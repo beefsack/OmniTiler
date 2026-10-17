@@ -43,17 +43,23 @@ describe("bounded gap schema and native KCM persistence", () => {
 
     it("persists gaps through the native script KCM with bounded validation", () => {
         const module = entryXml("native-effect/unifiedsettings_module.cpp");
+        const adapter = entryXml("native-effect/kdesettings_adapter.cpp");
+        const descriptors = entryXml("native-effect/generated/kde_settings_descriptors.h");
         const ui = entryXml("native-effect/unifiedsettings.ui");
         for (const key of ["innerGap", "outerGap"]) {
-            assert.match(module, new RegExp(`readBoundedGap\\(group, QStringLiteral\\("${key}"\\)\\)`));
+            assert.match(descriptors, new RegExp(`"${key}", "${key}SpinBox"`));
+            assert.match(descriptors, new RegExp(`"8", "0", "64"`));
+            assert.match(adapter, /readBoundedInt/);
+            assert.match(adapter, /isBoundedIntRawValid/);
+            assert.match(module, /KdeSettingsAdapter::readBoundedInt\(/);
             assert.match(module, new RegExp(`writeEntry\\(QStringLiteral\\("${key}"\\)`));
             assert.match(ui, new RegExp(`name="${key}SpinBox"`));
             assert.match(ui, new RegExp(`name="label_${key}"[\\s\\S]*?${key}SpinBox`));
         }
         assert.match(module, /m_ui\.innerGapSpinBox->setValue\(innerGap\)/);
         assert.match(module, /m_ui\.outerGapSpinBox->setValue\(outerGap\)/);
-        assert.match(module, /m_ui\.innerGapSpinBox->setValue\(kGapDefault\)/);
-        assert.match(module, /m_ui\.outerGapSpinBox->setValue\(kGapDefault\)/);
+        assert.match(module, /KdeSettingsAdapter::configureNativeControls\(widget\(\)\)/);
+        assert.match(adapter, /configureBoundedSpinBox/);
         assert.match(ui, /name="innerGapSpinBox"[\s\S]*?<number>64<\/number>/);
         assert.match(ui, /name="outerGapSpinBox"[\s\S]*?<number>64<\/number>/);
     });

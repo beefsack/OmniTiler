@@ -1,6 +1,7 @@
 #include "activeborderconfig.h"
 #include "activeborderconfig_module.h"
 #include "activeborderlogic.h"
+#include "kdesettings_adapter.h"
 
 #include <KColorButton>
 #include <KConfigGroup>
@@ -11,9 +12,13 @@
 #include <QCheckBox>
 #include <QClipboard>
 #include <QColor>
+#include <QComboBox>
 #include <QDBusMessage>
 #include <QDoubleSpinBox>
+#include <QLabel>
 #include <QMimeData>
+#include <QSpinBox>
+#include <QTabWidget>
 #include <QTemporaryDir>
 
 #include <cstdio>
@@ -434,6 +439,81 @@ void useThemeColorOnlyHotApplyRetry()
     CHECK(!module.needsSave());
 }
 
+void descriptorDrivenControlsMatchScriptIdentity()
+{
+    // Effect identity renders the same descriptor-driven page: tab titles
+    // and page order, enum rows with tooltips, gap bounds and dialog
+    // labels with buddy bindings. (Full cross-tab persistence lives in the
+    // descriptor test on the script identity; both share one page.)
+    using namespace OmnitilerKdeSettings;
+    KWin::ActiveBorderConfigModule module(nullptr, KPluginMetaData());
+    module.load();
+    QTabWidget *tabs = module.widget()->findChild<QTabWidget *>(QStringLiteral("settingsTabs"));
+    CHECK(tabs != nullptr);
+    if (tabs) {
+        CHECK(tabs->count() == kKdeTabCount);
+        for (int i = 0; i < kKdeTabCount && i < tabs->count(); ++i) {
+            CHECK(tabs->tabText(i) == kKdeTabs[i].title.toString());
+            CHECK(tabs->widget(i) != nullptr);
+            if (tabs->widget(i)) {
+                CHECK(tabs->widget(i)->objectName() == QString::fromUtf8(kKdeTabs[i].page_widget));
+            }
+        }
+    }
+    QComboBox *axis = module.widget()->findChild<QComboBox *>(QStringLiteral("sameAxisMoveCombo"));
+    CHECK(axis != nullptr);
+    if (axis) {
+        const auto *field = KWin::KdeSettingsAdapter::findScriptFieldByKey(QStringLiteral("sameAxisMove"));
+        CHECK(field != nullptr);
+        if (field) {
+            CHECK(axis->count() == field->option_count);
+            for (int i = 0; i < field->option_count && i < axis->count(); ++i) {
+                CHECK(axis->itemText(i) == field->options[i].label.toString());
+                CHECK(axis->itemData(i).toString() == QString::fromUtf8(field->options[i].token));
+            }
+        }
+    }
+    const auto *inner = KWin::KdeSettingsAdapter::findScriptFieldByKey(QStringLiteral("innerGap"));
+    auto *spin = module.widget()->findChild<QSpinBox *>(QStringLiteral("innerGapSpinBox"));
+    auto *label = module.widget()->findChild<QLabel *>(QStringLiteral("label_innerGap"));
+    CHECK(inner != nullptr);
+    CHECK(spin != nullptr);
+    CHECK(label != nullptr);
+    if (spin && inner) {
+        CHECK(spin->minimum() == KWin::KdeSettingsAdapter::intMinimum(inner));
+        CHECK(spin->maximum() == KWin::KdeSettingsAdapter::intMaximum(inner));
+    }
+    if (label && inner) {
+        CHECK(label->text() == inner->ui_label.toString());
+        CHECK(label->buddy() != nullptr);
+    }
+    // Appearance numerics and the theme checkbox render from the same
+    // descriptors: double ranges, exact dialog text, escaped tab ampersand.
+    const auto *width = KWin::KdeSettingsAdapter::findFieldById("border.width");
+    auto *widthSpin = module.widget()->findChild<QDoubleSpinBox *>(QStringLiteral("kcfg_BorderWidth"));
+    auto *widthLabel = module.widget()->findChild<QLabel *>(QStringLiteral("label_BorderWidth"));
+    CHECK(width != nullptr);
+    CHECK(widthSpin != nullptr);
+    CHECK(widthLabel != nullptr);
+    if (widthSpin && width) {
+        CHECK(widthSpin->minimum() == KWin::KdeSettingsAdapter::doubleMinimum(width));
+        CHECK(widthSpin->maximum() == KWin::KdeSettingsAdapter::doubleMaximum(width));
+    }
+    if (widthLabel && width) {
+        CHECK(widthLabel->text() == width->ui_label.toString());
+    }
+    const auto *theme = KWin::KdeSettingsAdapter::findFieldById("border.use-theme");
+    auto *themeCheck = module.widget()->findChild<QCheckBox *>(QStringLiteral("kcfg_UseThemeColor"));
+    CHECK(theme != nullptr);
+    CHECK(themeCheck != nullptr);
+    if (themeCheck && theme) {
+        CHECK(themeCheck->text() == theme->ui_label.toString());
+    }
+    if (tabs) {
+        CHECK(tabs->tabText(0) == QStringLiteral("Tiling && Workspaces"));
+    }
+}
+
 void unifiedControlsArePresent()
 {
     KWin::ActiveBorderConfigModule module(nullptr, KPluginMetaData());
@@ -702,6 +782,7 @@ int main(int argc, char **argv)
         translucentColorsAlphaChannelEnabled();
         translucentColorsMissingKeysDefaultToTranslucent();
         unifiedControlsArePresent();
+        descriptorDrivenControlsMatchScriptIdentity();
     } else if (scenario == QStringLiteral("config")) {
         effectConfigReloadReflectsStoredValues();
     } else {

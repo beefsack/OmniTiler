@@ -122,31 +122,21 @@ describe("migration source-refill schema and native KCM persistence", () => {
 
     it("persists migrationSourceRefill through the native script KCM with validation", () => {
         const module = entryFile("native-effect/unifiedsettings_module.cpp");
+        const adapter = entryFile("native-effect/kdesettings_adapter.cpp");
+        const descriptors = entryFile("native-effect/generated/kde_settings_descriptors.h");
         const ui = entryFile("native-effect/unifiedsettings.ui");
         assert.match(ui, /name="migrationSourceRefillCombo"/);
         assert.match(ui, /name="label_migrationSourceRefill"[\s\S]*?migrationSourceRefillCombo/);
-        assert.match(
-            module,
-            /m_ui\.migrationSourceRefillCombo->addItem\(.*QStringLiteral\("last-remaining-workspace"\)\)/,
-        );
-        assert.match(
-            module,
-            /m_ui\.migrationSourceRefillCombo->addItem\(.*QStringLiteral\("most-recently-used-workspace"\)\)/,
-        );
-        assert.match(module, /Last remaining workspace/);
-        assert.match(module, /Most recently used workspace/);
-        assert.match(module, /setItemData\(0, i18n\("COSMIC"\), Qt::ToolTipRole\)/);
-        assert.match(module, /bspwm, i3, awesome/);
-        assert.match(module, /readMigrationSourceRefill\(group\)/);
+        assert.match(descriptors, /"migrationSourceRefill", "migrationSourceRefillCombo"/);
+        assert.match(descriptors, /kli18n\("Last remaining workspace"\)/);
+        assert.match(descriptors, /kli18n\("Most recently used workspace"\)/);
+        assert.match(descriptors, /kli18n\("COSMIC"\)/);
+        assert.match(descriptors, /kli18n\("bspwm, i3, awesome"\)/);
+        assert.match(adapter, /readEnumToken/);
+        assert.match(module, /KdeSettingsAdapter::configureNativeControls\(widget\(\)\)/);
+        assert.match(module, /KdeSettingsAdapter::readEnumToken\(/);
         assert.match(module, /writeEntry\(QStringLiteral\("migrationSourceRefill"\)/);
-        assert.match(
-            module,
-            /select\(m_ui\.migrationSourceRefillCombo, migrationSourceRefill, QStringLiteral\("last-remaining-workspace"\)\)/,
-        );
-        assert.match(
-            module,
-            /migrationSourceRefillCombo->setCurrentIndex\(m_ui\.migrationSourceRefillCombo->findData\(QStringLiteral\("last-remaining-workspace"\)\)\)/,
-        );
+        assert.match(module, /KdeSettingsAdapter::selectEnumCombo\(/);
     });
 });
 

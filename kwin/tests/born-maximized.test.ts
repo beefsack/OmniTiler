@@ -71,19 +71,21 @@ describe("born-maximized schema and native KCM persistence", () => {
 
     it("persists bornMaximized through the native script KCM with validation", () => {
         const module = entryXml("native-effect/unifiedsettings_module.cpp");
+        const adapter = entryXml("native-effect/kdesettings_adapter.cpp");
+        const descriptors = entryXml("native-effect/generated/kde_settings_descriptors.h");
         const ui = entryXml("native-effect/unifiedsettings.ui");
         assert.match(ui, /name="bornMaximizedCombo"/);
         assert.match(ui, /name="label_bornMaximized"[\s\S]*?bornMaximizedCombo/);
-        assert.match(module, /m_ui\.bornMaximizedCombo->addItem\(.*QStringLiteral\("tile-on-launch"\)\)/);
-        assert.match(module, /m_ui\.bornMaximizedCombo->addItem\(.*QStringLiteral\("keep-maximized-overlay"\)\)/);
-        assert.match(module, /Tile on launch/);
-        assert.match(module, /Keep maximized overlay/);
-        assert.match(module, /bspwm, i3, xmonad, sway, qtile/);
-        assert.match(module, /COSMIC, Hyprland/);
-        assert.match(module, /readBornMaximized\(group\)/);
+        assert.match(descriptors, /"bornMaximized", "bornMaximizedCombo"/);
+        assert.match(descriptors, /kli18n\("Tile on launch"\)/);
+        assert.match(descriptors, /kli18n\("Keep maximized overlay"\)/);
+        assert.match(descriptors, /kli18n\("bspwm, i3, xmonad, sway, qtile"\)/);
+        assert.match(descriptors, /kli18n\("COSMIC, Hyprland"\)/);
+        assert.match(adapter, /readEnumToken/);
+        assert.match(module, /KdeSettingsAdapter::configureNativeControls\(widget\(\)\)/);
+        assert.match(module, /KdeSettingsAdapter::readEnumToken\(/);
         assert.match(module, /writeEntry\(QStringLiteral\("bornMaximized"\)/);
-        assert.match(module, /select\(m_ui\.bornMaximizedCombo, bornMaximized, QStringLiteral\("tile-on-launch"\)\)/);
-        assert.match(module, /bornMaximizedCombo->setCurrentIndex\(m_ui\.bornMaximizedCombo->findData\(QStringLiteral\("tile-on-launch"\)\)\)/);
+        assert.match(module, /KdeSettingsAdapter::selectEnumCombo\(/);
     });
 });
 

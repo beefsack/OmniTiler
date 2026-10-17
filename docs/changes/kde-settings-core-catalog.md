@@ -1,6 +1,6 @@
 # KDE Settings core-catalog migration
 
-- Status: implementation in progress.
+- Status: implementation and offline verification complete; CI pending.
 - Goal: migrate the existing four native KDE Settings tabs onto the shared Rust
   catalog through deterministic checked-in descriptors and a CI freshness gate.
 - Scope: development-only exporter, KDE adapter mappings/presentation overrides,
@@ -44,6 +44,23 @@
   one schema-only field, four tabs and native panel slots. Defaults, bounds and
   tokens derive from the catalog; native workspace option text is overridden.
 - Generated schemas differ only by provenance comments. Exporter freshness and
-  missing/tampered-artifact checks pass; Rust workspace tests, formatting and
-  strict all-target clippy pass. Generated header syntax checked with warnings
-  denied; actual KCM compilation/consumption remains the next verification gate.
+  missing/tampered-artifact checks pass (13 exporter tests). All 14 existing
+  field labels, enum choices/tooltips and numeric bounds, plus four tab titles,
+  are consumed by a focused native adapter over the retained Designer layout.
+  KConfigXT consumes generated appearance defaults. Save and operations stay
+  native; no generic operation setter was introduced.
+- Native regression coverage checks field/widget/tab/buddy parity, synthetic
+  descriptor-driven rendering, cross-tab drafts, Apply/Defaults/Cancel, tolerant
+  fallback, exact changed keys and retained hidden/foreign configuration. Both
+  KCM identities share the adapter; operation paths remain isolated.
+- Independent compatibility review caught a missing workspace member in the
+  Nix native-effect source fileset. Adding the exporter restores offline Cargo
+  resolution; hermetic Nix settings tests pass 27/27 and effect tests 34/34.
+  Source-archive checks now require the generated header and native helpers.
+- Latest integrated Rust workspace tests: 2,986 passed, zero failed; formatting
+  and strict all-target clippy pass. KWin tests: 1,773 passed, zero failed;
+  typecheck passes. Settings-only CMake build with warnings denied and CTest
+  pass 27/27. Generated-header syntax and real KCM builds pass.
+- KI18n lazy source markers are supported since 5.89, below the KF6 floor.
+  C-locale native text parity is tested; translated message extraction has no
+  repository harness and remains unverified, as does physical native UX.

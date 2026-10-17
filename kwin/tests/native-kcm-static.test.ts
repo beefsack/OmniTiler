@@ -27,6 +27,9 @@ const scriptFactory = read("native-effect/scriptconfig_module.cpp");
 const scriptFactoryHeader = read("native-effect/scriptconfig_module.h");
 const unified = read("native-effect/unifiedsettings_module.cpp");
 const unifiedHeader = read("native-effect/unifiedsettings_module.h");
+const adapter = read("native-effect/kdesettings_adapter.cpp");
+const adapterHeader = read("native-effect/kdesettings_adapter.h");
+const descriptors = read("native-effect/generated/kde_settings_descriptors.h");
 const unifiedUi = read("native-effect/unifiedsettings.ui");
 const reconcilerHeader = read("native-effect/shortcutreconciler.h");
 const reconciler = read("native-effect/shortcutreconciler.cpp");
@@ -129,6 +132,8 @@ describe("native KCM static contract", () => {
         // Single unified sourceset feeds both plugins and every KCM test binary.
         assert.match(cmake, /unifiedsettings_module\.cpp/);
         assert.match(cmake, /unifiedsettings_module\.h/);
+        assert.match(cmake, /kdesettings_adapter\.cpp/);
+        assert.match(cmake, /kdesettings_adapter\.h/);
         assert.match(cmake, /ki18n_wrap_ui\(unified_kcm_SOURCES unifiedsettings\.ui\)/);
         assert.doesNotMatch(cmake, /activeborderconfig\.ui/);
         assert.doesNotMatch(cmake, /scriptconfig\.ui/);
@@ -202,39 +207,68 @@ describe("native KCM static contract", () => {
         assert.deepEqual(rest, SCRIPT_SETTINGS);
         assert.match(kcfg, /<group name="Effect-omnitiler-active-border">/);
 
+        // Catalog-owned metadata lives in the generated descriptors and the
+        // focused adapter: defaults, bounds, tokens and enum rows derive
+        // from there, while the module keeps persistence and staging.
+        assert.match(descriptors, /kKdeExposedFieldCount == 14/);
+        assert.match(descriptors, /"workspaceMode", "workspaceModeCombo"/);
+        assert.match(descriptors, /"innerGap", "innerGapSpinBox"/);
+        assert.match(adapterHeader, /findScriptFieldByKey/);
+        assert.match(adapterHeader, /readEnumToken/);
+        assert.match(adapterHeader, /readWorkspaceMode/);
+        assert.match(adapterHeader, /readBoundedInt/);
+        assert.match(adapterHeader, /scriptDefaults/);
+        assert.match(adapterHeader, /populateEnumCombo/);
+        assert.match(adapterHeader, /configureNativeControls/);
+        assert.match(adapterHeader, /configureTabTitles/);
+        assert.match(adapterHeader, /applyFieldLabel/);
+        assert.match(adapterHeader, /configureDoubleSpinBox/);
+        assert.match(adapter, /for \(const auto &field : OmnitilerKdeSettings::kKdeFields\)/);
+        assert.match(adapter, /for \(const auto &tab : OmnitilerKdeSettings::kKdeTabs\)/);
+        assert.match(adapter, /readEntry\(fieldKey\(field\), fallback\)/);
+        assert.match(adapter, /group\.readEntry\(fieldKey\(field\), fieldDefaultToken\(field\)\)/);
+        assert.match(unified, /#include "kdesettings_adapter\.h"/);
+        assert.match(unified, /KdeSettingsAdapter::configureNativeControls\(widget\(\)\)/);
+        assert.doesNotMatch(unified, /KdeSettingsAdapter::populateEnumCombo\(m_ui\./);
+        assert.match(unified, /KdeSettingsAdapter::readWorkspaceMode\(group\)/);
+        assert.match(unified, /KdeSettingsAdapter::readEnumToken\(/);
+        assert.match(unified, /KdeSettingsAdapter::readBoundedInt\(/);
+        assert.match(unified, /KdeSettingsAdapter::scriptDefaults\(\)/);
+        assert.doesNotMatch(unified, /\.addItem\(i18n\(/);
+
         for (const [key, setting] of Object.entries(SCRIPT_SETTINGS)) {
             if (key === "innerGap" || key === "outerGap" || key === "shortcutProfile") {
                 continue;
             }
-            const defaultExpression = `QStringLiteral("${setting.defaultValue}")`;
-            assert.match(
-                unified,
-                new RegExp(
-                    `readEntry\\(QStringLiteral\\("${key}"\\), ${defaultExpression.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\)`,
-                ),
-            );
+            // Key, token default and enum order are owned by the generated
+            // header; the module keeps only changed-key persistence.
+            assert.match(descriptors, new RegExp(`"${key}"`));
+            assert.match(descriptors, new RegExp(`"${setting.defaultValue}"`));
             assert.match(unified, new RegExp(`writeEntry\\(QStringLiteral\\("${key}"\\)`));
         }
         for (const key of ["innerGap", "outerGap"]) {
-            assert.match(unified, new RegExp(`readBoundedGap\\(group, QStringLiteral\\("${key}"\\)\\)`));
-            assert.match(unified, new RegExp(`isBoundedGapRawValid\\(group, QStringLiteral\\("${key}"\\)\\)`));
+            assert.match(adapter, new RegExp(`readBoundedInt`));
+            assert.match(adapter, new RegExp(`isBoundedIntRawValid`));
             assert.match(unified, new RegExp(`writeEntry\\(QStringLiteral\\("${key}"\\)`));
-            assert.match(unified, new RegExp(`${key}SpinBox->setValue\\((8|kGapDefault)\\)`));
+            assert.match(unified, new RegExp(`KdeSettingsAdapter::readBoundedInt\\(`));
+            assert.match(unified, new RegExp(`${key}SpinBox->setValue\\(`));
             assert.match(unified, new RegExp(`${key}SpinBox->value\\(\\)`));
         }
 
-        assert.match(unified, /workspaceModeCombo->findData\(QStringLiteral\("per-output-local"\)\)/);
-        assert.match(unified, /sameAxisMoveCombo->findData\(QStringLiteral\("group-with-neighbor"\)\)/);
-        assert.match(unified, /fixedSizePredicateCombo->findData\(QStringLiteral\("both-axes-fixed"\)\)/);
-        assert.match(unified, /bornMaximizedCombo->findData\(QStringLiteral\("tile-on-launch"\)\)/);
-        assert.match(unified, /migrationSourceRefillCombo->findData\(QStringLiteral\("last-remaining-workspace"\)\)/);
+        assert.match(adapter, /findData\(value\)/);
+        assert.doesNotMatch(unified, /workspaceModeCombo->findData\(QStringLiteral\("per-output-local"\)\)/);
+        assert.match(unified, /KdeSettingsAdapter::selectEnumCombo\(/);
         assert.doesNotMatch(unified, /shortcutProfileCombo/);
         assert.doesNotMatch(unified, /readEntry\(QStringLiteral\("shortcutProfile"\)/);
         assert.doesNotMatch(unified, /writeEntry\(QStringLiteral\("shortcutProfile"\)/);
+        assert.doesNotMatch(adapter, /shortcutProfileCombo/);
+        assert.doesNotMatch(adapter, /readEntry\(QStringLiteral\("shortcutProfile"\)/);
+        assert.doesNotMatch(adapter, /writeEntry\(QStringLiteral\("shortcutProfile"\)/);
         assert.doesNotMatch(unified, /engineAuthorityModeCombo/);
         assert.doesNotMatch(unified, /tilingAlgorithm|automaticSplitTarget|dropOutlinePreview/);
-        assert.match(unified, /innerGapSpinBox->setValue\((8|kGapDefault)\)/);
-        assert.match(unified, /outerGapSpinBox->setValue\((8|kGapDefault)\)/);
+        assert.doesNotMatch(adapter, /tilingAlgorithm|automaticSplitTarget|dropOutlinePreview/);
+        assert.match(unified, /innerGapSpinBox->setValue\(/);
+        assert.match(unified, /outerGapSpinBox->setValue\(/);
         for (const factory of [effectFactory, scriptFactory]) {
             assert.doesNotMatch(factory, /workspaceModeCombo|shortcutProfileCombo|sameAxisMoveCombo|fixedSizePredicateCombo|bornMaximizedCombo|migrationSourceRefillCombo|innerGapSpinBox|outerGapSpinBox/);
             assert.doesNotMatch(factory, /Script-omnitiler-kwin/);
@@ -242,23 +276,60 @@ describe("native KCM static contract", () => {
     });
 
     it("reads and writes supported script settings only through the script config group", () => {
-        assert.equal((unified.match(/Script-omnitiler-kwin/g) ?? []).length, 2);
+        // The group name is owned once by the adapter; both load() and
+        // save() resolve it through scriptConfigGroupName().
+        assert.equal((adapter.match(/Script-omnitiler-kwin/g) ?? []).length, 1);
+        assert.equal((unified.match(/Script-omnitiler-kwin/g) ?? []).length, 0);
+        assert.match(adapter, /scriptConfigGroupName/);
+        assert.match(unified, /KdeSettingsAdapter::scriptConfigGroupName\(\)/);
         assert.doesNotMatch(unified, /Effect-omnitiler-kwin/);
-        assert.match(unified, /const QString workspaceMode = group\.readEntry\(QStringLiteral\("workspaceMode"\), QStringLiteral\("per-output-local"\)\)/);
-        assert.match(unified, /select\(m_ui\.workspaceModeCombo, workspaceMode, QStringLiteral\("per-output-local"\)\)/);
-        assert.match(unified, /readSameAxisMove\(group\)/);
-        assert.match(unified, /select\(m_ui\.sameAxisMoveCombo, sameAxisMove, QStringLiteral\("group-with-neighbor"\)\)/);
+        assert.doesNotMatch(adapter, /Effect-omnitiler-kwin/);
+        assert.match(unified, /KdeSettingsAdapter::readWorkspaceMode\(group\)/);
+        assert.match(unified, /KdeSettingsAdapter::selectEnumCombo\(combo, value, fallback\)/);
+        assert.match(unified, /findScriptFieldByKey\(QStringLiteral\("sameAxisMove"\)\)/);
         assert.match(unified, /writeEntry\(QStringLiteral\("sameAxisMove"\)/);
-        assert.match(unified, /readFixedSizePredicate\(group\)/);
-        assert.match(unified, /select\(m_ui\.fixedSizePredicateCombo, fixedSizePredicate, QStringLiteral\("both-axes-fixed"\)\)/);
+        assert.match(unified, /findScriptFieldByKey\(QStringLiteral\("fixedSizePredicate"\)\)/);
         assert.match(unified, /writeEntry\(QStringLiteral\("fixedSizePredicate"\)/);
-        assert.match(unified, /readBornMaximized\(group\)/);
-        assert.match(unified, /select\(m_ui\.bornMaximizedCombo, bornMaximized, QStringLiteral\("tile-on-launch"\)\)/);
+        assert.match(unified, /findScriptFieldByKey\(QStringLiteral\("bornMaximized"\)\)/);
         assert.match(unified, /writeEntry\(QStringLiteral\("bornMaximized"\)/);
-        assert.match(unified, /readMigrationSourceRefill\(group\)/);
-        assert.match(unified, /select\(m_ui\.migrationSourceRefillCombo, migrationSourceRefill, QStringLiteral\("last-remaining-workspace"\)\)/);
+        assert.match(unified, /findScriptFieldByKey\(QStringLiteral\("migrationSourceRefill"\)\)/);
         assert.match(unified, /writeEntry\(QStringLiteral\("migrationSourceRefill"\)/);
         assert.doesNotMatch(unified, /tilingAlgorithm|automaticSplitTarget|dropOutlinePreview/);
+    });
+
+    it("consumes descriptors through the focused adapter without operation calls", () => {
+        // The adapter renders metadata only: no shortcut/window operation
+        // entry points may be invoked through ordinary staging or Save.
+        assert.match(cmake, /kdesettings_adapter_test\.cpp/);
+        assert.match(cmake, /omnitiler-settings-descriptor-test/);
+        assert.match(cmake, /native-settings-descriptors/);
+        // Appearance numerics are consumed bounds, not Designer-only text:
+        // the header carries min/max/default per double row and the adapter
+        // applies them to the retained QDoubleSpinBox widgets.
+        for (const [key, widget, bounds] of [
+            ["BorderWidth", "kcfg_BorderWidth", `"3.0", "0.0", "32.0"`],
+            ["BorderRadius", "kcfg_BorderRadius", `"6.0", "0.0", "64.0"`],
+            ["BorderGap", "kcfg_BorderGap", `"0.0", "0.0", "64.0"`],
+            ["GroupUnderlayExtension", "kcfg_GroupUnderlayExtension", `"-1", "-1", "32.0"`],
+        ] as const) {
+            assert.match(descriptors, new RegExp(`"${key}", "${widget}"`));
+            assert.match(descriptors, new RegExp(bounds.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+        }
+        assert.match(adapter, /configureDoubleSpinBox/);
+        assert.match(descriptors, /"tiling-workspaces", kli18n\("Tiling && Workspaces"\), "tilingTab"/);
+        assert.doesNotMatch(adapter, /requestShortcutApply|requestShortcutRevert|requestWindowFix|requestWindowRevert/);
+        assert.doesNotMatch(adapter, /applyForcedSelected|previewForceApplySelected/);
+        assert.doesNotMatch(adapterHeader, /requestShortcutApply|requestShortcutRevert|requestWindowFix|requestWindowRevert/);
+        // Source packaging travels with the whole native-effect subtree, so
+        // the helper and generated outputs need no per-file install list.
+        // The Cargo workspace closure is enumerated per member instead, so
+        // the exporter member is asserted by name: a bare subtree check
+        // would not catch a dropped member manifest.
+        const flake = read("../flake.nix");
+        assert.match(flake, /\.\/kwin\/native-effect/);
+        assert.match(flake, /\.\/crates\/tiler-kde-settings-exporter/);
+        const cargoManifest = read("../Cargo.toml");
+        assert.match(cargoManifest, /crates\/tiler-kde-settings-exporter/);
     });
 
     it("does not expose global shortcut mutation APIs", () => {

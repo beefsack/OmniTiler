@@ -56,17 +56,19 @@ describe("fixed-size predicate schema and native KCM persistence", () => {
 
     it("persists fixedSizePredicate through the native script KCM with validation", () => {
         const module = entryXml("native-effect/unifiedsettings_module.cpp");
+        const adapter = entryXml("native-effect/kdesettings_adapter.cpp");
+        const descriptors = entryXml("native-effect/generated/kde_settings_descriptors.h");
         const ui = entryXml("native-effect/unifiedsettings.ui");
         assert.match(ui, /name="fixedSizePredicateCombo"/);
         assert.match(ui, /name="label_fixedSizePredicate"[\s\S]*?fixedSizePredicateCombo/);
-        assert.match(module, /m_ui\.fixedSizePredicateCombo->addItem\(.*QStringLiteral\("both-axes-fixed"\)\)/);
-        assert.match(module, /m_ui\.fixedSizePredicateCombo->addItem\(.*QStringLiteral\("either-axis-fixed"\)\)/);
-        assert.match(module, /Width and height both fixed/);
-        assert.match(module, /Width or height fixed/);
-        assert.match(module, /readFixedSizePredicate\(group\)/);
+        assert.match(descriptors, /"fixedSizePredicate", "fixedSizePredicateCombo"/);
+        assert.match(descriptors, /kli18n\("Width and height both fixed"\)/);
+        assert.match(descriptors, /kli18n\("Width or height fixed"\)/);
+        assert.match(adapter, /readEnumToken/);
+        assert.match(module, /KdeSettingsAdapter::configureNativeControls\(widget\(\)\)/);
+        assert.match(module, /KdeSettingsAdapter::readEnumToken\(/);
         assert.match(module, /writeEntry\(QStringLiteral\("fixedSizePredicate"\)/);
-        assert.match(module, /select\(m_ui\.fixedSizePredicateCombo, fixedSizePredicate, QStringLiteral\("both-axes-fixed"\)\)/);
-        assert.match(module, /fixedSizePredicateCombo->setCurrentIndex\(m_ui\.fixedSizePredicateCombo->findData\(QStringLiteral\("both-axes-fixed"\)\)\)/);
+        assert.match(module, /KdeSettingsAdapter::selectEnumCombo\(/);
     });
 });
 

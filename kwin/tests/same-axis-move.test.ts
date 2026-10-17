@@ -60,17 +60,21 @@ describe("same-axis move schema and native KCM persistence", () => {
 
     it("persists sameAxisMove through the native script KCM with validation", () => {
         const module = entryXml("native-effect/unifiedsettings_module.cpp");
+        const adapter = entryXml("native-effect/kdesettings_adapter.cpp");
+        const descriptors = entryXml("native-effect/generated/kde_settings_descriptors.h");
         const ui = entryXml("native-effect/unifiedsettings.ui");
         assert.match(ui, /name="sameAxisMoveCombo"/);
         assert.match(ui, /name="label_sameAxisMove"[\s\S]*?sameAxisMoveCombo/);
-        assert.match(module, /m_ui\.sameAxisMoveCombo->addItem\(.*QStringLiteral\("group-with-neighbor"\)\)/);
-        assert.match(module, /m_ui\.sameAxisMoveCombo->addItem\(.*QStringLiteral\("swap-with-neighbor"\)\)/);
-        assert.match(module, /Group with neighbor/);
-        assert.match(module, /Swap with neighbor/);
-        assert.match(module, /readSameAxisMove\(group\)/);
+        assert.match(descriptors, /"sameAxisMove", "sameAxisMoveCombo"/);
+        assert.match(descriptors, /kli18n\("Group with neighbor"\)/);
+        assert.match(descriptors, /kli18n\("Swap with neighbor"\)/);
+        assert.match(descriptors, /kli18n\("COSMIC"\)/);
+        assert.match(descriptors, /kli18n\("i3, sway"\)/);
+        assert.match(adapter, /readEnumToken/);
+        assert.match(module, /KdeSettingsAdapter::configureNativeControls\(widget\(\)\)/);
+        assert.match(module, /KdeSettingsAdapter::readEnumToken\(/);
         assert.match(module, /writeEntry\(QStringLiteral\("sameAxisMove"\)/);
-        assert.match(module, /select\(m_ui\.sameAxisMoveCombo, sameAxisMove, QStringLiteral\("group-with-neighbor"\)\)/);
-        assert.match(module, /sameAxisMoveCombo->setCurrentIndex\(m_ui\.sameAxisMoveCombo->findData\(QStringLiteral\("group-with-neighbor"\)\)\)/);
+        assert.match(module, /KdeSettingsAdapter::selectEnumCombo\(/);
     });
 });
 

@@ -164,6 +164,8 @@ if(OMNITILER_BUILD_SETTINGS)
 set(unified_kcm_SOURCES
     unifiedsettings_module.cpp
     unifiedsettings_module.h
+    kdesettings_adapter.cpp
+    kdesettings_adapter.h
     shortcutreconciler.cpp
     shortcutreconciler.h
     ${config_SOURCES}
@@ -258,6 +260,7 @@ if(BUILD_TESTING)
         activeborderconfig_module_test.cpp
         activeborderconfig_module.cpp
         unifiedsettings_module.cpp
+        kdesettings_adapter.cpp
         shortcutreconciler.cpp
         ${config_SOURCES}
     )
@@ -315,6 +318,7 @@ if(BUILD_TESTING)
         activeborderconfig_shortcut_test.cpp
         activeborderconfig_module.cpp
         unifiedsettings_module.cpp
+        kdesettings_adapter.cpp
         shortcutreconciler.cpp
         ${config_SOURCES}
     )
@@ -368,6 +372,7 @@ if(BUILD_TESTING)
         scriptconfig_module_test.cpp
         scriptconfig_module.cpp
         unifiedsettings_module.cpp
+        kdesettings_adapter.cpp
         shortcutreconciler.cpp
         ${config_SOURCES}
     )
@@ -405,6 +410,42 @@ if(BUILD_TESTING)
         native-script-config-gaps
         native-script-config-save
         native-script-config-windows
+        PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    )
+
+    set(descriptor_test_SOURCES
+        kdesettings_adapter_test.cpp
+        scriptconfig_module.cpp
+        unifiedsettings_module.cpp
+        kdesettings_adapter.cpp
+        shortcutreconciler.cpp
+        ${config_SOURCES}
+    )
+    ki18n_wrap_ui(descriptor_test_SOURCES unifiedsettings.ui)
+    add_executable(omnitiler-settings-descriptor-test
+        ${descriptor_test_SOURCES}
+    )
+    target_link_libraries(omnitiler-settings-descriptor-test PRIVATE
+        KF6::CoreAddons
+        KF6::ConfigCore
+        KF6::ConfigGui
+        KF6::I18n
+        KF6::KCMUtils
+        KF6::WidgetsAddons
+        Qt6::Core
+        Qt6::DBus
+        Qt6::Widgets
+    )
+    target_compile_definitions(omnitiler-settings-descriptor-test PRIVATE
+        -DTRANSLATION_DOMAIN="kwin"
+        -DKPLUGINFACTORY_PLUGIN_CLASS_INTERNAL_NAME=ScriptConfigModuleFactory
+    )
+    target_compile_options(omnitiler-settings-descriptor-test PRIVATE -Wall -Wextra -Werror)
+
+    add_test(NAME native-settings-descriptors
+        COMMAND omnitiler-settings-descriptor-test descriptors)
+    set_tests_properties(
+        native-settings-descriptors
         PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
     )
 

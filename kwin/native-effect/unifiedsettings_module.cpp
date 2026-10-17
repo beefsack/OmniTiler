@@ -1,8 +1,8 @@
 #include "unifiedsettings_module.h"
 #include "activeborderconfig.h"
+#include "kdesettings_adapter.h"
 
 #include <KConfigGroup>
-#include <KLocalizedString>
 #include <KSharedConfig>
 #include <QLoggingCategory>
 
@@ -46,69 +46,6 @@ void ShortcutTaskWorker::execute(Task task, quint64 generation)
 
 namespace
 {
-
-constexpr int kGapDefault = 8;
-constexpr int kGapMinimum = 0;
-constexpr int kGapMaximum = 64;
-
-int readBoundedGap(const KConfigGroup &group, const QString &key)
-{
-    if (!group.hasKey(key)) {
-        return kGapDefault;
-    }
-    bool ok = false;
-    const int parsed = group.readEntry(key, QString()).toInt(&ok);
-    if (ok && parsed >= kGapMinimum && parsed <= kGapMaximum) {
-        return parsed;
-    }
-    return kGapDefault;
-}
-
-bool isBoundedGapRawValid(const KConfigGroup &group, const QString &key)
-{
-    if (!group.hasKey(key)) {
-        return true;
-    }
-    bool ok = false;
-    const int parsed = group.readEntry(key, QString()).toInt(&ok);
-    return ok && parsed >= kGapMinimum && parsed <= kGapMaximum;
-}
-
-QString readSameAxisMove(const KConfigGroup &group)
-{
-    const QString value = group.readEntry(QStringLiteral("sameAxisMove"), QStringLiteral("group-with-neighbor"));
-    if (value == QStringLiteral("group-with-neighbor") || value == QStringLiteral("swap-with-neighbor")) {
-        return value;
-    }
-    return QStringLiteral("group-with-neighbor");
-}
-
-QString readFixedSizePredicate(const KConfigGroup &group)
-{
-    const QString value = group.readEntry(QStringLiteral("fixedSizePredicate"), QStringLiteral("both-axes-fixed"));
-    if (value == QStringLiteral("both-axes-fixed") || value == QStringLiteral("either-axis-fixed")) {
-        return value;
-    }
-    return QStringLiteral("both-axes-fixed");
-}
-
-QString readBornMaximized(const KConfigGroup &group)
-{
-    const QString value = group.readEntry(QStringLiteral("bornMaximized"), QStringLiteral("tile-on-launch"));
-    if (value == QStringLiteral("tile-on-launch") || value == QStringLiteral("keep-maximized-overlay")) {
-        return value;
-    }
-    return QStringLiteral("tile-on-launch");
-}
-
-QString readMigrationSourceRefill(const KConfigGroup &group)
-{
-    const QString value = group.readEntry(QStringLiteral("migrationSourceRefill"), QStringLiteral("last-remaining-workspace"));
-    if (value == QStringLiteral("last-remaining-workspace") || value == QStringLiteral("most-recently-used-workspace")) {
-        return value;
-    }
-    return QStringLiteral("last-remaining-workspace");
-}
 
 QStringList liveChangedNames(bool gapChanged, bool sameAxisMoveChanged, bool fixedPredicateChanged, bool bornMaximizedChanged, bool refillChanged)
 {
@@ -176,31 +113,10 @@ UnifiedSettingsModule::UnifiedSettingsModule(QObject *parent, const KPluginMetaD
     m_ui.setupUi(widget());
     addConfig(ActiveBorderConfig::self(), widget());
 
-    m_ui.workspaceModeCombo->addItem(i18n("Per output, local"), QStringLiteral("per-output-local"));
-    m_ui.workspaceModeCombo->setItemData(0, i18n("Requires KWin 6.7 or later; KWin 6.6 uses shared"), Qt::ToolTipRole);
-    m_ui.workspaceModeCombo->addItem(i18n("Global, unique"), QStringLiteral("global-unique"));
-    m_ui.workspaceModeCombo->setItemData(1, i18n("Requires KWin 6.7 or later; KWin 6.6 uses shared"), Qt::ToolTipRole);
-    m_ui.workspaceModeCombo->addItem(i18n("Shared"), QStringLiteral("shared"));
-
-    m_ui.sameAxisMoveCombo->addItem(i18n("Group with neighbor"), QStringLiteral("group-with-neighbor"));
-    m_ui.sameAxisMoveCombo->setItemData(0, i18n("COSMIC"), Qt::ToolTipRole);
-    m_ui.sameAxisMoveCombo->addItem(i18n("Swap with neighbor"), QStringLiteral("swap-with-neighbor"));
-    m_ui.sameAxisMoveCombo->setItemData(1, i18n("i3, sway"), Qt::ToolTipRole);
-
-    m_ui.fixedSizePredicateCombo->addItem(i18n("Width and height both fixed"), QStringLiteral("both-axes-fixed"));
-    m_ui.fixedSizePredicateCombo->setItemData(0, i18n("COSMIC"), Qt::ToolTipRole);
-    m_ui.fixedSizePredicateCombo->addItem(i18n("Width or height fixed"), QStringLiteral("either-axis-fixed"));
-    m_ui.fixedSizePredicateCombo->setItemData(1, i18n("Hyprland (Wayland), sway"), Qt::ToolTipRole);
-
-    m_ui.bornMaximizedCombo->addItem(i18n("Tile on launch"), QStringLiteral("tile-on-launch"));
-    m_ui.bornMaximizedCombo->setItemData(0, i18n("bspwm, i3, xmonad, sway, qtile"), Qt::ToolTipRole);
-    m_ui.bornMaximizedCombo->addItem(i18n("Keep maximized overlay"), QStringLiteral("keep-maximized-overlay"));
-    m_ui.bornMaximizedCombo->setItemData(1, i18n("COSMIC, Hyprland"), Qt::ToolTipRole);
-
-    m_ui.migrationSourceRefillCombo->addItem(i18n("Last remaining workspace"), QStringLiteral("last-remaining-workspace"));
-    m_ui.migrationSourceRefillCombo->setItemData(0, i18n("COSMIC"), Qt::ToolTipRole);
-    m_ui.migrationSourceRefillCombo->addItem(i18n("Most recently used workspace"), QStringLiteral("most-recently-used-workspace"));
-    m_ui.migrationSourceRefillCombo->setItemData(1, i18n("bspwm, i3, awesome"), Qt::ToolTipRole);
+    // Rendered native configuration comes from the generated
+    // descriptors through one focused adapter loop; the Designer layout
+    // keeps widget names, order, buddies and fallback text.
+    KdeSettingsAdapter::configureNativeControls(widget());
 
     connect(m_ui.workspaceModeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
             &UnifiedSettingsModule::updateScriptState);
@@ -1655,15 +1571,9 @@ QVariantMap UnifiedSettingsModule::currentScriptValues() const
 void UnifiedSettingsModule::updateScriptState()
 {
     const QVariantMap current = currentScriptValues();
-    const QVariantMap defaults = {
-        {QStringLiteral("workspaceMode"), QStringLiteral("per-output-local")},
-        {QStringLiteral("sameAxisMove"), QStringLiteral("group-with-neighbor")},
-        {QStringLiteral("fixedSizePredicate"), QStringLiteral("both-axes-fixed")},
-        {QStringLiteral("bornMaximized"), QStringLiteral("tile-on-launch")},
-        {QStringLiteral("migrationSourceRefill"), QStringLiteral("last-remaining-workspace")},
-        {QStringLiteral("innerGap"), kGapDefault},
-        {QStringLiteral("outerGap"), kGapDefault},
-    };
+    // Catalog-owned defaults through the adapter; dirty tracking compares
+    // the live widgets against the loaded snapshot below.
+    const QVariantMap defaults = KdeSettingsAdapter::scriptDefaults();
     unmanagedWidgetChangeState(m_gapReconfigurePending
                                || (!m_loadedScriptValues.isEmpty() && current != m_loadedScriptValues));
     unmanagedWidgetDefaultState(current == defaults);
@@ -1690,26 +1600,37 @@ void UnifiedSettingsModule::load()
     refreshWindowConflicts();
 
     const KConfigGroup group(KSharedConfig::openConfig(QStringLiteral("kwinrc")),
-                             QStringLiteral("Script-omnitiler-kwin"));
+                             KdeSettingsAdapter::scriptConfigGroupName());
     const auto select = [](QComboBox *combo, const QString &value, const QString &fallback) {
-        const int index = combo->findData(value);
-        const int fallbackIndex = combo->findData(fallback);
-        combo->setCurrentIndex(index >= 0 ? index : fallbackIndex);
+        KdeSettingsAdapter::selectEnumCombo(combo, value, fallback);
     };
-    const QString workspaceMode = group.readEntry(QStringLiteral("workspaceMode"), QStringLiteral("per-output-local"));
-    const QString sameAxisMove = readSameAxisMove(group);
-    const QString fixedSizePredicate = readFixedSizePredicate(group);
-    const QString bornMaximized = readBornMaximized(group);
-    const QString migrationSourceRefill = readMigrationSourceRefill(group);
-    const int innerGap = readBoundedGap(group, QStringLiteral("innerGap"));
-    const int outerGap = readBoundedGap(group, QStringLiteral("outerGap"));
-    m_loadedInnerGapRawValid = isBoundedGapRawValid(group, QStringLiteral("innerGap"));
-    m_loadedOuterGapRawValid = isBoundedGapRawValid(group, QStringLiteral("outerGap"));
-    select(m_ui.workspaceModeCombo, workspaceMode, QStringLiteral("per-output-local"));
-    select(m_ui.sameAxisMoveCombo, sameAxisMove, QStringLiteral("group-with-neighbor"));
-    select(m_ui.fixedSizePredicateCombo, fixedSizePredicate, QStringLiteral("both-axes-fixed"));
-    select(m_ui.bornMaximizedCombo, bornMaximized, QStringLiteral("tile-on-launch"));
-    select(m_ui.migrationSourceRefillCombo, migrationSourceRefill, QStringLiteral("last-remaining-workspace"));
+    const QString workspaceMode = KdeSettingsAdapter::readWorkspaceMode(group);
+    const QString sameAxisMove = KdeSettingsAdapter::readEnumToken(
+        group, KdeSettingsAdapter::findScriptFieldByKey(QStringLiteral("sameAxisMove")));
+    const QString fixedSizePredicate = KdeSettingsAdapter::readEnumToken(
+        group, KdeSettingsAdapter::findScriptFieldByKey(QStringLiteral("fixedSizePredicate")));
+    const QString bornMaximized = KdeSettingsAdapter::readEnumToken(
+        group, KdeSettingsAdapter::findScriptFieldByKey(QStringLiteral("bornMaximized")));
+    const QString migrationSourceRefill = KdeSettingsAdapter::readEnumToken(
+        group, KdeSettingsAdapter::findScriptFieldByKey(QStringLiteral("migrationSourceRefill")));
+    const int innerGap = KdeSettingsAdapter::readBoundedInt(
+        group, KdeSettingsAdapter::findScriptFieldByKey(QStringLiteral("innerGap")));
+    const int outerGap = KdeSettingsAdapter::readBoundedInt(
+        group, KdeSettingsAdapter::findScriptFieldByKey(QStringLiteral("outerGap")));
+    m_loadedInnerGapRawValid = KdeSettingsAdapter::isBoundedIntRawValid(
+        group, KdeSettingsAdapter::findScriptFieldByKey(QStringLiteral("innerGap")));
+    m_loadedOuterGapRawValid = KdeSettingsAdapter::isBoundedIntRawValid(
+        group, KdeSettingsAdapter::findScriptFieldByKey(QStringLiteral("outerGap")));
+    // Combo fallbacks are the catalog defaults: an unknown stored token
+    // shows the default while the snapshot keeps the raw value.
+    const QVariantMap catalogDefaults = KdeSettingsAdapter::scriptDefaults();
+    select(m_ui.workspaceModeCombo, workspaceMode, catalogDefaults.value(QStringLiteral("workspaceMode")).toString());
+    select(m_ui.sameAxisMoveCombo, sameAxisMove, catalogDefaults.value(QStringLiteral("sameAxisMove")).toString());
+    select(m_ui.fixedSizePredicateCombo, fixedSizePredicate,
+           catalogDefaults.value(QStringLiteral("fixedSizePredicate")).toString());
+    select(m_ui.bornMaximizedCombo, bornMaximized, catalogDefaults.value(QStringLiteral("bornMaximized")).toString());
+    select(m_ui.migrationSourceRefillCombo, migrationSourceRefill,
+           catalogDefaults.value(QStringLiteral("migrationSourceRefill")).toString());
     m_ui.innerGapSpinBox->setValue(innerGap);
     m_ui.outerGapSpinBox->setValue(outerGap);
     m_loadedScriptValues = {
@@ -1773,7 +1694,7 @@ void UnifiedSettingsModule::save()
     // pure retry save (pending request, unchanged widgets) skips
     // persistence: the loaded values already match the widgets.
     KConfigGroup group(KSharedConfig::openConfig(QStringLiteral("kwinrc")),
-                       QStringLiteral("Script-omnitiler-kwin"));
+                       KdeSettingsAdapter::scriptConfigGroupName());
     QStringList written;
     if (widgetsChanged) {
         if (workspaceModeChanged) {
@@ -2019,13 +1940,26 @@ void UnifiedSettingsModule::defaults()
 {
     KCModule::defaults();
 
-    m_ui.workspaceModeCombo->setCurrentIndex(m_ui.workspaceModeCombo->findData(QStringLiteral("per-output-local")));
-    m_ui.sameAxisMoveCombo->setCurrentIndex(m_ui.sameAxisMoveCombo->findData(QStringLiteral("group-with-neighbor")));
-    m_ui.fixedSizePredicateCombo->setCurrentIndex(m_ui.fixedSizePredicateCombo->findData(QStringLiteral("both-axes-fixed")));
-    m_ui.bornMaximizedCombo->setCurrentIndex(m_ui.bornMaximizedCombo->findData(QStringLiteral("tile-on-launch")));
-    m_ui.migrationSourceRefillCombo->setCurrentIndex(m_ui.migrationSourceRefillCombo->findData(QStringLiteral("last-remaining-workspace")));
-    m_ui.innerGapSpinBox->setValue(kGapDefault);
-    m_ui.outerGapSpinBox->setValue(kGapDefault);
+    // Catalog-owned defaults through the adapter; shortcut staging is
+    // restaged separately below and never persisted here.
+    const QVariantMap catalogDefaults = KdeSettingsAdapter::scriptDefaults();
+    KdeSettingsAdapter::selectEnumCombo(m_ui.workspaceModeCombo,
+                                       catalogDefaults.value(QStringLiteral("workspaceMode")).toString(),
+                                       catalogDefaults.value(QStringLiteral("workspaceMode")).toString());
+    KdeSettingsAdapter::selectEnumCombo(m_ui.sameAxisMoveCombo,
+                                       catalogDefaults.value(QStringLiteral("sameAxisMove")).toString(),
+                                       catalogDefaults.value(QStringLiteral("sameAxisMove")).toString());
+    KdeSettingsAdapter::selectEnumCombo(m_ui.fixedSizePredicateCombo,
+                                       catalogDefaults.value(QStringLiteral("fixedSizePredicate")).toString(),
+                                       catalogDefaults.value(QStringLiteral("fixedSizePredicate")).toString());
+    KdeSettingsAdapter::selectEnumCombo(m_ui.bornMaximizedCombo,
+                                       catalogDefaults.value(QStringLiteral("bornMaximized")).toString(),
+                                       catalogDefaults.value(QStringLiteral("bornMaximized")).toString());
+    KdeSettingsAdapter::selectEnumCombo(m_ui.migrationSourceRefillCombo,
+                                       catalogDefaults.value(QStringLiteral("migrationSourceRefill")).toString(),
+                                       catalogDefaults.value(QStringLiteral("migrationSourceRefill")).toString());
+    m_ui.innerGapSpinBox->setValue(catalogDefaults.value(QStringLiteral("innerGap")).toInt());
+    m_ui.outerGapSpinBox->setValue(catalogDefaults.value(QStringLiteral("outerGap")).toInt());
     // Defaults restage Keep for the shortcut draft with no preview;
     // persisting still never writes shortcuts. The revision invalidates
     // any outstanding restage claim (no new claim is staged).

@@ -197,6 +197,12 @@ if [[ -f "$ENTRIES" ]]; then
   for member in "$TOP_DIR/kwin/contents/code/main.js" "$TOP_DIR/VERSION" \
     "$TOP_DIR/SOURCE_REV" "$TOP_DIR/kwin/package.json" "$TOP_DIR/Cargo.lock" \
     "$TOP_DIR/Cargo.toml" "$TOP_DIR/kwin/native-effect/CMakeLists.txt" \
+    "$TOP_DIR/crates/tiler-kde-settings-exporter/Cargo.toml" \
+    "$TOP_DIR/crates/tiler-kde-settings-exporter/src/main.rs" \
+    "$TOP_DIR/kwin/native-effect/generated/kde_settings_descriptors.h" \
+    "$TOP_DIR/kwin/native-effect/kdesettings_adapter.h" \
+    "$TOP_DIR/kwin/native-effect/kdesettings_adapter.cpp" \
+    "$TOP_DIR/kwin/native-effect/kdesettings_adapter_test.cpp" \
     "$TOP_DIR/THIRD-PARTY-NOTICES"; do
     grep -Fxq -- "$member" "$ENTRIES" || fail "archive lacks $member"
   done

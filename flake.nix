@@ -76,6 +76,7 @@
           ./crates/omnitiler
           ./crates/tiler-windows
           ./crates/tiler-macos
+          ./crates/tiler-kde-settings-exporter
         ];
       };
 
