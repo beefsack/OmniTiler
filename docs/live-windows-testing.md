@@ -103,6 +103,13 @@ do not broaden cleanup or repeatedly restart the experiment.
 
 ## Agent Live-Test Practice
 
+- Immediately before every injected keystroke (including Esc, Enter, and
+  typing), verify the foreground HWND/PID belongs to the intended owned test
+  window, menu, or dialog; otherwise abort that leg without injecting. Input
+  reaching the operator's terminal can interrupt the agent session. Dismiss
+  menus without global keystrokes: click a verified owned test window or send
+  an owned-window cancellation such as `WM_CANCELMODE`, then verify the menu
+  is gone. Never leave a menu, dialog, or overlay open at a step boundary.
 - Scope the tiler to the permitted test apps so it never manages terminals or
   other windows, for example:
   `mise exec -- just dev trace --scope-exe notepad.exe --scope-exe CalculatorApp.exe --scope-exe ApplicationFrameHost.exe --scope-exe mspaint.exe --scope-host-child ApplicationFrameHost.exe=CalculatorApp.exe`.
