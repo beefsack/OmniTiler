@@ -222,6 +222,16 @@ earlier unretained gate claims. Unsafe accounting for this evaluation in
 `ffi.rs`: lines matching `unsafe` **176 → 191**; matching `unsafe {`
 **104 → 111**. No unsafe was added outside that module.
 
+Published diagnostic evaluation: `b60fc07b`. Full local gates were repeated before
+publication. Concurrent Windows documentation updates were rebased without source
+changes. Hosted CI [38988368422](https://github.com/beefsack/OmniTiler/actions/runs/38988368422)
+passed macOS, Rust, Windows, KWin, licenses and notices; native passed all 26 tests
+on one targeted rerun after the previously seen shortcut-selection allocator
+abort. Shell alone remains red on the pre-existing KWin API guard for
+`fullscreen`/`maximized`/`sticky`; no Shell/native source changed here. This is a
+verified diagnostic milestone, not completed product-underlay acceptance. Keep
+this note with the parked item rather than archive unfinished integration.
+
 Remaining KDE/Windows differences, explicitly:
 
 - No product underlay or group creation/dissolution lifecycle; no `ActiveGroup`
