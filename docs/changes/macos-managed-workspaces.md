@@ -145,6 +145,45 @@ Do not remove an occupied Space. Run
 Restore any separately changed shortcut setting. No probe performs cleanup Space
 operations or changes settings on the user's behalf.
 
+### User-assisted discriminator results (2026-10-17)
+
+Run with the user at the desktop: tiler stopped, one display, Desktop 1 plus one
+manually created Desktop 2, a disposable TextEdit window on Desktop 1.
+
+| Cell | Result |
+| --- | --- |
+| Real drag + real Ctrl+Right (baseline) | **Pass**: the view switched while the window was still held; on release TextEdit stayed on Desktop 2. Real drag + Ctrl+Left returned it |
+| Real drag + synthetic Ctrl+Right (`drag-diag-chord`, tagged, flags `0x40000`) | **No effect**: two posts, no desktop switch |
+| Synthetic Ctrl+Right alone, no drag (same command, tagged) | **No effect**: two posts, no desktop switch |
+| Synthetic drag + synthetic Ctrl+2 (`drag-diag-full --amethyst --desktop 2`, after the user enabled Switch to Desktop 2) | **Pass**: the view and TextEdit both moved to Desktop 2. Six balanced posts; both identities joined TextEdit's `AXStandardWindow` at the cursor; mouse-down to mouse-up 469 ms, including the 400 ms settle delay |
+
+The untagged Ctrl+Right variant and the synthetic-drag/real-chord cell were
+skipped once the cause was isolated.
+
+**Cause.** The read-only `spaces-bindings` table registers every Mission
+Control arrow chord with Carbon modifiers `0x21000`, which is Control plus Fn.
+On Apple keyboards the arrow keys carry the Fn flag. The executor's chord sets
+only Control (`0x40000`), so it never matches. This is consistent with the
+earlier no-effect evidence in the
+[routes research](../research/macos-port/native-spaces-routes.md). Desktop-N
+holders are registered as Control only (`0x1000`), so they match the existing
+construction. The synthetic title-bar drag itself works.
+
+**Consequences.**
+- The numbered send route (synthetic drag plus Desktop-N chord) is proven on a
+  real app.
+- Relative sends need the arrow chord posted with Control plus SecondaryFn
+  (`0x840000`), possibly plus NumericPad (`0x200000`), as hardware arrows carry.
+  This needs a fix and a re-test.
+- The working Desktop-N run was untagged, with key-up flags 0. Confirm that the
+  tagged chord also works, because the tiler's tap needs the provenance tag to
+  pass its own chords.
+- Transfer is unparked. The earlier occlusion and identity work stands.
+
+Cleanup: the user returned TextEdit, closed it and unticked Switch to Desktop 2.
+A read-only `spaces-diagnose` afterwards still showed two Spaces on the display,
+with Desktop 1 current. The disposable Desktop 2 had not yet been removed.
+
 ### Offline verification
 
 Final local gates pass: **862 tests** (728 library plus eight integration suites),

@@ -3689,16 +3689,19 @@ decisions of 2026-09-24 are under
   (diagnostic-only). All three manual native Space-transfer routes moved an
   ordinary window ([results](research/macos-port/native-spaces-routes.md#user-manual-transfer-check-2026-10-16)).
   **Next, in order (user-reviewed 2026-10-17):**
-  1. User-assisted synthetic-drag discriminator: add two one-shot probe
-     commands (synthetic Ctrl+Right only, posted exactly as the transfer
-     executor posts it; synthetic title-bar drag hold only, on a user-chosen
-     non-Ghostty point, with guaranteed release) and compare the event sequence
-     with Amethyst offline. The user holds a real title bar or presses the real
-     chord to isolate which half fails. Tiler not running; two Spaces.
+  1. **Done 2026-10-17:** user-assisted synthetic-drag discriminator
+     ([results](changes/macos-managed-workspaces.md#user-assisted-discriminator-results-2026-10-17)).
+     A synthetic drag plus a Desktop-N chord moved TextEdit to another Space.
+     Synthetic Ctrl+Right failed even alone, because Mission Control's arrow
+     holders require Control plus Fn and the executor sets only Control.
+     Transfer is unparked.
   2. Adopt full world-state core replies (P1 item above) before more workspace
      or overlay work lands in the same runtime files.
-  3. Finish managed native workspaces: fix the transfer, then send-follow and
-     send-stay; trailing empty Space (Meta+0, also the indicator's trailing
+  3. Finish managed native workspaces: post the relative arrow chord with
+     Control plus SecondaryFn (possibly NumericPad) and re-test; confirm the
+     tagged chord still triggers the holder; numbered sends use the proven
+     synthetic drag plus Desktop-N route, with Authentic enabling Desktop-N;
+     then send-follow and send-stay; trailing empty Space (Meta+0, also the indicator's trailing
      slot); per-display Space-number attribution; multi-display.
      **2026-10-17 fallback:** clear-helper placement now proves AX and
      WindowServer titlebar identity after self-join, but two posted Ctrl+Right
