@@ -14,7 +14,7 @@
 - Regression coverage for event delivery, deadlines, request/settings changes and missing wakes.
 - Scripted workspace switching and clean-stop comparison; supported preview/input checks without substituting synthetic input for physical evidence.
 - Locked Windows package build/tests, formatting, strict all-target clippy and whitespace checks; CI results recorded separately from local Windows evidence.
-- Implementation and offline verification delivered; post-correction live remeasurement and physical-input acceptance remain pending, as detailed below.
+- Implementation, offline verification and the post-correction eight-case idle CPU matrix delivered. Visible timeout attribution, chevron response and physical-input/game acceptance remain open, as detailed below.
 
 ## Approach
 
@@ -57,12 +57,114 @@ CPU milliseconds per minute, release scoped runs, non-game idle only:
 | Managed windows, trace off | 341.9 | 85.2 | 75.1% |
 | Managed windows, trace on | 506.7 | 116.4 | 77.0% |
 
-- These after samples precede the final name-only ledger-watch correction. The trace runs still included unnecessary log-content notification wakes, fixed subsequently and verified offline; final-release live remeasurement remains pending.
+- These after samples precede the final name-only ledger-watch correction. The trace runs still included unnecessary log-content notification wakes, fixed subsequently and verified offline; post-correction samples are recorded separately below.
 - After CPU sample windows were 117-121 s after 15 s settling. CPU accounting quantum was 15.625 ms, approximately 7.8 ms/min uncertainty; the empty trace-off result was only one quantum and is not a precise performance floor.
 - After counters were mapped to thread IDs on each sample. Context switches were bursty 0-44/s, mostly owner-thread activity; two counter sampling errors were retained as errors. Most CPU was on owner, with at most two quanta on another thread in managed cases. Do not infer thread roles for unnamed threads.
 - Trace owner waits fell from approximately 9.5/s to 1.1-1.6/s over whole runs. Approximately 0.5/s were visible-pager maintenance deadlines; remaining notifications included the subsequently corrected log-write feedback. Input/render idle wait deltas remained zero. No repeated idle full reconciliation remained after removing diagnostic-only deadlines.
 - Scripted workspace select: 153/180/217 ms versus baseline 217/245/281 ms, all successful. Process startup and 50 ms observation granularity prevent a precise product-latency claim; ranges overlap.
 - Clean stop: 75-210 ms versus baseline 80-288 ms; all scoped owners exited, recovery/restore succeeded, request/ledger files cleared and changed state restored. Non-target terminal windows were excluded and left unchanged.
+
+## Post-correction live matrix, 2026-10-17
+
+- Release source `c785d98f1324244071376c294afb92ef7bdf658b`, clean tree;
+  includes owner-idle `1a4f82ad`, its log-watch correction and Windows FFI
+  consolidation/correction `1fe27640`/`f42691af`. Rebuilt with
+  `mise exec -- cargo build --locked --release -p tiler-windows`.
+- SHA-256: owner `071ad55c77c0e58a80b8b966a60837c66b3318448d8abe0550e1a379df1cf7d0`;
+  disposable helper `dd842b5ea5683f4ac2712e0d82ad5276f9c558cd00ceb2406ffbe22121d6e722`.
+  Windows 11 physical host, medium integrity, single output. Exact OS/display,
+  executable/PID/start identities and raw responses remain in external evidence,
+  not repository machine records.
+- Launch: `tile --user-start --scope-exe tiler-test-window.exe`, adding
+  `--trace` for trace legs. Managed cases used two identity-tagged helpers;
+  other applications were excluded. No keyboard injection. Workspaces were
+  idle during sampling, then switched through the exact-owner CLI.
+- Each leg settled for 15 s, then sampled process CPU over 152.7-154.5 s wall
+  time, including sparse thread-counter collection. Hidden cases enabled
+  taskbar auto-hide; visible cases disabled it. No game was run.
+
+| Workspace contents | Pager | Trace | CPU ms/sample | CPU ms/min |
+| --- | --- | --- | ---: | ---: |
+| Empty | Visible | Off | 93.8 | 36.4 |
+| Empty | Visible | On | 156.2 | 61.4 |
+| Two helpers | Visible | Off | 140.6 | 54.7 |
+| Two helpers | Visible | On | 140.6 | 54.8 |
+| Empty | Hidden, auto-hide | Off | 0.0 | 0.0 |
+| Empty | Hidden, auto-hide | On | 15.6 | 6.1 |
+| Two helpers | Hidden, auto-hide | Off | 0.0 | 0.0 |
+| Two helpers | Hidden, auto-hide | On | 15.6 | 6.1 |
+
+- Accounting quantum was 15.625 ms, about 6.1 ms/min for these windows.
+  Hidden results are granularity-limited near-zero observations, not proven
+  zero CPU. These are single samples, not confidence intervals. In particular,
+  the earlier 7.9 ms/min empty-visible sample and current 36.4 are different
+  revisions/windows; quantization alone does not explain their difference,
+  and neither regression nor improvement is established by that comparison.
+- Surviving-thread snapshots concentrated CPU in one thread, except two in
+  managed trace-off. Thread churn prevents complete lifetime attribution;
+  rounded agreement with process totals does not prove exited-thread zero CPU.
+  Context-switch reads were 7-9 sparse instantaneous samples per leg, not
+  totals/averages: visible samples ranged 0-28.7/s; hidden samples read 0/s.
+  Counter errors were retained, not converted to zero, including two in the
+  visible trace-empty leg.
+- Hidden trace snapshots: empty owner timeout delta 0 across 146.4 s;
+  managed delta 0 across 178.5 s. No periodic pager timeout was observed;
+  CLI/completion notifications still woke the owner. This is bounded live
+  evidence supporting the blocking-wait design, not proof of forever-idle:
+  the retained 300 s gaming refresh lies outside these windows.
+- Visible trace snapshots, including startup and CLI operations: empty
+  +107 waits/+98 timeouts over 174.7 s; managed +175/+102 over 182.7 s.
+  Timeout counts (~0.56/s) exceed nominal 2 s pager maintenance (~0.50/s).
+  Aggregate counters also include staged-work zero-timeout collects and
+  cannot identify the cause of every excess return. No new periodic timer
+  or log-write feedback loop was established; attribution remains open.
+- Managed visible trace contained 60 icon-result batches, all misses,
+  approximately paired every 6 s, correlated with completion notifications
+  (+64 across the run). This is the already-approved 5 s negative icon-cache
+  retry serviced on visible 2 s turns, not startup-only work or a new
+  independently armed timer. Hidden managed trace had no icon-result batches.
+  Positive 10 s refresh was not exercised by the iconless helpers.
+- Later taskbar response passed: visible pager -> auto-hide enabled, no pager
+  -> auto-hide disabled, visible pager recreated. This proves the exercised
+  later change, not just startup appearance; no precise latency was measured.
+  Chevron response is unmeasured: UI Automation/Win32 discovery did not expose
+  a verified click target. That is not proof the chevron is physically absent
+  or that tray-geometry response has no contract; no speculative click was made.
+- All eight legs' workspace selects completed `ok` in owner logs. Later
+  idle-matrix harness legs measured 43-161 ms dispatch-to-observation, including CLI
+  startup; the first leg's incomplete parsed result was checked in its log.
+  This is not physical-input or isolated product-latency evidence.
+- Graceful stop took 76-86 ms; standalone restore succeeded and ledger/request
+  state cleared. A separate exact-owner emergency-stop/restore also succeeded.
+  Final taskbar state matched its preimage, no owner/watch-owner/helper or
+  pager overlay remained, and no hidden-window claims remained. Managed hidden
+  helper visibility/styles/rectangles matched their post-tiling baseline before
+  exact close; this does not claim restoration to original pre-tiling geometry.
+  Owner logs report Mouse Snap disabled on resume and restored at teardown;
+  that restore path verifies its SPI write. A separate final read-only
+  `SPI_GETWINARRANGING` returned true. No independent pre-run SPI readback was
+  captured, so there is no independent pre/post comparison; standalone
+  `mouse_snap_restored:false` is only a no-op report, not restoration proof.
+  One failed harness setup was stopped/restored; its partial sample is excluded.
+- Evidence set `idle-matrix-20261017-postcorr`: case-prefixed
+  `measure/provenance/workspace/waits/stop` JSON, helper readbacks,
+  `G-pager-response.json`, `preimage.json` and `restore-verify.json`.
+  Independent evidence/source review accepted the measurements with the
+  attribution, granularity, restoration and chevron limits above.
+
+### Open finding and next action
+
+- Visible timeout excess is not causally resolved. Options: (a) add trace-only
+  per-timeout attribution (staged flag, selected deadline and wait outcome),
+  then repeat one bounded visible leg; (b) retain the aggregate uncertainty
+  without a stronger wake-frequency claim. Recommendation: (a), before changing
+  any timeout calculation or declaring every residual wake accounted for.
+  No runtime fix was made: changing retry cadence would override the existing
+  icon-freshness decision, and the counters do not establish a small causal fix.
+- Chevron response needs a verified safe target or user-run observation.
+  Physical workspace/Win+arrow focus/move, drag-preview and game comparison
+  remain pending and user-owned. No game-cost or physical-responsiveness claim
+  follows from this matrix. External settings live-edit remains unexercised.
 
 ## Retained deadlines and reasons
 
@@ -80,7 +182,12 @@ CPU milliseconds per minute, release scoped runs, non-game idle only:
 | Bounded run end | Explicit proof/run duration, not steady maintenance. |
 
 - Focus settlement (10 x 50 ms), hide confirmation (25 ms within a 2 s budget), render finish/teardown waits, modal-tray stop checking and input/render contention or setup retries remain operation-scoped, not healthy idle polling.
-- Healthy hidden-pager idle has no periodic maintenance deadline, with trace enabled or disabled. Visible pager maintenance was armed in every measured live run.
+- Artwork cache age thresholds are also retained: negative entries retry after
+  5 s because applications set icons late; positive entries refresh after 10 s
+  because Windows has no icon-change event. These approved thresholds are
+  checked on existing visible-pager turns, not independently armed deadlines;
+  worker completions add event wakes. Hidden/non-drawable artwork is not queued.
+- Healthy hidden-pager idle has no periodic pager-maintenance deadline, with trace enabled or disabled. The separate 300 s gaming refresh remains. Visible pager maintenance was armed in the visible live cases.
 
 ## Decisions and pending evidence
 
@@ -89,6 +196,11 @@ CPU milliseconds per minute, release scoped runs, non-game idle only:
 - Physical game comparison remains user-owned. No game-performance claim follows from idle results.
 - Directory watches rearm before inspection; modifier-only transitions, refused-input capacity recovery and asynchronous completions explicitly signal the owner.
 - Missing hide acknowledgement must still trigger the existing 500 ms refusal deadline, never authorize a drop without proof. Completion callbacks retain owned event lifetime through shutdown.
-- Pending: final post-log-watch-correction four-case live matrix; hidden-pager indefinite-wait live evidence; physical workspace/Win+arrow focus/move and drag-preview responsiveness; pager auto-hide/chevron change-response checks; physical game comparison. Startup pager appearance is not proof of later taskbar-change response. External settings live-edit behavior was not exercised; notification/last-good contracts have offline coverage.
+- Post-log-watch-correction eight-case CPU matrix, bounded hidden-pager wait
+  evidence and later auto-hide response are measured above. Visible timeout
+  attribution and chevron response remain open, alongside physical
+  workspace/Win+arrow focus/move, drag-preview and game comparison. External
+  settings live-edit behavior was not exercised; notification/last-good
+  contracts have offline coverage.
 - Retain the approved visible-pager 2 s reassert for now. Options for a later slice are proving a complete native z-order wake source or choosing a changed recovery/staleness contract; do not silently delete the period or add a replacement global poll.
 - Production settings and ledger directories differ. A same-directory seam intentionally retains content notifications for settings fidelity and can still wake on colocated log writes; no performance claim covers that configuration.

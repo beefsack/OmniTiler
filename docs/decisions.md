@@ -513,8 +513,13 @@ platform API behavior.
   publication is atomic. Diagnostics add no deadline or reconcile. Preserve
   the existing visible-pager 2 s topmost-recovery contract and degraded setup
   fallbacks with specific reasons, rather than a global poll. Non-game idle
-  measurements improved; final post-correction live and physical-input/game
-  acceptance remain pending. See the
+  measurements improved. Post-correction eight-case idle matrix and later
+  taskbar-auto-hide response measured 2026-10-17; hidden samples were
+  granularity-limited near-zero with no timeout increments in the observed
+  trace intervals. Existing approved icon-cache refresh accounts for recurring
+  visible managed completion wakes. Visible timeout excess remains unattributed;
+  recommend trace-only per-turn attribution before changing behavior. Chevron
+  response and physical-input/preview/game acceptance remain pending. See the
   [idle record](changes/archive/windows-owner-event-idle.md).
 - Input clean stop requires successful hook release and successful finished
   thread join; repeated terminal waits return the cached result. Missing or

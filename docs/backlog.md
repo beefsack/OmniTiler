@@ -1002,8 +1002,12 @@ decisions of 2026-09-24 are under
     CPU, frame-time and input cost against a without-tiler game baseline,
     including suspended work/effects. The unconditional 100 ms owner poll was
     removed 2026-10-17; non-game idle evidence showed 75-98% less CPU before
-    the final log-notification correction. Final post-correction live matrix,
-    physical input/preview and pager change-response checks remain pending;
+    the final log-notification correction. Post-correction eight-case idle
+    matrix, bounded hidden-pager wait evidence and later auto-hide response
+    measured 2026-10-17: hidden CPU was granularity-limited near-zero, not
+    proven zero. Visible timeout excess still needs per-turn attribution;
+    chevron response and physical input/preview remain pending. Existing
+    approved icon-cache refresh explains visible managed completion wakes;
     retain visible-pager 2 s recovery pending a complete native wake source or
     an explicit recovery-contract choice. [Idle record](changes/archive/windows-owner-event-idle.md).
     Game cost remains unmeasured; idle improvement, suspension and nominal
