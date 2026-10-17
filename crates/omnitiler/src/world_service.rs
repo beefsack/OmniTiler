@@ -337,7 +337,7 @@ pub fn world_ingress_summary(request: &str) -> String {
 
 /// Bounded egress summary for one authorized world outcome. Pure over the
 /// request/reply strings; never echoes payload beyond correlation, outcome,
-/// kind, and revision.
+/// kind, the fixed check-vocabulary message, and revision.
 #[must_use]
 pub fn world_egress_summary(request: &str, reply: &str) -> String {
     let request_value: serde_json::Value = serde_json::from_str(request).unwrap_or_default();
@@ -384,8 +384,23 @@ pub fn world_egress_summary(request: &str, reply: &str) -> String {
             )
         }
     };
+    // Fixed check-vocabulary message on rejections (dash tokens pass
+    // through; sentence messages and absent fields sanitize to unknown/-).
+    // Accepted replies carry no message.
+    let msg = match object
+        .and_then(|o| o.get("outcome"))
+        .and_then(serde_json::Value::as_str)
+    {
+        Some("rejected") => world_token(
+            object
+                .and_then(|o| o.get("message"))
+                .and_then(serde_json::Value::as_str),
+            "-",
+        ),
+        _ => "-".to_owned(),
+    };
     format!(
-        "omnitiler:world-summary direction=egress req={req} outcome={outcome} kind={kind} rev={rev}"
+        "omnitiler:world-summary direction=egress req={req} outcome={outcome} kind={kind} rev={rev} msg={msg}"
     )
 }
 
@@ -509,5 +524,43 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&reply).expect("valid JSON");
         assert_eq!(parsed["kind"], "generation-mismatch");
         assert_eq!(parsed["gen"].as_str(), Some(fresh.as_str()));
+    }
+
+    #[test]
+    fn egress_summary_names_rejection_reason_without_content() {
+        // Fixed check-vocabulary messages surface as the msg token so one
+        // daemon line diagnoses the rejection; anything else sanitizes and
+        // no request/reply content ever echoes.
+        let request = "{\"req\":\"req-7\"}";
+        let fixed = "{\"outcome\":\"rejected\",\"kind\":\"snapshot-invalid\",\
+            \"message\":\"duplicate-window\",\"gen\":\"gen-1\"}";
+        let line = world_egress_summary(request, fixed);
+        assert_eq!(
+            line,
+            "omnitiler:world-summary direction=egress req=req-7 \
+             outcome=rejected kind=snapshot-invalid rev=- msg=duplicate-window"
+        );
+        // Sentence messages and hostile correlation/content sanitize.
+        let hostile_request = "{\"req\":\"bad req!\",\"command\":{\"op\":\"send secret\"}}";
+        let hostile_reply = "{\"outcome\":\"rejected\",\"kind\":\"snapshot-invalid\",\
+            \"message\":\"observation of win-secret-1 failed\",\"gen\":\"gen-1\"}";
+        let line = world_egress_summary(hostile_request, hostile_reply);
+        assert_eq!(
+            line,
+            "omnitiler:world-summary direction=egress req=unknown \
+             outcome=rejected kind=snapshot-invalid rev=- msg=unknown"
+        );
+        assert!(
+            !line.contains("secret"),
+            "no content echoes into the summary"
+        );
+        // Accepted replies carry no message.
+        let accepted = "{\"consumed\":false,\"rev\":\"3\"}";
+        let line = world_egress_summary(request, accepted);
+        assert_eq!(
+            line,
+            "omnitiler:world-summary direction=egress req=req-7 \
+             outcome=accepted kind=- rev=3 msg=-"
+        );
     }
 }

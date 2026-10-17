@@ -891,7 +891,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                             state.noteRejectedOrTransportError();
                             return;
                         }
-                        log(`omnitiler:world:rejected kind=${token(parsed.kind)} recovery=on-next-event`);
+                        log(`omnitiler:world:rejected kind=${token(parsed.kind)} msg=${token(parsed.message)} recovery=on-next-event`);
                         pendingCommand = null;
                         state.inFlightReq = null;
                         state.observationOnlyCatchup = true;

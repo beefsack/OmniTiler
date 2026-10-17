@@ -221,11 +221,15 @@ fn validation_rejects_every_malformed_section() {
         output: OutputId("out".to_owned()),
     });
     assert!(!validate_report(&bad));
-    // Inverted hints refuse.
-    let mut bad = test_report();
-    bad.domains[0].windows[0].hints.min_w = Some(100);
-    bad.domains[0].windows[0].hints.max_w = Some(50);
-    assert!(!validate_report(&bad));
+    // Contradictory hints are advisory, never a refusal: the clamp
+    // lets the minimum win and fixed-size classification treats the pair
+    // as unequal (see size_hints::meaningful). Production clients report
+    // such pairs, so gating them here rejected live reports.
+    let mut advisory = test_report();
+    advisory.domains[0].windows[0].hints.min_w = Some(100);
+    advisory.domains[0].windows[0].hints.max_w = Some(50);
+    assert!(validate_report(&advisory));
+    assert_eq!(validate_report_reason(&advisory), None);
     // Bad adjacency target refuses.
     let mut bad = test_report();
     bad.domains[0].domain.adjacent.insert(

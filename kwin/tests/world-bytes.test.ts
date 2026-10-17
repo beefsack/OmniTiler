@@ -150,6 +150,76 @@ function makeFixtureSurface() {
     return { surface, world, started, stepped, finished, windowAdded, windowRemoved };
 }
 
+// Native Qt QSize shapes: real clients report explicit minimum/maximum
+// extents. The Qt defaults are a 0x0 minimum (no minimum) and a
+// QWIDGETSIZE_MAX 16777215 maximum (no maximum); the i32::MAX sentinel is
+// also unbounded. Generic fake ids, real field shapes.
+function makeSizeHintsSurface() {
+    const ws1 = { id: "ws-1" };
+    const ws2 = { id: "ws-2" };
+    const wins: Array<Record<string, unknown>> = [
+        {
+            internalId: "win-default", normalWindow: true,
+            frameGeometry: { x: 0, y: 0, width: 200, height: 200 },
+            output: { name: "out-1" }, desktops: [ws1],
+            minimized: false, fullscreen: false, maximized: false, sticky: false,
+            minSize: { width: 0, height: 0 }, maxSize: { width: 16777215, height: 16777215 },
+        },
+        {
+            internalId: "win-sentinel", normalWindow: true,
+            frameGeometry: { x: 210, y: 0, width: 200, height: 200 },
+            output: { name: "out-1" }, desktops: [ws1],
+            minimized: false, fullscreen: false, maximized: false, sticky: false,
+            minSize: null, maxSize: { width: 2147483647, height: 2147483647 },
+        },
+        {
+            internalId: "win-wide", normalWindow: true,
+            frameGeometry: { x: 420, y: 0, width: 200, height: 200 },
+            output: { name: "out-1" }, desktops: [ws1],
+            minimized: false, fullscreen: false, maximized: false, sticky: false,
+            minSize: { width: 640, height: 0 }, maxSize: { width: 640, height: 0 },
+        },
+        {
+            internalId: "win-fixed", normalWindow: true,
+            frameGeometry: { x: 630, y: 0, width: 400, height: 300 },
+            output: { name: "out-1" }, desktops: [ws1],
+            minimized: false, fullscreen: false, maximized: false, sticky: false,
+            minSize: { width: 400, height: 300 }, maxSize: { width: 400, height: 300 },
+        },
+    ];
+    const world = {
+        wins,
+        screens: [
+            { name: "out-1", geometry: { x: 0, y: 0, width: 1920, height: 1080 } },
+        ],
+        desktops: [ws1, ws2],
+        activeScreen: { name: "out-1" },
+        activeWindow: wins[0] as unknown,
+        currentByScreen: new Map([["out-1", ws1]]),
+    };
+    const surface = {
+        windowList: () => world.wins,
+        screens: world.screens,
+        desktops: world.desktops,
+        activeScreen: world.activeScreen,
+        get activeWindow() {
+            return world.activeWindow;
+        },
+        set activeWindow(ref: unknown) {
+            world.activeWindow = ref;
+        },
+        clientArea: () => ({ x: 0, y: 0, width: 800, height: 600 }),
+        currentDesktopForScreen: (screen: { name: string }) => world.currentByScreen.get(screen.name) ?? null,
+        setCurrentDesktopForScreen: (deskRef: unknown, screen: { name: string }) => {
+            world.currentByScreen.set(screen.name, deskRef as { id: string });
+        },
+        sendClientToScreen: () => undefined,
+        createDesktop: () => null as unknown as object,
+        removeDesktop: () => undefined,
+    };
+    return { surface, world };
+}
+
 interface Flow {
     handle: NonNullable<ReturnType<typeof startWorldAdapterEntry>>;
     calls: Array<{ method: string; payload: string; callback: (reply: unknown) => void }>;
@@ -218,6 +288,18 @@ function seedBinds(req: unknown, obs: unknown, rev: string): string {
             { id: "ws-1", out: "out-1", bind: "ws-1", logical: "desk-1", scope: "out-1", order: 0, mode: "tiled", exist: true, hold: "" },
             { id: "ws-2", out: "out-2", bind: "ws-2", logical: "desk-2", scope: "out-2", order: 0, mode: "tiled", exist: true, hold: "" },
             { id: "ws-3", out: "out-1", bind: "ws-3", logical: "desk-3", scope: "out-1", order: 1, mode: "tiled", exist: true, hold: "" },
+        ],
+    });
+}
+
+function seedSizeHintBinds(req: unknown, obs: unknown, rev: string): string {
+    return JSON.stringify({
+        v: 1, adapter: "test-adapter", gen: "gen-1", req,
+        obs, rev, ready: true, consumed: false,
+        scopes: [], outputs: [], windows: [], transfers: [], effects: [],
+        workspaces: [
+            { id: "ws-1", out: "out-1", bind: "ws-1", logical: "desk-1", scope: "out-1", order: 0, mode: "tiled", exist: true, hold: "" },
+            { id: "ws-2", out: "out-1", bind: "ws-2", logical: "desk-2", scope: "out-1", order: 1, mode: "tiled", exist: true, hold: "" },
         ],
     });
 }
@@ -334,6 +416,47 @@ describe("world shared byte fixtures", () => {
         flow.handle.stop();
     });
 
+    it("captures real Qt size-hint defaults byte-identically with a select follow-up", () => {
+        const { surface } = makeSizeHintsSurface();
+        const flow = startFlow(surface);
+        replyCall(flow, "DiscoverWorld")(seedSizeHintBinds("disc-1", "0", "0"));
+        const observePayload = lastPayload(flow, "DescribeWorld");
+        checkOrWrite("report-kwin-size-hints.json", observePayload);
+        const body = JSON.parse(observePayload) as Record<string, unknown>;
+        // Real Qt QSize field shapes ride verbatim on the wire.
+        assert.ok(observePayload.includes('"minW":0,"minH":0,"maxW":16777215,"maxH":16777215}'), "Qt default hints ride");
+        assert.ok(observePayload.includes('"maxW":2147483647'), "unbounded sentinel rides");
+        assert.ok(observePayload.includes('"minW":640,"minH":0,"maxW":640,"maxH":0}'), "partial-zero vector rides");
+        assert.ok(observePayload.includes('"minW":400,"minH":300,"maxW":400,"maxH":300}'), "fixed pin rides");
+        // fixedAuto classification stays meaningful under the default
+        // both-axes predicate: only the equal nonzero pin floats.
+        const domains = body["domains"] as Array<Record<string, unknown>>;
+        const rows = domains.flatMap((d) => d["windows"] as Array<Record<string, unknown>>);
+        const flagOf = (id: string): boolean => {
+            const row = rows.find((w) => w["win"] === id);
+            assert.ok(row !== undefined, `expected row ${id}`);
+            return row["fixedAuto"] === true;
+        };
+        assert.equal(flagOf("win-fixed"), true);
+        assert.equal(flagOf("win-default"), false);
+        assert.equal(flagOf("win-sentinel"), false);
+        assert.equal(flagOf("win-wide"), false);
+        // Accepted, never catchup-held: the explicit select rides the next
+        // dispatch instead of being dropped to observation-only.
+        replyCall(flow, "DescribeWorld")(acceptEmpty(body["req"], body["obs"], "1"));
+        flow.handle.requestWorkspaceSelect(2);
+        runTimers(flow);
+        assert.ok(!flow.logs.some((l) => l.includes("shortcut-failed")), "select dispatched with its command");
+        const selectPayload = lastPayload(flow, "DescribeWorld");
+        checkOrWrite("report-kwin-size-hints-select.json", selectPayload);
+        const selectBody = JSON.parse(selectPayload) as Record<string, unknown>;
+        const cmd = selectBody["command"] as Record<string, unknown>;
+        assert.equal(cmd["op"], "select-numbered");
+        assert.equal(cmd["index"], 2);
+        assert.equal(cmd["out"], "out-1");
+        flow.handle.stop();
+    });
+
     it("refuses oversize reports at the 4MiB gate without truncation", () => {
         // Fat rows (128-char window, output, and workspace ids) so the
         // real builder crosses 4MiB well inside the 10000-window cap.
@@ -387,5 +510,33 @@ describe("world shared byte fixtures", () => {
             assert.ok(flow.logs.some((l) => l.includes("request-oversize")), "one bounded oversize line");
             flow.handle.stop();
         }
+    });
+});
+
+describe("world rejection log vocabulary", () => {
+    function startRejectedFlow(message: unknown): string[] {
+        const { surface } = makeSizeHintsSurface();
+        const flow = startFlow(surface);
+        replyCall(flow, "DiscoverWorld")(acceptEmpty("disc-1", "0", "0"));
+        replyCall(flow, "DescribeWorld")(JSON.stringify({
+            v: 1, outcome: "rejected", kind: "snapshot-invalid", message, gen: "gen-1",
+        }));
+        const logs = [...flow.logs];
+        flow.handle.stop();
+        return logs;
+    }
+
+    it("carries only the fixed msg token on rejections", () => {
+        const logs = startRejectedFlow("duplicate-window");
+        assert.ok(logs.some((l) =>
+            l === "omnitiler:world:rejected kind=snapshot-invalid msg=duplicate-window recovery=on-next-event"));
+    });
+
+    it("sanitizes non-vocabulary message content without echo", () => {
+        const secret = "win-secret-1 payload {\"x\":1}";
+        const logs = startRejectedFlow(secret);
+        assert.ok(logs.some((l) =>
+            l === "omnitiler:world:rejected kind=snapshot-invalid msg=unknown recovery=on-next-event"));
+        assert.ok(!logs.some((l) => l.includes("secret")), "no content echoes into the log");
     });
 });

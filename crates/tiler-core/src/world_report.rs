@@ -832,32 +832,41 @@ pub fn report_digest(report: &WorldReport) -> u64 {
 /// in the transition, not here.
 #[must_use]
 pub fn validate_report(report: &WorldReport) -> bool {
+    validate_report_reason(report).is_none()
+}
+
+/// Name the failed [`validate_report`] check in fixed vocabulary (never
+/// payload bytes): `None` when the report is valid, otherwise the static
+/// reason token the rejection carries as its message under kind
+/// `snapshot-invalid`, so one log line diagnoses the report.
+#[must_use]
+pub fn validate_report_reason(report: &WorldReport) -> Option<&'static str> {
     if report.contract_version != WORLD_CONTRACT_VERSION {
-        return false;
+        return Some("version-mismatch");
     }
     if !is_opaque_id(&report.owner)
         || !is_opaque_id(&report.adapter_incarnation)
         || !is_opaque_id(&report.request_id)
     {
-        return false;
+        return Some("identity-invalid");
     }
     if !crate::ids::is_generation_id(&report.core_generation) {
-        return false;
+        return Some("generation-invalid");
     }
     if report.domains.len() > MAX_WORLD_DOMAINS
         || report.topology.len() > MAX_WORLD_OUTPUTS
         || report.bindings.len() > MAX_WORLD_BINDINGS
         || report.feedback.len() > MAX_WORLD_FEEDBACK
     {
-        return false;
+        return Some("section-over-cap");
     }
     if report.command_seq.is_none() != report.command.is_none() {
-        return false;
+        return Some("command-pair-invalid");
     }
     if let Some(command) = report.command.as_ref()
         && !valid_command(command)
     {
-        return false;
+        return Some("command-invalid");
     }
     let mut seen_windows = BTreeSet::new();
     let mut total_windows = 0usize;
@@ -865,10 +874,10 @@ pub fn validate_report(report: &WorldReport) -> bool {
     let mut seen_closed = BTreeSet::new();
     for domain in &report.domains {
         if !domain.domain.validate() {
-            return false;
+            return Some("domain-invalid");
         }
         if !is_opaque_id(&domain.domain.id.0) || !is_opaque_id(&domain.domain.workspace.0) {
-            return false;
+            return Some("domain-id-invalid");
         }
         if !valid_carried_rect(
             domain.domain.bounds.x,
@@ -876,59 +885,68 @@ pub fn validate_report(report: &WorldReport) -> bool {
             domain.domain.bounds.w,
             domain.domain.bounds.h,
         ) {
-            return false;
+            return Some("domain-bounds-invalid");
         }
         if !is_gap(domain.domain.gap) || !is_gap(domain.outer_gap) {
-            return false;
+            return Some("gap-invalid");
         }
         if domain.domain.adjacent.len() > 4 {
-            return false;
+            return Some("adjacent-invalid");
         }
         for target in domain.domain.adjacent.values() {
             if !is_opaque_id(&target.0) {
-                return false;
+                return Some("adjacent-invalid");
             }
         }
         if !domain.focused.0.is_empty() && !is_opaque_id(&domain.focused.0) {
-            return false;
+            return Some("focused-id-invalid");
         }
         if domain.windows.len() > MAX_WORLD_WINDOWS || domain.closed.len() > MAX_WORLD_CLOSED {
-            return false;
+            return Some("domain-entry-over-cap");
         }
         for window in &domain.windows {
             if !is_opaque_id(&window.window.0)
                 || !is_opaque_id(&window.output.0)
                 || !is_opaque_id(&window.workspace.0)
-                || !valid_carried_rect(window.rect.x, window.rect.y, window.rect.w, window.rect.h)
-                || !valid_hints(window.hints)
             {
-                return false;
+                return Some("window-id-invalid");
             }
+            if !valid_carried_rect(window.rect.x, window.rect.y, window.rect.w, window.rect.h) {
+                return Some("window-rect-invalid");
+            }
+            // Size hints are advisory only: zero, negative, contradictory,
+            // and out-of-bound values (Qt 0x0 default minimums,
+            // QWIDGETSIZE_MAX / i32::MAX unbounded maximums) sanitize to
+            // absent at every use site (see
+            // `crate::size_hints::WindowSizeHints`), never fail the
+            // report. A single valid native window reporting such default
+            // or sentinel hints invalidates the whole world when gated
+            // here, so every DescribeWorld carrying one was refused.
             if !seen_windows.insert(window.window.0.clone()) {
-                return false;
+                return Some("duplicate-window");
             }
             total_windows += 1;
         }
         for id in &domain.closed {
             if !is_opaque_id(&id.0) {
-                return false;
+                return Some("closed-id-invalid");
             }
             // Closed ids must not also be live: one id cannot be both
             // observed and reported closed.
             if seen_windows.contains(&id.0) {
-                return false;
+                return Some("closed-overlaps-live");
             }
             if !seen_closed.insert(id.0.clone()) {
-                return false;
+                return Some("duplicate-closed");
             }
             total_closed += 1;
         }
         if domain.readable != domain.hold.is_none() {
-            return false;
+            return Some("readable-hold-mismatch");
         }
     }
     if total_windows > MAX_WORLD_WINDOWS || total_closed > MAX_WORLD_CLOSED {
-        return false;
+        return Some("inventory-over-cap");
     }
     // Explicit minimized lifetimes: opaque homing, no duplicates, never
     // also live (a minimized window is absent from domain membership) and
@@ -940,17 +958,17 @@ pub fn validate_report(report: &WorldReport) -> bool {
                 || !is_opaque_id(&entry.output.0)
                 || !is_opaque_id(&entry.workspace.0)
             {
-                return false;
+                return Some("minimized-id-invalid");
             }
             if seen_windows.contains(&entry.window.0) || seen_closed.contains(&entry.window.0) {
-                return false;
+                return Some("minimized-overlaps");
             }
             if !seen_minimized.insert(entry.window.0.clone()) {
-                return false;
+                return Some("duplicate-minimized");
             }
         }
         if report.minimized.len() > MAX_WORLD_WINDOWS {
-            return false;
+            return Some("minimized-over-cap");
         }
     }
     let mut total_native = 0usize;
@@ -959,32 +977,32 @@ pub fn validate_report(report: &WorldReport) -> bool {
             || !is_opaque_id(&topology.current_native)
             || topology.native_order.len() > MAX_NATIVE_PER_OUTPUT
         {
-            return false;
+            return Some("topology-invalid");
         }
         for native in &topology.native_order {
             if !is_opaque_id(native) {
-                return false;
+                return Some("native-id-invalid");
             }
         }
         total_native += topology.native_order.len();
     }
     if total_native > MAX_WORLD_OUTPUTS.saturating_mul(MAX_NATIVE_PER_OUTPUT) {
-        return false;
+        return Some("topology-over-cap");
     }
     for binding in &report.bindings {
         if !is_opaque_id(&binding.logical_id)
             || !is_opaque_id(&binding.native_id)
             || !is_opaque_id(&binding.output.0)
         {
-            return false;
+            return Some("binding-invalid");
         }
     }
     for feedback in &report.feedback {
         if !is_opaque_id(&feedback.operation_id) {
-            return false;
+            return Some("feedback-invalid");
         }
     }
-    true
+    None
 }
 
 /// Validate one world command: every carried id is opaque, every direction
@@ -1131,24 +1149,6 @@ pub fn valid_operation(command: &CoreCommand) -> bool {
                     .is_none_or(|key| is_opaque_id(&key.output.0) && is_opaque_id(&key.workspace.0))
         }
     }
-}
-
-/// Validate carried size-hint bounds: meaningful, ordered, and bounded.
-fn valid_hints(hints: crate::size_hints::WindowSizeHints) -> bool {
-    const BOUND: i32 = GEOMETRY_BOUND;
-    let within = |value: Option<i32>| value.is_none_or(|v| (1..=BOUND).contains(&v));
-    within(hints.min_w)
-        && within(hints.min_h)
-        && within(hints.max_w)
-        && within(hints.max_h)
-        && hints
-            .min_w
-            .zip(hints.max_w)
-            .is_none_or(|(min, max)| min <= max)
-        && hints
-            .min_h
-            .zip(hints.max_h)
-            .is_none_or(|(min, max)| min <= max)
 }
 
 #[cfg(test)]

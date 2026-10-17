@@ -170,8 +170,11 @@ Current world-route diagnostics:
 - `omnitiler:world:applied rev=<revision> geom=<N> member=<N> views=<N> mk=<N> rm=<N> fx=<N> held=<N>`: snapshot accepted and partial actuator counts, not atomic native completion.
 - `omnitiler:world:stale reason=<token> recovery=catchup`: zero stale setters,
   followed by an observation-only report.
+- `omnitiler:world:rejected kind=<token> msg=<fixed-check> recovery=on-next-event`:
+  a bounded validation reason, never a window payload.
 - Planner `omnitiler:world-summary direction=ingress|egress ...`: bounded
-  request/outcome correlation without raw payloads.
+  request/outcome correlation without raw payloads; egress `msg=<fixed-check>`
+  distinguishes validation failures without exposing content.
 
 The operation-specific `DescribePlan` journal forms retained below describe
 the legacy domain path and earlier acceptance evidence, not the current KDE

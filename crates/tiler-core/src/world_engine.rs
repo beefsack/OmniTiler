@@ -48,7 +48,7 @@ use crate::world_report::{
     AttemptOutcome, CommandResult, HoldReason, TilingMode, TransferKind, TransferTarget,
     WORLD_CONTRACT_VERSION, WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES, WorldReply,
     WorldReport, encode_reply_canonical, reply_estimate, reply_upper_bound, report_digest,
-    report_estimate, validate_report,
+    report_estimate, validate_report_reason,
 };
 
 pub(crate) const KIND_VERSION: &str = "unsupported-version";
@@ -413,10 +413,11 @@ impl WorldEngine {
                 message: MSG_VERSION,
             };
         }
-        if !validate_report(report) {
+        if let Some(reason) = validate_report_reason(report) {
             return WorldOutcome::Rejected {
                 kind: KIND_SNAPSHOT,
-                message: MSG_SNAPSHOT,
+                // Fixed check vocabulary, never payload bytes.
+                message: reason,
             };
         }
         let owner = match OwnerId::parse(&report.owner) {
@@ -542,7 +543,7 @@ impl WorldEngine {
             (Some(_), None) | (None, Some(_)) => {
                 return WorldOutcome::Rejected {
                     kind: KIND_SNAPSHOT,
-                    message: MSG_SNAPSHOT,
+                    message: "command-pair-invalid",
                 };
             }
             (None, None) => false,

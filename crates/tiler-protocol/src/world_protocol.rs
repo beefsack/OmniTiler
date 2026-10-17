@@ -72,7 +72,7 @@ use tiler_core::workspace_scope::WorkspaceMode;
 use tiler_core::world_report::{
     AttemptFeedback, AttemptKind, AttemptOutcome, DomainReport, HoldReason, MinimizedEntry,
     OutputTopology, TransferKind, WORLD_CONTRACT_VERSION, WorkspaceBinding, WorldCommand,
-    WorldReply, WorldReport, validate_report,
+    WorldReply, WorldReport, validate_report_reason,
 };
 
 /// World protocol contract version (equals the core world contract version).
@@ -102,7 +102,6 @@ const MSG_MALFORMED: &str = "request is malformed";
 const MSG_UNKNOWN_FIELD: &str = "request contains an unknown field";
 const MSG_UNKNOWN_VALUE: &str = "request contains an unknown value";
 const MSG_VERSION: &str = "unsupported contract version";
-const MSG_SNAPSHOT: &str = "observation does not cover the known window set";
 
 fn malformed() -> WorldProtocolError {
     WorldProtocolError {
@@ -1033,7 +1032,7 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
     if command_seq.is_none() != command.is_none() {
         return Err(WorldProtocolError {
             kind: KIND_SNAPSHOT,
-            message: MSG_SNAPSHOT,
+            message: "command-pair-invalid",
         });
     }
     let topology_value = map.get("topology").ok_or_else(malformed)?;
@@ -1092,10 +1091,11 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
         gesture_barrier: req_bool(map, "gesture")?,
         feedback,
     };
-    if !validate_report(&report) {
+    if let Some(reason) = validate_report_reason(&report) {
         return Err(WorldProtocolError {
             kind: KIND_SNAPSHOT,
-            message: MSG_SNAPSHOT,
+            // Fixed check vocabulary, never payload bytes.
+            message: reason,
         });
     }
     // Hard input caps that `validate_report` does not bound alone: every
@@ -1104,7 +1104,7 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
     if report.domains.len() > tiler_core::world_report::MAX_WORLD_DOMAINS {
         return Err(WorldProtocolError {
             kind: KIND_SNAPSHOT,
-            message: MSG_SNAPSHOT,
+            message: "section-over-cap",
         });
     }
     Ok(report)

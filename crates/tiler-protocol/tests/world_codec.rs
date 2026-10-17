@@ -1109,6 +1109,10 @@ const FIXTURE_SEND: &str = include_str!("../../../test-fixtures/world-wire/repor
 const FIXTURE_DRAGDROP: &str =
     include_str!("../../../test-fixtures/world-wire/report-dragdrop.json");
 const FIXTURE_GOLDEN: &str = include_str!("../../../test-fixtures/world-wire/reply-golden.json");
+const FIXTURE_SIZE_HINTS: &str =
+    include_str!("../../../test-fixtures/world-wire/report-kwin-size-hints.json");
+const FIXTURE_SIZE_HINTS_SELECT: &str =
+    include_str!("../../../test-fixtures/world-wire/report-kwin-size-hints-select.json");
 
 #[test]
 fn shared_fixture_actual_bytes_gate() {
@@ -1214,4 +1218,192 @@ fn shared_fixture_actual_bytes_gate() {
         other => panic!("expected accepted, got {other:?}"),
     };
     assert_eq!(encode_reply(&reply), FIXTURE_GOLDEN);
+}
+
+#[test]
+fn kwin_real_size_hints_accept_through_repeated_observes() {
+    // Native Qt QSize shapes (see the TS-captured
+    // report-kwin-size-hints.json gate below for the actual producer
+    // bytes): a 0x0 minimum means no minimum, QWIDGETSIZE_MAX 16777215
+    // and i32::MAX mean no maximum, fixed dialogs carry equal nonzero
+    // pins, and width-fixed clients carry partial-zero vectors. The dev
+    // log carries no payload (bounded summaries only), so these shapes
+    // are inference from the deterministic Qt/KWin field defaults, not
+    // observed log bytes. All are advisory (sanitize-at-use in
+    // size_hints::meaningful) and must never fail validation: the pre-fix
+    // gate refused them as snapshot-invalid, rejecting every DescribeWorld
+    // carrying one from the first report on. The loop below mirrors the
+    // production failure (back-to-back observation-only reports with fresh
+    // obs/reqSeq/req, as the adapter re-dispatches after each rejection).
+    fn window_with_hints(id: &str, x: i32, hints: &str) -> String {
+        format!(
+            "{{\"win\":\"{id}\",\"out\":\"out\",\"ws\":\"ws\",\"rect\":[{x},0,200,200],\
+             \"floating\":false,\"fitExcluded\":false,\"fullscreen\":false,\
+             \"maximized\":false,\"sticky\":false,\"fixedAuto\":false,\
+             \"fixedSuppress\":false,\"hints\":{hints}}}"
+        )
+    }
+    fn observe_request(obs: u64, req_seq: u64, req: &str, windows: &str) -> String {
+        format!(
+            "{{\"v\":1,\"owner\":\"owner-a\",\"adapter\":\"adapter-1\",\"gen\":\"gen-1\",\
+             \"obs\":\"{obs}\",\"reqSeq\":\"{req_seq}\",\"req\":\"{req}\",\"cmdSeq\":null,\
+             \"command\":null,\"mode\":\"per-output-local\",\
+             \"topology\":[{{\"out\":\"out\",\"order\":[\"ws\"],\"current\":\"ws\",\
+             \"complete\":true,\"rect\":null,\"primary\":false}}],\
+             \"bindings\":[],\
+             \"domains\":[{{\"id\":\"out\",\"ws\":\"ws\",\"bounds\":[0,0,800,600],\"gap\":8,\
+             \"outer\":4,\"focused\":\"\",\"readable\":true,\"hold\":\"\",\"adjacent\":{{}},\
+             \"windows\":[{windows}],\"closed\":[]}}],\
+             \"minimized\":[],\"predicate\":\"both-axes-fixed\",\"defaultTiled\":true,\
+             \"focused\":\"\",\"complete\":true,\"gesture\":false,\"feedback\":[]}}"
+        )
+    }
+    let windows = [
+        // KWin default: no minimum, no maximum.
+        window_with_hints(
+            "win-plain",
+            0,
+            "{\"minW\":0,\"minH\":0,\"maxW\":16777215,\"maxH\":16777215}",
+        ),
+        // Fixed dialog: equal nonzero pins.
+        window_with_hints(
+            "win-fixed",
+            210,
+            "{\"minW\":400,\"minH\":300,\"maxW\":400,\"maxH\":300}",
+        ),
+        // Width-fixed client: partial-zero vector.
+        window_with_hints(
+            "win-wide",
+            420,
+            "{\"minW\":640,\"minH\":0,\"maxW\":640,\"maxH\":0}",
+        ),
+        // Unbounded max sentinel: never a real cap.
+        window_with_hints(
+            "win-sentinel",
+            630,
+            "{\"minW\":null,\"minH\":null,\"maxW\":2147483647,\"maxH\":2147483647}",
+        ),
+    ]
+    .join(",");
+    let mut engine = WorldEngine::new("gen-1").expect("valid");
+    for round in 1..=6u64 {
+        let json = observe_request(round, round, &format!("req-{round}"), &windows);
+        let report = decode_request(&json).expect("real KWin hints decode");
+        match engine.handle_report(&report) {
+            WorldOutcome::Accepted(reply) => {
+                assert_eq!(reply.state_revision, round);
+            }
+            other => panic!("round {round}: expected accepted, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn snapshot_rejection_names_fixed_check_reason() {
+    // Validation failures share kind snapshot-invalid but must name the
+    // failed check in fixed vocabulary (never payload bytes), so one log
+    // line diagnoses the report without source archaeology.
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["domains"][0]["windows"] = serde_json::json!([
+        serde_json::from_str::<serde_json::Value>(&window_json("win-a", 0)).expect("valid"),
+        serde_json::from_str::<serde_json::Value>(&window_json("win-a", 210)).expect("valid"),
+    ]);
+    let error = decode_request(&value.to_string()).expect_err("duplicate refuses");
+    assert_eq!(error.kind, "snapshot-invalid");
+    assert_eq!(error.message, "duplicate-window");
+}
+
+#[test]
+fn shared_fixture_size_hints_gate() {
+    // TS-captured actual producer bytes (see kwin/tests/world-bytes
+    // makeSizeHintsSurface): native QSize default minimums (0x0),
+    // QWIDGETSIZE_MAX and i32::MAX unbounded maximums, a partial-zero
+    // width pin, and an equal nonzero fixed pin. The dev log carries no
+    // payload (summaries only), so this shape is inference from the
+    // deterministic Qt/KWin field defaults, not observed log bytes; the
+    // pre-fix gate refused exactly these shapes as snapshot-invalid.
+    for (name, json) in [
+        ("report-kwin-size-hints", FIXTURE_SIZE_HINTS),
+        ("report-kwin-size-hints-select", FIXTURE_SIZE_HINTS_SELECT),
+    ] {
+        let report = decode_request(json).unwrap_or_else(|e| panic!("{name} decodes fully: {e:?}"));
+        let estimate = tiler_core::world_report::report_estimate(&report);
+        assert!(
+            estimate >= json.len(),
+            "{name} estimate {estimate} bounds actual {len}",
+            len = json.len(),
+        );
+    }
+    let observe = decode_request(FIXTURE_SIZE_HINTS).expect("size hints decode");
+    let rows: Vec<_> = observe
+        .domains
+        .iter()
+        .flat_map(|d| d.windows.iter())
+        .collect();
+    let row = |id: &str| {
+        rows.iter()
+            .find(|w| w.window.0 == id)
+            .unwrap_or_else(|| panic!("expected row {id}"))
+    };
+    // Raw Qt shapes survive verbatim into the typed report.
+    assert_eq!(row("win-default").hints.min_w, Some(0));
+    assert_eq!(row("win-default").hints.min_h, Some(0));
+    assert_eq!(row("win-default").hints.max_w, Some(16777215));
+    assert_eq!(row("win-default").hints.max_h, Some(16777215));
+    assert_eq!(row("win-sentinel").hints.max_w, Some(i32::MAX));
+    assert_eq!(row("win-sentinel").hints.max_h, Some(i32::MAX));
+    assert_eq!(row("win-wide").hints.min_w, Some(640));
+    assert_eq!(row("win-wide").hints.min_h, Some(0));
+    assert_eq!(row("win-wide").hints.max_w, Some(640));
+    assert_eq!(row("win-wide").hints.max_h, Some(0));
+    // fixedAuto classification stays meaningful under the default
+    // both-axes predicate: only the equal nonzero pin floats.
+    assert!(row("win-fixed").fixed_auto);
+    assert!(row("win-fixed").floating);
+    assert!(!row("win-default").fixed_auto);
+    assert!(!row("win-sentinel").fixed_auto);
+    assert!(!row("win-wide").fixed_auto);
+    // The follow-up select executes on the engine (never catchup-dropped
+    // by the adapter, never re-refused here): rev advances past the seed.
+    let mut engine = WorldEngine::new("gen-1").expect("valid");
+    match engine.handle_report(&observe) {
+        WorldOutcome::Accepted(reply) => assert_eq!(reply.state_revision, 1),
+        other => panic!("expected observe accepted, got {other:?}"),
+    }
+    let select = decode_request(FIXTURE_SIZE_HINTS_SELECT).expect("select decodes");
+    assert_eq!(select.command_seq, Some(1));
+    match &select.command {
+        Some(tiler_core::world_report::WorldCommand::SelectNumbered { output, index }) => {
+            assert_eq!(output.0, "out-1");
+            assert_eq!(*index, 2);
+        }
+        other => panic!("expected select-numbered, got {other:?}"),
+    }
+    match engine.handle_report(&select) {
+        WorldOutcome::Accepted(reply) => assert_eq!(reply.state_revision, 2),
+        other => panic!("expected select accepted, got {other:?}"),
+    }
+    // Advisory extras rooted in the same captured bytes: negative and
+    // out-of-bound hints still decode and accept (sanitize-at-use), while
+    // non-integer JSON and out-of-i32 numbers still refuse.
+    let mut advisory =
+        serde_json::from_str::<serde_json::Value>(FIXTURE_SIZE_HINTS).expect("valid");
+    advisory["domains"][0]["windows"][0]["hints"] =
+        serde_json::json!({"minW": -5, "minH": 0, "maxW": 99999, "maxH": null});
+    let report = decode_request(&advisory.to_string()).expect("advisory hints decode");
+    let mut engine = WorldEngine::new("gen-1").expect("valid");
+    match engine.handle_report(&report) {
+        WorldOutcome::Accepted(_) => {}
+        other => panic!("expected advisory accepted, got {other:?}"),
+    }
+    let mut bad = serde_json::from_str::<serde_json::Value>(FIXTURE_SIZE_HINTS).expect("valid");
+    bad["domains"][0]["windows"][0]["hints"] =
+        serde_json::json!({"minW": "640", "minH": 0, "maxW": 640, "maxH": 0});
+    let error = decode_request(&bad.to_string()).expect_err("string hint refuses");
+    assert_eq!(error.kind, "malformed");
+    let mut bad = serde_json::from_str::<serde_json::Value>(FIXTURE_SIZE_HINTS).expect("valid");
+    bad["domains"][0]["windows"][0]["hints"] =
+        serde_json::json!({"minW": 0, "minH": 0, "maxW": 2147483648u64, "maxH": 0});
+    let error = decode_request(&bad.to_string()).expect_err("out-of-i32 hint refuses");
+    assert_eq!(error.kind, "malformed");
 }
