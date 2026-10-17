@@ -439,7 +439,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         }
     };
 
-    const submitCommand = (command: WorldCommand, label: string): boolean => {
+    const submitCommandInner = (command: WorldCommand, label: string): boolean => {
         if (stopped) {
             return false;
         }
@@ -457,6 +457,22 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         log(`omnitiler:world:command op=${token((command as { op?: unknown }).op)} label=${token(label)} obs=${state.currentObs}`);
         scheduleDispatch();
         return true;
+    };
+
+    // Newer explicit input supersedes a deferred B9 unfloat immediately:
+    // every command routed here cancels the pending attempt (which ends
+    // narrowly with no retry) before the new command submits. The B9
+    // continuation itself submits through submitCommandInner so it
+    // cannot cancel itself. Assigned after the native toggles exist;
+    // calls before that are no-ops.
+    let cancelPendingForNewerInput: (() => void) | null = null;
+    const submitCommand = (command: WorldCommand, label: string): boolean => {
+        try {
+            cancelPendingForNewerInput?.();
+        } catch (error) {
+            void error;
+        }
+        return submitCommandInner(command, label);
     };
 
     // Float-origin directional focus/move lives in world-float-nav (native
@@ -728,6 +744,19 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // admission (future admissions only, attempts never reset).
     const bornMaxAdmission = new WorldBornMaximizedAdmission(overrides.readBornMaximizedFn);
 
+    // Deferred B9 attempt lifetime: any terminal report failure ends the
+    // attempt narrowly (no retry, no replay); a later explicit press may
+    // retry. Stale replies are excluded (no report arrived; the boundary
+    // report is still ahead and its guards decide). `native` is declared
+    // below; every call below runs after initialization.
+    const killPending = (cause: string): void => {
+        try {
+            native.cancelPendingUnfloat(cause);
+        } catch (error) {
+            void error;
+        }
+    };
+
     const dispatch = (isCatchup: boolean): void => {
         void isCatchup;
         if (stopped || state.boundGen === null) {
@@ -780,6 +809,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 log("omnitiler:world:timeout recovery=on-next-event");
                 pendingCommand = null;
                 state.noteRejectedOrTransportError();
+                killPending("timeout");
             }
         });
         log(`omnitiler:world:dispatch req=${token(begun.reqId)} obs=${dispatchObs} cmd=${command === null ? "observe" : token((command as { op?: unknown }).op)}`);
@@ -796,12 +826,14 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         log("omnitiler:world:transport-error recovery=on-next-event");
                         pendingCommand = null;
                         state.noteRejectedOrTransportError();
+                        killPending("transport");
                         return;
                     }
                     if (utf8ByteLength(reply) > WORLD_MAX_REPLY_BYTES) {
                         log("omnitiler:world:reply-oversize recovery=on-next-event");
                         pendingCommand = null;
                         state.noteRejectedOrTransportError();
+                        killPending("rejected");
                         return;
                     }
                     const parsed = parseWorldReply(reply);
@@ -809,6 +841,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         log("omnitiler:world:reply-malformed recovery=on-next-event");
                         pendingCommand = null;
                         state.noteRejectedOrTransportError();
+                        killPending("rejected");
                         return;
                     }
                     if (isWorldRejection(parsed)) {
@@ -818,12 +851,14 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                             log("omnitiler:world:generation-mismatch recovery=rediscover");
                             pendingCommand = null;
                             state.inFlightReq = null;
+                            killPending("generation-mismatch");
                             discover();
                             return;
                         }
                         if (parsed.kind === "busy" || parsed.kind === "unavailable") {
                             pendingCommand = null;
                             state.noteRejectedOrTransportError();
+                            killPending("busy");
                             return;
                         }
                         log(`omnitiler:world:rejected kind=${token(parsed.kind)} msg=${token(parsed.message)} recovery=on-next-event`);
@@ -831,6 +866,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         state.inFlightReq = null;
                         state.observationOnlyCatchup = true;
                         state.dirty = true;
+                        killPending("rejected");
                         return;
                     }
                     // Previous accepted snapshot for born-maximized applied
@@ -1081,6 +1117,17 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     // floatingIds above; a change writes through.
                     persistFloatIntent();
                     log(`omnitiler:world:applied rev=${token(parsed.rev)} geom=${applied.geometryWrites} member=${applied.membershipWrites} views=${applied.viewWrites} mk=${applied.creations} rm=${applied.removals} fx=${applied.effects} held=${applied.held}`);
+                    // B9 single-observation boundary: the first accepted
+                    // full-state report after the issued clear decides the
+                    // deferred unfloat exactly once (complete or narrow
+                    // cancel). Full-state remains the policy path: this
+                    // only submits a core command, never tiles. Scope and
+                    // gesture come from the actual current capture.
+                    try {
+                        native.pollPendingUnfloat(fresh, gestureActive());
+                    } catch (error) {
+                        void error;
+                    }
                     if (overrides.onWorkspaceTilingChanged !== undefined) {
                         try {
                             overrides.onWorkspaceTilingChanged(getWorkspaceTilingSnapshot());
@@ -1099,6 +1146,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             timeoutCancel();
             pendingCommand = null;
             state.noteRejectedOrTransportError();
+            killPending("transport");
         }
     };
 
@@ -1245,6 +1293,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         readProp,
         shortcutFailed,
         submitCommand,
+        submitSettledCommand: submitCommandInner,
         invalidate: () => {
             state.invalidate();
         },
@@ -1260,6 +1309,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         },
         activeWindowId,
         activeWindowRef,
+        liveRefById,
         readLiveRect: (ref) => {
             try {
                 const g = readProp(ref, "frameGeometry") as Record<string, unknown> | undefined;
@@ -1280,6 +1330,16 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             }
         },
     });
+    // Newer explicit input supersedes the deferred B9 attempt from here
+    // on (all command traffic flows through the hooked submitCommand
+    // above; the native toggles below cancel explicitly).
+    cancelPendingForNewerInput = (): void => {
+        try {
+            native.cancelPendingUnfloat("newer-input");
+        } catch (error) {
+            void error;
+        }
+    };
     registerWorldShortcuts({
         readProp,
         isDirection,
@@ -1308,6 +1368,11 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     return {
         stop: () => {
             stopped = true;
+            try {
+                native.cancelPendingUnfloat();
+            } catch (error) {
+                void error;
+            }
             try {
                 dragRoute.stop();
             } catch (error) {
@@ -1406,6 +1471,11 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 shortcutFailed("sticky");
                 return;
             }
+            try {
+                native.cancelPendingUnfloat("newer-input");
+            } catch (error) {
+                void error;
+            }
             const stickyRaw = readProp(ref, "onAllDesktops");
             const want = (typeof stickyRaw === "boolean" ? stickyRaw : readNativeAlias(readProp, ref, "sticky")) !== true;
             if (!native.setStickyNative(ref, id, want)) {
@@ -1417,6 +1487,11 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             if (ref === null) {
                 shortcutFailed("maximize");
                 return;
+            }
+            try {
+                native.cancelPendingUnfloat("newer-input");
+            } catch (error) {
+                void error;
             }
             // Maximize echo: the toggle target logs before the setter so a
             // missing finish signal still converges on the next observation.
@@ -1432,6 +1507,11 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             if (ref === null) {
                 shortcutFailed("fullscreen");
                 return;
+            }
+            try {
+                native.cancelPendingUnfloat("newer-input");
+            } catch (error) {
+                void error;
             }
             const fsRaw = readProp(ref, "fullScreen");
             const want = (typeof fsRaw === "boolean" ? fsRaw : readNativeAlias(readProp, ref, "fullscreen") === true) !== true;

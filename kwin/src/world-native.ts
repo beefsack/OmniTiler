@@ -1,4 +1,4 @@
-// Synchronous native state toggles for the world adapter: float with B9
+// Native state toggles for the world adapter: float with deferred B9
 // maximized-unfloat parity plus sticky/maximize/fullscreen. Each toggle
 // fences outstanding world applies BEFORE setters (no races) and reports an
 // explicit outcome line; applied writes invalidate synchronously BEFORE the
@@ -18,6 +18,7 @@ import { isOpaqueId } from "./world-seq";
 import { decodeList } from "./qml-list";
 import { normalizeNativeId } from "./native-id";
 import { readNativeAlias } from "./native-alias";
+import type { WorldObservation } from "./world-observe";
 
 export interface WorldNativeEnv {
     surface: object;
@@ -26,6 +27,11 @@ export interface WorldNativeEnv {
     readProp: (value: object, property: string) => unknown;
     shortcutFailed: (action: string) => void;
     submitCommand: (command: WorldCommand, label: string) => boolean;
+    // Settlement-only submission for the deferred B9 continuation: same
+    // core command route as submitCommand but bypasses the entry's
+    // newer-input cancellation hook so the continuation cannot cancel
+    // itself. All other callers use submitCommand.
+    submitSettledCommand: (command: WorldCommand, label: string) => boolean;
     invalidate: () => void;
     scheduleDispatch: () => void;
     persistFloatIntent: () => void;
@@ -41,6 +47,9 @@ export interface WorldNativeEnv {
     clearFloating: (win: string) => void;
     activeWindowId: () => string | null;
     activeWindowRef: () => object | null;
+    // Stable-id live ref resolution (renewed wrappers per enumeration):
+    // re-resolves the current wrapper for a canonical id, never ref identity.
+    liveRefById: (id: string) => object | null;
 }
 
 export interface WorldNativeToggles {
@@ -48,6 +57,19 @@ export interface WorldNativeToggles {
     readonly setStickyNative: (ref: object, id: string, sticky: boolean) => boolean;
     readonly setMaximizedNative: (ref: object, maximized: boolean) => boolean;
     readonly setFullscreenNative: (ref: object, fullscreen: boolean) => boolean;
+    // B9 pending-unfloat settlement probe (entry-driven, exactly once on
+    // the first accepted full-state report after the issued clear): the
+    // first fresh report is the settlement boundary. A cleared window
+    // still maximized, unreadable, refused, refocused, relifed,
+    // re-scoped, fullscreened, defloated, busy, or mid-gesture terminates
+    // the attempt narrowly; a later explicit press may retry. Never
+    // retries setters and never decides tiling (core owns the command
+    // through submitSettledCommand).
+    readonly pollPendingUnfloat: (fresh: WorldObservation, gesture: boolean) => void;
+    // Terminates a pending attempt. Omitted cause drops silently (stop);
+    // "newer-input" logs a supersede outcome without failing the old
+    // label; any other cause fails that label narrowly.
+    readonly cancelPendingUnfloat: (cause?: string) => void;
 }
 
 // Exact KWin reads with the offline lowercase fallback only when the
@@ -189,29 +211,213 @@ export function createWorldNativeToggles(env: WorldNativeEnv): WorldNativeToggle
         return isLiveWindowListed(surface, readProp, ref);
     };
 
+    // B9 deferred maximized-unfloat (D1): the native `setMaximize`
+    // settles asynchronously on the live host (`maximizeMode` 3->0
+    // arrives after the setter returns), so an immediate same-stack
+    // readback always misreads still-maximized and discards the live
+    // settlement. Clear exactly once, then terminate on the FIRST fresh
+    // accepted full-state report after the clear (the existing
+    // invalidate+scheduleDispatch already schedules that observation; no
+    // new timers, no retries, no per-window signal listening). An
+    // unconfirmed clear ends the attempt and a later explicit press may
+    // retry. No TS tiling policy: the core owns admission through the
+    // submitted command. Stable canonical ids only, never ref identity
+    // (wrappers renew per enumeration).
+    let pendingUnfloat: { win: string; label: string; scope: string } | null = null;
+
+    // Live scope (`out/ws`) of a ref through the exact KWin names,
+    // mirroring the apply host: null when unreadable (arm refuses).
+    const readScopeOf = (ref: object): string | null => {
+        try {
+            const outputRaw = readProp(ref, "output");
+            const out = typeof outputRaw === "object" && outputRaw !== null
+                ? readProp(outputRaw as object, "name")
+                : null;
+            const members = decodeList(readProp(ref, "desktops"), MAX_NATIVE_WINDOW_DESKTOPS);
+            if (typeof out !== "string" || members === null) {
+                return null;
+            }
+            for (const m of members) {
+                if (typeof m === "object" && m !== null) {
+                    const id = readProp(m as object, "id");
+                    if (isOpaqueId(id)) {
+                        return `${out}/${id as string}`;
+                    }
+                }
+            }
+            return null;
+        } catch (error) {
+            void error;
+            return null;
+        }
+    };
+
+    const dropPending = (): void => {
+        pendingUnfloat = null;
+    };
+
+    const cancelPending = (cause: string): void => {
+        const pending = pendingUnfloat;
+        if (pending === null) {
+            return;
+        }
+        dropPending();
+        log(`omnitiler:world:float-refused-maximize-clear window=${token(pending.win)} cause=${cause}`);
+        env.shortcutFailed(pending.label);
+    };
+
+    const cancelPendingSilent = (cause: string): void => {
+        const pending = pendingUnfloat;
+        if (pending === null) {
+            return;
+        }
+        const win = pending.win;
+        dropPending();
+        log(`omnitiler:world:float-unfloat-maximize-clear window=${token(win)} outcome=${cause}`);
+    };
+
+    // First-report settlement boundary (called once with the first
+    // accepted full-state report after the issued clear; entry calls it
+    // at most once per armed attempt because every outcome below drops
+    // the pending state). Scope comes from the actual current capture;
+    // overlays, maximize, and frames read live.
+    const pollPendingUnfloat = (fresh: WorldObservation, gesture: boolean): void => {
+        const pending = pendingUnfloat;
+        if (pending === null) {
+            return;
+        }
+        const win = pending.win;
+        dropPending();
+        const refuse = (cause: string): void => {
+            log(`omnitiler:world:float-refused-maximize-clear window=${token(win)} cause=${cause}`);
+            env.shortcutFailed(pending.label);
+        };
+        if (env.isWorldBusy()) {
+            refuse("busy");
+            return;
+        }
+        if (gesture) {
+            refuse("gesture-raced");
+            return;
+        }
+        if (env.activeWindowId() !== win) {
+            refuse("focus-raced");
+            return;
+        }
+        let live: object | null = null;
+        try {
+            live = env.liveRefById(win);
+        } catch (error) {
+            void error;
+            live = null;
+        }
+        if (live === null || !isListed(live)) {
+            refuse("observe-missing");
+            return;
+        }
+        let scope: string | null = null;
+        for (const domain of fresh.domains) {
+            for (const entry of domain.windows) {
+                if (entry.win === win) {
+                    scope = `${domain.id}/${entry.ws}`;
+                    break;
+                }
+            }
+            if (scope !== null) {
+                break;
+            }
+        }
+        if (scope === null) {
+            refuse("observe-missing");
+            return;
+        }
+        if (scope !== pending.scope) {
+            refuse("scope-raced");
+            return;
+        }
+        if (readFullscreen(readProp, live) === true) {
+            refuse("fullscreen-raced");
+            return;
+        }
+        if (!env.isFloating(win)) {
+            refuse("floating-lost");
+            return;
+        }
+        const maximized = readMaximized(readProp, live);
+        if (maximized !== false) {
+            refuse(maximized === null ? "observe-missing" : "still-maximized");
+            return;
+        }
+        let frame: { x: number; y: number; w: number; h: number } | null = null;
+        try {
+            frame = env.readLiveRect(live);
+        } catch (error) {
+            void error;
+            frame = null;
+        }
+        if (frame === null) {
+            refuse("unreadable");
+            return;
+        }
+        const rect: [number, number, number, number] = [frame.x, frame.y, frame.w, frame.h];
+        if (!env.submitSettledCommand(
+            { op: "operation", command: { op: "toggle-float", win, rect } },
+            "float",
+        )) {
+            refuse("submit-refused");
+            return;
+        }
+        log(`omnitiler:world:float-unfloat-maximize-clear window=${token(win)} outcome=observed-cleared`);
+    };
+
+    const cancelPendingUnfloat = (cause?: string): void => {
+        if (pendingUnfloat === null) {
+            return;
+        }
+        if (cause === undefined) {
+            dropPending();
+            return;
+        }
+        if (cause === "newer-input") {
+            cancelPendingSilent("newer-input-superseded");
+            return;
+        }
+        cancelPending(cause);
+    };
+
     // Float toggle with B9 maximized-unfloat parity (native only). Fence
     // order is load-bearing: busy fence, then the overlay recheck, then
-    // the maximize clear (when a floating maximized window needs it), and
-    // only then the toggle-float operation. Rect capture follows legacy
+    // the maximize clear (when a floating maximized window needs it),
+    // and only then the toggle-float operation. Rect capture follows legacy
     // frame semantics: float selects the session-retained placement (the
     // request carries no rect, so the session never recomputes a center
     // for a window that has floated before); unfloat carries the live
     // frame rect so a user-moved/resized float is retained for the next
-    // float. A failed clear or an unreadable unfloat frame refuses with no
-    // command; a cleared maximize proves through the readback.
+    // float. A refused setter fails closed with no command; an issued
+    // clear defers the command until observed settlement (no same-stack
+    // readback: async KWin settlement arrives after the setter returns).
     const submitFloat = (label: string): boolean => {
         const w = env.activeWindowId();
         const ref = env.activeWindowRef();
         if (w === null || ref === null) {
+            if (pendingUnfloat !== null) {
+                cancelPendingSilent("newer-input-superseded");
+            }
             env.shortcutFailed(label);
             return false;
         }
         if (worldApplyFenced("float")) {
+            if (pendingUnfloat !== null) {
+                cancelPendingSilent("newer-input-superseded");
+            }
             env.shortcutFailed(label);
             return false;
         }
         const fullscreen = readFullscreen(readProp, ref);
         if (fullscreen === true) {
+            if (pendingUnfloat !== null) {
+                cancelPendingSilent("newer-input-superseded");
+            }
             log(`omnitiler:world:float-refused-overlay window=${token(w)}`);
             env.shortcutFailed(label);
             return false;
@@ -219,19 +425,37 @@ export function createWorldNativeToggles(env: WorldNativeEnv): WorldNativeToggle
         const floating = env.isFloating(w);
         const maximized = readMaximized(readProp, ref);
         if (floating && maximized === true && fullscreen === false) {
+            if (pendingUnfloat !== null) {
+                cancelPendingSilent("newer-input-superseded");
+            }
             log(`omnitiler:world:float-unfloat-maximize-clear window=${token(w)} outcome=issued`);
             env.invalidate();
-            if (!invokeMaximize(readProp, ref, false)) {
-                log(`omnitiler:world:float-refused-maximize-clear window=${token(w)}`);
+            let invoked = false;
+            try {
+                invoked = invokeMaximize(readProp, ref, false);
+            } catch (error) {
+                void error;
+                invoked = false;
+            }
+            if (!invoked) {
+                log(`omnitiler:world:float-refused-maximize-clear window=${token(w)} cause=native-write-refused`);
+                env.shortcutFailed(label);
+                return false;
+            }
+            // Arm scope fences the continuation to the current capture:
+            // an unreadable scope refuses immediately (unobserved).
+            const scope = readScopeOf(ref);
+            if (scope === null) {
+                log(`omnitiler:world:float-refused-maximize-clear window=${token(w)} cause=observe-missing`);
                 env.shortcutFailed(label);
                 return false;
             }
             env.scheduleDispatch();
-            if (readMaximized(readProp, ref) !== false) {
-                log(`omnitiler:world:float-refused-maximize-clear window=${token(w)}`);
-                env.shortcutFailed(label);
-                return false;
-            }
+            pendingUnfloat = { win: w, label, scope };
+            return true;
+        }
+        if (pendingUnfloat !== null) {
+            cancelPendingSilent("newer-input-superseded");
         }
         // Unfloat carries the live frame; float carries no rect (session
         // retained placement wins, never a recomputed center).
@@ -415,7 +639,7 @@ export function createWorldNativeToggles(env: WorldNativeEnv): WorldNativeToggle
         }
     };
 
-    return { submitFloat, setStickyNative, setMaximizedNative, setFullscreenNative };
+    return { submitFloat, setStickyNative, setMaximizedNative, setFullscreenNative, pollPendingUnfloat, cancelPendingUnfloat };
 }
 
 // Native host bindings for the shared apply loop (moved verbatim from the

@@ -71,3 +71,16 @@
 - Three sequential units (implementation, full verification, fresh
   independent review). Offline delivery complete;
   native acceptance remains user-owned.
+
+## Full-state native follow-up, 2026-10-18
+
+- Live callback testing found that the full-state native route read maximize
+  synchronously after clearing it. Native settlement was asynchronous: the first
+  activation cleared maximize but refused unfloat; the second activation tiled.
+- The correction issues one clear and decides on the first fresh accepted world
+  report: observed clear admits once, unconfirmed/raced clear ends the attempt.
+  Newer input, scope/lifetime/gesture races and terminal transport or generation
+  failures cancel pending intent. No new timers or setter retries were added.
+- Producer-shaped red/green regressions and independent safety review accepted
+  the corrected bounded continuation. KWin 1794 tests and Rust workspace 3017
+  tests pass. [Current acceptance and remaining checks](../kde-live-acceptance.md).

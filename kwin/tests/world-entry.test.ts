@@ -821,7 +821,7 @@ describe("world entry discovery and observation", () => {
         assert.equal(inner["mode"], "outwards");
     });
 
-    it("clears maximize natively before a floating-maximized float request", () => {
+    it("defers a floating-maximized float request until the settlement report", () => {
         const h = makeHarness();
         discover(h);
         // Seed intentional-float membership through an accepted untouched
@@ -842,11 +842,26 @@ describe("world entry discovery and observation", () => {
         assert.ok(target !== undefined);
         (target as FakeWindow).maximizeMode = 3;
         h.handle?.requestFloat();
+        // Deferred: the sync fake settles in the same stack, but no
+        // toggle-float command rides it (no same-stack echo admission).
         h.runTimers();
-        const req = requestOf(h);
+        let req = requestOf(h);
+        assert.equal(req["command"], null, "clear schedules observation first");
+        h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["req"] as string, req["obs"] as string, "2", {
+            windows: [{
+                win: "win-a", out: "out", ws: "ws1",
+                alloc: null, frame: null,
+                frame_auth: "untouched", frame_hold: "",
+                member_auth: "controlled", member_hold: "",
+                frame_op: "",
+            }],
+        }));
+        h.runTimers();
+        req = requestOf(h);
         const cmd = req["command"] as Record<string, unknown>;
         assert.equal(cmd["op"], "operation");
         assert.equal((cmd["command"] as Record<string, unknown>)["op"], "toggle-float");
         assert.equal((target as FakeWindow).maximizeMode, 0);
+        assert.ok(h.logs.some((l) => l.includes("outcome=observed-cleared")));
     });
 });

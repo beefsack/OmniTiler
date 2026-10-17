@@ -19,6 +19,8 @@ interface FakeWin {
     onAllDesktops: boolean;
     keepAbove: boolean;
     keepBelow: boolean;
+    output: { name: string } | undefined;
+    desktops: Array<{ id: string }>;
     setMaximize: ((v: boolean, h: boolean) => void) | undefined;
 }
 
@@ -32,6 +34,8 @@ function makeWin(over: Partial<FakeWin> = {}): { ref: FakeWin; order: string[] }
         onAllDesktops: false,
         keepAbove: false,
         keepBelow: false,
+        output: { name: "out-1" },
+        desktops: [{ id: "ws-1" }],
         setMaximize: undefined as ((v: boolean, h: boolean) => void) | undefined,
         ...over,
     } as FakeWin;
@@ -43,6 +47,12 @@ function makeWin(over: Partial<FakeWin> = {}): { ref: FakeWin; order: string[] }
     }
     return { ref, order };
 }
+
+// Minimal fresh capture for the single-observation boundary: only the
+// domains the B9 poll reads (win homing for the scope fence).
+const freshWith = (win: string, out: string, ws: string): { domains: Array<{ id: string; windows: Array<{ win: string; ws: string }> }> } => ({
+    domains: [{ id: out, windows: [{ win, ws }] }],
+});
 
 interface Harness {
     toggles: ReturnType<typeof createWorldNativeToggles>;
@@ -82,6 +92,10 @@ function setup(win: FakeWin, order: string[], readLiveRect?: () => { x: number; 
             calls.push(command);
             return true;
         },
+        submitSettledCommand: (command) => {
+            calls.push(command);
+            return true;
+        },
         invalidate: () => {
             invalidations += 1;
             order.push("invalidate");
@@ -94,6 +108,7 @@ function setup(win: FakeWin, order: string[], readLiveRect?: () => { x: number; 
         clearFloating: () => undefined,
         activeWindowId: () => "win-a",
         activeWindowRef: () => win as object,
+        liveRefById: (id) => (id === "win-a" ? (win as object) : null),
         readLiveRect: (ref) => {
             if (readLiveRect !== undefined) {
                 return readLiveRect();
@@ -136,17 +151,29 @@ describe("world native toggles", () => {
         assert.ok(h.logs.some((l) => l.includes("native-fenced")));
     });
 
-    it("clears maximize through setMaximize with readback before floating", () => {
+    it("defers the maximized unfloat command until the first-report boundary", () => {
         const { ref, order } = makeWin({ maximizeMode: 3 });
         const h = setup(ref, order);
         h.env.setFloating(true);
+        // Sync fake settles in the same stack, but the command must not
+        // ride the same stack (no same-stack admission).
         assert.equal(h.toggles.submitFloat("float"), true);
         assert.deepEqual(order, ["invalidate", "setMaximize:false,false"]);
         assert.equal(ref.maximizeMode, 0);
-        assert.equal(h.calls.length, 1);
+        assert.equal(h.calls.length, 0, "deferred: no same-stack command");
+        assert.ok(h.logs.some((l) => l.includes("float-unfloat-maximize-clear") && l.includes("outcome=issued")));
+        h.toggles.pollPendingUnfloat(freshWith("win-a", "out-1", "ws-1") as never, false);
+        assert.equal(h.calls.length, 1, "exactly one command after observed clear");
+        assert.deepEqual((h.calls[0] as { command: Record<string, unknown> }).command, {
+            op: "toggle-float", win: "win-a", rect: [0, 0, 100, 100],
+        });
+        assert.ok(h.logs.some((l) => l.includes("outcome=observed-cleared")));
+        // The boundary consumed the attempt: a repeat poll is a no-op.
+        h.toggles.pollPendingUnfloat(freshWith("win-a", "out-1", "ws-1") as never, false);
+        assert.equal(h.calls.length, 1, "no second command");
     });
 
-    it("refuses float when the maximize clear does not read back", () => {
+    it("terminates on the first report when the mode stays maximized", () => {
         const { ref, order } = makeWin({ maximizeMode: 3 });
         ref.setMaximize = () => {
             order.push("setMaximize:false,false");
@@ -154,9 +181,61 @@ describe("world native toggles", () => {
         };
         const h = setup(ref, order);
         h.env.setFloating(true);
+        assert.equal(h.toggles.submitFloat("float"), true, "issued clear pends for the boundary report");
+        assert.equal(h.calls.length, 0, "no command before the boundary");
+        // First fresh report still maximized: the attempt terminates,
+        // never waiting for a later restore.
+        h.toggles.pollPendingUnfloat(freshWith("win-a", "out-1", "ws-1") as never, false);
+        assert.equal(h.calls.length, 0, "raced clear never admits");
+        assert.ok(h.logs.some((l) => l.includes("float-refused-maximize-clear") && l.includes("cause=still-maximized")));
+        // Terminated means terminated: a later settled report admits nothing.
+        ref.maximizeMode = 0;
+        h.toggles.pollPendingUnfloat(freshWith("win-a", "out-1", "ws-1") as never, false);
+        assert.equal(h.calls.length, 0, "no late admission after termination");
+    });
+
+    it("refuses the arm when the live scope is unreadable", () => {
+        const { ref } = makeWin({ maximizeMode: 3, output: undefined });
+        const h = setup(ref, []);
+        h.env.setFloating(true);
         assert.equal(h.toggles.submitFloat("float"), false);
-        assert.equal(h.calls.length, 0, "no command after a refused clear");
-        assert.ok(h.logs.some((l) => l.includes("float-refused-maximize-clear")));
+        assert.equal(h.calls.length, 0, "unobserved arm admits nothing");
+        assert.ok(h.logs.some((l) => l.includes("float-refused-maximize-clear") && l.includes("cause=observe-missing")));
+    });
+
+    it("cancels the pending unfloat on a scope race", () => {
+        const { ref } = makeWin({ maximizeMode: 3 });
+        const h = setup(ref, []);
+        h.env.setFloating(true);
+        assert.equal(h.toggles.submitFloat("float"), true);
+        ref.maximizeMode = 0;
+        h.toggles.pollPendingUnfloat(freshWith("win-a", "out-1", "ws-2") as never, false);
+        assert.equal(h.calls.length, 0, "moved scope never admits");
+        assert.ok(h.logs.some((l) => l.includes("float-refused-maximize-clear") && l.includes("cause=scope-raced")));
+    });
+
+    it("cancels the pending unfloat mid-gesture", () => {
+        const { ref } = makeWin({ maximizeMode: 3 });
+        const h = setup(ref, []);
+        h.env.setFloating(true);
+        assert.equal(h.toggles.submitFloat("float"), true);
+        ref.maximizeMode = 0;
+        h.toggles.pollPendingUnfloat(freshWith("win-a", "out-1", "ws-1") as never, true);
+        assert.equal(h.calls.length, 0, "mid-gesture boundary never admits");
+        assert.ok(h.logs.some((l) => l.includes("float-refused-maximize-clear") && l.includes("cause=gesture-raced")));
+    });
+
+    it("cancels the pending unfloat when the world flight is busy at the boundary", () => {
+        const { ref } = makeWin({ maximizeMode: 3 });
+        const h = setup(ref, []);
+        h.env.setFloating(true);
+        assert.equal(h.toggles.submitFloat("float"), true);
+        assert.equal(h.calls.length, 0);
+        // Sync fake already settled; a newer flight racing the boundary wins.
+        h.env.setBusy(true);
+        h.toggles.pollPendingUnfloat(freshWith("win-a", "out-1", "ws-1") as never, false);
+        assert.equal(h.calls.length, 0, "busy boundary never admits");
+        assert.ok(h.logs.some((l) => l.includes("float-refused-maximize-clear") && l.includes("cause=busy")));
     });
 
     it("carries the live frame on unfloat so the next float restores it", () => {
