@@ -824,6 +824,12 @@ decisions of 2026-09-24 are under
   ordinary-app recovery/timing: 72-124 ms ordinary-app selects, 171-241 ms
   physical select/send trace; user accepts select/send/follow and drag-resize
   usability. [Latency evidence](changes/archive/windows-workspace-action-latency.md).
+  Batch visibility follow-up 2026-10-17 (739a97c0/5f1bf4fa): user physically
+  accepts "huge improvement"; slow one-by-one workspace reveal resolved.
+  New trace: 20/20 workspace actions ok; five-window returns take 103-113 ms
+  with 62-74 ms reveal phases (prior three-window samples: 493/737/1293 ms
+  actions, 406/656/761 ms reveals; application mix differs).
+  [Batch visibility acceptance](changes/archive/windows-workspace-reveal-latency.md).
   Follow-up 2026-10-12 edge-resize lag: pixel/checksum-identical border raster
   optimization passes native offline gates; user dev/trace-on reports much
   better but still laggy. LL hooks share the rendering/owner thread; unchanged
