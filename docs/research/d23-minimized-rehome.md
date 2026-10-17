@@ -1,8 +1,10 @@
 # D23 minimized rehome: source-slot lifetime (Tier 1 research)
 
 Objective: B tiled on WS1, minimized, membership rehomed to WS2/output while
-minimized, restore on destination, then return B to source. Does the source
-slot survive? OPEN parked user decision; no code. Commit `3d55cba0` pins below
+minimized, restore on destination, then return B to source. User decision
+2026-10-17: option B (forget the source slot on confirmed rehome; later return
+admitted fresh). Shared-core implementation (affects KDE) approved, not
+implemented. Commit `3d55cba0` pins below
 are COSMIC; Hyprland/i3/sway pins were directly verified against pinned
 upstream sources (blob links below), consistent with the existing
 minimize-matrix citations.
@@ -89,7 +91,7 @@ minimized entries (`mod.rs:379,4419-4437`) are out of this tiled scenario.
   restore/source slot to keep or forget. Scratchpad/hidden analogues are not
   minimize votes per the matrix header and are not counted here.
 
-## Options (OPEN; none selected)
+## Options (decided User 2026-10-17: option B; shared-core implementation approved, not implemented)
 
 - (A) Keep source-only remembered context: destination restore still
   fresh-admits per the selected fallback; only a later source return may
@@ -112,19 +114,15 @@ minimized entries (`mod.rs:379,4419-4437`) are out of this tiled scenario.
   applicability stays unsupported/TBD. No Tier 1 source evidence distinguishes
   the passive leg.
 
-## Recommendation (tier rule; OPEN, not selected)
-
-COSMIC is the sole voting Tier 1 WM here (Hyprland/i3/sway have evidenced no
-counterpart = non-voting, not disagreement); no Tier 2 contradicts the
-forget behavior at the source-state level. The tier-rule lean is option (B) -
+## Recommendation (selected User 2026-10-17: option B -
 re-homing a minimized window forgets the source slot at the source-state
 level (degraded entry transferred to destination); destination restore
 fresh-admits; source return is inferred ordinary fresh-return with exact
-rendered shape TBD. This is a lean only; the decision stays OPEN for the
-user. No setting (D23 has none selected). The existing matrix row
+rendered shape TBD. Shared-core implementation approved, not implemented.
+No setting (D23 has none selected). The existing matrix row
 (`reference-outcomes.md:169-177`, source row "Source slot after membership
 rehoming while minimized") already selects destination fresh admission; the
-source half remains TBD pending user approval.
+source half is now decided too.
 
 ## Discriminating sequence (canonical matrix row)
 

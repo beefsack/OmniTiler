@@ -152,15 +152,21 @@ decisions of 2026-09-24 are under
   fullscreen `Ctrl+Win+F11`, exact Ctrl-arm routing and hold/release coverage;
   Authentic keeps Win+G/F11 with cached read-only per-user `GamingHomeApp`
   configuration and supported current-user Game Bar package-query evidence.
-  User-confirmed 2026-10-16: unknown/absent/unreadable GamingHomeApp retains
-  conservative Xbox amber/tray/Settings warnings. Correction B delivered offline:
+  User decision 2026-10-17 (supersedes the 2026-10-16 conservative-warning
+  decisions for BOTH Game Bar and GamingHomeApp): warnings only on provably
+  present conflict. Game Bar query positive installed only;
+  failure/unknown same as absence, no notes/conflict rows/badges.
+  GamingHomeApp per-user config positively present/configured only;
+  unknown/absent/unreadable no amber/tray/Settings warning. Honest
+  normal-level probe outcome logs retained. Code implementation pending
+  Part B; current shipped behavior still warns conservatively until then.
+  Correction B delivered offline:
   detected Game Bar installation warns; successful package
   absence clears all Win+G warnings, notes and conflict rows, including static
   binding-list and selected OS text (not just probe-derived details/badges).
   Presence/absence/failure, disabled-row and effective-rebound-chord regressions
   pass; locked native gates: 2,286 passed, 0 failed, 1 ignored.
-  Query failure is not absence; current explicit unknown/query-failed warning
-  remains, with that handling for review. Resolve buttons
+  Resolve buttons
   open Settings only, explaining capture/managed-app-data loss and Store
   reinstall limits; no tiler uninstall or registry/policy writes.
   [Active record and physical plan](changes/windows-gaming-coexistence.md),
@@ -323,6 +329,12 @@ decisions of 2026-09-24 are under
   effect loading compatibility (IID/version binding), OBS rebuild latency and
   pin options. Aim for the smoothest possible user upgrades; exact pin remains
   selected. [Decision](decisions.md#kde-support-floor).
+- P2 | Post-0.1 research: hidden-workspace presentation configurability |
+  User 2026-10-17 (`SW_HIDE` kept for 0.1): investigate trivial
+  configurability (e.g. off-screen parking for shell inclusion);
+  switch-versus-pull remains open in post-0.1 research.
+  [Research](research/windows-port/alt-tab-hidden-workspaces.md),
+  [decision](decisions.md#workspaces).
 - P1 | 0.1 triage decisions - batch 1 verification (KDE/shared) | User
   2026-10-10 approved the 15 units above, exactly recommendation (a) in
   [triage](research/release-0.1-triage.md#user-decisions-2026-10-10).
@@ -372,7 +384,7 @@ decisions of 2026-09-24 are under
   | D23 | delivered offline on KDE and Windows; native verification pending | COSMIC `3d55cba0` source gate passed. Shared best-effort neighbor rejoin and additive `closed_windows` serve both adapters. Windows delivered 2026-10-13: retained-allocation divergence replaced with release/reflow/MRU, no-focus restore, sole null focus and hidden-domain close cleanup; session-only. Native gates 1,845 passed, 0 failed, 1 ignored; native journeys pending. [Shared/KDE evidence](changes/archive/d23-rework.md), [Windows evidence](changes/archive/windows-d23-restore-close.md), [decision](decisions.md#window-state-float-sticky-maximize-fullscreen). |
   | D25 | approved (a); verification-only | Keep host-owned set; re-observe host membership, no moves; focus only where provable; rebuild layout by re-adoption, no saved-layout restore; intentional floats stay floating via existing restart store; no setting. Generic fresh snapshot/rebuild/converge supports membership/provable focus (`kwin/src/plan-adapter-entry.ts:2186-2300`, `crates/tiler-core/src/session/world.rs:746-799` at `fafcd31`, revision-bound). Native dogfood/live checks will assess orderly restart; outcomes pending. [Decision](decisions.md#restart-persistence). |
   | D26 | approved (b); verification-only, no code | Restore already-persisted owned gaps/settings; re-observe host set/membership/maximize, no invented layout restore. Gaps/settings reload exists (`kwin/src/domain-gap.ts:90` at `fafcd31`); intent cannot cross login/bus/KWin namespace (`crates/omnitiler/src/float_intent_store.rs:11,30-34`). Listed 0.1 known limitation: intentional-float memory lost on logout/login, reopened apps new identities; unchanged REQ-RST-01d lifetime. Revisit after 0.1 with shared restart store. Native dogfood/live checks will assess; outcomes pending. [Decision](decisions.md#restart-persistence). |
-  | D27 | KDE verification-only; no longer BLOCKED. Windows partial verification; approved 5b implementation pending | User 2026-10-13 accepts native KWin host exception: valid-token/FromTool/allowed-X11 switches + focuses, missing/stale-token demand-attention; converge without intercept/revert/suppress. No KDE gaming guard; rely on native input freshness. Real-game active and idle/paused check must pass; reopen only on actual active-play switch-away. Windows 2026-10-14 `f4b9f41`: fresh background current/hidden calls denied with no switch/focus change; shell flash observed, visible urgency unproven. Previously attached caller converges; no product classifier/marker. User-approved 2026-10-16 Windows 5b: OS-permitted Switch and focus over fullscreen/games, no urgency-only downgrade; default Mark urgent only/non-permitted unchanged. Not yet implemented; clean permitted route, mark/clear and game evidence TBD ([Windows evidence/options](changes/archive/windows-d27-activation-verification.md)). Setting KDE applicability deferred to design ([research](research/d27-kwin-activation-trace.md); [decision](decisions.md#activation-requests)). |
+  | D27 | KDE verification-only; no longer BLOCKED. Windows partial verification; approved 5b implementation pending via P2 Activation request setting | User 2026-10-13 accepts native KWin host exception: valid-token/FromTool/allowed-X11 switches + focuses, missing/stale-token demand-attention; converge without intercept/revert/suppress. No KDE gaming guard; rely on native input freshness. Real-game active and idle/paused check must pass; reopen only on actual active-play switch-away. Windows 2026-10-14 `f4b9f41`: fresh background current/hidden calls denied with no switch/focus change; shell flash observed, visible urgency unproven. Previously attached caller converges; no product classifier/marker. User-approved 2026-10-16 Windows 5b: OS-permitted Switch and focus over fullscreen/games, no urgency-only downgrade; default Mark urgent only/non-permitted unchanged. Not yet implemented; User 2026-10-17 folds the standalone 5b implementation into the planned post-0.1 `Activation request` setting item (P2 0.1 triage settings follow-up). Clean permitted route, mark/clear and game evidence TBD ([Windows evidence/options](changes/archive/windows-d27-activation-verification.md)). Setting KDE applicability deferred to design ([research](research/d27-kwin-activation-trace.md); [decision](decisions.md#activation-requests)). |
   | D28 | delivered offline, including born-fullscreen option (a); native/game verification pending | Explicit numbered/relative follow/stay carries retained fullscreen tiles and never-tiled slotless members. Shared MoveDeferred rehomes the initial hold without tree mutation, source admission or geometry setters; D5 first exit admits on the destination. Fullscreen flag and existing send fences retained. Native KDE journey including a real game is must-pass; stop if KWin drops/corrupts fullscreen. No setting; native outcome TBD ([record](changes/archive/kde-fullscreen-activation-and-send.md); [decision](decisions.md#window-state-float-sticky-maximize-fullscreen)). |
 
   - D16 verification queue: ordinary and approved floating+fullscreen/maximized
@@ -406,8 +418,10 @@ decisions of 2026-09-24 are under
     session-only lifetime and no restore focus write. Minimize/reflow/MRU and
     sole-none are preserved. Windows adapter delivered offline 2026-10-13
     ([record](changes/archive/windows-d23-restore-close.md)); native journeys
-    remain in item 22. Source-slot lifetime after send elsewhere remains TBD
-    in the reference discriminator, with shared behavior unchanged.
+    remain in item 22. Source-slot lifetime after send elsewhere is decided
+    User 2026-10-17, option B (forget on confirmed rehome; shared-core
+    implementation approved, not implemented); shared behavior unchanged
+    until then.
     Agent-live Windows 2026-10-17: minimize/reflow/restore recovered measured
     frames; minimized Paint exited and survivors reflowed. Internal slot
     retirement remains unproven; attempted sole leg invalid; minimized restart
@@ -452,7 +466,8 @@ decisions of 2026-09-24 are under
   2026-10-16 Windows amendment: Switch and focus honors OS-permitted activation
   even over fullscreen/games, no urgency-only downgrade; default/non-permitted
   unchanged. Implement that behavior and help text; no activation setting is
-  currently shipped. KDE applicability is reviewed when the setting
+  currently shipped. User 2026-10-17 folds D27 5b into this setting item;
+  the standalone pending Windows implementation entry is removed. KDE applicability is reviewed when the setting
   is designed; no decision now. Functional names/options; WM names only in tooltips.
   Qualifies via COSMIC Tier 1 plus xmonad Tier 2 under the
   [tier rule](decisions.md#reference-tiers); [activation decision](decisions.md#activation-requests).
@@ -493,7 +508,10 @@ decisions of 2026-09-24 are under
     regressions; user physical recheck passed 2026-10-14 (fullscreen Notepad
     kept focus across workspace follow sends) ([decision](decisions.md#window-state-float-sticky-maximize-fullscreen)).
   - Windows review follow-ups (User 2026-10-14):
-    - 5b / correction C APPROVED user 2026-10-16, NOT YET IMPLEMENTED:
+    - 5b / correction C APPROVED user 2026-10-16, NOT YET IMPLEMENTED;
+      folded User 2026-10-17 into the planned post-0.1 `Activation request`
+      setting item (P2 0.1 triage settings follow-up), standalone entry
+      removed:
       Windows Switch and focus honors OS-permitted activation even with a
       fullscreen/game foreground; no urgency-only downgrade. Default Mark urgent
       only and non-permitted requests unchanged. Windows itself permits this;
@@ -509,30 +527,23 @@ decisions of 2026-09-24 are under
       [Tier 1 research delivered 2026-10-17](research/d23-minimized-rehome.md).
       COSMIC removes the source entry and discards its restore anchor on a
       minimized-window move; Hyprland/i3/sway have no native counterpart and
-      do not vote. Recommend B, forget on confirmed window rehome, not omission
-      or whole-workspace migration. OPEN user decision, PARKED: keep, forget,
-      or clear only for explicit sends; no shared-core/KDE change selected.
-      Earlier lean to B remains context, not approval.
+      do not vote. User decision 2026-10-17, option B: forget the source slot
+      on confirmed rehome; a later return is admitted fresh. Shared-core
+      implementation (affects KDE) approved, not implemented.
     - (8) Linux KDE `just dev` streaming/teardown check remains pending;
       [entry-point record](changes/dev-entry-point.md) stays active until it passes.
     - (13f) [Tier 1 research delivered 2026-10-17](research/fixed-override-born-maximized.md).
-      No exact durable-override/restart/maximize counterpart in Tier 1. Proposed
-      shared policy A: durable explicit tile keeps a reserved base beneath
-      maximize under either born-maximized setting, including hint loss;
-      automatic fixed D4 unchanged. Preserves native maximize and durable tile
-      intent; not Tier 1 consensus. Setting-led maximize clearing can also
-      preserve the durable tiled base.
-      OPEN user decision, PARKED: A, born-maximized setting takes precedence,
-      or automatic fixed classification takes precedence. All targets including
-      KDE affected by any future change; [Windows interim unchanged](decisions.md#fixed-size-admission).
+      No exact durable-override/restart/maximize counterpart in Tier 1. User
+      decision 2026-10-17, option A: preserve the durable tiled base beneath
+      native maximize under either born-maximized setting, including hint
+      loss; automatic fixed D4 unchanged. Approved shared policy, not
+      implemented. All targets including KDE affected by the future change;
+      [Windows interim unchanged](decisions.md#fixed-size-admission).
     - (13g) Research delivered 2026-10-16:
       [safe Win32 wrappers](research/windows-port/safe-win32-wrappers.md).
-      Recommend one safe FFI boundary atop current `windows-sys`; both Microsoft
-      bindings expose the checked native families as unsafe. `winsafe` has
-      substantial downloads but concentrated maintenance and coverage gaps;
-      battle-hardening for this surface is not established. Route decision
-      PARKED: retain `windows-sys`, migrate to `windows` for ergonomics, or use
-      a partial `winsafe` hybrid. No production changes. Default-forbid lints,
+      User decision 2026-10-17, option A: one minimal safe FFI module on
+      `windows-sys`; keep the module minimal. Route chosen, implementation
+      queued, not started. Default-forbid lints,
       narrow module opt-in and the CI allowlist check remain pending under
       P1 Windows unsafe FFI consolidation / Rust unsafe policy and the
       [guardrail](decisions.md#rust-unsafe-guardrail).
@@ -674,7 +685,8 @@ decisions of 2026-09-24 are under
   offline with handoff item 23; shared-table settings/admission conformance
   and native MSVC build/test pass (1,847 passed, 0 failed, 1 ignored), closing
   the lift's native compile gap. Behavior/schema/lifetime adoption and the
-  tentative hydrated fixed-override maximize route are preserved
+  hydrated fixed-override maximize route are preserved (User 2026-10-17
+  option-A approved shared policy, not implemented)
   ([Windows record](changes/archive/windows-born-maximized-shared-policy.md)).
   Underlay candidate C `#662a82da` selected for now on both platforms; KDE
   kcfg/KCM default delivered offline 2026-10-13 (native build, CTest 32/32,
@@ -688,6 +700,9 @@ decisions of 2026-09-24 are under
   one tiny dedicated FFI module per crate, every other module/crate forbids
   unsafe. Queue after current Windows release-gate work; timing tentative.
   Preserve safe input/render handoffs. [Rule](decisions.md#rust-unsafe-guardrail).
+  User 2026-10-17, item 13g option A: one minimal safe FFI module on
+  `windows-sys`; keep the module minimal. Route chosen, implementation queued,
+  not started. [Research](research/windows-port/safe-win32-wrappers.md).
 - P1 | Module size refactoring | User 2026-10-14: split oversized source
   files toward the [file size](principles.md#file-size) soft caps.
   Behavior-preserving moves between feature deliveries, with two verified
@@ -745,8 +760,9 @@ decisions of 2026-09-24 are under
   scripted-live verified 2026-10-17: owned conflict preview, Apply/Revert
   success/error dialogs, discard protection, and preview-time stale refusal.
   Settings bytes and system-input state restored; 2,458 / 0 / 1 locked gates.
-  User review remains for tentative no-stacked-confirmation presentation and
-  Windows advisory Apply/Cancel wording; physical chord delivery is not claimed.
+  User 2026-10-17 keeps the shipped dialogs as shipped: advisory Apply/Cancel
+  preview, no extra Apply confirmation, whole-draft discard. Accepted-for-now;
+  a later UX review note is nonblocking. Physical chord delivery is not claimed.
   Windows Revert still reloads saved settings, not KDE defaults.
   [Delivery](changes/archive/windows-shortcut-settings-dialogs.md),
   [decisions](decisions.md#settings-tray-and-first-run).
@@ -997,8 +1013,9 @@ decisions of 2026-09-24 are under
   is matrix row R-WS-07. Research deliverable complete 2026-10-17: per-option
   comparison, owned-helper live visibility baseline, and reference-outcome
   discriminators ([note](research/windows-port/alt-tab-hidden-workspaces.md)).
-  Mechanism plus switch-versus-pull selection stays PARKED for user decision;
-  shell visuals stay user-observed TBD.
+  Mechanism plus switch-versus-pull selection moves to post-0.1 research;
+  shell visuals stay user-observed TBD. User decision 2026-10-17: keep
+  `SW_HIDE` for 0.1 ([decision](decisions.md#workspaces)).
   [Delivery evidence](changes/archive/windows-workspace-presentation-research.md).
   Non-native inputs:
   [workspaces/Alt+Tab](research/non-native-tiler-host-interaction.md#workspaces-monitors-overview-and-alttab-dim-4),
@@ -1036,10 +1053,12 @@ decisions of 2026-09-24 are under
     [research](research/windows-port/taskbar-workspace-indicator.md#product-overlay-2026-10-16)).
     Native 2026-10-17: actual Explorer restart recovered the tray and pager from
     fresh geometry; auto-hide on/off and live shared-settings opt-out passed
-    with original settings restored. Tentative auto-hide behavior hides the
-    pager throughout auto-hide, retaining the tray number/menu. Resource counts
+    with original settings restored. User-confirmed 2026-10-17, as shipped:
+    auto-hide hides the pager throughout auto-hide, retaining the tray
+    number/menu. Resource counts
     plateaued over several minutes. Calculator paints a plain gray miniature
-    without packaged artwork; an earlier missing-miniature report was an
+    without packaged artwork; User 2026-10-17 keeps it as implemented for now,
+    user reviews dogfooding. An earlier missing-miniature report was an
     image-analysis error, not a source defect
     ([record](changes/archive/windows-taskbar-pager-lifecycle.md)).
     Remaining: secondary taskbar tray anchors and physical multi-output;
@@ -1053,7 +1072,9 @@ decisions of 2026-09-24 are under
     missing or too small. Limits cleanup delivered offline: fixed five-second
     creation/spawn retries, uncapped deduplicated icon queues, latest click only.
     Native appearance remains pending; exact packaged/UWP
-    artwork is deferred until the user has seen Calculator physically
+    artwork was deferred until the user saw Calculator physically (now seen);
+    User 2026-10-17 keeps the plain-gray miniature as implemented for now, user
+    reviews dogfooding
     ([active record](changes/windows-taskbar-pager-icons.md)). Urgency
     acquisition remains separate. Secondary/non-bottom/invalid
     geometry currently refuses safely and logs, never guesses a tray edge.
@@ -1328,8 +1349,8 @@ decisions of 2026-09-24 are under
   | 18 | G-06 maximized directional focus/move | Windows delivered offline; tiled focus fence and clear-before-tiled-move/float-four-halves physically user-accepted 2026-10-12, scoped single output. Failure/race/preset/fixed/game/DPI pending. [Record](changes/archive/windows-maximized-directional-navigation.md). |
   | 19 | G-37 migration source-refill setting | Windows additive schema-v1 config, UI Apply/Revert and live runtime/scoped MRU delivered offline 2026-10-14 with item 14 ([record](changes/archive/windows-workspace-output-migration.md)); native journeys pending. Shared core/KDE delivered offline 2026-10-10. |
   | 20 | G-D2 maximized send carry | Windows same-output numbered/relative follow/stay verified agent-observed 2026-10-11 with item 2; KDE offline. Physical/cross-output pending; item 5 foundation required. |
-  | 22 | D16 ordinary/combo sends and D23 best-effort restore/close cleanup | Windows D16 and D23 adapters delivered offline 2026-10-13; native carry/exit, minimize/restore/close checks pending. D27 2026-10-14 at `f4b9f41`: fresh background current/hidden requests denied without focus/workspace switch; native shell flash heard, visible urgency unproven. Previously attached caller's permitted activation converged; no product classifier/marker. User-approved 2026-10-16 Windows 5b implementation pending: OS-permitted Switch and focus honors activation over fullscreen/games; default urgency-only/non-permitted unchanged. Clean permitted requests, mark/clear and game outcomes TBD; presentation/technical classification unresolved. D23 source keep/forget remains OPEN and parked after [Tier 1 research](research/d23-minimized-rehome.md). [D27 evidence/options](changes/archive/windows-d27-activation-verification.md), [Windows D16](changes/archive/windows-d16-floating-transfer.md), [Windows D23](changes/archive/windows-d23-restore-close.md), [verification and exact journeys](changes/archive/windows-item22-verification.md). |
-  | 23 | Born-maximized shared policy | Windows delivered offline 2026-10-13: core parsing/default/clear-keep policy consumed directly, shared fixture conformance; behavior, labels, schema and subsequent-admission semantics preserved, including tentative hydrated fixed-override maximize routing. Native gates 1,847 passed, 0 failed, 1 ignored; existing user-owned native journeys pending. [Record](changes/archive/windows-born-maximized-shared-policy.md). |
+  | 22 | D16 ordinary/combo sends and D23 best-effort restore/close cleanup | Windows D16 and D23 adapters delivered offline 2026-10-13; native carry/exit, minimize/restore/close checks pending. D27 2026-10-14 at `f4b9f41`: fresh background current/hidden requests denied without focus/workspace switch; native shell flash heard, visible urgency unproven. Previously attached caller's permitted activation converged; no product classifier/marker. User-approved 2026-10-16 Windows 5b implementation pending via the P2 `Activation request` setting item (standalone entry folded User 2026-10-17): OS-permitted Switch and focus honors activation over fullscreen/games; default urgency-only/non-permitted unchanged. Clean permitted requests, mark/clear and game outcomes TBD; presentation/technical classification unresolved. D23 source slot: User decision 2026-10-17 option B (forget on confirmed rehome, later return fresh); shared-core implementation approved, not implemented ([Tier 1 research](research/d23-minimized-rehome.md)). [D27 evidence/options](changes/archive/windows-d27-activation-verification.md), [Windows D16](changes/archive/windows-d16-floating-transfer.md), [Windows D23](changes/archive/windows-d23-restore-close.md), [verification and exact journeys](changes/archive/windows-item22-verification.md). |
+  | 23 | Born-maximized shared policy | Windows delivered offline 2026-10-13: core parsing/default/clear-keep policy consumed directly, shared fixture conformance; behavior, labels, schema and subsequent-admission semantics preserved, including the User 2026-10-17 option-A approved fixed-override maximize routing (shared policy, not implemented). Native gates 1,847 passed, 0 failed, 1 ignored; existing user-owned native journeys pending. [Record](changes/archive/windows-born-maximized-shared-policy.md). |
   | 24 | Underlay default `#662a82da` | Windows render/settings and CLI/proof mirrors delivered offline 2026-10-13, matching KDE candidate C (40% accent blue, for now). Explicit saved/CLI colors preserved; schema v1, no migration. Native gates pass (1,792 passed, one ignored); user black/white/grey visual check at 100%/150% pending. [Record](changes/archive/windows-underlay-default.md). |
   | Later | Unsafe FFI consolidation | Required after current Windows release-gate work (timing tentative); one dedicated minimal FFI module per crate, forbid elsewhere. |
 
@@ -3509,7 +3530,8 @@ decisions of 2026-09-24 are under
     seams, including real resize/swap, observed-restored focus and hidden iconic
     refresh/automatic close fanout. Locked native gates: 1,845 passed, 0 failed,
     1 ignored; no native journeys performed. Source-slot lifetime after send
-    elsewhere remains shared behavior with a TBD reference discriminator.
+    elsewhere is decided User 2026-10-17, option B (forget on confirmed
+    rehome; shared-core implementation approved, not implemented).
     No setting. Approved D27 needs supported activation-request/urgency
     observation and default Mark urgent only (no workspace/focus change).
     User-approved 2026-10-16 Windows 5b: OS-permitted Switch and focus requests

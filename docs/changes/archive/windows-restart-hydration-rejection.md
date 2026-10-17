@@ -64,6 +64,7 @@ Preserve intentional ordinary and sticky floats from the first observation after
 - Unsupported reference outcomes remain TBD.
 - Do not repair shared fresh admission here: changing its reply for this valid fixed-size input would also change KDE behavior. Preserve its characterization and report that separate repair boundary.
 - Apply Windows-only, observation-scoped write protection for the marker-validated candidates whose hydration fails. Preserve their pre-observation frames without committing a rejected Engine candidate. Revalidate normally on the next observation; do not introduce durable float state or new un-stick semantics. This implements narrow degradation for already-established intent, not a new restart-layout policy.
+- User decision 2026-10-17: shared-core duplicate-window rejection unchanged unless KDE shows the same harm; the user will test KDE dogfooding. No shared-core repair here.
 
 ## Second agent-live regression (2026-10-17)
 

@@ -1,6 +1,8 @@
 # Safe Win32 wrappers (research item 13g)
 
-- Researched 2026-10-16, revised same day. Decision PARKED for the user.
+- Researched 2026-10-16, revised same day. User decision 2026-10-17: option A
+  (one minimal safe FFI module on `windows-sys`; keep the module minimal).
+  Route chosen; implementation queued, not started.
 - Backlog: [13g](../../backlog.md). Principle: [Unsafe Code](../../principles.md#unsafe-code).
   Guardrail: [Rust unsafe guardrail](../../decisions.md#rust-unsafe-guardrail).
 - Snapshot: local source at `aa76633` (2026-10-16); upstream data as served
@@ -158,7 +160,7 @@ internally). No benchmarks run; no build/runtime numbers claimed.
   allocation-free and retain existing safe input/render handoffs; measure
   any changed hot path. No performance measurements were made.
 
-## 6. Recommendation (parked, not approved)
+## 6. Recommendation (selected User 2026-10-17: option A; implementation queued, not started)
 
 - A (recommended): one boundary module atop `windows-sys`. Lowest churn,
   keeps the Microsoft binding; no verified complete safe replacement in

@@ -913,7 +913,8 @@ All fresh variants below reset the client and WM state independently.
   Reference outcomes and Ours Windows observed outcomes remain TBD; Windows
   fixed-origin marker coverage and retained-maximized hydration are implemented
   offline; fixed-override reserved-overlay routing under both born-maximized
-  values is tentative ([record](../../changes/archive/windows-fixed-size-admission.md)).
+  values is approved shared policy User 2026-10-17, option A (not implemented;
+  [decision](../../decisions.md#fixed-size-admission)).
   Exact Tier 1 intersection (durable marker plus owner restart with live
   clients plus maximize under both born modes) has no counterpart in these
   four pinned Tier 1 references (COSMIC `3d55cba0`, Hyprland `19fb395d`, i3

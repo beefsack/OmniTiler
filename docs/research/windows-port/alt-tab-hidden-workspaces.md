@@ -1,14 +1,17 @@
 # Alt+Tab and taskbar presence for hidden managed workspaces
 
-Research only. No product design selected, no code or host settings changed.
+Research only. 0.1 presentation decided User 2026-10-17 (keep `SW_HIDE`); post-0.1 mechanism open. No code or host settings changed.
 Checked 2026-10-04; extended 2026-10-17 with an owned-helper live
 visibility baseline (no Alt+Tab/Task View visual observation) and a
-per-option presentation comparison. Documentation, pinned source,
+per-option presentation comparison. User decision 2026-10-17: keep `SW_HIDE`
+for 0.1; post-0.1 research investigates trivial configurability (e.g.
+off-screen parking); switch-versus-pull remains open in post-0.1 research.
+Documentation, pinned source,
 upstream reports, live readbacks and inference are distinguished below.
 
-Presentation selection is PARKED for explicit user decision. The
-recommendation below is a recommendation only; no mechanism or
-switch-versus-pull activation policy is selected in this survey.
+Presentation selection for 0.1 is decided User 2026-10-17 (keep `SW_HIDE`).
+The recommendation below is a recommendation only; post-0.1 mechanism and
+switch-versus-pull activation policy are open research, not selected in this survey.
 
 ## Pins
 
@@ -309,9 +312,12 @@ presentation decision, not a final product selection. Parking is the only public
 and stays the first evaluation target: evaluate it on disposable windows first,
 using KDE's default switch-to-workspace as the parity candidate. Select no mechanism or activation policy in this survey.
 
-PARKED for user decision: hidden-workspace presentation selection
-(mechanism plus switch-versus-pull on explicit shell selection). This survey
-recommends retaining `SW_HIDE` but does not select it; the user decides.
+Decided for 0.1 User 2026-10-17 (keep `SW_HIDE`); post-0.1 research open for
+mechanism plus switch-versus-pull on explicit shell selection. This survey
+recommended retaining `SW_HIDE` before selection; the user has decided for 0.1.
+User 2026-10-17 keeps `SW_HIDE` for 0.1; mechanism plus switch-versus-pull
+moves to post-0.1 research (trivial-configurability investigation, e.g.
+off-screen parking).
 
 ## Known uncertainties (explicit)
 

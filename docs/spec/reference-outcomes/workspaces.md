@@ -428,7 +428,7 @@ Part of the [outcome matrix index](../reference-outcomes.md). Notation, profiles
   listing/activation TBD (no host switcher source traced).
   `S(S-pan-cmds)` + `S(S-pan-switcher)`.
 - Then Ours KDE: Per the KDE source, native filter permits B; TabBox activation follows configured policy, default switch to WS1, alternative bring-to-current; exact user-version live outcome TBD; `D(D-alt-tab)`
-- Then Ours Windows: Current `SW_HIDE`: B omitted; future inclusion/activation policy TBD; `D(D-alt-tab)`
+- Then Ours Windows: Current `SW_HIDE`: B omitted; kept for 0.1 User 2026-10-17. Future inclusion/activation policy TBD; switch-versus-pull open in post-0.1 research. `D(D-alt-tab)`
 - Variant hook: V-WS-SHELL-ACTIVATE.
 
 ## New scenarios (GWT; fixtures/actions/discriminators per the approved expansion record)

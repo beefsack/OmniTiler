@@ -13,8 +13,9 @@
   the overlay while auto-hide is enabled, retaining the tray number/menu and
   logging `taskbar-autohide`. Re-evaluate every pump, including reconfiguration
   and `TaskbarCreated` recovery.
-- Tentative for user review: hide throughout auto-hide, even while the taskbar
-  temporarily shows. Alternative: track its slide-in/out; deferred to avoid
+- User-confirmed 2026-10-17, as shipped: hide throughout auto-hide, even while
+  the taskbar temporarily shows ([decision](../decisions.md#settings-tray-and-first-run)).
+  Alternative: track its slide-in/out; deferred to avoid
   animation coupling and floating overlays.
 - Inspect stale-hide/fresh-geometry handling for `WM_SETTINGCHANGE`,
   `WM_DISPLAYCHANGE` and `WM_DPICHANGED`; add offline regressions.

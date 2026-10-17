@@ -55,6 +55,8 @@
   at 32 px and stretch to the DPI-aware slot; scales above 200% can upscale.
 - User-approved 2026-10-16: defer packaged/UWP package-artwork lookup until
   the user has seen Calculator physically; no exact artwork claim is made.
+  User 2026-10-17 (now seen): keep the plain-gray miniature as implemented
+  for now; the user reviews dogfooding.
 - User-approved 2026-10-16 limits cleanup delivered offline: positive cache
   entries refresh after 10 seconds (no Windows icon-change event), misses
   retry after 5 seconds (apps often set icons after window creation).

@@ -1,5 +1,11 @@
 # Fixed-override born-maximized: Tier 1 intersection (13f follow-up)
 
+User decision 2026-10-17: option A (preserve the durable tiled base beneath
+native maximize under either born-maximized setting, including hint loss).
+Approved shared policy, not implemented. All targets including KDE are
+affected by the future change; the Windows interim stays untouched until
+shared delivery.
+
 Scope: adopted/born-maximized durable fixed-origin tile override, both
 `core.born_maximized` values including hint loss. Generic non-fixed maximize
 routing is an unchanged control. No live testing was run. No shared/KDE/
@@ -164,9 +170,9 @@ for or against any candidate.
 
 ## Recommendation (design inference, NOT Tier 1 consensus)
 
-Recommend candidate A as the shared candidate, deferred (no implementation in
-this unit; Windows interim untouched; KDE behavior unchanged until a later
-user-approved change). Basis: native overlay preservation and intent
+Recommend candidate A as the shared candidate, selected User 2026-10-17
+(option A; approved shared policy, not implemented; Windows interim
+untouched; KDE behavior unchanged until a later user-approved change). Basis: native overlay preservation and intent
 continuity, supported by actual Tier 1 analogues - COSMIC's
 original-layer mechanism retaining a Tiling slot beneath maximize for
 ordinary tiled windows; Hyprland's refusal-free explicit float toggle and

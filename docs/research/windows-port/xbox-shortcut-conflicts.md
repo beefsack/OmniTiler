@@ -2,6 +2,13 @@
 
 - Research date: 2026-10-16. Status: research snapshot; the implementation
   choices below are superseded by the approved decisions immediately below.
+- User decision 2026-10-17 (supersedes the 2026-10-16 conservative-warning
+  choices in this snapshot for BOTH Game Bar and GamingHomeApp): warnings only
+  on provably present conflict. Game Bar positive installed query only;
+  failure/unknown same as absence, no notes/conflict rows/badges.
+  GamingHomeApp positively present/configured only; unknown/absent/unreadable
+  no amber/tray/Settings warning. Honest normal-level probe-outcome logs
+  retained. Code implementation pending Part B.
 - Approved 2026-10-16: Compatible uses Ctrl+Win+G (float) and Ctrl+Win+F11
   (fullscreen); Authentic keeps Win+G/F11. Read-only Xbox detection uses the
   undocumented per-user `GamingHomeApp` mapping: exact Xbox AUMID on, present

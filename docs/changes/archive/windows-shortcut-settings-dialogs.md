@@ -84,8 +84,10 @@ adoption. Existing Windows Revert reloads saved settings, not shortcut defaults.
   and clippy passed; the required four-package test gate passed separately.
   This unrelated cross-host test limitation was not changed.
 
-Physical shortcut delivery and user acceptance of the tentative presentation
-remain TBD. Synthetic input and owner revision logs do not establish either.
+Physical shortcut delivery remains TBD; synthetic input and owner revision logs
+do not establish it. User acceptance of the presentation is decided User
+2026-10-17: kept as shipped (accepted-for-now; later UX review nonblocking;
+[decision](../decisions.md#settings-tray-and-first-run)).
 Implementation commit `0ab5d104` passed the same local gates again after rebase.
 [CI run 38945371716](https://github.com/beefsack/OmniTiler/actions/runs/38945371716)
 passed Windows, macOS, Rust, native, KWin, licenses, and notices. The sole failed

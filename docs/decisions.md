@@ -539,6 +539,10 @@ platform API behavior.
   Windows must consolidate FFI into dedicated modules after its current
   release-gate work (timing tentative). KWin effect FFI remains a minimal
   boundary module.
+- User decision 2026-10-17, research item 13g option A: one minimal safe
+  FFI module on `windows-sys`; keep the module minimal. Route chosen per
+  [research](research/windows-port/safe-win32-wrappers.md); implementation
+  queued, not started ([backlog](backlog.md)).
 - Stage 2 cross-thread state uses safe standard primitives and owned handles;
   no unsafe Send/Sync, mutable statics, UnsafeCell or cross-thread pointer
   dereferencing. Existing scattered Win32 FFI call sites are an implementation
@@ -722,9 +726,10 @@ platform API behavior.
   for Apply/Force and "Shortcuts reverted to defaults." for Revert; result
   dialogs give no instructions about overall Settings Apply/OK. Errors show a
   single-line reason, capped at 240 characters with `...` for truncation;
-  full diagnostics remain in the journal. Tentative, pending user review: no preliminary
-  Apply confirmation and no second Force confirmation; the conflict dialog is
-  the single Force confirmation. Revert retains its custom-binding-loss
+  full diagnostics remain in the journal. User 2026-10-17 keeps the shipped
+  KDE shortcut dialogs as shipped: no preliminary Apply confirmation and no
+  second Force confirmation; the conflict dialog is the single Force
+  confirmation. Accepted-for-now; a later UX review note is nonblocking. Revert retains its custom-binding-loss
   confirmation. [Flow](#shortcuts-conflicts-and-presets),
   [delivery](changes/archive/kde-shortcut-result-dialogs.md).
 - KDE tray carrier: portable Rust StatusNotifierItem, KWin backend first;
@@ -775,12 +780,10 @@ platform API behavior.
     / "Reverted to saved settings." in owned modal dialogs; concise single-line
     errors retain full status diagnostics. A save result does not claim runtime
     delivery. Presets remain staged, and Revert never restores shortcut defaults
-    or undoes an earlier Apply. Tentative, pending user review: unresolved
-    tray-warning conflicts use one scrollable Apply/Cancel advisory preview
-    (Windows has no foreign-binding Force operation); conflict-free Apply has no
-    preliminary confirmation. Revert protects unsaved full-draft edits with
-    "Discard unsaved edits?" and Discard/Cancel. Cancel writes nothing and opens
-    no result dialog. [Delivery and live evidence](changes/archive/windows-shortcut-settings-dialogs.md).
+    or undoes an earlier Apply. User 2026-10-17 keeps the shipped dialogs as
+    shipped: advisory Apply/Cancel preview, no extra Apply confirmation,
+    whole-draft discard. Accepted-for-now; a later UX review note is
+    nonblocking. [Delivery and live evidence](changes/archive/windows-shortcut-settings-dialogs.md).
   - Plain official Win32 controls via `windows-sys`; `tiler-windows settings`
     plus tray; single UI instance per user/session; external stale edits
     trigger reload/refusal.
@@ -838,7 +841,9 @@ platform API behavior.
     Icons were omitted in the MVP. The 2026-10-16 icon extension adds centred
     obtainable window/class/executable artwork asynchronously, omitting missing
     or too-small icons without changing pager geometry. Exact packaged-app
-    artwork is deferred until the user has seen Calculator physically;
+    artwork was deferred until the user saw Calculator physically (now seen);
+    User 2026-10-17: keep the pager miniature as implemented (plain gray, no
+    packaged artwork) for now; the user reviews dogfooding.
     native appearance acceptance remains pending
     ([record](changes/windows-taskbar-pager-icons.md)). Secondary tray anchors and non-bottom
     taskbars refuse unknown geometry rather than guessing; physical
@@ -857,6 +862,10 @@ platform API behavior.
     artwork refresh stays ten seconds because Windows has no icon-change
     event; negative retry stays five seconds because apps often set icons
     after window creation.
+    User-confirmed 2026-10-17, as shipped: hide the pager throughout
+    auto-hide (even while the taskbar temporarily shows), retaining the tray
+    number/menu; restore from fresh geometry when disabled. No longer
+    tentative.
   - An amber warning overlay and conflict row identify enabled effective
     Win+G/F11 chords with known incomplete containment, plus kept Win+L when
     runtime opt-in allows its unreliable lock override. Disable, rebind-away,
@@ -1083,6 +1092,11 @@ platform API behavior.
   Status: native locked gates and scoped synthetic/native effect proof passed;
   physical feel and other output/DPI arrangements remain user-owned
   ([workspace tiling](changes/archive/windows-workspace-tiling.md)).
+- User decision 2026-10-17, hidden-workspace presentation: keep `SW_HIDE`
+  for 0.1. Add a post-0.1 research backlog item to investigate trivial
+  configurability (e.g. off-screen parking for shell inclusion);
+  switch-versus-pull remains open in post-0.1 research.
+  [Research](research/windows-port/alt-tab-hidden-workspaces.md).
 - Delivery coordination for items 1-5: see Move, Layout and Output Commands
   below.
 - Windows multi-output is unparked (user 2026-10-10): after the single-output
@@ -1420,18 +1434,22 @@ platform API behavior.
     owner restart in the same intentional-float store, with recompute
     fallback if unavailable.
   - D7 status: Linux planner/KDE delivered offline ([record](changes/archive/fixed-window-tile-override-restart.md)); Windows fixed-origin tile marker delivered offline 2026-10-11 ([record](changes/archive/windows-fixed-size-admission.md)). Only settled tile wins over known automatic fixed origin write `OmniTiler.TileOverride.v1`; generic non-fixed unfloats do not. Hydration covers visible and retained/maximized admitted lifetimes before automatic classification, without requiring hints or granting write/recovery authority.
-  - Tentative Windows D3/D4/Q3 intersection, native verification pending (User
-    2026-10-14: kept for now; Tier 1 research before a shared cross-platform
-    decision): hydrated fixed-origin overrides keep the reserved tiled slot
-    beneath maximize under both `core.born_maximized` values, including hint
-    loss. Generic non-fixed maximize routing remains unchanged; the R-SPC-13
-    native discriminator stays TBD.
+  - Tentative Windows D3/D4/Q3 intersection, kept for now 2026-10-14, superseded
+    by the User 2026-10-17 option A decision below: hydrated fixed-origin
+    overrides keep the reserved tiled slot beneath maximize under both
+    `core.born_maximized` values, including hint loss. Generic non-fixed
+    maximize routing remains unchanged; the R-SPC-13 native discriminator
+    stays TBD.
     [Tier 1 research 2026-10-17](research/fixed-override-born-maximized.md)
     finds no exact durable-override/restart/maximize counterpart. Proposed
     shared precedence preserves durable tile intent and native maximize;
     setting-led maximize clearing could also respect D3/D7. Neither is
-    reference consensus. Shared choice remains OPEN and parked; this
-    research selects no KDE or other target change.
+    reference consensus.
+  - User decision 2026-10-17, 13f option A: preserve the durable tiled base
+    beneath native maximize under either born-maximized setting, including
+    hint loss. Approved shared policy, not implemented. All targets including
+    KDE are affected by the future change; the Windows interim above stays
+    untouched until shared delivery.
   - D8 no-touch: automatic fixed floats are membership-only: no
     geometry, focus, stacking or keep-above writes. Manual floats
     retain keep-above because intentional floats stay above windowed
@@ -1450,6 +1468,8 @@ platform API behavior.
   authority is added. The shared-core fixed-anchor rejection remains unchanged;
   changing its valid-input KDE reply/projection needs a separate decision.
   [Evidence and boundaries](changes/archive/windows-restart-hydration-rejection.md).
+- User decision 2026-10-17: shared-core duplicate-window rejection unchanged
+  unless KDE shows the same harm; the user will test KDE dogfooding.
 - User decision 2026-10-12, D25 / REQ-RST-01c / R-RST-01, option (a):
   orderly owner restart with apps kept alive retains the host-owned workspace
   set; re-observe membership from the host without moves; restore focus only
@@ -1730,17 +1750,27 @@ platform API behavior.
   experience and Game Bar as configuration conflicts in the existing
   warning/action-required surfaces, only while binding the conflicting chord.
   Xbox configuration detection uses the undocumented per-user `GamingHomeApp`
-  registry value read-only; log its source and categorical outcome. Absent,
-  unreadable or unrecognised values are unknown and retain a conservative
-  warning with Settings navigation, confirmed user-approved 2026-10-16.
-  User-approved 2026-10-16 Game Bar rule: warn for detected installation;
-  successful package-query absence must produce no Win+G warning, residual
-  "check Win+G" note or conflict row. A speculative warning for this chord
+  registry value read-only; log its source and categorical outcome. Detection
+  failure never stops tiling.
+- User decision 2026-10-17 (supersedes the 2026-10-16 conservative-warning
+  decisions for BOTH Game Bar and GamingHomeApp): warn only on provably
+  present conflict. Game Bar: a positive installed package query only;
+  failure/unknown counts the same as absence, with no notes, conflict rows
+  or badges. GamingHomeApp: per-user configuration positively
+  present/configured only; unknown/absent/unreadable values produce no
+  amber/tray/Settings warning. Honest normal-level probe-outcome logs are
+  retained. Code implementation pending Part B; current shipped behavior
+  still warns conservatively until then.
+  User-approved 2026-10-16 Game Bar rule, amended User 2026-10-17 (see the
+  provably-present-conflict decision above): warn only for detected
+  installation (positive package query). Successful package-query absence
+  must produce no Win+G warning, residual "check Win+G" note or conflict
+  row; query failure/unknown now counts the same as absence, with no notes,
+  conflict rows or badges. A speculative warning for this chord
   would equally justify warnings for every chord. Correction B is delivered
-  offline, including static binding-list and selected OS text.
-  Query failure is not absence: existing handling keeps
-  an explicit unknown/query-failed warning; retaining that handling needs
-  review and is not a new approved absence exception. Game Bar detection uses supported
+  offline, including static binding-list and selected OS text; the
+  query-failure warning removal is pending Part B implementation.
+  Game Bar detection uses supported
   current-user Appx package registration queries, not capture switches.
   Probes stay cheap, cached and outside the tile/input hot paths; failure never
   disables tiling. Resolve actions only open `ms-settings:gaming-fullscreen`
@@ -1795,9 +1825,9 @@ platform API behavior.
   required key in its active list is listed with its retained keys and blocks
   Force until unbound manually; Force Apply is disabled with the reason shown.
   Force Apply and Cancel are the dialog's actions. Cancel discards the preview
-  without writes or another dialog. Tentative, pending user review: no stacked
-  confirmations, so Apply has no preliminary prompt and this dialog is the
-  sole Force confirmation. Apply/Force applies immediately, with the result
+  without writes or another dialog. User 2026-10-17 keeps this flow as shipped:
+  no stacked confirmations, so Apply has no preliminary prompt and this dialog is the
+  sole Force confirmation. Accepted-for-now; a later UX review note is nonblocking. Apply/Force applies immediately, with the result
   shown in a short dialog (wording under [Settings](#settings-tray-and-first-run));
   operational/partial failures report a brief reason, without offering
   Force as recovery. Revert retains one custom-binding-loss confirmation and
@@ -2868,6 +2898,9 @@ platform API behavior.
   tooltip needs editing; include this text when the setting is implemented.
   Review this setting's KDE applicability when it is designed; no KDE setting
   applicability decision is made here.
+- User 2026-10-17: fold D27 5b into the planned post-0.1 `Activation request`
+  setting item above (P2 0.1 triage settings follow-up); the standalone
+  pending Windows implementation entry is removed.
 - User decision 2026-10-13, option 1: accept KWin native activation as a KDE
   host exception. Valid-token / FromTool / allowed-X11 requests for a
   hidden-desktop window switch desktop and focus natively; missing/stale-token
@@ -2943,12 +2976,14 @@ platform API behavior.
   a TBD discriminator; no adapter-specific exception or cleanup policy added.
   User-approved 2026-10-16 process for D23 item 6: research Tier 1 reference-WM
   behavior first, then decide source keep/forget consistently with that evidence.
-  The behavior itself is NOT decided; the earlier lean toward option B (forget)
-  is context only. [Tier 1 research 2026-10-17](research/d23-minimized-rehome.md)
+  [Tier 1 research 2026-10-17](research/d23-minimized-rehome.md)
   finds COSMIC forgets the source entry/anchor on a minimized-window move;
   Hyprland/i3/sway lack a native counterpart and do not vote. Recommendation:
   forget on confirmed window rehome, not omission or whole-workspace migration.
-  OPEN user decision, parked; no source-slot behavior change is delivered.
+- User decision 2026-10-17, D23 item 6 option B: forget the source slot on
+  confirmed rehome; a later return is admitted fresh. Shared-core
+  implementation (affects KDE) approved, not implemented. This supersedes the
+  OPEN parked wording above.
   [Approval](research/release-0.1-triage.md#user-decisions-2026-10-12).
 - User decision 2026-10-12, D28 / REQ-MAX-09 fullscreen leg / REQ-MAX-09b /
   R-MAX-09, option (b): KDE fullscreen carry ships in 0.1. An explicit send
