@@ -775,6 +775,9 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
             seconds,
             regular_policy,
         } => tiler_macos::border_session::run_border_session(seconds, regular_policy),
+        Command::GroupUnderlaySession { seconds } => {
+            tiler_macos::group_underlay_session::run_group_underlay_session(seconds)
+        }
         Command::McInspect => tiler_macos::mc_lifecycle::run_mc_inspect(),
         Command::McLifecycle {
             seconds,

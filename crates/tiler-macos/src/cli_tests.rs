@@ -353,6 +353,26 @@ fn border_session_is_bounded_with_optional_regular_policy() {
 }
 
 #[test]
+fn group_underlay_session_is_bounded() {
+    use crate::group_underlay_session::DEFAULT_UNDERLAY_SECONDS;
+    let r = parse_args(&argv(&["group-underlay-session"])).unwrap();
+    assert!(r.may_mutate);
+    assert!(matches!(
+        r.command,
+        Command::GroupUnderlaySession {
+            seconds: DEFAULT_UNDERLAY_SECONDS,
+        }
+    ));
+    let r = parse_args(&argv(&["group-underlay-session", "--seconds", "60"])).unwrap();
+    assert!(matches!(
+        r.command,
+        Command::GroupUnderlaySession { seconds: 60 }
+    ));
+    assert!(parse_args(&argv(&["group-underlay-session", "--bogus"])).is_err());
+    assert!(parse_args(&argv(&["group-underlay-session", "--seconds"])).is_err());
+}
+
+#[test]
 fn owned_controls_parse_with_exact_identity() {
     // owned-frame is read-only; minimize/post/focus mutate.
     let r = parse_args(&argv(&[

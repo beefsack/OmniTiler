@@ -2251,6 +2251,15 @@ platform API behavior.
   physical appearance, successful float/zoom suppression, multiple displays and
   actual games remain follow-ups. See
   [implementation and evidence](changes/macos-active-border.md).
+- **macOS group-underlay ordering, 2026-10-17 — Tentative (pending user review):**
+  keep the filled carrier diagnostic-only and do not integrate public AppKit
+  relative-Below ordering into the product. Two owned foreign-process fixtures
+  left it above at least one member, including a frontmost result after
+  front-plus-relative ordering. Below-member placement is a required safety and
+  parity invariant; click-through and fullscreen suppression do not compensate.
+  A scoped private SkyLight ordering evaluation versus deferral is an open
+  question; no private rendering route, chord mapping or native-move detector is
+  selected. [Evidence and remaining differences](changes/macos-group-underlay.md).
 - Group underlay (user decision 2026-10-02, accepted for now):
   `changes/group-underlay-move-trigger.md` on Windows. Show for Win+Shift hold
   (both required, either order, extra modifiers allowed) OR a matching focused

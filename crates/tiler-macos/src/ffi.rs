@@ -5436,6 +5436,286 @@ mod macos {
         }
     }
 
+    // -- Reusable group-underlay carrier (public AppKit only, main thread) --
+    //
+    // A borderless, nonactivating, click-through `NSPanel` whose content view
+    // fills its bounds with the shared underlay colour
+    // (`#662a82da`, no radius) on the main thread (`drawRect:`, no `CALayer`
+    // tree), ordered BELOW its lowest member with public
+    // `orderWindow:relativeTo:`. Collection behavior is explicitly `Managed`
+    // (never `CanJoinAllSpaces` / `FullScreenAuxiliary`), level `Normal`,
+    // so the carrier cannot rise over unrelated fullscreen/games or windows
+    // above the group: fullscreen and Space departure hide it via an
+    // explicit `orderOut:`. No SkyLight rendering anywhere here. The bounded
+    // fixture holder (`crate::group_underlay_session`) owns one handle per
+    // run; production integration reuses this handle, never a copy.
+
+    #[repr(C)]
+    struct UnderlayFillIvars {
+        // f64 bit patterns: `update` restyles without recreating the view.
+        r_bits: std::sync::atomic::AtomicU64,
+        g_bits: std::sync::atomic::AtomicU64,
+        b_bits: std::sync::atomic::AtomicU64,
+        a_bits: std::sync::atomic::AtomicU64,
+        draws: std::sync::atomic::AtomicU64,
+    }
+
+    impl UnderlayFillIvars {
+        fn new(r: f64, g: f64, b: f64, a: f64) -> Self {
+            use std::sync::atomic::AtomicU64;
+            Self {
+                r_bits: AtomicU64::new(r.to_bits()),
+                g_bits: AtomicU64::new(g.to_bits()),
+                b_bits: AtomicU64::new(b.to_bits()),
+                a_bits: AtomicU64::new(a.to_bits()),
+                draws: AtomicU64::new(0),
+            }
+        }
+
+        fn store(&self, r: f64, g: f64, b: f64, a: f64) {
+            use std::sync::atomic::Ordering;
+            self.r_bits.store(r.to_bits(), Ordering::Relaxed);
+            self.g_bits.store(g.to_bits(), Ordering::Relaxed);
+            self.b_bits.store(b.to_bits(), Ordering::Relaxed);
+            self.a_bits.store(a.to_bits(), Ordering::Relaxed);
+        }
+
+        fn load(&self) -> (f64, f64, f64, f64) {
+            use std::sync::atomic::Ordering;
+            (
+                f64::from_bits(self.r_bits.load(Ordering::Relaxed)),
+                f64::from_bits(self.g_bits.load(Ordering::Relaxed)),
+                f64::from_bits(self.b_bits.load(Ordering::Relaxed)),
+                f64::from_bits(self.a_bits.load(Ordering::Relaxed)),
+            )
+        }
+    }
+
+    // SAFETY: plain-data ivars carried to `set_ivars` (same shape as
+    // `BorderRingIvars` above); never dereferenced as an ObjC object.
+    unsafe impl objc2::Encode for UnderlayFillIvars {
+        const ENCODING: objc2::Encoding = objc2::Encoding::Object;
+    }
+
+    objc2::define_class! {
+        // SAFETY: `NSView` subclass with no subclassing requirements beyond
+        // the two drawing overrides below; no `Drop`; `drawRect:` fills the
+        // bounds once (no layout, no logging, no panics).
+        #[unsafe(super(objc2_app_kit::NSView))]
+        #[thread_kind = objc2::MainThreadOnly]
+        #[ivars = Box<UnderlayFillIvars>]
+        struct UnderlayFillView;
+
+        // SAFETY: signatures match `isOpaque` and `drawRect:` exactly.
+        impl UnderlayFillView {
+            #[unsafe(method(isOpaque))]
+            fn is_opaque(&self) -> bool {
+                false
+            }
+
+            #[unsafe(method(drawRect:))]
+            fn draw_rect(&self, _dirty: objc2_foundation::NSRect) {
+                use std::sync::atomic::Ordering;
+                self.ivars().draws.fetch_add(1, Ordering::Relaxed);
+                let (r, g, b, a) = self.ivars().load();
+                let bounds = self.bounds();
+                let color =
+                    objc2_app_kit::NSColor::colorWithCalibratedRed_green_blue_alpha(
+                        r, g, b, a,
+                    );
+                color.set();
+                objc2_app_kit::NSBezierPath::fillRect(bounds);
+            }
+        }
+    }
+
+    /// Reusable group-underlay carrier handle: create/update/hide/destroy
+    /// over one owned `NSPanel`. Main-thread confinement is structural (same
+    /// shape as [`BorderCarrier`]): every AppKit method takes a
+    /// [`objc2::MainThreadMarker`], and the held `Retained<NSPanel>` is
+    /// `!Send + !Sync`. No `Drop` impl: teardown is the explicit
+    /// [`GroupUnderlayCarrier::destroy`], which consumes the handle.
+    pub struct GroupUnderlayCarrier {
+        panel: objc2::rc::Retained<objc2_app_kit::NSPanel>,
+        fill: objc2::rc::Retained<UnderlayFillView>,
+        mtm: objc2::MainThreadMarker,
+    }
+
+    impl GroupUnderlayCarrier {
+        /// Create the carrier for `outer` (AppKit points, global coordinates)
+        /// filled with `fill` (RGBA channels in order: red, green, blue,
+        /// alpha — see [`crate::group_underlay::parse_fill`]). The panel
+        /// caller shows it with [`GroupUnderlayCarrier::show_below`]. Fails
+        /// closed on non-finite or degenerate geometry.
+        pub fn create(
+            mtm: objc2::MainThreadMarker,
+            outer: tiler_core::visual::VisualRect,
+            fill: (u8, u8, u8, u8),
+            title: &str,
+        ) -> Result<Self, String> {
+            use objc2_app_kit::{
+                NSBackingStoreType, NSPanel, NSWindowCollectionBehavior, NSWindowStyleMask,
+            };
+            use objc2_foundation::NSString;
+            if ![outer.x, outer.y, outer.w, outer.h]
+                .iter()
+                .all(|v| v.is_finite())
+                || outer.w <= 0.0
+                || outer.h <= 0.0
+            {
+                return Err(
+                    "underlay carrier outer rect refused: non-finite or degenerate".to_owned(),
+                );
+            }
+            let panel: objc2::rc::Retained<NSPanel> =
+                NSPanel::initWithContentRect_styleMask_backing_defer(
+                    mtm.alloc::<NSPanel>(),
+                    border_nsrect((outer.x, outer.y, outer.w, outer.h)),
+                    NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel,
+                    NSBackingStoreType(2),
+                    false,
+                );
+            panel.setTitle(&NSString::from_str(title));
+            panel.setIgnoresMouseEvents(true);
+            panel.setOpaque(false);
+            panel.setHasShadow(false);
+            panel.setBackgroundColor(Some(&objc2_app_kit::NSColor::clearColor()));
+            panel.setCollectionBehavior(NSWindowCollectionBehavior::Managed);
+            // SAFETY: `alloc` + direct ivars + superclass `initWithFrame:`
+            // (the `define_class!` doc shape); the view lives as the
+            // carrier's content view until `destroy`. Main-thread-only
+            // allocation via the marker.
+            let fill_view: objc2::rc::Retained<UnderlayFillView> = unsafe {
+                let allocated =
+                    mtm.alloc::<UnderlayFillView>()
+                        .set_ivars(Box::new(UnderlayFillIvars::new(
+                            f64::from(fill.0) / 255.0,
+                            f64::from(fill.1) / 255.0,
+                            f64::from(fill.2) / 255.0,
+                            f64::from(fill.3) / 255.0,
+                        )));
+                objc2::msg_send![super(allocated), initWithFrame: border_nsrect((0.0, 0.0, outer.w, outer.h))]
+            };
+            panel.setContentView(Some(fill_view.as_ref()));
+            Ok(Self {
+                panel,
+                fill: fill_view,
+                mtm,
+            })
+        }
+
+        /// Request placement below `target_wid` (public ordering; never activation). The
+        /// caller passes the LOWEST (most-back) group member with the INTENT that the
+        /// carrier end up beneath every member — this call alone proves nothing about
+        /// where the carrier landed. The only ordering verdict is the global CG join in
+        /// [`cg_carrier_below_targets`], which has REJECTED both public routes so far
+        /// (carrier still above at least one member). Like [`BorderCarrier::show_above`],
+        /// the panel comes `orderFront:` first and is then placed relative to the target;
+        /// that transient front flash is bounded fixture behavior, never accepted ordering
+        /// evidence and never a production claim. Diagnostic-only: not wired into tiling,
+        /// configuration, or product visibility triggers.
+        pub fn show_below(&self, _mtm: objc2::MainThreadMarker, target_wid: isize) {
+            self.panel.orderFront(None);
+            self.panel
+                .orderWindow_relativeTo(objc2_app_kit::NSWindowOrderingMode::Below, target_wid);
+        }
+
+        /// Move and/or restyle the carrier: frame set plus fill restyle and
+        /// redisplay. Fails closed on degenerate geometry (the previous frame
+        /// is kept, never a guessed clamp).
+        pub fn update(
+            &self,
+            _mtm: objc2::MainThreadMarker,
+            outer: tiler_core::visual::VisualRect,
+            fill: (u8, u8, u8, u8),
+        ) -> Result<(), String> {
+            if ![outer.x, outer.y, outer.w, outer.h]
+                .iter()
+                .all(|v| v.is_finite())
+                || outer.w <= 0.0
+                || outer.h <= 0.0
+            {
+                return Err(
+                    "underlay carrier update refused: non-finite or degenerate outer".to_owned(),
+                );
+            }
+            self.panel
+                .setFrame_display(border_nsrect((outer.x, outer.y, outer.w, outer.h)), true);
+            self.fill.ivars().store(
+                f64::from(fill.0) / 255.0,
+                f64::from(fill.1) / 255.0,
+                f64::from(fill.2) / 255.0,
+                f64::from(fill.3) / 255.0,
+            );
+            self.fill.setNeedsDisplay(true);
+            Ok(())
+        }
+
+        /// Fence hide: `orderOut:` (the caller reads back `is_visible`).
+        pub fn hide(&self, _mtm: objc2::MainThreadMarker) {
+            self.panel.orderOut(None);
+        }
+
+        /// Main-thread marker proof for pump-gated legs.
+        pub fn main_thread(&self) -> objc2::MainThreadMarker {
+            self.mtm
+        }
+
+        /// Current carrier frame in AppKit points (global coordinates).
+        pub fn frame_points(&self) -> (f64, f64, f64, f64) {
+            frame_tuple(self.panel.frame())
+        }
+
+        /// Backing-pixel rect of the current frame at the target screen's
+        /// `backingScaleFactor`. `None` refuses.
+        pub fn backing_rect(&self, scale: f64) -> Option<crate::active_border::BackingRect> {
+            let (x, y, w, h) = self.frame_points();
+            crate::active_border::points_to_backing(
+                tiler_core::visual::VisualRect { x, y, w, h },
+                scale,
+            )
+        }
+
+        /// `isVisible` readback.
+        pub fn is_visible(&self) -> bool {
+            self.panel.isVisible()
+        }
+
+        /// Carrier window number for CG joins.
+        pub fn window_number(&self) -> i64 {
+            self.panel.windowNumber() as i64
+        }
+
+        /// Fill `drawRect:` dispatches so far (fill-path execution proof;
+        /// not pixel proof).
+        pub fn draws(&self) -> u64 {
+            use std::sync::atomic::Ordering;
+            self.fill.ivars().draws.load(Ordering::Relaxed)
+        }
+
+        /// Static flag readbacks (honest API evidence, not claims).
+        pub fn flags(&self) -> BorderCarrierFlags {
+            use objc2_app_kit::NSWindowCollectionBehavior;
+            let behavior = self.panel.collectionBehavior();
+            BorderCarrierFlags {
+                ignores_mouse: self.panel.ignoresMouseEvents(),
+                can_key: self.panel.canBecomeKeyWindow(),
+                can_main: self.panel.canBecomeMainWindow(),
+                collection_managed_only: behavior.contains(NSWindowCollectionBehavior::Managed)
+                    && !behavior.contains(NSWindowCollectionBehavior::CanJoinAllSpaces)
+                    && !behavior.contains(NSWindowCollectionBehavior::FullScreenAuxiliary),
+                level: self.panel.level() as i64,
+            }
+        }
+
+        /// Verified teardown: hide plus close. Consumes the handle so no
+        /// AppKit call can follow the close.
+        pub fn destroy(self, _mtm: objc2::MainThreadMarker) {
+            self.panel.orderOut(None);
+            self.panel.close();
+        }
+    }
+
     fn border_nsrect(frame: (f64, f64, f64, f64)) -> objc2_foundation::NSRect {
         objc2_foundation::NSRect::new(
             objc2_foundation::NSPoint::new(frame.0, frame.1),
@@ -5482,6 +5762,43 @@ mod macos {
         }
         let above = carrier_idx >= 0 && target_idx >= 0 && carrier_idx < target_idx;
         (above, carrier_idx, target_idx)
+    }
+
+    /// Below-group verdict over one CG snapshot ACROSS processes: the carrier
+    /// and every member window number must be present globally — no
+    /// owner/PID filtering, the carrier and its members live in different
+    /// processes — and the carrier must follow EVERY member in list order
+    /// (the list is front-to-back, so a larger index is further back/below).
+    /// Foreign windows anywhere (above, below, or between) move the indices
+    /// but never change the pairwise verdict. Returns the verdict plus the
+    /// carrier index and the member indices in input order for transparency.
+    pub fn cg_carrier_below_targets(
+        windows: &[CgWindow],
+        carrier_wid: isize,
+        member_wids: &[u32],
+    ) -> (bool, isize, Vec<isize>) {
+        let Ok(carrier) = u32::try_from(carrier_wid) else {
+            return (false, -1, vec![-1; member_wids.len()]);
+        };
+        if member_wids.is_empty() {
+            return (false, -1, Vec::new());
+        }
+        let mut carrier_idx: isize = -1;
+        let mut member_idx = vec![-1isize; member_wids.len()];
+        for (i, w) in windows.iter().enumerate() {
+            if w.wid == carrier && carrier_idx < 0 {
+                carrier_idx = i as isize;
+            }
+            for (j, member) in member_wids.iter().enumerate() {
+                if w.wid == *member && member_idx[j] < 0 {
+                    member_idx[j] = i as isize;
+                }
+            }
+        }
+        let below = carrier_idx >= 0
+            && member_idx.iter().all(|m| *m >= 0)
+            && member_idx.iter().all(|m| carrier_idx > *m);
+        (below, carrier_idx, member_idx)
     }
 
     // -- Bounded event tap (trusted core-graphics wrapper) --
@@ -6880,30 +7197,30 @@ mod macos {
 pub use macos::{
     AX_ATTRIBUTE_UNSUPPORTED, AX_FAILURE, AX_ILLEGAL_ARGUMENT, AX_NO_VALUE, AxElement, AxFrame,
     BorderCarrier, BorderCarrierFlags, CgBounds, CgWindow, CgWindowBasic, DisplayChangeGuard,
-    DisplayRect, HotkeySpi, KeyCounts, MouseCounts, NsAppIdentity, NsDisplay, Phase1Observer,
-    SLPS_CPS_USER_GENERATED, SLPS_EVENT_LEN, SlpsPsn, SlsBridgedAvailability, SlsDisplayRow,
-    SlsMoveSymbols, TapChordSpec, TapHit, TapPump, TapSource, TapSourceReport, activate_app,
-    activation_policy_raw_for_pid, app_hidden_for_pid, ax_app_focus_leg, ax_bool_attribute,
-    ax_children, ax_direct_focused_read, ax_display_id, ax_element_at_position,
+    DisplayRect, GroupUnderlayCarrier, HotkeySpi, KeyCounts, MouseCounts, NsAppIdentity, NsDisplay,
+    Phase1Observer, SLPS_CPS_USER_GENERATED, SLPS_EVENT_LEN, SlpsPsn, SlsBridgedAvailability,
+    SlsDisplayRow, SlsMoveSymbols, TapChordSpec, TapHit, TapPump, TapSource, TapSourceReport,
+    activate_app, activation_policy_raw_for_pid, app_hidden_for_pid, ax_app_focus_leg,
+    ax_bool_attribute, ax_children, ax_direct_focused_read, ax_display_id, ax_element_at_position,
     ax_focused_preimage, ax_focused_preimage_detailed, ax_focused_preimage_evidence,
     ax_fullscreen_state, ax_get_frame, ax_hit_test_owner, ax_identifier, ax_is_process_trusted,
     ax_is_size_settable, ax_min_size, ax_observe_bounded, ax_observe_session, ax_perform_action,
     ax_raise, ax_selected_focus_evidence, ax_set_bool_attribute, ax_set_focused_window,
     ax_set_frame, ax_set_messaging_timeout, ax_set_position, ax_set_size, ax_string_attribute,
     ax_system_focus_leg, ax_window_id, ax_window_id_detailed, ax_window_title,
-    border_system_accent, bundle_id_for_pid, cg_carrier_above_target, cg_display_uuid,
-    cg_post_event_access_known, cg_window_list_all, cg_window_list_basic, copy_symbolic_hotkeys,
-    drain_app_events, drain_app_events_counted, frontmost_app, hotkey_read, hotkey_set_enabled,
-    hotkey_spi_available, install_display_change_guard, key_counts_snapshot, launch_date_for_pid,
-    macos_major, mc_launch_toggle, mouse_counts_snapshot, ns_app_identity_for_pid,
-    ns_display_snapshot, ns_separate_spaces, own_bundle_id, process_executable_path,
-    process_exists, pump_runloop_once, resolve_hotkey_spi, run_event_tap_bounded,
-    run_owned_probe_window, runloop_present, running_apps, secure_input_known, session_state,
-    slps_available, slps_front_available, slps_front_pid, slps_post_event, slps_psn_for_pid,
-    slps_set_front, sls_bridged_availability, sls_connection_available, sls_display_rows,
-    sls_display_spaces, sls_main_connection_id, sls_move_symbols, sls_move_windows_direct,
-    sls_space_type, sls_spaces_for_window, sls_spaces_for_windows, sls_window_at_point,
-    terminate_process, warp_cursor_position,
+    border_system_accent, bundle_id_for_pid, cg_carrier_above_target, cg_carrier_below_targets,
+    cg_display_uuid, cg_post_event_access_known, cg_window_list_all, cg_window_list_basic,
+    copy_symbolic_hotkeys, drain_app_events, drain_app_events_counted, frontmost_app, hotkey_read,
+    hotkey_set_enabled, hotkey_spi_available, install_display_change_guard, key_counts_snapshot,
+    launch_date_for_pid, macos_major, mc_launch_toggle, mouse_counts_snapshot,
+    ns_app_identity_for_pid, ns_display_snapshot, ns_separate_spaces, own_bundle_id,
+    process_executable_path, process_exists, pump_runloop_once, resolve_hotkey_spi,
+    run_event_tap_bounded, run_owned_probe_window, runloop_present, running_apps,
+    secure_input_known, session_state, slps_available, slps_front_available, slps_front_pid,
+    slps_post_event, slps_psn_for_pid, slps_set_front, sls_bridged_availability,
+    sls_connection_available, sls_display_rows, sls_display_spaces, sls_main_connection_id,
+    sls_move_symbols, sls_move_windows_direct, sls_space_type, sls_spaces_for_window,
+    sls_spaces_for_windows, sls_window_at_point, terminate_process, warp_cursor_position,
 };
 
 #[cfg(not(target_os = "macos"))]
@@ -7624,6 +7941,43 @@ mod stub {
         (above, carrier_idx, target_idx)
     }
 
+    /// Pure global below-group ordering (same semantics as the macOS leg; no
+    /// owner filtering on either platform).
+    pub fn cg_carrier_below_targets(
+        windows: &[CgWindow],
+        carrier_wid: isize,
+        member_wids: &[u32],
+    ) -> (bool, isize, Vec<isize>) {
+        let Ok(carrier) = u32::try_from(carrier_wid) else {
+            return (false, -1, vec![-1; member_wids.len()]);
+        };
+        if member_wids.is_empty() {
+            return (false, -1, Vec::new());
+        }
+        let mut carrier_idx: isize = -1;
+        let mut member_idx = vec![-1isize; member_wids.len()];
+        for (i, w) in windows.iter().enumerate() {
+            if w.wid == carrier && carrier_idx < 0 {
+                carrier_idx = i as isize;
+            }
+            for (j, member) in member_wids.iter().enumerate() {
+                if w.wid == *member && member_idx[j] < 0 {
+                    member_idx[j] = i as isize;
+                }
+            }
+        }
+        let below = carrier_idx >= 0
+            && member_idx.iter().all(|m| *m >= 0)
+            && member_idx.iter().all(|m| carrier_idx > *m);
+        (below, carrier_idx, member_idx)
+    }
+
+    /// Stub underlay carrier handle (macOS-only fixture): unconstructible
+    /// off-macOS.
+    pub struct GroupUnderlayCarrier {
+        _priv: (),
+    }
+
     /// Stub downstream key-delivery counters (always zero off-macOS).
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
     pub struct KeyCounts {
@@ -7690,26 +8044,27 @@ mod stub {
 #[cfg(not(target_os = "macos"))]
 pub use stub::{
     AxElement, AxFrame, BorderCarrier, BorderCarrierFlags, CgBounds, CgWindow, CgWindowBasic,
-    DisplayChangeGuard, DisplayRect, HotkeySpi, KeyCounts, MouseCounts, NsAppIdentity, NsDisplay,
-    Phase1Observer, SLPS_CPS_USER_GENERATED, SLPS_EVENT_LEN, SlpsPsn, SlsBridgedAvailability,
-    SlsDisplayRow, SlsMoveSymbols, TapChordSpec, TapHit, TapPump, TapSource, TapSourceReport,
-    activate_app, activation_policy_raw_for_pid, app_hidden_for_pid, ax_app_focus_leg,
-    ax_bool_attribute, ax_children, ax_direct_focused_read, ax_display_id, ax_element_at_position,
-    ax_focused_preimage, ax_focused_preimage_detailed, ax_focused_preimage_evidence,
-    ax_fullscreen_state, ax_get_frame, ax_hit_test_owner, ax_identifier, ax_is_process_trusted,
-    ax_is_size_settable, ax_min_size, ax_observe_bounded, ax_observe_session, ax_perform_action,
-    ax_raise, ax_selected_focus_evidence, ax_set_bool_attribute, ax_set_focused_window,
-    ax_set_frame, ax_set_messaging_timeout, ax_set_position, ax_set_size, ax_string_attribute,
-    ax_system_focus_leg, ax_window_id, ax_window_id_detailed, ax_window_title,
-    border_system_accent, bundle_id_for_pid, cg_carrier_above_target, cg_display_uuid,
-    cg_post_event_access_known, cg_window_list_all, cg_window_list_basic, copy_symbolic_hotkeys,
-    frontmost_app, hotkey_read, hotkey_set_enabled, hotkey_spi_available,
-    install_display_change_guard, key_counts_snapshot, launch_date_for_pid, macos_major,
-    mc_launch_toggle, mouse_counts_snapshot, ns_app_identity_for_pid, ns_display_snapshot,
-    ns_separate_spaces, own_bundle_id, process_executable_path, process_exists, pump_runloop_once,
-    resolve_hotkey_spi, run_event_tap_bounded, run_owned_probe_window, runloop_present,
-    running_apps, secure_input_known, session_state, slps_available, slps_front_available,
-    slps_front_pid, slps_post_event, slps_psn_for_pid, slps_set_front, sls_bridged_availability,
+    DisplayChangeGuard, DisplayRect, GroupUnderlayCarrier, HotkeySpi, KeyCounts, MouseCounts,
+    NsAppIdentity, NsDisplay, Phase1Observer, SLPS_CPS_USER_GENERATED, SLPS_EVENT_LEN, SlpsPsn,
+    SlsBridgedAvailability, SlsDisplayRow, SlsMoveSymbols, TapChordSpec, TapHit, TapPump,
+    TapSource, TapSourceReport, activate_app, activation_policy_raw_for_pid, app_hidden_for_pid,
+    ax_app_focus_leg, ax_bool_attribute, ax_children, ax_direct_focused_read, ax_display_id,
+    ax_element_at_position, ax_focused_preimage, ax_focused_preimage_detailed,
+    ax_focused_preimage_evidence, ax_fullscreen_state, ax_get_frame, ax_hit_test_owner,
+    ax_identifier, ax_is_process_trusted, ax_is_size_settable, ax_min_size, ax_observe_bounded,
+    ax_observe_session, ax_perform_action, ax_raise, ax_selected_focus_evidence,
+    ax_set_bool_attribute, ax_set_focused_window, ax_set_frame, ax_set_messaging_timeout,
+    ax_set_position, ax_set_size, ax_string_attribute, ax_system_focus_leg, ax_window_id,
+    ax_window_id_detailed, ax_window_title, border_system_accent, bundle_id_for_pid,
+    cg_carrier_above_target, cg_carrier_below_targets, cg_display_uuid, cg_post_event_access_known,
+    cg_window_list_all, cg_window_list_basic, copy_symbolic_hotkeys, frontmost_app, hotkey_read,
+    hotkey_set_enabled, hotkey_spi_available, install_display_change_guard, key_counts_snapshot,
+    launch_date_for_pid, macos_major, mc_launch_toggle, mouse_counts_snapshot,
+    ns_app_identity_for_pid, ns_display_snapshot, ns_separate_spaces, own_bundle_id,
+    process_executable_path, process_exists, pump_runloop_once, resolve_hotkey_spi,
+    run_event_tap_bounded, run_owned_probe_window, runloop_present, running_apps,
+    secure_input_known, session_state, slps_available, slps_front_available, slps_front_pid,
+    slps_post_event, slps_psn_for_pid, slps_set_front, sls_bridged_availability,
     sls_connection_available, sls_display_rows, sls_display_spaces, sls_main_connection_id,
     sls_move_symbols, sls_move_windows_direct, sls_space_type, sls_spaces_for_window,
     sls_spaces_for_windows, terminate_process, warp_cursor_position,

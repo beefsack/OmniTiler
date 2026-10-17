@@ -173,6 +173,9 @@ pub enum Command {
         seconds: u64,
         regular_policy: bool,
     },
+    GroupUnderlaySession {
+        seconds: u64,
+    },
     McInspect,
     SpacesGrabDiagnose,
     CgInspect,
@@ -450,6 +453,13 @@ pub fn help_text() -> String {
            \x20 \x20 foreign-fullscreen hide and verified teardown; --regular-policy\n\
            \x20 \x20 opts the HELPER into regular activation; no taps, no Space\n\
            \x20 \x20 writes, no synthetic keys, click-through parked)\n\
+           \x20 group-underlay-session [--seconds N]\n\
+           \x20 \x20 (bounded cross-process underlay fixture, default 75s, 45..=90s\n\
+           \x20 \x20 real deadline: owned fill panel here plus TWO owned member\n\
+           \x20 \x20 helpers and one nonmember receipt helper; proves global CG\n\
+           \x20 \x20 below-member ordering, reflow tracking, focus isolation,\n\
+           \x20 \x20 fill click-through, fence hide/restore, member-fullscreen\n\
+           \x20 \x20 hide and verified teardown; no taps, no Space writes)\n\
             \x20 mc-inspect\n\
             \x20 \x20 (read-only Mission Control probe: session lock, AX trust, Dock\n\
             \x20 \x20 identity, MC-group presence, sanitized topology; no launch, no\n\
@@ -1634,6 +1644,29 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                 seconds,
                 regular_policy,
             }
+        }
+        "group-underlay-session" => {
+            // Bounded cross-process underlay fixture: the owned AppKit
+            // fill panel lives on the calling (main) thread while THREE
+            // owned helpers (two members + one nonmember receipt) own
+            // their windows in separate processes. `--seconds`
+            // (default 75, 45..=90) is the enforced real deadline.
+            let mut seconds = crate::group_underlay_session::DEFAULT_UNDERLAY_SECONDS;
+            let mut j = 0;
+            while j < args.len() {
+                match args[j].as_str() {
+                    "--seconds" => {
+                        j += 1;
+                        seconds =
+                            parse_u64(args.get(j).ok_or("--seconds needs a value")?, "--seconds")?;
+                    }
+                    other => {
+                        return Err(format!("group-underlay-session: unknown arg '{other}'"));
+                    }
+                }
+                j += 1;
+            }
+            Command::GroupUnderlaySession { seconds }
         }
         "mc-inspect" => {
             // Read-only Mission Control inspection: no launch, no writes.
