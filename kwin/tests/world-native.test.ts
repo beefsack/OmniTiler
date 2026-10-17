@@ -1,13 +1,14 @@
 // World native toggles through the exact KWin seams: `setMaximize` with
-// `maximizeMode` readback, `fullScreen`, `onAllDesktops`. Fakes use
-// real-property names only: no lowercase alias may mask a regression.
+// `maximizeMode` readback, `fullScreen`, `onAllDesktops`. Fakes prefer
+// real-property names; the live-safety alias tests below pin the fallback
+// precedence explicitly so no alias can mask a regression elsewhere.
 // Busy fences and overlay rechecks run before any setter; synchronous
 // invalidation runs before the first setter; the setter boolean alone is
 // never proof (truthful readback decides).
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { createWorldNativeToggles, type WorldNativeEnv } from "../src/world-native";
+import { createWorldApplyHost, createWorldNativeToggles, type WorldNativeEnv } from "../src/world-native";
 import type { WorldCommand } from "../src/world-report";
 
 interface FakeWin {
@@ -235,5 +236,74 @@ describe("world native toggles", () => {
         assert.equal(ref.fullScreen, true);
         assert.equal(h.toggles.setFullscreenNative(ref as object, false), true);
         assert.equal(ref.fullScreen, false);
+    });
+});
+
+describe("world apply host live safety", () => {
+    const readProp = (value: object, property: string): unknown =>
+        Reflect.get(value as object, property);
+    const surface = { windowList: () => [] as Array<unknown> };
+    const safetyOf = (
+        ref: object,
+        reader: (value: object, property: string) => unknown = readProp,
+    ): unknown =>
+        createWorldApplyHost(surface as object, reader).readLiveSafety(ref);
+
+    it("prefers canonical native properties over contradictory aliases", () => {
+        const ref = {
+            minimized: false,
+            fullScreen: true,
+            maximizeMode: 3,
+            onAllDesktops: false,
+            fullscreen: false,
+            maximized: false,
+            sticky: true,
+        };
+        assert.deepEqual(safetyOf(ref as object), {
+            minimized: false,
+            fullscreen: true,
+            maximized: true,
+            sticky: false,
+        });
+    });
+
+    it("falls back to aliases when native properties are absent", () => {
+        const ref = {
+            minimized: false,
+            fullscreen: true,
+            maximized: true,
+            sticky: true,
+        };
+        assert.deepEqual(safetyOf(ref as object), {
+            minimized: false,
+            fullscreen: true,
+            maximized: true,
+            sticky: true,
+        });
+    });
+
+    it("falls back to aliases when native reads are type-invalid", () => {
+        const ref = {
+            minimized: 0,
+            fullScreen: "yes",
+            maximizeMode: "3",
+            onAllDesktops: 1,
+            fullscreen: true,
+            maximized: false,
+            sticky: true,
+        };
+        assert.deepEqual(safetyOf(ref as object), {
+            minimized: null,
+            fullscreen: true,
+            maximized: false,
+            sticky: true,
+        });
+    });
+
+    it("fails the whole safety result when a read throws", () => {
+        const throwing = (): unknown => {
+            throw new Error("boom");
+        };
+        assert.equal(safetyOf({} as object, throwing), null);
     });
 });

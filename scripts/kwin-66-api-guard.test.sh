@@ -85,5 +85,25 @@ else
   cat "$OUTPUT" >&2
 fi
 
+# ---- Part 5: a direct lowercase alias read outside the seam is caught ----
+# The world path reads native overlay properties first and reaches the
+# lowercase offline-fake aliases only through kwin/src/native-alias.ts (by
+# variable, never a literal). A literal alias read anywhere else is an
+# unaudited API symbol and must fail.
+mkdir -p "$WORK/src4"
+cp "$REPO_ROOT/kwin/src/"*.ts "$WORK/src4/"
+printf '\nconst legacy = readProp(ref, "fullscreen");\nvoid legacy;\n' >> "$WORK/src4/plan-adapter-entry.ts"
+if bash "$GUARD" "$WORK/src4" >"$OUTPUT" 2>&1; then
+  fail "alias-negative" "guard missed a direct lowercase alias read outside the seam"
+else
+  pass
+fi
+if grep -Fq "unaudited API symbol: fullscreen" "$OUTPUT"; then
+  pass
+else
+  fail "alias-message" "missing alias violation message"
+  cat "$OUTPUT" >&2
+fi
+
 echo "kwin-66-api-guard: PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]

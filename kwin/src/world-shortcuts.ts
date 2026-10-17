@@ -15,6 +15,7 @@ import {
     type WorldCommand,
 } from "./world-report";
 import { workspaceShortcutCatalog } from "./workspace-native";
+import { readNativeAlias } from "./native-alias";
 
 export type WorldShortcutRegisterFn =
     | ((name: string, text: string, sequence: string, callback: () => void) => boolean)
@@ -243,7 +244,7 @@ export function registerWorldShortcuts(env: WorldShortcutsEnv): void {
             const id = activeWindowId();
             const ref = activeWindowRef();
             const stickyRaw = ref !== null ? readProp(ref, "onAllDesktops") : undefined;
-            const sticky = typeof stickyRaw === "boolean" ? stickyRaw : ref !== null ? readProp(ref, "sticky") : undefined;
+            const sticky = typeof stickyRaw === "boolean" ? stickyRaw : ref !== null ? readNativeAlias(readProp, ref, "sticky") : undefined;
             if (id === null || ref === null || !setStickyNative(ref, id, sticky !== true)) {
                 shortcutFailed("toggle-sticky");
             }
@@ -251,7 +252,7 @@ export function registerWorldShortcuts(env: WorldShortcutsEnv): void {
         tryRegister("omnitiler-toggle-maximize", "Toggle maximize window", "Meta+M", () => {
             const ref = activeWindowRef();
             const mode = ref !== null ? readProp(ref, "maximizeMode") : undefined;
-            const maximized = typeof mode === "number" ? mode !== 0 : ref !== null ? readProp(ref, "maximized") === true : false;
+            const maximized = typeof mode === "number" ? mode !== 0 : ref !== null ? readNativeAlias(readProp, ref, "maximized") === true : false;
             if (ref === null || !setMaximizedNative(ref, !maximized)) {
                 shortcutFailed("toggle-maximize");
             }
@@ -259,7 +260,7 @@ export function registerWorldShortcuts(env: WorldShortcutsEnv): void {
         tryRegister("omnitiler-toggle-fullscreen", "Toggle fullscreen window", "Meta+F11", () => {
             const ref = activeWindowRef();
             const fsRaw = ref !== null ? readProp(ref, "fullScreen") : undefined;
-            const fullscreen = typeof fsRaw === "boolean" ? fsRaw : ref !== null ? readProp(ref, "fullscreen") === true : false;
+            const fullscreen = typeof fsRaw === "boolean" ? fsRaw : ref !== null ? readNativeAlias(readProp, ref, "fullscreen") === true : false;
             if (ref === null || !setFullscreenNative(ref, !fullscreen)) {
                 shortcutFailed("toggle-fullscreen");
             }

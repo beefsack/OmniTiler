@@ -64,10 +64,11 @@
 - Source-archive contract suite passes on the committed native implementation,
   including exporter sources, generated descriptors and native helper sources.
 - CI run [39021538182](https://github.com/beefsack/OmniTiler/actions/runs/39021538182)
-  tracks the native implementation and exporter freshness gate. Full workflow
-  conclusion is pending. The preceding upstream run also had unrelated KWin
-  API-guard failures for internal world-state property names and a macOS
-  scoped-tile applied-frame timeout; those remain separate from this migration.
+  passed seven jobs, including Rust/exporter freshness, native, Windows and
+  macOS. Its sole failure was the pre-existing KWin API-guard mismatch for
+  offline aliases, addressed in the [guard follow-up](kwin-66-test-alias-guard.md).
+  The `bf99f3dc` fix supplies exporter workspace-lint inheritance
+  and is included in this passing Rust run.
 
 ## Native user re-check
 

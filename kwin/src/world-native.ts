@@ -17,6 +17,7 @@ import { readDesktopForOutput, writeDesktopForOutput } from "./workspace-native"
 import { isOpaqueId } from "./world-seq";
 import { decodeList } from "./qml-list";
 import { normalizeNativeId } from "./native-id";
+import { readNativeAlias } from "./native-alias";
 
 export interface WorldNativeEnv {
     surface: object;
@@ -50,15 +51,16 @@ export interface WorldNativeToggles {
 }
 
 // Exact KWin reads with the offline lowercase fallback only when the
-// native property is absent (mirrors the world observation seam; tests
-// use real-property fakes so the fallback never masks a regression).
+// native read is absent or type-invalid (mirrors the world observation
+// seam; production fakes prefer real-property names and dedicated alias
+// tests pin the fallback precedence).
 function readMaximized(readProp: WorldNativeEnv["readProp"], ref: object): boolean | null {
     try {
         const mode = readProp(ref, "maximizeMode");
         if (typeof mode === "number") {
             return mode !== 0;
         }
-        const legacy = readProp(ref, "maximized");
+        const legacy = readNativeAlias(readProp, ref, "maximized");
         return typeof legacy === "boolean" ? legacy : null;
     } catch (error) {
         void error;
@@ -72,7 +74,7 @@ function readFullscreen(readProp: WorldNativeEnv["readProp"], ref: object): bool
         if (typeof native === "boolean") {
             return native;
         }
-        const legacy = readProp(ref, "fullscreen");
+        const legacy = readNativeAlias(readProp, ref, "fullscreen");
         return typeof legacy === "boolean" ? legacy : null;
     } catch (error) {
         void error;
@@ -86,7 +88,7 @@ function readSticky(readProp: WorldNativeEnv["readProp"], ref: object): boolean 
         if (typeof native === "boolean") {
             return native;
         }
-        const legacy = readProp(ref, "sticky");
+        const legacy = readNativeAlias(readProp, ref, "sticky");
         return typeof legacy === "boolean" ? legacy : null;
     } catch (error) {
         void error;
@@ -494,30 +496,34 @@ export function createWorldApplyHost(
             }
         },
         readLiveSafety: (ref) => {
-            // Native overlay lifetime at setter time, using
-            // the legacy KWin property names (`fullScreen`,
-            // `maximizeMode`, `onAllDesktops`, `minimized`)
-            // with the offline lowercase aliases as fallback
-            // when the native property is absent.
+            // Native overlay lifetime at setter time, using the exact KWin
+            // property names (`fullScreen`, `maximizeMode`, `onAllDesktops`,
+            // `minimized`): the offline lowercase aliases apply only when
+            // the native read is absent or type-invalid, never overriding a
+            // well-typed native read. Reads stay lazy and in native-first
+            // order; any throw fails the whole safety result (null), never
+            // a single field.
             try {
-                const boolOf = (names: ReadonlyArray<string>): boolean | null => {
-                    for (const name of names) {
-                        const v = readProp(ref, name);
-                        if (typeof v === "boolean") {
-                            return v;
-                        }
-                    }
-                    return null;
-                };
+                const boolOrNull = (value: unknown): boolean | null =>
+                    typeof value === "boolean" ? value : null;
                 const modeRaw = readProp(ref, "maximizeMode");
                 const maximized = typeof modeRaw === "number"
                     ? modeRaw !== 0
-                    : boolOf(["maximized"]);
+                    : boolOrNull(readNativeAlias(readProp, ref, "maximized"));
+                const minimized = boolOrNull(readProp(ref, "minimized"));
+                const fullScreenRaw = readProp(ref, "fullScreen");
+                const fullscreen = boolOrNull(typeof fullScreenRaw === "boolean"
+                    ? fullScreenRaw
+                    : readNativeAlias(readProp, ref, "fullscreen"));
+                const allDesktopsRaw = readProp(ref, "onAllDesktops");
+                const sticky = boolOrNull(typeof allDesktopsRaw === "boolean"
+                    ? allDesktopsRaw
+                    : readNativeAlias(readProp, ref, "sticky"));
                 return {
-                    minimized: boolOf(["minimized"]),
-                    fullscreen: boolOf(["fullScreen", "fullscreen"]),
+                    minimized,
+                    fullscreen,
                     maximized,
-                    sticky: boolOf(["onAllDesktops", "sticky"]),
+                    sticky,
                 };
             } catch (error) {
                 void error;

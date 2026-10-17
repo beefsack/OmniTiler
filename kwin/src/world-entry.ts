@@ -53,6 +53,7 @@ import { WorldAdapterState } from "./world-state";
 import { applyWorldReply } from "./world-apply";
 import { decodeList } from "./qml-list";
 import { normalizeNativeId } from "./native-id";
+import { readNativeAlias } from "./native-alias";
 import { createWorldCloseTracker } from "./world-close-tracker";
 import { createWorldCommandContext } from "./world-command-context";
 import { createWorldSettingsLive } from "./world-settings-live";
@@ -1406,7 +1407,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 return;
             }
             const stickyRaw = readProp(ref, "onAllDesktops");
-            const want = (typeof stickyRaw === "boolean" ? stickyRaw : readProp(ref, "sticky")) !== true;
+            const want = (typeof stickyRaw === "boolean" ? stickyRaw : readNativeAlias(readProp, ref, "sticky")) !== true;
             if (!native.setStickyNative(ref, id, want)) {
                 shortcutFailed("sticky");
             }
@@ -1420,7 +1421,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             // Maximize echo: the toggle target logs before the setter so a
             // missing finish signal still converges on the next observation.
             const mode = readProp(ref, "maximizeMode");
-            const want = (typeof mode === "number" ? mode !== 0 : readProp(ref, "maximized") === true) !== true;
+            const want = (typeof mode === "number" ? mode !== 0 : readNativeAlias(readProp, ref, "maximized") === true) !== true;
             log(`omnitiler:world:maximize-toggle target=${want ? "maximized" : "restored"} outcome=issued`);
             if (!native.setMaximizedNative(ref, want)) {
                 shortcutFailed("maximize");
@@ -1433,7 +1434,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 return;
             }
             const fsRaw = readProp(ref, "fullScreen");
-            const want = (typeof fsRaw === "boolean" ? fsRaw : readProp(ref, "fullscreen") === true) !== true;
+            const want = (typeof fsRaw === "boolean" ? fsRaw : readNativeAlias(readProp, ref, "fullscreen") === true) !== true;
             if (!native.setFullscreenNative(ref, want)) {
                 shortcutFailed("fullscreen");
             }

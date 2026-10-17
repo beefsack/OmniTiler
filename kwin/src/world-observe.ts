@@ -6,6 +6,7 @@
 
 import { decodeList } from "./qml-list";
 import { normalizeNativeId } from "./native-id";
+import { readNativeAlias } from "./native-alias";
 import {
     FIXED_SIZE_PREDICATE_DEFAULT,
     FIXED_SIZE_PREDICATE_EITHER,
@@ -582,13 +583,13 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
         // native property is absent, never overriding a live native read.
         const fullScreenRaw = readProp(ref, "fullScreen");
         const fullscreenNow = fullScreenRaw === true ||
-            (fullScreenRaw === undefined && readProp(ref, "fullscreen") === true);
+            (fullScreenRaw === undefined && readNativeAlias(readProp, ref, "fullscreen") === true);
         const modeRaw = readProp(ref, "maximizeMode");
         const maximizedNow = (typeof modeRaw === "number" && modeRaw !== 0) ||
-            (modeRaw === undefined && readProp(ref, "maximized") === true);
+            (modeRaw === undefined && readNativeAlias(readProp, ref, "maximized") === true);
         const allDesktopsRaw = readProp(ref, "onAllDesktops");
         const stickyNow = allDesktopsRaw === true ||
-            (allDesktopsRaw === undefined && readProp(ref, "sticky") === true);
+            (allDesktopsRaw === undefined && readNativeAlias(readProp, ref, "sticky") === true);
         const floatingNow = adapterFloat || stickyNow || (fixedAuto && !tileOverride);
         const fitExcludedNow = floatingNow || stickyNow || fullscreenNow || maximizedNow;
         liveById.set(rawId, {
