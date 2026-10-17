@@ -2,9 +2,9 @@
 
 ## Goal and status
 
-- 2026-10-18: slicing investigation complete; implementation blocked on the
-  existing world constructor's platform-policy configuration. Windows remains
-  on its working legacy domain API. No behavior change delivered.
+- 2026-10-18: additive constructor prerequisite implemented under the tentative
+  selection below; Windows observation/actuation migration remains pending.
+  Windows remains on its working legacy domain API. No host behavior change.
 - Goal: complete observed-world reports and host diffs against one full reply;
   move workspace lifecycle, scope, history and mapping policy into the retained
   in-process world state.
@@ -14,11 +14,12 @@
 - Preserve recovery ledger, native window properties, lifetime/gesture fences,
   refused-target suppression, follow proof, D16/D23, overlays and game safety.
   No new native capabilities, settings, polling or process boundary.
-- Shared-core/protocol behavior changes are outside this change. Coordinate
+- Shared-core/protocol behavior changes beyond the selected additive
+  construction API are outside this change. Coordinate
   with [D23/13f delivery](shared-core-d23-rehome-and-13f-maximize-base.md),
   consuming its approved additions rather than implementing a competing rule.
 
-## Blocking configuration gap
+## Constructor prerequisite and tentative selection
 
 | Policy | Current Windows owner | Current world constructor |
 | --- | --- | --- |
@@ -54,8 +55,16 @@
      but the backlog item remains unimplemented.
 - Do not fake `fixed_suppress`, automatic origin or maximized state to bypass
   the mismatch; those facts have distinct user-override and native-safety meaning.
-- Exact next action: approve and coordinate the additive constructor route,
-  or select another option, before starting W1 production integration.
+- Tentative selection, pending user review (2026-10-18): option 1, additive
+  constructor configuration with existing constructors/defaults unchanged.
+  `WorldEngine::new_with_config(core_generation: &str, config:
+  WorldEngineConfig) -> Option<Self>` accepts exactly `fixed_send_admission`
+  and `maximized_focus_fence`. `Default` remains `false`/`true`; Windows uses
+  `true`/`false`. Fixed-size admission stays enabled in both profiles.
+- No KDE, macOS or wire/protocol changes. The KDE and macOS streams should be
+  told of this additive core API; notification is pending. Their existing
+  constructor calls and behavior remain unchanged. No D23/13f changes included.
+- Exact next action: W1 observation/ordering fixtures using the Windows profile.
 
 ## Ordered releasable slices
 
@@ -92,7 +101,7 @@
 - Completion requires no unapproved Windows-observable changes, passing
   regressions, truthful partial/refused outcomes, and no unresolved safety
   finding. Archive this record only after acceptance; backlog status remains
-  unimplemented while the constructor gap blocks adoption.
+  unimplemented until the runtime cutover and acceptance are delivered.
 
 ## Evidence
 
@@ -108,3 +117,9 @@
 - `WorldCommand::Operation` implementation already covers Windows' local,
   cross-output drag/directional, migration and release routes. Its older
   restrictive documentation is not evidence of a missing command handler.
+- Constructor prerequisite: build/test/strict all-target clippy, formatting
+  and whitespace checks pass; **2,606 passed, 0 failed, 1 ignored**. Five new
+  core tests prove unchanged default replies and opt-ins, actual automatic
+  fixed-float refusal/carry, maximized focus behavior, and configuration
+  retention through reports/incarnation reset. Independent review accepted
+  the isolated two-file core change; documentation/naming findings corrected.

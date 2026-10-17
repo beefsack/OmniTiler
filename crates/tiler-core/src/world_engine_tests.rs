@@ -2814,3 +2814,238 @@ fn outer_gap_float_overlay_and_exhaustion_hold() {
         .expect("recovered tile frame");
     assert_eq!(tile, rect(12, 12, 776, 576), "sole tile fills the inset");
 }
+
+const WINDOWS_CONFIG: WorldEngineConfig = WorldEngineConfig {
+    fixed_send_admission: true,
+    maximized_focus_fence: false,
+};
+
+#[test]
+fn default_config_matches_new_exactly() {
+    // `Default` is exactly the historical constructor: invalid generations
+    // refuse on both, flags match, and direct `Engine` carriers keep exact
+    // historical defaults.
+    assert!(WorldEngine::new("GEN BAD").is_none());
+    assert!(WorldEngine::new_with_config("GEN BAD", WorldEngineConfig::default()).is_none());
+    let historical = WorldEngine::new("gen-1").expect("valid");
+    let configured =
+        WorldEngine::new_with_config("gen-1", WorldEngineConfig::default()).expect("valid");
+    assert_eq!(
+        WorldEngineConfig::default(),
+        WorldEngineConfig {
+            fixed_send_admission: false,
+            maximized_focus_fence: true,
+        }
+    );
+    for engine in [&historical, &configured] {
+        assert!(engine.engine().fixed_size_admission());
+        assert!(!engine.engine().fixed_send_admission());
+        assert!(engine.engine().maximized_focus_fence());
+    }
+    let windows =
+        WorldEngine::new_with_config("gen-1", WINDOWS_CONFIG).expect("valid windows config");
+    assert!(windows.engine().fixed_size_admission());
+    assert!(windows.engine().fixed_send_admission());
+    assert!(!windows.engine().maximized_focus_fence());
+    let bare = Engine::new();
+    assert!(!bare.fixed_size_admission());
+    assert!(!bare.fixed_send_admission());
+    assert!(!bare.maximized_focus_fence());
+}
+
+#[test]
+fn default_config_replies_match_new_exactly() {
+    // Same script through both constructors: every reply and the final
+    // revision are identical, so existing call sites keep exact behavior.
+    fn script() -> Vec<WorldReport> {
+        let mut reports = vec![base_report(1, 1)];
+        let mut send = base_report(2, 2);
+        send.command_seq = Some(5);
+        send.command = Some(WorldCommand::Send {
+            window: WindowId("win-a".to_owned()),
+            target_output: OutputId("out".to_owned()),
+            target_workspace: "ws2".to_owned(),
+            follow: true,
+        });
+        reports.push(send);
+        reports.push(base_report(3, 2));
+        let mut confirmed = base_report(4, 3);
+        confirmed.domains[0].windows.clear();
+        confirmed.domains[0].focused = WindowId(String::new());
+        confirmed.domains[1].windows = vec![
+            win("win-b", "out", "ws2", 0),
+            win("win-a", "out", "ws2", 50),
+        ];
+        reports.push(confirmed);
+        let mut focus = base_report(5, 3);
+        // Confirmed observation above moved win-a; focus the co-located
+        // survivor so the effect resolves against retained topology.
+        focus.command_seq = Some(7);
+        focus.command = Some(focus_command("win-b"));
+        reports.push(focus);
+        reports
+    }
+    fn run(engine: &mut WorldEngine, reports: &[WorldReport]) -> (Vec<WorldReply>, u64) {
+        let mut replies = Vec::new();
+        for report in reports {
+            match engine.handle_report(report) {
+                WorldOutcome::Accepted(reply) | WorldOutcome::CommandConsumed(reply) => {
+                    replies.push(reply);
+                }
+                WorldOutcome::Duplicate(reply) => replies.push(reply),
+                WorldOutcome::Rejected { kind, message } => {
+                    panic!("replay rejected: {kind} {message}")
+                }
+            }
+        }
+        (replies, engine.state_revision())
+    }
+    let reports = script();
+    let mut historical = WorldEngine::new("gen-1").expect("valid");
+    let mut configured =
+        WorldEngine::new_with_config("gen-1", WorldEngineConfig::default()).expect("valid");
+    let (first, first_rev) = run(&mut historical, &reports);
+    let (second, second_rev) = run(&mut configured, &reports);
+    assert_eq!(first_rev, second_rev);
+    assert_eq!(first, second);
+}
+
+fn automatic_float_send_report(request_seq: u64, observation_seq: u64) -> WorldReport {
+    // Intentional float observed with automatic origin: refuses the
+    // slotless send by default, carries under the Windows opt-in.
+    let mut report = float_report(request_seq, observation_seq, true);
+    report.domains[0]
+        .windows
+        .iter_mut()
+        .find(|w| w.window.0 == "win-f")
+        .expect("floater observed")
+        .fixed_auto = true;
+    report.command_seq = Some(9);
+    report.command = Some(WorldCommand::Send {
+        window: WindowId("win-f".to_owned()),
+        target_output: OutputId("out".to_owned()),
+        target_workspace: "ws2".to_owned(),
+        follow: true,
+    });
+    report
+}
+
+#[test]
+fn automatic_fixed_float_send_refuses_by_default_and_carries_for_windows() {
+    let mut default_engine = WorldEngine::new("gen-1").expect("valid");
+    accepted_reply(&mut default_engine, &float_report(1, 1, true));
+    // The engine gates first: a focused mover with no tiled link only
+    // proceeds when the deferred path deems it eligible, which the
+    // automatic origin refuses without the opt-in.
+    match default_engine.handle_report(&automatic_float_send_report(2, 2)) {
+        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "focus-mismatch"),
+        other => panic!("expected automatic send refusal, got {other:?}"),
+    }
+    assert!(default_engine.retained_transfers().is_empty());
+
+    let mut windows_engine =
+        WorldEngine::new_with_config("gen-1", WINDOWS_CONFIG).expect("valid windows config");
+    accepted_reply(&mut windows_engine, &float_report(1, 1, true));
+    let reply = accepted_reply(&mut windows_engine, &automatic_float_send_report(2, 2));
+    assert_eq!(reply.transfers.len(), 1);
+    assert_eq!(reply.transfers[0].operation_id, "op-9");
+    assert_eq!(homing(&reply, "win-f"), Some("out/ws2".to_owned()));
+
+    // The explicit tile win still refuses under the Windows opt-in.
+    let mut suppressed = automatic_float_send_report(3, 2);
+    suppressed.command_seq = Some(10);
+    suppressed.command = Some(WorldCommand::Send {
+        window: WindowId("win-f".to_owned()),
+        target_output: OutputId("out".to_owned()),
+        target_workspace: "ws2".to_owned(),
+        follow: false,
+    });
+    suppressed.domains[0]
+        .windows
+        .iter_mut()
+        .find(|w| w.window.0 == "win-f")
+        .expect("floater observed")
+        .fixed_suppress = true;
+    match windows_engine.handle_report(&suppressed) {
+        WorldOutcome::Rejected { .. } => {}
+        other => panic!("expected explicit tile-win refusal, got {other:?}"),
+    }
+}
+
+#[test]
+fn windows_config_persists_across_reports_and_incarnation_reset() {
+    let mut engine =
+        WorldEngine::new_with_config("gen-1", WINDOWS_CONFIG).expect("valid windows config");
+    accepted_reply(&mut engine, &float_report(1, 1, true));
+    assert!(engine.engine().fixed_send_admission());
+    assert!(!engine.engine().maximized_focus_fence());
+    accepted_reply(&mut engine, &automatic_float_send_report(2, 2));
+    // New adapter incarnation: retained world state resets, construction
+    // policy survives, and the automatic send still carries.
+    let mut rebound = float_report(1, 1, true);
+    rebound.adapter_incarnation = "adapter-2".to_owned();
+    accepted_reply(&mut engine, &rebound);
+    assert!(engine.engine().fixed_send_admission());
+    assert!(!engine.engine().maximized_focus_fence());
+    assert!(engine.engine().fixed_size_admission());
+    let mut send = automatic_float_send_report(2, 2);
+    send.adapter_incarnation = "adapter-2".to_owned();
+    let reply = accepted_reply(&mut engine, &send);
+    assert_eq!(reply.transfers.len(), 1);
+    assert_eq!(homing(&reply, "win-f"), Some("out/ws2".to_owned()));
+}
+
+fn maximized_focus_operation(window: &str) -> crate::boundary::CoreCommand {
+    // Focus-last seeding places win-a rightmost, so the neighbor lies left.
+    crate::boundary::CoreCommand::Focus {
+        window: window.to_owned(),
+        direction: "left".to_owned(),
+        cross_output_transfer: false,
+        float_subject: false,
+    }
+}
+
+#[test]
+fn maximized_focus_fence_holds_by_default_and_releases_for_windows() {
+    // Paired tiles with the focused subject maximized: the Linux default
+    // fences directional focus as `unchanged`, while the Windows carrier
+    // (fence off) moves focus to the neighbor.
+    fn maximized_report(request_seq: u64, observation_seq: u64) -> WorldReport {
+        let mut report = paired_report(request_seq, observation_seq);
+        report.domains[0]
+            .windows
+            .iter_mut()
+            .find(|w| w.window.0 == "win-a")
+            .expect("subject observed")
+            .maximized = true;
+        report
+    }
+    let mut default_engine = WorldEngine::new("gen-1").expect("valid");
+    accepted_reply(&mut default_engine, &maximized_report(1, 1));
+    let mut fenced = maximized_report(2, 2);
+    with_command(
+        &mut fenced,
+        2,
+        15,
+        WorldCommand::Operation(maximized_focus_operation("win-a")),
+    );
+    match default_engine.handle_report(&fenced) {
+        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "unchanged"),
+        other => panic!("expected maximized focus fence, got {other:?}"),
+    }
+
+    let mut windows_engine =
+        WorldEngine::new_with_config("gen-1", WINDOWS_CONFIG).expect("valid windows config");
+    accepted_reply(&mut windows_engine, &maximized_report(1, 1));
+    let mut released = maximized_report(2, 2);
+    with_command(
+        &mut released,
+        2,
+        15,
+        WorldCommand::Operation(maximized_focus_operation("win-a")),
+    );
+    let reply = accepted_reply(&mut windows_engine, &released);
+    assert_eq!(reply.effects.len(), 1);
+    assert_eq!(reply.effects[0].id, "fx-15");
+    assert_eq!(reply.effects[0].target.0, "win-b");
+}

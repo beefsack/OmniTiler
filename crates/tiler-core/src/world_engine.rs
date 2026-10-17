@@ -278,6 +278,30 @@ pub struct WorldEngine {
     pub(crate) command_result: Option<CommandResult>,
 }
 
+/// Platform opt-ins for [`WorldEngine`] construction: the only Engine
+/// policy carried at world construction time. `fixed_size_admission` is
+/// always on and is not configurable here; nothing else may be injected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorldEngineConfig {
+    /// Deferred sends for automatic fixed-size floats (Windows workspace
+    /// sends). Off by default; the Windows carrier enables it.
+    pub fixed_send_admission: bool,
+    /// G-06 maximized directional focus fence (REQ-MAX-08). On by default
+    /// (Linux route); the Windows carrier disables it.
+    pub maximized_focus_fence: bool,
+}
+
+impl Default for WorldEngineConfig {
+    /// Exactly the historical [`WorldEngine::new`] semantics: automatic
+    /// fixed-float sends off, maximized focus fence on.
+    fn default() -> Self {
+        Self {
+            fixed_send_admission: false,
+            maximized_focus_fence: true,
+        }
+    }
+}
+
 impl WorldEngine {
     /// Fresh backend incarnation. `None` on a malformed generation token.
     /// A new incarnation (process start, Engine replacement, poison
@@ -286,15 +310,21 @@ impl WorldEngine {
     /// effects, or logical creation tokens across generations.
     #[must_use]
     pub fn new(core_generation: &str) -> Option<Self> {
+        Self::new_with_config(core_generation, WorldEngineConfig::default())
+    }
+
+    /// Fresh backend incarnation with explicit platform opt-ins. `None` on
+    /// a malformed generation token. `Default` is exactly [`WorldEngine::new`].
+    #[must_use]
+    pub fn new_with_config(core_generation: &str, config: WorldEngineConfig) -> Option<Self> {
         let parsed = GenerationId::parse(core_generation)?;
         let mut engine = Engine::new();
-        // Linux world route carries the same opt-ins as the legacy Linux
-        // planner route: Q2 fixed-size float admission (D1-D8) and the G-06
-        // maximized directional focus fence (REQ-MAX-08). Windows/macOS
-        // carriers keep `Engine::new` defaults by using the transitional
-        // domain API directly, never this constructor.
+        // Fixed-size admission stays enabled for every world carrier.
+        // The default keeps the Linux opt-ins; native carriers can select
+        // their existing send and maximized-focus policies explicitly.
         engine.set_fixed_size_admission(true);
-        engine.set_maximized_focus_fence(true);
+        engine.set_maximized_focus_fence(config.maximized_focus_fence);
+        engine.set_fixed_send_admission(config.fixed_send_admission);
         Some(Self {
             engine,
             core_generation: parsed,

@@ -149,6 +149,10 @@ decisions of 2026-09-24 are under
   lifetime/gesture fences, refused targets, partial transfer and follow proof
   in all workspace modes. Native acceptance remains separately required.
   The legacy domain API remains compiling, not behaviorally migrated.
+  Tentative constructor prerequisite selected 2026-10-18, pending user review:
+  additive core configuration preserves existing defaults and Windows send/
+  maximized policies without wire changes. [Slices and evidence](changes/windows-full-world-state-replies.md);
+  Windows runtime adoption remains pending.
 - P1 | macOS: adopt full world-state core replies | Replace per-domain reply
   concatenation/cursors with world revision and input watermark, preserving
   AppKit/engine/AX thread ownership, per-app generations, latest-wins frame
