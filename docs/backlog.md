@@ -262,21 +262,9 @@ decisions of 2026-09-24 are under
   - Original 60 OPEN rows triaged: 32 relevant / 28 post-0.1. P2 settings now
     contain approved D09/D10/D27; D03/D12/D13/D16/D22/D23/D25/D28
     have no setting. [User decisions](research/release-0.1-triage.md#user-decisions-2026-10-12).
-  - P1 0.1 packaging: offline recipes/archive/tag workflows and
-    Revert-before-removal guidance prepared 2026-10-11; distro offline
-    builds passed. Core Settings ownership approved and delivered 2026-10-11
-    ([evidence](changes/archive/release-0.1-core-settings.md)); effect companion
-    is effect-only. Remaining: OBS handoff decision (0.1 blocker status OPEN),
-    accounts/provisioning, third-party notice delivery and runtime validation.
-    License audit/CI gate and Ubuntu apt solver acceptance are complete. OBS/AUR names are
-    `omnitiler` and `omnitiler-native-effect` (user 2026-10-11). KWin 6.6 support
-    delivered offline: both Debian packages built from one archive on Ubuntu
-    26.04 release/updates and 26.10; effect exactly pins its KWin distro build.
-    Ubuntu live acceptance remains; neon provisioning remains blocked.
-    [Compatibility delivery](changes/archive/kwin-6.6-support.md).
-    [Ubuntu research](research/distribution-package-feasibility/ubuntu-native-effect.md).
-    [Evidence](changes/archive/release-0.1-offline-packaging.md).
-  - External NixOS/Home Manager validation (P1 gate).
+  - Release gates owned by their own items: 0.1 packaging (mainstream install
+    path), External NixOS/Home Manager validation, Ubuntu 26.04/26.10
+    acceptance, Licensing and OBS release handoff redesign (all below).
   - Workspace tiling toggle Meta+Y (KDE) delivered offline 2026-10-11
     ([record](changes/archive/kde-workspace-tiling-shortcut.md)); Win+Y (Windows
     item 21) delivered offline 2026-10-13
@@ -3873,6 +3861,10 @@ decisions of 2026-09-24 are under
   [change](changes/archive/nix-current-host-delivery.md)
 - P1 | 0.1 packaging: mainstream install path | Nix flake/Home Manager,
   GitHub Release and OBS distro packages (user 2026-10-10; KDE Store excluded).
+  OBS/AUR names are `omnitiler` and `omnitiler-native-effect` (user
+  2026-10-11); core Settings ownership delivered
+  ([evidence](changes/archive/release-0.1-core-settings.md)), effect companion
+  is effect-only.
   OBS builds release tags only into one stable repository: openSUSE Tumbleweed,
   Fedora 43/44 with updates repos; Arch via AUR PKGBUILD, not OBS pacman.
   Ubuntu 26.04/26.10 support delivered offline under the KWin 6.6 floor;
