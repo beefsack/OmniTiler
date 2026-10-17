@@ -67,6 +67,10 @@
     only; functionally the window is treated exactly like a normal float, with
     no capacity-specific behavior. The new window is focused whether it tiles
     or capacity-floats.
+  - D5: no automatic re-tile when capacity returns; explicit tile/unfloat
+    behaves as for any float. Capacity floats persist across restart like
+    user floats, so restart adoption cannot re-tile one and capacity-float a
+    different window, which would change the layout surprisingly.
 
 | ID | Options and consequences | Recommendation |
 | --- | --- | --- |
