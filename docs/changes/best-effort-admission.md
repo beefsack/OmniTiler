@@ -53,8 +53,13 @@
 
 ## Decisions needed
 
-- Every recommendation below is **unselected**. D1 is especially material:
-  default capacity floating alone does **not** eliminate B6 minimum overlap.
+- Every recommendation below is **unselected** unless listed here. D1 is
+  especially material: default capacity floating alone does **not**
+  eliminate B6 minimum overlap.
+- User selections 2026-10-17:
+  - D1: geometric exhaustion only; B6 minimum overlap stays, with a UX
+    follow-up on B6 overlap as part of dogfooding.
+  - D2: default anchor fallback is largest splittable window.
 
 | ID | Options and consequences | Recommendation |
 | --- | --- | --- |
