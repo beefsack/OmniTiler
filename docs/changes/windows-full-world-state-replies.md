@@ -3,7 +3,8 @@
 ## Goal and status
 
 - 2026-10-18: additive constructor prerequisite implemented under the tentative
-  selection below; Windows observation/actuation migration remains pending.
+  selection below; W1 prototype rejected after correction and withdrawn.
+  Windows observation/actuation migration remains pending.
   Windows remains on its working legacy domain API. No host behavior change.
 - Goal: complete observed-world reports and host diffs against one full reply;
   move workspace lifecycle, scope, history and mapping policy into the retained
@@ -64,7 +65,8 @@
 - No KDE, macOS or wire/protocol changes. The KDE and macOS streams should be
   told of this additive core API; notification is pending. Their existing
   constructor calls and behavior remain unchanged. No D23/13f changes included.
-- Exact next action: W1 observation/ordering fixtures using the Windows profile.
+- Exact next action: redesign W1 from actual native capture as described below,
+  using the delivered Windows constructor profile.
 
 ## Ordered releasable slices
 
@@ -123,3 +125,45 @@
   fixed-float refusal/carry, maximized focus behavior, and configuration
   retention through reports/incarnation reset. Independent review accepted
   the isolated two-file core change; documentation/naming findings corrected.
+- Constructor commit `0869f08c`: CI run 39040453638 passed all eight jobs,
+  including native Windows/macOS, Rust/KWin and native effect/settings gates.
+
+## W1 acceptance blocker and revised entry point
+
+- Two W1 prototype revisions were reviewed; neither was accepted or landed.
+  The first modeled host snapshots in parallel DTOs and lost undelivered
+  closes or updated feedback during acknowledgement. The correction fenced
+  individual flights but retained unsafe observation mappings and incomplete
+  dirty-until-ack semantics. The prototype was preserved outside the source
+  tree for diagnosis and withdrawn; no Windows code from it is delivered.
+- Remaining findings in the rejected correction:
+  - Non-iconic hidden rows forced overlay, fixed-origin/override and exclusion
+    flags false instead of carrying verified retained facts or explicit holds.
+  - Invisible non-iconic rows were omitted as if minimized. Frameless retained
+    rows were described as minimized despite also representing unreadable or
+    scope-excluded windows. Hidden, iconic and unreadable are distinct facts.
+  - A separately supplied membership key was not checked against the observed
+    window identity, permitting mismatched lifetime/flag association.
+  - An accepted report cleared dirty state when its observation watermark was
+    current even if newer feedback or an absent-domain close remained queued.
+    Tests manually invalidated again and therefore missed this lost catch-up.
+- Native evidence to start the redesign: `tiling_sys/observe.rs` defines
+  `ObservedWindow`; `retained.rs` defines `RetainedRow`, `HiddenRecord` and
+  `PendingClosed`; `observation.rs` creates frameless rows for both unreadable
+  and scope-excluded evidence. `workspace.rs` owns `WindowKey` and committed
+  membership. Derive lifetime keys directly from those identities and preserve
+  their existing distinctions, rather than accepting a parallel guessed state.
+- Options:
+  1. Recommended: restart W1 as a smaller source-first capture fixture unit.
+     Prove visible/hidden/iconic/unreadable classification and retained safety
+     flags before adding the sequencer. Build actual managed membership,
+     topology and binding assembly, then add ordering/acknowledgement tests.
+  2. Salvage the prototype sequencer in isolation, with the remaining dirty
+     obligation regressions fixed, before rebuilding capture. This preserves
+     more scaffolding but risks designing around the same parallel model.
+- Required discriminators: hidden overlay/fixed intent stays reserved/held;
+  frameless unreadable/scope-excluded is not minimize; mismatched lifetime
+  cannot inherit lanes; updated feedback and undelivered closes remain dirty
+  after an unrelated acknowledgement without an extra native invalidation.
+- No new product decision or core contract gap was discovered. W2-W4 and live
+  smoke remain pending; no desktop mutation or restoration claim was made.

@@ -152,7 +152,9 @@ decisions of 2026-09-24 are under
   Tentative constructor prerequisite selected 2026-10-18, pending user review:
   additive core configuration preserves existing defaults and Windows send/
   maximized policies without wire changes. [Slices and evidence](changes/windows-full-world-state-replies.md);
-  Windows runtime adoption remains pending.
+  constructor prerequisite delivered in `0869f08c` (CI green). W1 observation
+  prototype rejected before landing for hidden/unknown-state and dirty-ack
+  gaps; source-first capture redesign and runtime adoption remain pending.
 - P1 | macOS: adopt full world-state core replies | Replace per-domain reply
   concatenation/cursors with world revision and input watermark, preserving
   AppKit/engine/AX thread ownership, per-app generations, latest-wins frame
