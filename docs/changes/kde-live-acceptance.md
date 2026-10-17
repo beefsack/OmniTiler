@@ -17,9 +17,10 @@
 - Exercise the three acceptance groups in order; regress and fix product defects
   only after reproduction. Stop on baseline or restoration surprises.
 - Status: unfloat functional callback pass; physical shortcut delivery pending.
-  The initial fixture drift has a fresh recorded baseline. No production change
-  or product defect has been established. Settings and the remaining full-state /
-  single-output matrix are next.
+  Both Settings identities opened in the native shell; interactive Settings
+  acceptance is incomplete. The initial fixture drift has a fresh recorded
+  baseline. No production change or product defect has been established. The
+  remaining full-state / single-output matrix is next.
 
 ## Native observations, 2026-10-17/18
 
@@ -73,5 +74,29 @@
   protected-window preservation, lifecycle teardown and baseline drift. It did
   not accept a claim of exact desktop restoration or complete native acceptance.
 - No tentative product decisions were made. The fixture-baseline decision above
-  is tentative, pending user review. Remaining Settings, full-state and
+  is tentative, pending user review. Unverified Settings, full-state and
   single-output cases retain their previous pending status.
+
+## Settings native shell re-check, 2026-10-18
+
+- Host-matched builds produced both KCM plugins. Both exact identities opened
+  through `kcmshell6` using process-scoped plugin staging, without installation
+  or session restart. A follow-up script-KCM run independently verified that the
+  source-built staged plugin was mapped into the owned shell process. The
+  earlier effect-KCM run retained no mapping proof, only scoped launch and native
+  window/render evidence.
+- First-page rendering showed the four expected tab titles in order, tiling
+  controls, gap defaults from absent keys, the Status panel below that page and
+  disabled Apply. This does not establish traversal or Status visibility on the
+  other three tabs.
+- Live keyboard traversal, label buddies, tab switching, cross-tab drafts,
+  Apply/reopen, Cancel, Defaults-without-save and ordinary-Apply operation
+  isolation were not tested: no safe desktop input route was available. These
+  remain pending, not inferred from offline coverage.
+- Settings-only build and CTest passed **27/27** on the same source. These are
+  offline/application-local results, not native-shell interaction acceptance.
+- Settings values were not changed. The capture tool briefly added its own
+  shortcut-service entry; the exact preimage was restored before the next leg.
+  Final configuration and shortcut bytes matched the accepted baseline;
+  protected windows, desktops, pointer, effects and DOWN lifecycle matched, and
+  all owned Settings windows were gone. No product defect was found.

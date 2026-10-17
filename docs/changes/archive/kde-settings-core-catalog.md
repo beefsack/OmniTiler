@@ -90,4 +90,16 @@
    user-owned conflict/recovery procedure and restore its exact baseline;
    these operations remain separate from ordinary Settings Apply.
 6. Workspace mode retains its restart requirement. This migration does not
-   require a session restart merely to inspect the rebuilt KCM.
+    require a session restart merely to inspect the rebuilt KCM.
+
+## Bounded native shell observation, 2026-10-18
+
+- Both KCM identities opened through the real shell with process-scoped plugin
+  staging. The script-KCM follow-up proved the source-built plugin mapping.
+  First-page rendering showed the expected tab titles/order, tiling controls,
+  gap fallback values, Status panel and disabled Apply.
+- Tabs 2-4, traversal/buddies, draft/Apply/reopen, Cancel, Defaults-without-save
+  and ordinary-Apply operation isolation remain untested live. Settings-only
+  CTest passed 27/27 but does not replace those interactions. Configuration,
+  shortcut state, protected windows and desktop baseline were restored.
+- [Acceptance continuation and limitations](../kde-live-acceptance.md).
