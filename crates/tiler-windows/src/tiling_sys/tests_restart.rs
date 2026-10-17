@@ -875,13 +875,19 @@ fn hydration_rejection_detail_omits_nothing_under_cap() {
     assert_eq!(detail["candidates"][1]["floating"], true);
 }
 
-// --- Rejected-hydration write barrier ---------------------------------------
-// First-observation fixture through the production preamble: a fixed
-// (max-pinned) focused anchor plus one plain tiled remainder plus two
-// sticky-marked and one ordinary float-marked candidates. Hydration must
-// reject (the recorded `duplicate-window` shape) while the same tick's
-// row assembly rides the validated floats floating and the write gate
-// excludes them, with the tiled remainder still eligible.
+// --- Mixed-roster hydration write barrier ------------------------------------
+// Mixed roster through the production preamble: a fixed (max-pinned)
+// focused anchor plus one plain tiled remainder plus two sticky-marked and
+// one ordinary float-marked candidates. Core now admits the complete roster
+// atomically (the anchor converges as an automatic float exception, no
+// `duplicate-window` fall-through), so adoption populates the lanes, the
+// hold stays empty, and the same tick's rows and write gate treat every
+// Engine exception as floating with no tiled writes to it. A repeated
+// identical observation recomputes the same stable adoption.
+// The observation-scoped hold path itself (rollback on an unresolvable
+// domain) is pinned by `unresolvable_domain_holds_float_writes_for_one_observation`
+// below; engine-level `duplicate-window` refusal of genuinely duplicated
+// input stays pinned in core (`session_lifecycle::errors_are_redacted_and_bounded`).
 
 fn reject_domain_bounds() -> Rect {
     Rect {
@@ -1039,7 +1045,7 @@ fn reject_domain_key(rig: &RejectRig) -> DomainKey {
 }
 
 /// Production reconcile event over freshly assembled rows on a cloned
-/// Engine, so the probe never mutates the rig: proves the fixture rejects
+/// Engine, so the probe never mutates the rig: proves the fixture plans
 /// through the real event builder and extracts the plan-level writes.
 fn probe_reconcile(
     rig: &RejectRig,
@@ -1115,13 +1121,14 @@ fn assert_no_float_writes(
 }
 
 #[test]
-fn rejected_hydration_holds_float_writes_for_one_observation() {
+fn mixed_roster_adoption_carries_fixed_anchor_as_exception() {
     // Fixed focused anchor plus plain remainder plus three marked floats:
-    // hydration rejects, the validated floats hold exactly one
-    // observation of write protection, lanes stay empty, durable markers
-    // stay installed, the tiled remainder stays eligible, and the
-    // production event on a cloned Engine rejects with no float writes. A
-    // repeated identical observation recomputes the same narrow hold.
+    // hydration admits the complete mixed roster atomically, the hold stays
+    // empty, lanes populate, durable markers stay installed, the fixed
+    // anchor converges as an Engine exception alongside the floats, the
+    // tiled remainder stays eligible, and the production event on a cloned
+    // Engine plans with no float writes. A repeated identical observation
+    // recomputes the same stable adoption.
     let mut rig = reject_rig();
     let areas = reject_areas_for(&rig.output);
     let mut hint_cx = super::HintCx::new();
@@ -1133,48 +1140,60 @@ fn rejected_hydration_holds_float_writes_for_one_observation() {
         &areas,
         &mut hint_cx,
     );
-    let barrier = &rig.state.restart_reject_hold;
-    assert_eq!(
-        barrier.len(),
-        3,
-        "rejection holds exactly the three validated floats"
-    );
-    for key in &rig.keys[2..] {
-        assert!(
-            barrier.contains(key),
-            "validated float {key:?} is write-held this observation"
-        );
-    }
-    for key in &rig.keys[..2] {
-        assert!(!barrier.contains(key), "tiled rows never enter the hold");
-    }
     assert!(
-        rig.state.floated.is_empty() && rig.state.sticky.is_empty(),
-        "rejection keeps no adapter float lane"
+        rig.state.restart_reject_hold.is_empty(),
+        "admission leaves no hold"
+    );
+    assert_eq!(
+        rig.state.sticky.get(&rig.keys[2]),
+        Some(&false),
+        "ex-tiled sticky adopts its prior"
+    );
+    assert_eq!(
+        rig.state.sticky.get(&rig.keys[3]),
+        Some(&true),
+        "ex-float sticky adopts its prior"
+    );
+    assert!(
+        rig.state.floated.contains(&rig.keys[4]),
+        "ordinary float adopts"
     );
     for token in &rig.tokens[2..] {
+        assert_eq!(
+            rig.state.float_rects.get(token),
+            Some(&reject_float_frame()),
+            "adopted float keeps live frame for {token}"
+        );
+    }
+    let key = reject_domain_key(&rig);
+    let session = rig
+        .state
+        .engine
+        .session(&key)
+        .expect("hydrated domain retained");
+    for token in std::iter::once(&rig.tokens[0]).chain(rig.tokens[2..].iter()) {
         assert!(
-            !rig.state.float_rects.contains_key(token),
-            "rejection keeps no float frame for {token}"
+            session.is_exception(&tiler_core::directional::WindowId(token.clone())),
+            "adopted float {token} converges as an exception"
         );
     }
     assert!(
-        rig.state.engine.session(&reject_domain_key(&rig)).is_none(),
-        "rejection commits no Engine candidate"
+        !session.is_exception(&tiler_core::directional::WindowId(rig.tokens[1].clone())),
+        "plain remainder stays tiled"
     );
     assert!(
         crate::product_hide::sys::read_float_intent_marker(rig.wins[4].hwnd),
-        "durable float marker survives rejection"
+        "durable float marker survives adoption"
     );
     for (win, prior) in [(&rig.wins[2], false), (&rig.wins[3], true)] {
         assert_eq!(
             crate::product_hide::sys::read_sticky_marker(win.hwnd),
             Some(prior),
-            "durable sticky marker survives rejection"
+            "durable sticky marker survives adoption"
         );
     }
-    // Same-tick row assembly rides the held keys floating on their live
-    // frames while the tiled remainder stays tiled.
+    // Same-tick row assembly rides every Engine exception floating on its
+    // live frame while the tiled remainder stays tiled.
     let mut hint_cx = super::HintCx::new();
     let rows = super::assemble_domain_rows(
         &mut rig.state,
@@ -1183,57 +1202,92 @@ fn rejected_hydration_holds_float_writes_for_one_observation() {
         &rig.observed,
         &[],
         "reconcile",
-        "reject-hold",
+        "mixed-adopt",
         &mut hint_cx,
     )
     .expect("rows assemble");
-    assert_eq!(rows.len(), 5, "observation stays complete under hold");
-    for token in &rig.tokens[2..] {
+    assert_eq!(rows.len(), 5, "observation stays complete under adoption");
+    for token in std::iter::once(&rig.tokens[0]).chain(rig.tokens[2..].iter()) {
         let row = rows
             .iter()
             .find(|row| row.token == *token)
-            .expect("held float row");
-        assert!(row.floating, "held float {token} rides floating");
+            .expect("adopted float row");
+        assert!(row.floating, "adopted float {token} rides floating");
+    }
+    assert_eq!(
+        rows.iter()
+            .find(|row| row.token == rig.tokens[0])
+            .expect("anchor row")
+            .rect,
+        reject_anchor_frame(),
+        "anchor keeps live frame"
+    );
+    for token in &rig.tokens[2..] {
         assert_eq!(
-            row.rect,
+            rows.iter()
+                .find(|row| row.token == *token)
+                .expect("adopted float row")
+                .rect,
             reject_float_frame(),
-            "held float keeps live frame"
+            "adopted float keeps live frame"
         );
     }
-    for token in &rig.tokens[..2] {
+    {
         let row = rows
             .iter()
-            .find(|row| row.token == *token)
+            .find(|row| row.token == rig.tokens[1])
             .expect("tiled row");
-        assert!(!row.floating, "tiled {token} stays tiled under hold");
+        assert!(!row.floating, "plain remainder stays tiled");
     }
-    // Write gate excludes the held floats but keeps the tiled remainder.
+    // Write gate excludes every Engine exception but keeps the tiled remainder.
     let writable = super::writable_tokens(&rig.state, &rig.output, &rig.active, &rig.observed);
-    for token in &rig.tokens[..2] {
-        assert!(
-            writable.contains(token),
-            "unaffected tile {token} stays writable"
-        );
-    }
-    for token in &rig.tokens[2..] {
+    assert!(
+        writable.contains(&rig.tokens[1]),
+        "plain remainder stays writable"
+    );
+    for token in std::iter::once(&rig.tokens[0]).chain(rig.tokens[2..].iter()) {
         assert!(
             !writable.contains(token),
-            "held float {token} takes no tiled write"
+            "adopted float {token} takes no tiled write"
         );
     }
-    // The production event shape rejects on a cloned Engine with zero
-    // planned writes to the held floats.
+    // The production event shape plans on a cloned Engine with zero
+    // planned writes to the adopted floats.
     let reply = probe_reconcile(&rig, &rows);
     match &reply {
-        tiler_core::boundary::CoreReply::Rejected { kind, .. } => assert_eq!(
-            *kind, "duplicate-window",
-            "fixture reproduces the recorded rejection"
-        ),
-        other => panic!("held-float fixture must reject, got {other:?}"),
+        tiler_core::boundary::CoreReply::Tiled(plan) => {
+            let mut members: Vec<&str> = plan
+                .geometry
+                .iter()
+                .map(|entry| entry.window.0.as_str())
+                .collect();
+            members.sort();
+            assert_eq!(
+                members,
+                vec![rig.tokens[1].as_str()],
+                "only the plain remainder projects tiled"
+            );
+        }
+        tiler_core::boundary::CoreReply::Projection(plan) => {
+            let mut members: Vec<&str> = plan
+                .geometry
+                .iter()
+                .map(|entry| entry.window.0.as_str())
+                .collect();
+            members.sort();
+            assert_eq!(
+                members,
+                vec![rig.tokens[1].as_str()],
+                "only the plain remainder projects tiled"
+            );
+        }
+        other => panic!("mixed-roster fixture must plan, got {other:?}"),
     }
-    assert_no_float_writes(&reply, &rig.tokens[2..], "rejected tick");
-    // Indefinite repeated rejection recomputes the same narrow hold: no
-    // accumulation, no lanes, markers untouched.
+    let mut float_tokens = rig.tokens[2..].to_vec();
+    float_tokens.push(rig.tokens[0].clone());
+    assert_no_float_writes(&reply, &float_tokens, "adopted tick");
+    // A repeated identical observation recomputes the same stable adoption:
+    // no hold, lanes kept, markers untouched.
     let mut hint_cx = super::HintCx::new();
     super::adopt_restart_markers(
         &mut rig.state,
@@ -1243,31 +1297,37 @@ fn rejected_hydration_holds_float_writes_for_one_observation() {
         &areas,
         &mut hint_cx,
     );
-    assert_eq!(
-        rig.state.restart_reject_hold.len(),
-        3,
-        "repeat rejection recomputes the narrow hold"
-    );
-    for key in &rig.keys[2..] {
-        assert!(rig.state.restart_reject_hold.contains(key));
-    }
     assert!(
-        rig.state.floated.is_empty() && rig.state.sticky.is_empty(),
-        "repeat rejection still keeps no lane"
+        rig.state.restart_reject_hold.is_empty(),
+        "repeat adoption leaves no hold"
+    );
+    assert_eq!(
+        rig.state.sticky.get(&rig.keys[2]),
+        Some(&false),
+        "repeat adoption keeps ex-tiled sticky"
+    );
+    assert_eq!(
+        rig.state.sticky.get(&rig.keys[3]),
+        Some(&true),
+        "repeat adoption keeps ex-float sticky"
+    );
+    assert!(
+        rig.state.floated.contains(&rig.keys[4]),
+        "repeat adoption keeps ordinary float"
     );
     assert!(
         crate::product_hide::sys::read_float_intent_marker(rig.wins[4].hwnd),
-        "repeat rejection keeps the durable marker"
+        "repeat adoption keeps the durable marker"
     );
     super::clear_test_hints();
 }
 
 #[test]
-fn next_consistent_observation_revalidates_after_rejection() {
-    // Same rig rejects first, then the anchor reports minimum-only (no
-    // maximum pin) under unchanged markers and lifetime: the next
-    // observation adopts all three floats, the hold clears, and later
-    // planned writes never target the floats.
+fn next_consistent_observation_revalidates_after_adoption() {
+    // Same rig adopts first with the fixed anchor, then the anchor reports
+    // minimum-only (no maximum pin) under unchanged markers and lifetime:
+    // the next observation keeps all three floats adopted, the hold stays
+    // empty, and later planned writes never target the floats.
     let mut rig = reject_rig();
     let areas = reject_areas_for(&rig.output);
     let mut hint_cx = super::HintCx::new();
@@ -1279,10 +1339,14 @@ fn next_consistent_observation_revalidates_after_rejection() {
         &areas,
         &mut hint_cx,
     );
-    assert_eq!(
-        rig.state.restart_reject_hold.len(),
-        3,
-        "first observation rejects and holds"
+    assert!(
+        rig.state.restart_reject_hold.is_empty(),
+        "first observation adopts with no hold"
+    );
+    let first_session = reject_domain_key(&rig);
+    assert!(
+        rig.state.engine.session(&first_session).is_some(),
+        "first observation commits the candidate"
     );
     super::inject_test_hints(rig.wins[0].hwnd, min_anchor_hints());
     let mut hint_cx = super::HintCx::new();
@@ -1324,6 +1388,10 @@ fn next_consistent_observation_revalidates_after_rejection() {
             "adopted float {token} converges as an exception"
         );
     }
+    assert!(
+        session.is_exception(&tiler_core::directional::WindowId(rig.tokens[0].clone())),
+        "fixed anchor stays an exception after min-only hints"
+    );
     let mut hint_cx = super::HintCx::new();
     let rows = super::assemble_domain_rows(
         &mut rig.state,
@@ -1337,20 +1405,167 @@ fn next_consistent_observation_revalidates_after_rejection() {
     )
     .expect("rows assemble");
     let writable = super::writable_tokens(&rig.state, &rig.output, &rig.active, &rig.observed);
-    for token in &rig.tokens[..2] {
-        assert!(
-            writable.contains(token),
-            "revalidated tile {token} stays writable"
-        );
-    }
-    for token in &rig.tokens[2..] {
+    assert!(
+        writable.contains(&rig.tokens[1]),
+        "revalidated tile stays writable"
+    );
+    for token in std::iter::once(&rig.tokens[0]).chain(rig.tokens[2..].iter()) {
         assert!(
             !writable.contains(token),
             "revalidated float {token} takes no tiled write"
         );
     }
     let reply = probe_reconcile(&rig, &rows);
-    assert_no_float_writes(&reply, &rig.tokens[2..], "revalidated tick");
+    match &reply {
+        tiler_core::boundary::CoreReply::Tiled(plan) => {
+            let mut members: Vec<&str> = plan
+                .geometry
+                .iter()
+                .map(|entry| entry.window.0.as_str())
+                .collect();
+            members.sort();
+            assert_eq!(
+                members,
+                vec![rig.tokens[1].as_str()],
+                "only the plain remainder projects tiled"
+            );
+        }
+        tiler_core::boundary::CoreReply::Projection(plan) => {
+            let mut members: Vec<&str> = plan
+                .geometry
+                .iter()
+                .map(|entry| entry.window.0.as_str())
+                .collect();
+            members.sort();
+            assert_eq!(
+                members,
+                vec![rig.tokens[1].as_str()],
+                "only the plain remainder projects tiled"
+            );
+        }
+        other => panic!("revalidated fixture must plan, got {other:?}"),
+    }
+    let mut float_tokens = rig.tokens[2..].to_vec();
+    float_tokens.push(rig.tokens[0].clone());
+    assert_no_float_writes(&reply, &float_tokens, "revalidated tick");
+    super::clear_test_hints();
+}
+
+#[test]
+fn unresolvable_domain_holds_float_writes_for_one_observation() {
+    // Hold/rollback barrier without an Engine commit: the same mixed roster
+    // stages three validated floats but the domain does not resolve (monitor
+    // gone), so adoption rolls back, the hold carries exactly the three
+    // staged keys for one observation, lanes stay empty, durable markers
+    // stay installed, the same tick's rows ride the held keys floating, and
+    // the write gate excludes them. A repeated identical observation
+    // recomputes the same narrow hold.
+    let mut rig = reject_rig();
+    let areas: Vec<super::MonitorArea> = Vec::new();
+    let mut hint_cx = super::HintCx::new();
+    super::adopt_restart_markers(
+        &mut rig.state,
+        &fake_me(),
+        &rig.observed,
+        &[],
+        &areas,
+        &mut hint_cx,
+    );
+    assert_eq!(
+        rig.state.restart_reject_hold.len(),
+        3,
+        "unresolvable domain holds exactly the three staged floats"
+    );
+    for key in &rig.keys[2..] {
+        assert!(
+            rig.state.restart_reject_hold.contains(key),
+            "staged float {key:?} is write-held this observation"
+        );
+    }
+    for key in &rig.keys[..2] {
+        assert!(
+            !rig.state.restart_reject_hold.contains(key),
+            "unstaged rows never enter the hold"
+        );
+    }
+    assert!(
+        rig.state.floated.is_empty() && rig.state.sticky.is_empty(),
+        "rollback keeps no adapter float lane"
+    );
+    for token in &rig.tokens[2..] {
+        assert!(
+            !rig.state.float_rects.contains_key(token),
+            "rollback keeps no float frame for {token}"
+        );
+    }
+    assert!(
+        rig.state.engine.session(&reject_domain_key(&rig)).is_none(),
+        "rollback commits no Engine candidate"
+    );
+    assert!(
+        crate::product_hide::sys::read_float_intent_marker(rig.wins[4].hwnd),
+        "durable float marker survives rollback"
+    );
+    for (win, prior) in [(&rig.wins[2], false), (&rig.wins[3], true)] {
+        assert_eq!(
+            crate::product_hide::sys::read_sticky_marker(win.hwnd),
+            Some(prior),
+            "durable sticky marker survives rollback"
+        );
+    }
+    let mut hint_cx = super::HintCx::new();
+    let rows = super::assemble_domain_rows(
+        &mut rig.state,
+        &rig.output,
+        &rig.active,
+        &rig.observed,
+        &[],
+        "reconcile",
+        "domain-missing-hold",
+        &mut hint_cx,
+    )
+    .expect("rows assemble");
+    assert_eq!(rows.len(), 5, "observation stays complete under hold");
+    for token in &rig.tokens[2..] {
+        let row = rows
+            .iter()
+            .find(|row| row.token == *token)
+            .expect("held float row");
+        assert!(row.floating, "held float {token} rides floating");
+        assert_eq!(
+            row.rect,
+            reject_float_frame(),
+            "held float keeps live frame"
+        );
+    }
+    let writable = super::writable_tokens(&rig.state, &rig.output, &rig.active, &rig.observed);
+    for token in &rig.tokens[2..] {
+        assert!(
+            !writable.contains(token),
+            "held float {token} takes no tiled write"
+        );
+    }
+    let mut hint_cx = super::HintCx::new();
+    super::adopt_restart_markers(
+        &mut rig.state,
+        &fake_me(),
+        &rig.observed,
+        &[],
+        &areas,
+        &mut hint_cx,
+    );
+    assert_eq!(
+        rig.state.restart_reject_hold.len(),
+        3,
+        "repeat observation recomputes the narrow hold"
+    );
+    for key in &rig.keys[2..] {
+        assert!(rig.state.restart_reject_hold.contains(key));
+    }
+    assert!(
+        rig.state.floated.is_empty() && rig.state.sticky.is_empty(),
+        "repeat rollback still keeps no lane"
+    );
     super::clear_test_hints();
 }
 

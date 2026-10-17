@@ -499,7 +499,7 @@ fn preview_sticky_journey_agrees_with_drop() {
     // Inter-tile gap strip from Engine geometry: adjacent pair
     // overlapping in y with a real x gap.
     let mut rects: Vec<Rect> = geometry.iter().map(|(_, r)| *r).collect();
-    rects.sort_by_key(|r| r.x);
+    rects.sort_by_key(|r| (r.x, r.y));
     let mut gap = None;
     for pair in rects.windows(2) {
         let (r1, r2) = (pair[0], pair[1]);
