@@ -4247,3 +4247,196 @@ fn core_topology_ordering_fences_survive_replay_and_reset() {
         "complete report under the new incarnation re-retains"
     );
 }
+
+#[test]
+fn unequal_height_occupied_return_r4_recovers_vacated_source() {
+    use crate::directional::SameAxisMove;
+    // Producer for the KWin `world-r4-unequal-engine` return-leg
+    // `operation-refused`: genuinely unequal FULL heights (left 2048x1152,
+    // right 1920x1080 at y72, unequal work areas), both outputs occupied,
+    // mover shuttles right then immediately left with the global focus
+    // riding it. The vacated source keeps reporting the absent mover as
+    // its per-domain focus (exactly what the adapter reports for a
+    // current-marked domain while the active window lives elsewhere), so
+    // the retained Reconcile must converge the focusless source with focus
+    // none instead of wedging on `focus-mismatch` and fencing the return
+    // pair as `operation-refused`.
+    fn r4win(id: &str, out: &str, ws: &str, r: Rect) -> EngineWindow {
+        EngineWindow {
+            window: WindowId(id.to_owned()),
+            output: OutputId(out.to_owned()),
+            workspace: WorkspaceId(ws.to_owned()),
+            rect: r,
+            floating: false,
+            fit_excluded: false,
+            fullscreen: false,
+            maximized: false,
+            sticky: false,
+            fixed_auto: false,
+            fixed_suppress: false,
+            hints: crate::size_hints::WindowSizeHints::none(),
+        }
+    }
+    fn r4domain(out: &str, ws: &str, bounds: Rect, windows: Vec<EngineWindow>) -> DomainReport {
+        DomainReport {
+            domain: OutputDomain {
+                id: OutputId(out.to_owned()),
+                workspace: WorkspaceId(ws.to_owned()),
+                bounds,
+                gap: 8,
+                adjacent: BTreeMap::new(),
+            },
+            outer_gap: 8,
+            // Honest adapter shape: every current-marked domain names the
+            // global active window, even the domain the mover just left.
+            focused: WindowId("w-move".to_owned()),
+            windows,
+            closed: Vec::new(),
+            readable: true,
+            hold: None,
+        }
+    }
+    fn r4report(seq: u64, left: Vec<EngineWindow>, right: Vec<EngineWindow>) -> WorldReport {
+        WorldReport {
+            contract_version: WORLD_CONTRACT_VERSION,
+            owner: "owner-a".to_owned(),
+            adapter_incarnation: "adapter-1".to_owned(),
+            core_generation: "gen-1".to_owned(),
+            observation_seq: seq,
+            request_seq: seq,
+            request_id: format!("req-{seq}"),
+            command_seq: None,
+            command: None,
+            workspace_mode: WorkspaceMode::PerOutputLocal,
+            topology: vec![
+                OutputTopology {
+                    output: OutputId("out-left".to_owned()),
+                    native_order: vec!["ws-a".to_owned()],
+                    current_native: "ws-a".to_owned(),
+                    complete: true,
+                    geometry: Some(Rect {
+                        x: 0,
+                        y: 0,
+                        w: 2048,
+                        h: 1152,
+                    }),
+                    primary: true,
+                },
+                OutputTopology {
+                    output: OutputId("out-right".to_owned()),
+                    native_order: vec!["ws-b".to_owned()],
+                    current_native: "ws-b".to_owned(),
+                    complete: true,
+                    geometry: Some(Rect {
+                        x: 2048,
+                        y: 72,
+                        w: 1920,
+                        h: 1080,
+                    }),
+                    primary: false,
+                },
+            ],
+            bindings: vec![
+                WorkspaceBinding {
+                    logical_id: "ws-a".to_owned(),
+                    native_id: "ws-a".to_owned(),
+                    output: OutputId("out-left".to_owned()),
+                    pinned: false,
+                    displaced: false,
+                    managed: true,
+                },
+                WorkspaceBinding {
+                    logical_id: "ws-b".to_owned(),
+                    native_id: "ws-b".to_owned(),
+                    output: OutputId("out-right".to_owned()),
+                    pinned: false,
+                    displaced: false,
+                    managed: true,
+                },
+            ],
+            domains: vec![
+                r4domain("out-left", "ws-a", rect(0, 0, 2048, 1100), left),
+                r4domain("out-right", "ws-b", rect(2048, 72, 1920, 1000), right),
+            ],
+            minimized: Vec::new(),
+            fixed_size_predicate: crate::size_hints::FixedSizePredicate::BothAxes,
+            migration_source_refill: crate::output_selection::MigrationSourceRefill::LastRemaining,
+            anchor_fallback: crate::admission::AnchorFallback::default(),
+            no_space_result: crate::admission::NoSpaceResult::default(),
+            default_tiled: true,
+            focused_global: "w-move".to_owned(),
+            inventory_complete: true,
+            gesture_barrier: false,
+            feedback: Vec::new(),
+        }
+    }
+    let left_before = vec![
+        r4win("w-l1", "out-left", "ws-a", rect(8, 8, 1012, 1084)),
+        r4win("w-move", "out-left", "ws-a", rect(1028, 8, 1012, 1084)),
+    ];
+    let right_before = vec![r4win(
+        "w-r1",
+        "out-right",
+        "ws-b",
+        rect(2056, 80, 1904, 984),
+    )];
+    let mut engine = WorldEngine::new("gen-1").expect("valid");
+    accepted_reply(
+        &mut engine,
+        &r4report(1, left_before.clone(), right_before.clone()),
+    );
+    // Leg right: mover crosses to the occupied right output.
+    let mut go = r4report(2, left_before, right_before);
+    with_command(
+        &mut go,
+        2,
+        11,
+        WorldCommand::MoveDirectional {
+            window: WindowId("w-move".to_owned()),
+            direction: "right".to_owned(),
+            same_axis: SameAxisMove::GroupWithNeighbor,
+        },
+    );
+    let reply = accepted_reply(&mut engine, &go);
+    assert_eq!(homing(&reply, "w-move"), Some("out-right/ws-b".to_owned()));
+    assert!(reply.transfers.iter().any(|t| t.operation_id == "op-11"
+        && matches!(&t.kind, TransferKind::Window(w) if w.0 == "w-move")
+        && t.target_output.0 == "out-right"));
+    // Arrival observation: membership actuated, global focus still on the
+    // mover, vacated left current still names the absent mover.
+    let left_after = vec![r4win("w-l1", "out-left", "ws-a", rect(8, 8, 2032, 1084))];
+    let right_after = vec![
+        r4win("w-move", "out-right", "ws-b", rect(2056, 80, 948, 984)),
+        r4win("w-r1", "out-right", "ws-b", rect(3012, 80, 948, 984)),
+    ];
+    let settled = accepted_reply(
+        &mut engine,
+        &r4report(3, left_after.clone(), right_after.clone()),
+    );
+    assert!(settled.transfers.is_empty());
+    // Leg left: the immediate return must plan R4 instead of refusing as
+    // `operation-refused` over the held vacated source.
+    let mut back = r4report(4, left_after, right_after);
+    with_command(
+        &mut back,
+        4,
+        12,
+        WorldCommand::MoveDirectional {
+            window: WindowId("w-move".to_owned()),
+            direction: "left".to_owned(),
+            same_axis: SameAxisMove::GroupWithNeighbor,
+        },
+    );
+    match engine.handle_report(&back) {
+        WorldOutcome::Accepted(reply) => {
+            assert_eq!(homing(&reply, "w-move"), Some("out-left/ws-a".to_owned()));
+            assert!(reply.transfers.iter().any(|t| t.operation_id == "op-12"
+                && matches!(&t.kind, TransferKind::Window(w) if w.0 == "w-move")
+                && t.target_output.0 == "out-left"));
+        }
+        WorldOutcome::Rejected { kind, message } => {
+            panic!("return R4 refused: {kind} {message}")
+        }
+        other => panic!("unexpected outcome: {other:?}"),
+    }
+}

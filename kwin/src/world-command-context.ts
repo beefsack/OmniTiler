@@ -14,7 +14,7 @@ export interface WorldCommandContextDeps {
     readonly observe: () => import("./world-observe").WorldObservation | null;
     readonly isDirection: (value: unknown) => value is "left" | "right" | "up" | "down";
     readonly isCreationBound: (nativeId: string) => boolean;
-    readonly activeCommand: () => WorldCommand | null;
+    readonly activeCommands: () => ReadonlyArray<WorldCommand>;
 }
 
 export interface WorldCommandContext {
@@ -79,9 +79,10 @@ export function createWorldCommandContext(
         if (deps.isCreationBound(nativeId)) {
             return true;
         }
-        const cmd = deps.activeCommand();
-        if (cmd !== null && commandWorkspaceRefs(cmd).has(nativeId)) {
-            return true;
+        for (const cmd of deps.activeCommands()) {
+            if (commandWorkspaceRefs(cmd).has(nativeId)) {
+                return true;
+            }
         }
         return false;
     };

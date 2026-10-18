@@ -183,31 +183,14 @@ decisions of 2026-09-24 are under
     behavior); verify or port automatic-float focus preservation to the world
     route; then live checks above and the user Steam retest.
     [Record](changes/kde-automatic-float-stacking.md).
-- P0 (after floating dialog defect) | KDE rapid input drops and stalled geometry |
-  Dogfood 2026-10-18 on two outputs: directional focus lags and rapid
-  left-then-right performs only the first; repeated same-output Meta+arrow
-  moves slow down then misbehave; a cross-output R4 arrival first lands
-  short with a bottom gap; after several back-and-forth R4 moves the arrival
-  overlaps on the far side of the target instead of the near side.
-  - Proven: busy focus inputs are refused before dispatch, without replay
-    (`kwin/src/world-float-nav.ts:153-156`, `world-shortcuts.ts:158-164`;
-    busy = pending command or in-flight request, `world-entry.ts:510`).
-    Commands share the 120 ms observation debounce (`world-entry.ts:69-70`).
-  - Likely: per window+target+hints geometry clamp budgets count successful
-    writes and only reset explicitly, so alternating layouts exhaust them and
-    later accepted moves apply nothing (`held=2`)
-    (`kwin/src/world-apply.ts:95-98,556-605`; `world-state.ts:285-296`).
-    Likely explains the far-side overlap; R4 wrap policy is unchanged
-    (`crates/tiler-core/src/session/ops/move.rs:1362-1395`).
-  - Unknown: short arrival height (the summary log lacks frames); one
-    Planner `unchanged` focus refusal with sanitized reason.
-  - Both suspects date to the world-adapter introduction (`76c4185f`).
-  - Next: offline regression alternating two applied frame targets more than
-    three times (expect continued actuation); production-entry regression for
-    left-then-right during debounce and in flight (replay semantics need a
-    user decision); unequal-height occupied-target R4 replay both ways. If
-    unexplained, a live leg capturing timestamps, window tokens, desired and
-    live frames, domain bounds, transfer identities and hold branch/clamp key.
+- P0 | KDE rapid input drops and stalled geometry | Delivered 2026-10-19:
+  production tiled directional FIFO with drain-time subject binding, exact
+  convergence-based clamp budgets, and vacated-source R4 return reconciliation.
+  KWin 1903/1903; Rust workspace 3289 passed; native callback-driven 8 same-output
+  moves, 16 occupied-target crossings and rapid move/focus pairs pass. Input
+  ordering is **Tentative (user review pending)**. Physical-key/perceived-latency
+  acceptance remains; original short-height cause lacked frames, while current
+  full-height arrivals pass. [Outcome](changes/archive/kde-rapid-input-geometry.md).
 - P0 (after floating dialog defect) | KDE aligned per-output workspaces |
   Dogfood 2026-10-18: disjoint backing desktops disagree with KDE's global
   desktop numbering and strand members outside their output's ring. User

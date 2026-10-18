@@ -299,8 +299,8 @@ function discover(h: Harness, gen = "gen-1"): void {
     call.callback(BOOTSTRAP(gen, body.req));
     // Settle the discovery-triggered observation report first: the entry
     // auto-dispatches one observation-only DescribeWorld on bind, and a
-    // command issued while it is in flight is busy-refused (never
-    // coalesced). Replying here leaves the flight idle for the test body.
+    // command issued while it is in flight queues in FIFO order behind it.
+    // Replying here leaves the flight idle for the test body.
     const auto = h.lastCall("DescribeWorld");
     const autoBody = JSON.parse(auto.payload);
     assert.equal(autoBody.command, null);
@@ -418,28 +418,38 @@ describe("world entry discovery and observation", () => {
         assert.equal(h.world.geometryWrites.length, writes);
     });
 
-    it("treats input during flight as stale-obs catchup with no command replay", () => {
+    it("queues directional input during flight without disturbing the head", () => {
         const h = makeHarness();
         discover(h);
-        h.handle?.requestWorkspaceRelative(1);
-        h.runTimers();
+        h.handle?.requestFocus("left");
+        // Idle fast path: the first command dispatches without waiting for
+        // the observation debounce.
+        const describes = h.calls.filter((c) => c.method === "DescribeWorld");
+        assert.equal(describes.length, 2);
         const first = requestOf(h);
         const firstObs = first["obs"] as string;
-        // Second command while in flight is busy (never coalesced).
-        const rel = h.shortcuts.get("omnitiler-workspace-next-j");
-        assert.ok(rel !== undefined);
-        rel();
-        assert.ok(h.logs.some((l) => l.includes("command-busy")));
-        // Native input during flight advances CURRENT obs synchronously via
-        // the signal seam: the outstanding flight now resolves against a
-        // moved watermark, so acceptReply sees obs mismatch and schedules
-        // catchup without setters or command replay.
-        for (const handler of [...(h.signals.windowActivated as FakeSignal).handlers]) {
-            handler();
-        }
+        assert.notEqual((first["command"] as Record<string, unknown>)["op"], null);
+        const firstCmdSeq = first["cmdSeq"] as string;
+        // A second directional press queues WITHOUT advancing the
+        // watermark: only native changes invalidate, so the head reply
+        // still matches and applies.
+        h.handle?.requestFocus("right");
+        assert.ok(!h.logs.some((l) => l.includes("command-busy")));
+        assert.ok(!h.logs.some((l) => l.includes("shortcut-failed")));
         h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", first["req"] as string, firstObs, "1"));
-        assert.ok(h.logs.some((l) => l.includes("stale")));
-        assert.equal(h.world.geometryWrites.length, 0);
+        assert.ok(!h.logs.some((l) => l.includes("stale")));
+        // The queued press drains zero-delay after the acceptance.
+        h.runTimers();
+        const second = requestOf(h);
+        assert.deepEqual((second["command"] as Record<string, unknown>)["op"], "focus-directional");
+        assert.deepEqual((second["command"] as Record<string, unknown>)["direction"], "right");
+        h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", second["req"] as string, second["obs"] as string, "2"));
+        const seqs = h.calls
+            .filter((c) => c.method === "DescribeWorld")
+            .map((c) => JSON.parse(c.payload) as Record<string, unknown>)
+            .filter((req) => req["command"] !== null)
+            .map((req) => req["cmdSeq"] as string);
+        assert.deepEqual(seqs, [firstCmdSeq, "2"]);
     });
 
     it("suspends geometry under a gesture barrier but keeps observation flowing", () => {
@@ -874,5 +884,240 @@ describe("world entry discovery and observation", () => {
         assert.equal((cmd["command"] as Record<string, unknown>)["op"], "toggle-float");
         assert.equal((target as FakeWindow).maximizeMode, 0);
         assert.ok(h.logs.some((l) => l.includes("outcome=observed-cleared")));
+    });
+});
+
+describe("world entry rapid directional FIFO", () => {
+    // Producer-shaped helpers over the harness above: every discrete press
+    // dispatches in press order across debounce and flight boundaries.
+    const sentCmdSeqs = (h: Harness): string[] => h.calls
+        .filter((c) => c.method === "DescribeWorld")
+        .map((c) => JSON.parse(c.payload) as Record<string, unknown>)
+        .filter((req) => req["command"] !== null)
+        .map((req) => req["cmdSeq"] as string);
+    // Fire the earliest due timer at/after `from` only: the entry arms
+    // follow-up timers from inside callbacks, firing the whole queue at
+    // once would also expire a follow-up's own timeout before its reply
+    // can arrive, and dead (cancel-noop) timers from earlier legs must
+    // not steal the pump.
+    const fireNextTimer = (hh: Harness, maxDelay: number, from = 0): void => {
+        let at = -1;
+        for (let i = from; i < hh.timers.length; i += 1) {
+            const t = hh.timers[i] as { delay: number; cb: () => void };
+            if (t.delay <= maxDelay && (at < 0 || t.delay < (hh.timers[at] as { delay: number; cb: () => void }).delay)) {
+                at = i;
+            }
+        }
+        assert.ok(at >= 0, "expected a due timer");
+        const [timer] = hh.timers.splice(at, 1);
+        (timer as { delay: number; cb: () => void }).cb();
+    };
+    const acceptLast = (h: Harness, gen: string, rev: string): void => {
+        const req = requestOf(h);
+        h.lastCall("DescribeWorld").callback(acceptedReply(gen, req["req"] as string, req["obs"] as string, rev));
+    };
+
+    it("dispatches rapid left then right in order across a coalescing debounce", () => {
+        const h = makeHarness();
+        discover(h);
+        // A native burst arms the debounce with no command in flight.
+        for (const handler of [...(h.signals.windowActivated as FakeSignal).handlers]) {
+            handler();
+        }
+        const left = h.shortcuts.get("omnitiler-focus-left") as () => void;
+        const right = h.shortcuts.get("omnitiler-focus-right") as () => void;
+        assert.ok(left !== undefined && right !== undefined);
+        left();
+        right();
+        // Both presses accepted: no busy refusal, no shortcut failure.
+        assert.ok(!h.logs.some((l) => l.includes("command-busy")));
+        assert.ok(!h.logs.some((l) => l.includes("shortcut-failed")));
+        // The debounce flushes the head first with a fresh observation.
+        h.runTimers();
+        const head = requestOf(h);
+        const headCmd = head["command"] as Record<string, unknown>;
+        assert.equal(headCmd["op"], "focus-directional");
+        assert.equal(headCmd["direction"], "left");
+        acceptLast(h, "gen-1", "1");
+        // The accepted head drains the queued opposite press next.
+        h.runTimers();
+        const tail = requestOf(h);
+        const tailCmd = tail["command"] as Record<string, unknown>;
+        assert.equal(tailCmd["op"], "focus-directional");
+        assert.equal(tailCmd["direction"], "right");
+        assert.ok((tail["cmdSeq"] as string) > (head["cmdSeq"] as string));
+    });
+
+    it("preserves repeated directional moves in order across successive flights", () => {
+        const h = makeHarness();
+        discover(h);
+        const moveLeft = h.shortcuts.get("omnitiler-move-left") as () => void;
+        assert.ok(moveLeft !== undefined);
+        // First press takes the idle fast path into flight.
+        moveLeft();
+        const head = requestOf(h);
+        assert.notEqual(head["command"], null);
+        const headObs = head["obs"] as string;
+        // Two more presses queue behind the flight without moving the
+        // watermark, so the head still accepts; each tail then drains
+        // zero-delay after the previous acceptance.
+        moveLeft();
+        moveLeft();
+        assert.ok(!h.logs.some((l) => l.includes("command-busy")));
+        assert.ok(!h.logs.some((l) => l.includes("shortcut-failed")));
+        assert.ok(!h.logs.some((l) => l.includes("stale")));
+        h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", head["req"] as string, headObs, "1"));
+        h.runTimers();
+        const second = requestOf(h)["command"] as Record<string, unknown>;
+        assert.equal(second["op"], "move-directional");
+        assert.equal(second["direction"], "left");
+        acceptLast(h, "gen-1", "2");
+        h.runTimers();
+        const third = requestOf(h)["command"] as Record<string, unknown>;
+        assert.equal(third["op"], "move-directional");
+        assert.equal(third["direction"], "left");
+        acceptLast(h, "gen-1", "3");
+        // Every intent rode exactly one report: strictly increasing
+        // command sequences, no replay, no coalescing.
+        const seqs = sentCmdSeqs(h);
+        assert.deepEqual(seqs, [...seqs].sort());
+        assert.equal(new Set(seqs).size, 3);
+    });
+
+    it("drains queued tails automatically after a busy rejection, unsignalled", () => {
+        const h = makeHarness();
+        discover(h);
+        h.handle?.requestFocus("left");
+        // Core busy: the sent head ends without replay.
+        h.handle?.requestFocus("right");
+        h.lastCall("DescribeWorld").callback(JSON.stringify({
+            v: 1, outcome: "rejected", kind: "busy", message: "busy", gen: "gen-1",
+        }));
+        // No native event and no new press: the terminal failure alone
+        // schedules the catchup, which stays observation-only.
+        h.runTimers();
+        const catchup = requestOf(h);
+        assert.equal(catchup["command"], null);
+        acceptLast(h, "gen-1", "1");
+        // The accepted catchup drains the queued tail zero-delay.
+        h.runTimers();
+        const drained = requestOf(h)["command"] as Record<string, unknown>;
+        assert.equal(drained["op"], "focus-directional");
+        assert.equal(drained["direction"], "right");
+        acceptLast(h, "gen-1", "2");
+        // No replay anywhere: the refused head and the queued tail each
+        // rode exactly one report.
+        const cmdSeqs = sentCmdSeqs(h);
+        assert.equal(new Set(cmdSeqs).size, cmdSeqs.length);
+        assert.equal(cmdSeqs.length, 2);
+    });
+
+    it("drops only the sent head on timeout and drains the tail unsignalled", () => {
+        const h = makeHarness();
+        discover(h);
+        const mark = h.timers.length;
+        h.handle?.requestFocus("left");
+        const first = requestOf(h);
+        const firstCmdSeq = first["cmdSeq"] as string;
+        // Queue a second press behind the flight, then expire the flight's
+        // own timeout only: the auto-drain schedules the catchup, which is
+        // answered before its own timeout can fire. No native event is
+        // delivered anywhere below.
+        h.handle?.requestFocus("right");
+        fireNextTimer(h, 2000, mark);
+        fireNextTimer(h, 2000, mark);
+        fireNextTimer(h, 2000, mark);
+        assert.ok(h.logs.some((l) => l.includes("timeout")));
+        const catchup = requestOf(h);
+        assert.equal(catchup["command"], null);
+        acceptLast(h, "gen-1", "1");
+        h.runTimers();
+        const drained = requestOf(h)["command"] as Record<string, unknown>;
+        assert.equal(drained["op"], "focus-directional");
+        assert.equal(drained["direction"], "right");
+        acceptLast(h, "gen-1", "2");
+        // The timed-out head never reappears.
+        const seqs = sentCmdSeqs(h);
+        assert.equal(seqs.filter((s) => s === firstCmdSeq).length, 1);
+        assert.equal(new Set(seqs).size, seqs.length);
+    });
+
+    it("drops queued directionals on generation mismatch with a diagnostic", () => {
+        const h = makeHarness();
+        discover(h);
+        h.handle?.requestFocus("left");
+        h.handle?.requestFocus("right");
+        h.handle?.requestFocus("left");
+        // Poison while one head flies and two tails wait: the whole queue
+        // belongs to the dead generation.
+        h.lastCall("DescribeWorld").callback(JSON.stringify({
+            v: 1, outcome: "rejected", kind: "generation-mismatch", message: "stale", gen: "gen-2",
+        }));
+        assert.ok(h.logs.some((l) => l.includes("queue-dropped reason=generation-mismatch depth=2")));
+        assert.equal(h.calls.filter((c) => c.method === "DiscoverWorld").length, 2);
+        const cmdsBefore = sentCmdSeqs(h).length;
+        // Only the native debounce elapses here: expiring the fresh
+        // discovery round instead would wedge the rebind it is about to
+        // answer. The armed pre-mismatch debounce finds the discovery
+        // gate closed and dispatches nothing.
+        h.runTimers();
+        // The discovery gate holds while unbound: nothing dispatches, and
+        // no command ever replays.
+        assert.deepEqual(sentCmdSeqs(h).length, cmdsBefore);
+        const second = h.calls.filter((c) => c.method === "DiscoverWorld").pop() as CapturedCall;
+        second.callback(BOOTSTRAP("gen-2", JSON.parse(second.payload).req));
+        {
+            const auto = h.lastCall("DescribeWorld");
+            const autoBody = JSON.parse(auto.payload);
+            auto.callback(acceptedReply("gen-2", autoBody.req, autoBody.obs, "0"));
+        }
+        // After rebinding, a fresh press flows; the dropped tails never do.
+        h.handle?.requestFocus("right");
+        const fresh = requestOf(h);
+        assert.equal(fresh["gen"], "gen-2");
+        assert.deepEqual((fresh["command"] as Record<string, unknown>)["direction"], "right");
+        const dirs = h.calls
+            .filter((c) => c.method === "DescribeWorld")
+            .map((c) => JSON.parse(c.payload) as Record<string, unknown>)
+            .filter((req) => req["command"] !== null)
+            .map((req) => (req["command"] as Record<string, unknown>)["direction"]);
+        assert.deepEqual(dirs, ["left", "right"]);
+    });
+
+    it("keeps fail-fast busy refusal for non-directional commands", () => {
+        const h = makeHarness();
+        discover(h);
+        h.handle?.requestFocus("left");
+        // A workspace select behind a directional flight refuses exactly
+        // like the old single-slot path: no queue, native state untouched.
+        h.handle?.requestWorkspaceRelative(1);
+        assert.ok(h.logs.some((l) => l.includes("command-busy")));
+        assert.ok(h.logs.some((l) => l.includes("shortcut-failed action=workspace-relative")));
+        // A resize does the same.
+        h.handle?.requestResize("left", "outwards");
+        assert.ok(h.logs.some((l) => l.includes("shortcut-failed action=resize")));
+        // Draining the head still works afterwards.
+        acceptLast(h, "gen-1", "1");
+        h.runTimers();
+        const drained = requestOf(h)["command"] as Record<string, unknown>;
+        assert.equal(drained["op"], "focus-directional");
+    });
+
+    it("drops the queue on stop with no post-stop dispatch", () => {
+        const h = makeHarness();
+        discover(h);
+        h.handle?.requestFocus("left");
+        h.handle?.requestFocus("right");
+        const callsBefore = h.calls.filter((c) => c.method === "DescribeWorld").length;
+        h.handle?.stop();
+        for (const handler of [...(h.signals.windowActivated as FakeSignal).handlers]) {
+            handler();
+        }
+        h.runTimers(2000);
+        assert.equal(h.calls.filter((c) => c.method === "DescribeWorld").length, callsBefore);
+        // Presses after stop refuse with no dispatch.
+        h.handle?.requestFocus("right");
+        assert.ok(h.logs.some((l) => l.includes("shortcut-failed")));
+        assert.equal(h.calls.filter((c) => c.method === "DescribeWorld").length, callsBefore);
     });
 });

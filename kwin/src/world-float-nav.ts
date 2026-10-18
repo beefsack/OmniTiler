@@ -150,10 +150,9 @@ export function createFloatNav(env: FloatNavEnv): FloatNav {
         if (!isFloatDirection(direction)) {
             return "failed";
         }
-        if (env.isBusy()) {
-            log("omnitiler:world:busy-refused kind=focus");
-            return "failed";
-        }
+        // Tiled subjects never touch the busy fence: they fall through to
+        // the queued Planner command below. Only genuine float/sticky
+        // subjects (native writes or float-subject commands) observe it.
         const w = env.activeWindowId();
         if (w === null) {
             return "failed";
@@ -165,6 +164,10 @@ export function createFloatNav(env: FloatNavEnv): FloatNav {
         const subject = findObservedWin(obs, w);
         if (subject === null || (subject.floating !== true && subject.sticky !== true)) {
             return "not-float";
+        }
+        if (env.isBusy()) {
+            log("omnitiler:world:busy-refused kind=focus");
+            return "failed";
         }
         if (subject.maximized && !subject.fullscreen) {
             log("omnitiler:world:focus-refused-maximize");
@@ -232,10 +235,8 @@ export function createFloatNav(env: FloatNavEnv): FloatNav {
         if (!isFloatDirection(direction)) {
             return "failed";
         }
-        if (env.isBusy()) {
-            log("omnitiler:world:busy-refused kind=move");
-            return "failed";
-        }
+        // Same ordering as focus: tiled subjects bypass the busy fence to
+        // the queued Planner command; only float/sticky half-snaps fence.
         const w = env.activeWindowId();
         if (w === null) {
             return "failed";
@@ -247,6 +248,10 @@ export function createFloatNav(env: FloatNavEnv): FloatNav {
         const subject = findObservedWin(obs, w);
         if (subject === null || (subject.floating !== true && subject.sticky !== true)) {
             return "not-float";
+        }
+        if (env.isBusy()) {
+            log("omnitiler:world:busy-refused kind=move");
+            return "failed";
         }
         if (subject.fullscreen) {
             log("omnitiler:world:move-refused-fullscreen");

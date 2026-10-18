@@ -555,6 +555,11 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             }
             if (liveRect !== null && !sameRect(liveRect, targetFrame)) {
                 const key = clampKeyFor(row.win, targetFrame, observed);
+                // Authoritative convergence: the fresh live frame proves an
+                // earlier target under the same hints already converged
+                // (sync or delayed). Reset exactly that context; unrelated
+                // unachieved targets keep their own budgets.
+                state.resetClamp(clampKeyFor(row.win, [liveRect.x, liveRect.y, liveRect.w, liveRect.h], observed));
                 const attempts = state.clampAttempt(key);
                 if (attempts < 3) {
                     if (!preSetterOk(env, reply, entryObs, observed, true)) {
@@ -574,8 +579,22 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
                         // Accepted-host convergence: a later observation that
                         // still differs retries until the bounded budget ends,
                         // then the context is retained (never reset per reply)
-                        // until a meaningful target/constraint change.
-                        state.noteClampAttempt(key);
+                        // until a meaningful target/constraint change. Only
+                        // exact read-back convergence clears the just-written
+                        // context; anything else consumes one bounded retry
+                        // so a genuinely clamped target still spends.
+                        let converged: { x: number; y: number; w: number; h: number } | null = null;
+                        try {
+                            converged = env.readLiveRect(observed.ref);
+                        } catch (error) {
+                            void error;
+                            converged = null;
+                        }
+                        if (converged !== null && sameRect(converged, targetFrame)) {
+                            state.resetClamp(key);
+                        } else {
+                            state.noteClampAttempt(key);
+                        }
                     } else {
                         // Setter booleans are not proof: a false that already
                         // converged counts as converged; a throw (or a false
@@ -589,7 +608,7 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
                             proof = null;
                         }
                         if (proof !== null && sameRect(proof, targetFrame)) {
-                            state.resetClamp(clampKeyFor(row.win, targetFrame, observed));
+                            state.resetClamp(key);
                         } else if (!threw && !ok) {
                             state.noteFeedback({ op: `prop-${row.win}`, kind: "property", outcome: "refused-proven", hold: "constraint-clamp" });
                             result.held += 1;

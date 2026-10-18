@@ -1430,6 +1430,23 @@ impl Engine {
         })
     }
 
+    /// True when the named window is a known lifetime homed on another
+    /// retained domain (tiled link, float exception, or minimized slot):
+    /// the observed per-domain focus is the cross-domain global active,
+    /// not an incoherent unknown window.
+    fn focus_homed_on_other_domain(&self, key: &DomainKey, window: &WindowId) -> bool {
+        self.sessions.iter().any(|(other, session)| {
+            other != key
+                && (session
+                    .snapshot()
+                    .windows
+                    .iter()
+                    .any(|link| &link.window == window)
+                    || session.is_exception(window)
+                    || session.minimized_slot(window).is_some())
+        })
+    }
+
     /// Read-only adoption gate: true when the hinted projection of the clean
     /// fitted topology flags any leaf overconstrained. Projection failure is
     /// not infeasibility (plain validation already passed), so false.
@@ -2492,6 +2509,22 @@ impl Engine {
                 // alike), so the tiled remainder projects with focus none
                 // instead of wedging the domain on `focus-mismatch`. The
                 // retained tiled MRU is untouched.
+                None
+            }
+            (None, None)
+                if !event.focused_window.0.is_empty()
+                    && self
+                        .focus_homed_on_other_domain(&event.domain_key, &event.focused_window) =>
+            {
+                // Focusless retained session with cross-domain observed
+                // focus (e.g. an R4 source vacated with follow: the global
+                // active window is a known lifetime homed on another
+                // domain while this current-marked domain still names it).
+                // No local focus claim exists to contradict, so converge
+                // projecting focus none instead of wedging the scope on
+                // `focus-mismatch` (which would fence the return pair as
+                // `operation-refused`). A truly unknown focus still
+                // mismatches below.
                 None
             }
             _ => {

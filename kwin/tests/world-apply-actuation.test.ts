@@ -1046,6 +1046,10 @@ describe("world actuation identity and proof", () => {
         let feedback = feedbackOf(h);
         assert.equal(feedback.find((f) => f["op"] === "fx-9")?.["outcome"], "unattempted");
         assert.equal(feedback.find((f) => f["op"] === "fx-10")?.["outcome"], "unattempted");
+        // The second press queues behind the in-flight feedback-carrier
+        // report without invalidating it, so that flight stays fresh and
+        // the focus effect applies on its own round trip; the queued press
+        // then drains after the acceptance.
         h.handle?.requestWorkspaceRelative(-1);
         dispatchAndReply(h, rev, {
             effects: [{ id: "fx-11", kind: "focus", target: "win-b", rev: "2" }],

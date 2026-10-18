@@ -4,6 +4,18 @@ Active, user-approved choices are recorded here. Explicitly flagged tentative
 clauses are pending user review, not user-approved current rules.
 Historical implementation detail is recoverable in Git history.
 
+## KDE rapid directional input
+
+- **Tentative (user review pending), 2026-10-19:** production KDE tiled
+  directional focus/move preserve unsent presses in FIFO order, resolving the
+  subject from settled native focus at dispatch, including focus-then-move.
+  Tier 1 per-press dispatch evidence and regression/native outcomes are in the
+  [change record](changes/archive/kde-rapid-input-geometry.md).
+- Native observation invalidation still fences stale setters; an already-sent
+  command never replays. Generation changes discard old queued contexts.
+  Non-directional commands and native float/sticky actions retain existing
+  fail-closed behavior; no queue policy is selected for those paths.
+
 ## Development Entry Point
 
 - User decision 2026-10-13: `just dev [verbose|trace]` is the single

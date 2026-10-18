@@ -161,6 +161,12 @@ These rows select no new native behavior.
 | Below-member foreign ordering | Open owned members A/B and nonmember C; show the fill relative-Below the lowest member; read one global CG order; repeat from a front-ordered initial state | Both public routes fail: carrier/member indices 12/[45,2], then 0/[40,38]. The second proves click receipt, focus isolation, fullscreen hide/return and teardown, not acceptable ordering. [Diagnostic and limitations](../changes/macos-group-underlay.md) | Successful below-all-members placement with C above, interleaved and below TBD; scoped private ordering evaluation versus deferral remains open. No product effect enabled |
 | Modifier hold versus classified native move | In a focused tiled group, hold Cmd+Shift in either order with an extra modifier; release; separately titlebar-move, resize and programmatically move a member | Shared KDE/Windows policy requires both chord modifiers or a matching focused interactive move; resize alone must not trigger | macOS chord selection, observation/delivery and native-move classification TBD; AX move notification alone is not classification |
 
+### KDE rapid directional input discriminator
+
+| Variant | Minimal action sequence | Reference source / selected KDE outcome | Unsupported outcome |
+| --- | --- | --- | --- |
+| Opposite focus and mixed commands before settlement | Focus B with left neighbor A; press focus-left then focus-right before the first reply. Separately press focus-left then move-right before its reply | i3 `903bcd51` `src/key_press.c:24-38`, sway `1652c54b` `sway/input/keyboard.c:480-530`, Hyprland `19fb395d` `src/keybinds/Manager.cpp:190-280`, COSMIC `3d55cba0` `src/input/mod.rs` `filter_keyboard_input` / `handle_action` dispatch discrete matched presses sequentially, without adapter-busy refusal. **Tentative (user review pending):** KDE queues unsent tiled directions in order and binds each to current native focus at dispatch. Real-Engine entry regressions prove A-then-B focus and mixed focus/move; native in-flight focus pair accepts both and returns to origin ([record](../changes/archive/kde-rapid-input-geometry.md)) | Physical key delivery, perceived latency and native separately forced debounce remain TBD. Native float/sticky and non-directional queue semantics are not selected; sent-head replay remains forbidden |
+
 ### KDE directional transfer settlement discriminator
 
 | Variant | Minimal action sequence | Observed KDE outcome | Unsupported outcome / next discriminator |
