@@ -15,7 +15,7 @@ pub struct SelectionSnapshot {
 }
 
 impl SelectionSnapshot {
-    fn validate(&self) -> Result<(), String> {
+    pub(crate) fn validate(&self) -> Result<(), String> {
         if self.display.is_empty()
             || self.spaces.is_empty()
             || self.spaces.contains(&0)
@@ -142,6 +142,19 @@ pub struct SelectionEffect {
 }
 
 impl SelectionState {
+    /// Record a verified follow arrival for the send drain: the per-display
+    /// previous becomes the source the send followed away from (so
+    /// `workspace-previous` flips back to it). Called only on exact
+    /// membership-plus-current readback, never on refusals or ambiguous
+    /// output — same rule as the select history advance.
+    ///
+    /// Test-gated in this offline unit alongside the send drain core (see
+    /// [`crate::workspace_send::drain_live_claimed`]).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn note_arrival(&mut self, display: &str, from: u64) {
+        self.previous.insert(display.to_owned(), from);
+    }
+
     pub fn execute(
         &mut self,
         backend: &mut impl SelectionBackend,
@@ -250,18 +263,20 @@ impl SelectionState {
 
 /// Select-only product binding subset: exactly the 18 armed rows —
 /// numbered existing-Space selects `1..9`, the 8 relative-select rows, and
-/// the previous toggle. Never adds send chords; the trailing `index 0`
+/// the previous toggle. Never adds send chords (the offline send seam in
+/// [`crate::workspace_send::bindings`] currently arms nothing in product);
+/// the trailing `index 0`
 /// select-or-create stays unarmed (no automatic trailing creation/deletion
 /// this milestone — occupancy unresolved), so it is excluded here even
 /// though the explicit `spaces-select` batch retains it. Driven by the
-/// catalogue `implemented` flags (single source with
-/// [`crate::workspace_input::is_armed_select`]); the preview arms this
+/// catalogue `implemented` flags plus [`crate::workspace_input::is_armed_select`]
+/// (single source with the engine admission gate); the preview arms this
 /// subset with no-focus dispatch and main-thread drain.
 #[must_use]
 pub fn bindings() -> Vec<crate::runtime_types::TileBinding> {
     crate::workspace_input::workspace_catalogue()
         .into_iter()
-        .filter(|row| row.implemented)
+        .filter(|row| row.implemented && crate::workspace_input::is_armed_select(&row.action))
         .filter_map(|row| row.binding())
         .collect()
 }

@@ -3943,9 +3943,16 @@ decisions of 2026-09-24 are under
    3. Finish managed native workspaces: tagged Control+Fn arrows and tagged
       Desktop-N helper roundtrips now pass; integrate numbered product sends
       using synthetic drag plus Desktop-N, with Authentic enabling Desktop-N;
-     then send-follow and send-stay; trailing empty Space (Meta+0, also the indicator's trailing
-     slot); per-display Space-number attribution; multi-display.
-      **2026-10-18 delivery checkpoint:** starting the helper on the existing
+      then send-follow and send-stay; trailing empty Space (Meta+0, also the indicator's trailing
+      slot); per-display Space-number attribution; multi-display.
+       **2026-10-18 offline preparation:** fake-backed numbered send-follow,
+       planner claim/feedback and Authentic ownership helpers pass 940 macOS
+       tests, strict clippy/format and signed build/verify; unsafe stays 114.
+       Product remains select-only: no send chords armed, no startup settings
+       writes, no new live proof. Scoped product-post identity and nonblocking
+       fresh AX proof handoff block native integration; later substeps remain
+       pending. [Contracts and exact native checks](changes/macos-managed-workspaces.md#unarmed-numbered-send-preparation-checkpoint-2026-10-18).
+       **2026-10-18 delivery checkpoint:** starting the helper on the existing
       second Space resolves crowded placement without moving the protected
       terminal or weakening ownership. Tagged arrow and numbered native transfer
       both pass outward/inverse membership readback; raw protected before/after

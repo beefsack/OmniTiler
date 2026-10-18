@@ -56,6 +56,8 @@ fn reply_token(op: &'static str, outcome: &'static str) -> &'static str {
         ("drag-drop", "consumed") => "drag-drop-consumed",
         ("select", "accepted") => "select-accepted",
         ("select", "consumed") => "select-consumed",
+        ("send", "accepted") => "send-accepted",
+        ("send", "consumed") => "send-consumed",
         ("terminate", "accepted") => "terminate-accepted",
         ("terminate", "consumed") => "terminate-consumed",
         // All production (op, outcome) pairs are enumerated above; the

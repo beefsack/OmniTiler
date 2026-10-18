@@ -13,7 +13,10 @@
 //! replacements):
 //! - Authentic consumes the exact supported chords while running (tap `Drop`
 //!   suppression, no persistent native-setting writes — notably no
-//!   `com.apple.symbolichotkeys` writes anywhere in this crate).
+//!   `com.apple.symbolichotkeys` plist writes anywhere in this crate, and no
+//!   session Desktop-N holder enable anywhere either: the offline send-seam
+//!   holder helpers in [`crate::workspace_send`] are not wired to startup,
+//!   to any drain, or to any preset path).
 //! - Compatible leaves known conflicting chords to macOS by not arming them
 //!   (they pass through natively): under the Ctrl Meta that is the 4
 //!   unshifted no-Alt arrow chords (Mission Control Ctrl+arrows are the

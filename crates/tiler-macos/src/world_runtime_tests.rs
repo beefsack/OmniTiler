@@ -57,7 +57,7 @@ fn domain_key() -> DomainKey {
 fn select_commands_cover_exactly_the_armed_subset() {
     use crate::workspace_input::{is_armed_select, workspace_unsupported_outcome};
     let output = OutputId("macos-display-1".to_owned());
-    // Every armed select maps to a planner-owned command.
+    // Every armed select maps to a planner-owned select command.
     for action in [
         InputSemanticAction::WorkspaceSelect { index: 1 },
         InputSemanticAction::WorkspaceSelect { index: 9 },
@@ -71,13 +71,39 @@ fn select_commands_cover_exactly_the_armed_subset() {
             "{action:?} has a planner route"
         );
     }
-    // Everything unarmed (trailing select-0, sends, outputs) has no
-    // world route: capability-refused before contact.
+    // Send-shaped actions keep the offline send-seam route mapping (never
+    // the select route) but refuse engine-side: no product planner dispatch
+    // this milestone. Everything else unarmed (trailing select-0, stays,
+    // relative sends, outputs) has no world route: capability-refused
+    // before contact.
+    for index in 1..=9u8 {
+        let action = InputSemanticAction::WorkspaceSend {
+            index,
+            follow: true,
+        };
+        assert_eq!(
+            workspace_unsupported_outcome(&action),
+            Some("refused-workspace-send-unsupported"),
+            "{action:?} refused, never dispatched"
+        );
+        assert!(
+            select_command(&action, output.clone()).is_none(),
+            "{action:?} never selects"
+        );
+        assert!(
+            send_command(&action, "4242_7", output.clone()).is_some(),
+            "{action:?} keeps the offline send-seam mapping"
+        );
+    }
     for action in [
         InputSemanticAction::WorkspaceSelect { index: 0 },
         InputSemanticAction::WorkspaceSend {
-            index: 1,
+            index: 0,
             follow: true,
+        },
+        InputSemanticAction::WorkspaceSend {
+            index: 1,
+            follow: false,
         },
         InputSemanticAction::WorkspaceSendRelative {
             prev: true,
@@ -91,6 +117,10 @@ fn select_commands_cover_exactly_the_armed_subset() {
         assert!(workspace_unsupported_outcome(&action).is_some());
         assert!(
             select_command(&action, output.clone()).is_none(),
+            "{action:?} stays refused"
+        );
+        assert!(
+            send_command(&action, "4242_7", output.clone()).is_none(),
             "{action:?} stays refused"
         );
     }

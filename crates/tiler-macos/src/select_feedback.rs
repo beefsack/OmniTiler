@@ -89,12 +89,46 @@ impl RuntimeHandle {
         }
     }
 
+    /// Proven outcome of one main-thread send drain, staged as attempt
+    /// feedback for the next world report (same data-lane best-effort
+    /// contract as [`RuntimeHandle::report_select_outcome`]). Reachable only
+    /// from the retained-but-unreachable product send-drain leg (no send
+    /// claim ever pends: the engine refuses every send first) and the
+    /// future live step. The kind is
+    /// always transfer (see [`crate::workspace_send::feedback_kind_for`]):
+    /// `Applied` settles the retained `SendNumbered` transfer on
+    /// observation confirm; `Refused` settles to observed without
+    /// actuation; `PossiblyExecuted` holds without re-actuation. Call with
+    /// the `operation_id` of the drained claim (the core ignores ids naming
+    /// no retained target).
+    pub fn report_send_outcome(
+        &self,
+        operation_id: &str,
+        outcome: crate::workspace_send::SendDrainOutcome,
+    ) {
+        if operation_id.is_empty() {
+            return;
+        }
+        let job = EngineJob::AttemptFeedback {
+            operation_id: operation_id.to_owned(),
+            kind: tiler_core::world_report::AttemptKind::Transfer,
+            outcome: crate::workspace_send::attempt_outcome_for(outcome),
+            hold: None,
+        };
+        // Bump before enqueue (see `invalidate_clock` in runtime).
+        invalidate_clock(&self.shared);
+        if !self.inbox.try_send_data(job) {
+            lock_shared(&self.shared).diagnostics.data_dropped_full += 1;
+        }
+    }
+
     /// Drop a pending (unclaimed) product select without dispatching: the
     /// lock/secure/stale-topology paths refuse narrowly instead of running
     /// a switch under an unsafe context. Returns whether one was dropped.
     /// Never touches a drain in progress. A dropped bound claim stages
     /// proven-refusal feedback (best-effort) so the core settles its
-    /// planner-owned view target instead of retaining it.
+    /// planner-owned target instead of retaining it: view kind for selects,
+    /// transfer kind for sends (see [`crate::workspace_send::feedback_kind_for`]).
     pub fn discard_select_pending(&self) -> bool {
         let dropped: Option<ClaimedSelect> = {
             let mut guard = lock_shared(&self.shared);
@@ -109,10 +143,10 @@ impl RuntimeHandle {
         if let Some(operation_id) = claim.operation_id.as_deref()
             && !operation_id.is_empty()
         {
-            use tiler_core::world_report::{AttemptKind, AttemptOutcome};
+            use tiler_core::world_report::AttemptOutcome;
             let job = EngineJob::AttemptFeedback {
                 operation_id: operation_id.to_owned(),
-                kind: AttemptKind::View,
+                kind: crate::workspace_send::feedback_kind_for(&claim.action),
                 outcome: AttemptOutcome::RefusedProven,
                 hold: None,
             };

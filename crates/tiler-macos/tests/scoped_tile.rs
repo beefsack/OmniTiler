@@ -2527,8 +2527,11 @@ fn select_enqueues_without_focus_and_serializes_concurrent_presses() {
 #[test]
 fn unarmed_workspace_rows_refuse_without_dispatch() {
     // Test-only over-arming (the product never arms these): trailing
-    // select-0 and numbered sends still refuse engine-side with their
-    // honest tokens and never enqueue — the engine is the backstop.
+    // select-0 and numbered send-1 still refuse engine-side with their
+    // honest tokens and never enqueue — the engine is the backstop. No
+    // planner dispatch runs for either: no send/select claim enqueues, no
+    // world command is forwarded, and no send-accepted/consumed reply
+    // appears.
     use tiler_macos::runtime::InputSemanticAction as Action;
     let mut bindings = select_product_bindings();
     bindings.extend(
@@ -2581,6 +2584,20 @@ fn unarmed_workspace_rows_refuse_without_dispatch() {
         "unarmed rows never enqueue"
     );
     assert_eq!(diagnostics.input_forwarded, 0);
+    assert_eq!(diagnostics.input_select_refused, 0);
+    assert!(
+        !log_has(&fixture.handle, "input", "send-enqueued"),
+        "no send claim enqueues"
+    );
+    assert!(
+        !log_has(&fixture.handle, "input", "select-enqueued"),
+        "no select claim enqueues"
+    );
+    assert!(
+        !log_has(&fixture.handle, "core-reply", "send-accepted")
+            && !log_has(&fixture.handle, "core-reply", "send-consumed"),
+        "no planner send dispatch for unimplemented sends"
+    );
     shutdown_clean(&fixture);
 }
 

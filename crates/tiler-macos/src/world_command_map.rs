@@ -5,10 +5,13 @@
 //! Split from [`crate::world_runtime`]: which typed [`InputSemanticAction`]
 //! becomes which [`WorldCommand`](tiler_core::world_report::WorldCommand).
 //! No sequencing, no core contact, no actuation — the armed select-only
-//! subset maps to planner-owned commands, every other supported tiling
-//! action maps to its existing core command shape, and anything else has
-//! no route (capability-refused by the caller). Pure over retained input
-//! state except the keyboard-resize repeat cursor it advances.
+//! subset maps to planner-owned select commands, the send-shaped actions map
+//! to planner-owned send commands through the OFFLINE send seam only (no
+//! product path dispatches sends: the engine refuses them first), every
+//! other supported tiling action maps to its existing core command shape,
+//! and anything else has no route (capability-refused by the caller). Pure
+//! over retained input state except the keyboard-resize repeat cursor it
+//! advances.
 
 use tiler_core::directional::OutputId;
 use tiler_core::world_report::WorldCommand;
@@ -26,6 +29,7 @@ pub(crate) const OP_TOGGLE_FLOAT: &str = "toggle-float";
 pub(crate) const OP_TOGGLE_ORIENTATION: &str = "toggle-orientation";
 pub(crate) const OP_DRAG_DROP: &str = "drag-drop";
 pub(crate) const OP_SELECT: &str = "select";
+pub(crate) const OP_SEND: &str = "send";
 pub(crate) const OP_TERMINATE: &str = "terminate";
 
 /// Resolve the output one armed select switches: the observed-focus home
@@ -44,7 +48,7 @@ pub(crate) fn select_output(retained: &RetainedCore, ctx: &NativeContext) -> Opt
 }
 
 /// Map one armed select-only action to its planner-owned world command.
-/// Unarmed actions (trailing select-0, sends, outputs) have no world route
+/// Unarmed actions (trailing select-0, sends, outputs) have no select route
 /// and stay capability-refused by the caller.
 pub(crate) fn select_command(
     action: &InputSemanticAction,
@@ -62,6 +66,35 @@ pub(crate) fn select_command(
             delta: if *prev { -1 } else { 1 },
         }),
         InputSemanticAction::WorkspacePrevious => Some(WorldCommand::SelectPrevious { output }),
+        _ => None,
+    }
+}
+
+/// Map one send-shaped action to its planner-owned world command for the
+/// focused-window subject `window` (OFFLINE SEAM ONLY: no product path calls
+/// this — the engine refuses every send first; fake-proven shape mapping
+/// for the live step): `SendNumbered` retains a window transfer core-side
+/// (follow pins the view intent; the main-thread drain actuates natively
+/// and reports the proven outcome back under the stable operation identity
+/// so the core settles instead of retaining forever). Non-send-shaped
+/// actions (trailing send-0, stays, relative sends, outputs, selects,
+/// basics) have no send route (`None`).
+pub(crate) fn send_command(
+    action: &InputSemanticAction,
+    window: &str,
+    output: OutputId,
+) -> Option<WorldCommand> {
+    match action {
+        InputSemanticAction::WorkspaceSend { index, follow }
+            if *follow && (1..=9).contains(index) =>
+        {
+            Some(WorldCommand::SendNumbered {
+                window: tiler_core::directional::WindowId(window.to_owned()),
+                output,
+                index: *index,
+                follow: true,
+            })
+        }
         _ => None,
     }
 }

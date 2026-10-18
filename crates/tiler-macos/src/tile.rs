@@ -1920,67 +1920,119 @@ mod native {
                 ax_focus: None,
             });
 
-            // Product select drain: one claimed pending select (action plus,
-            // for indicator clicks, the immutable render-time SID/revision
-            // binding) runs the proven native switch with fresh
-            // topology/readback on this
-            // (main) thread — the tap callback and the serial engine handed
-            // off asynchronously and never block. The drain refuses unless
-            // exactly one native display row exists (no first-display
-            // guessing), refuses bound claims whose ordinal no longer names
-            // their SID or whose revision drifted, rechecks session/Secure
-            // Input/lock-screen immediately pre-dispatch (the MC legs
-            // re-gate session/trust at every leg boundary; no atomicity past
-            // the recheck is promised), and runs under a 30 s budget plus a
+            // Product workspace drain: one claimed pending select-only action
+            // runs its proven native leg with fresh topology/readback on
+            // this (main) thread — the tap callback and the serial engine
+            // handed off asynchronously and never block. Selects (action
+            // plus, for indicator clicks, the immutable render-time
+            // SID/revision binding) run the proven native switch. Sends never
+            // enqueue in product (the engine refuses every send, and the tap
+            // table carries no send chord): the `is_armed_send` leg below is
+            // unreachable product code, retained only so the offline-tested
+            // send seam typechecks against the same drain shape — the live
+            // send backend lands in the live step (see
+            // [`crate::workspace_send::drain_live_claimed`], which refuses
+            // until then). Both lanes refuse unless exactly one native
+            // display row exists (no first-display guessing), refuse bound
+            // claims whose ordinal no longer names their SID or whose
+            // revision drifted, recheck session/Secure Input/lock-screen
+            // immediately pre-dispatch (the native legs re-gate
+            // session/trust at every leg boundary; no atomicity past the
+            // recheck is promised), and run under a bounded budget plus a
             // bounded reaped caffeinate companion. Verified arrival advances
             // the per-display previous history; every refusal (gates,
-            // unarmed, display count, drift, stale binding, no effect)
-            // clears without replay and advances nothing. A claim still held
-            // at shutdown is dropped, never dispatched.
+            // unarmed, display count, subject, target, holder, drift, stale
+            // binding, no effect) clears without replay and advances
+            // nothing. A claim still held at shutdown is dropped, never
+            // dispatched.
             if let Some(claim) = handle.claim_select_for_drain() {
-                let gates = crate::workspace_select::SelectGates {
-                    session_unlocked: matches!(
-                        crate::ffi::session_state().lock,
-                        crate::ffi::SessionLock::Unlocked
-                    ),
-                    secure_active: matches!(crate::ffi::secure_input_known(), Some(true)),
-                    lock_screen: crate::ffi::frontmost_app()
-                        .map(|(_, bundle)| crate::focus::is_loginwindow_bundle(&bundle))
-                        .unwrap_or(true),
-                };
+                let session_unlocked = matches!(
+                    crate::ffi::session_state().lock,
+                    crate::ffi::SessionLock::Unlocked
+                );
+                let secure_active = matches!(crate::ffi::secure_input_known(), Some(true));
+                let lock_screen = crate::ffi::frontmost_app()
+                    .map(|(_, bundle)| crate::focus::is_loginwindow_bundle(&bundle))
+                    .unwrap_or(true);
                 let id = crate::workspace_input::workspace_action_id(&claim.action)
                     .unwrap_or("unknown-select");
                 // The operation identity rides out of the claim before the
                 // drain consumes it: the proven outcome reports back under
                 // the same id so the core settles its planner-owned view
-                // target (never replayed).
+                // target (selects) or window transfer (sends) — never
+                // replayed.
                 let operation_id = claim.operation_id.clone();
-                let outcome =
-                    crate::workspace_select::drain_live_claimed(&mut select_state, claim, &gates);
-                handle.release_select_after_drain();
-                match outcome {
-                    Ok((effect, reaped)) => {
-                        eprintln!(
-                            "tiler-macos dev select action={} changed={} caffeinate_reaped={} complete=true",
-                            id, effect.changed, reaped,
-                        );
-                        if let Some(operation_id) = operation_id.as_deref() {
-                            handle.report_select_outcome(
-                                operation_id,
-                                crate::runtime::SelectDrainOutcome::Applied,
+                if crate::workspace_input::is_armed_send(&claim.action) {
+                    let gates = crate::workspace_send::SendGates {
+                        session_unlocked,
+                        secure_active,
+                        lock_screen,
+                    };
+                    let outcome =
+                        crate::workspace_send::drain_live_claimed(&mut select_state, claim, &gates);
+                    handle.release_select_after_drain();
+                    match outcome {
+                        Ok((effect, reaped)) => {
+                            eprintln!(
+                                "tiler-macos dev send action={} target={} caffeinate_reaped={} complete=true",
+                                id, effect.target, reaped,
                             );
+                            if let Some(operation_id) = operation_id.as_deref() {
+                                handle.report_send_outcome(
+                                    operation_id,
+                                    crate::workspace_send::SendDrainOutcome::Applied,
+                                );
+                            }
+                        }
+                        Err(reason) => {
+                            eprintln!(
+                                "tiler-macos dev send action={} refused reason={} complete=false",
+                                id, reason,
+                            );
+                            if let Some(operation_id) = operation_id.as_deref() {
+                                handle.report_send_outcome(
+                                    operation_id,
+                                    crate::workspace_send::classify_send_drain_error(&reason),
+                                );
+                            }
                         }
                     }
-                    Err(reason) => {
-                        eprintln!(
-                            "tiler-macos dev select action={} refused reason={} complete=false",
-                            id, reason,
-                        );
-                        if let Some(operation_id) = operation_id.as_deref() {
-                            handle.report_select_outcome(
-                                operation_id,
-                                crate::select_feedback::classify_select_drain_error(&reason),
+                } else {
+                    let gates = crate::workspace_select::SelectGates {
+                        session_unlocked,
+                        secure_active,
+                        lock_screen,
+                    };
+                    let outcome = crate::workspace_select::drain_live_claimed(
+                        &mut select_state,
+                        claim,
+                        &gates,
+                    );
+                    handle.release_select_after_drain();
+                    match outcome {
+                        Ok((effect, reaped)) => {
+                            eprintln!(
+                                "tiler-macos dev select action={} changed={} caffeinate_reaped={} complete=true",
+                                id, effect.changed, reaped,
                             );
+                            if let Some(operation_id) = operation_id.as_deref() {
+                                handle.report_select_outcome(
+                                    operation_id,
+                                    crate::runtime::SelectDrainOutcome::Applied,
+                                );
+                            }
+                        }
+                        Err(reason) => {
+                            eprintln!(
+                                "tiler-macos dev select action={} refused reason={} complete=false",
+                                id, reason,
+                            );
+                            if let Some(operation_id) = operation_id.as_deref() {
+                                handle.report_select_outcome(
+                                    operation_id,
+                                    crate::select_feedback::classify_select_drain_error(&reason),
+                                );
+                            }
                         }
                     }
                 }

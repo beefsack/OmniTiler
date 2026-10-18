@@ -607,29 +607,42 @@ pub enum InputSemanticAction {
     },
 }
 
-/// One pending product select claim awaiting the main-thread drain: the
+/// One pending product workspace claim awaiting the main-thread drain: the
 /// armed action plus the immutable click binding that produced it. Tap
 /// chords carry no binding (`expected_sid`/`topology_revision` are `None`,
-/// `ui_generation` 0 — the drain maps the ordinal fresh, exactly as
+/// `ui_generation` 0 — the select drain maps the ordinal fresh, exactly as
 /// before); menu-bar segment clicks carry the full render-time binding, and
 /// the drain refuses any claim whose ordinal no longer names the expected
-/// SID or whose revision drifted. An ordinal is therefore never interpreted
-/// against a different generation or topology than the click rendered.
+/// SID or whose revision drifted. Send-shaped claims (offline seam only —
+/// product never enqueues them) carry a binding bound at admission: the
+/// engine resolves the target SID plus the current topology revision at
+/// admission time and pins the focused-window subject (`send_subject`), so
+/// the send drain revalidates the ordinal against the same generation and
+/// never grabs a different window. An ordinal is therefore never interpreted
+/// against a different generation or topology than the claim rendered.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClaimedSelect {
     pub action: InputSemanticAction,
     pub expected_sid: Option<u64>,
     pub ui_generation: u64,
     pub topology_revision: Option<u64>,
+    /// Pinned focused-window subject for send-shaped claims (`"<pid>_<wid>"`,
+    /// observed focus at admission, homed current, never fullscreen).
+    /// Always `None` for selects (no subject) and for unbound tap claims
+    /// before engine admission binds them.
+    pub send_subject: Option<String>,
     /// Stable world-command operation identity (`op-<command_seq>`) minted
     /// at engine dispatch: the main-thread drain reports its native outcome
     /// under this id so the core settles the planner-owned view target
-    /// (never replayed). `None` until the engine binds the claim.
+    /// (selects) or window transfer (sends) — never replayed. `None` until
+    /// the engine binds the claim.
     pub operation_id: Option<String>,
 }
 
 impl ClaimedSelect {
-    /// Tap/keyboard claim: no render-time binding (fresh-ordinal mapping).
+    /// Tap/keyboard claim: no render-time binding (fresh-ordinal mapping
+    /// for selects; the offline send lane binds send-shaped claims at
+    /// admission).
     #[must_use]
     pub const fn tap(action: InputSemanticAction) -> Self {
         Self {
@@ -637,6 +650,7 @@ impl ClaimedSelect {
             expected_sid: None,
             ui_generation: 0,
             topology_revision: None,
+            send_subject: None,
             operation_id: None,
         }
     }
@@ -655,6 +669,7 @@ impl ClaimedSelect {
             expected_sid: Some(expected_sid),
             ui_generation,
             topology_revision: Some(topology_revision),
+            send_subject: None,
             operation_id: None,
         }
     }

@@ -605,7 +605,7 @@ fn tap_specs_carry_select_category_per_action() {
         assert_eq!(spec.select, is_armed_select(&binding.action));
         assert_eq!(spec.key_code, binding.key_code);
     }
-    // Full catalogue: only the 18 armed rows flag select (sends, stays,
+    // Full catalogue: only the 18 armed selects flag select (sends, stays,
     // outputs, and trailing select-0 stay basic-gated, refused downstream).
     let specs = tap_specs_for(
         ProbeModifier::Ctrl,

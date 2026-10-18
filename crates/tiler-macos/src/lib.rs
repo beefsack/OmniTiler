@@ -123,6 +123,9 @@ mod workspace_input_tests;
 pub mod workspace_select;
 #[cfg(test)]
 mod workspace_select_tests;
+pub mod workspace_send;
+#[cfg(test)]
+mod workspace_send_tests;
 pub(crate) mod world_builder;
 pub(crate) mod world_command_map;
 pub(crate) mod world_dispatch;

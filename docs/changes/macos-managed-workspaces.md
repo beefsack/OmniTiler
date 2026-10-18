@@ -1,5 +1,92 @@
 # macOS managed native workspaces
 
+## Unarmed numbered-send preparation checkpoint (2026-10-18)
+
+**Step 2 remains incomplete. No product send is armed, no startup holder enable
+is wired, and no new native transfer proof is claimed.** The product retains
+34 basic actions and 18 existing-Space selects. All send rows remain unsupported,
+including when an over-armed input fixture supplies a send chord.
+
+### Accepted offline scope
+
+- Added a fake-backed numbered send-follow drain with pinned subject and target,
+  single-display/session/focus/membership fences, fresh Desktop-N holder checks,
+  release-first drag execution, arrival/history and honest transfer feedback.
+- Added planner command/claim preparation and an Authentic-only holder-ownership
+  helper over existing durable Apply/Revert transactions. These are not connected
+  to a working native send backend or startup settings mutation. Compatible's
+  helper path performs no store access. Existing explicit Apply/Revert is unchanged.
+- Full macOS tests: 940 passed, zero failed or ignored. Strict all-target clippy,
+  workspace format, named signed app build and separate signature verification
+  pass. Independent correction review reran all 792 library tests, the unarmed
+  runtime integration refusal and targeted send/input/world suites. Unsafe remains
+  **114 blocks**, all in unchanged `ffi.rs`; no dependencies were added.
+
+### Blocking integration contracts
+
+- `synth::OwnedPostTarget` proves fixture ownership using a held helper child or
+  spawn record. A product send needs a separate scoped managed-window identity
+  contract; bypassing that proof with raw global HID posts is not an integration.
+- Fresh positional AX and WindowServer point hits must name the pinned subject
+  at the drag boundary without blocking the tile main loop on AX work. The
+  AX-owner handoff, freshness fence and effect ownership remain unresolved.
+- Only after those contracts and a native backend exist should Authentic holder
+  enable be wired and numbered send-follow rows armed. Owned preimages and
+  conditional Revert remain required by the existing approved product decision.
+- Send-stay, trailing lifecycle and per-display/multi-display implementation have
+  not advanced at this checkpoint. No new product or architecture decision is
+  selected. The retained send lane is deliberately unreachable preparation.
+
+### Pending native acceptance, in order
+
+All procedures below require their implementation first. Use a disposable
+TextEdit-only scope, fresh identity/lock/Secure Input checks per leg, exact raw
+protected-window records before and after, and settings/topology preimages.
+Never direct input or window operations at the controlling terminal. After
+Mission Control closes, resample geometry; stop on genuine protected drift.
+Capture only freshly verified owned-window/indicator regions, inspect them,
+then delete them. Synthetic results do not establish physical shortcut feel.
+
+1. **Numbered product send and Authentic ownership: pending.** Build/sign/verify,
+   run signed preflight, then `spaces-desktop-status` and `spaces-diagnose`.
+   With disposable A on O and an existing adjacent T, launch
+   `mise exec -- just tile --user-start --scope com.apple.TextEdit --input tap --preset authentic --seconds 60`.
+   Require automatic standard Desktop-N enable with unchanged chords and durable
+   preimages. Focus A; press Ctrl+Shift+2, then Ctrl+Shift+1. After each release,
+   require A's exact target membership, current Space and focus, retained layout,
+   balanced input release and unchanged protected geometry. Stop the bounded
+   runtime; run `spaces-desktop-revert`, then fresh status/diagnose. Compare exact
+   owned settings preimages and original current/topology. Repeat Compatible
+   startup and require zero holder mutation. Launch diagnostic subcommands only
+   through `mise exec -- just launch -- <subcommand>`.
+2. **Send-follow and send-stay: pending.** Repeat A/B on O and C on T. Send B
+   with follow and require target current/focus and both retained layouts. Bind
+   the currently unbound numbered stay action after native support exists;
+   repeat O->T and require B on T but current/focus returned to O. Revisit both
+   Spaces and compare per-window slots. Repeat the inverse, restore B and the
+   original current Space, and record physical switch-back cost separately.
+3. **Trailing empty Space: pending.** On O press Meta+0; record created T and
+   current/membership. Return to O; select T through the indicator trailing slot;
+   press Meta+0 again on empty T and require reuse, not another SID. Return to O;
+   press Meta+Shift+0 on disposable A and require append/reuse plus send-follow.
+   Repeat after T becomes occupied, check the new trailing target, restore A/O,
+   and remove only newly created, proven-empty Spaces. Unknown occupancy must
+   still refuse removal; do not exempt foreign chrome to force cleanup.
+4. **Per-display attribution and two displays: pending.** Record stable display
+   IDs, ordered user-Space SIDs and current SID for each display, including the
+   separate-Spaces mode. Put disposable A/B on different displays; focus each
+   in turn and select/send to its numbered target. Require attribution to that
+   display's order, unchanged other-display current/memberships, exact focus and
+   retained layouts. Repeat trailing selection/send through each indicator and
+   compare native SIDs to displayed numbers. Test refusal on unsupported shared
+   Space topology. Restore both original currents, windows/settings and only own
+   proven-empty temporary Spaces. Offline attribution coverage is still pending;
+   no two-display success is inferred from single-display evidence.
+
+Next: settle the scoped product-post target identity contract and nonblocking AX
+proof handoff, implement the native backend and Authentic enable wiring, then
+deliberately re-arm numbered send-follow and execute acceptance item 1.
+
 ## Tagged native-holder delivery checkpoint (2026-10-18)
 
 **The transfer discriminator passes; the managed-workspace product remains

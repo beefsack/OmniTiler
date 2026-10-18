@@ -71,6 +71,16 @@
 //! drains it with fresh topology/readback, advancing per-display previous
 //! history only on verified arrival (stale/drift fails narrow without
 //! replay, concurrent presses serialize/refuse).
+//!
+//! Offline send preparation (not product behavior): the numbered
+//! send-and-follow shape (`WorkspaceSend` 1-9 with `follow: true`) is named
+//! by [`is_armed_send`] and exercised through the offline-tested
+//! [`crate::workspace_send`] seam (fake-backed drain core, admission shape
+//! check, holder-ownership helpers) — but the catalogue marks every send
+//! row `implemented: false`, the engine refuses every send, and the product
+//! tap table carries no send chord. [`is_armed_send`] is never consulted
+//! for dispatch; it only classifies the send shape for the offline seam
+//! and its tests.
 
 use crate::config::ProbeModifier;
 use crate::input_policy::{KEY_DOWN, KEY_H, KEY_J, KEY_K, KEY_L, KEY_LEFT, KEY_RIGHT, KEY_UP};
@@ -321,6 +331,11 @@ pub fn workspace_catalogue() -> Vec<WorkspaceRow> {
                 aux: false,
             }),
             unbound_key: None,
+            // Unarmed this milestone: every numbered send stays
+            // `implemented: false` (transfer PARKED) and refuses
+            // engine-side — see the module docs. The offline send seam
+            // (see `crate::workspace_send`) exercises the send shape
+            // through test-only injection, never through this flag.
             implemented: false,
         });
         rows.push(WorkspaceRow {
@@ -482,6 +497,27 @@ pub const fn is_armed_select(action: &InputSemanticAction) -> bool {
         InputSemanticAction::WorkspaceRelative { .. } | InputSemanticAction::WorkspacePrevious => {
             true
         }
+        _ => false,
+    }
+}
+
+/// Send-shape predicate for the OFFLINE send seam only: `WorkspaceSend`
+/// with `index` 1-9 and `follow: true` (the future `Ctrl+Shift+1..9` send
+/// shape under the default Ctrl role). This names the action shape the
+/// offline-tested [`crate::workspace_send`] machinery recognizes — it does
+/// NOT arm anything: every send row is `implemented: false`, the engine
+/// refusal gate ([`workspace_unsupported_reason`] /
+/// [`workspace_unsupported_outcome`]) deliberately does NOT consult this
+/// predicate, and the product tap table carries no send chord. Consumers
+/// are the offline drain core, the discard/kind classifier
+/// ([`crate::workspace_send::feedback_kind_for`]), and the offline tests.
+/// Everything else — the trailing `index 0` send, every send-and-stay
+/// (`follow: false`), every relative send, every output send, every
+/// select, and every basic action — is NOT send-shaped.
+#[must_use]
+pub const fn is_armed_send(action: &InputSemanticAction) -> bool {
+    match *action {
+        InputSemanticAction::WorkspaceSend { index, follow } => follow && index >= 1 && index <= 9,
         _ => false,
     }
 }

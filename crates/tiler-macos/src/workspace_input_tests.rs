@@ -91,6 +91,16 @@ fn catalogue_shape_is_63_rows_45_defaulted_18_implemented() {
     .into_iter()
     .collect();
     assert_eq!(implemented, expected, "armed select-only subset");
+    for id in ["workspace-send-0", "workspace-send-1", "workspace-send-9"] {
+        assert!(
+            !catalogue
+                .iter()
+                .find(|row| row.id == id)
+                .unwrap_or_else(|| panic!("{id} exists"))
+                .implemented,
+            "{id} stays unarmed (transfer PARKED)"
+        );
+    }
     assert!(
         !catalogue
             .iter()
@@ -99,8 +109,14 @@ fn catalogue_shape_is_63_rows_45_defaulted_18_implemented() {
             .implemented,
         "trailing select-0 stays unarmed"
     );
-    // The product subset exposes exactly those 18 as bindings.
+    // The product subsets expose exactly those 18 selects as bindings;
+    // the offline send seam arms nothing in product.
     assert_eq!(crate::workspace_select::bindings().len(), 18);
+    assert_eq!(
+        crate::workspace_send::bindings().len(),
+        0,
+        "no send chord armed in product"
+    );
     // Family counts: 10 select + 10 send + 10 stay + 8 + 8 + 8 relative +
     // 1 previous + 8 output.
     let selects = catalogue
@@ -400,7 +416,8 @@ fn trailing_zero_matches_shared_core_semantics() {
 fn numbered_chords_keep_plain_meta_digits() {
     // Numbered rows carry no auxiliary arm: Meta+digit select,
     // Meta+Shift+digit send — under Ctrl exactly the native Desktop-N
-    // default shape the Authentic ownership unit enables.
+    // default shape (the offline ownership seam covers the same digits;
+    // product arms no send chord).
     let select_1 = row_by_id("workspace-select-1").default.expect("bound");
     assert_eq!(
         (select_1.shift, select_1.alt, select_1.aux),
@@ -679,7 +696,9 @@ fn unsupported_refusal_names_the_seam_per_family() {
     // Basic actions execute (no refusal), and the armed select-only subset
     // dispatches (no refusal); every other workspace family refuses with a
     // distinct static token and a reason naming its exact missing route —
-    // never a fake dispatch.
+    // never a fake dispatch. Numbered sends 1-9 refuse too (transfer
+    // PARKED): the send shape is exercised only through the offline seam
+    // with test-only injection, never through product dispatch.
     for action in [
         InputSemanticAction::FocusStep {
             direction: InputDirection::Left,
@@ -690,6 +709,7 @@ fn unsupported_refusal_names_the_seam_per_family() {
         assert_eq!(workspace_unsupported_outcome(&action), None, "{action:?}");
         assert_eq!(workspace_unsupported_reason(&action), None, "{action:?}");
         assert!(!is_armed_select(&action), "{action:?}");
+        assert!(!is_armed_send(&action), "{action:?}");
     }
     for action in [
         InputSemanticAction::WorkspaceSelect { index: 1 },
@@ -701,6 +721,27 @@ fn unsupported_refusal_names_the_seam_per_family() {
         assert_eq!(workspace_unsupported_outcome(&action), None, "{action:?}");
         assert_eq!(workspace_unsupported_reason(&action), None, "{action:?}");
         assert!(is_armed_select(&action), "{action:?}");
+        assert!(!is_armed_send(&action), "{action:?}");
+    }
+    for index in [0u8, 1, 9] {
+        let action = InputSemanticAction::WorkspaceSend {
+            index,
+            follow: true,
+        };
+        let reason = workspace_unsupported_reason(&action).expect("send refuses");
+        assert!(
+            reason.contains("never runs from the product tile"),
+            "{reason}"
+        );
+        assert_eq!(
+            workspace_unsupported_outcome(&action),
+            Some("refused-workspace-send-unsupported"),
+            "{action:?}"
+        );
+        assert!(!is_armed_select(&action), "{action:?}");
+        // The offline seam still names the 1-9 follow shape (never
+        // consulted for dispatch); index 0 is not send-shaped.
+        assert_eq!(is_armed_send(&action), index != 0, "{action:?}");
     }
     // The trailing select-0 stays unarmed: automatic trailing creation is
     // unresolved (occupancy unproven), so it refuses with the switch token.
@@ -719,13 +760,19 @@ fn unsupported_refusal_names_the_seam_per_family() {
         follow: false,
     })
     .expect("stay refuses");
-    assert!(reason.contains("direct-SLS"), "{reason}");
+    assert!(
+        reason.contains("never runs from the product tile"),
+        "{reason}"
+    );
     let reason = workspace_unsupported_reason(&InputSemanticAction::WorkspaceSendRelative {
         prev: false,
         follow: true,
     })
     .expect("relative send refuses");
-    assert!(reason.contains("direct-SLS"), "{reason}");
+    assert!(
+        reason.contains("never runs from the product tile"),
+        "{reason}"
+    );
     let reason = workspace_unsupported_reason(&InputSemanticAction::WorkspaceOutput {
         direction: InputDirection::Right,
         follow: true,
@@ -746,7 +793,9 @@ fn unsupported_refusal_names_the_seam_per_family() {
         }),
         Some("refused-workspace-output-unsupported")
     );
-    // Sends, stays, and outputs are never armed selects.
+    // Sends, stays, and outputs are never armed selects; selects and basic
+    // actions are never send-shaped. The send shape predicate still names
+    // 1-9 follow rows for the offline seam (never consulted for dispatch).
     for action in [
         InputSemanticAction::WorkspaceSend {
             index: 1,
@@ -770,6 +819,16 @@ fn unsupported_refusal_names_the_seam_per_family() {
         },
     ] {
         assert!(!is_armed_select(&action), "{action:?}");
+    }
+    for action in [
+        InputSemanticAction::WorkspaceSelect { index: 1 },
+        InputSemanticAction::WorkspaceRelative { prev: true },
+        InputSemanticAction::WorkspacePrevious,
+        InputSemanticAction::FocusStep {
+            direction: InputDirection::Left,
+        },
+    ] {
+        assert!(!is_armed_send(&action), "{action:?}");
     }
 }
 
