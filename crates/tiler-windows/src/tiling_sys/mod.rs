@@ -41,14 +41,18 @@ use self::action_context::{ActionCtx, ActionLine, ActionTimings, SelectEffect, S
 #[cfg(test)]
 use self::admission::admission_clear_planned;
 use self::admission::{
-    admission_clear_eligible, clear_maximize_at_admission, committed_ordinary_pin,
-    engine_is_automatic_fixed, engine_is_float, fanout_pending_closed, fixed_origin_provenance,
-    fixed_predicate_for, float_focus_candidates, float_send_admits, handle_engine_event,
-    is_automatic_in, overlay_refusal_for, stamp_engine_event,
+    admission_clear_eligible, anchor_fallback_for, clear_maximize_at_admission,
+    committed_ordinary_pin, engine_is_automatic_fixed, engine_is_float, fanout_pending_closed,
+    fixed_origin_provenance, fixed_predicate_for, float_focus_candidates, float_send_admits,
+    handle_engine_event, is_automatic_in, no_space_for, overlay_refusal_for, stamp_engine_event,
 };
 use self::assignments::{
     MAX_HIDE_DIAG_PER_SELECT, audit_hidden_claims, ensure_workspace_assignments,
     workspace_close_cleanup, workspace_hide_one, workspace_proof_reveal_gate,
+};
+use self::capacity_floats::{
+    adopt_tick_capacity_floats, register_committed_capacity_floats,
+    reply_is_capacity_float_transfer,
 };
 use self::chord_resolution::{
     ChordObserved, ChordTarget, chord_overlay_refusal, observe_chord_intent,
@@ -59,6 +63,8 @@ use self::cli_workspace::poll_workspace_cli_request;
 pub use self::commands::{
     cmd_capture, cmd_inventory, cmd_resize, cmd_tile, cmd_workspace, load_normal_tile_base,
 };
+#[cfg(test)]
+use self::cross_drag::drag_refusal_kind;
 #[cfg(test)]
 use self::cross_drag::prepare_cross_drag_event;
 use self::cross_drag::{
@@ -1000,6 +1006,8 @@ mod fullscreen;
 
 mod admission;
 
+mod capacity_floats;
+
 mod rows;
 
 // W1 world capture fixtures (offline only): pure source-first observation
@@ -1164,6 +1172,14 @@ mod float_send_gate_tests;
 #[cfg(test)]
 #[path = "tests_deferred_send.rs"]
 mod deferred_send_route_tests;
+
+#[cfg(test)]
+#[path = "tests_admission_settings.rs"]
+mod admission_settings_tests;
+
+#[cfg(test)]
+#[path = "tests_capacity_floats.rs"]
+mod capacity_floats_tests;
 
 #[cfg(test)]
 #[path = "tests_border_shell.rs"]

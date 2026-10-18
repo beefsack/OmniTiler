@@ -19,13 +19,14 @@ use tiler_core::settings_catalog::{ALL_SECTIONS, ALL_TABS, FieldType, find_secti
 use crate::settings::{NATIVE_PANELS, WINDOWS_SECTIONS, windows_field_def};
 
 use super::{
-    ID_ALLOW_WIN_L, ID_APPLY, ID_BIND_CHORD, ID_BIND_DISABLE, ID_BIND_KEEP, ID_BIND_REBIND,
-    ID_BINDING_INFO, ID_BINDING_LIST, ID_BORDER_COLOR, ID_BORDER_ENABLED, ID_BORDER_GAP,
-    ID_BORDER_RADIUS, ID_BORDER_THEME, ID_BORDER_WIDTH, ID_BORN_MAX_OVERLAY, ID_BORN_MAX_TILE,
-    ID_CLOSE, ID_DEFAULT_FLOATING, ID_DEFAULT_TILED, ID_FIXED_SIZE_BOTH, ID_FIXED_SIZE_EITHER,
-    ID_GAMING_OPEN_APP, ID_GAMING_OPEN_GAMEBAR, ID_GAMING_OPEN_XBOX, ID_GAMING_RECHECK,
-    ID_INNER_GAP, ID_KEYBOARD_TAKEOVER, ID_LOCK_WARNING, ID_MIGRATION_REFILL_LAST,
-    ID_MIGRATION_REFILL_MRU, ID_MOUSE_SNAP, ID_OUTER_GAP, ID_PRESET_AUTHENTIC,
+    ID_ALLOW_WIN_L, ID_ANCHOR_CLOSEST, ID_ANCHOR_LARGEST, ID_ANCHOR_NO_SEARCH, ID_APPLY,
+    ID_BIND_CHORD, ID_BIND_DISABLE, ID_BIND_KEEP, ID_BIND_REBIND, ID_BINDING_INFO, ID_BINDING_LIST,
+    ID_BORDER_COLOR, ID_BORDER_ENABLED, ID_BORDER_GAP, ID_BORDER_RADIUS, ID_BORDER_THEME,
+    ID_BORDER_WIDTH, ID_BORN_MAX_OVERLAY, ID_BORN_MAX_TILE, ID_CLOSE, ID_DEFAULT_FLOATING,
+    ID_DEFAULT_TILED, ID_FIXED_SIZE_BOTH, ID_FIXED_SIZE_EITHER, ID_GAMING_OPEN_APP,
+    ID_GAMING_OPEN_GAMEBAR, ID_GAMING_OPEN_XBOX, ID_GAMING_RECHECK, ID_INNER_GAP,
+    ID_KEYBOARD_TAKEOVER, ID_LOCK_WARNING, ID_MIGRATION_REFILL_LAST, ID_MIGRATION_REFILL_MRU,
+    ID_MOUSE_SNAP, ID_NO_SPACE_FLOAT, ID_NO_SPACE_OVERLAP, ID_OUTER_GAP, ID_PRESET_AUTHENTIC,
     ID_PRESET_COMPATIBLE, ID_PRESET_EXPLAIN, ID_REBIND_NOTE, ID_REVERT, ID_SAME_AXIS_GROUP,
     ID_SAME_AXIS_SWAP, ID_SNAP_MEANING, ID_STATUS, ID_TASKBAR_PAGER, ID_UNDERLAY_COLOR,
     ID_UNDERLAY_ENABLED, ID_UNDERLAY_EXTENSION, ID_WORKSPACE_MODE_GLOBAL, ID_WORKSPACE_MODE_LOCAL,
@@ -172,6 +173,10 @@ pub const fn control_field(id: u32) -> Option<&'static str> {
         ID_SAME_AXIS_GROUP | ID_SAME_AXIS_SWAP => Some("move.same-axis"),
         ID_BORN_MAX_TILE | ID_BORN_MAX_OVERLAY => Some("admission.born-maximized"),
         ID_FIXED_SIZE_BOTH | ID_FIXED_SIZE_EITHER => Some("admission.fixed-size"),
+        ID_ANCHOR_LARGEST | ID_ANCHOR_CLOSEST | ID_ANCHOR_NO_SEARCH => {
+            Some("admission.anchor-fallback")
+        }
+        ID_NO_SPACE_FLOAT | ID_NO_SPACE_OVERLAP => Some("admission.no-space"),
         ID_MIGRATION_REFILL_LAST | ID_MIGRATION_REFILL_MRU => Some("migration.refill"),
         ID_BORDER_ENABLED => Some("border.enabled"),
         ID_BORDER_WIDTH => Some("border.width"),
@@ -223,7 +228,7 @@ pub const fn control_rect(id: u32) -> Option<(i32, i32, i32, i32)> {
         ID_APPLY => Some((580, 528, 100, 30)),
         ID_REVERT => Some((690, 528, 100, 30)),
         ID_CLOSE => Some((800, 528, 100, 30)),
-        // Tiling & Workspaces: gaps row, workspaces block, four radio rows.
+        // Tiling & Workspaces: gaps row, workspaces block, five radio rows.
         ID_INNER_GAP => Some((84, 66, 56, 22)),
         ID_OUTER_GAP => Some((206, 66, 56, 22)),
         ID_DEFAULT_TILED => Some((310, 66, 140, 24)),
@@ -231,14 +236,19 @@ pub const fn control_rect(id: u32) -> Option<(i32, i32, i32, i32)> {
         ID_WORKSPACE_MODE_LOCAL => Some((310, 100, 170, 24)),
         ID_WORKSPACE_MODE_GLOBAL => Some((490, 100, 160, 24)),
         ID_WORKSPACE_MODE_SHARED => Some((660, 100, 100, 24)),
-        ID_SAME_AXIS_GROUP => Some((28, 220, 200, 24)),
-        ID_SAME_AXIS_SWAP => Some((238, 220, 200, 24)),
-        ID_BORN_MAX_TILE => Some((28, 288, 200, 24)),
-        ID_BORN_MAX_OVERLAY => Some((238, 288, 200, 24)),
-        ID_FIXED_SIZE_BOTH => Some((28, 356, 200, 24)),
-        ID_FIXED_SIZE_EITHER => Some((238, 356, 200, 24)),
-        ID_MIGRATION_REFILL_LAST => Some((28, 424, 210, 24)),
-        ID_MIGRATION_REFILL_MRU => Some((248, 424, 220, 24)),
+        ID_SAME_AXIS_GROUP => Some((28, 202, 200, 24)),
+        ID_SAME_AXIS_SWAP => Some((238, 202, 200, 24)),
+        ID_BORN_MAX_TILE => Some((28, 250, 200, 24)),
+        ID_BORN_MAX_OVERLAY => Some((238, 250, 200, 24)),
+        ID_FIXED_SIZE_BOTH => Some((28, 296, 200, 24)),
+        ID_FIXED_SIZE_EITHER => Some((238, 296, 200, 24)),
+        ID_ANCHOR_LARGEST => Some((28, 342, 210, 24)),
+        ID_ANCHOR_CLOSEST => Some((248, 342, 210, 24)),
+        ID_ANCHOR_NO_SEARCH => Some((468, 342, 150, 24)),
+        ID_NO_SPACE_FLOAT => Some((28, 400, 200, 24)),
+        ID_NO_SPACE_OVERLAP => Some((238, 400, 200, 24)),
+        ID_MIGRATION_REFILL_LAST => Some((28, 458, 210, 24)),
+        ID_MIGRATION_REFILL_MRU => Some((248, 458, 220, 24)),
         // Appearance: border block (left) plus underlay block (right).
         ID_BORDER_ENABLED => Some((28, 66, 200, 20)),
         ID_BORDER_THEME => Some((28, 88, 290, 20)),
@@ -317,6 +327,11 @@ pub const fn control_class(id: u32) -> Option<&'static str> {
         | ID_BORN_MAX_OVERLAY
         | ID_FIXED_SIZE_BOTH
         | ID_FIXED_SIZE_EITHER
+        | ID_ANCHOR_LARGEST
+        | ID_ANCHOR_CLOSEST
+        | ID_ANCHOR_NO_SEARCH
+        | ID_NO_SPACE_FLOAT
+        | ID_NO_SPACE_OVERLAP
         | ID_MIGRATION_REFILL_LAST
         | ID_MIGRATION_REFILL_MRU
         | ID_WORKSPACE_MODE_LOCAL
@@ -347,33 +362,47 @@ pub enum GroupKey {
 }
 
 /// Groupboxes in creation order: `(key, x, y, w, h)` at 96 DPI. Id 0,
-/// never automated, pinned behind siblings by the shell. The two
+/// never automated, pinned behind siblings by the shell. The four
 /// admission groups share one section id, so each carries its field key:
-/// titles read `Admission: <field label>`, never two bare `Admission`s.
+/// titles read `Admission: <field label>`, never bare duplicates.
 pub const GROUPS: &[(GroupKey, i32, i32, i32, i32)] = &[
-    (GroupKey::Section("tiling.gaps"), 18, 44, 272, 64),
-    (GroupKey::Section("tiling.workspaces"), 300, 44, 604, 160),
-    (GroupKey::Section("tiling.move"), 18, 212, 886, 60),
+    (GroupKey::Section("tiling.gaps"), 18, 44, 272, 56),
+    (GroupKey::Section("tiling.workspaces"), 300, 44, 604, 140),
+    (GroupKey::Section("tiling.move"), 18, 190, 886, 44),
     (
         GroupKey::SectionField("tiling.admission", "admission.born-maximized"),
         18,
-        280,
+        240,
         886,
-        60,
+        40,
     ),
     (
         GroupKey::SectionField("tiling.admission", "admission.fixed-size"),
         18,
-        348,
+        286,
         886,
-        60,
+        40,
+    ),
+    (
+        GroupKey::SectionField("tiling.admission", "admission.anchor-fallback"),
+        18,
+        332,
+        886,
+        52,
+    ),
+    (
+        GroupKey::SectionField("tiling.admission", "admission.no-space"),
+        18,
+        390,
+        886,
+        52,
     ),
     (
         GroupKey::Section("tiling.migration-refill"),
         18,
-        416,
+        448,
         886,
-        60,
+        48,
     ),
     (GroupKey::Section("appearance.border"), 18, 44, 560, 240),
     (GroupKey::Section("appearance.underlay"), 588, 44, 316, 180),
@@ -417,7 +446,7 @@ pub fn group_tab(key: GroupKey) -> Option<usize> {
 }
 
 /// Groupbox title for one key: native panel labels for panels, catalog
-/// section labels for sections, and `section: field` for the two
+/// section labels for sections, and `section: field` for the four
 /// admission groups sharing one section id.
 #[must_use]
 pub fn group_title(key: GroupKey) -> String {
@@ -453,15 +482,17 @@ fn section_label(section: &str) -> String {
 /// rects are native metrics. Long workspace notes (indices 2, 3) are
 /// readonly multiline edits like the other long notes.
 pub const LABEL_RECTS: &[(usize, i32, i32, i32, i32)] = &[
-    // Tiling: gap labels, workspace notes, four radio-row notes.
+    // Tiling: gap labels, workspace notes, six radio-row notes.
     (TAB_TILING, 28, 68, 52, 20),
     (TAB_TILING, 150, 68, 52, 20),
     (TAB_TILING, 610, 64, 284, 60),
     (TAB_TILING, 310, 132, 584, 44),
-    (TAB_TILING, 448, 218, 448, 46),
-    (TAB_TILING, 448, 286, 448, 46),
-    (TAB_TILING, 448, 354, 448, 46),
-    (TAB_TILING, 478, 422, 418, 46),
+    (TAB_TILING, 448, 200, 448, 32),
+    (TAB_TILING, 448, 246, 448, 32),
+    (TAB_TILING, 448, 292, 448, 32),
+    (TAB_TILING, 478, 454, 418, 40),
+    (TAB_TILING, 628, 342, 266, 32),
+    (TAB_TILING, 448, 394, 448, 48),
     // Appearance: border/underlay field labels plus two notes.
     (TAB_APPEARANCE, 28, 112, 136, 20),
     (TAB_APPEARANCE, 28, 136, 136, 20),
@@ -480,7 +511,7 @@ pub const LABEL_RECTS: &[(usize, i32, i32, i32, i32)] = &[
 
 /// Label index of the rebind-chord buddy label (no catalog field; the
 /// editor carries the pending chord, so the label is native wording).
-pub const LABEL_CHORD: usize = 18;
+pub const LABEL_CHORD: usize = 20;
 
 /// Catalog field behind a label-static index above.
 const LABEL_FIELDS: &[&str] = &[
@@ -492,6 +523,8 @@ const LABEL_FIELDS: &[&str] = &[
     "admission.born-maximized",
     "admission.fixed-size",
     "migration.refill",
+    "admission.anchor-fallback",
+    "admission.no-space",
     "border.color",
     "border.width",
     "border.gap",
@@ -520,12 +553,12 @@ pub const fn label_class(index: usize) -> &'static str {
 pub const BUDDY_LABELS: &[(u32, usize)] = &[
     (ID_INNER_GAP, 0),
     (ID_OUTER_GAP, 1),
-    (ID_BORDER_COLOR, 8),
-    (ID_BORDER_WIDTH, 9),
-    (ID_BORDER_GAP, 10),
-    (ID_BORDER_RADIUS, 11),
-    (ID_UNDERLAY_COLOR, 13),
-    (ID_UNDERLAY_EXTENSION, 14),
+    (ID_BORDER_COLOR, 10),
+    (ID_BORDER_WIDTH, 11),
+    (ID_BORDER_GAP, 12),
+    (ID_BORDER_RADIUS, 13),
+    (ID_UNDERLAY_COLOR, 15),
+    (ID_UNDERLAY_EXTENSION, 16),
     (ID_BIND_CHORD, LABEL_CHORD),
 ];
 
@@ -558,13 +591,17 @@ pub fn control_text(id: u32) -> String {
                     | ID_BORN_MAX_TILE
                     | ID_FIXED_SIZE_BOTH
                     | ID_MIGRATION_REFILL_LAST
+                    | ID_ANCHOR_LARGEST
+                    | ID_NO_SPACE_FLOAT
                     | ID_WORKSPACE_MODE_LOCAL => 0,
                     ID_SAME_AXIS_SWAP
                     | ID_BORN_MAX_OVERLAY
                     | ID_FIXED_SIZE_EITHER
                     | ID_MIGRATION_REFILL_MRU
+                    | ID_ANCHOR_CLOSEST
+                    | ID_NO_SPACE_OVERLAP
                     | ID_WORKSPACE_MODE_GLOBAL => 1,
-                    ID_WORKSPACE_MODE_SHARED => 2,
+                    ID_ANCHOR_NO_SEARCH | ID_WORKSPACE_MODE_SHARED => 2,
                     _ => return String::new(),
                 };
                 return def
@@ -616,13 +653,13 @@ pub fn label_text(index: usize) -> String {
         0 | 1 => format!("{}:", short_field_noun(field_id)),
         2 => format!("{} {}", def.help, def.timing_help),
         3 => format!("Scope (restart required): {}", def.timing_help),
-        4..=7 => def.timing_help.to_owned(),
-        8..=11 => format!("{}:", def.label),
-        12 => "Configured colour wins when theme is off or no accent.".to_owned(),
-        13 | 14 => format!("{}:", def.label),
-        15 => "-1 follows the border width.".to_owned(),
-        16 => def.timing_help.to_owned(),
-        17 => def.help.to_owned(),
+        4..=9 => def.timing_help.to_owned(),
+        10..=13 => format!("{}:", def.label),
+        14 => "Configured colour wins when theme is off or no accent.".to_owned(),
+        15 | 16 => format!("{}:", def.label),
+        17 => "-1 follows the border width.".to_owned(),
+        18 => def.timing_help.to_owned(),
+        19 => def.help.to_owned(),
         _ => def.label.to_owned(),
     }
 }
@@ -893,6 +930,8 @@ pub const fn is_radio_first(id: u32) -> bool {
             | ID_SAME_AXIS_GROUP
             | ID_BORN_MAX_TILE
             | ID_FIXED_SIZE_BOTH
+            | ID_ANCHOR_LARGEST
+            | ID_NO_SPACE_FLOAT
             | ID_MIGRATION_REFILL_LAST
     )
 }
@@ -1010,6 +1049,11 @@ pub const ALL_CONTROL_IDS: &[u32] = &[
     ID_FIXED_SIZE_EITHER,
     ID_MIGRATION_REFILL_LAST,
     ID_MIGRATION_REFILL_MRU,
+    ID_ANCHOR_LARGEST,
+    ID_ANCHOR_CLOSEST,
+    ID_ANCHOR_NO_SEARCH,
+    ID_NO_SPACE_FLOAT,
+    ID_NO_SPACE_OVERLAP,
     ID_WORKSPACE_MODE_LOCAL,
     ID_WORKSPACE_MODE_GLOBAL,
     ID_WORKSPACE_MODE_SHARED,

@@ -901,6 +901,7 @@ fn send_follow_hide_failure_never_reaches_select() {
         0,
         preflight,
         false,
+        false,
     );
     assert_eq!(effect.outcome, "refused", "failed hide aborts the follow");
     assert_eq!(effect.focus, "none", "no focus without a reveal");

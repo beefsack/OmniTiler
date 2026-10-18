@@ -142,17 +142,14 @@ decisions of 2026-09-24 are under
   [Delivery and exact script-restart re-check](changes/archive/best-effort-admission.md#residual-risks-and-exact-live-re-check).
   Windows/macOS consumption remains separate below. B6 declared-minimum overlap
   is unchanged; review its UX during dogfooding.
-- P1 | Windows best-effort admission adoption | Consume the shared D1-D10 policy
-  and Admission catalog settings. Not started; first determine whether adoption
-  depends on the parked full-world migration below. Windows fixtures are aligned
-  (`c75fe675`, [record](changes/windows-admission-ci-compatibility.md));
-  remove the explicit unsupported catalog partition when runtime consumes them.
-  Echo capacity floats as ordinary floats, persist membership like user floats,
-  preserve opening/last-live frames and explicit-retry semantics, consume mixed
-  rosters, protected newest-first repair and positive-overflow targets. Adapt
-  sends/R4 with native arrival/follow/refusal fences; keep drag preview/drop
-  honest. Native regression acceptance remains separate. Shared primitives and
-  compiling legacy API do not establish Windows behavioral adoption.
+- P1 | Windows best-effort admission adoption | Delivered offline on the existing
+  legacy API; no dependency on parked world adoption or shared semantic change.
+  Ordinary float markers preserve capacity floats across restart; shrink repair,
+  overlap, retry and catalog controls are covered by producer-shaped fixtures and
+  independent safety review. Native four-package gates: **2,750 passed, 0 failed,
+  1 ignored**. Pending scoped live checks and host limitations (cross-output float
+  transfers safely refuse without an established remap):
+  [record](changes/windows-best-effort-admission.md).
 - P1 | macOS: adopt best-effort admission | Consume the shared D1-D10 policy
   with full-world adoption below; retain/echo ordinary float classification
   through AX observations and restart persistence, no capacity-specific behavior.

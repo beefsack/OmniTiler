@@ -117,6 +117,65 @@ pub(super) fn migration_refill_tip_texts() -> [Vec<u16>; 2] {
     [wide(options[0].2), wide(options[1].2)]
 }
 
+/// Best-effort admission D2 selector state from saved/draft settings: the
+/// index into [`crate::settings::anchor_fallback_options`] (0
+/// largest-splittable default, 1 closest-relative, 2 no-search). Unknown
+/// values (possible only in hand-built drafts, never from disk) show the
+/// default.
+pub(super) fn anchor_fallback_selected(settings: &Settings) -> usize {
+    match settings.core.anchor_fallback.as_str() {
+        s if s == crate::settings::ANCHOR_FALLBACK_CLOSEST => 1,
+        s if s == crate::settings::ANCHOR_FALLBACK_NO_SEARCH => 2,
+        _ => 0,
+    }
+}
+
+/// Best-effort admission D2 draft staging from the selector index: writes
+/// the exact wire token for the selected choice, so Apply persists a
+/// validated value. Out-of-range indices stage the default, never an
+/// unknown token.
+pub(super) fn apply_anchor_fallback_selection(draft: &mut Settings, index: usize) {
+    draft.core.anchor_fallback = match index {
+        1 => crate::settings::ANCHOR_FALLBACK_CLOSEST.to_owned(),
+        2 => crate::settings::ANCHOR_FALLBACK_NO_SEARCH.to_owned(),
+        _ => crate::settings::ANCHOR_FALLBACK_LARGEST.to_owned(),
+    };
+}
+
+/// Best-effort admission D2 native tooltip text buffers from the shared
+/// options table, wide-encoded for the tooltip control. Radio labels stay
+/// functional-only per the naming rule.
+pub(super) fn anchor_fallback_tip_texts() -> [Vec<u16>; 3] {
+    let options = crate::settings::anchor_fallback_options();
+    [wide(options[0].2), wide(options[1].2), wide(options[2].2)]
+}
+
+/// Best-effort admission D3 radio selection from saved/draft settings: true
+/// selects the allow-overlap radio, false the float default. Unknown values
+/// (possible only in hand-built drafts, never from disk) show the default.
+pub(super) fn no_space_overlap_selected(settings: &Settings) -> bool {
+    settings.core.no_space_result == crate::settings::NO_SPACE_OVERLAP
+}
+
+/// Best-effort admission D3 draft staging from the overlap radio state:
+/// writes the exact wire token for the selected choice, so Apply persists
+/// a validated value.
+pub(super) fn apply_no_space_selection(draft: &mut Settings, overlap: bool) {
+    draft.core.no_space_result = if overlap {
+        crate::settings::NO_SPACE_OVERLAP.to_owned()
+    } else {
+        crate::settings::NO_SPACE_FLOAT.to_owned()
+    };
+}
+
+/// Best-effort admission D3 native tooltip text buffers from the shared
+/// options table, wide-encoded for the tooltip control. Radio labels stay
+/// functional-only per the naming rule.
+pub(super) fn no_space_tip_texts() -> [Vec<u16>; 2] {
+    let options = crate::settings::no_space_options();
+    [wide(options[0].2), wide(options[1].2)]
+}
+
 /// Item 12 selector state from saved/draft settings: the index into
 /// [`crate::settings::workspace_mode_options`] (0 per-output-local default,
 /// 1 global-unique, 2 shared). Unknown values (possible only in hand-built
@@ -140,17 +199,22 @@ pub(super) fn apply_workspace_mode_selection(draft: &mut Settings, index: usize)
     };
 }
 
-/// All eight two-choice radio tooltip buffers in control order: the two
+/// All thirteen choice tooltip buffers in control order: the two
 /// R-MOV-03 buffers, the two R-MAX-06 buffers, the two R-SPC-04 D1
-/// fixed-size buffers, then the two R-WS-12e G-37 migration-refill buffers.
-pub(super) fn choice_tip_texts() -> [Vec<u16>; 8] {
+/// fixed-size buffers, the two R-WS-12e G-37 migration-refill buffers,
+/// then the three best-effort admission D2 buffers and the two D3 buffers.
+pub(super) fn choice_tip_texts() -> [Vec<u16>; 13] {
     let axis = same_axis_tip_texts();
     let born = born_maximized_tip_texts();
     let fixed = fixed_size_tip_texts();
     let refill = migration_refill_tip_texts();
+    let anchor = anchor_fallback_tip_texts();
+    let no_space = no_space_tip_texts();
     let [a0, a1] = axis;
     let [b0, b1] = born;
     let [c0, c1] = fixed;
     let [d0, d1] = refill;
-    [a0, a1, b0, b1, c0, c1, d0, d1]
+    let [e0, e1, e2] = anchor;
+    let [f0, f1] = no_space;
+    [a0, a1, b0, b1, c0, c1, d0, d1, e0, e1, e2, f0, f1]
 }

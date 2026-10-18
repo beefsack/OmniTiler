@@ -715,6 +715,19 @@ fn confirm_cross_drop(
     ("drag-drop-applied", Some(actuation))
 }
 
+/// Refusal kind for a non-plan drag reply: typed refusals keep their
+/// kind; a committed capacity-float transfer (which has no drag
+/// remap) reports as capacity rather than an unhandled variant.
+pub(super) fn drag_refusal_kind(reply: &CoreReply) -> &'static str {
+    match reply {
+        CoreReply::Rejected { kind, .. } => kind,
+        CoreReply::Diverged(reason) => reason.as_str(),
+        CoreReply::SnapshotInvalid { detail, .. } => detail,
+        _ if reply_is_capacity_float_transfer(reply) => "capacity",
+        _ => "unhandled-variant",
+    }
+}
+
 /// Finalize an occupied-destination cross drop reply: the pair plan sits on
 /// the discarded-on-refusal candidate, so the project membership commits
 /// only after the fresh topology, the single combined apply, its readback,
@@ -759,12 +772,7 @@ fn finalize_cross_drag_drop(
         log_json_at(&log_path, serde_json::Value::Object(line));
     };
     let CoreReply::Tiled(_) = reply else {
-        let kind = match reply {
-            CoreReply::Rejected { kind, .. } => *kind,
-            CoreReply::Diverged(reason) => reason.as_str(),
-            CoreReply::SnapshotInvalid { detail, .. } => *detail,
-            _ => "unhandled-variant",
-        };
+        let kind = drag_refusal_kind(reply);
         log_drop(
             "drag-drop-refused",
             serde_json::json!({"disposition": "refused", "kind": kind}),
@@ -1077,12 +1085,7 @@ fn finalize_empty_drag_drop(
         log_json_at(&log_path, serde_json::Value::Object(line));
     };
     let CoreReply::Tiled(_) = reply else {
-        let kind = match reply {
-            CoreReply::Rejected { kind, .. } => *kind,
-            CoreReply::Diverged(reason) => reason.as_str(),
-            CoreReply::SnapshotInvalid { detail, .. } => *detail,
-            _ => "unhandled-variant",
-        };
+        let kind = drag_refusal_kind(reply);
         log_drop(
             "drag-drop-refused",
             serde_json::json!({"disposition": "refused", "kind": kind}),

@@ -578,6 +578,20 @@ pub(super) fn workspace_do_select(
             geometry = summary;
             ms
         };
+        // Revealed-domain capacity adoption: the committed convergence
+        // above can float newcomers or shrink-repair victims (a workspace
+        // that shrank while hidden), so register them exactly like the
+        // tick legs, including the geometry-skipped path whose commit
+        // still stands.
+        adopt_tick_capacity_floats(
+            state,
+            me,
+            tick,
+            ctx.correlation.as_str(),
+            &reply,
+            &fresh_observed,
+            &domain_key,
+        );
         return SelectEffect {
             outcome: "ok",
             geometry,

@@ -44,7 +44,7 @@ fn windows_sections_point_at_known_tabs() {
 
 #[test]
 fn every_scalar_field_renders_exactly_once() {
-    assert_eq!(WINDOWS_FIELD_MAPPINGS.len(), 21);
+    assert_eq!(WINDOWS_FIELD_MAPPINGS.len(), 23);
     let mut seen: BTreeSet<&str> = BTreeSet::new();
     for id in ALL_CONTROL_IDS {
         if let Some(field) = control_field(*id) {
@@ -131,8 +131,9 @@ fn native_slots_consumed_once_each() {
 #[test]
 fn control_text_comes_from_the_catalog() {
     for field in ALL_FIELDS.iter().chain(WINDOWS_ONLY_FIELDS.iter()) {
-        // Portable fields without a Windows mapping stay off the dialog
-        // until the runtime follow-up (see WINDOWS_UNSUPPORTED_FIELDS).
+        // Portable fields without a Windows mapping stay off the dialog;
+        // the unsupported partition is currently empty since the runtime
+        // adoption maps both admission settings.
         if WINDOWS_UNSUPPORTED_FIELDS.contains(&field.id) {
             continue;
         }
@@ -184,14 +185,14 @@ fn group_titles_come_from_metadata_and_admission_is_unambiguous() {
         // Production derivation agrees with the stored owning tab.
         assert!(group_tab(*key).is_some(), "{key:?}");
     }
-    // The two admission groups share one section id but read
+    // The four admission groups share one section id but read
     // distinctly through their field labels.
     let admissions: Vec<String> = GROUPS
         .iter()
         .filter(|(key, _, _, _, _)| matches!(key, GroupKey::SectionField("tiling.admission", _)))
         .map(|(key, _, _, _, _)| group_title(*key))
         .collect();
-    assert_eq!(admissions.len(), 2);
+    assert_eq!(admissions.len(), 4);
     assert_ne!(admissions[0], admissions[1]);
     for title in &admissions {
         assert!(title.starts_with("Admission: "), "{title}");
@@ -396,7 +397,7 @@ fn radio_starters_cover_every_field_exactly_once() {
             }
         }
     }
-    assert_eq!(by_field.len(), 6);
+    assert_eq!(by_field.len(), 8);
     for (field, ids) in &by_field {
         let starters = ids.iter().filter(|id| is_radio_first(**id)).count();
         assert_eq!(starters, 1, "{field} needs one WS_GROUP starter");

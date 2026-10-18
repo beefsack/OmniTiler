@@ -489,6 +489,11 @@ impl SettingsWindow {
                 crate::settings_ui::ID_FIXED_SIZE_EITHER,
                 crate::settings_ui::ID_MIGRATION_REFILL_LAST,
                 crate::settings_ui::ID_MIGRATION_REFILL_MRU,
+                crate::settings_ui::ID_ANCHOR_LARGEST,
+                crate::settings_ui::ID_ANCHOR_CLOSEST,
+                crate::settings_ui::ID_ANCHOR_NO_SEARCH,
+                crate::settings_ui::ID_NO_SPACE_FLOAT,
+                crate::settings_ui::ID_NO_SPACE_OVERLAP,
             ]
             .iter()
             .enumerate()

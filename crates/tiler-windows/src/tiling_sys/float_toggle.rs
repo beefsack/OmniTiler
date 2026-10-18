@@ -700,10 +700,22 @@ pub(super) fn apply_unfloat_to_tiled(
     ) else {
         return;
     };
-    let Some(topmost_restored) = restore_raised_band(
-        state, me, fulls, observed, member_key, from, target, origin, settle, log_path, tick, op,
-    ) else {
-        return;
+    // Capacity re-float: the tile retry found no space, so the window
+    // stays floating with its frame. No tile override, no marker
+    // removal, no toggle loop: lanes persist, survivors reflow below,
+    // and the outcome reports no-space. The raised band stays as-is.
+    let capacity_refloat = matches!(&reply, CoreReply::Tiled(plan) if plan.float_window.is_some());
+    let topmost_restored = if capacity_refloat {
+        // The float continues: keep its raised band exactly as-is.
+        false
+    } else {
+        let Some(restored) = restore_raised_band(
+            state, me, fulls, observed, member_key, from, target, origin, settle, log_path, tick,
+            op,
+        ) else {
+            return;
+        };
+        restored
     };
     if unmark_sticky {
         let expected_prior = state.sticky.get(member_key).copied().unwrap_or(false);
@@ -721,7 +733,22 @@ pub(super) fn apply_unfloat_to_tiled(
             return;
         }
     }
-    if !clear_float_mark(
+    if capacity_refloat {
+        // Repair a foreign marker value; never remove: the window stays
+        // floating. Failures keep state with a degraded log.
+        let marker_ok = crate::product_hide::sys::read_float_intent_marker(member_key.hwnd)
+            || install_float_mark_held(state, me, member_key);
+        if !marker_ok {
+            log_json_at(
+                log_path,
+                serde_json::json!({
+                    "event": "unfloat-capacity",
+                    "window": from,
+                    "outcome": "marker-unverified",
+                }),
+            );
+        }
+    } else if !clear_float_mark(
         state, me, member_key, from, target, origin, settle, log_path,
     ) {
         return;
@@ -732,9 +759,19 @@ pub(super) fn apply_unfloat_to_tiled(
     // suppression only and install no marker.
     let fixed_win = fixed_origin_provenance(state, member_key);
     state.engine = candidate;
-    state.sticky.remove(member_key);
-    state.floated.remove(member_key);
-    state.float_rects.remove(from);
+    if capacity_refloat {
+        // Stays floating: keep lanes and frame, record no win.
+        if !state.floated.contains(member_key) {
+            state.floated.insert(member_key.clone());
+        }
+        if let Some(frame) = float_rect {
+            state.float_rects.insert(from.to_owned(), frame);
+        }
+    } else {
+        state.sticky.remove(member_key);
+        state.floated.remove(member_key);
+        state.float_rects.remove(from);
+    }
     // R-SPC-04 D3/D7: a settled unfloat is an explicit user tile win for
     // this live client. Record it in the runtime override set (survives
     // domain releases so workspace-enable re-adoption keeps tiling it);
@@ -742,20 +779,23 @@ pub(super) fn apply_unfloat_to_tiled(
     // on-window marker (survives owner restarts; recompute fallback
     // otherwise). The D4 automatic latch withdraws: the window is
     // explicitly tiled now. A failed marker install keeps local intent and
-    // native state with a degraded log.
-    state.fixed_auto_seen.remove(member_key);
-    state.fixed_tile_overrides.insert(member_key.clone());
-    if fixed_win {
-        state.fixed_origin_overrides.insert(member_key.clone());
-        if !install_tile_override_mark_held(state, me, member_key) {
-            log_json_at(
-                log_path,
-                serde_json::json!({
-                    "event": "tile-override",
-                    "window": from,
-                    "outcome": "marker-unverified",
-                }),
-            );
+    // native state with a degraded log. A capacity re-float records no
+    // win: overrides and latches stand as they were.
+    if !capacity_refloat {
+        state.fixed_auto_seen.remove(member_key);
+        state.fixed_tile_overrides.insert(member_key.clone());
+        if fixed_win {
+            state.fixed_origin_overrides.insert(member_key.clone());
+            if !install_tile_override_mark_held(state, me, member_key) {
+                log_json_at(
+                    log_path,
+                    serde_json::json!({
+                        "event": "tile-override",
+                        "window": from,
+                        "outcome": "marker-unverified",
+                    }),
+                );
+            }
         }
     }
     let focus = match observed.iter().find(|w| w.hwnd == member_key.hwnd) {
@@ -787,6 +827,13 @@ pub(super) fn apply_unfloat_to_tiled(
         Some(s) if s.mismatched > 0 => "unfloat-mismatch",
         Some(_) => "unfloat-applied",
         None => reply_outcome(&reply),
+    };
+    // A re-float that reflowed its survivors reports no-space instead
+    // of a tile success.
+    let outcome = if capacity_refloat && outcome == "unfloat-applied" {
+        "unfloat-no-space"
+    } else {
+        outcome
     };
     let mut line = settle(outcome);
     line["origin"] = serde_json::Value::from(origin.token.clone());

@@ -367,8 +367,15 @@ pub fn peek_sticky_raw(hwnd_u64: u64) -> MarkerSlot {
 }
 
 /// Intentional-float marker slot. Same honest absences as
-/// [`peek_sticky_raw`].
+/// [`peek_sticky_raw`]. Registered test fakes read their scripted slot.
 pub fn peek_float_intent_raw(hwnd_u64: u64) -> MarkerSlot {
+    #[cfg(test)]
+    if let Some(slot) = fake::peek_float_mark(hwnd_u64) {
+        return match slot {
+            Some(value) => MarkerSlot::Value(value),
+            None => MarkerSlot::Absent,
+        };
+    }
     read_prop_slot(hwnd_u64, FLOAT_INTENT_PROP)
 }
 
@@ -459,6 +466,19 @@ pub fn read_tile_override_marker(hwnd_u64: u64) -> bool {
 /// and no removal.
 pub fn install_float_intent_marker(hwnd_u64: u64) -> Result<()> {
     let value = crate::tiling::float_intent_marker_value();
+    #[cfg(test)]
+    if fake::active(hwnd_u64) {
+        if !fake::store_float_mark(hwnd_u64, value) {
+            return Err(err("error: SetProp failed"));
+        }
+        return match peek_float_intent_raw(hwnd_u64) {
+            MarkerSlot::Value(back) if crate::tiling::parse_float_intent_marker(back).is_some() => {
+                Ok(())
+            }
+            MarkerSlot::Unreadable => Err(err("error: float intent marker read error")),
+            _ => Err(err("error: float intent marker readback mismatch")),
+        };
+    }
     if !crate::ffi::set_prop(hwnd_u64, FLOAT_INTENT_PROP, value as usize) {
         return Err(err("error: SetProp failed"));
     }
@@ -1693,6 +1713,12 @@ pub(crate) mod fake {
         static SNAPSHOT_LOG: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
         /// Combined post/snapshot order: `('p' | 's', hwnd)`.
         static OP_LOG: RefCell<Vec<(char, u64)>> = const { RefCell::new(Vec::new()) };
+        /// Scripted float-intent marker slots by HWND: present entry is a
+        /// present property value, absent entry is no property. Stands in
+        /// for the window property table for registered HWNDs only, so
+        /// marker install/peek roundtrips run offline; unregistered HWNDs
+        /// fall through to the OS exactly as before.
+        static FLOAT_MARKS: RefCell<HashMap<u64, u64>> = RefCell::new(HashMap::new());
     }
 
     pub(crate) fn register(hwnd: u64, window: FakeWindow) {
@@ -1704,6 +1730,7 @@ pub(crate) mod fake {
         POST_LOG.with(|log| log.borrow_mut().clear());
         SNAPSHOT_LOG.with(|log| log.borrow_mut().clear());
         OP_LOG.with(|log| log.borrow_mut().clear());
+        FLOAT_MARKS.with(|map| map.borrow_mut().clear());
     }
 
     pub(crate) fn any_registered() -> bool {
@@ -1720,6 +1747,32 @@ pub(crate) mod fake {
 
     pub(crate) fn with_mut<R>(hwnd: u64, f: impl FnOnce(&mut FakeWindow) -> R) -> Option<R> {
         WINDOWS.with(|map| map.borrow_mut().get_mut(&hwnd).map(f))
+    }
+
+    /// Scripted float-intent marker read: `None` falls through to the OS
+    /// (unregistered HWND); `Some` mirrors the property table (`Some`
+    /// value present, `None` absent, including destroyed fakes whose
+    /// markers die with the window).
+    pub(crate) fn peek_float_mark(hwnd: u64) -> Option<Option<u64>> {
+        if !active(hwnd) {
+            return None;
+        }
+        Some(FLOAT_MARKS.with(|map| map.borrow().get(&hwnd).copied()))
+    }
+
+    /// Scripted float-intent marker write: `false` falls through to the
+    /// OS (unregistered HWND) or mirrors a failed `SetProp` (destroyed
+    /// fake); `true` stores and reads back through the same table.
+    pub(crate) fn store_float_mark(hwnd: u64, value: u64) -> bool {
+        if !active(hwnd) {
+            return false;
+        }
+        if with(hwnd, |w| w.alive).unwrap_or(false) {
+            FLOAT_MARKS.with(|map| map.borrow_mut().insert(hwnd, value));
+            true
+        } else {
+            false
+        }
     }
 
     pub(crate) fn post_log() -> Vec<(u64, bool)> {

@@ -298,6 +298,16 @@ pub(super) fn run_tile_loop(
     state
         .engine
         .set_fixed_size_predicate(fixed_predicate_for(state.settings_live.as_ref()));
+    // Best-effort admission D2/D3: the shared capacity policy starts from
+    // the last-good startup settings (largest-splittable/float defaults,
+    // proof owners included) and later adopts live edits for subsequent
+    // decisions only.
+    state
+        .engine
+        .set_anchor_fallback(anchor_fallback_for(state.settings_live.as_ref()));
+    state
+        .engine
+        .set_no_space_result(no_space_for(state.settings_live.as_ref()));
     // Existing workspaces take the saved default at owner startup (initially
     // tiled); live default edits later affect only newly created workspaces.
     // Overrides reset on owner restart: nothing persists per workspace.

@@ -469,6 +469,17 @@ fn converge_tail(
                     .as_millis()
                     .min(u128::from(u64::MAX)) as u64
             };
+            // Revealed-side capacity adoption, mirroring the local
+            // select tail: converged floats register on every side.
+            super::adopt_tick_capacity_floats(
+                state,
+                me,
+                tick,
+                ctx.correlation.as_str(),
+                &reply,
+                &fresh_observed,
+                &domain_key,
+            );
         }
         // Non-requesting sides still applied natively above: their geometry
         // evidence rides this bounded line since the caller's action line

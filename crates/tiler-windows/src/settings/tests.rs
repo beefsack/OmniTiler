@@ -33,6 +33,16 @@ fn defaults_match_kde_parity() {
         settings.core.fixed_size_predicate_mode(),
         tiler_core::size_hints::FixedSizePredicate::BothAxes
     );
+    assert_eq!(settings.core.anchor_fallback, ANCHOR_FALLBACK_LARGEST);
+    assert_eq!(
+        settings.core.anchor_fallback_mode(),
+        tiler_core::admission::AnchorFallback::LargestSplittable
+    );
+    assert_eq!(settings.core.no_space_result, NO_SPACE_FLOAT);
+    assert_eq!(
+        settings.core.no_space_result_mode(),
+        tiler_core::admission::NoSpaceResult::Float
+    );
     assert_eq!(
         settings.core.migration_source_refill,
         MIGRATION_REFILL_LAST_REMAINING
@@ -217,6 +227,190 @@ fn fixed_size_predicate_presets_leave_core_field_unchanged() {
         settings.core.fixed_size_predicate = FIXED_SIZE_EITHER_AXIS.to_owned();
         apply_preset(&mut settings, preset);
         assert_eq!(settings.core.fixed_size_predicate, FIXED_SIZE_EITHER_AXIS);
+        assert!(validate_settings(&settings).is_ok());
+    }
+}
+
+#[test]
+fn admission_tokens_map_exactly_with_largest_float_defaults() {
+    use tiler_core::admission::{AnchorFallback, NoSpaceResult};
+    assert_eq!(
+        AnchorFallback::parse_wire(ANCHOR_FALLBACK_LARGEST),
+        Some(AnchorFallback::LargestSplittable)
+    );
+    assert_eq!(
+        AnchorFallback::parse_wire(ANCHOR_FALLBACK_CLOSEST),
+        Some(AnchorFallback::ClosestRelative)
+    );
+    assert_eq!(
+        AnchorFallback::parse_wire(ANCHOR_FALLBACK_NO_SEARCH),
+        Some(AnchorFallback::NoSearch)
+    );
+    assert_eq!(
+        AnchorFallback::LargestSplittable.as_wire_str(),
+        ANCHOR_FALLBACK_LARGEST
+    );
+    assert_eq!(
+        AnchorFallback::ClosestRelative.as_wire_str(),
+        ANCHOR_FALLBACK_CLOSEST
+    );
+    assert_eq!(
+        AnchorFallback::NoSearch.as_wire_str(),
+        ANCHOR_FALLBACK_NO_SEARCH
+    );
+    assert_eq!(AnchorFallback::default(), AnchorFallback::LargestSplittable);
+    assert_eq!(
+        NoSpaceResult::parse_wire(NO_SPACE_FLOAT),
+        Some(NoSpaceResult::Float)
+    );
+    assert_eq!(
+        NoSpaceResult::parse_wire(NO_SPACE_OVERLAP),
+        Some(NoSpaceResult::AllowOverlap)
+    );
+    assert_eq!(NoSpaceResult::Float.as_wire_str(), NO_SPACE_FLOAT);
+    assert_eq!(NoSpaceResult::AllowOverlap.as_wire_str(), NO_SPACE_OVERLAP);
+    assert_eq!(NoSpaceResult::default(), NoSpaceResult::Float);
+    // No aliases, no case folding, no empty token, no retired IDs.
+    for bad in [
+        "",
+        "largest",
+        "closest",
+        "no_search",
+        "overlap",
+        "LARGEST-SPLITTABLE-WINDOW",
+        "FLOAT",
+    ] {
+        assert!(AnchorFallback::parse_wire(bad).is_none(), "{bad}");
+        assert!(NoSpaceResult::parse_wire(bad).is_none(), "{bad}");
+    }
+    let mut settings = Settings::default();
+    settings.core.anchor_fallback = ANCHOR_FALLBACK_CLOSEST.to_owned();
+    assert_eq!(
+        settings.core.anchor_fallback_mode(),
+        AnchorFallback::ClosestRelative
+    );
+    settings.core.no_space_result = NO_SPACE_OVERLAP.to_owned();
+    assert_eq!(
+        settings.core.no_space_result_mode(),
+        NoSpaceResult::AllowOverlap
+    );
+    assert!(validate_settings(&settings).is_ok());
+    // Hand-built unknown values fail closed to the defaults but refuse
+    // through validation (last-good on disk, never live).
+    settings.core.anchor_fallback = "closest".to_owned();
+    assert_eq!(
+        settings.core.anchor_fallback_mode(),
+        AnchorFallback::LargestSplittable
+    );
+    assert!(matches!(
+        validate_settings(&settings),
+        Err(SettingsError::Invalid(_))
+    ));
+    settings.core.anchor_fallback = ANCHOR_FALLBACK_LARGEST.to_owned();
+    settings.core.no_space_result = "overlap".to_owned();
+    assert_eq!(settings.core.no_space_result_mode(), NoSpaceResult::Float);
+    assert!(matches!(
+        validate_settings(&settings),
+        Err(SettingsError::Invalid(_))
+    ));
+}
+
+#[test]
+fn admission_options_carry_functional_labels_and_notes() {
+    assert_eq!(
+        anchor_fallback_options(),
+        [
+            (
+                ANCHOR_FALLBACK_LARGEST,
+                "Largest splittable window",
+                "Most remaining area first"
+            ),
+            (
+                ANCHOR_FALLBACK_CLOSEST,
+                "Closest splittable relative",
+                "Nearest branch first"
+            ),
+            (
+                ANCHOR_FALLBACK_NO_SEARCH,
+                "No search",
+                "Go directly to the no-space setting"
+            ),
+        ]
+    );
+    assert_eq!(
+        no_space_options(),
+        [
+            (
+                NO_SPACE_FLOAT,
+                "Float",
+                "Keep tiling intact on a separate layer"
+            ),
+            (
+                NO_SPACE_OVERLAP,
+                "Allow overlap",
+                "Keep tiled membership with overflowing geometry"
+            ),
+        ]
+    );
+}
+
+#[test]
+fn admission_missing_keys_default_and_invalid_strings_refuse() {
+    // Producer-shaped additive schema-v1 docs: older files without the
+    // keys deserialize to the selected defaults and validate; explicit
+    // values round-trip; unknown strings deserialize but refuse in
+    // validation (last-good kept, never normalized into live).
+    let missing: Settings =
+        serde_json::from_str(r#"{"v":1,"core":{}}"#).expect("missing keys parse");
+    assert_eq!(missing.core.anchor_fallback, ANCHOR_FALLBACK_LARGEST);
+    assert_eq!(missing.core.no_space_result, NO_SPACE_FLOAT);
+    assert!(validate_settings(&missing).is_ok());
+    for (key, good) in [
+        ("anchor_fallback", ANCHOR_FALLBACK_NO_SEARCH),
+        ("no_space_result", NO_SPACE_OVERLAP),
+    ] {
+        let doc = serde_json::json!({
+            "v": SETTINGS_SCHEMA_VERSION,
+            "revision": 1,
+            "core": {key: good},
+            "bindings": {}
+        });
+        let parsed: Settings = serde_json::from_value(doc).expect("explicit value parses");
+        assert!(validate_settings(&parsed).is_ok());
+        let round_tripped: Settings =
+            serde_json::from_str(&serde_json::to_string(&parsed).expect("serializes"))
+                .expect("round-trips");
+        assert_eq!(round_tripped, parsed);
+    }
+    for (key, bad) in [
+        ("anchor_fallback", "closest"),
+        ("anchor_fallback", ""),
+        ("no_space_result", "overlap"),
+        ("no_space_result", ""),
+    ] {
+        let doc = serde_json::json!({
+            "v": SETTINGS_SCHEMA_VERSION,
+            "revision": 1,
+            "core": {key: bad},
+            "bindings": {}
+        });
+        let parsed: Settings = serde_json::from_value(doc).expect("invalid string parses");
+        assert!(
+            matches!(validate_settings(&parsed), Err(SettingsError::Invalid(_))),
+            "{key}={bad}"
+        );
+    }
+}
+
+#[test]
+fn admission_presets_leave_core_fields_unchanged() {
+    for preset in [Preset::Authentic, Preset::Compatible] {
+        let mut settings = Settings::default();
+        settings.core.anchor_fallback = ANCHOR_FALLBACK_NO_SEARCH.to_owned();
+        settings.core.no_space_result = NO_SPACE_OVERLAP.to_owned();
+        apply_preset(&mut settings, preset);
+        assert_eq!(settings.core.anchor_fallback, ANCHOR_FALLBACK_NO_SEARCH);
+        assert_eq!(settings.core.no_space_result, NO_SPACE_OVERLAP);
         assert!(validate_settings(&settings).is_ok());
     }
 }

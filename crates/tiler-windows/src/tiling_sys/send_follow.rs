@@ -9,7 +9,10 @@ use super::*;
 /// and no replay. Broader view/mode/gap races stay with the select's own
 /// fresh fences below. When `deferred` is set (D16 slotless carry), the
 /// target select skips its geometry application while keeping observation,
-/// reconcile, reveal, focus, and fences.
+/// reconcile, reveal, focus, and fences. A D3 capacity-float mover
+/// (`to_float`) rides the same slotless select: the source reflow already
+/// applied on the caller plan, and the mover takes no destination
+/// geometry.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn workspace_send_follow(
     state: &mut TileLoop,
@@ -32,6 +35,7 @@ pub(super) fn workspace_send_follow(
     source_plan_ms: u64,
     preflight: SendPreflight,
     deferred: bool,
+    to_float: bool,
 ) -> SendEffect {
     if let Err(outcome) = preflight.overlay_hold(mover_key.hwnd, fulls) {
         return SendEffect {
@@ -113,7 +117,7 @@ pub(super) fn workspace_send_follow(
         ctx,
         Some(mover_key),
         false,
-        deferred,
+        deferred || to_float,
     );
     if select.outcome != "ok" {
         return SendEffect {

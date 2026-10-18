@@ -267,6 +267,7 @@ pub(super) fn workspace_do_send_native(
             0,
             preflight,
             false,
+            false,
         )
     } else {
         workspace_send_stay_native(

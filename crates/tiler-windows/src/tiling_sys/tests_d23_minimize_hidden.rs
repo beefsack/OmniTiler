@@ -277,7 +277,7 @@ fn close_drain_fanout_covers_hidden_and_other_output_automatically() {
     state.outer_gap = 12;
     // ONE production fanout over the tick observation: the hidden
     // domain delivers while the active domain's queue is excluded.
-    fanout_pending_closed(&mut state, &areas, &observed, &retained, "d23-fanout");
+    fanout_pending_closed(&mut state, &me, &areas, &observed, &retained, "d23-fanout");
     assert!(
         !state.pending_closed.contains_key("wH"),
         "hidden close drains through fanout despite gap drift"
@@ -340,7 +340,7 @@ fn close_drain_fanout_covers_hidden_and_other_output_automatically() {
         Vec::new(),
         Vec::new(),
     );
-    fanout_pending_closed(&mut state, &areas, &observed, &retained, "d23-fanout2");
+    fanout_pending_closed(&mut state, &me, &areas, &observed, &retained, "d23-fanout2");
     assert!(
         state.pending_closed.is_empty(),
         "pruned-domain close still delivers"

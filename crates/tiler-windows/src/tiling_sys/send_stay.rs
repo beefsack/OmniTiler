@@ -149,7 +149,9 @@ fn stay_focus_token(
 /// `deferred` is set (D16 slotless deferred carry), the source-only geometry
 /// application is skipped entirely: membership-only with zero geometry or
 /// overlay writes on either tree, while fences, hide, trailing lifecycle,
-/// and the source-bound plan focus stay unchanged.
+/// and the source-bound plan focus stay unchanged. A D3 capacity-float
+/// mover (`to_float`) still reflows the source survivors (the source tree
+/// changed) while taking no destination geometry.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn workspace_send_stay(
     state: &mut TileLoop,
@@ -173,6 +175,7 @@ pub(super) fn workspace_send_stay(
     preflight: SendPreflight,
     source_plan_ms: u64,
     deferred: bool,
+    to_float: bool,
 ) -> SendEffect {
     let fail_at = |outcome: &'static str| SendEffect {
         outcome,
@@ -212,8 +215,9 @@ pub(super) fn workspace_send_stay(
     // the source writable set exactly like follow (mover transferred out,
     // hidden/retained rows never writable): target entries skip honestly as
     // retained, and hidden geometry is never written. Deferred slotless
-    // transfers skip this entirely (membership-only).
-    let (source, source_ms) = if deferred {
+    // transfers skip this entirely (membership-only); capacity-float sends
+    // still reflow (the source tree lost its mover).
+    let (source, source_ms) = if deferred && !to_float {
         (None, 0)
     } else {
         let source_writable = writable_tokens(state, output, source_id, observed);

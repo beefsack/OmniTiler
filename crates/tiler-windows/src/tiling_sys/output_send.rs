@@ -472,6 +472,24 @@ pub(super) fn run_output_send(
         plan.operation,
         tiler_core::contract::LifecycleOperation::MoveDeferred { .. }
     );
+    // Cross-output has no safe float remap (no move-only frame
+    // primitive; rect arrival proof cannot verify a slotless float),
+    // so the transfer refuses with the source preserved. The
+    // candidate is discarded: no Engine mutation survives.
+    if let CoreReply::SendOutput(_) = &reply
+        && reply_is_capacity_float_transfer(&reply)
+    {
+        log_send(
+            "float-no-remap",
+            serde_json::json!({
+                "window": from.0,
+                "transfer": "capacity-float",
+                "target_output": state.workspaces.output_token(target_output),
+                "target_workspace": state.workspaces.workspace_token(target_output, target_workspace),
+            }),
+        );
+        return "float-no-remap";
+    }
     // The pair plan sits on the discarded-on-refusal candidate, so the
     // project membership commits only after the fresh topology, the single
     // combined apply, its readback, and the arrival proof all verify. The

@@ -301,10 +301,21 @@ pub(super) fn reconcile_tick(
                 revision: revision_for(state, &output, &active),
             },
         );
+        // Best-effort adoption: committed capacity floats join the
+        // ordinary float lanes through the shared tick helper below.
+        adopt_tick_capacity_floats(
+            state,
+            me,
+            tick,
+            correlation.as_str(),
+            &reply,
+            &observed,
+            &domain_key,
+        );
     }
     // D23: queued closes homed outside the selected set (hidden/inactive
     // workspaces) drain through ordinary observations here, before any later
     // registry pruning can strand them. Engine commits only; hidden domains
     // take no geometry or focus writes.
-    fanout_pending_closed(state, areas, &observed, &retained, correlation.as_str());
+    fanout_pending_closed(state, me, areas, &observed, &retained, correlation.as_str());
 }

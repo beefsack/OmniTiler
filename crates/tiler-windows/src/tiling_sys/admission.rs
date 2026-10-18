@@ -570,6 +570,28 @@ pub(super) fn fixed_predicate_for(
         .unwrap_or_default()
 }
 
+/// Best-effort admission D2 fallback for subsequent capacity decisions:
+/// the last-good live setting, read per decision so a saved change applies
+/// to later admissions only and never reclassifies retained topology
+/// (D10). Proof owners carry no live settings (`None`) and keep the
+/// largest-splittable default.
+pub(super) fn anchor_fallback_for(
+    live: Option<&LiveSettings>,
+) -> tiler_core::admission::AnchorFallback {
+    live.map(|live| live.settings.core.anchor_fallback_mode())
+        .unwrap_or_default()
+}
+
+/// Best-effort admission D3 result for subsequent admission or actual
+/// capacity-repair decisions: the last-good live setting, read per decision
+/// so a saved change applies later only and never reflows retained
+/// tiles/floats (D10). Proof owners carry no live settings (`None`) and
+/// keep the float default.
+pub(super) fn no_space_for(live: Option<&LiveSettings>) -> tiler_core::admission::NoSpaceResult {
+    live.map(|live| live.settings.core.no_space_result_mode())
+        .unwrap_or_default()
+}
+
 /// Stamp the fixed-size admission observation flags onto one Engine event
 /// from live adapter state, then dispatch it. Every production Engine
 /// handle path funnels through here so the classifier sees the same
@@ -687,6 +709,7 @@ fn drain_closed_windows(state: &mut TileLoop, event: &CoreEvent, reply: &CoreRep
 /// contract the KDE refresh chain already implements adapter-side.
 pub(super) fn fanout_pending_closed(
     state: &mut TileLoop,
+    me: &ProcessIdentity,
     areas: &[MonitorArea],
     observed: &[ObservedWindow],
     retained: &[RetainedRow],
@@ -783,7 +806,18 @@ pub(super) fn fanout_pending_closed(
         // Engine commit only: deliberately no `apply_geometry`, no focus
         // actuation, no writes. Stamping scopes the domain's queued closes
         // onto the wire; acceptance drains them, rejection retains them.
-        handle_engine_event(state, &mut event);
+        // Hidden-domain capacity adoption: a shrunken hidden domain can
+        // repair-evict here, so register victims like the tick legs.
+        let reply = handle_engine_event(state, &mut event);
+        adopt_tick_capacity_floats(
+            state,
+            me,
+            state.tick,
+            correlation,
+            &reply,
+            observed,
+            &domain_key,
+        );
     }
 }
 

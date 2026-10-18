@@ -434,6 +434,23 @@ pub(super) fn run_directional_cross(
         return outcome;
     }
     let CoreReply::MoveDirectional(plan) = &reply else {
+        // R4 capacity fallback: the exact wrap proved exhaustion, so core
+        // stages the slotless float as `SendOutput`. No safe cross-output
+        // remap exists, so this refuses with the source preserved; the
+        // candidate is discarded, no Engine mutation survives.
+        if matches!(&reply, CoreReply::SendOutput(_)) && reply_is_capacity_float_transfer(&reply) {
+            log_snap(
+                "float-no-remap",
+                serde_json::json!({
+                    "window": from.0,
+                    "continued": continued,
+                    "transfer": "capacity-float",
+                    "target_output": state.workspaces.output_token(target_output),
+                    "target_workspace": state.workspaces.workspace_token(target_output, target_workspace),
+                }),
+            );
+            return "float-no-remap";
+        }
         let outcome = reply_outcome(&reply);
         log_snap(
             outcome,

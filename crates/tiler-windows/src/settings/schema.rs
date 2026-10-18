@@ -1,8 +1,12 @@
 #![forbid(unsafe_code)]
 use super::*;
 use tiler_core::settings_catalog as catalog;
+use tiler_core::{
+    admission::{AnchorFallback, NoSpaceResult},
+    output_selection::MigrationSourceRefill,
+    size_hints::FixedSizePredicate,
+};
 use tiler_core::{born_maximized::BornMaximized, directional::SameAxisMove};
-use tiler_core::{output_selection::MigrationSourceRefill, size_hints::FixedSizePredicate};
 
 /// Settings schema version. Older readers refuse newer versions outright;
 /// newer readers refuse anything but known versions (no silent migration).
@@ -211,6 +215,87 @@ fn default_fixed_size_predicate() -> String {
     FIXED_SIZE_BOTH_AXES.to_owned()
 }
 
+/// Best-effort admission D2 anchor-fallback wire values (user 2026-10-17).
+/// Exact tokens only: no aliases, no migration; unknown or mistyped values
+/// refuse through the existing invalid-file/last-good path.
+/// Single source: the shared portable catalog and core enum.
+pub const ANCHOR_FALLBACK_LARGEST: &str = AnchorFallback::LargestSplittable.as_wire_str();
+/// Best-effort admission D2 closest-relative alternative wire value.
+pub const ANCHOR_FALLBACK_CLOSEST: &str = AnchorFallback::ClosestRelative.as_wire_str();
+/// Best-effort admission D2 no-search alternative wire value.
+pub const ANCHOR_FALLBACK_NO_SEARCH: &str = AnchorFallback::NoSearch.as_wire_str();
+/// Functional label for the default (catalog parity).
+pub const ANCHOR_FALLBACK_LARGEST_LABEL: &str = catalog::ANCHOR_FALLBACK_OPTIONS[0].label;
+/// Tooltip note for the default (catalog parity: never a setting id).
+pub const ANCHOR_FALLBACK_LARGEST_TIP: &str = catalog::ANCHOR_FALLBACK_OPTIONS[0].tip;
+/// Functional label for the closest-relative alternative.
+pub const ANCHOR_FALLBACK_CLOSEST_LABEL: &str = catalog::ANCHOR_FALLBACK_OPTIONS[1].label;
+/// Tooltip note for the closest-relative alternative.
+pub const ANCHOR_FALLBACK_CLOSEST_TIP: &str = catalog::ANCHOR_FALLBACK_OPTIONS[1].tip;
+/// Functional label for the no-search alternative.
+pub const ANCHOR_FALLBACK_NO_SEARCH_LABEL: &str = catalog::ANCHOR_FALLBACK_OPTIONS[2].label;
+/// Tooltip note for the no-search alternative.
+pub const ANCHOR_FALLBACK_NO_SEARCH_TIP: &str = catalog::ANCHOR_FALLBACK_OPTIONS[2].tip;
+
+/// Best-effort admission D3 no-space wire values (user 2026-10-17).
+/// Exact tokens only: no aliases, no migration; unknown or mistyped values
+/// refuse through the existing invalid-file/last-good path.
+/// Single source: the shared portable catalog and core enum.
+pub const NO_SPACE_FLOAT: &str = NoSpaceResult::Float.as_wire_str();
+/// Best-effort admission D3 allow-overlap alternative wire value.
+pub const NO_SPACE_OVERLAP: &str = NoSpaceResult::AllowOverlap.as_wire_str();
+/// Functional label for the default (catalog parity).
+pub const NO_SPACE_FLOAT_LABEL: &str = catalog::NO_SPACE_OPTIONS[0].label;
+/// Tooltip note for the default (catalog parity: never a setting id).
+pub const NO_SPACE_FLOAT_TIP: &str = catalog::NO_SPACE_OPTIONS[0].tip;
+/// Functional label for the allow-overlap alternative.
+pub const NO_SPACE_OVERLAP_LABEL: &str = catalog::NO_SPACE_OPTIONS[1].label;
+/// Tooltip note for the allow-overlap alternative.
+pub const NO_SPACE_OVERLAP_TIP: &str = catalog::NO_SPACE_OPTIONS[1].tip;
+
+/// Best-effort admission D2 three-choice control rows: `(wire token, functional label, note)`.
+#[must_use]
+pub const fn anchor_fallback_options() -> [(&'static str, &'static str, &'static str); 3] {
+    [
+        (
+            ANCHOR_FALLBACK_LARGEST,
+            ANCHOR_FALLBACK_LARGEST_LABEL,
+            ANCHOR_FALLBACK_LARGEST_TIP,
+        ),
+        (
+            ANCHOR_FALLBACK_CLOSEST,
+            ANCHOR_FALLBACK_CLOSEST_LABEL,
+            ANCHOR_FALLBACK_CLOSEST_TIP,
+        ),
+        (
+            ANCHOR_FALLBACK_NO_SEARCH,
+            ANCHOR_FALLBACK_NO_SEARCH_LABEL,
+            ANCHOR_FALLBACK_NO_SEARCH_TIP,
+        ),
+    ]
+}
+
+fn default_anchor_fallback() -> String {
+    ANCHOR_FALLBACK_LARGEST.to_owned()
+}
+
+/// Best-effort admission D3 two-choice control rows: `(wire token, functional label, note)`.
+#[must_use]
+pub const fn no_space_options() -> [(&'static str, &'static str, &'static str); 2] {
+    [
+        (NO_SPACE_FLOAT, NO_SPACE_FLOAT_LABEL, NO_SPACE_FLOAT_TIP),
+        (
+            NO_SPACE_OVERLAP,
+            NO_SPACE_OVERLAP_LABEL,
+            NO_SPACE_OVERLAP_TIP,
+        ),
+    ]
+}
+
+fn default_no_space() -> String {
+    NO_SPACE_FLOAT.to_owned()
+}
+
 /// R-WS-12e G-37 two-choice control rows: `(wire token, functional label, WM tooltip)`.
 #[must_use]
 pub const fn migration_source_refill_options() -> [(&'static str, &'static str, &'static str); 2] {
@@ -309,6 +394,20 @@ pub struct CoreSettings {
     /// classifications (D2).
     #[serde(default = "default_fixed_size_predicate")]
     pub fixed_size_predicate: String,
+    /// Best-effort admission D2 anchor fallback. Additive schema-v1 field:
+    /// a missing value defaults to [`ANCHOR_FALLBACK_LARGEST`]; any other
+    /// value besides the three exact tokens refuses in [`validate_settings`].
+    /// Changes apply to subsequent capacity decisions only, never to
+    /// retained topology (D10).
+    #[serde(default = "default_anchor_fallback")]
+    pub anchor_fallback: String,
+    /// Best-effort admission D3 no-space result. Additive schema-v1 field:
+    /// a missing value defaults to [`NO_SPACE_FLOAT`]; any other value
+    /// besides the two exact tokens refuses in [`validate_settings`].
+    /// Changes apply to subsequent admission or actual capacity-repair
+    /// decisions only, never to retained tiles/floats (D10).
+    #[serde(default = "default_no_space")]
+    pub no_space_result: String,
     /// R-WS-12e G-37 source workspace after migration. Additive schema-v1
     /// field: a missing value defaults to
     /// [`MIGRATION_REFILL_LAST_REMAINING`]; any other value besides the two
@@ -349,6 +448,8 @@ impl Default for CoreSettings {
             same_axis_move: default_same_axis_move(),
             born_maximized: default_born_maximized(),
             fixed_size_predicate: default_fixed_size_predicate(),
+            anchor_fallback: default_anchor_fallback(),
+            no_space_result: default_no_space(),
             migration_source_refill: default_migration_source_refill(),
             border: BorderSettings::default(),
             underlay: UnderlaySettings::default(),
@@ -401,6 +502,28 @@ impl CoreSettings {
     pub fn fixed_size_predicate_mode(&self) -> tiler_core::size_hints::FixedSizePredicate {
         tiler_core::size_hints::FixedSizePredicate::parse_wire(&self.fixed_size_predicate)
             .unwrap_or_default()
+    }
+
+    /// Typed best-effort admission D2 fallback for subsequent capacity
+    /// decisions. Shared policy only: the exact tokens parse through
+    /// [`tiler_core::admission::AnchorFallback::parse_wire`]. Live settings
+    /// are always validated, so the fallback only covers hand-built
+    /// defaults; invalid files never become live (they keep last-good
+    /// instead).
+    #[must_use]
+    pub fn anchor_fallback_mode(&self) -> tiler_core::admission::AnchorFallback {
+        tiler_core::admission::AnchorFallback::parse_wire(&self.anchor_fallback).unwrap_or_default()
+    }
+
+    /// Typed best-effort admission D3 result for subsequent admission or
+    /// actual capacity-repair decisions. Shared policy only: the exact
+    /// tokens parse through [`tiler_core::admission::NoSpaceResult::parse_wire`].
+    /// Live settings are always validated, so the fallback only covers
+    /// hand-built defaults; invalid files never become live (they keep
+    /// last-good instead).
+    #[must_use]
+    pub fn no_space_result_mode(&self) -> tiler_core::admission::NoSpaceResult {
+        tiler_core::admission::NoSpaceResult::parse_wire(&self.no_space_result).unwrap_or_default()
     }
 
     /// Typed R-WS-12e G-37 source-refill mode for subsequent whole-workspace

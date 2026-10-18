@@ -3,18 +3,21 @@
 #![forbid(unsafe_code)]
 
 use super::choice::{
+    anchor_fallback_selected, anchor_fallback_tip_texts, apply_anchor_fallback_selection,
     apply_born_maximized_selection, apply_fixed_size_selection, apply_migration_refill_selection,
-    apply_same_axis_selection, apply_workspace_mode_selection, born_maximized_tip_texts,
-    born_overlay_selected, choice_tip_texts, fixed_size_either_selected, fixed_size_tip_texts,
-    migration_refill_mru_selected, migration_refill_tip_texts, same_axis_swap_selected,
-    same_axis_tip_texts, workspace_mode_selected,
+    apply_no_space_selection, apply_same_axis_selection, apply_workspace_mode_selection,
+    born_maximized_tip_texts, born_overlay_selected, choice_tip_texts, fixed_size_either_selected,
+    fixed_size_tip_texts, migration_refill_mru_selected, migration_refill_tip_texts,
+    no_space_overlap_selected, no_space_tip_texts, same_axis_swap_selected, same_axis_tip_texts,
+    workspace_mode_selected,
 };
 use super::ctl::wide;
 use crate::settings::{
+    ANCHOR_FALLBACK_CLOSEST, ANCHOR_FALLBACK_LARGEST, ANCHOR_FALLBACK_NO_SEARCH,
     BORN_MAXIMIZED_OVERLAY, BORN_MAXIMIZED_TILE, FIXED_SIZE_BOTH_AXES, FIXED_SIZE_EITHER_AXIS,
-    MIGRATION_REFILL_LAST_REMAINING, MIGRATION_REFILL_MRU, SAME_AXIS_MOVE_GROUP,
-    SAME_AXIS_MOVE_SWAP, Settings, WORKSPACE_MODE_GLOBAL_UNIQUE, WORKSPACE_MODE_PER_OUTPUT_LOCAL,
-    WORKSPACE_MODE_SHARED,
+    MIGRATION_REFILL_LAST_REMAINING, MIGRATION_REFILL_MRU, NO_SPACE_FLOAT, NO_SPACE_OVERLAP,
+    SAME_AXIS_MOVE_GROUP, SAME_AXIS_MOVE_SWAP, Settings, WORKSPACE_MODE_GLOBAL_UNIQUE,
+    WORKSPACE_MODE_PER_OUTPUT_LOCAL, WORKSPACE_MODE_SHARED,
 };
 
 #[test]
@@ -101,11 +104,12 @@ fn born_maximized_tip_texts_come_from_shared_options() {
 
 #[test]
 fn choice_tip_buffers_cover_all_radio_pairs() {
-    // Eight buffers in control order: same-axis pair, born-maximized
-    // pair, fixed-size pair, then migration-refill pair, so each tooltip
-    // tool reads its own choice text.
+    // Thirteen buffers in control order: same-axis pair, born-maximized
+    // pair, fixed-size pair, migration-refill pair, the admission D2
+    // triple, then the admission D3 pair, so each tooltip tool reads its
+    // own choice text.
     let tips = choice_tip_texts();
-    assert_eq!(tips.len(), 8);
+    assert_eq!(tips.len(), 13);
     assert_eq!(tips[0], wide("COSMIC"));
     assert_eq!(tips[1], wide("i3, sway"));
     assert_eq!(tips[0], same_axis_tip_texts()[0]);
@@ -120,6 +124,11 @@ fn choice_tip_buffers_cover_all_radio_pairs() {
     assert_eq!(tips[7], migration_refill_tip_texts()[1]);
     assert_eq!(tips[6], wide("COSMIC"));
     assert_eq!(tips[7], wide("bspwm, i3, awesome"));
+    assert_eq!(tips[8], anchor_fallback_tip_texts()[0]);
+    assert_eq!(tips[9], anchor_fallback_tip_texts()[1]);
+    assert_eq!(tips[10], anchor_fallback_tip_texts()[2]);
+    assert_eq!(tips[11], no_space_tip_texts()[0]);
+    assert_eq!(tips[12], no_space_tip_texts()[1]);
 }
 
 #[test]
@@ -221,6 +230,140 @@ fn migration_refill_options_carry_functional_labels() {
                 MIGRATION_REFILL_MRU,
                 "Most recently used workspace",
                 "bspwm, i3, awesome"
+            ),
+        ]
+    );
+}
+
+#[test]
+fn anchor_fallback_selector_round_trips_all_three_tokens() {
+    let mut draft = Settings::default();
+    assert_eq!(anchor_fallback_selected(&draft), 0);
+    apply_anchor_fallback_selection(&mut draft, 1);
+    assert_eq!(draft.core.anchor_fallback, ANCHOR_FALLBACK_CLOSEST);
+    assert_eq!(anchor_fallback_selected(&draft), 1);
+    apply_anchor_fallback_selection(&mut draft, 2);
+    assert_eq!(draft.core.anchor_fallback, ANCHOR_FALLBACK_NO_SEARCH);
+    assert_eq!(anchor_fallback_selected(&draft), 2);
+    apply_anchor_fallback_selection(&mut draft, 0);
+    assert_eq!(draft.core.anchor_fallback, ANCHOR_FALLBACK_LARGEST);
+    assert_eq!(anchor_fallback_selected(&draft), 0);
+}
+
+#[test]
+fn anchor_fallback_selector_shows_largest_for_unknown_hand_built_value() {
+    let mut draft = Settings::default();
+    draft.core.anchor_fallback = "retired-alias".to_owned();
+    assert_eq!(anchor_fallback_selected(&draft), 0);
+}
+
+#[test]
+fn anchor_fallback_out_of_range_index_stages_the_default() {
+    let mut draft = Settings::default();
+    apply_anchor_fallback_selection(&mut draft, 99);
+    assert_eq!(draft.core.anchor_fallback, ANCHOR_FALLBACK_LARGEST);
+    assert!(crate::settings::validate_settings(&draft).is_ok());
+}
+
+#[test]
+fn anchor_fallback_selection_validates_after_apply() {
+    for index in [0, 1, 2] {
+        let mut draft = Settings::default();
+        apply_anchor_fallback_selection(&mut draft, index);
+        crate::settings::validate_settings(&draft).expect("selector stages a valid token");
+    }
+}
+
+#[test]
+fn anchor_fallback_tip_texts_come_from_shared_options() {
+    let options = crate::settings::anchor_fallback_options();
+    let tips = anchor_fallback_tip_texts();
+    assert_eq!(tips.len(), 3);
+    for (buffer, option) in tips.iter().zip(options.iter()) {
+        assert_eq!(*buffer, wide(option.2));
+    }
+    assert_eq!(tips[0], wide("Most remaining area first"));
+    assert_eq!(tips[1], wide("Nearest branch first"));
+    assert_eq!(tips[2], wide("Go directly to the no-space setting"));
+}
+
+#[test]
+fn no_space_radio_round_trips_both_tokens() {
+    let mut draft = Settings::default();
+    assert!(!no_space_overlap_selected(&draft));
+    apply_no_space_selection(&mut draft, true);
+    assert_eq!(draft.core.no_space_result, NO_SPACE_OVERLAP);
+    assert!(no_space_overlap_selected(&draft));
+    apply_no_space_selection(&mut draft, false);
+    assert_eq!(draft.core.no_space_result, NO_SPACE_FLOAT);
+    assert!(!no_space_overlap_selected(&draft));
+}
+
+#[test]
+fn no_space_radio_shows_float_for_unknown_hand_built_value() {
+    let mut draft = Settings::default();
+    draft.core.no_space_result = "retired-alias".to_owned();
+    assert!(!no_space_overlap_selected(&draft));
+}
+
+#[test]
+fn no_space_selection_validates_after_apply() {
+    for overlap in [false, true] {
+        let mut draft = Settings::default();
+        apply_no_space_selection(&mut draft, overlap);
+        crate::settings::validate_settings(&draft).expect("radio stages a valid token");
+    }
+}
+
+#[test]
+fn no_space_tip_texts_come_from_shared_options() {
+    let options = crate::settings::no_space_options();
+    let tips = no_space_tip_texts();
+    assert_eq!(tips.len(), 2);
+    for (buffer, option) in tips.iter().zip(options.iter()) {
+        assert_eq!(*buffer, wide(option.2));
+    }
+    assert_eq!(tips[0], wide("Keep tiling intact on a separate layer"));
+    assert_eq!(
+        tips[1],
+        wide("Keep tiled membership with overflowing geometry")
+    );
+}
+
+#[test]
+fn admission_options_carry_functional_labels() {
+    assert_eq!(
+        crate::settings::anchor_fallback_options(),
+        [
+            (
+                ANCHOR_FALLBACK_LARGEST,
+                "Largest splittable window",
+                "Most remaining area first"
+            ),
+            (
+                ANCHOR_FALLBACK_CLOSEST,
+                "Closest splittable relative",
+                "Nearest branch first"
+            ),
+            (
+                ANCHOR_FALLBACK_NO_SEARCH,
+                "No search",
+                "Go directly to the no-space setting"
+            ),
+        ]
+    );
+    assert_eq!(
+        crate::settings::no_space_options(),
+        [
+            (
+                NO_SPACE_FLOAT,
+                "Float",
+                "Keep tiling intact on a separate layer"
+            ),
+            (
+                NO_SPACE_OVERLAP,
+                "Allow overlap",
+                "Keep tiled membership with overflowing geometry"
             ),
         ]
     );

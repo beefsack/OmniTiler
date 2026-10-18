@@ -15,6 +15,58 @@ pub(super) fn hold_marker_target(
     me: &ProcessIdentity,
     key: &crate::workspace::WindowKey,
 ) -> Option<HeldProcess> {
+    // Test-only mirror of the gates below against a registered fake: the
+    // scripted pid/process/liveness stand in for the OS reads while the
+    // predicates (identity, scope, lifetime, integrity) stay real.
+    // Unregistered HWNDs fall through to the OS exactly as before.
+    #[cfg(test)]
+    if crate::product_hide::sys::fake::active(key.hwnd) {
+        use crate::product_hide::sys::fake;
+        let stored = state.member_identity.get(key)?.clone();
+        let (facts_ok, tag) = fake::with(key.hwnd, |w| {
+            (
+                w.alive
+                    && w.pid == key.pid
+                    && w.process.pid == stored.pid
+                    && w.process.process_creation == key.creation
+                    && w.process.process_creation == stored.process_creation
+                    && w.process.user_sid == stored.user_sid
+                    && w.process.session_id == stored.session_id
+                    && crate::lifecycle::exe_paths_equal(&w.process.exe_path, &stored.exe_path),
+                w.member_tag.clone(),
+            )
+        })?;
+        if !facts_ok {
+            return None;
+        }
+        if stored.user_sid != me.user_sid || stored.session_id != me.session_id {
+            return None;
+        }
+        if !scope_allows(&state.scope, &stored.exe_path) {
+            return None;
+        }
+        if !hosted_gate_allows(&stored.exe_path, key.hwnd, key.pid, &state.scope_hosts) {
+            return None;
+        }
+        if let Some(entries) = state.allowlist.as_ref() {
+            let entry = entries.iter().find(|e| e.hwnd == key.hwnd)?;
+            if verify_proof_owned(key.hwnd, entry, me).is_err() {
+                return None;
+            }
+        }
+        let stored_tag = state.member_tags.get(key)?;
+        if !crate::workspace_owner::visible_lifetime_ok(stored_tag, tag.as_deref()) {
+            return None;
+        }
+        if !pid_current(key.hwnd, key.pid) {
+            return None;
+        }
+        let held = fake::hold_verified(key.pid, &stored).and_then(|r| r.ok())?;
+        if !held.integrity().is_ok_and(is_medium_rid) {
+            return None;
+        }
+        return Some(held);
+    }
     let stored = state.member_identity.get(key)?;
     let held = HeldProcess::open(key.pid).ok()?;
     let ident = held.identity().ok()?;

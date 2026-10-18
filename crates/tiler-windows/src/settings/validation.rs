@@ -45,6 +45,17 @@ pub fn validate_settings(settings: &Settings) -> Result<(), SettingsError> {
             "core.fixed_size_predicate needs both-axes-fixed|either-axis-fixed".to_owned(),
         ));
     }
+    if tiler_core::admission::AnchorFallback::parse_wire(&settings.core.anchor_fallback).is_none() {
+        return Err(SettingsError::Invalid(
+            "core.anchor_fallback needs largest-splittable-window|closest-splittable-relative|no-search"
+                .to_owned(),
+        ));
+    }
+    if tiler_core::admission::NoSpaceResult::parse_wire(&settings.core.no_space_result).is_none() {
+        return Err(SettingsError::Invalid(
+            "core.no_space_result needs float|allow-overlap".to_owned(),
+        ));
+    }
     if tiler_core::output_selection::MigrationSourceRefill::parse_wire(
         &settings.core.migration_source_refill,
     )

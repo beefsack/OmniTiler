@@ -467,6 +467,38 @@ pub(super) fn apply_live_settings(
             }),
         );
     }
+    // Best-effort admission D2/D3: adopt for subsequent capacity decisions
+    // only. The Engine propagates the values to every retained session
+    // without touching topology, revision, or existing tile/float marks
+    // (no reflow, no retry on Apply); the admission and shrink-repair
+    // gates read them per decision through the same assignment. A change
+    // to only these fields returns false, so no tree rebuild follows.
+    let anchor = settings.core.anchor_fallback_mode();
+    if state.engine.anchor_fallback() != anchor {
+        state.engine.set_anchor_fallback(anchor);
+        log_json_at(
+            &log_path,
+            serde_json::json!({
+                "event": "settings-anchor-fallback",
+                "anchor_fallback": anchor.as_wire_str(),
+                "outcome": "adopted",
+                "scope": "subsequent-decisions",
+            }),
+        );
+    }
+    let no_space = settings.core.no_space_result_mode();
+    if state.engine.no_space_result() != no_space {
+        state.engine.set_no_space_result(no_space);
+        log_json_at(
+            &log_path,
+            serde_json::json!({
+                "event": "settings-no-space",
+                "no_space": no_space.as_wire_str(),
+                "outcome": "adopted",
+                "scope": "subsequent-decisions",
+            }),
+        );
+    }
     if let Some(live) = state.settings_live.as_mut() {
         let saved_scope = crate::workspace_scope_owner::saved_mode(&settings);
         let status = state.scope_owner.status_for(revision, saved_scope);

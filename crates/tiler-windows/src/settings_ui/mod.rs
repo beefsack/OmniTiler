@@ -107,6 +107,11 @@ pub const ID_WORKSPACE_MODE_LOCAL: u32 = 141;
 pub const ID_WORKSPACE_MODE_GLOBAL: u32 = 142;
 pub const ID_WORKSPACE_MODE_SHARED: u32 = 143;
 pub const ID_TASKBAR_PAGER: u32 = 144;
+pub const ID_ANCHOR_LARGEST: u32 = 152;
+pub const ID_ANCHOR_CLOSEST: u32 = 153;
+pub const ID_ANCHOR_NO_SEARCH: u32 = 154;
+pub const ID_NO_SPACE_FLOAT: u32 = 155;
+pub const ID_NO_SPACE_OVERLAP: u32 = 156;
 pub const ID_GAMING_OPEN_XBOX: u32 = 145;
 pub const ID_GAMING_OPEN_GAMEBAR: u32 = 146;
 pub const ID_GAMING_OPEN_APP: u32 = 147;
@@ -129,7 +134,7 @@ pub(crate) struct App {
     pub(crate) work: Settings,
     pub(crate) selected: Option<usize>,
     pub(crate) invalid: Option<String>,
-    pub(crate) tip_text: [Vec<u16>; 8],
+    pub(crate) tip_text: [Vec<u16>; 13],
     pub(crate) gaming: crate::gaming::GamingMonitor,
     pub(crate) gaming_generation: u64,
     pub(crate) current_tab: usize,
@@ -312,6 +317,11 @@ fn on_command(app: &mut App, id: u32, notify: u32) -> bool {
         | ID_FIXED_SIZE_EITHER
         | ID_MIGRATION_REFILL_LAST
         | ID_MIGRATION_REFILL_MRU
+        | ID_ANCHOR_LARGEST
+        | ID_ANCHOR_CLOSEST
+        | ID_ANCHOR_NO_SEARCH
+        | ID_NO_SPACE_FLOAT
+        | ID_NO_SPACE_OVERLAP
         | ID_WORKSPACE_MODE_LOCAL
         | ID_WORKSPACE_MODE_GLOBAL
         | ID_WORKSPACE_MODE_SHARED => {
@@ -509,6 +519,9 @@ pub fn cmd_settings() -> Result<String, DynError> {
             | ID_BORN_MAX_OVERLAY
             | ID_FIXED_SIZE_EITHER
             | ID_MIGRATION_REFILL_MRU
+            | ID_ANCHOR_CLOSEST
+            | ID_ANCHOR_NO_SEARCH
+            | ID_NO_SPACE_OVERLAP
             | ID_WORKSPACE_MODE_GLOBAL
             | ID_WORKSPACE_MODE_SHARED => {
                 return radio | tab;

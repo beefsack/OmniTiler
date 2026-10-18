@@ -10,8 +10,7 @@
 //! `v`, `revision`, and `bindings` stay native and are never mapped here.
 
 use tiler_core::settings_catalog::{
-    FIELD_ANCHOR_FALLBACK, FIELD_NO_SPACE, FieldDef, HostCaps, PanelSlot, SectionDef, SettingValue,
-    Timing, Validity, find_field,
+    FieldDef, HostCaps, PanelSlot, SectionDef, SettingValue, Timing, Validity, find_field,
 };
 use tiler_core::settings_catalog::{TAB_DESKTOP_INTEGRATION, TAB_SHORTCUTS};
 
@@ -164,13 +163,14 @@ pub struct FieldStorageMap {
     pub storage_key: &'static str,
 }
 
-/// Portable fields with no Windows mapping: no storage key, no reader, no
-/// stager, no dialog control. The Windows runtime does not consume these
-/// admission settings (a follow-up owns behavior), so mapping them would
-/// persist values the runtime silently ignores.
-pub const WINDOWS_UNSUPPORTED_FIELDS: &[&str] = &[FIELD_ANCHOR_FALLBACK, FIELD_NO_SPACE];
+/// Portable fields with no Windows mapping: none. Both best-effort
+/// admission settings (`admission.anchor-fallback`, `admission.no-space`)
+/// are mapped below and consumed by the legacy Engine since the runtime
+/// adoption; the table stays as the explicit empty partition point so a
+/// future unmapped portable field cannot silently drift.
+pub const WINDOWS_UNSUPPORTED_FIELDS: &[&str] = &[];
 
-/// Every scalar Windows-exposed field mapped exactly once (17 portable plus
+/// Every scalar Windows-exposed field mapped exactly once (19 portable plus
 /// 4 Windows-only). Storage keys are the existing schema-v1 nested
 /// snake_case keys; this table renames nothing.
 pub const WINDOWS_FIELD_MAPPINGS: &[FieldStorageMap] = &[
@@ -201,6 +201,14 @@ pub const WINDOWS_FIELD_MAPPINGS: &[FieldStorageMap] = &[
     FieldStorageMap {
         field: "admission.fixed-size",
         storage_key: "core.fixed_size_predicate",
+    },
+    FieldStorageMap {
+        field: "admission.anchor-fallback",
+        storage_key: "core.anchor_fallback",
+    },
+    FieldStorageMap {
+        field: "admission.no-space",
+        storage_key: "core.no_space_result",
     },
     FieldStorageMap {
         field: "migration.refill",
@@ -347,6 +355,10 @@ pub fn windows_field_value(settings: &Settings, field: &str) -> Option<WindowsVa
         "admission.fixed-size" => Some(WindowsValue::Text(
             settings.core.fixed_size_predicate.clone(),
         )),
+        "admission.anchor-fallback" => {
+            Some(WindowsValue::Text(settings.core.anchor_fallback.clone()))
+        }
+        "admission.no-space" => Some(WindowsValue::Text(settings.core.no_space_result.clone())),
         "migration.refill" => Some(WindowsValue::Text(
             settings.core.migration_source_refill.clone(),
         )),
@@ -421,6 +433,12 @@ fn apply_typed(settings: &mut Settings, field: &str, value: &WindowsValue) -> Re
         ("admission.fixed-size", WindowsValue::Text(got)) => {
             settings.core.fixed_size_predicate = got.clone();
         }
+        ("admission.anchor-fallback", WindowsValue::Text(got)) => {
+            settings.core.anchor_fallback = got.clone();
+        }
+        ("admission.no-space", WindowsValue::Text(got)) => {
+            settings.core.no_space_result = got.clone();
+        }
         ("migration.refill", WindowsValue::Text(got)) => {
             settings.core.migration_source_refill = got.clone();
         }
@@ -490,6 +508,10 @@ mod tests {
             "move.same-axis" => WindowsValue::Text("swap-with-neighbor".to_owned()),
             "admission.born-maximized" => WindowsValue::Text("keep-maximized-overlay".to_owned()),
             "admission.fixed-size" => WindowsValue::Text("either-axis-fixed".to_owned()),
+            "admission.anchor-fallback" => {
+                WindowsValue::Text("closest-splittable-relative".to_owned())
+            }
+            "admission.no-space" => WindowsValue::Text("allow-overlap".to_owned()),
             "migration.refill" => WindowsValue::Text("most-recently-used-workspace".to_owned()),
             "border.enabled" => WindowsValue::Bool(false),
             "border.width" => WindowsValue::Float(4.0),
@@ -510,7 +532,7 @@ mod tests {
 
     #[test]
     fn every_scalar_field_mapped_exactly_once() {
-        assert_eq!(WINDOWS_FIELD_MAPPINGS.len(), 21);
+        assert_eq!(WINDOWS_FIELD_MAPPINGS.len(), 23);
         let mut fields = BTreeSet::new();
         let mut keys = BTreeSet::new();
         for entry in WINDOWS_FIELD_MAPPINGS {
@@ -540,14 +562,10 @@ mod tests {
 
     #[test]
     fn unsupported_fields_partition_the_catalog() {
-        // Best-effort admission settings stay out of the Windows mapping
-        // until the runtime follow-up: exactly these portable fields, each
-        // a known catalog field with no storage key, no reader, and no
-        // stager. Mapped plus unsupported partition every portable field.
-        assert_eq!(
-            WINDOWS_UNSUPPORTED_FIELDS,
-            &["admission.anchor-fallback", "admission.no-space"]
-        );
+        // Best-effort admission settings are mapped since the runtime
+        // adoption: no portable field stays unmapped. Mapped plus
+        // unsupported still partition every portable field.
+        assert_eq!(WINDOWS_UNSUPPORTED_FIELDS, &[] as &[&str]);
         let mapped: BTreeSet<&str> = WINDOWS_FIELD_MAPPINGS
             .iter()
             .map(|entry| entry.field)

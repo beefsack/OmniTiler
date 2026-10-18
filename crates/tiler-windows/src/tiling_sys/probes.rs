@@ -102,7 +102,13 @@ pub(super) fn revalidate_target(
 }
 
 /// Recheck the HWND's current pid after the write (recycled-HWND guard).
+/// Registered test fakes answer from their scripted pid/liveness.
 pub(super) fn pid_current(hwnd_u64: u64, pid: u32) -> bool {
+    #[cfg(test)]
+    if crate::product_hide::sys::fake::active(hwnd_u64) {
+        return crate::product_hide::sys::fake::with(hwnd_u64, |w| w.alive && w.pid == pid)
+            .unwrap_or(false);
+    }
     let current = crate::ffi::window_pid(hwnd_u64);
     current != 0 && current == pid
 }

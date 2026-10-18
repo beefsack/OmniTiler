@@ -483,6 +483,10 @@ pub(super) fn workspace_do_send(
     } else {
         return fail_at("origin-vanished");
     };
+    // Live frame for a capacity-float mover: the committed exception
+    // keeps its verbatim native frame. Carried pre-tail; the
+    // Engine-retained frame still wins inside registration.
+    let mover_frame = by_hwnd.get(&mover_hwnd).map(|fresh| fresh.visible);
     // Post-Engine lifetime recheck: a same-process reuse across the in-memory
     // mutation still refuses before any membership change or hide.
     let post_tag = live_member_tag(mover_hwnd);
@@ -541,8 +545,16 @@ pub(super) fn workspace_do_send(
         plan.operation,
         tiler_core::contract::LifecycleOperation::MoveDeferred { .. }
     );
+    // Capacity-float send: the mover exhausted its destination and
+    // committed slotless there. Source survivors still reflow below;
+    // lanes register only on verified transfer. Cross-output floats
+    // refuse on their own routes (no safe remap).
+    let to_float = matches!(
+        plan.operation,
+        tiler_core::contract::LifecycleOperation::MoveToFloat { .. }
+    );
     if !plan.follow {
-        return workspace_send_stay(
+        let effect = workspace_send_stay(
             state,
             me,
             store,
@@ -564,7 +576,12 @@ pub(super) fn workspace_do_send(
             preflight,
             source_plan_ms,
             deferred,
+            to_float,
         );
+        if to_float && effect.outcome == "ok" {
+            register_verified_send_float(state, me, &target_key, &source_token, mover_frame);
+        }
+        return effect;
     }
     // D16 deferred follow is membership-only too: the slotless mover takes
     // no allocation on either tree, so the source plan never applies. The
@@ -592,6 +609,7 @@ pub(super) fn workspace_do_send(
             source_plan_ms,
             preflight,
             true,
+            to_float,
         );
     }
     // Consume the existing source plan while the survivors are still visible
@@ -601,6 +619,8 @@ pub(super) fn workspace_do_send(
     // geometry is never written. All write fences stay inside
     // `apply_geometry` (identity/lifetime/scope, fullscreen veto, readback).
     // The internal tick reuses the parent action correlation.
+    // A capacity-float mover rides no destination geometry, so the
+    // plan carries source reflow only.
     let source_writable = writable_tokens(state, output, &loc.workspace, observed);
     state.tick += 1;
     let source_tick = state.tick;
@@ -630,7 +650,7 @@ pub(super) fn workspace_do_send(
     // post-follow enumeration here. A committed claim is owned even on
     // uncertain post-hide readback: flag it hidden and report the stall
     // without pretending follow success.
-    workspace_send_follow(
+    let effect = workspace_send_follow(
         state,
         me,
         store,
@@ -651,5 +671,37 @@ pub(super) fn workspace_do_send(
         source_plan_ms,
         preflight,
         deferred,
-    )
+        to_float,
+    );
+    if to_float && effect.outcome == "ok" {
+        register_verified_send_float(state, me, &target_key, &source_token, mover_frame);
+    }
+    effect
+}
+
+/// Register one verified capacity-float send mover: follow/stay proved
+/// the transfer, so the committed exception joins the lanes with the
+/// live frame and a repaired marker. The Engine-retained frame wins;
+/// the observed frame is the fallback.
+fn register_verified_send_float(
+    state: &mut TileLoop,
+    me: &ProcessIdentity,
+    target_key: &tiler_core::session::DomainKey,
+    token: &str,
+    frame: Option<Rect>,
+) {
+    let mut frames = HashMap::new();
+    if let Some(frame) = frame {
+        frames.insert(token.to_owned(), frame);
+    }
+    for adopted in register_committed_capacity_floats(state, me, target_key, &frames) {
+        log_json_at(
+            &state.log_path,
+            serde_json::json!({
+                "event": "send-capacity-float",
+                "window": adopted.token,
+                "marker": if adopted.marker_ok { "ok" } else { "unverified" },
+            }),
+        );
+    }
 }

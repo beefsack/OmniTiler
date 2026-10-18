@@ -698,3 +698,127 @@ fn gesture_classification_keeps_native_move_apart_from_resize() {
     // Zero movement routes nothing.
     assert_eq!(classify_gesture(&before, &before, Some((100, 100))), None);
 }
+
+#[test]
+fn drag_refusal_kind_names_capacity_float_transfers() {
+    // A committed cross-output capacity-float transfer reaching a drag
+    // finalize reports as capacity rather than an unhandled variant.
+    // The reply below is Engine-produced (real cross-output send into
+    // an exhausted single-tile destination); typed refusals keep their
+    // own kinds through the same helper.
+    use tiler_core::contract::LifecycleOperation;
+    let mut state = test_state();
+    let single = Rect {
+        x: 0,
+        y: 0,
+        w: 9,
+        h: 9,
+    };
+    let (source_domain, source_key) =
+        crate::workspace_owner::workspace_domain("mon-a", "ws-a", single, 8);
+    let (target_domain, target_key) =
+        crate::workspace_owner::workspace_domain("mon-b", "ws-b", single, 8);
+    for (domain, key, token) in [
+        (&source_domain, &source_key, "wM"),
+        (&target_domain, &target_key, "wT"),
+    ] {
+        let carried = vec![(
+            WindowId(token.to_owned()),
+            single,
+            tiler_core::size_hints::WindowSizeHints::none(),
+            false,
+        )];
+        let revision = state
+            .engine
+            .session(key)
+            .map(|session| session.accepted_revision())
+            .unwrap_or(0);
+        let fp = crate::tiling::fingerprint(&[(token.to_owned(), single)]);
+        let event = crate::tiling::build_reconcile_event_for_floating(
+            &state.owner.clone(),
+            &state.generation.clone(),
+            &CorrelationId::parse("drag-kind-seed").expect("correlation"),
+            revision,
+            fp,
+            domain,
+            key,
+            state.outer_gap,
+            &carried,
+            Some(&WindowId(token.to_owned())),
+        );
+        let reply = state.engine.handle(&event);
+        assert!(
+            matches!(reply, CoreReply::Projection(_) | CoreReply::Tiled(_)),
+            "seed converges, got {reply:?}"
+        );
+    }
+    let source_rows = vec![crate::workspace_owner::OwnerRow {
+        token: "wM".to_owned(),
+        rect: single,
+        hints: tiler_core::size_hints::WindowSizeHints::none(),
+        floating: false,
+    }];
+    let target_rows = vec![crate::workspace_owner::OwnerRow {
+        token: "wT".to_owned(),
+        rect: single,
+        hints: tiler_core::size_hints::WindowSizeHints::none(),
+        floating: false,
+    }];
+    let mut pairs: Vec<(String, Rect)> = source_rows
+        .iter()
+        .chain(target_rows.iter())
+        .map(|row| (row.token.clone(), row.rect))
+        .collect();
+    pairs.sort_by(|a, b| a.0.cmp(&b.0));
+    let fp = crate::tiling::fingerprint(
+        &pairs
+            .iter()
+            .map(|(token, rect)| (token.clone(), *rect))
+            .collect::<Vec<_>>(),
+    );
+    let mut event = crate::workspace_owner::build_send_output_event(
+        &state.owner.clone(),
+        &state.generation.clone(),
+        &CorrelationId::parse("drag-kind-send").expect("correlation"),
+        state
+            .engine
+            .session(&source_key)
+            .map(|session| session.accepted_revision())
+            .unwrap_or(0),
+        fp,
+        (source_domain, source_key),
+        (target_domain, target_key),
+        &source_rows,
+        &target_rows,
+        "wM",
+        state.outer_gap,
+        true,
+    )
+    .expect("send builds");
+    let target_key = event.target_domain.clone().expect("target").1;
+    crate::workspace_owner::stamp_send_output_target(&mut event, &target_key);
+    let reply = state.engine.handle(&event);
+    let plan = match &reply {
+        CoreReply::SendOutput(plan) => plan,
+        other => panic!("send commits, got {other:?}"),
+    };
+    assert!(
+        matches!(plan.operation, LifecycleOperation::MoveToFloat { .. }),
+        "mover floats for the exhausted destination"
+    );
+    assert_eq!(super::drag_refusal_kind(&reply), "capacity");
+    assert_eq!(
+        super::drag_refusal_kind(&CoreReply::Rejected {
+            kind: "k",
+            message: "m",
+        }),
+        "k"
+    );
+    assert_eq!(
+        super::drag_refusal_kind(&CoreReply::SnapshotInvalid {
+            message: "m",
+            detail: "d",
+        }),
+        "d"
+    );
+}
