@@ -388,13 +388,13 @@ fn managed_never_touches_fixture_post_target() {
 
 #[test]
 fn managed_applied_roundtrip_via_thread_with_tagged_digit() {
-    let worker = ManagedSendThread::spawn(FakeManaged::new);
+    let mut worker = ManagedSendThread::spawn(FakeManaged::new);
     let handoff = worker.handoff();
     let pinned = target();
-    handoff.submit(pinned.clone()).expect("idle submits");
+    worker.submit(pinned.clone()).expect("idle submits");
     // Second submit while pending/inflight refuses: no overlapping effects.
     assert_eq!(
-        handoff.submit(pinned.clone()),
+        worker.submit(pinned.clone()),
         Err("send-effect-busy"),
         "concurrent press serializes/refuses"
     );
@@ -419,7 +419,18 @@ fn managed_applied_roundtrip_via_thread_with_tagged_digit() {
     // the per-display previous becomes the source the send followed away from.
     let mut history = SelectionState::default();
     history.note_arrival("display-a", 20);
-    assert!(!worker.shutdown(), "nothing outstanding after poll");
+    // Idle shutdown is event-driven and nonblocking: request, then reap once
+    // finished (the owner already idles on its wake channel).
+    worker.request_shutdown();
+    let mut released = None;
+    for _ in 0..500 {
+        if let Some(had) = worker.try_reap() {
+            released = Some(had);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(released, Some(false), "nothing outstanding after poll");
 }
 
 #[test]
@@ -765,16 +776,24 @@ fn managed_thread_busy_blocks_overlap_and_shutdown_releases() {
     });
     let handoff = worker.handoff();
     let pinned = target();
-    handoff.submit(pinned.clone()).expect("submits");
+    worker.submit(pinned.clone()).expect("submits");
     started_rx
         .recv_timeout(Duration::from_secs(5))
         .expect("effect thread takes and blocks in begin_leg");
     assert!(handoff.is_busy());
     assert_eq!(
-        handoff.submit(pinned.clone()),
+        worker.submit(pinned.clone()),
         Err("send-effect-busy"),
         "no overlapping physical effect while blocked"
     );
+    // try_reap while the owner still lives is nonblocking None: the caller
+    // must never join-block nor release the lane from under a live owner.
+    let mut worker = worker;
+    assert!(
+        worker.try_reap().is_none(),
+        "reap while inflight is nonblocking None"
+    );
+    assert!(handoff.is_busy(), "lane stays busy while the owner lives");
     assert!(worker.cancel(), "cancel flags the blocked inflight");
     assert!(handoff.is_busy(), "cancel keeps the lane busy");
     release_tx.send(()).expect("release the blocked leg");
@@ -790,7 +809,156 @@ fn managed_thread_busy_blocks_overlap_and_shutdown_releases() {
     // Cancel arrived before the chord: proven refusal (nothing posted).
     assert_eq!(terminal.outcome, SendEffectOutcome::RefusedProven);
     assert!(!handoff.is_busy());
-    assert!(!worker.shutdown(), "polled lane releases idle");
+    worker.request_shutdown();
+    let mut released = None;
+    for _ in 0..500 {
+        if let Some(had) = worker.try_reap() {
+            released = Some(had);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(released, Some(false), "polled lane releases idle");
+}
+
+#[test]
+fn managed_thread_is_event_driven_no_idle_sleep() {
+    // Events over polling: the owner blocks on a wake channel while idle.
+    // No millisecond sleep may remain on the idle path.
+    let source = include_str!("workspace_send_managed.rs");
+    assert!(
+        source.contains("wake_rx.recv()"),
+        "idle owner blocks on the event wake channel"
+    );
+    assert!(
+        source.contains("wake_tx.send(())") || source.contains("wake_tx.send()"),
+        "submit/cancel/shutdown wake the owner"
+    );
+    assert!(
+        !source.contains("millis(1)"),
+        "no 1ms idle poll sleep remains on the effect thread"
+    );
+    assert!(
+        source.contains("request_shutdown") && source.contains("try_reap"),
+        "nonblocking shutdown request plus finished-only reap"
+    );
+    assert!(
+        source.contains("is_finished()"),
+        "reap joins only once the owner already finished"
+    );
+}
+
+#[test]
+fn managed_idle_shutdown_request_then_reap_without_blocking() {
+    // An idle owner shuts down promptly: request is nonblocking, reap
+    // arrives once finished, and the released lane was idle.
+    let mut worker = ManagedSendThread::spawn(FakeManaged::new);
+    assert!(!worker.is_finished(), "owner starts live");
+    worker.request_shutdown();
+    // request_shutdown never blocks and never releases by itself.
+    let mut released = None;
+    for _ in 0..500 {
+        if let Some(had) = worker.try_reap() {
+            released = Some(had);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(
+        released,
+        Some(false),
+        "idle lane releases with nothing outstanding"
+    );
+}
+
+#[test]
+fn managed_inflight_request_shutdown_never_releases_while_live() {
+    // While the owner is blocked mid-effect, request_shutdown returns
+    // immediately, try_reap stays None (no blocking join), and the lane
+    // stays busy: the caller can never release from under a live owner.
+    let (started_tx, started_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let mut worker = ManagedSendThread::spawn(move || {
+        let mut backend = FakeManaged::new();
+        backend.block_begin = Some((started_tx, release_rx));
+        backend
+    });
+    let handoff = worker.handoff();
+    let pinned = target();
+    worker.submit(pinned.clone()).expect("submits");
+    started_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("owner blocks mid-effect");
+    worker.request_shutdown();
+    assert!(
+        worker.try_reap().is_none(),
+        "reap while the owner lives is nonblocking None"
+    );
+    assert!(handoff.is_busy(), "no release while the owner is live");
+    release_tx.send(()).expect("unblock the owner");
+    // The owner finishes its terminal completion (cancelled before the
+    // chord: proven refusal), then exits on the stop flag.
+    let mut terminal = None;
+    for _ in 0..500 {
+        if let Some(completion) = handoff.poll_completion_for(&pinned) {
+            terminal = Some(completion);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let terminal = terminal.expect("terminal completion after unblock");
+    assert_eq!(terminal.outcome, SendEffectOutcome::RefusedProven);
+    let mut released = None;
+    for _ in 0..500 {
+        if let Some(had) = worker.try_reap() {
+            released = Some(had);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(released, Some(false), "staged completion was polled first");
+}
+
+#[test]
+fn managed_second_operation_on_reused_backend_classifies_fresh() {
+    // Regression: post counts are per-operation deltas. A first success must
+    // not corrupt a second early proof refusal into PossiblyExecuted via
+    // cumulative totals.
+    let handoff = SendEffectHandoff::new();
+    let pinned = target();
+    let mut backend = FakeManaged::new();
+    // First operation: exact arrival.
+    handoff.submit(pinned.clone()).expect("first submits");
+    handoff.take_for_owner().expect("first takes");
+    let (first, leg) = execute_managed_send(&pinned, &mut backend, &handoff);
+    assert_eq!(first, SendEffectOutcome::Applied);
+    assert!(leg.is_some());
+    let first_posts = backend.counts.total();
+    assert!(first_posts > 0, "first operation posts");
+    assert!(handoff.finish(completion_for(&pinned, first)));
+    assert!(handoff.poll_completion_for(&pinned).is_some());
+    // Second operation on the SAME backend: focus swaps before any new post.
+    backend.evidence_base.focused_window = Some("4242_9".to_owned());
+    handoff.submit(pinned.clone()).expect("second submits");
+    handoff.take_for_owner().expect("second takes");
+    let (second, leg) = execute_managed_send(&pinned, &mut backend, &handoff);
+    assert_eq!(
+        second,
+        SendEffectOutcome::RefusedProven,
+        "early proof refusal stays proven despite prior cumulative posts"
+    );
+    assert!(leg.is_none());
+    assert_eq!(
+        backend.counts.total(),
+        first_posts,
+        "second operation posts nothing new"
+    );
+    assert!(handoff.finish(completion_for(&pinned, second)));
+    let done = handoff
+        .poll_completion_for(&pinned)
+        .expect("second terminal polls");
+    assert_eq!(done.outcome, SendEffectOutcome::RefusedProven);
+    assert!(!handoff.is_busy());
 }
 
 #[test]

@@ -55,20 +55,28 @@
 //! - [`ManagedSendThread`]: the dedicated scoped effect thread. Owns its
 //!   backend (built on the effect thread via the spawn factory, so fresh
 //!   AX create/use/drop never runs on the engine/AppKit/observer owners).
-//!   Main/engine threads only submit nonblocking
-//!   ([`SendEffectHandoff::submit`]) and poll nonblocking
+//!   Submission and stop are event-driven (channel wake, no idle sleep);
+//!   the engine/main threads only submit nonblocking
+//!   ([`ManagedSendThread::submit`]) and poll the shared lane nonblocking
 //!   ([`SendEffectHandoff::poll_completion_for`]); no fresh AX polling or
-//!   waits happen on main. The existing bounded post-release effect poll
-//!   rides inside `run_drag_leg` and is not a proof cache: no periodic proof
-//!   query is added. Cancellation is request-to-stop; shutdown joins the
-//!   owner thread first and only then calls [`SendEffectHandoff::release`],
-//!   so a cancelled inflight never admits a concurrent physical effect and
-//!   no held input is abandoned. The main loop never joins this thread
-//!   per-cadence (shutdown/teardown only).
+//!   waits happen on main. The existing bounded post-release settle poll
+//!   stays inside `run_drag_leg` on this thread and is not a proof cache:
+//!   no periodic proof query is added. Cancellation is request-to-stop;
+//!   [`ManagedSendThread::request_shutdown`] signals stop, cancels the lane,
+//!   and wakes the owner without joining, while
+//!   [`ManagedSendThread::try_reap`] joins only once the owner already
+//!   finished and only then releases the lane - the caller can never release
+//!   while a live owner may still actuate. Never join per-cadence on the
+//!   main loop, never abandon a held input (the release-first executor plus
+//!   unconditional UP attempts guarantee the mouse releases before the
+//!   terminal completion). `Drop` panics when the owner was not reaped: an
+//!   active held-input thread is never silently detached and `Drop` never
+//!   blocks.
 
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
+    mpsc,
 };
 
 use crate::desktop_shortcuts::{ShortcutEntry, resolve_numbered_chord};
@@ -387,9 +395,13 @@ pub(crate) fn execute_managed_send<B: ManagedSendBackend>(
     backend: &mut B,
     handoff: &SendEffectHandoff,
 ) -> (SendEffectOutcome, Option<LegOk>) {
+    // Per-operation post baseline: the backend is reused across requests, so
+    // classification below must use deltas from this operation only - never
+    // cumulative totals that a prior success would corrupt.
+    let start_counts = backend.counts();
     // Stop before touching the desktop: a cancel that landed between take
-    // and execute reports a proven refusal (nothing posted).
-    if handoff.cancel_requested() && backend.counts().total() == 0 {
+    // and execute reports a proven refusal (nothing posted this operation).
+    if handoff.cancel_requested() {
         return (SendEffectOutcome::RefusedProven, None);
     }
     let gates = backend.read_gates();
@@ -462,8 +474,15 @@ pub(crate) fn execute_managed_send<B: ManagedSendBackend>(
         Err(LegError::Refused { stage, .. }) if stage != "readback" => {
             // A stop or proof refusal after the chord started is uncertain:
             // the switch may have fired before the refusal. Only a refusal
-            // with zero key-down posts is proven pre-actuation.
-            if adapter.inner.counts().key_down > 0 {
+            // with zero key-down posts *this operation* is proven
+            // pre-actuation (delta from the entry baseline, never the
+            // cumulative backend totals).
+            let key_down_delta = adapter
+                .inner
+                .counts()
+                .key_down
+                .saturating_sub(start_counts.key_down);
+            if key_down_delta > 0 {
                 (SendEffectOutcome::PossiblyExecuted, None)
             } else {
                 (SendEffectOutcome::RefusedProven, None)
@@ -492,28 +511,41 @@ pub(crate) fn completion_for(
 /// Owns exactly one [`ManagedSendBackend`] built on the effect thread via
 /// the spawn factory, so fresh AX create/use/drop reads, settles, OS posts,
 /// and readbacks never run on the engine, AppKit, or per-app observation
-/// owners. The engine/main threads interact only through the shared
-/// [`SendEffectHandoff`]: nonblocking submit plus nonblocking poll. No fresh
-/// AX polling or waits happen on main; the bounded post-release settle poll
-/// stays inside `run_drag_leg` on this thread.
+/// owners.
 ///
-/// Lifecycle is explicit: [`ManagedSendThread::spawn`] starts the owner,
-/// [`ManagedSendThread::cancel`] requests stop nonblocking, and
-/// [`ManagedSendThread::shutdown`] stops the owner, joins it, and only then
-/// releases the lane. Never release while the owner may still actuate, never
-/// join per-cadence on the main loop, never abandon a held input (the
+/// The owner sleeps on an event-driven wake channel while idle: each
+/// successful [`ManagedSendThread::submit`], [`ManagedSendThread::cancel`],
+/// and [`ManagedSendThread::request_shutdown`] sends one wake (the lane
+/// itself carries the work; the channel carries only the wakeup). No polling
+/// sleep exists on the idle path. The bounded post-release settle poll stays
+/// inside `run_drag_leg` on the owner thread and is not a proof cache.
+///
+/// Lifecycle is explicit and never blocks the caller: `spawn` starts the
+/// owner, `request_shutdown` signals stop, cancels the lane, and wakes the
+/// owner without joining, and `try_reap` joins only when the owner already
+/// finished (`JoinHandle::is_finished`) and only then releases the lane.
+/// The lane is never released while a live owner may still actuate; a
+/// cancelled inflight therefore never admits a concurrent physical effect.
+/// Never join per-cadence on the main loop, never abandon a held input (the
 /// release-first executor plus unconditional UP attempts guarantee the mouse
 /// releases before the terminal completion).
+///
+/// Ownership policy: the thread must be reaped with `try_reap` (after
+/// `request_shutdown`) before drop. `Drop` panics on a live owner instead
+/// of silently detaching a possibly held-input thread, and `Drop` never
+/// joins, so it never blocks an AppKit thread.
 pub struct ManagedSendThread {
     handoff: Arc<SendEffectHandoff>,
     stop: Arc<AtomicBool>,
+    wake_tx: mpsc::Sender<()>,
     handle: Option<std::thread::JoinHandle<()>>,
 }
 
 impl ManagedSendThread {
     /// Spawn the dedicated owner. The factory runs ON the effect thread, so
     /// backend construction (and every later AX read/post) stays off the
-    /// engine/AppKit/observer owners.
+    /// engine/AppKit/observer owners. The owner blocks on the wake channel
+    /// while idle - no sleep polling.
     pub fn spawn<B, F>(factory: F) -> Self
     where
         B: ManagedSendBackend + 'static,
@@ -521,38 +553,66 @@ impl ManagedSendThread {
     {
         let handoff = Arc::new(SendEffectHandoff::new());
         let stop = Arc::new(AtomicBool::new(false));
+        let (wake_tx, wake_rx) = mpsc::channel::<()>();
         let thread_handoff = Arc::clone(&handoff);
         let thread_stop = Arc::clone(&stop);
         let handle = std::thread::Builder::new()
             .name("managed-send-effect".to_owned())
             .spawn(move || {
                 let mut backend = factory();
-                while !thread_stop.load(Ordering::SeqCst) {
-                    let Some(target) = thread_handoff.take_for_owner() else {
-                        std::thread::sleep(std::time::Duration::from_millis(1));
+                loop {
+                    if thread_stop.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    if let Some(target) = thread_handoff.take_for_owner() {
+                        let (outcome, _) =
+                            execute_managed_send(&target, &mut backend, &thread_handoff);
+                        let _ = thread_handoff.finish(completion_for(&target, outcome));
                         continue;
-                    };
-                    let (outcome, _) = execute_managed_send(&target, &mut backend, &thread_handoff);
-                    let _ = thread_handoff.finish(completion_for(&target, outcome));
+                    }
+                    // Idle: event-driven wait for submit/cancel/shutdown.
+                    // The lane holds the work; this channel is wakeup only.
+                    // A queued wake returns immediately, so no submission is
+                    // ever lost between the take above and this wait.
+                    match wake_rx.recv() {
+                        Ok(()) => continue,
+                        Err(_) => break,
+                    }
                 }
             })
             .expect("managed send effect thread spawns");
         Self {
             handoff,
             stop,
+            wake_tx,
             handle: Some(handle),
         }
     }
 
-    /// Shared lane: engine submits nonblocking, main polls nonblocking.
+    /// Nonblocking submit through the serialized lane: refuses busy while a
+    /// request is pending, inflight, or completed-but-unpolled. Wakes the
+    /// owner exactly once on success.
+    pub fn submit(&self, target: ManagedSendTarget) -> Result<(), &'static str> {
+        let result = self.handoff.submit(target);
+        if result.is_ok() {
+            let _ = self.wake_tx.send(());
+        }
+        result
+    }
+
+    /// Shared lane: engine submits via [`ManagedSendThread::submit`];
+    /// main polls completions nonblocking here.
     #[must_use]
     pub fn handoff(&self) -> Arc<SendEffectHandoff> {
         Arc::clone(&self.handoff)
     }
 
-    /// Nonblocking request-to-stop (delegates to the lane).
+    /// Nonblocking request-to-stop (delegates to the lane) plus an owner
+    /// wake so an idle owner re-checks immediately.
     pub fn cancel(&self) -> bool {
-        self.handoff.cancel()
+        let had = self.handoff.cancel();
+        let _ = self.wake_tx.send(());
+        had
     }
 
     /// Whether a request is pending, inflight, or completed-but-unpolled.
@@ -561,14 +621,52 @@ impl ManagedSendThread {
         self.handoff.is_busy()
     }
 
-    /// Explicit shutdown: stop the owner, join it, then release the lane.
-    /// Call once at teardown — never per-cadence on the main loop.
-    /// Returns whether anything was outstanding at release.
-    pub fn shutdown(mut self) -> bool {
+    /// Whether the owner thread already finished (join would not block).
+    #[must_use]
+    pub fn is_finished(&self) -> bool {
+        self.handle
+            .as_ref()
+            .is_some_and(|handle| handle.is_finished())
+    }
+
+    /// Nonblocking shutdown request: signal stop, cancel the lane (a
+    /// cancelled inflight stays busy until its terminal completion), and
+    /// wake the owner. Never joins, never releases the lane - pair with
+    /// [`ManagedSendThread::try_reap`].
+    pub fn request_shutdown(&self) {
         self.stop.store(true, Ordering::SeqCst);
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
+        let _ = self.handoff.cancel();
+        let _ = self.wake_tx.send(());
+    }
+
+    /// Nonblocking reap: when the owner already finished, join it (which no
+    /// longer blocks) and only then release the lane. Returns `None` while
+    /// the owner still lives - the caller must retry later and must never
+    /// release the lane itself while the owner is live. Returns whether
+    /// anything was outstanding at release.
+    pub fn try_reap(&mut self) -> Option<bool> {
+        if !self.is_finished() {
+            return None;
         }
-        self.handoff.release()
+        let handle = self.handle.take()?;
+        let _ = handle.join();
+        Some(self.handoff.release())
+    }
+}
+
+impl Drop for ManagedSendThread {
+    fn drop(&mut self) {
+        // Best-effort nonblocking stop on every path (never join here, so
+        // Drop never blocks an AppKit thread). A live owner is a caller
+        // bug: panic instead of silently detaching a possibly held-input
+        // thread or releasing its lane from under it.
+        self.stop.store(true, Ordering::SeqCst);
+        let _ = self.handoff.cancel();
+        let _ = self.wake_tx.send(());
+        if self.handle.is_some() && !std::thread::panicking() {
+            panic!(
+                "ManagedSendThread must be reaped with try_reap after request_shutdown; refusing silent detach of a possibly held-input owner"
+            );
+        }
     }
 }
