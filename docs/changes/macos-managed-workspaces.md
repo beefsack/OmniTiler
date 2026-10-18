@@ -1,5 +1,50 @@
 # macOS managed native workspaces
 
+## Sequence discriminator checkpoint (2026-10-19)
+
+**TextEdit product send-follow still fails; no sequence fix is selected.**
+`3f7e1a7d`, `eaab84ad` and `11e44433` add reviewed metadata-only startup,
+exact admitted-subject, native event timing/geometry and changed-only readback
+logs. Startup readiness is emitted after runtime/input-owner readiness and
+observer/drag setup; the existing launcher's `--stream` exposes logs before
+teardown. No posting gate, event sequence or settlement policy changes.
+
+| Detail | Product numbered send | Passing `drag-diag-full --amethyst --desktop 2` |
+| --- | --- | --- |
+| Posts | Move, down, one zero-distance dragged event, key down/up, mouse up | Same |
+| Grab | First dual-hit-proven frame candidate: fractions .2/.35/.5/.65/.8, y + 8 | Captured cursor; successful run used center, y + 13 |
+| Source/tap/button | Null/default source, no explicit source-state ID, HID; left button, mouse flags zero | Same |
+| Chord | Ctrl+2 down/up (`0x40000`), own-switch key tag; no Fn | Configured Ctrl+2 down, zero-flags up, untagged; no Fn |
+| Timing | Fresh proof before each nonrelease edge; 50 ms pre-chord and 400 ms post-chord holds | Session gates only; same holds |
+| After release | Exact membership/current readback, then transfer feedback/history | Dispatch report only; no automatic return |
+
+- Historical control reproduced on one disposable, sheet-free TextEdit document:
+  outward/inverse carry, focus-follow and identical frames, down-to-up 471/469 ms.
+- That same document's scoped Authentic product send admitted the exact identity
+  and posted fully. Down/drag/chord-down/up/mouse-up were 34/53/125/125/525 ms
+  from leg start; membership stayed at source, target stayed current throughout
+  the remaining bounded run, result `PossiblyExecuted`. No inverse attempted.
+  Source inspection independently excludes a commanded follow/reconcile return
+  before membership observation; the earlier bounce actor remains unproven.
+- A stopped-runtime diagnostic comparison on a second document held its tiled
+  frame, chord, provenance and settings fixed. Both center/y+13 and .2-width/y+8
+  switched the view without carrying (477/480 ms). Because the positive control
+  failed on this frame, this does **not** isolate or eliminate grab geometry.
+  A small TextEdit-owned panel appeared transiently; its AX role was not captured.
+- Every run restored holders/preimages and original current/topology. Raw
+  protected-window baseline/final records match; own runtimes/display-awake
+  children are gone. No screenshots taken. Existing extra Space remains.
+- Final reviewed offline checks pass; hosted CI
+  [39142932503](https://github.com/beefsack/OmniTiler/actions/runs/39142932503)
+  passes all jobs at `11e44433`. Unsafe remains **114**, all in unchanged `ffi.rs`.
+
+Next: establish a passing fresh-document baseline, then vary only frame position
+and size with the same document/chord/anchor. Inspect scoped titlebar pixels and
+AX hit roles to distinguish draggable chrome from a document-title control.
+Do not change key-up flags, provenance or product geometry without isolation.
+Roundtrip layouts/indicator/border, same-current no-op, send-stay, trailing
+lifecycle and per-display attribution remain pending. No new actions are armed.
+
 ## Product send-follow partial live checkpoint (2026-10-19)
 
 **Disposable TextEdit input proof is implemented and reviewed; product transfer
@@ -185,11 +230,13 @@ trailing-Space lifecycle and multi-display work parked.
 
 - **Current status:** basic actions and existing-Space selects can be checked;
   helper outward product send-follow passes, but TextEdit outward transfer fails
-  with full posts, no carry and `PossiblyExecuted`. The reviewed diagnostic-only
-  `textedit-post` closes input ownership, not transfer acceptance. Numbered sends
-  remain armed but not dogfood-ready; no new actions are armed. Diagnose the
-  admitted subject/readback and require observed startup/admission logs before
-  another scoped attempt. No inverse or roundtrip/visual pass is claimed.
+  with full posts, no carry and `PossiblyExecuted`. Historical TextEdit diagnostic
+  carry reproduces, but its positive control fails on a tiled frame. Reviewed
+  diagnostic input proof and live startup/admitted-subject/native timing logs
+  establish dispatch identity, not transfer acceptance. Numbered sends remain
+  armed but not dogfood-ready; no new actions are armed. Require observed runtime
+  readiness and scoped-subject admission before dispatch. Product inverse,
+  roundtrip layouts, indicator and following-border acceptance remain pending.
 - The usual user entry is `mise exec -- just dev trace`. It builds/signs before
   launch, is unbounded and unscoped, and can tile ordinary terminal windows.
   For this disposable TextEdit check, use the scoped, explicit Authentic/Ctrl
