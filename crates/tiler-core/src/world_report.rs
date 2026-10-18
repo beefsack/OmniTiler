@@ -532,6 +532,49 @@ pub enum WorldCommand {
         target_output: OutputId,
         workspace: String,
     },
+    /// Direction-only focus (core-owned topology): the adapter names the
+    /// window and direction only, never the target or `crossOutput`. Core
+    /// resolves the strict unique-reciprocal target from retained FULL
+    /// rects; when it exists and the KDE focus policy allows crossing
+    /// (left/right only), the cross-output pair runs, otherwise the local
+    /// single-domain focus runs. Up/down never cross. Unreadable or held
+    /// scopes refuse without mutation.
+    FocusDirectional {
+        window: WindowId,
+        direction: String,
+        float_subject: bool,
+    },
+    /// Direction-only move (core-owned topology): the adapter names the
+    /// window, direction and same-axis mode only. Core resolves the strict
+    /// target; when it exists the cross-output pair runs in all four
+    /// directions, otherwise the local R1-R3 move runs. Never silently
+    /// refuses a local move for missing topology.
+    MoveDirectional {
+        window: WindowId,
+        direction: String,
+        same_axis: crate::directional::SameAxisMove,
+    },
+    /// Direction-only window send (core-owned topology): the adapter names
+    /// the window, direction and follow only. Core resolves the strict
+    /// target output plus its current native view (same rule as the removed
+    /// adapter `adjacentTarget`), then retains an ordinary window transfer.
+    /// No resolvable target refuses without mutation.
+    SendDirectional {
+        window: WindowId,
+        direction: String,
+        follow: bool,
+    },
+    /// Direction-only whole-workspace migration (core-owned topology): the
+    /// adapter names the source output, its current workspace and the
+    /// direction only, never the target. Core resolves the strict target
+    /// and runs the world migration path. Explicit source context is
+    /// required even with no active window. No resolvable target refuses
+    /// without mutation.
+    MigrateDirectional {
+        source_output: OutputId,
+        workspace: String,
+        direction: String,
+    },
     /// Existing operation route: one [`CoreCommand`] executed against the
     /// homing (or first readable) domain through the full [`CoreEvent`].
     /// `SendToWorkspace`/`SendToOutput` retain a window transfer exactly
@@ -1161,6 +1204,30 @@ pub fn valid_command(command: &WorldCommand) -> bool {
                 && is_opaque_id(&target_output.0)
                 && is_opaque_id(workspace)
                 && source_output != target_output
+        }
+        WorldCommand::FocusDirectional {
+            window,
+            direction,
+            ..
+        } => is_opaque_id(&window.0) && DIRECTIONS.contains(&direction.as_str()),
+        WorldCommand::MoveDirectional {
+            window,
+            direction,
+            ..
+        } => is_opaque_id(&window.0) && DIRECTIONS.contains(&direction.as_str()),
+        WorldCommand::SendDirectional {
+            window,
+            direction,
+            ..
+        } => is_opaque_id(&window.0) && DIRECTIONS.contains(&direction.as_str()),
+        WorldCommand::MigrateDirectional {
+            source_output,
+            workspace,
+            direction,
+        } => {
+            is_opaque_id(&source_output.0)
+                && is_opaque_id(workspace)
+                && DIRECTIONS.contains(&direction.as_str())
         }
         WorldCommand::Operation(command) => valid_operation(command),
     }

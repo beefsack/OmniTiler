@@ -122,8 +122,25 @@ impl WorldEngine {
         }
         // Fail-closed like the legacy topology handler: partial
         // enumeration never moves displacement state in either direction.
+        // Geometry-dependent remap additionally fences narrowly on
+        // missing/invalid/duplicate FULL rects (never derived from work
+        // areas or window frames); unrelated tiling still converges.
         if !report.inventory_complete || report.topology.iter().any(|topology| !topology.complete) {
             return;
+        }
+        {
+            let mut seen: BTreeSet<&str> = BTreeSet::new();
+            for topology in &report.topology {
+                let Some(rect) = topology.geometry else {
+                    return;
+                };
+                if topology.output.0.is_empty()
+                    || !crate::bounds::valid_carried_rect(rect.x, rect.y, rect.w, rect.h)
+                    || !seen.insert(topology.output.0.as_str())
+                {
+                    return;
+                }
+            }
         }
         let live_order = live_native_order(report);
         let live: BTreeSet<&str> = live_order.iter().map(String::as_str).collect();

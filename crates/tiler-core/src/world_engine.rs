@@ -252,10 +252,11 @@ pub struct WorldEngine {
     /// displacement: shared mode retains exactly like local modes).
     /// Directional world commands resolve against this map through the
     /// shared strict unique-reciprocal helper, never the carried adapter
-    /// adjacency. A report that is incomplete, partial, or carries a
-    /// missing/invalid/duplicate FULL rect clears the map, so
+    /// adjacency. A report with empty topology, any incomplete topology
+    /// entry, or a missing/invalid/duplicate FULL rect clears the map, so
     /// topology-dependent crossing, migration, and remap fence narrowly
     /// until the next complete report instead of actuating on stale edges.
+    /// Unrelated window-inventory incompleteness never clears this map.
     /// Disconnect-time facts for nearest-survivor placement stay in
     /// [`WorldEngine::output_facts`].
     pub(crate) live_topology: BTreeMap<String, Rect>,
@@ -454,15 +455,17 @@ impl WorldEngine {
 
     /// Retain (or fence) the core-owned live output topology from one
     /// accepted report, before any command planning on that same report.
-    /// A report claiming complete inventory with every topology entry
-    /// complete and carrying a valid FULL rectangle replaces the map;
-    /// anything else (partial inventory, incomplete entries, missing or
-    /// invalid rectangles, duplicate output ids) clears it, so
-    /// topology-dependent operations fence until the next complete
-    /// report. Never infers geometry from work areas or window frames.
+    /// A report with every topology entry complete and carrying a valid
+    /// FULL rectangle replaces the map; anything else (empty topology,
+    /// incomplete entries, missing or invalid rectangles, duplicate output
+    /// ids) clears it, so topology-dependent operations fence until the
+    /// next complete report. Monitor completeness is independent of
+    /// unrelated window-read failures: `inventory_complete` (window
+    /// inventory) never gates topology retention. Never infers geometry
+    /// from work areas or window frames.
     pub(crate) fn retain_live_topology(&mut self, report: &WorldReport) {
         let mut fresh: BTreeMap<String, Rect> = BTreeMap::new();
-        let mut complete = report.inventory_complete && !report.topology.is_empty();
+        let mut complete = !report.topology.is_empty();
         for topology in &report.topology {
             if !topology.complete {
                 complete = false;

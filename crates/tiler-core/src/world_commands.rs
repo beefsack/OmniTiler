@@ -9,7 +9,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::boundary::{CoreCommand, CoreEvent, CoreReply, TiledKind};
-use crate::directional::{Direction, OutputId, WindowId};
+use crate::directional::{Direction, OutputId, SameAxisMove, WindowId};
 use crate::engine::Engine;
 use crate::ids::{CorrelationId, OwnerId};
 use crate::seed::EngineWindow;
@@ -248,6 +248,56 @@ impl WorldEngine {
                 target_output,
                 workspace,
             } => self.start_migration(report, command_seq, source_output, target_output, workspace),
+            WorldCommand::FocusDirectional {
+                window,
+                direction,
+                float_subject,
+            } => self.focus_directional(
+                report,
+                command_seq,
+                window,
+                direction,
+                *float_subject,
+                by_id,
+                held_scopes,
+            ),
+            WorldCommand::MoveDirectional {
+                window,
+                direction,
+                same_axis,
+            } => self.move_directional(
+                report,
+                command_seq,
+                window,
+                direction,
+                *same_axis,
+                by_id,
+                held_scopes,
+            ),
+            WorldCommand::SendDirectional {
+                window,
+                direction,
+                follow,
+            } => self.send_directional(
+                report,
+                command_seq,
+                window,
+                direction,
+                *follow,
+                by_id,
+                held_scopes,
+            ),
+            WorldCommand::MigrateDirectional {
+                source_output,
+                workspace,
+                direction,
+            } => self.migrate_directional(
+                report,
+                command_seq,
+                source_output,
+                workspace,
+                direction,
+            ),
             WorldCommand::Operation(command) => {
                 self.execute_operation(report, command_seq, command, by_id, held_scopes)
             }
@@ -757,6 +807,233 @@ impl WorldEngine {
             command: command.clone(),
         };
         self.finish_operation_event(report, command_seq, &event)
+    }
+
+    /// Direction-only focus (core-owned topology): cross left/right through
+    /// the strict unique-reciprocal pair when resolvable, otherwise local
+    /// single-domain focus. Up/down never cross (KDE policy). No adapter
+    /// target or `crossOutput` is read; the core decides.
+    pub(crate) fn focus_directional(
+        &mut self,
+        report: &WorldReport,
+        command_seq: u64,
+        window: &WindowId,
+        direction: &str,
+        float_subject: bool,
+        by_id: &BTreeMap<&WindowId, &EngineWindow>,
+        held_scopes: &BTreeSet<DomainKey>,
+    ) -> CommandApplied {
+        let Some(direction_parsed) = parse_direction_token(direction) else {
+            return CommandApplied::Rejected {
+                kind: KIND_DIRECTION,
+                message: MSG_DIRECTION,
+            };
+        };
+        let Some(source_row) = by_id.get(window) else {
+            return CommandApplied::Rejected {
+                kind: KIND_FOCUS,
+                message: MSG_FOCUS,
+            };
+        };
+        let source_key = DomainKey {
+            output: source_row.output.clone(),
+            workspace: source_row.workspace.clone(),
+        };
+        if held_scopes.contains(&source_key) {
+            return CommandApplied::Rejected {
+                kind: KIND_SCOPE_HELD,
+                message: MSG_SCOPE_HELD,
+            };
+        }
+        // KDE focus policy: only left/right may cross. Up/down always run
+        // local, so a vertical strict edge never diverts focus.
+        let may_cross = matches!(
+            direction_parsed,
+            Direction::Left | Direction::Right
+        ) && self
+            .core_topology_target(&source_key.output, direction_parsed)
+            .is_some();
+        let command = CoreCommand::Focus {
+            window: window.0.clone(),
+            direction: direction.to_owned(),
+            cross_output_transfer: may_cross,
+            float_subject,
+        };
+        if may_cross {
+            // Cross path refuses only when the pair cannot form; fall back
+            // to local rather than refusing a focus that has a valid
+            // single-domain target (edgeless/ambiguous/partial topology).
+            let probe = self.directional_pair_for(report, &source_key, direction, held_scopes);
+            if probe.is_some() {
+                return self.operation_directional(
+                    report,
+                    command_seq,
+                    &command,
+                    &window.0,
+                    direction,
+                    by_id,
+                    held_scopes,
+                );
+            }
+        }
+        self.run_local_operation(report, command_seq, &command, by_id, held_scopes)
+    }
+
+    /// Direction-only move (core-owned topology): cross in all four
+    /// directions through the strict pair when resolvable, otherwise local
+    /// R1-R3. No adapter target or `crossOutput` is read; the core decides.
+    pub(crate) fn move_directional(
+        &mut self,
+        report: &WorldReport,
+        command_seq: u64,
+        window: &WindowId,
+        direction: &str,
+        same_axis: SameAxisMove,
+        by_id: &BTreeMap<&WindowId, &EngineWindow>,
+        held_scopes: &BTreeSet<DomainKey>,
+    ) -> CommandApplied {
+        let Some(direction_parsed) = parse_direction_token(direction) else {
+            return CommandApplied::Rejected {
+                kind: KIND_DIRECTION,
+                message: MSG_DIRECTION,
+            };
+        };
+        let Some(source_row) = by_id.get(window) else {
+            return CommandApplied::Rejected {
+                kind: KIND_OPERATION,
+                message: MSG_OPERATION,
+            };
+        };
+        let source_key = DomainKey {
+            output: source_row.output.clone(),
+            workspace: source_row.workspace.clone(),
+        };
+        if held_scopes.contains(&source_key) {
+            return CommandApplied::Rejected {
+                kind: KIND_SCOPE_HELD,
+                message: MSG_SCOPE_HELD,
+            };
+        }
+        let may_cross = self
+            .core_topology_target(&source_key.output, direction_parsed)
+            .is_some();
+        let command = CoreCommand::Move {
+            window: window.0.clone(),
+            direction: direction.to_owned(),
+            cross_output_transfer: may_cross,
+            same_axis_move: same_axis,
+        };
+        if may_cross {
+            let probe = self.directional_pair_for(report, &source_key, direction, held_scopes);
+            if probe.is_some() {
+                return self.operation_directional(
+                    report,
+                    command_seq,
+                    &command,
+                    &window.0,
+                    direction,
+                    by_id,
+                    held_scopes,
+                );
+            }
+        }
+        self.run_local_operation(report, command_seq, &command, by_id, held_scopes)
+    }
+
+    /// Direction-only window send (core-owned topology): resolve the strict
+    /// target output plus its current native view, then run the ordinary
+    /// send path. No adapter endpoint is read. No resolvable target or
+    /// unreadable target view refuses without mutation.
+    pub(crate) fn send_directional(
+        &mut self,
+        report: &WorldReport,
+        command_seq: u64,
+        window: &WindowId,
+        direction: &str,
+        follow: bool,
+        by_id: &BTreeMap<&WindowId, &EngineWindow>,
+        held_scopes: &BTreeSet<DomainKey>,
+    ) -> CommandApplied {
+        let Some(direction_parsed) = parse_direction_token(direction) else {
+            return CommandApplied::Rejected {
+                kind: KIND_DIRECTION,
+                message: MSG_DIRECTION,
+            };
+        };
+        let Some(source_row) = by_id.get(window) else {
+            return CommandApplied::Rejected {
+                kind: KIND_SEND_WINDOW,
+                message: MSG_SEND_WINDOW,
+            };
+        };
+        let Some(target_output) =
+            self.core_topology_target(&source_row.output, direction_parsed)
+        else {
+            return CommandApplied::Rejected {
+                kind: KIND_SEND_TARGET,
+                message: MSG_SEND_TARGET,
+            };
+        };
+        let Some(current) = report
+            .topology
+            .iter()
+            .find(|t| t.output == target_output)
+            .map(|t| t.current_native.clone())
+        else {
+            return CommandApplied::Rejected {
+                kind: KIND_SEND_TARGET,
+                message: MSG_SEND_TARGET,
+            };
+        };
+        if current.is_empty() {
+            return CommandApplied::Rejected {
+                kind: KIND_SEND_TARGET,
+                message: MSG_SEND_TARGET,
+            };
+        }
+        self.start_send(
+            report,
+            command_seq,
+            window,
+            &target_output,
+            &current,
+            follow,
+            by_id,
+            held_scopes,
+        )
+    }
+
+    /// Direction-only whole-workspace migration (core-owned topology):
+    /// resolve the strict target from the explicit source output, then run
+    /// the world migration path. The adapter reports source identity only.
+    pub(crate) fn migrate_directional(
+        &mut self,
+        report: &WorldReport,
+        command_seq: u64,
+        source_output: &OutputId,
+        workspace: &str,
+        direction: &str,
+    ) -> CommandApplied {
+        let Some(direction_parsed) = parse_direction_token(direction) else {
+            return CommandApplied::Rejected {
+                kind: KIND_DIRECTION,
+                message: MSG_DIRECTION,
+            };
+        };
+        let Some(target_output) = self.core_topology_target(source_output, direction_parsed)
+        else {
+            return CommandApplied::Rejected {
+                kind: KIND_MIGRATION,
+                message: MSG_MIGRATION,
+            };
+        };
+        self.start_migration(
+            report,
+            command_seq,
+            source_output,
+            &target_output,
+            workspace,
+        )
     }
 
     /// Cross-output drag preview/drop through the source-first pair. The

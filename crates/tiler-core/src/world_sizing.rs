@@ -585,6 +585,50 @@ fn command_estimate_owned(command: &WorldCommand) -> usize {
                 + json_string_len(&target_output.0)
                 + json_string_len(workspace)
         }
+        WorldCommand::FocusDirectional {
+            window,
+            direction,
+            float_subject,
+        } => {
+            // {"op":"focus-directional","win":S,"direction":S,"floatSubject":B}
+            // = 62 fixed.
+            62 + json_string_len(&window.0)
+                + json_string_len(direction)
+                + bool_len(*float_subject)
+        }
+        WorldCommand::MoveDirectional {
+            window,
+            direction,
+            same_axis,
+        } => {
+            // {"op":"move-directional","win":S,"direction":S,"sameAxis":S}
+            // = 57 fixed.
+            57 + json_string_len(&window.0)
+                + json_string_len(direction)
+                + json_string_len(same_axis.as_wire_str())
+        }
+        WorldCommand::SendDirectional {
+            window,
+            direction,
+            follow,
+        } => {
+            // {"op":"send-directional","win":S,"direction":S,"follow":B}
+            // = 55 fixed.
+            55 + json_string_len(&window.0)
+                + json_string_len(direction)
+                + bool_len(*follow)
+        }
+        WorldCommand::MigrateDirectional {
+            source_output,
+            workspace,
+            direction,
+        } => {
+            // {"op":"migrate-directional","from":S,"ws":S,"direction":S}
+            // = 55 fixed.
+            55 + json_string_len(&source_output.0)
+                + json_string_len(workspace)
+                + json_string_len(direction)
+        }
         WorldCommand::Operation(command) => {
             // {"op":"operation","command":{...}} = 30 fixed.
             30 + operation_estimate(command)

@@ -53,7 +53,8 @@
 //! command.op: focus|send|switch-view|select-workspace|select-numbered|
 //!   select-relative|select-previous|select-trailing|send-relative|
 //!   send-numbered|set-workspace-tiling|
-//!   migrate-workspace|operation (fields per variant, see decode)
+//!   migrate-workspace|focus-directional|move-directional|send-directional|
+//!   migrate-directional|operation (fields per variant, see decode)
 //! ```
 //!
 //! Reply keys are exactly the core canonical reply encoding (`v`, `adapter`,
@@ -984,6 +985,41 @@ fn decode_command(value: &serde_json::Value) -> Result<WorldCommand> {
                 source_output: OutputId(from),
                 target_output: OutputId(to),
                 workspace: req_id(map, "ws")?,
+            })
+        }
+        "focus-directional" => {
+            check_keys(map, &["op", "win", "direction", "floatSubject"])?;
+            Ok(WorldCommand::FocusDirectional {
+                window: WindowId(req_id(map, "win")?),
+                direction: parse_direction_token(req_str(map, "direction")?)?,
+                float_subject: req_bool(map, "floatSubject")?,
+            })
+        }
+        "move-directional" => {
+            check_keys(map, &["op", "win", "direction", "sameAxis"])?;
+            let same_axis =
+                tiler_core::directional::SameAxisMove::parse_wire(req_str(map, "sameAxis")?)
+                    .ok_or_else(unknown_value)?;
+            Ok(WorldCommand::MoveDirectional {
+                window: WindowId(req_id(map, "win")?),
+                direction: parse_direction_token(req_str(map, "direction")?)?,
+                same_axis,
+            })
+        }
+        "send-directional" => {
+            check_keys(map, &["op", "win", "direction", "follow"])?;
+            Ok(WorldCommand::SendDirectional {
+                window: WindowId(req_id(map, "win")?),
+                direction: parse_direction_token(req_str(map, "direction")?)?,
+                follow: req_bool(map, "follow")?,
+            })
+        }
+        "migrate-directional" => {
+            check_keys(map, &["op", "from", "ws", "direction"])?;
+            Ok(WorldCommand::MigrateDirectional {
+                source_output: OutputId(req_id(map, "from")?),
+                workspace: req_id(map, "ws")?,
+                direction: parse_direction_token(req_str(map, "direction")?)?,
             })
         }
         "operation" => {
