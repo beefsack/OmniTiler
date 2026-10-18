@@ -18,6 +18,7 @@ use tiler_core::directional::{OutputId, WorkspaceId};
 use tiler_core::geometry::Rect;
 
 use crate::desktop_shortcuts::{ShortcutEntry, desktop_symbolic_id};
+use crate::runtime_core::EngineFactsRead;
 use crate::runtime_core::EngineManagedFacts;
 use crate::runtime_types::{ClaimedSelect, InputSemanticAction, NativeContext, NativeDomain};
 use crate::space_drag_transfer::DragStep;
@@ -226,6 +227,8 @@ struct FakeReaders {
     ax_calls: usize,
     engine_base: Option<EngineManagedFacts>,
     engine_from_call: Option<(usize, Option<EngineManagedFacts>)>,
+    engine_noreply: bool,
+    engine_noreply_from: Option<usize>,
     engine_calls: usize,
     focus: Option<(u32, Option<u32>)>,
     agree: bool,
@@ -275,6 +278,8 @@ impl FakeReaders {
             ax_calls: 0,
             engine_base: Some(engine_ok()),
             engine_from_call: None,
+            engine_noreply: false,
+            engine_noreply_from: None,
             engine_calls: 0,
             focus: Some((PID, Some(WID))),
             agree: true,
@@ -368,18 +373,32 @@ impl SendNativeReaders for FakeReaders {
         }
         self.ax_base
     }
-    fn engine_facts(&mut self, window: &str) -> Option<EngineManagedFacts> {
+    fn engine_facts(&mut self, window: &str) -> EngineFactsRead {
         let call = self.engine_calls;
         self.engine_calls += 1;
+        if let Some(from) = self.engine_noreply_from
+            && call >= from
+        {
+            return EngineFactsRead::NoReply;
+        }
+        if self.engine_noreply {
+            return EngineFactsRead::NoReply;
+        }
         if let Some((from, facts)) = self.engine_from_call.clone()
             && call >= from
         {
-            return facts;
+            return match facts {
+                Some(facts) => EngineFactsRead::Managed(facts),
+                None => EngineFactsRead::Unmanaged,
+            };
         }
         if window == WINDOW {
-            return self.engine_base.clone();
+            return match self.engine_base.clone() {
+                Some(facts) => EngineFactsRead::Managed(facts),
+                None => EngineFactsRead::Unmanaged,
+            };
         }
-        None
+        EngineFactsRead::Unmanaged
     }
     fn selected_focus(&mut self) -> Option<(u32, Option<u32>)> {
         self.focus
@@ -1285,11 +1304,12 @@ fn live_hotkey_to_feedback_pathway_with_injected_readers() {
 #[test]
 fn live_blind_root_discriminates_engine_topology_membership() {
     // One live inverse refusal (`refused-send-unknown-managed`) collapses
-    // three unreadable roots; the backend must name exactly which one
+    // four unreadable roots; the backend must name exactly which one
     // collapsed, with zero native posts at setup in every case.
     let target = pinned_target();
-    // Engine facts unreadable while topology and membership stay healthy:
-    // reports engine-facts — never mislabeled as topology.
+    // Proven engine unmanaged while topology and membership stay healthy:
+    // reports engine-facts-unmanaged — never mislabeled as topology, never
+    // confused with an unproven query.
     let lane = handoff();
     let mut backend = LiveManagedSendBackend::new({
         let mut readers = FakeReaders::new();
@@ -1299,7 +1319,22 @@ fn live_blind_root_discriminates_engine_topology_membership() {
     let (outcome, leg) = execute_managed_send(&target, &mut backend, &lane);
     assert_eq!(outcome, SendEffectOutcome::RefusedProven);
     assert!(leg.is_none());
-    assert_eq!(backend.blind_root(), Some(BlindRoot::EngineFacts));
+    assert_eq!(backend.blind_root(), Some(BlindRoot::EngineFactsUnmanaged));
+    assert_eq!(backend.counts().key_down, 0, "no chord posted");
+    assert_eq!(backend.counts().mouse_down, 0, "no grab posted");
+    // Unproven engine read (bound elapsed / inbox closed / engine down)
+    // while topology and membership stay healthy: reports
+    // engine-facts-noreply — never mislabeled as proven unmanaged.
+    let lane = handoff();
+    let mut backend = LiveManagedSendBackend::new({
+        let mut readers = FakeReaders::new();
+        readers.engine_noreply = true;
+        readers
+    });
+    let (outcome, leg) = execute_managed_send(&target, &mut backend, &lane);
+    assert_eq!(outcome, SendEffectOutcome::RefusedProven);
+    assert!(leg.is_none());
+    assert_eq!(backend.blind_root(), Some(BlindRoot::EngineFactsNoReply));
     assert_eq!(backend.counts().key_down, 0, "no chord posted");
     assert_eq!(backend.counts().mouse_down, 0, "no grab posted");
     // Topology unreadable at the proof read (the snapshot read at call 0
@@ -1335,4 +1370,48 @@ fn live_blind_root_discriminates_engine_topology_membership() {
     let evidence = backend.fresh_evidence(&target);
     assert_eq!(evidence.managed_current, Some(true));
     assert_eq!(backend.blind_root(), None);
+}
+
+#[test]
+fn live_inverse_roundtrip_discriminates_noreply_from_unmanaged() {
+    // Producer-shaped 1->2->1 admitted/effect-query sequence at the effect
+    // layer: the same admission-pinned target first applies with fresh
+    // engine authority, then the inverse leg refuses — and the refusal names
+    // whether the fresh engine read was proven-absent or unproven. Both
+    // refuse with zero posts and never substitute the admission pin.
+    let target = pinned_target();
+    // Outward leg 1->2 with healthy engine authority: applies.
+    let lane = handoff();
+    let mut backend = LiveManagedSendBackend::new(FakeReaders::new());
+    let (outcome, leg) = execute_managed_send(&target, &mut backend, &lane);
+    assert_eq!(outcome, SendEffectOutcome::Applied);
+    assert!(leg.is_some());
+    // Inverse leg with an unproven engine read (bound elapsed / engine
+    // down): refuses as noreply, never mislabeled unmanaged.
+    let lane = handoff();
+    let mut backend = LiveManagedSendBackend::new({
+        let mut readers = FakeReaders::new();
+        readers.engine_noreply = true;
+        readers
+    });
+    let (outcome, leg) = execute_managed_send(&target, &mut backend, &lane);
+    assert_eq!(outcome, SendEffectOutcome::RefusedProven);
+    assert!(leg.is_none());
+    assert_eq!(backend.blind_root(), Some(BlindRoot::EngineFactsNoReply));
+    assert_eq!(backend.counts().key_down, 0, "no chord posted");
+    assert_eq!(backend.counts().mouse_down, 0, "no grab posted");
+    // Inverse leg with a proven engine-absent reply (removed / unhomed):
+    // refuses as unmanaged, never mislabeled noreply.
+    let lane = handoff();
+    let mut backend = LiveManagedSendBackend::new({
+        let mut readers = FakeReaders::new();
+        readers.engine_base = None;
+        readers
+    });
+    let (outcome, leg) = execute_managed_send(&target, &mut backend, &lane);
+    assert_eq!(outcome, SendEffectOutcome::RefusedProven);
+    assert!(leg.is_none());
+    assert_eq!(backend.blind_root(), Some(BlindRoot::EngineFactsUnmanaged));
+    assert_eq!(backend.counts().key_down, 0, "no chord posted");
+    assert_eq!(backend.counts().mouse_down, 0, "no grab posted");
 }

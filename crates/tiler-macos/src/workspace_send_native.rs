@@ -80,11 +80,13 @@ pub trait SendNativeReaders: Send {
     /// Current engine-managed facts for one subject window: generation,
     /// homing source plus current actuation, retained fullscreen,
     /// classifier-excluded minimized lifetime, and the retained revision.
-    /// `None` when the engine no longer manages the window, the query
-    /// raced teardown, or the bound elapsed — every one of those refuses
-    /// without actuation. This is the managed-window authority: native OS
-    /// legs below supplement it but never replace it.
-    fn engine_facts(&mut self, window: &str) -> Option<crate::runtime_core::EngineManagedFacts>;
+    /// `Managed` carries fresh engine authority; `Unmanaged` is a proven
+    /// engine reply that the window is no longer managed; `NoReply` is an
+    /// unproven read (bound elapsed, inbox closed, engine down). Both
+    /// non-managed variants refuse without actuation — never guessed,
+    /// never an admission-pin substitute. This is the managed-window
+    /// authority: native OS legs below supplement it but never replace it.
+    fn engine_facts(&mut self, window: &str) -> crate::runtime_core::EngineFactsRead;
     /// Joined fresh topology (row plus revision plus context from one read
     /// set — the ordinal/revision/homing coherence root). The display legs
     /// are latest-wins main-thread publications; rows, types, membership
@@ -160,8 +162,8 @@ impl SendNativeReaders for OsSendReaders {
                 .unwrap_or(true),
         }
     }
-    fn engine_facts(&mut self, window: &str) -> Option<crate::runtime_core::EngineManagedFacts> {
-        self.handle.query_managed_facts(
+    fn engine_facts(&mut self, window: &str) -> crate::runtime_core::EngineFactsRead {
+        self.handle.query_managed_facts_read(
             window,
             std::time::Duration::from_millis(ENGINE_FACTS_TIMEOUT_MS),
         )
@@ -358,8 +360,14 @@ fn assemble_evidence<R: SendNativeReaders>(
 ) -> (SendFreshEvidence, Option<BlindRoot>) {
     let pid = target.pid();
     let wid = target.wid();
-    let Some(engine) = readers.engine_facts(target.window()) else {
-        return blind_evidence(BlindRoot::EngineFacts);
+    let engine = match readers.engine_facts(target.window()) {
+        crate::runtime_core::EngineFactsRead::Managed(facts) => facts,
+        crate::runtime_core::EngineFactsRead::Unmanaged => {
+            return blind_evidence(BlindRoot::EngineFactsUnmanaged);
+        }
+        crate::runtime_core::EngineFactsRead::NoReply => {
+            return blind_evidence(BlindRoot::EngineFactsNoReply);
+        }
     };
     let Some(topo) = readers.fresh_topology().ok() else {
         return blind_evidence(BlindRoot::Topology);

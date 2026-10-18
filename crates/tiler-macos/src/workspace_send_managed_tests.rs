@@ -1470,9 +1470,11 @@ fn effect_owner_emits_exactly_one_bounded_refusal_line_site() {
 #[test]
 fn proof_refusal_reason_names_blind_root_only_for_unknown_managed() {
     // Each blind root gets a distinct token-only suffix so one live
-    // refusal line discriminates engine-facts vs topology vs membership.
+    // refusal line discriminates engine-facts-unmanaged vs
+    // engine-facts-noreply vs topology vs membership.
     for (root, token) in [
-        (BlindRoot::EngineFacts, "engine-facts"),
+        (BlindRoot::EngineFactsUnmanaged, "engine-facts-unmanaged"),
+        (BlindRoot::EngineFactsNoReply, "engine-facts-noreply"),
         (BlindRoot::Topology, "topology"),
         (BlindRoot::Membership, "membership"),
     ] {

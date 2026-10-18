@@ -480,6 +480,23 @@ pub struct EngineManagedFacts {
     pub revision: u64,
 }
 
+/// Discriminated engine-facts read for the dedicated effect owner: the
+/// proof verdict is identical for the last two (`None` evidence,
+/// `UnknownManaged` refusal, zero posts), but the blind root names which
+/// one collapsed. `Managed` carries fresh engine authority;
+/// `Unmanaged` is a proven engine reply that the subject is no longer
+/// managed (removed, excluded, unhomed — retained truth, never a guess);
+/// `NoReply` is an unproven read (the bounded query elapsed, the inbox
+/// closed, or the engine is down — never a managed verdict). Callers must
+/// never substitute admission pins, static scope, or native membership on
+/// either refusal — both refuse without actuation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EngineFactsRead {
+    Managed(EngineManagedFacts),
+    Unmanaged,
+    NoReply,
+}
+
 impl RetainedCore {
     /// Publish the current managed facts for one subject window, joined
     /// against one native context: generation, homing source, current

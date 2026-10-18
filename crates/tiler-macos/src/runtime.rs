@@ -151,6 +151,7 @@ pub struct ScopedObservation {
 // [`crate::runtime_shared`] (re-exported here so every existing
 // `crate::runtime::{Shared, ...}` path keeps working); per-app lifetime
 // admission lives in [`crate::runtime_apps`].
+pub use crate::runtime_core::EngineFactsRead;
 pub use crate::runtime_core::EngineManagedFacts;
 pub use crate::runtime_shared::{
     MidflightHook, NativeContextCell, PostAcceptHook, PublishedDisplayInputs,
@@ -1203,18 +1204,41 @@ impl RuntimeHandle {
         window: &str,
         timeout: std::time::Duration,
     ) -> Option<crate::runtime_core::EngineManagedFacts> {
+        match self.query_managed_facts_read(window, timeout) {
+            crate::runtime_core::EngineFactsRead::Managed(facts) => Some(facts),
+            crate::runtime_core::EngineFactsRead::Unmanaged
+            | crate::runtime_core::EngineFactsRead::NoReply => None,
+        }
+    }
+
+    /// Discriminated engine-facts read for the dedicated effect owner:
+    /// `Managed` carries fresh engine authority; `Unmanaged` is a proven
+    /// engine reply that the subject is no longer managed; `NoReply` is an
+    /// unproven read (engine down, inbox closed, or the bound elapsed).
+    /// Both non-managed variants refuse without actuation — never a guess,
+    /// never an admission-pin substitute. Never blocks input or observation
+    /// owners (only the caller waits).
+    pub fn query_managed_facts_read(
+        &self,
+        window: &str,
+        timeout: std::time::Duration,
+    ) -> crate::runtime_core::EngineFactsRead {
         use crate::runtime_shared::engine_alive;
         if !engine_alive(&self.shared) {
-            return None;
+            return crate::runtime_core::EngineFactsRead::NoReply;
         }
         let (tx, rx) = mpsc::channel::<Option<crate::runtime_core::EngineManagedFacts>>();
         if !self.inbox.send_control(EngineJob::ManagedFactsQuery {
             window: window.to_owned(),
             reply: tx,
         }) {
-            return None;
+            return crate::runtime_core::EngineFactsRead::NoReply;
         }
-        rx.recv_timeout(timeout).ok().flatten()
+        match rx.recv_timeout(timeout) {
+            Ok(Some(facts)) => crate::runtime_core::EngineFactsRead::Managed(facts),
+            Ok(None) => crate::runtime_core::EngineFactsRead::Unmanaged,
+            Err(_) => crate::runtime_core::EngineFactsRead::NoReply,
+        }
     }
 
     /// Query the engine's retained workspace occupancy (control lane, never

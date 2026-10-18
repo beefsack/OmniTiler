@@ -309,9 +309,13 @@ impl SendProofRefusal {
 /// window content, never posted values).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlindRoot {
-    /// The engine no longer manages the subject, the query raced
-    /// teardown, or the bounded query elapsed.
-    EngineFacts,
+    /// Proven engine reply that the subject is no longer managed
+    /// (removed, excluded, or unhomed retained truth — never a guess).
+    EngineFactsUnmanaged,
+    /// Unproven engine read: the bounded query elapsed, the inbox closed,
+    /// or the engine was down. Never a managed verdict — refuses without
+    /// actuation, never an admission-pin substitute.
+    EngineFactsNoReply,
     /// The joined fresh topology (display legs plus SLS rows) unreadable.
     Topology,
     /// The fresh SLS Space membership for the subject unreadable.
@@ -323,7 +327,8 @@ impl BlindRoot {
     #[must_use]
     pub const fn token(self) -> &'static str {
         match self {
-            Self::EngineFacts => "engine-facts",
+            Self::EngineFactsUnmanaged => "engine-facts-unmanaged",
+            Self::EngineFactsNoReply => "engine-facts-noreply",
             Self::Topology => "topology",
             Self::Membership => "membership",
         }
