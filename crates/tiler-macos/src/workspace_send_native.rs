@@ -125,16 +125,10 @@ pub trait SendNativeReaders: Send {
 /// waited out on the owner.
 const ENGINE_FACTS_TIMEOUT_MS: u64 = 200;
 
-/// Production native readers over the calling (effect-owner) thread: fresh
-/// OS reads plus tagged HID posts. The AppKit-only display legs (display
-/// list plus separate-Spaces mode) arrive as latest-wins main-thread
-/// publications loaded without touching AppKit (never a synchronous main
-/// wait, never a poll); SLS rows, Space types, membership, AX, CG and focus
-/// legs stay fresh reads on this thread, so the revision identity is
-/// unchanged and every per-edge check stays live. Compiles on every host
-/// (off-macOS stubs refuse as unavailable); no new `unsafe` — only the
-/// maintained `objc2`/libc wrappers in [`crate::ffi`], [`crate::synth`],
-/// and [`crate::focus`].
+/// Production native readers over the calling (effect-owner) thread: the
+/// AppKit display legs arrive as latest-wins notification publications;
+/// every other leg stays a fresh read here. Compiles on every host; no
+/// new `unsafe`.
 pub struct OsSendReaders {
     handle: RuntimeHandle,
     store: crate::desktop_shortcuts::LiveStore,
@@ -173,14 +167,7 @@ impl SendNativeReaders for OsSendReaders {
         )
     }
     fn fresh_topology(&mut self) -> Result<SendTopology, String> {
-        // AppKit-only legs never run here: the main thread publishes them
-        // latest-wins (startup plus each revision change) and this owner
-        // loads them under a brief lock — no synchronous main wait, no
-        // poll, no cached topology. Absent publications refuse before any
-        // post, exactly like an unreadable snapshot. SLS rows and Space
-        // types below stay fresh reads on this thread, so the fingerprint
-        // revision identity is unchanged and per-edge row/ordinal/current
-        // checks stay live.
+        // Notification-published display legs plus fresh SLS rows/types here.
         let published = self.handle.published_display_inputs().ok_or_else(|| {
             "send topology unreadable: display snapshot unpublished (no main-thread publish yet)"
                 .to_owned()

@@ -1674,6 +1674,7 @@ mod native {
             Ok(snapshot) => {
                 poll.poll(&snapshot);
                 publish_snapshot_context(&facts_store, &snapshot);
+                handle.publish_display_inputs(&snapshot);
                 last_snapshot = Some(snapshot.clone());
                 handle.update_topology_with(snapshot, &|sid| crate::ffi::sls_space_type(sid).ok());
                 topology_updates += 1;
@@ -1886,14 +1887,18 @@ mod native {
                 indicator.discard_clicks();
             }
 
-            // Topology: observer events plus bounded fallback polling both
-            // funnel into resnapshot; revision drift publishes (purging
-            // queued focus and superseding current plans).
-            if display_flag.take_changed() {
+            // Topology: the 250 ms poll still owns the full snapshot; the
+            // send display legs publish on screen-parameter notification
+            // only (plus startup above), so polling never moves that slot.
+            let display_notified = display_flag.take_changed();
+            if display_notified {
                 display_events += 1;
             }
             match snapshot_live() {
                 Ok(snapshot) => {
+                    if display_notified {
+                        handle.publish_display_inputs(&snapshot);
+                    }
                     last_snapshot = Some(snapshot.clone());
                     if !matches!(
                         poll.poll(&snapshot),

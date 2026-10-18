@@ -540,16 +540,10 @@ fn shutdown_clean(fixture: &Fixture) {
 
 #[test]
 fn send_effect_owner_topology_never_touches_main_thread_displays() {
-    // The product defect: `OsSendReaders::fresh_topology` called the
-    // main-thread-only `ns_display_snapshot` on the dedicated effect
-    // owner and refused every numbered send-follow before posting. The
-    // display legs now arrive as latest-wins main-thread publications;
-    // the owner joins them with its own fresh SLS rows. These threads
-    // are never the main thread, so any AppKit touch fails here exactly
-    // as it did in production.
+    // Display legs arrive as startup/notification publications; the owner
+    // joins them with fresh SLS rows on its own thread.
     use tiler_macos::workspace_send_native::{OsSendReaders, SendNativeReaders};
     let fixture = start(scoped_config());
-    // Unpublished inputs refuse by name — never via an AppKit call.
     let probe = fixture.handle.clone();
     let err = std::thread::spawn(move || {
         let mut readers = OsSendReaders::live(probe);
@@ -565,10 +559,16 @@ fn send_effect_owner_topology_never_touches_main_thread_displays() {
         !err.contains("requires the main thread"),
         "effect owner never invokes the main-thread-only display read: {err}"
     );
-    // Latest-wins publication: the newest publish wins.
+    // Steady-state topology publishes never move the notification slot.
     fixture
         .handle
         .update_topology_with(two_space_snapshot(), &user_space);
+    assert!(
+        fixture.handle.published_display_inputs().is_none(),
+        "poll-path topology publish leaves display inputs unpublished"
+    );
+    // Startup/notification publication is latest-wins.
+    fixture.handle.publish_display_inputs(&two_space_snapshot());
     let first = fixture
         .handle
         .published_display_inputs()
@@ -577,12 +577,26 @@ fn send_effect_owner_topology_never_touches_main_thread_displays() {
     assert_eq!(first.separate, Some(true));
     fixture
         .handle
-        .update_topology_with(two_display_snapshot(), &user_space);
+        .publish_display_inputs(&two_display_snapshot());
     let second = fixture
         .handle
         .published_display_inputs()
         .expect("display inputs republished");
     assert_eq!(second.displays.len(), 2);
+    // A later poll-path publish with different legs leaves the slot alone.
+    fixture
+        .handle
+        .update_topology_with(two_space_snapshot(), &user_space);
+    assert_eq!(
+        fixture
+            .handle
+            .published_display_inputs()
+            .expect("slot intact")
+            .displays
+            .len(),
+        2,
+        "poll-path publish never overwrites notification slot"
+    );
     // Published inputs: the display leg passes on the spawned thread. Any
     // refusal names only the fresh SLS legs, never the display snapshot.
     let probe = fixture.handle.clone();
