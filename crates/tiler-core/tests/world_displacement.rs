@@ -84,14 +84,16 @@ struct OutputSpec {
     primary: bool,
 }
 
-fn output(out: &'static str, order: Vec<&'static str>, current: &'static str) -> OutputSpec {
-    OutputSpec {
-        out,
-        order,
-        current,
-        rect: None,
-        primary: false,
+fn output_rect(out: &str) -> Rect {
+    match out {
+        "out-2" => rect(800, 0, 800, 600),
+        _ => rect(0, 0, 800, 600),
     }
+}
+
+fn output(out: &'static str, order: Vec<&'static str>, current: &'static str) -> OutputSpec {
+    let rect = output_rect(out);
+    output_at(out, order, current, Some(rect), false)
 }
 
 fn output_at(
@@ -1250,9 +1252,11 @@ fn three_output_nearest_wins_over_far_primary() {
 }
 
 #[test]
-fn missing_geometry_falls_back_to_wired_primary() {
-    // No output geometry anywhere: the wired (active, not first)
-    // primary hosts the unit.
+fn missing_geometry_fences_remap_and_recovers_on_full_report() {
+    // No output geometry anywhere on a disconnect: the geometry-dependent
+    // world remap fences narrowly (never the wired-primary fallback, never
+    // a work-area or window-frame proxy). Survivor-local rows keep
+    // converging; the next FULL complete report places the unit.
     let mut engine = WorldEngine::new("gen-1").expect("valid");
     accepted(
         &mut engine,
@@ -1261,30 +1265,48 @@ fn missing_geometry_falls_back_to_wired_primary() {
             1,
             WorkspaceMode::PerOutputLocal,
             vec![
-                output_at("out-0", vec!["ws0", "ws1", "ws2"], "ws0", None, false),
-                output_at("out-1", vec!["ws0", "ws1", "ws2"], "ws1", None, false),
-                output_at("out-2", vec!["ws0", "ws1", "ws2"], "ws2", None, true),
+                output_at(
+                    "out-0",
+                    vec!["ws0", "ws1", "ws2"],
+                    "ws0",
+                    Some(rect(0, 0, 1920, 1080)),
+                    false,
+                ),
+                output_at(
+                    "out-1",
+                    vec!["ws0", "ws1", "ws2"],
+                    "ws1",
+                    Some(rect(1920, 0, 1920, 1080)),
+                    false,
+                ),
+                output_at(
+                    "out-2",
+                    vec!["ws0", "ws1", "ws2"],
+                    "ws2",
+                    Some(rect(3840, 0, 1920, 1080)),
+                    true,
+                ),
             ],
             vec![
                 domain(
                     "out-0",
                     "ws0",
-                    rect(0, 0, 800, 600),
+                    rect(0, 0, 1920, 1080),
                     vec![win("win-0", "out-0", "ws0", 10)],
                     "win-0",
                 ),
                 domain(
                     "out-1",
                     "ws1",
-                    rect(0, 0, 800, 600),
-                    vec![win("win-1", "out-1", "ws1", 10)],
+                    rect(1920, 0, 1920, 1080),
+                    vec![win("win-1", "out-1", "ws1", 1930)],
                     "win-1",
                 ),
                 domain(
                     "out-2",
                     "ws2",
-                    rect(0, 0, 800, 600),
-                    vec![win("win-2", "out-2", "ws2", 10)],
+                    rect(3840, 0, 1920, 1080),
+                    vec![win("win-2", "out-2", "ws2", 3850)],
                     "win-2",
                 ),
             ],
@@ -1298,7 +1320,11 @@ fn missing_geometry_falls_back_to_wired_primary() {
             None,
         ),
     );
-    let reply = accepted(
+    // Disconnect out-0: survivors report complete enumeration but no FULL
+    // geometry. The remap fences: no displaced record, no policy view or
+    // member transfers, and ws0 earns no row anywhere (in particular never
+    // the wired primary out-2 by inference).
+    let fenced = accepted(
         &mut engine,
         &report(
             2,
@@ -1312,22 +1338,89 @@ fn missing_geometry_falls_back_to_wired_primary() {
                 domain(
                     "out-1",
                     "ws1",
-                    rect(0, 0, 800, 600),
-                    vec![win("win-1", "out-1", "ws1", 10)],
+                    rect(1920, 0, 1920, 1080),
+                    vec![win("win-1", "out-1", "ws1", 1930)],
                     "win-1",
                 ),
                 domain(
-                    "out-2",
+                    "out-1",
                     "ws0",
-                    rect(0, 0, 800, 600),
-                    vec![win("win-0", "out-2", "ws0", 10)],
+                    rect(1920, 0, 1920, 1080),
+                    vec![win("win-0", "out-1", "ws0", 1930)],
                     "win-0",
                 ),
                 domain(
                     "out-2",
                     "ws2",
-                    rect(0, 0, 800, 600),
-                    vec![win("win-2", "out-2", "ws2", 10)],
+                    rect(3840, 0, 1920, 1080),
+                    vec![win("win-2", "out-2", "ws2", 3850)],
+                    "win-2",
+                ),
+            ],
+            vec![binding("l1", "ws1", "out-1"), binding("l2", "ws2", "out-2")],
+            "win-0",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        fenced.transfers.is_empty(),
+        "fenced remap retains no policy intent"
+    );
+    assert!(
+        fenced.workspaces.iter().all(|w| w.id != "ws0"),
+        "no inferred row without FULL geometry"
+    );
+    // Survivor-local work is unaffected by the fence.
+    assert_eq!(workspace_row(&fenced, "ws1").output.0, "out-1");
+    assert_eq!(workspace_row(&fenced, "ws2").output.0, "out-2");
+    assert!(workspace_row(&fenced, "ws1").existence);
+    assert!(workspace_row(&fenced, "ws2").existence);
+    // Next FULL complete report for the same disconnect: disconnect-time
+    // geometry places the unit on the nearest survivor (out-1), not the
+    // wired primary (out-2), with the focused-survivor view.
+    let recovered = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            WorkspaceMode::PerOutputLocal,
+            vec![
+                output_at(
+                    "out-1",
+                    vec!["ws0", "ws1", "ws2"],
+                    "ws1",
+                    Some(rect(1920, 0, 1920, 1080)),
+                    false,
+                ),
+                output_at(
+                    "out-2",
+                    vec!["ws0", "ws1", "ws2"],
+                    "ws2",
+                    Some(rect(3840, 0, 1920, 1080)),
+                    true,
+                ),
+            ],
+            vec![
+                domain(
+                    "out-1",
+                    "ws1",
+                    rect(1920, 0, 1920, 1080),
+                    vec![win("win-1", "out-1", "ws1", 1930)],
+                    "win-1",
+                ),
+                domain(
+                    "out-1",
+                    "ws0",
+                    rect(1920, 0, 1920, 1080),
+                    vec![win("win-0", "out-1", "ws0", 1930)],
+                    "win-0",
+                ),
+                domain(
+                    "out-2",
+                    "ws2",
+                    rect(3840, 0, 1920, 1080),
+                    vec![win("win-2", "out-2", "ws2", 3850)],
                     "win-2",
                 ),
             ],
@@ -1338,10 +1431,11 @@ fn missing_geometry_falls_back_to_wired_primary() {
         ),
     );
     assert_eq!(
-        workspace_row(&reply, "ws0").output.0,
-        "out-2",
-        "wired primary wins without geometry"
+        workspace_row(&recovered, "ws0").output.0,
+        "out-1",
+        "nearest survivor wins on the FULL retry"
     );
+    assert_eq!(view_transfers(&recovered, "out-1"), vec!["ws0".to_owned()]);
 }
 
 #[test]
