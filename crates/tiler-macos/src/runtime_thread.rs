@@ -544,9 +544,10 @@ fn store_select_claim(
 /// outputs), then a missing native context, an in-progress drain, or an
 /// already-pending claim refuses narrowly — concurrent presses
 /// serialize/refuse instead of overlapping, and a sent press is never
-/// replayed. Returns the claim to store on success. Tap chords ride
-/// binding-free; indicator clicks ride their immutable render-time binding
-/// through to the drain.
+/// replayed. Returns the claim to store on success. Numbered taps bind at
+/// dispatch (admission-time SID plus live revision); indicator clicks ride
+/// their immutable render-time binding through to the drain; relative and
+/// previous taps ride binding-free.
 pub(crate) fn admit_select_claim(
     native_present: bool,
     busy: bool,
@@ -1048,8 +1049,8 @@ fn process_job(
             // Armed select actions dispatch with no focused-window
             // subject (empty Spaces navigate): one planner-owned world
             // command plus one pending claim for the main-thread tile
-            // drain. Tap chords ride binding-free (see
-            // [`admit_select_claim`]).
+            // drain. Numbered taps bind at dispatch (see
+            // [`handle_select_action`]).
             if is_armed_select(&action) {
                 handle_select_action(
                     session,
@@ -1325,7 +1326,12 @@ fn dispatch_context(shared: &Arc<Mutex<Shared>>, session: &WorldSession) -> Disp
 /// refusal proves the command already executed core-side — one pending
 /// claim bound under the stable operation identity for the main-thread
 /// drain. Other core refusals drop the claim (never actuated, never
-/// replayed).
+/// replayed). Numbered selects resolve their native target SID exactly once
+/// here under the admission topology and dispatch it as an explicit
+/// `SelectWorkspace` (never re-resolved core-side through the scoped ring);
+/// the bound claim pins the SID plus the live revision so the drain
+/// revalidates instead of interpreting the ordinal against a different
+/// generation. Relative/previous selects keep their shared core semantics.
 fn handle_select_action(
     session: &mut WorldSession,
     retained: &mut RetainedCore,
@@ -1344,7 +1350,7 @@ fn handle_select_action(
             claim,
         )
     };
-    let claim = match verdict {
+    let mut claim = match verdict {
         Ok(claim) => claim,
         Err(token) => {
             refuse_select_claim(shared, token);
@@ -1359,9 +1365,48 @@ fn handle_select_action(
         refuse_select_claim(shared, "refused-select-no-view");
         return;
     };
-    let Some(command) = select_command(&claim.action, output) else {
-        refuse_select_claim(shared, "refused-select-unarmed");
-        return;
+    // Bind the admission-time target SID plus the live revision for numbered
+    // selects: the ordinal resolves exactly once here against the native row
+    // — never re-resolved core-side through the scoped ring, whose
+    // stable-logical order need not match native Desktop order — and the
+    // dispatched command carries the pinned native workspace directly.
+    // Indicator claims already ride their immutable render-time SID; tap
+    // claims bind here. Relative/previous selects keep their shared core
+    // semantics and ride binding-free. The drain revalidates the pinned
+    // target instead of interpreting the ordinal against a different
+    // generation (a moved ordinal refuses instead of selecting the new
+    // occupant).
+    let command = match &claim.action {
+        crate::runtime_types::InputSemanticAction::WorkspaceSelect { index }
+            if (1..=9).contains(index) =>
+        {
+            let workspace = if let Some(sid) = claim.expected_sid {
+                crate::topology::workspace_key(sid)
+            } else {
+                let Some(sid) = crate::workspace_send::context_target_sid(&ctx, &output, *index)
+                else {
+                    refuse_select_claim(shared, "refused-select-no-target");
+                    return;
+                };
+                claim.expected_sid = Some(sid);
+                claim.topology_revision = Some(ctx.revision);
+                crate::topology::workspace_key(sid)
+            };
+            match select_command(&claim.action, output.clone(), &workspace) {
+                Some(command) => command,
+                None => {
+                    refuse_select_claim(shared, "refused-select-unarmed");
+                    return;
+                }
+            }
+        }
+        _ => match select_command(&claim.action, output.clone(), "") {
+            Some(command) => command,
+            None => {
+                refuse_select_claim(shared, "refused-select-unarmed");
+                return;
+            }
+        },
     };
     match dispatch_report(
         session,

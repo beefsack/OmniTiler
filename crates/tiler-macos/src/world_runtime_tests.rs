@@ -57,7 +57,10 @@ fn domain_key() -> DomainKey {
 fn select_commands_cover_exactly_the_armed_subset() {
     use crate::workspace_input::{is_armed_select, workspace_unsupported_outcome};
     let output = OutputId("macos-display-1".to_owned());
-    // Every armed select maps to a planner-owned select command.
+    // Every armed select maps to a planner-owned select command. Numbered
+    // selects carry the admission-resolved native workspace explicitly
+    // (never re-resolved core-side through the scoped ring); relative and
+    // previous keep their shared core semantics.
     for action in [
         InputSemanticAction::WorkspaceSelect { index: 1 },
         InputSemanticAction::WorkspaceSelect { index: 9 },
@@ -66,8 +69,14 @@ fn select_commands_cover_exactly_the_armed_subset() {
         InputSemanticAction::WorkspacePrevious,
     ] {
         assert!(is_armed_select(&action), "{action:?} is armed");
+        let target = match action {
+            InputSemanticAction::WorkspaceSelect { index } => {
+                crate::topology::workspace_key(u64::from(index))
+            }
+            _ => String::new(),
+        };
         assert!(
-            select_command(&action, output.clone()).is_some(),
+            select_command(&action, output.clone(), &target).is_some(),
             "{action:?} has a planner route"
         );
     }
@@ -86,7 +95,7 @@ fn select_commands_cover_exactly_the_armed_subset() {
             "{action:?} dispatches"
         );
         assert!(
-            select_command(&action, output.clone()).is_none(),
+            select_command(&action, output.clone(), "space-1").is_none(),
             "{action:?} never selects"
         );
         assert!(
@@ -115,7 +124,7 @@ fn select_commands_cover_exactly_the_armed_subset() {
     ] {
         assert!(workspace_unsupported_outcome(&action).is_some());
         assert!(
-            select_command(&action, output.clone()).is_none(),
+            select_command(&action, output.clone(), "space-1").is_none(),
             "{action:?} stays refused"
         );
         assert!(

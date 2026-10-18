@@ -198,7 +198,10 @@ fn send_command_maps_send_shapes_to_explicit_sid_transfers() {
             }
         );
         // Sends never ride the select route.
-        assert_eq!(select_command(&send(index), output.clone()), None);
+        assert_eq!(
+            select_command(&send(index), output.clone(), "space-1"),
+            None
+        );
     }
     // Unsupported actions have no send route.
     for action in [

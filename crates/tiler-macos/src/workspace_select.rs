@@ -292,9 +292,10 @@ pub struct SelectGates {
     pub lock_screen: bool,
 }
 
-/// Tap-lane shorthand over [`drain_claimed_select`] (binding-free fresh-
-/// ordinal mapping). Test-only shim: production lanes call
-/// [`drain_claimed_select`] or go through `drain_live_claimed`.
+/// Unbound-claim shorthand over [`drain_claimed_select`] (skips the
+/// bound-claim fence exactly like a relative/previous tap). Test-only shim:
+/// production numbered lanes call [`drain_claimed_select`] with the
+/// admission-bound claim or go through `drain_live_claimed`.
 #[cfg(test)]
 pub(crate) fn drain_claimed(
     state: &mut SelectionState,
@@ -313,7 +314,7 @@ pub(crate) fn drain_claimed(
 /// Full-claim drain (offline-testable core of the product handoff: tests
 /// inject fake backends here; the tile controller injects the live backend
 /// through [`drain_live_claimed`]). Gates refuse first, then the unarmed and
-/// multi-display rules refuse before any effect leg; bound indicator claims
+/// multi-display rules refuse before any effect leg; bound claims
 /// additionally refuse when their ordinal no longer names the expected SID
 /// (a topology reorder between engine admission and this drain) or when
 /// their topology revision drifted — an ordinal is never interpreted
@@ -323,11 +324,11 @@ pub(crate) fn drain_claimed(
 /// arrival). The claim/release protocol around this call (not the slot
 /// itself) serializes concurrent presses: the slot stays claimed while
 /// this blocks, so engine enqueues refuse busy instead of overlapping.
-/// Tap chords ride binding-free (fresh-ordinal mapping, exactly as
-/// before); indicator segment clicks ride their immutable render-time
-/// SID/revision binding, fenced fresh here AND at the pre-dispatch leg
-/// inside `execute` (the MC legs re-fence session/trust at every leg
-/// boundary too). Busy, session, Secure Input, no-window, multi-display,
+/// Numbered taps bind at engine admission and indicator segment clicks ride
+/// their immutable render-time SID/revision binding, each fenced fresh here
+/// AND at the pre-dispatch leg inside `execute` (the MC legs re-fence
+/// session/trust at every leg boundary too); relative and previous taps
+/// ride binding-free. Busy, session, Secure Input, no-window, multi-display,
 /// and verified-history semantics are identical for both lanes — the
 /// binding only narrows which ordinal may dispatch, never widens it.
 /// Live-macOS-only outside tests (the non-test caller is gated to macOS);
@@ -370,11 +371,11 @@ pub(crate) fn drain_claimed_select(
             ));
         }
     }
-    // Bound-claim fence: the ordinal must still name the render-time SID
+    // Bound-claim fence: the ordinal must still name the admission-time SID
     // and the topology revision must still match. A reorder (or any
     // revision move) between engine admission and this drain refuses
-    // instead of selecting the new occupant of the ordinal. Tap claims
-    // carry no binding and skip this leg (fresh-ordinal mapping).
+    // instead of selecting the new occupant of the ordinal. Relative and
+    // previous taps carry no binding and skip this leg.
     if let Some(expected_sid) = claim.expected_sid {
         let InputSemanticAction::WorkspaceSelect { index } = claim.action else {
             return Err("bound select claim carries a non-numbered action; refusing".to_owned());

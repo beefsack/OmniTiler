@@ -470,3 +470,323 @@ fn bound_drain_refuses_vanished_position_and_unbound_revision_skips_leg() {
     assert!(effect.changed);
     assert_eq!(fake.selects, vec![3]);
 }
+
+/// Native-ordinal parity shared repro: a single-display synthetic snapshot
+/// with the SLS row `[1, 277]` and `current` naming the startup Space.
+/// Display geometry and UUID are synthetic shapes only (never a live
+/// machine value). The core claims the startup current at scoped-ring
+/// position 1 (observed currents claim first), so a 277-started runtime
+/// holds the reversed retained ring `[space-277, space-1]` while the native
+/// row stays `[1, 277]`.
+#[cfg(test)]
+mod ordinal_parity_repro {
+    use std::collections::BTreeMap;
+
+    use tiler_core::directional::OutputId;
+    use tiler_core::session::Session;
+    use tiler_core::world_engine::WorldOutcome;
+    use tiler_core::world_report::{WorldCommand, validate_report};
+
+    use crate::ffi::{SlsDisplayRow, SlsSpaceType};
+    use crate::runtime_types::NativeContext;
+    use crate::topology::{PointsRect, TopologySnapshot};
+    use crate::world_builder::{ReportInput, build_report};
+
+    pub const OWNER: &str = "macos-phase-1";
+    pub const INCARNATION: &str = "adapter-1";
+    pub const GENERATION: &str = "gen-1";
+    const UUID: &str = "deadbeef-dead-4000-8000-deadbeefdead";
+
+    pub fn ctx(startup_current: u64) -> NativeContext {
+        let snapshot = TopologySnapshot {
+            displays: vec![crate::topology::DisplayGeometry {
+                cg_id: 1,
+                uuid: Some(UUID.to_owned()),
+                cg_bounds: Some(PointsRect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 2240.0,
+                    h: 1260.0,
+                }),
+                visible: Some(PointsRect {
+                    x: 0.0,
+                    y: 25.0,
+                    w: 2240.0,
+                    h: 1235.0,
+                }),
+                scale: 2.0,
+            }],
+            rows: vec![SlsDisplayRow {
+                identifier: Some(UUID.to_owned()),
+                spaces: vec![1, 277],
+                current: Some(startup_current),
+            }],
+            separate_spaces: Some(true),
+            revision: 0,
+        };
+        let snapshot = TopologySnapshot {
+            revision: crate::topology::fingerprint_snapshot(
+                &snapshot.displays,
+                &snapshot.rows,
+                Some(true),
+            ),
+            ..snapshot
+        };
+        let (ctx, skipped) = NativeContext::derive(&snapshot, &|_| Some(SlsSpaceType::User));
+        assert!(skipped.is_empty(), "nothing skipped: {skipped:?}");
+        let row: Vec<u64> = ctx.domains.iter().map(|d| d.space).collect();
+        assert_eq!(row, vec![1, 277], "derive keeps SLS row order");
+        ctx
+    }
+
+    pub fn output() -> OutputId {
+        OutputId(crate::topology::output_key(1))
+    }
+
+    /// Drive one engine from a commandless first report (establishes the
+    /// retained ring under this startup current) and return the outcome of
+    /// one numbered/explicit command report plus the retained transfers.
+    pub fn drive(
+        ctx: &NativeContext,
+        command: WorldCommand,
+    ) -> (WorldOutcome, Vec<tiler_core::world_report::TransferTarget>) {
+        use tiler_core::world_engine::WorldEngine;
+
+        let empty_members = BTreeMap::new();
+        let empty_sessions: BTreeMap<tiler_core::session::DomainKey, Session> = BTreeMap::new();
+        let empty_focused = BTreeMap::new();
+        let empty_closed = BTreeMap::new();
+        let empty_unreadable = BTreeMap::new();
+        let build =
+            |obs: u64, req: u64, req_id: &str, seq: Option<u64>, command: Option<WorldCommand>| {
+                let mut input = ReportInput::new(
+                    OWNER,
+                    INCARNATION,
+                    GENERATION,
+                    ctx,
+                    obs,
+                    req,
+                    req_id,
+                    &empty_members,
+                    &empty_sessions,
+                    &empty_focused,
+                    &empty_closed,
+                    &empty_unreadable,
+                    &[],
+                    &[],
+                    "",
+                );
+                input.command_seq = seq;
+                input.command = command;
+                build_report(&input)
+            };
+        let mut engine = WorldEngine::new(GENERATION).expect("generation parses");
+        let first = build(1, 1, "req-1", None, None);
+        assert!(validate_report(&first));
+        assert!(matches!(
+            engine.handle_report(&first),
+            WorldOutcome::Accepted(_)
+        ));
+        let second = build(2, 2, "req-2", Some(2), Some(command));
+        assert!(
+            validate_report(&second),
+            "command report is well-formed wire input"
+        );
+        let outcome = engine.handle_report(&second);
+        let retained = engine.retained_transfers();
+        (outcome, retained)
+    }
+}
+
+/// Semantic contrast for the 277-startup repair: the legacy positional
+/// `SelectNumbered{index: 1}` resolves through the stable-logical scoped
+/// ring (`[space-277, space-1]`) and self-targets the startup current, while
+/// the fixed admission-resolved `SelectWorkspace{space-1}` against the
+/// native row (`[1, 277]`) selects Desktop-1 — under identical native
+/// context plus validated reports on fresh engines. Both second reports
+/// validate, so the red is a semantic wrong-target route failure, never an
+/// API/compile oracle.
+#[test]
+fn legacy_numbered_select_self_targets_under_277_startup() {
+    use tiler_core::world_report::WorldCommand;
+
+    use ordinal_parity_repro as repro;
+
+    let ctx = repro::ctx(277);
+    let output = repro::output();
+    let (outcome, retained) = repro::drive(
+        &ctx,
+        WorldCommand::SelectNumbered {
+            output: output.clone(),
+            index: 1,
+        },
+    );
+    assert!(
+        matches!(outcome, tiler_core::world_engine::WorldOutcome::Accepted(_)),
+        "legacy numbered select admits (it just names the wrong target)"
+    );
+    assert_eq!(retained.len(), 1, "one retained view");
+    assert_eq!(
+        retained[0].target_workspace, "space-277",
+        "Desktop-1 through the stable-logical ring names the 277-started current, not native SID 1"
+    );
+}
+
+/// Native Desktop-N resolves exactly once at admission: a runtime started
+/// on a non-first Space still selects by native ordinal. A startup on 277
+/// selects Desktop-1 to SID 1 (the retained inverse-refusal shape), and a
+/// startup on 1 keeps the proven Desktop-2 path. Same-Space and unknown
+/// targets keep their honest refusals, and the bound-claim drain proves the
+/// pinned SID instead of interpreting the ordinal against a new generation.
+#[test]
+fn explicit_select_resolves_native_ordinal_once_at_admission() {
+    use tiler_core::world_engine::WorldOutcome;
+    use tiler_core::world_report::{TransferKind, WorldCommand};
+
+    use crate::workspace_send::context_target_sid;
+    use crate::world_command_map::select_command;
+    use ordinal_parity_repro as repro;
+
+    let select = |index: u8| Action::WorkspaceSelect { index };
+    let output = repro::output();
+
+    // Startup on 277: admission binds the native Desktop-1 SID, and the
+    // production command carries it explicitly — never the ordinal.
+    let ctx = repro::ctx(277);
+    assert!(
+        ctx.domains.iter().any(|d| d.space == 277 && d.current),
+        "277 is the actuated current"
+    );
+    let sid = context_target_sid(&ctx, &output, 1).expect("Desktop-1 binds");
+    assert_eq!(sid, 1, "Desktop-1 is native SID 1");
+    let command = select_command(
+        &select(1),
+        output.clone(),
+        &crate::topology::workspace_key(sid),
+    )
+    .expect("select route");
+    assert_eq!(
+        command,
+        WorldCommand::SelectWorkspace {
+            output: output.clone(),
+            workspace: "space-1".to_owned(),
+        },
+        "select-1 carries an explicit SID target, got {command:?}"
+    );
+    let (outcome, retained) = repro::drive(&ctx, command);
+    assert!(
+        matches!(outcome, WorldOutcome::Accepted(_)),
+        "Desktop-1 from a 277-started runtime admits"
+    );
+    assert_eq!(retained.len(), 1, "one retained view");
+    assert_eq!(retained[0].kind, TransferKind::View);
+    assert_eq!(retained[0].target_output, output);
+    assert_eq!(retained[0].target_workspace, "space-1");
+    assert_eq!(
+        retained[0].operation_id, "op-2",
+        "stable operation identity unchanged"
+    );
+
+    // Admission-bound tap claim pins the SID plus the live revision (the
+    // shape `handle_select_action` stores): the drain proves it against the
+    // fresh row instead of interpreting the ordinal against a new
+    // generation.
+    let mut claim = ClaimedSelect::tap(select(1));
+    claim.expected_sid = Some(sid);
+    claim.topology_revision = Some(ctx.revision);
+    let mut fake = Fake {
+        row: SelectionSnapshot {
+            display: "display-a".to_owned(),
+            spaces: vec![1, 277],
+            current: 277,
+        },
+        revision: Some(ctx.revision),
+        ..Fake::default()
+    };
+    let mut state = SelectionState::default();
+    let effect = drain_claimed_select(&mut state, &mut fake, claim.clone(), &open_gates())
+        .expect("fresh binding dispatches the pinned SID");
+    assert!(effect.changed);
+    assert_eq!(fake.selects, vec![1], "native effect names SID 1");
+    // A reorder between admission and drain refuses instead of selecting
+    // the new occupant of the ordinal.
+    let mut moved = Fake {
+        row: SelectionSnapshot {
+            display: "display-a".to_owned(),
+            spaces: vec![277, 1],
+            current: 277,
+        },
+        revision: Some(ctx.revision),
+        ..Fake::default()
+    };
+    let mut state = SelectionState::default();
+    let err = drain_claimed_select(&mut state, &mut moved, claim, &open_gates())
+        .expect_err("reordered binding refuses");
+    assert!(err.contains("moved"), "{err}");
+    assert!(moved.selects.is_empty(), "never dispatched");
+
+    // Startup-on-1 parity: Desktop-2 from a 1-started runtime still admits.
+    let ctx = repro::ctx(1);
+    let sid = context_target_sid(&ctx, &output, 2).expect("Desktop-2 binds");
+    assert_eq!(sid, 277);
+    let command = select_command(
+        &select(2),
+        output.clone(),
+        &crate::topology::workspace_key(sid),
+    )
+    .expect("select route");
+    let (outcome, retained) = repro::drive(&ctx, command);
+    assert!(
+        matches!(outcome, WorldOutcome::Accepted(_)),
+        "Desktop-2 from a 1-started runtime admits"
+    );
+    assert_eq!(retained.len(), 1);
+    assert_eq!(retained[0].target_workspace, "space-277");
+
+    // Bounds/missing targets refuse narrowly at admission (never guessed).
+    assert_eq!(context_target_sid(&ctx, &output, 0), None);
+    assert_eq!(context_target_sid(&ctx, &output, 10), None);
+    assert_eq!(
+        select_command(&select(0), output.clone(), "space-1"),
+        None,
+        "trailing select-0 stays refused"
+    );
+
+    // Unknown native targets keep their honest core refusal.
+    let (outcome, retained) = repro::drive(
+        &ctx,
+        WorldCommand::SelectWorkspace {
+            output: output.clone(),
+            workspace: "space-999".to_owned(),
+        },
+    );
+    assert!(
+        matches!(
+            outcome,
+            WorldOutcome::Rejected {
+                kind: "view-target-unknown",
+                ..
+            }
+        ),
+        "unknown target refuses, got {outcome:?}"
+    );
+    assert!(retained.is_empty(), "refused select retains nothing");
+
+    // Relative/previous semantics are untouched (binding-free core paths).
+    let relative = select_command(
+        &Action::WorkspaceRelative { prev: true },
+        output.clone(),
+        "",
+    )
+    .expect("relative route");
+    assert_eq!(
+        relative,
+        WorldCommand::SelectRelative {
+            output: output.clone(),
+            delta: -1
+        }
+    );
+    let previous =
+        select_command(&Action::WorkspacePrevious, output.clone(), "").expect("previous route");
+    assert_eq!(previous, WorldCommand::SelectPrevious { output });
+}

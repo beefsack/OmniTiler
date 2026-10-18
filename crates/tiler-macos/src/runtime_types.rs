@@ -608,12 +608,13 @@ pub enum InputSemanticAction {
 }
 
 /// One pending product workspace claim awaiting the main-thread drain: the
-/// armed action plus the immutable click binding that produced it. Tap
-/// chords carry no binding (`expected_sid`/`topology_revision` are `None`,
-/// `ui_generation` 0 — the select drain maps the ordinal fresh, exactly as
-/// before); menu-bar segment clicks carry the full render-time binding, and
-/// the drain refuses any claim whose ordinal no longer names the expected
-/// SID or whose revision drifted. Send-shaped claims (offline seam only --
+/// armed action plus the immutable click binding that produced it. Numbered
+/// tap chords bind at engine admission (the admission resolves the native
+/// ordinal to its SID plus the live topology revision, exactly like the
+/// send lane); menu-bar segment clicks carry the full render-time binding,
+/// and the drain refuses any claim whose ordinal no longer names the expected
+/// SID or whose revision drifted. Relative/previous taps ride binding-free.
+/// Send-shaped claims (offline seam only --
 /// product never enqueues them) carry a binding bound at admission: the
 /// engine resolves the target SID plus the current topology revision at
 /// admission time and pins the focused-window subject (`send_subject`)
@@ -652,9 +653,9 @@ pub struct ClaimedSelect {
 }
 
 impl ClaimedSelect {
-    /// Tap/keyboard claim: no render-time binding (fresh-ordinal mapping
-    /// for selects; the offline send lane binds send-shaped claims at
-    /// admission).
+    /// Tap/keyboard claim: no render-time binding (the engine admission
+    /// binds numbered selects and offline send-shaped claims; relative and
+    /// previous selects ride binding-free).
     #[must_use]
     pub const fn tap(action: InputSemanticAction) -> Self {
         Self {

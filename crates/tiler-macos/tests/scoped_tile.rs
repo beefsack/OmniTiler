@@ -3500,7 +3500,7 @@ fn select_claim_release_discard_protocol() {
     let fixture = start(select_config(bindings.clone()));
     assert!(fixture.handle.claim_select_for_drain().is_none());
     assert!(!fixture.handle.discard_select_pending());
-    fixture
+    let revision = fixture
         .handle
         .update_topology_with(two_space_snapshot(), &user_space);
     send_select_chord(&fixture, &bindings, Action::WorkspaceSelect { index: 2 });
@@ -3516,13 +3516,15 @@ fn select_claim_release_discard_protocol() {
         .expect("pending claim");
     assert_eq!(claimed.action, Action::WorkspaceSelect { index: 2 });
     assert_eq!(
-        (
-            claimed.expected_sid,
-            claimed.ui_generation,
-            claimed.topology_revision
-        ),
-        (None, 0, None),
-        "tap claim rides binding-free"
+        claimed.expected_sid,
+        Some(12),
+        "numbered tap binds its admission SID"
+    );
+    assert_eq!(claimed.ui_generation, 0);
+    assert_eq!(
+        claimed.topology_revision,
+        Some(revision),
+        "numbered tap pins the admission revision for the drain fence"
     );
     assert_eq!(
         claimed.operation_id.as_deref(),

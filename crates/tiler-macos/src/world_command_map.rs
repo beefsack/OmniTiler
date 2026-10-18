@@ -48,17 +48,27 @@ pub(crate) fn select_output(retained: &RetainedCore, ctx: &NativeContext) -> Opt
 }
 
 /// Map one armed select-only action to its planner-owned world command.
-/// Unarmed actions (trailing select-0, sends, outputs) have no select route
-/// and stay capability-refused by the caller.
+/// Numbered selects (`1..=9`) carry the admission-resolved native workspace
+/// as an explicit [`WorldCommand::SelectWorkspace`]: the ordinal resolves
+/// exactly once at admission against the native row — Desktop-N is the
+/// 1-based native position — and the core executes the pinned SID directly,
+/// never re-resolving the ordinal through the scoped selection ring (whose
+/// stable-logical order need not match native Desktop order: a runtime
+/// started on a non-first Space claims that Space at ring position 1, so a
+/// positional re-resolution would self-target). Relative and previous
+/// selects keep their shared core semantics untouched. Unarmed actions
+/// (trailing select-0, sends, outputs) have no select route and stay
+/// capability-refused by the caller.
 pub(crate) fn select_command(
     action: &InputSemanticAction,
     output: OutputId,
+    target_workspace: &str,
 ) -> Option<WorldCommand> {
     match action {
         InputSemanticAction::WorkspaceSelect { index } if (1..=9).contains(index) => {
-            Some(WorldCommand::SelectNumbered {
+            Some(WorldCommand::SelectWorkspace {
                 output,
-                index: *index,
+                workspace: target_workspace.to_owned(),
             })
         }
         InputSemanticAction::WorkspaceRelative { prev } => Some(WorldCommand::SelectRelative {
