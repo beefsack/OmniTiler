@@ -160,6 +160,12 @@ Variant of [R-OUT-01](reference-outcomes/multi-output.md#r-out-01-move-left-onto
 | --- | --- | --- | --- |
 | Near-side remembered leaf on parallel multi-window target | Set `L=H[W1,W2]` remembering W2 (near-side), `R=H[W3*,W4]`; move W3 left. Mirror with the target remembering its near-left leaf | Selected 2026-10-14: `L=H[H[W1,W2],W3]`, mirrored right `H[W4,H[W1,W2]]`; every occupied R4 landing wraps the whole target tree per REQ-MOV-08, no remembered-leaf insertion, no flat append; empty takes the mover alone. Far-side history: before change `L=H[H[W1,W3],W2]`; far-side correction kept the same whole-wrap pair. Core implementation covers all four directions with focused tests passing | COSMIC S20/S23 observations wrap the whole target, including a parallel root. Pre-change KDE nested beside the remembered leaf when that leaf was near-side. R-OUT-01 proves i3 flat tail insertion, considered rejected for the predictable layout-preserving policy; sway has a parallel-left flat branch, exact wrapper TBD; Hyprland exact shape TBD. No established overriding Tier 1 majority beyond the COSMIC observation. Corrected live shape and native acceptance TBD |
 
+### Core-owned topology split-edge discriminator
+
+| Variant | Minimal action sequence | Verified source distinction / proposal | Reference / native |
+| --- | --- | --- | --- |
+| Migration versus window-position versus unique focus | Use FULL rects S=(0,0,1000,1000), B=(1000,0,1000,700), C=(1000,700,1000,300). Put sole tiled A on S with centre y=850. From fresh identical state, migrate workspace right; separately exhaust move-right, send-to-output-right and focus-right | Existing shared migration selector chooses B (longer edge); window selector chooses C (centre projection); KDE world unique-reciprocal adjacency omits S's right edge, so adjacency-dependent crossing refuses. [Core-owned topology proposal](../changes/shared-core-owned-output-topology.md) recommends explicit review of world per-use alignment, not silently applying one universal map. Windows legacy focus uses the window selector, unlike KDE focus | Exact reference/native three-output results TBD. No selection-policy change approved by this proposal; ordinary two-output parity is a separate required control |
+
 ### KDE dual-output admission and workspace-scope discriminators
 
 Variants of [R-OUT-05](reference-outcomes/multi-output.md#r-out-05-open-a-window-with-two-occupied-outputs) and [R-WS-11](reference-outcomes/workspaces.md#r-ws-11-next-workspace-previous-workspace).
