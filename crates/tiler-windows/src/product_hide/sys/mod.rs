@@ -1690,6 +1690,10 @@ pub(crate) mod fake {
     pub(crate) struct FakeWindow {
         pub pid: u32,
         pub process: ProcessIdentity,
+        /// Scripted target integrity RID standing in for the OS token
+        /// read: the fake-branch gates consume it with the real
+        /// medium predicate, never the ambient runner level.
+        pub integrity_rid: u32,
         pub nonce: Option<String>,
         pub member_tag: Option<String>,
         pub visible: bool,

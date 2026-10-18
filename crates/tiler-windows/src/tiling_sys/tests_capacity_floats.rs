@@ -128,6 +128,8 @@ fn stage_member(
 /// Register one scripted native window for marker tests: alive with
 /// matching pid/process/tag, standing in for the OS reads behind the
 /// hold, pid, lifetime, and property gates. No desktop window exists.
+/// Scripted integrity is medium, so the held gate passes; high-integrity
+/// refusal is scripted per-window (see the stale-pid test).
 fn register_fake(key: &crate::workspace::WindowKey, tag: &str) {
     fake::register(
         key.hwnd,
@@ -140,6 +142,7 @@ fn register_fake(key: &crate::workspace::WindowKey, tag: &str) {
                 session_id: 1,
                 exe_path: "test.exe".to_owned(),
             },
+            integrity_rid: crate::lifecycle::MEDIUM_RID_MIN,
             nonce: None,
             member_tag: Some(tag.to_owned()),
             visible: true,
@@ -1948,7 +1951,8 @@ fn stale_pid_or_tag_refuses_float_marker_install() {
     // Held-gate negatives through the real `install_float_mark_held`:
     // a recycled HWND (live pid moved on) and a stale lifetime tag
     // (same-process reuse) both refuse with no marker write, while a
-    // healthy fake installs and reads back. Native-free fake harness.
+    // healthy fake installs and reads back. A scripted high-integrity
+    // target refuses the same way on every runner. Native-free fake harness.
     clear_pending_seams();
     fake::clear();
     let mut state = test_state();
@@ -1959,11 +1963,19 @@ fn stale_pid_or_tag_refuses_float_marker_install() {
     let key_ok = member_key(0x6F1, 1691);
     let key_pid = member_key(0x6F2, 1692);
     let key_tag = member_key(0x6F3, 1693);
+    let key_high = member_key(0x6F4, 1694);
     stage_member(&mut state, &output, &ws, &key_ok, "wOk", "tag-ok");
     stage_member(&mut state, &output, &ws, &key_pid, "wPid", "tag-pid");
     stage_member(&mut state, &output, &ws, &key_tag, "wTag", "tag-fresh");
+    stage_member(&mut state, &output, &ws, &key_high, "wHigh", "tag-high");
     register_fake(&key_ok, "tag-ok");
     register_fake(&key_pid, "tag-pid");
+    register_fake(&key_high, "tag-high");
+    // Elevated scripted target: every other fact matches, only the
+    // integrity RID sits outside the medium band.
+    fake::with_mut(key_high.hwnd, |w| {
+        w.integrity_rid = crate::lifecycle::MEDIUM_RID_MAX;
+    });
     // Same-process reuse: the HWND still hosts the stored pid/creation
     // but the live lifetime property moved on.
     register_fake(&key_tag, "tag-stale");
@@ -1992,6 +2004,14 @@ fn stale_pid_or_tag_refuses_float_marker_install() {
     assert!(
         !crate::product_hide::sys::read_float_intent_marker(key_tag.hwnd),
         "stale tag writes no marker"
+    );
+    assert!(
+        !super::install_float_mark_held(&state, &me, &key_high),
+        "high-integrity target refuses"
+    );
+    assert!(
+        !crate::product_hide::sys::read_float_intent_marker(key_high.hwnd),
+        "high-integrity target writes no marker"
     );
     fake::clear();
     clear_pending_seams();

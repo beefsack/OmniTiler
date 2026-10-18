@@ -33,11 +33,11 @@
 
 - Source audit accepted: `tiling_sys/admission.rs` dispatches the legacy Engine;
   core reconcile/gap repair commits capacity victims but Projection omits their
-   identities. `SendWorkspacePlan` accepts `MoveToFloat`. Neither the parked
-   world migration nor a shared API/semantic change is needed.
+  identities. `SendWorkspacePlan` accepts `MoveToFloat`. Neither the parked
+  world migration nor a shared API/semantic change is needed.
 - KDE consumes complete world rows and settles ordinary float intent for user
-   and capacity origins alike. Windows consumes committed Session facts and
-   reuses its ordinary-float marker rather than adopting world replies.
+  and capacity origins alike. Windows consumes committed Session facts and
+  reuses its ordinary-float marker rather than adopting world replies.
 - Delivered: ordinary float lanes/frame retention and marker persistence for
   fresh/seed capacity admissions, newest-first shrink victims and hidden/select
   convergence; event-driven missing-marker repair; same-output follow/stay
@@ -60,7 +60,13 @@
   unsafe checks pass; no new unsafe code, dependencies or other-host edits.
 - No live tiler run, test-app launch, injected input, taskbar change or overlay
   was performed. Cargo fixtures are offline evidence, not desktop acceptance.
-- Hosted CI: pending publication.
+- Initial hosted CI at `18b69b61` passed seven jobs; Windows reported three
+  failures in the new scripted marker fixtures. Their fake held gate consumed
+  the test runner's real integrity instead of the scripted target's fact.
+  The narrow fixture correction scripts the native RID and retains the same
+  medium-integrity predicate, with an explicit high-integrity no-write negative.
+  Production gates and all original assertions are unchanged. The four-package
+  gates above pass again after this correction; hosted confirmation is pending.
 
 ## Host differences and bounded limitations
 

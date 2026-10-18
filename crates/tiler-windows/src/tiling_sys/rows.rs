@@ -16,14 +16,16 @@ pub(super) fn hold_marker_target(
     key: &crate::workspace::WindowKey,
 ) -> Option<HeldProcess> {
     // Test-only mirror of the gates below against a registered fake: the
-    // scripted pid/process/liveness stand in for the OS reads while the
-    // predicates (identity, scope, lifetime, integrity) stay real.
+    // scripted pid/process/liveness/integrity stand in for the OS reads
+    // while the predicates (identity, scope, lifetime, integrity) stay
+    // real. The self-process hold is only the liveness guard stand-in:
+    // its ambient runner level never gates scripted installs.
     // Unregistered HWNDs fall through to the OS exactly as before.
     #[cfg(test)]
     if crate::product_hide::sys::fake::active(key.hwnd) {
         use crate::product_hide::sys::fake;
         let stored = state.member_identity.get(key)?.clone();
-        let (facts_ok, tag) = fake::with(key.hwnd, |w| {
+        let (facts_ok, tag, integrity_rid) = fake::with(key.hwnd, |w| {
             (
                 w.alive
                     && w.pid == key.pid
@@ -34,6 +36,7 @@ pub(super) fn hold_marker_target(
                     && w.process.session_id == stored.session_id
                     && crate::lifecycle::exe_paths_equal(&w.process.exe_path, &stored.exe_path),
                 w.member_tag.clone(),
+                w.integrity_rid,
             )
         })?;
         if !facts_ok {
@@ -62,7 +65,7 @@ pub(super) fn hold_marker_target(
             return None;
         }
         let held = fake::hold_verified(key.pid, &stored).and_then(|r| r.ok())?;
-        if !held.integrity().is_ok_and(is_medium_rid) {
+        if !is_medium_rid(integrity_rid) {
             return None;
         }
         return Some(held);

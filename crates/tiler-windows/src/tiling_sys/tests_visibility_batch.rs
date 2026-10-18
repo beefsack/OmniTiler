@@ -160,6 +160,7 @@ fn register_visible(key: &crate::workspace::WindowKey, tag: &str) {
         fake::FakeWindow {
             pid: key.pid,
             process: member_process(key),
+            integrity_rid: crate::lifecycle::MEDIUM_RID_MIN,
             nonce: None,
             member_tag: Some(tag.to_owned()),
             visible: true,
@@ -269,6 +270,7 @@ fn hide_completes_on_own_events_despite_unrelated_wakes() {
             fake::FakeWindow {
                 pid: k.pid,
                 process: member_process(k),
+                integrity_rid: crate::lifecycle::MEDIUM_RID_MIN,
                 nonce: None,
                 member_tag: Some("tag-b".to_owned()),
                 visible: true,
@@ -323,6 +325,7 @@ fn missing_confirmations_share_one_deadline() {
             fake::FakeWindow {
                 pid: k.pid,
                 process: member_process(k),
+                integrity_rid: crate::lifecycle::MEDIUM_RID_MIN,
                 nonce: None,
                 member_tag: Some("tag-d".to_owned()),
                 visible: true,
@@ -376,6 +379,7 @@ fn failed_hide_rolls_back_exactly_newly_hidden_and_keeps_ledger() {
         fake::FakeWindow {
             pid: h2.pid,
             process: member_process(&h2),
+            integrity_rid: crate::lifecycle::MEDIUM_RID_MIN,
             nonce: None,
             member_tag: Some("tag-e".to_owned()),
             visible: true,
@@ -494,6 +498,7 @@ fn reveal_handles_failure_recycling_and_already_visible() {
         fake::FakeWindow {
             pid: r1.pid,
             process: member_process(&r1),
+            integrity_rid: crate::lifecycle::MEDIUM_RID_MIN,
             nonce: Some(claims[0].tag.clone()),
             member_tag: Some(tags[0].to_owned()),
             visible: false,
@@ -509,6 +514,7 @@ fn reveal_handles_failure_recycling_and_already_visible() {
         fake::FakeWindow {
             pid: r2.pid,
             process: member_process(&r2),
+            integrity_rid: crate::lifecycle::MEDIUM_RID_MIN,
             nonce: Some(claims[1].tag.clone()),
             member_tag: Some(tags[1].to_owned()),
             visible: false,
@@ -530,6 +536,7 @@ fn reveal_handles_failure_recycling_and_already_visible() {
                 session_id: 1,
                 exe_path: "other.exe".to_owned(),
             },
+            integrity_rid: crate::lifecycle::MEDIUM_RID_MIN,
             nonce: None,
             member_tag: Some(tags[2].to_owned()),
             visible: true,
@@ -545,6 +552,7 @@ fn reveal_handles_failure_recycling_and_already_visible() {
         fake::FakeWindow {
             pid: r4.pid,
             process: member_process(&r4),
+            integrity_rid: crate::lifecycle::MEDIUM_RID_MIN,
             nonce: Some(claims[3].tag.clone()),
             member_tag: Some(tags[3].to_owned()),
             visible: true,
@@ -849,6 +857,7 @@ fn send_follow_hide_failure_never_reaches_select() {
         fake::FakeWindow {
             pid: mover.pid,
             process: member_process(&mover),
+            integrity_rid: crate::lifecycle::MEDIUM_RID_MIN,
             nonce: None,
             member_tag: Some("tag-wm".to_owned()),
             visible: true,
