@@ -228,7 +228,7 @@ mod live_impl {
             crate::synth::post_guarded_with_tag(
                 &target,
                 key,
-                crate::symbolic_hotkeys::CG_CTRL_BIT,
+                crate::symbolic_hotkeys::CG_ARROW_FLAGS,
                 down,
                 crate::synth::GuardedPostRoute::Hid,
                 Some(crate::input_match::OWN_SWITCH_USER_DATA),

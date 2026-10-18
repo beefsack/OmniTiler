@@ -42,6 +42,14 @@ pub const KEY_RIGHT_ARROW: u32 = 0x7C;
 /// `CGEventFlags` Control bit for the synthetic arrow posts (CG domain,
 /// not Carbon): matches [`crate::input::cg_flag_bits`] for Ctrl.
 pub const CG_CTRL_BIT: u64 = 0x0004_0000;
+/// `CGEventFlags` SecondaryFn bit (`NX_SECONDARYFNMASK`, `CGEventTypes.h`):
+/// hardware arrow keys carry Fn, and the effective Mission Control arrow
+/// holders register Carbon `Control|Fn` (`0x21000`). The old Control-only
+/// synthetic arrow chord (`0x40000`) never matched; relative posts carry
+/// Control plus SecondaryFn (`0x840000`). Digits stay Control-only.
+pub const CG_FN_BIT: u64 = 0x0080_0000;
+/// Exact flags for synthetic relative-arrow chords (down and up).
+pub const CG_ARROW_FLAGS: u64 = CG_CTRL_BIT | CG_FN_BIT;
 
 /// Strip the automatic Fn bit from raw effective Carbon modifiers.
 #[must_use]
@@ -233,5 +241,12 @@ mod tests {
         assert_eq!(KEY_RIGHT_ARROW, 0x7C);
         assert_eq!(crate::input_policy::KEY_LEFT, KEY_LEFT_ARROW);
         assert_eq!(crate::input_policy::KEY_RIGHT, KEY_RIGHT_ARROW);
+    }
+
+    #[test]
+    fn arrow_flags_carry_secondary_fn_while_digits_stay_control_only() {
+        assert_eq!(CG_FN_BIT, 0x0080_0000);
+        assert_eq!(CG_ARROW_FLAGS, 0x0084_0000);
+        assert_eq!(CG_ARROW_FLAGS, crate::input_match::SWITCH_ARROW_FLAGS);
     }
 }

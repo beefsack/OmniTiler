@@ -76,6 +76,15 @@ pub const SWITCH_KEY_RIGHT: u32 = 0x7C;
 /// for Ctrl).
 pub const SWITCH_CTRL_BIT: u64 = 0x0004_0000;
 pub const SWITCH_FLAGS_MASK: u64 = 0x0002_0000 | 0x0004_0000 | 0x0008_0000 | 0x0010_0000;
+/// `CGEventFlags` SecondaryFn bit for synthetic relative-arrow chords
+/// (hardware arrows carry Fn; the Mission Control arrow holders register
+/// Carbon `Control|Fn`). Digits stay Control-only; this bit is
+/// Fn-agnostic in the tap match (outside the mask) so tagged arrows pass
+/// with or without it, while posts always carry it (`0x840000`).
+pub const SWITCH_FN_BIT: u64 = 0x0080_0000;
+/// Exact posted flags for relative-arrow chords (down and up):
+/// Control plus SecondaryFn.
+pub const SWITCH_ARROW_FLAGS: u64 = SWITCH_CTRL_BIT | SWITCH_FN_BIT;
 
 /// Pure own-switch provenance over plain data: true only for the tiler's
 /// own tagged native Space-switch chord shape -- exact tag, KeyDown/KeyUp,
@@ -407,6 +416,9 @@ mod tests {
         assert_ne!(OWN_SWITCH_USER_DATA, 0);
         // Switch legs pin the shared domains: CG Control bit, arrow codes.
         assert_eq!(SWITCH_CTRL_BIT, 0x0004_0000);
+        assert_eq!(SWITCH_FN_BIT, 0x0080_0000);
+        assert_eq!(SWITCH_ARROW_FLAGS, 0x0084_0000);
+        assert_eq!(SWITCH_ARROW_FLAGS, crate::symbolic_hotkeys::CG_ARROW_FLAGS);
         assert_eq!(SWITCH_KEY_LEFT, crate::input_policy::KEY_LEFT);
         assert_eq!(SWITCH_KEY_RIGHT, crate::input_policy::KEY_RIGHT);
     }
@@ -428,6 +440,22 @@ mod tests {
             OWN_SWITCH_USER_DATA,
             KeyUp,
             SWITCH_CTRL_BIT,
+            i64::from(SWITCH_KEY_LEFT)
+        ));
+        // The posted relative shape carries SecondaryFn (hardware arrows
+        // carry Fn; holders register Carbon Control|Fn): the tap match is
+        // Fn-agnostic (Fn sits outside the masked chord bits), so tagged
+        // Ctrl+Fn arrows pass identically on both edges.
+        assert!(down(
+            OWN_SWITCH_USER_DATA,
+            KeyDown,
+            SWITCH_ARROW_FLAGS,
+            i64::from(SWITCH_KEY_RIGHT)
+        ));
+        assert!(down(
+            OWN_SWITCH_USER_DATA,
+            KeyUp,
+            SWITCH_ARROW_FLAGS,
             i64::from(SWITCH_KEY_LEFT)
         ));
         // Untagged (user) identical chords are not ours.
@@ -529,6 +557,28 @@ mod tests {
             }
         );
         assert!(!pending);
+        // The posted relative shape adds SecondaryFn on both edges: passes
+        // identically (Fn is outside the masked chord bits), never pending.
+        let mut pending = false;
+        for kind in [TapKeyKind::KeyDown, TapKeyKind::KeyUp] {
+            let d = decide_tap_event_with_provenance(
+                kind,
+                SWITCH_ARROW_FLAGS,
+                i64::from(SWITCH_KEY_RIGHT),
+                OWN_SWITCH_USER_DATA,
+                t,
+                true,
+                &mut pending,
+            );
+            assert_eq!(
+                d,
+                TapDecision {
+                    matched: false,
+                    suppress: false,
+                }
+            );
+            assert!(!pending);
+        }
     }
 
     #[test]

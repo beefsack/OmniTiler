@@ -411,9 +411,9 @@ fn chord_params_match_the_transfer_executor() {
     assert_eq!(DIAG_CHORD_KEYCODE, crate::input_match::SWITCH_KEY_RIGHT);
     assert_eq!(DIAG_CHORD_KEYCODE, crate::input_policy::KEY_RIGHT);
     assert_eq!(DIAG_CHORD_KEYCODE, crate::symbolic_hotkeys::KEY_RIGHT_ARROW);
-    assert_eq!(DIAG_CHORD_FLAGS, 0x0004_0000);
-    assert_eq!(DIAG_CHORD_FLAGS, crate::input_match::SWITCH_CTRL_BIT);
-    assert_eq!(DIAG_CHORD_FLAGS, crate::symbolic_hotkeys::CG_CTRL_BIT);
+    assert_eq!(DIAG_CHORD_FLAGS, 0x0084_0000);
+    assert_eq!(DIAG_CHORD_FLAGS, crate::input_match::SWITCH_ARROW_FLAGS);
+    assert_eq!(DIAG_CHORD_FLAGS, crate::symbolic_hotkeys::CG_ARROW_FLAGS);
     assert_eq!(DIAG_OWN_TAG, crate::input_match::OWN_SWITCH_USER_DATA);
     assert_eq!(DIAG_MOUSE_FLAGS, 0);
     // Timing reuses the executor constants (no drifting copies).

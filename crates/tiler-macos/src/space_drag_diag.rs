@@ -70,8 +70,9 @@ pub const MAX_AMETHYST_DESKTOP: u32 = 16;
 /// Executor-identical chord keycode: `Ctrl+Right` (pinned equal to the
 /// transfer arrow legs by construction below).
 pub const DIAG_CHORD_KEYCODE: u32 = crate::input_match::SWITCH_KEY_RIGHT;
-/// Executor-identical chord flags (CG Control bit).
-pub const DIAG_CHORD_FLAGS: u64 = crate::input_match::SWITCH_CTRL_BIT;
+/// Executor-identical chord flags (CG Control plus SecondaryFn: the
+/// Mission Control arrow holders register Carbon Control|Fn).
+pub const DIAG_CHORD_FLAGS: u64 = crate::input_match::SWITCH_ARROW_FLAGS;
 /// Executor-identical mouse flags (Silica parity: zero).
 pub const DIAG_MOUSE_FLAGS: u64 = 0;
 /// Executor-identical mouse/key provenance tag (normal modes).

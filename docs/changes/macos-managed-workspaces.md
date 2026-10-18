@@ -1,5 +1,39 @@
 # macOS managed native workspaces
 
+## Relative-arrow offline checkpoint (2026-10-18)
+
+**Step 3 remains incomplete; no additional product actions are armed.** Relative
+arrow posting now carries Control plus SecondaryFn (`0x840000`) on down, up and
+pending-release paths, including the normal drag diagnostic. Digits remain
+Control-only. NumericPad is not added without delivery evidence. Regression tests
+pin executor/diagnostic flags and both tagged tap edges; provenance matching and
+the 18-select capability boundary are unchanged. Independent review found no
+blocking code issue.
+
+The live transfer fixture refused at helper placement before spawning a helper
+or posting synthetic input: no clear placement rectangle was available among the
+protected terminal and three disposable TextEdit windows. Reported topology was
+unchanged, with no settings writes or Space creation/removal. Raw output was not
+retained and a final protected-window CG snapshot was not collected, so this is
+**not accepted live delivery, protected-window stability or restoration evidence**.
+No screenshot was taken. The existing Space 277/TextEdit residue is not cleared.
+
+Offline gates pass: 761 library tests plus 148 integration tests across ten suites,
+strict all-target macOS crate clippy, workspace format and diff checks, named
+signed app build and separate verification for both bundles. The earlier transient
+`native_plans_land_inside_actual_work_areas_divided_per_domain` failure did not
+repeat in independent verification; its original panic output was not retained.
+Unsafe remains **114 blocks**, all in unchanged `ffi.rs`. Final main executable
+SHA-256: `8b313a9d68bc90aa5e67430fba81e7553cc0fc4a4753464f9bc3e59fac147bf3`.
+This rebuilt artifact has not been live-tested.
+
+Next: establish a clear disposable target placement, then prove tagged Ctrl+Fn
+arrow and tagged Desktop-N delivery with fresh retained raw protected-window
+records before and after each leg. Use the existing user-run discriminator if
+placement remains impractical; do not infer holder delivery from posting or tap
+bypass tests. Numbered sends, follow/stay, trailing lifecycle and multi-display
+remain pending. No new product decision is selected by this checkpoint.
+
 ## Current prerequisite checkpoint (2026-10-18)
 
 Managed workspace implementation has not advanced beyond the select-only fallback,
@@ -33,7 +67,7 @@ The existing NoEffect observations below are not superseded by fake-backed tests
 
 - Default countdown: 5 seconds (`--countdown 0..30`). Chord-only posts exactly
   one Ctrl+Right down/up through the transfer executor's shared safe construction
-  path: null/default event source, HID tap, Control flags on both key events and
+  path: null/default event source, HID tap, Control+SecondaryFn flags on both key events and
   the own-switch provenance tag. `--untagged` omits that tag.
 - Hold/full capture the real cursor once after the countdown. Positional AX
   `(PID, window ID)`, WindowServer hit-test and a complete CG owner join must
@@ -76,7 +110,7 @@ Behavior is reimplemented, not copied.
 | Source/state and tap | NULL source (default state, no explicit source-state ID); HID for all posts | Identical shared construction path; no explicit source-state ID |
 | Mouse flags | Move/down/up explicitly zero; dragged event retains creation defaults | All mouse flags explicitly zero, including dragged; variant retains this explicit zeroing |
 | Chord | Configured Desktop-N symbolic hotkey, ID `118 + N - 1`, N = 1..16 | Normal mode uses Ctrl+Right; `--amethyst --desktop 2` reads the configured Desktop-2 chord |
-| Modifier delivery | Key-down has configured flags; key-up flags zero; no separate Control-key events | Normal mode has Control flags on both edges, no separate modifier events; variant matches configured-down/zero-up |
+| Modifier delivery | Key-down has configured flags; key-up flags zero; no separate Control-key events | Normal mode now has Control+SecondaryFn flags on both edges, no separate modifier events; variant matches configured-down/zero-up |
 | Provenance | Untagged | Normal posts carry own-switch tag; variant is untagged |
 | Disabled shortcut | Enables it before posting | Variant refuses disabled/unbound/unreadable shortcuts; never writes settings |
 | Surrounding behavior | Manager switches back after about 1 second unless follow is enabled | One drag sequence only; no inverse or automatic switch-back. Countdown, cursor/identity/session guards, bounded holds, cancellation and release/residue reporting are additional diagnostics. |

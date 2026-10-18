@@ -22,7 +22,7 @@
 //! (https://github.com/Hammerspoon/hammerspoon/blob/23e387e2805a9890066366e0ac96c71b27f0cfd5/extensions/hotkey/libhotkey.m#L208-L241).
 
 use crate::mc_probe::McError;
-use crate::symbolic_hotkeys::CG_CTRL_BIT;
+use crate::symbolic_hotkeys::CG_ARROW_FLAGS;
 
 /// Yabai pinned gesture fields (same-display branch only).
 pub const GESTURE_FIELD_TYPE: u32 = 55;
@@ -206,7 +206,7 @@ pub(crate) fn post_arrow_held(
     if let Err(e) = post_guarded_with_tag(
         &target,
         key,
-        CG_CTRL_BIT,
+        CG_ARROW_FLAGS,
         true,
         GuardedPostRoute::Session,
         Some(crate::input_match::OWN_SWITCH_USER_DATA),
@@ -224,7 +224,7 @@ pub(crate) fn post_arrow_held(
         post_guarded_with_tag(
             &target,
             key,
-            CG_CTRL_BIT,
+            CG_ARROW_FLAGS,
             false,
             GuardedPostRoute::Session,
             Some(crate::input_match::OWN_SWITCH_USER_DATA),
@@ -427,7 +427,7 @@ pub(crate) fn post_release_once(
         post_guarded_with_tag(
             target,
             key,
-            CG_CTRL_BIT,
+            CG_ARROW_FLAGS,
             false,
             GuardedPostRoute::Session,
             Some(crate::input_match::OWN_SWITCH_USER_DATA),
@@ -440,7 +440,9 @@ pub(crate) fn post_release_once(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::symbolic_hotkeys::{CG_CTRL_BIT, KEY_LEFT_ARROW, KEY_RIGHT_ARROW};
+    use crate::symbolic_hotkeys::{
+        CG_ARROW_FLAGS, CG_CTRL_BIT, CG_FN_BIT, KEY_LEFT_ARROW, KEY_RIGHT_ARROW,
+    };
 
     #[test]
     fn arrow_keycodes_match_mac_virtual_codes() {
@@ -452,6 +454,17 @@ mod tests {
         assert_eq!(CG_CTRL_BIT, 0x0004_0000);
         assert_eq!(crate::input_policy::KEY_LEFT, KEY_LEFT_ARROW);
         assert_eq!(crate::input_policy::KEY_RIGHT, KEY_RIGHT_ARROW);
+    }
+
+    #[test]
+    fn arrow_posts_carry_control_plus_secondary_fn() {
+        // Mission Control arrow holders register Carbon Control|Fn
+        // (`0x21000`); the old Control-only synthetic chord never matched.
+        // Relative posts carry Control plus SecondaryFn (`0x840000`,
+        // `NX_SECONDARYFNMASK`); NumericPad is not posted without evidence.
+        assert_eq!(CG_FN_BIT, 0x0080_0000);
+        assert_eq!(CG_ARROW_FLAGS, 0x0084_0000);
+        assert_eq!(CG_ARROW_FLAGS, crate::input_match::SWITCH_ARROW_FLAGS);
     }
 
     #[test]
