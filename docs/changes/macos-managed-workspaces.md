@@ -1,5 +1,22 @@
 # macOS managed native workspaces
 
+## Current prerequisite checkpoint (2026-10-18)
+
+Managed workspace implementation has not advanced beyond the select-only fallback.
+The [world-state diagnostic checkpoint](macos-full-state-replies.md#runtime-select-diagnostic-checkpoint-2026-10-18)
+now proves outward tap→engine→drain `Ctrl+2`, current indicator state and retained
+layouts after a standalone return. Runtime `Ctrl+1` return remains unverified.
+Ring appearance and indicator legibility are pending user-assisted checks, with
+exact steps in that record; do not use screenshots or attempt Screen Recording
+permission changes. Temporary Space 277 and three disposable TextEdit documents
+remain for manual cleanup after conservative removal/close refusals. No test-owned
+processes, taps, helpers, overlays or display-sleep children remain.
+
+Next after that cleanup and the remaining native runtime check: relative chord
+Control+Fn/tag delivery, numbered sends and Authentic Desktop-N enable, follow/stay,
+trailing lifecycle, then per-display attribution and multi-display coverage. The
+successful untagged runtime input is not evidence for tagged native holder delivery.
+
 ## Drag/chord discriminator preparation (2026-10-17)
 
 **Offline preparation only; native transfer remains parked.** The one-shot

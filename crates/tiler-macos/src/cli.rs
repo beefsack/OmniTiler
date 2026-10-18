@@ -448,8 +448,13 @@ pub fn help_text() -> String {
              \x20 \x20 (ONE semantic tile chord through the native session stream:\n\
              \x20 \x20 focus-h/j/k/l, focus-left/right, move-h/j/k/l, move-left/right,\n\
              \x20 \x20 float-g, grow-h/j/k/l, grow-left/right, shrink-h/j/k/l,\n\
-             \x20 \x20 shrink-left/right, orientation-o; truthfully synthetic,\n\
-             \x20 \x20 oracle-gated per edge, helper targets only, never Ghostty)\n\
+             \x20 \x20 shrink-left/right, orientation-o, select-1..9 (armed\n\
+             \x20 \x20 existing-Space selects; select-0 stays unarmed);\n\
+             \x20 \x20 truthfully synthetic, untagged session post (tap consumes\n\
+             \x20 \x20 like the user's chord and forwards to the engine; the\n\
+             \x20 \x20 own-switch tag would bypass the engine and proves\n\
+             \x20 \x20 nothing about runtime selection), oracle-gated per edge,\n\
+             \x20 \x20 helper targets only, never Ghostty)\n\
              \x20 owned-drag-post --pid PID --nonce HEX --edge down|drag|up|escape --x X --y Y [--plain]\n\
              \x20 \x20 (PARKED: always refuses before any live touch until a balanced\n\
              \x20 \x20 per-PID release contract is proven; a lone down or paired Escape\n\

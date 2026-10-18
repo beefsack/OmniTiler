@@ -49,9 +49,21 @@ pub struct SemanticChord {
 
 /// Resolve a semantic chord name to its key code + Shift/Alt arms. Exactly
 /// the tile catalogue's letter/arrow focus arms, Shift move arms, Alt grow
-/// arms, Alt+Shift shrink arms, the `G` float toggle and the `O`
-/// orientation toggle — nothing else (Up/Down arrows are excluded: no
-/// user-owned overview restore path exists). Pure; unit-tested.
+/// arms, Alt+Shift shrink arms, the `G` float toggle, the `O`
+/// orientation toggle, plus the armed numbered workspace selects
+/// `select-1..9` (existing-Space selects only; trailing `select-0` stays
+/// unarmed and is refused here) — nothing else (Up/Down arrows are excluded:
+/// no user-owned overview restore path exists). Pure; unit-tested.
+///
+/// Select chords carry no Shift/Alt arms and post untagged through the
+/// session stream like any tile-catalogue chord: the tap consumes them
+/// exactly like the user's `Ctrl+digit` chords and forwards to the engine.
+/// They MUST NOT carry the own-switch provenance tag
+/// (`OWN_SWITCH_USER_DATA`): tagged `Ctrl+digit`/`Ctrl+arrows` shapes are the
+/// native drag-transfer switch chords and the tap passes them untouched
+/// (`Keep`, never matched/suppressed/forwarded, invisible in counters) so
+/// the tiler never self-triggers. Tagging a select chord would bypass the
+/// engine and cannot prove runtime tap→engine→drain selection.
 pub fn resolve_chord(name: &str) -> Option<SemanticChord> {
     let (key_code, shift, alt, action) = match name {
         "focus-h" => (0x04, false, false, "focus"),
@@ -80,6 +92,60 @@ pub fn resolve_chord(name: &str) -> Option<SemanticChord> {
         "shrink-left" => (0x7B, true, true, "shrink"),
         "shrink-right" => (0x7C, true, true, "shrink"),
         "orientation-o" => (0x1F, false, false, "orientation"),
+        "select-1" => (
+            crate::desktop_shortcuts::desktop_digit_keycode(1)?,
+            false,
+            false,
+            "select",
+        ),
+        "select-2" => (
+            crate::desktop_shortcuts::desktop_digit_keycode(2)?,
+            false,
+            false,
+            "select",
+        ),
+        "select-3" => (
+            crate::desktop_shortcuts::desktop_digit_keycode(3)?,
+            false,
+            false,
+            "select",
+        ),
+        "select-4" => (
+            crate::desktop_shortcuts::desktop_digit_keycode(4)?,
+            false,
+            false,
+            "select",
+        ),
+        "select-5" => (
+            crate::desktop_shortcuts::desktop_digit_keycode(5)?,
+            false,
+            false,
+            "select",
+        ),
+        "select-6" => (
+            crate::desktop_shortcuts::desktop_digit_keycode(6)?,
+            false,
+            false,
+            "select",
+        ),
+        "select-7" => (
+            crate::desktop_shortcuts::desktop_digit_keycode(7)?,
+            false,
+            false,
+            "select",
+        ),
+        "select-8" => (
+            crate::desktop_shortcuts::desktop_digit_keycode(8)?,
+            false,
+            false,
+            "select",
+        ),
+        "select-9" => (
+            crate::desktop_shortcuts::desktop_digit_keycode(9)?,
+            false,
+            false,
+            "select",
+        ),
         _ => return None,
     };
     Some(SemanticChord {
@@ -120,6 +186,15 @@ pub fn chord_names() -> &'static [&'static str] {
         "shrink-left",
         "shrink-right",
         "orientation-o",
+        "select-1",
+        "select-2",
+        "select-3",
+        "select-4",
+        "select-5",
+        "select-6",
+        "select-7",
+        "select-8",
+        "select-9",
     ]
 }
 
@@ -489,9 +564,9 @@ mod tests {
 
     #[test]
     fn chords_cover_focus_move_float_without_arrows_up_down() {
-        assert_eq!(chord_names().len(), 26);
+        assert_eq!(chord_names().len(), 35);
         // Letters on focus/move/grow/shrink arms plus Left/Right on each
-        // arm plus G plus O.
+        // arm plus G plus O, plus the nine armed numbered selects.
         for name in [
             "focus-h",
             "focus-j",
@@ -519,11 +594,20 @@ mod tests {
             "shrink-left",
             "shrink-right",
             "orientation-o",
+            "select-1",
+            "select-2",
+            "select-3",
+            "select-4",
+            "select-5",
+            "select-6",
+            "select-7",
+            "select-8",
+            "select-9",
         ] {
             assert!(resolve_chord(name).is_some(), "{name}");
         }
-        // Up/Down arrows are excluded (no overview restore path); unknown
-        // names refuse.
+        // Up/Down arrows are excluded (no overview restore path); trailing
+        // select-0 stays unarmed; unknown names refuse.
         for name in [
             "",
             "auto",
@@ -534,6 +618,9 @@ mod tests {
             "shrink-up",
             "h",
             "ctrl-h",
+            "select-0",
+            "select-10",
+            "workspace-select-1",
         ] {
             assert!(resolve_chord(name).is_none(), "{name}");
         }
@@ -559,6 +646,31 @@ mod tests {
         assert_eq!(resolve_chord("focus-right").unwrap().key_code, 0x7C);
         assert_eq!(resolve_chord("grow-left").unwrap().key_code, 0x7B);
         assert_eq!(resolve_chord("shrink-right").unwrap().key_code, 0x7C);
+        // Numbered selects carry the native Desktop-N digit keycodes with
+        // no Shift/Alt arms and report the select action; trailing 0 stays
+        // unarmed (occupancy unresolved).
+        for index in 1..=9u32 {
+            let name = match index {
+                1 => "select-1",
+                2 => "select-2",
+                3 => "select-3",
+                4 => "select-4",
+                5 => "select-5",
+                6 => "select-6",
+                7 => "select-7",
+                8 => "select-8",
+                _ => "select-9",
+            };
+            let chord = resolve_chord(name).unwrap();
+            assert_eq!(
+                chord.key_code,
+                crate::desktop_shortcuts::desktop_digit_keycode(index).unwrap(),
+                "{name}"
+            );
+            assert!(!chord.shift, "{name}");
+            assert!(!chord.alt, "{name}");
+            assert_eq!(chord.action, "select", "{name}");
+        }
     }
 
     #[test]

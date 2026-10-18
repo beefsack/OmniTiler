@@ -242,6 +242,91 @@ from temporary Space 272 to the original `[1]`, current 1:
  "independent_final":{"x":0.0,"y":30.0,"w":1150.0,"h":1139.0}}
 ```
 
+### Runtime-select diagnostic checkpoint (2026-10-18)
+
+**Incomplete: outward runtime selection is verified; return and visual acceptance
+remain pending.** `owned-post` now accepts `select-1..9`, reusing the native digit
+keycodes and existing owned-helper/per-edge focus guards. Index 0, 10 and unknown
+chord names refuse. This adds a diagnostic producer, not workspace capabilities.
+
+- Runtime input must not carry `OWN_SWITCH_USER_DATA`: that exact native-switch
+  tag intentionally bypasses matching, suppression and engine delivery. These
+  diagnostic posts are untagged and synthetic, never physical input. The requested
+  tagged runtime round trip is **not** established by this check; native tagged
+  chord delivery remains a separate managed-workspace acceptance condition.
+- With three disposable TextEdit documents and one scoped helper on Space 1,
+  `owned-post select-2` posted both edges to the helper. The running tiler reported
+  `matched:2`, `suppressed:2`, `deliveries:2`, `input_select_enqueued:1`,
+  `input_select_refused:0` and `workspace-select-2 changed=true complete=true`.
+  Independent topology readback showed `[1,277]`, current 277; the indicator
+  advanced from row 1 to row 2. No windows were transferred.
+- The attempted return post refused before any event (`no spawn record`): the
+  bounded helper holder had expired. Return to Space 1 used the standalone MC AX
+  selector, **not the runtime**. After that return, all three TextEdit frames and
+  memberships exactly matched their admitted layout, with AX equal to CG.
+- The finite tiler reported `shutdown_outcome:Clean`, `shutdown_clean:true`,
+  border shows/updates/hides `1/2/1`, indicator updates 4, and no lock or Secure
+  Input stops. No test-owned probe, helper, tap, overlay or display-sleep child
+  remained. Every live leg checked lock/Secure Input and reaped its own bounded
+  display-sleep child by exact PID.
+- Screen capture was unavailable. Do not attempt screenshots, Screen Recording
+  grants or permission workarounds for continuation. Ring appearance and strip
+  legibility require the user-assisted check below; native state is not pixel
+  acceptance.
+- **Cleanup residue:** temporary Space 277 remains, current Space 1. Exact empty
+  removal refused because foreign ControlCenter window 3635 (PID 656, layer 25)
+  was attributed to 277. The occupancy guard was not relaxed and that window was
+  untouched. Three disposable TextEdit windows 3584/3585/3586 (PID 13484) remain
+  on Space 1. AppleScript close-path inspection timed out; no existing bounded
+  exact-window AX close command was available. Close these documents and remove
+  the temporary Space manually, after inspecting its contents; do not repeat
+  unchanged removal attempts or classify foreign chrome as empty by assumption.
+
+Raw JSON and title-free snapshots were retained outside the repository. Source
+was `94b7f748` plus the three owned-post diagnostic files. The signed live
+executable hash was not retained, so artifact-level reproducibility is incomplete.
+Final offline verification after the diagnostic edits: **901 macOS tests pass**,
+strict all-target crate clippy and workspace formatting pass, signed app build and
+separate verification pass. Independent diagnostic review found no blocking code
+issue. Unsafe remains **114**, all in unchanged `ffi.rs`.
+
+The final offline rebuild was not live-tested. Its probe SHA-256 is
+`31c3de22047fae3dc70088093a1f6d44559bc83796f4f257002fc8901348f010`;
+Helper.app executable SHA-256 is
+`f5e41ab1b1a418ec3154f1737561d4b92cb1365f3d2034327e3e27b0da10d34e`.
+Both retain the bundle identifiers and signing requirement recorded above.
+
+#### Protected-window readback for this checkpoint
+
+These are the actual WID-sorted protected CG arrays, not record counts. All nine
+records compare exactly equal. CG inspection does not expose per-window Space
+membership: display topology changed `[1]`/current 1 to `[1,277]`/current 1, and
+the main protected surface stayed onscreen. No stronger membership claim is made.
+
+```json
+{"before":[
+ {"pid":14379,"wid":273,"layer":0,"onscreen":false,"bounds":{"x":0.0,"y":760.0,"w":64.0,"h":64.0}},
+ {"pid":14379,"wid":396,"layer":0,"onscreen":true,"bounds":{"x":0.0,"y":30.0,"w":1150.0,"h":1139.0}},
+ {"pid":14379,"wid":530,"layer":0,"onscreen":false,"bounds":{"x":8.0,"y":34.0,"w":2220.0,"h":1134.0}},
+ {"pid":14379,"wid":1621,"layer":0,"onscreen":false,"bounds":{"x":1123.0,"y":603.0,"w":1108.0,"h":558.0}},
+ {"pid":14379,"wid":1627,"layer":103,"onscreen":false,"bounds":{"x":320.0,"y":106.0,"w":254.0,"h":19.0}},
+ {"pid":14379,"wid":3425,"layer":0,"onscreen":false,"bounds":{"x":0.0,"y":0.0,"w":2240.0,"h":30.0}},
+ {"pid":14379,"wid":3428,"layer":0,"onscreen":false,"bounds":{"x":0.0,"y":0.0,"w":2240.0,"h":30.0}},
+ {"pid":14379,"wid":3431,"layer":0,"onscreen":false,"bounds":{"x":0.0,"y":0.0,"w":2240.0,"h":30.0}},
+ {"pid":14379,"wid":3434,"layer":0,"onscreen":false,"bounds":{"x":0.0,"y":0.0,"w":2240.0,"h":30.0}}
+],"after":[
+ {"pid":14379,"wid":273,"layer":0,"onscreen":false,"bounds":{"x":0.0,"y":760.0,"w":64.0,"h":64.0}},
+ {"pid":14379,"wid":396,"layer":0,"onscreen":true,"bounds":{"x":0.0,"y":30.0,"w":1150.0,"h":1139.0}},
+ {"pid":14379,"wid":530,"layer":0,"onscreen":false,"bounds":{"x":8.0,"y":34.0,"w":2220.0,"h":1134.0}},
+ {"pid":14379,"wid":1621,"layer":0,"onscreen":false,"bounds":{"x":1123.0,"y":603.0,"w":1108.0,"h":558.0}},
+ {"pid":14379,"wid":1627,"layer":103,"onscreen":false,"bounds":{"x":320.0,"y":106.0,"w":254.0,"h":19.0}},
+ {"pid":14379,"wid":3425,"layer":0,"onscreen":false,"bounds":{"x":0.0,"y":0.0,"w":2240.0,"h":30.0}},
+ {"pid":14379,"wid":3428,"layer":0,"onscreen":false,"bounds":{"x":0.0,"y":0.0,"w":2240.0,"h":30.0}},
+ {"pid":14379,"wid":3431,"layer":0,"onscreen":false,"bounds":{"x":0.0,"y":0.0,"w":2240.0,"h":30.0}},
+ {"pid":14379,"wid":3434,"layer":0,"onscreen":false,"bounds":{"x":0.0,"y":0.0,"w":2240.0,"h":30.0}}
+]}
+```
+
 ### Exact remaining procedure
 
 Keep this note active and the backlog item pending until runtime select and
@@ -252,7 +337,8 @@ No broader focus-None policy is selected; its discriminator remains TBD.
    each leg. Protect Ghostty absolutely, use an exact-PID bounded caffeinate
    child, and prove stop/restoration for the scoped resources. Stop on drift;
    never use unscoped `just dev` or process-name kills.
-2. Build/verify and run `mise exec -- just preflight-app`, requiring
+2. First inspect and clear the checkpoint's residue above manually. Build/verify
+   and run `mise exec -- just preflight-app`, requiring
    `ax_trusted:true`. Use three disposable TextEdit documents only, with a second
    Desktop available. Record raw before CG/AX/membership using
    `mise exec -- just launch -- --timeout 60 -- cg-inspect` and
@@ -261,9 +347,13 @@ No broader focus-None policy is selected; its discriminator remains TBD.
    Physically press Ctrl+2 and Ctrl+1, waiting for observed arrival and return.
    Verify current indicator row, retained layouts and runtime select results,
    not merely standalone native selection. No window transfers are included.
-4. Focus each owned survivor and visually check exactly one active ring follows
-   the true focused frame and the indicator is legible/current. Confirm border
-   removal and `shutdown_clean` at the finite end.
+4. **User-assisted, pending:** while the bounded tiler runs, focus each disposable
+   document in turn. Verify exactly one visible ring follows the actually focused
+   frame, with no lingering ring on its predecessor. Read every indicator number;
+   after Ctrl+2 it must highlight 2 and after Ctrl+1 highlight 1. Report crowding
+   or illegibility. At the finite end verify the visible ring disappears; separately
+   inspect `shutdown_clean:true` and native overlay absence. Do not use screenshots
+   or attempt to change Screen Recording permission for these appearance checks.
 5. Retain raw after records with the same commands; compare every protected
    record, restore only owned preimages and close only disposable documents.
    Leave no test-owned processes, taps, helpers, overlays or awake children.

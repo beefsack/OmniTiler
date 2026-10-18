@@ -2259,7 +2259,8 @@ platform API behavior.
   of incorporated observations: revalidate the watermark, topology and queued
   incorporable truth immediately before effects/setters, with observation-only
   catch-up and no command replay. Offline delivery is verified; live acceptance
-  is partial (runtime select and visual checks remain pending). Shared MRU
+  is partial (outward runtime select verified; return and user-assisted visual
+  checks remain pending). Shared MRU
   fallback includes later admitted/restored leaves without reordering retained
   history; strict focus binding and observed-focus authority stay unchanged.
   [Evidence](changes/macos-full-state-replies.md).

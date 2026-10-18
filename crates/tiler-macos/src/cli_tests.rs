@@ -476,18 +476,33 @@ fn owned_controls_parse_with_exact_identity() {
         .is_err()
     );
     // Only semantic chords parse; arbitrary keys refuse.
-    assert!(
-        parse_args(&argv(&[
-            "owned-post",
-            "--pid",
-            "9",
-            "--nonce",
-            "0123456789abcdef",
-            "--chord",
-            "ctrl-h",
-        ]))
-        .is_err()
-    );
+    for bad in ["ctrl-h", "select-0", "select-10", "workspace-select-1"] {
+        assert!(
+            parse_args(&argv(&[
+                "owned-post",
+                "--pid",
+                "9",
+                "--nonce",
+                "0123456789abcdef",
+                "--chord",
+                bad,
+            ]))
+            .is_err(),
+            "{bad}"
+        );
+    }
+    // Armed numbered selects parse.
+    let r = parse_args(&argv(&[
+        "owned-post",
+        "--pid",
+        "9",
+        "--nonce",
+        "0123456789abcdef",
+        "--chord",
+        "select-2",
+    ]))
+    .unwrap();
+    assert!(matches!(r.command, Command::OwnedPost { .. }));
     // Only lone drag edges parse; click pairs and unknown edges refuse,
     // and the point plus identity are mandatory (escape still names the
     // point for the oracle join).
