@@ -141,6 +141,22 @@
 - Physical shortcuts, games, drag preview/drop, broader application behavior
   and multi-output acceptance are not implied. Remaining checks stay open.
 
+## Additional scoped native evidence, 2026-10-18
+
+- [Follow-up matrix and unresolved discriminators](../windows-best-effort-admission-live.md):
+  native changed-policy Apply/save/reopen and capacity-float restart persistence
+  passed with live roster proof and exact cleanup. Ordered shrink matched newest
+  victim suffixes in two steps; minimal-prefix and protected-member acceptance
+  remain open. Valid overlap-policy shrink preserved a positive 40-tile roster
+  without capacity floats; geometric overflow and fresh exhaustion remain open.
+- Hidden-gap adoption preserved all hidden frames, but reveal produced no victims
+  where visible shrink did; retained-tree/session discrimination is still needed.
+  Fresh admission, failed unfloat and same-output sends did not reach no-space.
+  A feasible-tile unfloat reported `unfloat-mismatch` with a one-pixel readback
+  diagnostic; no clear production defect is established. Cross-output refusal
+  remains not-run.
+- This supplements, rather than rewrites, the earlier journey outcomes above.
+
 ## Remaining live checks
 
 - Before execution, follow [Windows preflight/recovery](../../live-windows-testing.md):
@@ -180,8 +196,6 @@
   overlays, restored Mouse Snap/session settings, revealed windows and clean
   recovery ledger. Physical keyboard/game/multi-output acceptance is not implied.
 
-- Exact next action: validate a foreground-qualified helper interaction and
-  owned Settings modal/save completion first, then run short, separate journeys
-  for fresh exhaustion, admission-ordered shrink, retry, restart before helper
-  expiry, same-output follow/stay and overlap. Retain cross-output float refusal;
-  verify that leg only when a second output is available.
+- Exact next action: follow the [current discriminators](../windows-best-effort-admission-live.md#blockers-and-exact-next-action).
+  Settings save/reopen and live-roster restart no longer need the earlier method
+  repair. Retain cross-output refusal; verify it only with a second output.

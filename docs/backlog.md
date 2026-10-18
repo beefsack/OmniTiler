@@ -224,11 +224,15 @@ decisions of 2026-09-24 are under
   overlap, retry and catalog controls are covered by producer-shaped fixtures and
   independent safety review. Native four-package gates: **2,750 passed, 0 failed,
   1 ignored**; all eight CI jobs pass (`6c4bcefd`, run 39083833668).
-  Partial scoped native checks 2026-10-18: gap-growth capacity repair preserved
-  all 320 victim frames and verified ordinary-float markers; cleanup and exact
-  settings/taskbar/SPI restoration passed. Fresh exhaustion/fallback, ordered
-  shrink, retry, capacity restart, sends, overlap and changed-policy Apply remain
-  unverified; focus/Settings interaction and helper expiry limited the procedure.
+  Scoped native checks 2026-10-18: gap-growth repair preserved victim frames and
+  markers; two-step shrink matched newest admission suffixes. Changed-policy
+  Apply/save/reopen/no-reflow, live-roster ordinary-float restart persistence and
+  exact settings/taskbar/SPI cleanup passed. Overlap-policy shrink kept 40 positive
+  tiles without floats. Remain open: true fresh exhaustion/fallback, shortest-prefix
+  and protected-member proof, failed-unfloat retention, capacity sends, geometric
+  overlap/overflow and hidden-repair discrepancy (reveal kept 40 tiles where
+  visible shrink floated 30). One-pixel unfloat readback diagnostic unresolved.
+  [Current evidence and exact discriminator](changes/windows-best-effort-admission-live.md).
   User accepted 2026-10-18 (T2): cross-output
   capacity-float transfers refuse until a remap rule is separately approved:
   [record](changes/archive/windows-best-effort-admission.md).
