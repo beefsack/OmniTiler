@@ -78,12 +78,32 @@ fn domain(
 }
 
 fn topology(output: &str, order: Vec<&str>, current: &str) -> OutputTopology {
+    // Core-owned topology fixtures: the two side-by-side FULL rectangles
+    // touch exactly at x=800 (strict unique-reciprocal), so directional
+    // world commands resolve from geometry, never carried adjacency.
+    // Single-output uses keep the matching out-1 rectangle (harmless: no
+    // pair resolves from one output).
+    let geometry = match output {
+        "out-1" => Some(Rect {
+            x: 0,
+            y: 0,
+            w: 800,
+            h: 600,
+        }),
+        "out-2" => Some(Rect {
+            x: 800,
+            y: 0,
+            w: 800,
+            h: 600,
+        }),
+        _ => None,
+    };
     OutputTopology {
         output: OutputId(output.to_owned()),
         native_order: order.into_iter().map(str::to_owned).collect(),
         current_native: current.to_owned(),
         complete: true,
-        geometry: None,
+        geometry,
         primary: false,
     }
 }
@@ -192,14 +212,16 @@ fn new_incarnation_rejection_leaves_old_state_intact() {
 }
 
 #[test]
-fn cross_output_move_without_adjacency_refuses_instead_of_degrading() {
+fn cross_output_move_without_topology_refuses_instead_of_degrading() {
     let mut engine = WorldEngine::new("gen-1").expect("valid");
     accepted(&mut engine, &two_output_report(1, 1));
-    // Strip adjacency: no resolvable target. The request refuses; it never
-    // silently runs as a local move.
+    // Strip FULL geometry (partial topology): no resolvable target from the
+    // core-owned map, even though the carried adapter adjacency below still
+    // names the neighbor. The request refuses; it never silently runs as a
+    // local move and never reads the carried adjacency as authority.
     let mut report = two_output_report(2, 2);
-    for d in &mut report.domains {
-        d.domain.adjacent.clear();
+    for t in &mut report.topology {
+        t.geometry = None;
     }
     with_command(
         &mut report,
@@ -234,7 +256,7 @@ fn cross_output_focus_reaches_engine_through_report_pair() {
             float_subject: false,
         }),
     );
-    // The report-derived pair routes to the engine: a one-shot focus
+    // The core-derived pair routes to the engine: a one-shot focus
     // effect lands on the cross-output target (never a wholesale refusal
     // and never a silent local focus).
     match engine.handle_report(&report) {
@@ -309,7 +331,8 @@ fn operation_migration_with_adjacency_retains_transfer() {
         ..two_output_report(1, 1)
     };
     accepted(&mut engine, &base);
-    // Migrate ws-b rightwards from its homing domain's adjacency.
+    // Migrate ws-b rightwards: the target resolves from the retained FULL
+    // topology, never the homing domain's carried adjacency.
     let mut migrate = base.clone();
     // Focus the command on the ws-b domain: drop win-a's domain from the
     // homing lookup is unnecessary; operation_domain falls back to the

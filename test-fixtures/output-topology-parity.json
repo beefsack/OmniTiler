@@ -1,0 +1,146 @@
+{
+  "version": 1,
+  "note": "Frozen capture of kwin world-observe computeAdjacency (strict unique-reciprocal exact edge-touch, positive overlap, no wrap) for shared core/KDE parity. Rust consumes this in tiler-core/tests/output_topology_parity.rs; the next KDE unit consumes the same file against world-observe computeAdjacency. expected maps every output name to its direction map (empty object when nothing resolves). Do not edit expectations without the explicit split-edge policy decision in docs/changes/shared-core-owned-output-topology.md section 5.",
+  "cases": [
+    {
+      "name": "two-output-horizontal",
+      "outputs": [
+        {"out": "left", "rect": [0, 0, 800, 600]},
+        {"out": "right", "rect": [800, 0, 800, 600]}
+      ],
+      "expected": {
+        "left": {"right": "right"},
+        "right": {"left": "left"}
+      }
+    },
+    {
+      "name": "vertical-stack",
+      "outputs": [
+        {"out": "top", "rect": [0, 0, 800, 600]},
+        {"out": "bottom", "rect": [0, 600, 800, 600]}
+      ],
+      "expected": {
+        "top": {"down": "bottom"},
+        "bottom": {"up": "top"}
+      }
+    },
+    {
+      "name": "three-in-row",
+      "outputs": [
+        {"out": "a", "rect": [0, 0, 800, 600]},
+        {"out": "b", "rect": [800, 0, 800, 600]},
+        {"out": "c", "rect": [1600, 0, 800, 600]}
+      ],
+      "expected": {
+        "a": {"right": "b"},
+        "b": {"left": "a", "right": "c"},
+        "c": {"left": "b"}
+      }
+    },
+    {
+      "name": "split-edge-forward-multi",
+      "outputs": [
+        {"out": "src", "rect": [0, 600, 1600, 600]},
+        {"out": "up-l", "rect": [0, 0, 800, 600]},
+        {"out": "up-r", "rect": [800, 0, 800, 600]}
+      ],
+      "expected": {
+        "src": {},
+        "up-l": {"right": "up-r"},
+        "up-r": {"left": "up-l"}
+      }
+    },
+    {
+      "name": "reverse-ambiguity",
+      "outputs": [
+        {"out": "s1", "rect": [0, 0, 800, 600]},
+        {"out": "s2", "rect": [800, 0, 800, 600]},
+        {"out": "wide", "rect": [0, 600, 1600, 600]}
+      ],
+      "expected": {
+        "s1": {"right": "s2"},
+        "s2": {"left": "s1"},
+        "wide": {}
+      }
+    },
+    {
+      "name": "tall-against-stacked-pair",
+      "outputs": [
+        {"out": "tall", "rect": [0, 0, 800, 1200]},
+        {"out": "top", "rect": [800, 0, 800, 600]},
+        {"out": "bottom", "rect": [800, 600, 800, 600]}
+      ],
+      "expected": {
+        "tall": {},
+        "top": {"down": "bottom"},
+        "bottom": {"up": "top"}
+      }
+    },
+    {
+      "name": "gap-non-touching",
+      "outputs": [
+        {"out": "a", "rect": [0, 0, 800, 600]},
+        {"out": "b", "rect": [900, 0, 800, 600]}
+      ],
+      "expected": {
+        "a": {},
+        "b": {}
+      }
+    },
+    {
+      "name": "corner-only-contact",
+      "outputs": [
+        {"out": "a", "rect": [0, 0, 800, 600]},
+        {"out": "b", "rect": [800, 600, 800, 600]}
+      ],
+      "expected": {
+        "a": {},
+        "b": {}
+      }
+    },
+    {
+      "name": "negative-origins",
+      "outputs": [
+        {"out": "a", "rect": [-800, 0, 800, 600]},
+        {"out": "b", "rect": [0, 0, 800, 600]}
+      ],
+      "expected": {
+        "a": {"right": "b"},
+        "b": {"left": "a"}
+      }
+    },
+    {
+      "name": "unequal-heights-offset",
+      "outputs": [
+        {"out": "short", "rect": [0, 200, 800, 600]},
+        {"out": "tall", "rect": [800, 0, 800, 1200]}
+      ],
+      "expected": {
+        "short": {"right": "tall"},
+        "tall": {"left": "short"}
+      }
+    },
+    {
+      "name": "mirrored-overlap-above-wide",
+      "outputs": [
+        {"out": "src", "rect": [0, 600, 1600, 600]},
+        {"out": "a", "rect": [0, 0, 1200, 600]},
+        {"out": "b", "rect": [400, 0, 1200, 600]}
+      ],
+      "expected": {
+        "src": {},
+        "a": {},
+        "b": {}
+      }
+    },
+    {
+      "name": "single-output",
+      "outputs": [
+        {"out": "solo", "rect": [0, 0, 800, 600]}
+      ],
+      "expected": {
+        "solo": {}
+      }
+    }
+  ]
+}

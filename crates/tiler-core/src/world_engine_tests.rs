@@ -1000,8 +1000,9 @@ fn operation_send_retains_and_foreign_routes_refuse() {
     let reply = accepted_reply(&mut engine, &send);
     assert_eq!(homing(&reply, "win-a"), Some("out/ws2".to_owned()));
     assert_eq!(reply.transfers.len(), 1);
-    // Directional migration without carried adjacency has no resolvable
-    // target and refuses without mutation, never silently local.
+    // Directional migration with no retained FULL topology has no
+    // resolvable target and refuses without mutation, never silently
+    // local. (Single output here, and no FULL rectangle retained.)
     let mut refused = base_report(4, 2);
     with_command(
         &mut refused,
@@ -1239,7 +1240,7 @@ fn migration_retained_then_confirmed_by_topology() {
                     native_order: vec!["wa1".to_owned()],
                     current_native: "wa1".to_owned(),
                     complete: true,
-                    geometry: None,
+                    geometry: Some(rect(0, 0, 800, 600)),
                     primary: false,
                 },
                 OutputTopology {
@@ -1247,7 +1248,7 @@ fn migration_retained_then_confirmed_by_topology() {
                     native_order: vec!["wb1".to_owned()],
                     current_native: "wb1".to_owned(),
                     complete: true,
-                    geometry: None,
+                    geometry: Some(rect(800, 0, 800, 600)),
                     primary: false,
                 },
             ],
@@ -1297,9 +1298,9 @@ fn migration_retained_then_confirmed_by_topology() {
     }
     accepted_reply(&mut engine, &two_output_report(1, 1));
     let mut migrate = two_output_report(2, 2);
-    // Explicit migration names adapter-resolved adjacent outputs: the
-    // production observation always carries full-output-rect adjacency,
-    // which the core uses to derive (and fence) the move direction.
+    // Explicit migration names its endpoints: the core derives the move
+    // direction from the retained FULL topology (strict unique-reciprocal),
+    // ignoring the carried adapter adjacency below entirely.
     for domain in &mut migrate.domains {
         if domain.domain.id.0 == "out-a" {
             domain.domain.adjacent.insert(
@@ -1379,7 +1380,7 @@ fn migration_refill_supersedes_older_pending_view_for_source() {
                     native_order: vec!["wa1".to_owned(), "wa2".to_owned()],
                     current_native: current_a.to_owned(),
                     complete: true,
-                    geometry: None,
+                    geometry: Some(rect(0, 0, 800, 600)),
                     primary: true,
                 },
                 OutputTopology {
@@ -1387,7 +1388,7 @@ fn migration_refill_supersedes_older_pending_view_for_source() {
                     native_order: vec!["wb1".to_owned()],
                     current_native: "wb1".to_owned(),
                     complete: true,
-                    geometry: None,
+                    geometry: Some(rect(800, 0, 800, 600)),
                     primary: false,
                 },
             ],
@@ -1569,7 +1570,7 @@ fn migration_source_refill_report_value_selects_source_refill() {
                     native_order: ids.iter().map(|id| id.to_string()).collect(),
                     current_native: current_a.to_owned(),
                     complete: true,
-                    geometry: None,
+                    geometry: Some(rect(0, 0, 800, 600)),
                     primary: true,
                 },
                 OutputTopology {
@@ -1577,7 +1578,7 @@ fn migration_source_refill_report_value_selects_source_refill() {
                     native_order: vec!["wb1".to_owned()],
                     current_native: "wb1".to_owned(),
                     complete: true,
-                    geometry: None,
+                    geometry: Some(rect(800, 0, 800, 600)),
                     primary: false,
                 },
             ],
@@ -2018,7 +2019,7 @@ fn command_result_migration_rekeys_engine_with_members() {
                     native_order: vec!["wa1".to_owned()],
                     current_native: "wa1".to_owned(),
                     complete: true,
-                    geometry: None,
+                    geometry: Some(rect(0, 0, 800, 600)),
                     primary: false,
                 },
                 OutputTopology {
@@ -2026,7 +2027,7 @@ fn command_result_migration_rekeys_engine_with_members() {
                     native_order: vec!["wb1".to_owned()],
                     current_native: "wb1".to_owned(),
                     complete: true,
-                    geometry: None,
+                    geometry: Some(rect(800, 0, 800, 600)),
                     primary: false,
                 },
             ],
@@ -3377,7 +3378,7 @@ fn migration_accepts_qt_unbounded_maximum_with_real_minimum() {
                     native_order: vec!["wa1".to_owned()],
                     current_native: "wa1".to_owned(),
                     complete: true,
-                    geometry: None,
+                    geometry: Some(rect(0, 0, 800, 600)),
                     primary: false,
                 },
                 OutputTopology {
@@ -3385,7 +3386,7 @@ fn migration_accepts_qt_unbounded_maximum_with_real_minimum() {
                     native_order: vec!["wb1".to_owned()],
                     current_native: "wb1".to_owned(),
                     complete: true,
-                    geometry: None,
+                    geometry: Some(rect(800, 0, 800, 600)),
                     primary: false,
                 },
             ],
@@ -3475,4 +3476,763 @@ fn migration_accepts_qt_unbounded_maximum_with_real_minimum() {
         reply.transfers.as_slice(),
         [t] if matches!(t.kind, TransferKind::Migration)
     ));
+}
+
+// ---- core-owned output topology (2026-10-18) ----
+//
+// Directional world commands resolve against the retained FULL topology
+// through the strict unique-reciprocal helper, never the carried adapter
+// adjacency. These tests pin: geometry authority, empty/wrong adjacency
+// ignored, partial/missing/invalid/duplicate fencing, same-report updates,
+// all scope modes, stale/duplicate/rejected/reset ordering, and
+// hotplug disconnect/return.
+
+/// Two-output world with caller-controlled FULL topology: out-a/wa1 left
+/// of out-b/wb1 when both rectangles are `Some`. Carried adjacency stays
+/// empty so every resolution below must come from geometry.
+fn topo_two_output(
+    request_seq: u64,
+    observation_seq: u64,
+    mode: WorkspaceMode,
+    geometry_a: Option<Rect>,
+    geometry_b: Option<Rect>,
+    complete_b: bool,
+    inventory_complete: bool,
+) -> WorldReport {
+    WorldReport {
+        contract_version: WORLD_CONTRACT_VERSION,
+        owner: "owner-a".to_owned(),
+        adapter_incarnation: "adapter-1".to_owned(),
+        core_generation: "gen-1".to_owned(),
+        observation_seq,
+        request_seq,
+        request_id: format!("req-{request_seq}"),
+        command_seq: None,
+        command: None,
+        workspace_mode: mode,
+        topology: vec![
+            OutputTopology {
+                output: OutputId("out-a".to_owned()),
+                native_order: vec!["wa1".to_owned()],
+                current_native: "wa1".to_owned(),
+                complete: true,
+                geometry: geometry_a,
+                primary: true,
+            },
+            OutputTopology {
+                output: OutputId("out-b".to_owned()),
+                native_order: vec!["wb1".to_owned()],
+                current_native: "wb1".to_owned(),
+                complete: complete_b,
+                geometry: geometry_b,
+                primary: false,
+            },
+        ],
+        bindings: vec![
+            WorkspaceBinding {
+                logical_id: "la".to_owned(),
+                native_id: "wa1".to_owned(),
+                output: OutputId("out-a".to_owned()),
+                pinned: false,
+                displaced: false,
+                managed: true,
+            },
+            WorkspaceBinding {
+                logical_id: "lb".to_owned(),
+                native_id: "wb1".to_owned(),
+                output: OutputId("out-b".to_owned()),
+                pinned: false,
+                displaced: false,
+                managed: true,
+            },
+        ],
+        domains: vec![
+            domain_report(
+                "out-a",
+                "wa1",
+                "win-a",
+                vec![win("win-a", "out-a", "wa1", 0)],
+            ),
+            domain_report(
+                "out-b",
+                "wb1",
+                "win-b",
+                vec![win("win-b", "out-b", "wb1", 0)],
+            ),
+        ],
+        minimized: Vec::new(),
+        fixed_size_predicate: crate::size_hints::FixedSizePredicate::BothAxes,
+        migration_source_refill: crate::output_selection::MigrationSourceRefill::LastRemaining,
+        anchor_fallback: crate::admission::AnchorFallback::default(),
+        no_space_result: crate::admission::NoSpaceResult::default(),
+        default_tiled: true,
+        focused_global: String::new(),
+        inventory_complete,
+        gesture_barrier: false,
+        feedback: Vec::new(),
+    }
+}
+
+fn migrate_a_to_b() -> WorldCommand {
+    WorldCommand::MigrateWorkspace {
+        source_output: OutputId("out-a".to_owned()),
+        target_output: OutputId("out-b".to_owned()),
+        workspace: "wa1".to_owned(),
+    }
+}
+
+fn expect_migration_refused(engine: &mut WorldEngine, report: &WorldReport) {
+    match engine.handle_report(report) {
+        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "migration-refused"),
+        other => panic!("expected migration refusal, got {other:?}"),
+    }
+}
+
+#[test]
+fn core_topology_explicit_migration_ignores_carried_adjacency() {
+    use crate::directional::Direction;
+    let rect_a = rect(0, 0, 800, 600);
+    let rect_b = rect(800, 0, 800, 600);
+    for (label, mut seed) in [
+        (
+            "empty",
+            topo_two_output(
+                1,
+                1,
+                WorkspaceMode::PerOutputLocal,
+                Some(rect_a),
+                Some(rect_b),
+                true,
+                true,
+            ),
+        ),
+        (
+            "contradictory",
+            topo_two_output(
+                1,
+                1,
+                WorkspaceMode::PerOutputLocal,
+                Some(rect_a),
+                Some(rect_b),
+                true,
+                true,
+            ),
+        ),
+    ] {
+        if label == "contradictory" {
+            // Carried adjacency claims the neighbor on the wrong side in
+            // both directions: the core must still derive right from FULL
+            // rects and ignore this entirely.
+            for domain in &mut seed.domains {
+                if domain.domain.id.0 == "out-a" {
+                    domain
+                        .domain
+                        .adjacent
+                        .insert(Direction::Left, OutputId("out-b".to_owned()));
+                } else {
+                    domain
+                        .domain
+                        .adjacent
+                        .insert(Direction::Right, OutputId("out-a".to_owned()));
+                }
+            }
+        }
+        let mut engine = WorldEngine::new("gen-1").expect("valid");
+        accepted_reply(&mut engine, &seed);
+        let mut migrate = topo_two_output(
+            2,
+            2,
+            WorkspaceMode::PerOutputLocal,
+            Some(rect_a),
+            Some(rect_b),
+            true,
+            true,
+        );
+        if label == "contradictory" {
+            for domain in &mut migrate.domains {
+                if domain.domain.id.0 == "out-a" {
+                    domain
+                        .domain
+                        .adjacent
+                        .insert(Direction::Left, OutputId("out-b".to_owned()));
+                } else {
+                    domain
+                        .domain
+                        .adjacent
+                        .insert(Direction::Right, OutputId("out-a".to_owned()));
+                }
+            }
+        }
+        with_command(&mut migrate, 2, 11, migrate_a_to_b());
+        let reply = accepted_reply(&mut engine, &migrate);
+        assert!(
+            reply
+                .transfers
+                .iter()
+                .any(|t| matches!(t.kind, TransferKind::Migration)
+                    && t.target_output.0 == "out-b"
+                    && t.target_workspace == "wa1"),
+            "{label}: migration retained despite carried adjacency"
+        );
+        let Some(CommandResult::Migration { direction, .. }) = reply.command_result else {
+            panic!(
+                "{label}: expected migration result, got {:?}",
+                reply.command_result
+            );
+        };
+        assert_eq!(
+            direction,
+            Direction::Right,
+            "{label}: geometry-derived direction"
+        );
+        assert_eq!(homing(&reply, "win-a"), Some("out-b/wa1".to_owned()));
+    }
+}
+
+#[test]
+fn core_topology_directional_focus_ignores_carried_adjacency() {
+    use crate::boundary::CoreCommand;
+    let mut engine = WorldEngine::new("gen-1").expect("valid");
+    accepted_reply(
+        &mut engine,
+        &topo_two_output(
+            1,
+            1,
+            WorkspaceMode::PerOutputLocal,
+            Some(rect(0, 0, 800, 600)),
+            Some(rect(800, 0, 800, 600)),
+            true,
+            true,
+        ),
+    );
+    // No carried adjacency anywhere: the pair still resolves from FULL
+    // rects and the focus lands on the cross-output target.
+    let mut focus = topo_two_output(
+        2,
+        2,
+        WorkspaceMode::PerOutputLocal,
+        Some(rect(0, 0, 800, 600)),
+        Some(rect(800, 0, 800, 600)),
+        true,
+        true,
+    );
+    with_command(
+        &mut focus,
+        2,
+        12,
+        WorldCommand::Operation(CoreCommand::Focus {
+            window: "win-a".to_owned(),
+            direction: "right".to_owned(),
+            cross_output_transfer: true,
+            float_subject: false,
+        }),
+    );
+    match engine.handle_report(&focus) {
+        WorldOutcome::Accepted(reply) => {
+            assert_eq!(reply.effects.len(), 1);
+            assert_eq!(reply.effects[0].target.0, "win-b");
+        }
+        other => panic!("expected cross-output focus effect, got {other:?}"),
+    }
+}
+
+#[test]
+fn core_topology_partial_and_invalid_fence_narrowly() {
+    let rect_a = rect(0, 0, 800, 600);
+    let rect_b = rect(800, 0, 800, 600);
+    let mut engine = WorldEngine::new("gen-1").expect("valid");
+    accepted_reply(
+        &mut engine,
+        &topo_two_output(
+            1,
+            1,
+            WorkspaceMode::PerOutputLocal,
+            Some(rect_a),
+            Some(rect_b),
+            true,
+            true,
+        ),
+    );
+    // Missing FULL rect fences migration without touching unrelated ops:
+    // an explicit focus on the same partial report still emits.
+    let mut partial = topo_two_output(
+        2,
+        2,
+        WorkspaceMode::PerOutputLocal,
+        Some(rect_a),
+        None,
+        true,
+        true,
+    );
+    with_command(&mut partial, 2, 21, migrate_a_to_b());
+    expect_migration_refused(&mut engine, &partial);
+    let mut focus = topo_two_output(
+        3,
+        3,
+        WorkspaceMode::PerOutputLocal,
+        Some(rect_a),
+        None,
+        true,
+        true,
+    );
+    with_command(&mut focus, 3, 22, focus_command("win-a"));
+    let reply = accepted_reply(&mut engine, &focus);
+    assert_eq!(reply.effects.len(), 1, "named focus needs no topology");
+    // Invalid rect (zero width) fences exactly like a missing one.
+    let mut invalid = topo_two_output(
+        4,
+        4,
+        WorkspaceMode::PerOutputLocal,
+        Some(rect_a),
+        Some(rect(800, 0, 0, 600)),
+        true,
+        true,
+    );
+    with_command(&mut invalid, 4, 23, migrate_a_to_b());
+    expect_migration_refused(&mut engine, &invalid);
+    // Incomplete topology entry fences even with both rects present.
+    let mut incomplete = topo_two_output(
+        5,
+        5,
+        WorkspaceMode::PerOutputLocal,
+        Some(rect_a),
+        Some(rect_b),
+        false,
+        true,
+    );
+    with_command(&mut incomplete, 5, 24, migrate_a_to_b());
+    expect_migration_refused(&mut engine, &incomplete);
+    // Duplicate output ids fence: never derive from the readable subset.
+    let mut duplicate = topo_two_output(
+        6,
+        6,
+        WorkspaceMode::PerOutputLocal,
+        Some(rect_a),
+        Some(rect_b),
+        true,
+        true,
+    );
+    duplicate.topology[1].output = OutputId("out-a".to_owned());
+    with_command(&mut duplicate, 6, 25, migrate_a_to_b());
+    expect_migration_refused(&mut engine, &duplicate);
+    // The next complete report recovers immediately.
+    let mut recovered = topo_two_output(
+        7,
+        7,
+        WorkspaceMode::PerOutputLocal,
+        Some(rect_a),
+        Some(rect_b),
+        true,
+        true,
+    );
+    with_command(&mut recovered, 7, 26, migrate_a_to_b());
+    let reply = accepted_reply(&mut engine, &recovered);
+    assert!(
+        reply
+            .transfers
+            .iter()
+            .any(|t| matches!(t.kind, TransferKind::Migration)),
+        "complete report recovers"
+    );
+}
+
+#[test]
+fn core_topology_incomplete_inventory_fences_and_recovers() {
+    let mut engine = WorldEngine::new("gen-1").expect("valid");
+    accepted_reply(
+        &mut engine,
+        &topo_two_output(
+            1,
+            1,
+            WorkspaceMode::PerOutputLocal,
+            Some(rect(0, 0, 800, 600)),
+            Some(rect(800, 0, 800, 600)),
+            true,
+            true,
+        ),
+    );
+    // Complete entries but a partial inventory: no stale-edge actuation.
+    let mut partial = topo_two_output(
+        2,
+        2,
+        WorkspaceMode::PerOutputLocal,
+        Some(rect(0, 0, 800, 600)),
+        Some(rect(800, 0, 800, 600)),
+        true,
+        false,
+    );
+    with_command(&mut partial, 2, 31, migrate_a_to_b());
+    expect_migration_refused(&mut engine, &partial);
+    let mut recovered = topo_two_output(
+        3,
+        3,
+        WorkspaceMode::PerOutputLocal,
+        Some(rect(0, 0, 800, 600)),
+        Some(rect(800, 0, 800, 600)),
+        true,
+        true,
+    );
+    with_command(&mut recovered, 3, 32, migrate_a_to_b());
+    accepted_reply(&mut engine, &recovered);
+}
+
+#[test]
+fn core_topology_ambiguous_and_non_touching_edges_refuse() {
+    fn three_output_report(request_seq: u64, rects: [Rect; 3]) -> WorldReport {
+        let mut report = topo_two_output(
+            request_seq,
+            request_seq,
+            WorkspaceMode::PerOutputLocal,
+            Some(rects[0]),
+            Some(rects[1]),
+            true,
+            true,
+        );
+        report.topology.push(OutputTopology {
+            output: OutputId("out-c".to_owned()),
+            native_order: vec!["wc1".to_owned()],
+            current_native: "wc1".to_owned(),
+            complete: true,
+            geometry: Some(rects[2]),
+            primary: false,
+        });
+        report.bindings.push(WorkspaceBinding {
+            logical_id: "lc".to_owned(),
+            native_id: "wc1".to_owned(),
+            output: OutputId("out-c".to_owned()),
+            pinned: false,
+            displaced: false,
+            managed: true,
+        });
+        report.domains.push(domain_report(
+            "out-c",
+            "wc1",
+            "win-c",
+            vec![win("win-c", "out-c", "wc1", 0)],
+        ));
+        report
+    }
+    // Split edge: out-a spans both outputs above, so its upward direction
+    // is multi-touch and migration must refuse rather than pick a side.
+    let mut engine = WorldEngine::new("gen-1").expect("valid");
+    accepted_reply(
+        &mut engine,
+        &three_output_report(
+            1,
+            [
+                rect(0, 600, 1600, 600),
+                rect(0, 0, 800, 600),
+                rect(800, 0, 800, 600),
+            ],
+        ),
+    );
+    let mut split = three_output_report(
+        2,
+        [
+            rect(0, 600, 1600, 600),
+            rect(0, 0, 800, 600),
+            rect(800, 0, 800, 600),
+        ],
+    );
+    with_command(&mut split, 2, 41, migrate_a_to_b());
+    expect_migration_refused(&mut engine, &split);
+    // Gap: out-b sits 100px off the edge, so nothing touches.
+    let mut engine = WorldEngine::new("gen-1").expect("valid");
+    accepted_reply(
+        &mut engine,
+        &three_output_report(
+            1,
+            [
+                rect(0, 0, 800, 600),
+                rect(900, 0, 800, 600),
+                rect(1800, 0, 800, 600),
+            ],
+        ),
+    );
+    let mut gap = three_output_report(
+        2,
+        [
+            rect(0, 0, 800, 600),
+            rect(900, 0, 800, 600),
+            rect(1800, 0, 800, 600),
+        ],
+    );
+    with_command(&mut gap, 2, 42, migrate_a_to_b());
+    expect_migration_refused(&mut engine, &gap);
+    // Corner-only contact overlaps zero: no candidate either way.
+    let mut engine = WorldEngine::new("gen-1").expect("valid");
+    accepted_reply(
+        &mut engine,
+        &three_output_report(
+            1,
+            [
+                rect(0, 0, 800, 600),
+                rect(800, 600, 800, 600),
+                rect(1600, 600, 800, 600),
+            ],
+        ),
+    );
+    let mut corner = three_output_report(
+        2,
+        [
+            rect(0, 0, 800, 600),
+            rect(800, 600, 800, 600),
+            rect(1600, 600, 800, 600),
+        ],
+    );
+    with_command(&mut corner, 2, 43, migrate_a_to_b());
+    expect_migration_refused(&mut engine, &corner);
+}
+
+#[test]
+fn core_topology_same_report_geometry_update_applies() {
+    let mut engine = WorldEngine::new("gen-1").expect("valid");
+    // Seed with a gap: migration refuses on the retained map.
+    accepted_reply(
+        &mut engine,
+        &topo_two_output(
+            1,
+            1,
+            WorkspaceMode::PerOutputLocal,
+            Some(rect(0, 0, 800, 600)),
+            Some(rect(2000, 0, 800, 600)),
+            true,
+            true,
+        ),
+    );
+    let mut gapped = topo_two_output(
+        2,
+        2,
+        WorkspaceMode::PerOutputLocal,
+        Some(rect(0, 0, 800, 600)),
+        Some(rect(2000, 0, 800, 600)),
+        true,
+        true,
+    );
+    with_command(&mut gapped, 2, 51, migrate_a_to_b());
+    expect_migration_refused(&mut engine, &gapped);
+    // The rearranged report carries its own command: the retained map is
+    // already the moved geometry when the command plans.
+    let mut moved = topo_two_output(
+        3,
+        3,
+        WorkspaceMode::PerOutputLocal,
+        Some(rect(0, 0, 800, 600)),
+        Some(rect(800, 0, 800, 600)),
+        true,
+        true,
+    );
+    with_command(&mut moved, 3, 52, migrate_a_to_b());
+    let reply = accepted_reply(&mut engine, &moved);
+    assert!(
+        reply
+            .transfers
+            .iter()
+            .any(|t| matches!(t.kind, TransferKind::Migration)),
+        "same-report geometry update plans the migration"
+    );
+}
+
+#[test]
+fn core_topology_shared_mode_resolves_then_scope_refuses() {
+    let mut engine = WorldEngine::new("gen-1").expect("valid");
+    accepted_reply(
+        &mut engine,
+        &topo_two_output(
+            1,
+            1,
+            WorkspaceMode::Shared,
+            Some(rect(0, 0, 800, 600)),
+            Some(rect(800, 0, 800, 600)),
+            true,
+            true,
+        ),
+    );
+    // Complete FULL topology in shared mode resolves the target, so the
+    // directional migration reaches the scope policy (which refuses shared
+    // migration): the kind proves topology resolved.
+    let mut migrate = topo_two_output(
+        2,
+        2,
+        WorkspaceMode::Shared,
+        Some(rect(0, 0, 800, 600)),
+        Some(rect(800, 0, 800, 600)),
+        true,
+        true,
+    );
+    with_command(
+        &mut migrate,
+        2,
+        61,
+        WorldCommand::Operation(crate::boundary::CoreCommand::MigrateWorkspace {
+            direction: "right".to_owned(),
+        }),
+    );
+    match engine.handle_report(&migrate) {
+        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "migration-refused"),
+        other => panic!("expected scope-policy refusal, got {other:?}"),
+    }
+    // Without FULL geometry the same route fences at the topology, never
+    // reaching the scope policy.
+    let mut fenced = topo_two_output(
+        3,
+        3,
+        WorkspaceMode::Shared,
+        Some(rect(0, 0, 800, 600)),
+        None,
+        true,
+        true,
+    );
+    with_command(
+        &mut fenced,
+        3,
+        62,
+        WorldCommand::Operation(crate::boundary::CoreCommand::MigrateWorkspace {
+            direction: "right".to_owned(),
+        }),
+    );
+    match engine.handle_report(&fenced) {
+        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "operation-refused"),
+        other => panic!("expected topology fence, got {other:?}"),
+    }
+}
+
+#[test]
+fn core_topology_named_send_needs_no_geometry() {
+    // Explicit named sends keep their command eligibility: missing FULL
+    // topology never blocks them.
+    let mut engine = WorldEngine::new("gen-1").expect("valid");
+    accepted_reply(&mut engine, &base_report(1, 1));
+    let mut send = base_report(2, 2);
+    with_command(
+        &mut send,
+        2,
+        71,
+        WorldCommand::Send {
+            window: WindowId("win-a".to_owned()),
+            target_output: OutputId("out".to_owned()),
+            target_workspace: "ws2".to_owned(),
+            follow: true,
+        },
+    );
+    let reply = accepted_reply(&mut engine, &send);
+    assert_eq!(homing(&reply, "win-a"), Some("out/ws2".to_owned()));
+    assert_eq!(reply.transfers.len(), 1);
+}
+
+#[test]
+fn core_topology_hotplug_disconnect_fences_return_recovers() {
+    let rect_a = rect(0, 0, 800, 600);
+    let rect_b = rect(800, 0, 800, 600);
+    let mut engine = WorldEngine::new("gen-1").expect("valid");
+    accepted_reply(
+        &mut engine,
+        &topo_two_output(
+            1,
+            1,
+            WorkspaceMode::PerOutputLocal,
+            Some(rect_a),
+            Some(rect_b),
+            true,
+            true,
+        ),
+    );
+    // Disconnect: out-b leaves the topology, so the target is unresolvable
+    // from the retained map (never the disconnect-time facts).
+    let mut gone = topo_two_output(
+        2,
+        2,
+        WorkspaceMode::PerOutputLocal,
+        Some(rect_a),
+        Some(rect_b),
+        true,
+        true,
+    );
+    gone.topology.remove(1);
+    gone.bindings.remove(1);
+    gone.domains.remove(1);
+    with_command(&mut gone, 2, 81, migrate_a_to_b());
+    expect_migration_refused(&mut engine, &gone);
+    // Return: the complete report restores the map and migration succeeds.
+    let mut back = topo_two_output(
+        3,
+        3,
+        WorkspaceMode::PerOutputLocal,
+        Some(rect_a),
+        Some(rect_b),
+        true,
+        true,
+    );
+    with_command(&mut back, 3, 82, migrate_a_to_b());
+    let reply = accepted_reply(&mut engine, &back);
+    assert!(
+        reply
+            .transfers
+            .iter()
+            .any(|t| matches!(t.kind, TransferKind::Migration)),
+        "returned output migrates again"
+    );
+}
+
+#[test]
+fn core_topology_ordering_fences_survive_replay_and_reset() {
+    let rect_a = rect(0, 0, 800, 600);
+    let rect_b = rect(800, 0, 800, 600);
+    let complete = || {
+        topo_two_output(
+            1,
+            1,
+            WorkspaceMode::PerOutputLocal,
+            Some(rect_a),
+            Some(rect_b),
+            true,
+            true,
+        )
+    };
+    let mut engine = WorldEngine::new("gen-1").expect("valid");
+    let first = accepted_reply(&mut engine, &complete());
+    // Identical duplicate returns the cached reply with no new revision.
+    match engine.handle_report(&complete()) {
+        WorldOutcome::Duplicate(cached) => assert_eq!(cached, first),
+        other => panic!("expected duplicate, got {other:?}"),
+    }
+    assert_eq!(engine.state_revision(), 1);
+    // Reused sequence with different input rejects without touching the
+    // retained topology: the next fresh migration still succeeds.
+    let mut changed = complete();
+    changed.focused_global = "win-a".to_owned();
+    match engine.handle_report(&changed) {
+        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "request-reused"),
+        other => panic!("expected reused rejection, got {other:?}"),
+    }
+    let mut migrate = complete();
+    migrate.request_seq = 2;
+    migrate.request_id = "req-2".to_owned();
+    migrate.observation_seq = 2;
+    with_command(&mut migrate, 2, 91, migrate_a_to_b());
+    accepted_reply(&mut engine, &migrate);
+    // A new adapter incarnation resets retained topology: its partial
+    // report fences until a complete report re-retains.
+    let mut partial = complete();
+    partial.adapter_incarnation = "adapter-2".to_owned();
+    partial.request_seq = 1;
+    partial.request_id = "req-1".to_owned();
+    partial.observation_seq = 3;
+    partial.topology[1].geometry = None;
+    with_command(&mut partial, 1, 92, migrate_a_to_b());
+    expect_migration_refused(&mut engine, &partial);
+    let mut re_complete = complete();
+    re_complete.adapter_incarnation = "adapter-2".to_owned();
+    re_complete.request_seq = 2;
+    re_complete.request_id = "req-2".to_owned();
+    re_complete.observation_seq = 4;
+    with_command(&mut re_complete, 2, 93, migrate_a_to_b());
+    let reply = accepted_reply(&mut engine, &re_complete);
+    assert!(
+        reply
+            .transfers
+            .iter()
+            .any(|t| matches!(t.kind, TransferKind::Migration)),
+        "complete report under the new incarnation re-retains"
+    );
 }
