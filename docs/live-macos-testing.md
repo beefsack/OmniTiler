@@ -189,6 +189,31 @@ experiment.
 
 ## Live Evidence
 
+### Scoped screenshots
+
+- When screen capture is available, use `screencapture -x -R X,Y,W,H -t png
+  CAPTURE.png` for a tightly bounded owned-window or indicator region, or
+  `screencapture -x -l WINDOW_ID -t png CAPTURE.png` for an owned window. A
+  window-only capture may omit a separate border overlay; use a region covering
+  the target and border for that check. Never capture the controlling terminal's
+  contents or the whole desktop unnecessarily.
+- Immediately before each capture, revalidate the owned target's process/window
+  identity, liveness and current frame. A cached rectangle is not capture scope:
+  after the target exits, that region may expose unrelated terminal content.
+- Store captures in an approved temporary directory, inspect a few images per
+  leg, and verify real application UI is visible rather than wallpaper or blank
+  pixels. Use `sips` to inspect dimensions or downscale large captures if needed.
+  Keep indicator crops tight: nearby menu extras can contain unrelated content.
+- Pair each image with native focus, target/overlay frames and indicator state;
+  pixels alone do not prove identity or effects. Delete capture files after
+  inspection, never commit them, and retain the title-free native readbacks.
+  If capture fails, shows a consent picker or produces blank content, stop that
+  visual leg and record a user-assisted check instead. Do not trigger or work
+  around permission changes. A retry is appropriate only after a separately
+  confirmed capture-permission change, not as a repeated blind attempt.
+
+### Native readbacks and acceptance
+
 - Record the date, supported release family when relevant, physical versus VM
   test conditions (without the development host's OS version),
   source and artifact identity (including bundle ID and signing
