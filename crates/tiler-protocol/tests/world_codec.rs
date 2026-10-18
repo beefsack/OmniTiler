@@ -211,6 +211,55 @@ fn minimized_predicate_and_new_commands_decode() {
 }
 
 #[test]
+#[allow(clippy::type_complexity)]
+fn directional_intents_decode_typed_and_refuse_bad_vocab() {
+    use tiler_core::directional::SameAxisMove;
+    use tiler_core::world_report::WorldCommand;
+    // Direction-only intents carry no endpoint: win+direction or
+    // source+direction only. The core resolves the strict target.
+    let cases: Vec<(serde_json::Value, Box<dyn Fn(&WorldCommand)>)> = vec![
+        (
+            serde_json::json!({"op": "focus-directional", "win": "win-a", "direction": "right", "floatSubject": true}),
+            Box::new(|cmd| assert!(matches!(cmd, WorldCommand::FocusDirectional { float_subject: true, .. }))),
+        ),
+        (
+            serde_json::json!({"op": "move-directional", "win": "win-a", "direction": "left", "sameAxis": "swap-with-neighbor"}),
+            Box::new(|cmd| assert!(matches!(cmd, WorldCommand::MoveDirectional { same_axis: SameAxisMove::SwapWithNeighbor, .. }))),
+        ),
+        (
+            serde_json::json!({"op": "send-directional", "win": "win-a", "direction": "down", "follow": false}),
+            Box::new(|cmd| assert!(matches!(cmd, WorldCommand::SendDirectional { follow: false, .. }))),
+        ),
+        (
+            serde_json::json!({"op": "migrate-directional", "from": "out", "ws": "ws", "direction": "up"}),
+            Box::new(|cmd| assert!(matches!(cmd, WorldCommand::MigrateDirectional { .. }))),
+        ),
+    ];
+    for (command, check) in cases {
+        let mut value: serde_json::Value =
+            serde_json::from_str(&one_window_request()).expect("valid");
+        value["cmdSeq"] = serde_json::Value::String("77".to_owned());
+        value["command"] = command;
+        let report = decode_request(&value.to_string()).expect("directional decodes");
+        check(report.command.as_ref().expect("command present"));
+    }
+    // Bad direction, bad sameAxis, and missing keys refuse.
+    for bad in [
+        serde_json::json!({"op": "focus-directional", "win": "win-a", "direction": "sideways", "floatSubject": false}),
+        serde_json::json!({"op": "move-directional", "win": "win-a", "direction": "left", "sameAxis": "sideways"}),
+        serde_json::json!({"op": "send-directional", "win": "win-a", "direction": "left"}),
+        serde_json::json!({"op": "migrate-directional", "from": "out", "ws": "ws"}),
+        serde_json::json!({"op": "focus-directional", "win": "win-a", "direction": "left", "floatSubject": "yes"}),
+    ] {
+        let mut value: serde_json::Value =
+            serde_json::from_str(&one_window_request()).expect("valid");
+        value["cmdSeq"] = serde_json::Value::String("78".to_owned());
+        value["command"] = bad;
+        assert!(decode_request(&value.to_string()).is_err(), "bad directional refuses");
+    }
+}
+
+#[test]
 fn request_estimate_bounds_actual_wire_bytes() {
     // The structural request estimator gates before any convergence: it
     // must bound the actual wire bytes for every shape, not just deltas.
@@ -269,6 +318,10 @@ fn request_estimate_bounds_every_command_shape() {
         serde_json::json!({"op": "send-numbered", "win": long, "out": "out", "index": 9, "follow": true}),
         serde_json::json!({"op": "set-workspace-tiling", "out": "out", "ws": "ws", "tiled": true}),
         serde_json::json!({"op": "migrate-workspace", "from": "out", "to": "out-2", "ws": "ws"}),
+        serde_json::json!({"op": "focus-directional", "win": long, "direction": "right", "floatSubject": true}),
+        serde_json::json!({"op": "move-directional", "win": long, "direction": "left", "sameAxis": "swap-with-neighbor"}),
+        serde_json::json!({"op": "send-directional", "win": long, "direction": "down", "follow": false}),
+        serde_json::json!({"op": "migrate-directional", "from": "out", "ws": "ws", "direction": "up"}),
         serde_json::json!({"op": "operation", "command": {"op": "reconcile"}}),
         serde_json::json!({"op": "operation", "command": {"op": "update-gaps"}}),
         serde_json::json!({"op": "operation", "command": {"op": "active-group"}}),

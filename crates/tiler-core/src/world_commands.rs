@@ -323,6 +323,18 @@ impl WorldEngine {
         target_output: &OutputId,
         workspace: &str,
     ) -> CommandApplied {
+        // Whole-workspace moves need a provably complete window inventory
+        // to prove the target empty and the source fully observed; partial
+        // inventory fences even when the monitor topology itself is
+        // complete and retained. This preserves the established report
+        // contract while live-topology retention stays independent of
+        // unrelated window-read gaps.
+        if !report.inventory_complete {
+            return CommandApplied::Rejected {
+                kind: KIND_MIGRATION,
+                message: MSG_MIGRATION,
+            };
+        }
         let live: BTreeSet<String> = live_native_order(report).into_iter().collect();
         let target_current = report
             .topology
@@ -813,6 +825,7 @@ impl WorldEngine {
     /// the strict unique-reciprocal pair when resolvable, otherwise local
     /// single-domain focus. Up/down never cross (KDE policy). No adapter
     /// target or `crossOutput` is read; the core decides.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn focus_directional(
         &mut self,
         report: &WorldReport,
@@ -893,6 +906,7 @@ impl WorldEngine {
     /// Direction-only move (core-owned topology): cross in all four
     /// directions through the strict pair when resolvable, otherwise local
     /// R1-R3. No adapter target or `crossOutput` is read; the core decides.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn move_directional(
         &mut self,
         report: &WorldReport,
@@ -964,6 +978,7 @@ impl WorldEngine {
     /// target output plus its current native view, then run the
     /// cross-output send path. No adapter endpoint is read. No resolvable
     /// target or unreadable target view refuses without mutation.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn send_directional(
         &mut self,
         report: &WorldReport,
