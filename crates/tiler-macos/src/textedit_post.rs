@@ -947,7 +947,7 @@ mod tests {
     }
 
     #[test]
-    fn escape_chord_posts_fixed_keycode53_flags0_untagged() {
+    fn escape_chord_resolves_fixed_keycode53_flags0_without_posting() {
         // Fixed Escape shape: keycode 53, flags 0 under every modifier role
         // (no Ctrl/Shift/Alt can ride along), so the popover dismiss posts
         // untagged exactly like any catalogue chord and the gateless bypass
@@ -1611,27 +1611,28 @@ mod tests {
     #[test]
     fn grab_inspect_report_schema_is_metadata_only() {
         // The JSON schema carries IDs, frame, and per-point hit metadata
-        // only: no titles, content, or paths.
+        // only: no titles, content, or paths. All IDs and geometry below
+        // are synthetic fixture values, never a live record.
         let report = TextEditGrabInspectReport {
             outcome: "textedit-grab-inspect-complete".to_owned(),
-            pid: 27619,
-            wid: 4393,
+            pid: 4242,
+            wid: 7,
             frame: crate::ffi::AxFrame {
-                x: 1124.0,
-                y: 603.0,
-                w: 550.0,
-                h: 558.0,
+                x: 100.0,
+                y: 100.0,
+                w: 400.0,
+                h: 300.0,
             },
             points: vec![GrabPointInspect {
-                x: 1234.0,
-                y: 611.0,
+                x: 200.0,
+                y: 108.0,
                 ax_role: Some("AXButton".to_owned()),
                 ax_role_status: "kAXErrorSuccess".to_owned(),
                 ax_subrole: None,
                 ax_subrole_status: "kAXErrorSuccess".to_owned(),
-                ax_owner: Some((27619, 4393)),
+                ax_owner: Some((4242, 7)),
                 ax_owner_error: None,
-                ws_wid: Some(4393),
+                ws_wid: Some(7),
                 ws_error: None,
             }],
             synthetic: false,
@@ -1639,15 +1640,12 @@ mod tests {
         };
         let value = serde_json::to_value(&report).expect("report serializes");
         assert_eq!(value["outcome"], "textedit-grab-inspect-complete");
-        assert_eq!(value["pid"], 27619);
-        assert_eq!(value["wid"], 4393);
-        assert_eq!(value["frame"]["w"], 550.0);
+        assert_eq!(value["pid"], 4242);
+        assert_eq!(value["wid"], 7);
+        assert_eq!(value["frame"]["w"], 400.0);
         assert_eq!(value["points"][0]["ax_role"], "AXButton");
-        assert_eq!(
-            value["points"][0]["ax_owner"],
-            serde_json::json!([27619, 4393])
-        );
-        assert_eq!(value["points"][0]["ws_wid"], 4393);
+        assert_eq!(value["points"][0]["ax_owner"], serde_json::json!([4242, 7]));
+        assert_eq!(value["points"][0]["ws_wid"], 7);
         assert_eq!(value["synthetic"], false);
         assert_eq!(value["mutates"], false);
         let flat = serde_json::to_string(&value).expect("report flattens");
