@@ -16,22 +16,22 @@ use std::sync::{
 };
 use std::time::Duration;
 
-use tiler_core::{
-    boundary::{CoreCommand, CoreReply},
-    directional::{SameAxisMove, WindowId},
-    engine::Engine,
-    geometry::Rect,
-    window_policy::geometry_write_allowed,
-};
+use tiler_core::directional::WindowId;
 
 use crate::runtime::{
-    AxCompletion, DesiredFrame, FocusCommand, FocusRequest, FrameCommand, InputSemanticAction,
-    NativeContext, ObservedWindow, Shared, emit, lock_focus, lock_shared, parse_window_id,
-    window_id,
+    AxCompletion, FocusCommand, FocusRequest, FrameCommand, InputSemanticAction, ObservedWindow,
+    Shared, emit, lock_shared, window_id,
 };
 use crate::runtime_lifecycle::EngineExit;
 use crate::runtime_log::sanitize_backend_reason;
 use crate::runtime_types::ScopedBackendSnapshot;
+use crate::world_command_map::{
+    OP_RECONCILE, OP_SELECT, OP_TERMINATE, operation_command, select_command, select_output,
+};
+use crate::world_dispatch::{DispatchVerdict, dispatch_report};
+use crate::world_runtime::{
+    DispatchContext, WorldSession, forget_world_members, preview_world, stage_write_feedback,
+};
 
 // -- Wake-driven inbox ---------------------------------------------------------
 
@@ -126,12 +126,49 @@ pub(crate) enum EngineJob {
         cmd_id: u64,
         completion: AxCompletion,
     },
+    /// Per-operation actuation feedback from proven setter/drain
+    /// outcomes (never false success): staged into the next world report
+    /// so the core settles retained transfers, views, and placements.
+    /// Data lane (drops counted when full, never blocks); a dropped row
+    /// merely delays settlement — retained core targets never re-actuate
+    /// without fresh proof.
+    AttemptFeedback {
+        operation_id: String,
+        kind: tiler_core::world_report::AttemptKind,
+        outcome: tiler_core::world_report::AttemptOutcome,
+        hold: Option<tiler_core::world_report::HoldReason>,
+    },
     /// Rendezvous for deterministic tests: processed in FIFO order, so a
     /// completed barrier proves every earlier job was processed.
     Barrier(mpsc::Sender<()>),
     /// Offline fault injection only: makes the engine thread panic to prove
     /// panic handling. Never sent by production paths.
     TestPanic,
+}
+
+/// Coherence-relevant pending input: a queued job whose truth the next
+/// report may not incorporate. Only observations (legacy/scoped) and
+/// terminates qualify — commands and feedback change planned state, not
+/// observed truth, and launches register empty apps that change no plan.
+/// Cloned out of the inbox under one lock for the emission gate to
+/// classify (see `emission_coherent` in [`crate::world_runtime`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CoherencePending {
+    Observation {
+        pid: u32,
+        generation: u64,
+        seq: u64,
+    },
+    ScopedObservation {
+        pid: u32,
+        generation: u64,
+        seq: u64,
+        revision: u64,
+    },
+    Terminate {
+        pid: u32,
+        generation: u64,
+    },
 }
 
 impl EngineJob {
@@ -144,6 +181,7 @@ impl EngineJob {
                 | Self::ScopedObservation { .. }
                 | Self::InputAction { .. }
                 | Self::IndicatorSelect { .. }
+                | Self::AttemptFeedback { .. }
                 | Self::AxResult { .. }
                 | Self::FocusResult { .. }
         )
@@ -242,6 +280,49 @@ impl Inbox {
     pub(crate) fn wake_all(&self) {
         self.wake.notify_all();
     }
+
+    /// Snapshot the queued coherence-relevant inputs (observations and
+    /// terminates) as small descriptors under one lock. The engine-thread
+    /// emission gate classifies each as will-incorporate (blocks actuation)
+    /// or will-drop (ignored): stale queued truth must never suppress an
+    /// honest snapshot, and a drop never dispatches a successor — so
+    /// blocking on it would stall convergence with no recovery. Reads only;
+    /// the queue is untouched.
+    pub(crate) fn coherence_pending(&self) -> Vec<CoherencePending> {
+        let state = self.state.lock().expect("inbox mutex");
+        state
+            .queue
+            .iter()
+            .filter_map(|job| match job {
+                EngineJob::Observation {
+                    pid,
+                    generation,
+                    seq,
+                    ..
+                } => Some(CoherencePending::Observation {
+                    pid: *pid,
+                    generation: *generation,
+                    seq: *seq,
+                }),
+                EngineJob::ScopedObservation {
+                    pid,
+                    generation,
+                    seq,
+                    snapshot,
+                } => Some(CoherencePending::ScopedObservation {
+                    pid: *pid,
+                    generation: *generation,
+                    seq: *seq,
+                    revision: snapshot.revision,
+                }),
+                EngineJob::Terminate { pid, generation } => Some(CoherencePending::Terminate {
+                    pid: *pid,
+                    generation: *generation,
+                }),
+                _ => None,
+            })
+            .collect()
+    }
 }
 
 /// Latest-wins frame slot for one app worker. `set_latest` overwrites the
@@ -282,7 +363,7 @@ impl FrameSlot {
     /// Overwrite the pending desired set. Returns `None` when stopped
     /// (caller counts the invalidation), else the overwritten command
     /// count for coalescing diagnostics.
-    fn set_latest(&self, cmds: Vec<FrameCommand>) -> Option<usize> {
+    pub(crate) fn set_latest(&self, cmds: Vec<FrameCommand>) -> Option<usize> {
         let mut state = self.state.lock().expect("frame slot mutex");
         if state.stopped {
             return None;
@@ -385,7 +466,7 @@ impl FocusSlot {
 
     /// Overwrite the pending focus command. Returns `None` when stopped
     /// (caller counts the invalidation).
-    fn set_latest(&self, cmd: FocusCommand) -> Option<()> {
+    pub(crate) fn set_latest(&self, cmd: FocusCommand) -> Option<()> {
         let mut state = self.state.lock().expect("focus slot mutex");
         if state.stopped {
             return None;
@@ -410,37 +491,28 @@ impl FocusSlot {
     }
 }
 
-pub(crate) use crate::runtime_core::{
-    RetainedApp, RetainedCore, build_event, build_native_event, clear_focus_into,
-    domain_member_apps, forget_app_members, native_domain_views, resize_repeat_next, skeleton_key,
-};
-use crate::runtime_native::{
-    handle_scoped_observation, plan_native_observation, reply_base_revision,
-};
+use crate::runtime_core::{RetainedApp, RetainedCore};
+use crate::runtime_native::handle_scoped_observation;
 
-// -- Engine event wire ---------------------------------------------------------
+// -- Engine event wire (world route) -------------------------------------------
 
-/// Build one core event with wire normalization over core-session lifetime:
-/// the session query and the fixed predicate travel with the retained state
-/// so [`build_event`] can hold born arrivals and assert first-sight fixed
-/// origins without adapter lifetime maps.
-fn wire_event(
-    engine: &Engine,
-    retained: &mut RetainedCore,
-    focused_override: Option<WindowId>,
-    closed: Vec<WindowId>,
-    command: CoreCommand,
-) -> tiler_core::boundary::CoreEvent {
-    let session = engine.session(&skeleton_key());
-    let predicate = engine.fixed_size_predicate();
-    build_event(
-        retained,
-        focused_override,
-        closed,
-        command,
-        session,
-        predicate,
-    )
+/// Store one admitted select claim under its world operation identity.
+/// The claim reaches the main-thread drain with the stable `op-<seq>` id
+/// so the drain reports its proven native outcome back under the same id.
+/// `None` (duplicate path) stores the claim unbound: the earlier dispatch
+/// already retains the transfer.
+fn store_select_claim(
+    shared: &Arc<Mutex<Shared>>,
+    claim: crate::runtime_types::ClaimedSelect,
+    operation_id: Option<&str>,
+) {
+    let mut stored = claim;
+    stored.operation_id = operation_id.map(str::to_owned);
+    let mut guard = lock_shared(shared);
+    guard.select_pending = Some(stored);
+    guard.diagnostics.input_select_enqueued += 1;
+    drop(guard);
+    emit(shared, 0, 0, 0, "input", "select-enqueued", 0);
 }
 
 /// Pure engine admission verdict for one armed select claim (offline
@@ -473,110 +545,42 @@ pub(crate) fn admit_select_claim(
     Ok(claim)
 }
 
-/// Store one admitted select claim (shared by tap and indicator lanes).
-fn admit_and_store(shared: &Arc<Mutex<Shared>>, claim: crate::runtime_types::ClaimedSelect) {
-    let verdict = {
-        let guard = lock_shared(shared);
-        admit_select_claim(
-            guard.native_context.is_some(),
-            guard.select_busy,
-            guard.select_pending.is_some(),
-            claim,
-        )
-    };
-    match verdict {
-        Ok(claim) => {
-            let mut guard = lock_shared(shared);
-            guard.select_pending = Some(claim);
-            guard.diagnostics.input_select_enqueued += 1;
-            drop(guard);
-            emit(shared, 0, 0, 0, "input", "select-enqueued", 0);
-        }
-        Err(token) => {
-            lock_shared(shared).diagnostics.input_select_refused += 1;
-            emit(shared, 0, 0, 0, "input", token, 0);
-        }
-    }
+/// Refuse one select claim narrowly (counted, never dispatched, never
+/// replayed). Shared by tap and indicator lanes.
+fn refuse_select_claim(shared: &Arc<Mutex<Shared>>, token: &'static str) {
+    lock_shared(shared).diagnostics.input_select_refused += 1;
+    emit(shared, 0, 0, 0, "input", token, 0);
 }
 
-/// Read-only drag preview against the current Engine (worker thread only):
-/// home the press-proven subject to its current domain and resolve one
-/// `DragPreview` over that domain's full membership. Hidden-domain
+/// Read-only drag preview against the current world session (engine thread
+/// only): home the press-proven subject to its current domain and resolve
+/// one `Operation(DragPreview)` through the world route. Hidden-domain
 /// subjects (off-current Space) and unmapped subjects cancel dead — the
 /// main thread already fenced focus/scope/revision before querying, so
 /// these legs are backstops, never the primary gate. Synthetic mode
-/// (no native context) resolves over the skeleton event. Stages nothing.
+/// (no native context) resolves over the skeleton report. Read-only:
+/// never commits, never advances the revision.
 fn resolve_drag_preview(
-    engine: &mut Engine,
-    retained: &mut RetainedCore,
+    session: &mut WorldSession,
+    retained: &RetainedCore,
     shared: &Arc<Mutex<Shared>>,
     window: &str,
     x: i32,
     y: i32,
     hover_prior: Option<tiler_core::session::DragHoverPrior>,
 ) -> crate::drag_drop::PreviewOutcome {
-    use crate::drag_drop::PreviewOutcome;
-    let command = CoreCommand::DragPreview {
-        window: window.to_owned(),
-        x,
-        y,
-        hover_prior,
-        source: None,
-    };
-    let native_ctx: Option<Arc<NativeContext>> = lock_shared(shared).native_context.clone();
-    let Some(ctx) = native_ctx else {
-        let event = wire_event(
-            engine,
-            retained,
-            retained.observed_focus.clone(),
-            Vec::new(),
-            command,
-        );
-        return crate::drag_drop::classify_preview_reply(&engine.handle(&event));
-    };
-    let Some(key) = retained.window_domains.get(window).cloned() else {
-        return PreviewOutcome::CancelDead {
-            reason: "unknown-window",
-        };
-    };
-    if !ctx.is_current(&key) {
-        return PreviewOutcome::CancelDead {
-            reason: "hidden-domain",
-        };
-    }
-    let views = native_domain_views(&ctx);
-    let Some(view) = views.iter().find(|v| v.key == key) else {
-        return PreviewOutcome::CancelDead {
-            reason: "hidden-domain",
-        };
-    };
-    let member_apps = domain_member_apps(retained, &key);
-    let revision = retained
-        .domain_revisions
-        .get(&key)
-        .copied()
-        .unwrap_or(retained.last_revision);
-    let predicate = engine.fixed_size_predicate();
-    let session = engine.session(&key);
-    let event = build_native_event(
-        retained,
-        view,
-        &member_apps,
-        retained.observed_focus.clone(),
-        Vec::new(),
-        command,
-        session,
-        predicate,
-        revision,
-    );
-    crate::drag_drop::classify_preview_reply(&engine.handle(&event))
+    let outcome = preview_world(session, retained, shared, window, x, y, hover_prior);
+    lock_shared(shared).diagnostics.input_forwarded += 1;
+    emit(shared, 0, 0, 0, "input", "drag-preview", 0);
+    outcome
 }
 
 // -- Thread bodies -------------------------------------------------------------
 
-/// Engine owner: the sole owner of the [`Engine`] and retained observation
-/// state. Never waits for AX; frame emission is a non-blocking slot
-/// overwrite and focus emission is a bounded `try_send`.
+/// Engine owner: the sole owner of the [`WorldSession`] (retained world
+/// engine plus adapter-side sequencing) and retained observation state.
+/// Never waits for AX; frame emission is a non-blocking slot overwrite
+/// and focus emission is a bounded outbox push.
 pub(crate) fn engine_main(
     shared: Arc<Mutex<Shared>>,
     inbox: Arc<Inbox>,
@@ -585,18 +589,25 @@ pub(crate) fn engine_main(
     stop: Arc<AtomicBool>,
     ready_tx: mpsc::Sender<()>,
 ) -> EngineExit {
-    let mut engine = Engine::new();
-    let mut retained = RetainedCore::default();
-    // The macOS skeleton opts into the shared fixed-size admission policy
-    // (D1-D8): hintless traffic is unaffected, while fixed-hint arrivals
-    // classify admission-side through the configured predicate. Lifetimes
-    // (born hold, first exit, restore) stay core-owned; this only selects
-    // the shared policy the normalization feeds.
-    {
+    // The world engine carries the shared fixed-size admission opt-in
+    // (D1-D8) via its constructor; the configured predicate rides every
+    // report ingress and applies to subsequent admissions only, never
+    // reclassifying retained windows. The watermark clock is the shared
+    // input mark (submitters advance it; dispatches only stamp it).
+    let (predicate, native_mode, focus_route, clock) = {
         let guard = lock_shared(&shared);
-        engine.set_fixed_size_admission(true);
-        engine.set_fixed_size_predicate(guard.config.fixed_size_predicate);
-    }
+        (
+            guard.config.fixed_size_predicate,
+            matches!(
+                guard.config.topology_mode,
+                crate::runtime_types::TopologyMode::Native
+            ),
+            guard.config.focus_route,
+            Arc::clone(&guard.clock),
+        )
+    };
+    let mut session = WorldSession::new(predicate, native_mode, focus_route, clock);
+    let mut retained = RetainedCore::default();
     let _ = ready_tx.send(());
     loop {
         let Some(job) = inbox.recv(&stop) else {
@@ -608,9 +619,10 @@ pub(crate) fn engine_main(
         }
         process_job(
             job,
-            &mut engine,
+            &mut session,
             &mut retained,
             &shared,
+            &inbox,
             &focus_queue,
             focus_capacity,
         );
@@ -721,12 +733,14 @@ fn note_completion(
 
 fn process_job(
     job: EngineJob,
-    engine: &mut Engine,
+    session: &mut WorldSession,
     retained: &mut RetainedCore,
     shared: &Arc<Mutex<Shared>>,
+    inbox: &Arc<Inbox>,
     focus_queue: &Arc<Mutex<Vec<FocusRequest>>>,
     focus_capacity: usize,
 ) {
+    use crate::workspace_input::{is_armed_select, workspace_unsupported_outcome};
     match job {
         EngineJob::Launch { pid, generation } => {
             let valid = {
@@ -745,6 +759,8 @@ fn process_job(
                     // Never reuse old-lifetime core state: a new generation
                     // starts with empty retained state, and observed focus
                     // into this PID is authoritatively lost until observed.
+                    // Homing, minimized lifetimes, and write correlation
+                    // from the dead lifetime drop with it.
                     retained.apps.insert(
                         pid,
                         RetainedApp {
@@ -755,7 +771,7 @@ fn process_job(
                             focused_wid: None,
                         },
                     );
-                    clear_focus_into(retained, pid);
+                    forget_world_members(session, retained, pid);
                 }
                 emit(shared, pid, generation, 0, "launch", "registered", 0);
             } else {
@@ -773,8 +789,6 @@ fn process_job(
                 return;
             }
             let removed = retained.apps.remove(&pid);
-            clear_focus_into(retained, pid);
-            forget_app_members(retained, pid);
             let closed: Vec<WindowId> = removed
                 .map(|app| {
                     app.windows
@@ -783,6 +797,15 @@ fn process_job(
                         .collect()
                 })
                 .unwrap_or_default();
+            // Partition member closes through live homing, plus minimized
+            // closes through their entry homing (minimized windows ride no
+            // membership, so without this their slots would leak core-side
+            // — never silent absence, never an inferred close elsewhere).
+            // Both partitions happen BEFORE forgetting either.
+            let closed_map = crate::world_runtime::terminate_close_map(retained, pid, &closed);
+            // Forget homing/minimized/correlation before dispatch so the
+            // closed windows ride as explicit closes, never members.
+            forget_world_members(session, retained, pid);
             emit(
                 shared,
                 pid,
@@ -790,41 +813,24 @@ fn process_job(
                 0,
                 "terminate",
                 "retained-removed",
-                closed.len() as u64,
-            );
-            // Reconcile the survivors so unaffected apps stay operational;
-            // the closed windows ride as explicit closes (never minimize
-            // slots for a dead app). Native mode re-plans every current
-            // domain (closed IDs ride each domain event; unknown IDs are
-            // ignored there); synthetic mode keeps the skeleton event.
-            let native_ctx: Option<Arc<NativeContext>> = lock_shared(shared).native_context.clone();
-            if let Some(ctx) = native_ctx {
-                let views = native_domain_views(&ctx);
-                plan_native_observation(
-                    engine,
-                    retained,
-                    &ctx,
-                    &views,
-                    closed,
-                    CoreCommand::Reconcile,
-                    shared,
-                    focus_queue,
-                    focus_capacity,
-                    pid,
-                    generation,
-                    0,
-                );
-                return;
-            }
-            let event = wire_event(engine, retained, None, closed, CoreCommand::Reconcile);
-            let reply = engine.handle(&event);
-            apply_reply(
-                reply,
-                "reconcile",
+                closed_map.values().map(Vec::len).sum::<usize>() as u64,
+            ); // Reconcile the survivors so unaffected apps stay operational.
+            // Native mode reports every current domain with the closed ids
+            // homed per domain (unknown ids omit there); synthetic mode
+            // keeps the skeleton report.
+            let dispatch = dispatch_context(shared, session);
+            dispatch_report(
+                session,
                 retained,
                 shared,
+                inbox,
                 focus_queue,
                 focus_capacity,
+                dispatch,
+                closed_map,
+                None,
+                false,
+                OP_TERMINATE,
                 pid,
                 generation,
                 0,
@@ -918,10 +924,15 @@ fn process_job(
                 _ => None,
             };
             let window_count = entry.windows.len() as u64;
+            let homed_windows = entry.windows.clone();
             match observed_target {
                 Some(window) => retained.observed_focus = Some(window),
-                None => clear_focus_into(retained, pid),
+                None => crate::runtime_core::clear_focus_into(retained, pid),
             }
+            // Synthetic homing: every retained window belongs to the
+            // skeleton domain (legacy observations carry no Space
+            // membership), so reports home, focus, and close exactly.
+            crate::runtime_core::note_synthetic_homing(retained, pid, &homed_windows);
             emit(
                 shared,
                 pid,
@@ -931,15 +942,21 @@ fn process_job(
                 "applied",
                 window_count,
             );
-            let event = wire_event(engine, retained, None, Vec::new(), CoreCommand::Reconcile);
-            let reply = engine.handle(&event);
-            apply_reply(
-                reply,
-                "reconcile",
+            session.clear_coverage_gap();
+            // Legacy (metadataless) observations carry no Space membership:
+            // the skeleton report, exactly as the legacy skeleton event.
+            dispatch_report(
+                session,
                 retained,
                 shared,
+                inbox,
                 focus_queue,
                 focus_capacity,
+                DispatchContext::Synthetic,
+                BTreeMap::new(),
+                None,
+                false,
+                OP_RECONCILE,
                 pid,
                 generation,
                 seq,
@@ -952,9 +969,10 @@ fn process_job(
             snapshot,
         } => {
             handle_scoped_observation(
-                engine,
+                session,
                 retained,
                 shared,
+                inbox,
                 focus_queue,
                 focus_capacity,
                 pid,
@@ -969,22 +987,26 @@ fn process_job(
             // create, no transfer, no output-send route runs from the
             // product tile (see `workspace_unsupported_reason` for the exact
             // seam). Counted and logged with a static token, never faked.
-            if let Some(outcome) = crate::workspace_input::workspace_unsupported_outcome(&action) {
+            if let Some(outcome) = workspace_unsupported_outcome(&action) {
                 lock_shared(shared).diagnostics.input_refused_unsupported += 1;
                 emit(shared, 0, 0, 0, "input", outcome, 0);
                 return;
             }
             // Armed select-only actions dispatch with no focused-window
-            // subject (empty Spaces navigate): enqueue one pending claim
-            // for the main-thread tile drain without blocking and without
-            // touching the core (no plans, no frames, no focus — non-current
-            // windows stay tracked and hidden domains never actuate here).
-            // No published native topology, or an already-claimed/pending
-            // select, refuses narrowly (concurrent presses serialize/refuse
-            // instead of overlapping); a sent press is never replayed.
-            // Tap chords ride binding-free (see [`admit_select_claim`]).
-            if crate::workspace_input::is_armed_select(&action) {
-                admit_and_store(shared, crate::runtime_types::ClaimedSelect::tap(action));
+            // subject (empty Spaces navigate): one planner-owned world
+            // command plus one pending claim for the main-thread tile
+            // drain. Tap chords ride binding-free (see
+            // [`admit_select_claim`]).
+            if is_armed_select(&action) {
+                handle_select_action(
+                    session,
+                    retained,
+                    shared,
+                    inbox,
+                    focus_queue,
+                    focus_capacity,
+                    crate::runtime_types::ClaimedSelect::tap(action),
+                );
                 return;
             }
             // The subject is observed truth, never planned focus — except
@@ -997,8 +1019,8 @@ fn process_job(
                 _ => None,
             };
             // Press topology revision for drag drops (stale pid_wid reuse
-            // never mutates; validated against the worker's current
-            // revision plus live membership in the native branch below).
+            // never mutates; validated against retained revision plus live
+            // membership below).
             let drag_press_revision: Option<u64> = match &action {
                 InputSemanticAction::DragDrop { press_revision, .. } => Some(*press_revision),
                 _ => None,
@@ -1012,197 +1034,70 @@ fn process_job(
                 emit(shared, 0, 0, 0, "input", "refused-no-focus", 0);
                 return;
             };
-            let (command, op) = match action {
-                InputSemanticAction::FocusStep { direction } => (
-                    CoreCommand::Focus {
-                        window: window.0.clone(),
-                        direction: direction.as_str().to_owned(),
-                        cross_output_transfer: false,
-                        float_subject: false,
-                    },
-                    "focus",
-                ),
-                InputSemanticAction::MoveStep { direction } => (
-                    CoreCommand::Move {
-                        window: window.0.clone(),
-                        direction: direction.as_str().to_owned(),
-                        cross_output_transfer: false,
-                        same_axis_move: SameAxisMove::default(),
-                    },
-                    "move",
-                ),
-                InputSemanticAction::ResizeStep { direction, mode } => {
-                    // Exact Windows/KDE repeat rule: the press index
-                    // continues only on a focused-window/direction/mode
-                    // match, restarts otherwise — before the Engine
-                    // dispatch. The core owns the pixel step
-                    // (12/14/16/18/20px capped); refusals (edge no-op,
-                    // float/overlay subject) settle with no writes and the
-                    // next press restarts or continues per this same rule.
-                    let (press_index, repeat) = resize_repeat_next(
-                        retained.resize_repeat.clone(),
-                        &window.0,
-                        direction.as_str(),
-                        mode.as_str(),
-                    );
-                    retained.resize_repeat = Some(repeat);
-                    (
-                        CoreCommand::Resize {
-                            window: window.0.clone(),
-                            direction: direction.as_str().to_owned(),
-                            mode: mode.as_str().to_owned(),
-                            press_index,
-                        },
-                        "resize",
-                    )
-                }
-                InputSemanticAction::ToggleFloat => (
-                    CoreCommand::ToggleFloat {
-                        window: window.0.clone(),
-                        float_rect: None,
-                    },
-                    "toggle-float",
-                ),
-                InputSemanticAction::ToggleOrientation => (
-                    CoreCommand::ToggleOrientation {
-                        window: window.0.clone(),
-                    },
-                    "toggle-orientation",
-                ),
-                // Meta+left drop: the final pointer snapshot plus the
-                // carried sticky prior over the subject's homed domain
-                // (same-domain only — no source pair: the worker has no
-                // target-domain rows, so cross-output stays explicitly
-                // unsupported and resolves to `cross-domain-mismatch`
-                // snap-back). Commits through the shared acknowledge path
-                // below, so the current Engine plans and the native
-                // backends apply the returned frames.
-                InputSemanticAction::DragDrop {
-                    x, y, hover_prior, ..
-                } => (
-                    CoreCommand::DragDrop {
-                        window: window.0.clone(),
-                        x,
-                        y,
-                        hover_prior: hover_prior.map(|prior| *prior),
-                        source: None,
-                    },
-                    "drag-drop",
-                ),
+            let Some((command, op)) = operation_command(&action, &window.0, retained) else {
                 // Unarmed workspace actions refuse in the guard above and
-                // armed selects enqueue there too, so these arms are
-                // unreachable here (adding an action variant fails the
-                // guard's exhaustive match first).
-                InputSemanticAction::WorkspaceSelect { .. }
-                | InputSemanticAction::WorkspaceSend { .. }
-                | InputSemanticAction::WorkspaceRelative { .. }
-                | InputSemanticAction::WorkspaceSendRelative { .. }
-                | InputSemanticAction::WorkspacePrevious
-                | InputSemanticAction::WorkspaceOutput { .. } => {
-                    unreachable!("workspace actions refuse before dispatch")
-                }
+                // armed selects enqueue there too, so this is unreachable
+                // (adding an action variant fails the guard's exhaustive
+                // match first).
+                unreachable!("workspace actions refuse before dispatch");
             };
             lock_shared(shared).diagnostics.input_forwarded += 1;
             emit(shared, 0, 0, 0, "input", op, 0);
-            // Native mode resolves the subject's homed domain and plans
-            // exactly there (one domain event over that domain's full
-            // membership); an unmapped subject refuses instead of planning
-            // the skeleton. Synthetic mode keeps the single skeleton event.
-            let native_ctx: Option<Arc<NativeContext>> = lock_shared(shared).native_context.clone();
-            if let Some(ctx) = native_ctx {
+            // Native mode resolves the subject's homed domain: an unmapped
+            // subject refuses instead of planning the skeleton, and a
+            // hidden-domain subject never dispatches (no input writes or
+            // focus moves into an off-current Space). Synthetic mode keeps
+            // the skeleton report.
+            let dispatch = dispatch_context(shared, session);
+            if session.is_native() && lock_shared(shared).native_context.is_some() {
                 let Some(key) = retained.window_domains.get(&window.0).cloned() else {
                     lock_shared(shared).diagnostics.input_refused_no_focus += 1;
                     emit(shared, 0, 0, 0, "input", "refused-no-domain", 0);
                     return;
                 };
-                let views = native_domain_views(&ctx);
-                let Some(view) = views.iter().find(|v| v.key == key) else {
-                    lock_shared(shared).diagnostics.input_refused_no_focus += 1;
-                    emit(shared, 0, 0, 0, "input", "refused-no-domain", 0);
-                    return;
-                };
-                // Hidden-domain subjects never dispatch: no input writes or
-                // focus moves into an off-current Space (game/fullscreen
-                // safety extends to every hidden layout). Counted with its
-                // own token, never faked as success.
-                if !ctx.is_current(&key) {
+                let current = lock_shared(shared)
+                    .native_context
+                    .clone()
+                    .is_some_and(|ctx| ctx.is_current(&key));
+                if !current {
                     lock_shared(shared).diagnostics.input_refused_no_focus += 1;
                     emit(shared, 0, 0, 0, "input", "refused-hidden-domain", 0);
                     return;
-                };
+                }
                 // Drag-drop staleness: the press revision must still equal
-                // the worker's current topology revision (a mid-gesture
-                // resnapshot drifted the pid_wid), and the subject must
-                // still ride the last observation's live membership (a
-                // missing/closed target refuses instead of mutating).
+                // the retained topology revision (a mid-gesture resnapshot
+                // drifted the pid_wid), and the subject must still ride
+                // live membership (a missing/closed target refuses instead
+                // of mutating).
                 if let Some(press_revision) = drag_press_revision {
                     if press_revision != retained.native_revision {
                         lock_shared(shared).diagnostics.input_refused_no_focus += 1;
                         emit(shared, 0, 0, 0, "input", "refused-stale-press", 0);
                         return;
                     }
-                    let member_apps = domain_member_apps(retained, &key);
-                    let live = member_apps
-                        .iter()
-                        .flat_map(|(pid, ws)| ws.iter().map(|w| window_id(*pid, w.wid)))
-                        .any(|id| id == window.0);
+                    let live = retained
+                        .window_domains
+                        .get(&window.0)
+                        .is_some_and(|k| k == &key);
                     if !live {
                         lock_shared(shared).diagnostics.input_refused_no_focus += 1;
                         emit(shared, 0, 0, 0, "input", "refused-closed-target", 0);
                         return;
                     }
                 }
-                let member_apps = domain_member_apps(retained, &key);
-                let revision = retained
-                    .domain_revisions
-                    .get(&key)
-                    .copied()
-                    .unwrap_or(retained.last_revision);
-                let predicate = engine.fixed_size_predicate();
-                let session = engine.session(&key);
-                let focus_op = matches!(command, CoreCommand::Focus { .. });
-                let event = build_native_event(
-                    retained,
-                    view,
-                    &member_apps,
-                    Some(window),
-                    Vec::new(),
-                    command,
-                    session,
-                    predicate,
-                    revision,
-                );
-                let reply = engine.handle(&event);
-                if let Some(base) = reply_base_revision(&reply) {
-                    retained.domain_revisions.insert(key, base);
-                }
-                lock_shared(shared).count_reply(&format!("{op}-{}", reply_kind(&reply)));
-                let mut merged = MergedPlan::default();
-                collect_reply(&reply, &mut merged);
-                apply_merged(
-                    merged,
-                    None,
-                    op,
-                    focus_op,
-                    retained,
-                    shared,
-                    focus_queue,
-                    focus_capacity,
-                    0,
-                    0,
-                    0,
-                );
-                return;
             }
-            let event = wire_event(engine, retained, Some(window), Vec::new(), command);
-            let reply = engine.handle(&event);
-            apply_reply(
-                reply,
-                op,
+            dispatch_report(
+                session,
                 retained,
                 shared,
+                inbox,
                 focus_queue,
                 focus_capacity,
+                dispatch,
+                BTreeMap::new(),
+                Some(tiler_core::world_report::WorldCommand::Operation(command)),
+                false,
+                op,
                 0,
                 0,
                 0,
@@ -1218,8 +1113,13 @@ fn process_job(
             // the immutable render-time binding rides through admission
             // into the pending claim (see [`admit_select_claim`]);
             // anything unarmed refuses inside without touching the core.
-            admit_and_store(
+            handle_select_action(
+                session,
+                retained,
                 shared,
+                inbox,
+                focus_queue,
+                focus_capacity,
                 crate::runtime_types::ClaimedSelect::indicator(
                     action,
                     expected_sid,
@@ -1228,6 +1128,24 @@ fn process_job(
                 ),
             );
         }
+        EngineJob::AttemptFeedback {
+            operation_id,
+            kind,
+            outcome,
+            hold,
+        } => {
+            // Proven setter/drain truth staged for the next report (never
+            // false success: only recorded outcomes stage). The ring line
+            // makes staging observable end to end (drain, discard, and
+            // placement completions all land here).
+            session.stage_feedback(tiler_core::world_report::AttemptFeedback {
+                operation_id,
+                kind,
+                outcome,
+                hold,
+            });
+            emit(shared, 0, 0, 0, "feedback", "staged", 1);
+        }
         EngineJob::DragPreviewQuery {
             window,
             x,
@@ -1235,16 +1153,12 @@ fn process_job(
             hover_prior,
             reply,
         } => {
-            // Read-only preview against the current Engine: home the
-            // press-proven subject to its domain, fence hidden domains
-            // (off-current Space never previews), and resolve on the
-            // Engine's working clone (no staging, no reconciler writes).
-            // Every refusal maps to a pure outcome — never a dropped
-            // reply — so the main thread always unblocks by its timeout.
+            // Read-only preview through the world route (never commits,
+            // never advances the revision). Every refusal maps to a pure
+            // outcome — never a dropped reply — so the main thread always
+            // unblocks by its timeout.
             let outcome =
-                resolve_drag_preview(engine, retained, shared, &window, x, y, hover_prior);
-            lock_shared(shared).diagnostics.input_forwarded += 1;
-            emit(shared, 0, 0, 0, "input", "drag-preview", 0);
+                resolve_drag_preview(session, retained, shared, &window, x, y, hover_prior);
             let _ = reply.send(outcome);
         }
         EngineJob::AxResult {
@@ -1254,6 +1168,12 @@ fn process_job(
             completion,
         } => {
             note_completion(shared, "ax-result", pid, generation, cmd_id, &completion);
+            // A staged placement row changes the next report: advance the
+            // shared mark now (the completion itself is already
+            // incorporated). Ordinary writes stage nothing — no mark moves.
+            if stage_write_feedback(session, pid, cmd_id, &completion) {
+                crate::runtime::invalidate_clock(shared);
+            }
         }
         EngineJob::FocusResult {
             pid,
@@ -1281,444 +1201,106 @@ fn process_job(
     }
 }
 
-pub(crate) fn reply_kind(reply: &CoreReply) -> &'static str {
-    match reply {
-        CoreReply::Projection(_) => "projection",
-        CoreReply::Tiled(_) => "tiled",
-        CoreReply::SendWorkspace(_) => "send-workspace",
-        CoreReply::SendOutput(_) => "send-output",
-        CoreReply::MigrateWorkspace(_) => "migrate-workspace",
-        CoreReply::MoveDirectional(_) => "move-directional",
-        CoreReply::FocusDirectional(_) => "focus-directional",
-        CoreReply::Resize(_) => "resize",
-        CoreReply::ActiveGroup(_) => "active-group",
-        CoreReply::NoGroup { .. } => "no-group",
-        CoreReply::DragPreview(_) => "drag-preview",
-        CoreReply::Released => "released",
-        CoreReply::Rejected { .. } => "rejected",
-        CoreReply::SnapshotInvalid { .. } => "snapshot-invalid",
-        CoreReply::Diverged(_) => "diverged",
+/// Dispatch context for one job: native when the mode is native and a
+/// derived context is published; the skeleton otherwise (legacy parity:
+/// inputs planned the skeleton before any snapshot published).
+fn dispatch_context(shared: &Arc<Mutex<Shared>>, session: &WorldSession) -> DispatchContext {
+    if session.is_native()
+        && let Some(ctx) = lock_shared(shared).native_context.clone()
+    {
+        return DispatchContext::Native(ctx);
     }
+    DispatchContext::Synthetic
 }
 
-/// Live per-app emission targets: PID, generation, frame slot, focus slot.
-/// One row per non-terminated app, collected without holding the lock
-/// during emission.
-type LiveSlots = Vec<(u32, u64, Arc<FrameSlot>, Arc<FocusSlot>)>;
-
-/// Whether frame emission for `window` is withheld: the retained observation
-/// still carries a native overlay flag for it. The reserved slot/allocation
-/// stays plan truth; only actuation is filtered, through the shared
-/// [`geometry_write_allowed`] gate. The skeleton performs no maximized
-/// inference, so only fullscreen can hold here.
-fn overlay_holds_frame(retained: &RetainedCore, window: &str) -> bool {
-    let Some((pid, wid)) = parse_window_id(window) else {
-        return false;
-    };
-    retained
-        .apps
-        .get(&pid)
-        .and_then(|app| app.windows.iter().find(|w| w.wid == wid))
-        .is_some_and(|w| !geometry_write_allowed(w.fullscreen, false))
-}
-
-/// Translate one core reply into frame commands and focus requests.
-/// Frame emission overwrites per-app latest-wins slots without waiting;
-/// focus emission is a bounded outbox `try_send` with a counted drop.
-#[allow(clippy::too_many_arguments)]
-fn apply_reply(
-    reply: CoreReply,
-    op: &'static str,
+/// Armed-select lane (tap and indicator): admission gates, planner-owned
+/// world command, and — when the reply applies, or when a stale-observation
+/// refusal proves the command already executed core-side — one pending
+/// claim bound under the stable operation identity for the main-thread
+/// drain. Other core refusals drop the claim (never actuated, never
+/// replayed).
+fn handle_select_action(
+    session: &mut WorldSession,
     retained: &mut RetainedCore,
     shared: &Arc<Mutex<Shared>>,
+    inbox: &Arc<Inbox>,
     focus_queue: &Arc<Mutex<Vec<FocusRequest>>>,
     focus_capacity: usize,
-    pid: u32,
-    generation: u64,
-    seq: u64,
+    claim: crate::runtime_types::ClaimedSelect,
 ) {
-    let token: &'static str = reply_kind(&reply);
-    let mut merged = MergedPlan::default();
-    collect_reply(&reply, &mut merged);
-    if let Some(base) = merged.revision {
-        retained.last_revision = base;
-    }
-    // Single-reply focus emission only for explicit focus operations (the
-    // merged native caller passes explicit focus replies through this same
-    // gate per reply — observations never focus).
-    let focus_reply = matches!(reply, CoreReply::FocusDirectional(_));
-    apply_merged(
-        merged,
-        Some(token),
-        op,
-        focus_reply,
-        retained,
-        shared,
-        focus_queue,
-        focus_capacity,
-        pid,
-        generation,
-        seq,
-    )
-}
-
-/// Merged plan geometry across one or more core replies (one in synthetic
-/// mode, one per tile domain in native mode). Geometry stays in plan order
-/// per reply; replies concatenate in domain order.
-#[derive(Default)]
-pub(crate) struct MergedPlan {
-    /// Full plan geometry including overlaid members (plan truth; the
-    /// emission filter below withholds overlay writes without touching it).
-    geometry: Vec<(String, Rect)>,
-    /// Planned focus target, when some reply named one.
-    focus_to: Option<WindowId>,
-    /// Plan revision when some reply carried one (drives empty-set
-    /// supersede; refusals carry none and emit nothing).
-    revision: Option<u64>,
-}
-
-/// Extract plan geometry, focus target, and revision from one core reply.
-/// Pure over the reply; the overlay filter and emission live in
-/// [`apply_merged`] so synthetic single-reply and native multi-reply paths
-/// share them exactly.
-pub(crate) fn collect_reply(reply: &CoreReply, out: &mut MergedPlan) {
-    // Geometry plus revision carried by success replies.
-    let mut geometry: Vec<(String, Rect)> = Vec::new();
-    let mut revision: Option<u64> = None;
-    let mut focus_to: Option<WindowId> = None;
-    match reply {
-        CoreReply::Projection(plan) => {
-            revision = Some(plan.base_revision);
-            geometry = plan
-                .geometry
-                .iter()
-                .filter(|g| !g.client_clamped)
-                .map(|g| (g.window.0.clone(), g.rect))
-                .collect();
-        }
-        CoreReply::Tiled(plan) => {
-            revision = Some(plan.base_revision);
-            geometry = plan
-                .geometry
-                .iter()
-                .filter(|g| !g.client_clamped)
-                .map(|g| (g.window.0.clone(), g.rect))
-                .collect();
-            // Fresh-admission plans carry the focused leaf; resolve it to
-            // the authoritative window through the plan geometry.
-            if let Some(leaf) = plan.focus_leaf.clone() {
-                focus_to = plan
-                    .geometry
-                    .iter()
-                    .find(|g| g.leaf == leaf)
-                    .map(|g| g.window.clone());
-            }
-        }
-        CoreReply::MoveDirectional(plan) => {
-            revision = Some(plan.base_revision);
-            geometry = plan
-                .geometry
-                .iter()
-                .filter(|g| !g.client_clamped)
-                .map(|g| (g.window.0.clone(), g.rect))
-                .collect();
-            focus_to = plan
-                .geometry
-                .iter()
-                .find(|g| g.leaf == plan.focus_leaf)
-                .map(|g| g.window.clone());
-        }
-        CoreReply::FocusDirectional(plan) => {
-            revision = Some(plan.base_revision);
-            geometry = plan
-                .geometry
-                .iter()
-                .filter(|g| !g.client_clamped)
-                .map(|g| (g.window.0.clone(), g.rect))
-                .collect();
-            focus_to = Some(plan.to_window.clone());
-        }
-        CoreReply::Resize(plan) => {
-            // Keyboard resize reflows exactly the two adjacent shares and
-            // retains focus exactly, so the plan carries geometry plus
-            // revision with no focus target (unlike moves, nothing
-            // dispatches native focus downstream of a resize).
-            revision = Some(plan.base_revision);
-            geometry = plan
-                .geometry
-                .iter()
-                .filter(|g| !g.client_clamped)
-                .map(|g| (g.window.0.clone(), g.rect))
-                .collect();
-        }
-        _ => {}
-    }
-    out.geometry.extend(geometry);
-    if out.focus_to.is_none() {
-        out.focus_to = focus_to;
-    }
-    if out.revision.is_none() {
-        out.revision = revision;
-    }
-}
-
-/// Apply one merged plan: snapshot desired geometry, filter overlay writes,
-/// and hand per-app latest-wins frame sets plus at most one focus dispatch
-/// to the owning workers. Shared exactly by the synthetic single-reply path
-/// and the native multi-reply path so emission semantics cannot diverge.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn apply_merged(
-    merged: MergedPlan,
-    token: Option<&'static str>,
-    op: &'static str,
-    focus_reply: bool,
-    retained: &mut RetainedCore,
-    shared: &Arc<Mutex<Shared>>,
-    focus_queue: &Arc<Mutex<Vec<FocusRequest>>>,
-    focus_capacity: usize,
-    pid: u32,
-    generation: u64,
-    seq: u64,
-) {
-    let MergedPlan {
-        geometry,
-        focus_to,
-        revision,
-    } = merged;
-    // Snapshot desired geometry for tests and diagnostics. Built from the
-    // FULL plan geometry: overlaid members stay plan truth even while
-    // emission below withholds their writes.
-    let desired: Vec<DesiredFrame> = geometry
-        .iter()
-        .map(|(window, rect)| DesiredFrame {
-            window: window.clone(),
-            x: rect.x,
-            y: rect.y,
-            w: rect.w,
-            h: rect.h,
-        })
-        .collect();
-    // Overlay emission filter: retained fullscreen members keep their
-    // reserved slot/allocation in plan truth but take no geometry write
-    // while overlaid. Withheld frames are counted, never dropped silently;
-    // only actuation is filtered here, never plan truth above.
-    let mut overlay_skipped = 0u64;
-    let geometry: Vec<(String, Rect)> = geometry
-        .into_iter()
-        .filter(|(window, _)| {
-            if overlay_holds_frame(retained, window) {
-                overlay_skipped += 1;
-                false
-            } else {
-                true
-            }
-        })
-        .collect();
-    // Planned focus never becomes observed truth here: `focus_to` travels
-    // only into the focus request below, and the input subject stays on
-    // `observed_focus` until an observation confirms arrival. A dropped
-    // request therefore never advances focus.
-    // Collect live per-app slots plus the current topology revision fence
-    // and focus route without holding the lock during emission.
-    let (slots, topology_revision, focus_route, native_mode): (
-        LiveSlots,
-        u64,
-        crate::focus_route::FocusRoute,
-        bool,
-    ) = {
+    let verdict = {
         let guard = lock_shared(shared);
-        (
-            guard
-                .apps
-                .iter()
-                .filter(|(_, r)| !r.terminated)
-                .map(|(pid, r)| {
-                    (
-                        *pid,
-                        r.generation,
-                        Arc::clone(&r.frames),
-                        Arc::clone(&r.focus),
-                    )
-                })
-                .collect(),
-            guard.topology_revision,
-            guard.config.focus_route,
-            matches!(
-                guard.config.topology_mode,
-                crate::runtime_types::TopologyMode::Native
-            ),
+        admit_select_claim(
+            guard.native_context.is_some(),
+            guard.select_busy,
+            guard.select_pending.is_some(),
+            claim,
         )
     };
-    // Group the plan by app so each worker receives its whole desired
-    // set in one latest-wins handoff.
-    let mut by_app: BTreeMap<u32, Vec<FrameCommand>> = BTreeMap::new();
-    let mut unparseable = 0u64;
-    for (window, rect) in &geometry {
-        let Some((wpid, wid)) = parse_window_id(window) else {
-            unparseable += 1;
-            continue;
-        };
-        let generation = slots
-            .iter()
-            .find(|(p, _, _, _)| *p == wpid)
-            .map(|(_, generation, _, _)| *generation)
-            .unwrap_or(0);
-        // Per-app command sequence comes from retained state.
-        let cmd_id = retained
-            .apps
-            .get_mut(&wpid)
-            .map(|app| {
-                app.cmd_counter += 1;
-                app.cmd_counter
-            })
-            .unwrap_or(0);
-        by_app.entry(wpid).or_default().push(FrameCommand {
-            pid: wpid,
-            generation,
-            cmd_id,
-            window: window.clone(),
-            wid,
-            x: rect.x,
-            y: rect.y,
-            w: rect.w,
-            h: rect.h,
-            topology_revision,
-            // Engine-homed target domain at plan time: the backend pins
-            // effects to exactly this domain, so a window that crosses
-            // displays mid-plan refuses the remaining legs instead of
-            // actuating outside its planned domain. `None` for unmapped
-            // (synthetic/legacy) windows, which derive live instead.
-            domain: retained.window_domains.get(window).cloned(),
-        });
-    }
-    let mut emitted = 0u64;
-    let mut coalesced = 0u64;
-    let mut dead = unparseable;
-    for (wpid, cmds) in &by_app {
-        let Some((_, _, slot, _)) = slots.iter().find(|(p, _, _, _)| *p == *wpid) else {
-            dead += cmds.len() as u64;
-            continue;
-        };
-        match slot.set_latest(cmds.clone()) {
-            Some(overwritten) => {
-                emitted += cmds.len() as u64;
-                coalesced += overwritten as u64;
-            }
-            None => dead += cmds.len() as u64,
+    let claim = match verdict {
+        Ok(claim) => claim,
+        Err(token) => {
+            refuse_select_claim(shared, token);
+            return;
         }
-    }
-    // A whole empty desired set supersedes pending state: live apps with no
-    // windows in this plan converge to empty instead of actuating a stale
-    // pending set. Refusals carry no plan (`revision` is `None`) and emit
-    // nothing.
-    if revision.is_some() {
-        for (wpid, _, slot, _) in &slots {
-            if !by_app.contains_key(wpid)
-                && let Some(overwritten) = slot.set_latest(Vec::new())
-            {
-                coalesced += overwritten as u64;
-            }
+    };
+    let Some(ctx) = lock_shared(shared).native_context.clone() else {
+        refuse_select_claim(shared, "refused-select-no-topology");
+        return;
+    };
+    let Some(output) = select_output(retained, &ctx) else {
+        refuse_select_claim(shared, "refused-select-no-view");
+        return;
+    };
+    let Some(command) = select_command(&claim.action, output) else {
+        refuse_select_claim(shared, "refused-select-unarmed");
+        return;
+    };
+    match dispatch_report(
+        session,
+        retained,
+        shared,
+        inbox,
+        focus_queue,
+        focus_capacity,
+        DispatchContext::Native(Arc::clone(&ctx)),
+        BTreeMap::new(),
+        Some(command),
+        true,
+        OP_SELECT,
+        0,
+        0,
+        0,
+    ) {
+        DispatchVerdict::Applied { select_operation } => {
+            store_select_claim(shared, claim, select_operation.as_deref());
         }
-    }
-    // Focus requests out: only explicit focus operations dispatch native
-    // focus. Reconcile/admit/move re-plan geometry (and track focus
-    // internally) without moving native focus. Each dispatch travels two
-    // paths: the bounded controller outbox (drained record, existing API)
-    // and the owning app's latest-wins focus slot (actuation — the SAME
-    // per-app AX owner that observed the window dispatches it). Both share
-    // one `request_id` so dispatch truth correlates across them.
-    let mut focus_dispatched = 0u64;
-    let mut focus_dropped = 0u64;
-    if focus_reply
-        && let Some(to_window) = focus_to
-        && let Some((fpid, fwid)) = parse_window_id(&to_window.0)
-    {
-        let (generation, focus_slot) = slots
-            .iter()
-            .find(|(p, _, _, _)| *p == fpid)
-            .map(|(_, generation, _, focus)| (*generation, Some(Arc::clone(focus))))
-            .unwrap_or((0, None));
-        let request_id = {
-            retained.focus_seq += 1;
-            retained.focus_seq
-        };
-        let request = FocusRequest {
-            pid: fpid,
-            generation,
-            request_id,
-            wid: fwid,
-            window: to_window.0.clone(),
-            dispatched: true,
-            verified: false,
-            topology_revision,
-        };
-        let mut queue = lock_focus(focus_queue);
-        if queue.len() < focus_capacity {
-            queue.push(request);
-            focus_dispatched = 1;
-        } else {
-            focus_dropped = 1;
+        DispatchVerdict::Duplicate => {
+            // Identical latest resend (unreachable for fresh command
+            // sequences): keep the transfer the earlier dispatch retained
+            // and let the drain actuate once.
+            store_select_claim(shared, claim, None);
         }
-        drop(queue);
-        // Owner actuation path, native mode only (the synthetic skeleton
-        // has no per-app focus dispatch; its workers never read the slot,
-        // so emitting there would only perturb the exact outbox counters
-        // the legacy tests pin). Latest-wins: a newer desired focus
-        // supersedes. A stopped slot means the app is terminating: the
-        // command dies with its lifetime, counted as dropped.
-        if native_mode && let Some(slot) = focus_slot {
-            let cmd = FocusCommand {
-                pid: fpid,
-                generation,
-                request_id,
-                wid: fwid,
-                window: to_window.0,
-                revision: topology_revision,
-                route: focus_route,
-            };
-            if slot.set_latest(cmd).is_some() {
-                focus_dispatched += 1;
+        DispatchVerdict::Refused {
+            token,
+            select_operation,
+        } => {
+            // A stale-observation refusal still carries the operation
+            // identity: the command already executed core-side
+            // (at-most-once), so the claim binds for drain feedback and
+            // the racing successor refuses busy instead of replaying.
+            // Every other refusal binds nothing (the core never ran).
+            if let Some(operation) = select_operation {
+                store_select_claim(shared, claim, Some(&operation));
             } else {
-                focus_dropped += 1;
+                lock_shared(shared).diagnostics.input_select_refused += 1;
+                emit(shared, 0, 0, 0, "input", "select-refused", 0);
+                let _ = token;
             }
-        } else if native_mode {
-            focus_dropped += 1;
         }
-    }
-    {
-        let mut guard = lock_shared(shared);
-        if let Some(token) = token {
-            guard.count_reply(&format!("{op}-{token}"));
+        DispatchVerdict::NoReport => {
+            refuse_select_claim(shared, "refused-select-no-topology");
         }
-        guard.diagnostics.frames_emitted += emitted;
-        guard.diagnostics.frames_coalesced += coalesced;
-        guard.diagnostics.frames_overlay_skipped += overlay_skipped;
-        guard.diagnostics.terminated_invalidated += dead;
-        guard.diagnostics.focus_dispatched += focus_dispatched;
-        guard.diagnostics.focus_dropped_full += focus_dropped;
-        // Snapshot the latest plan, including empty plans (e.g. every
-        // window closed is honest truth, never stale). Refusals carry no
-        // plan and must not clobber the last one.
-        if revision.is_some() {
-            guard.last_desired = desired;
-        }
-    }
-    // Retire note: when the core retires the skeleton domain (empty plan
-    // with the session removed), the next fresh seed adopts the carried
-    // revision (verified against the core: fresh sessions start clean
-    // regardless of the cursor), so no cursor reset is needed here. Held
-    // and minimize-slot sessions persist with their cursor untouched.
-    //
-    // `token` is `None` only for merged native applies, whose caller
-    // counts each reply separately; the ring entry below then carries the
-    // merged op name instead of a single reply kind.
-    let token = token.unwrap_or("merged");
-    emit(shared, pid, generation, seq, "core-reply", token, emitted);
-    if emitted > 0 {
-        emit(shared, pid, generation, seq, "frame", "emitted", emitted);
-    }
-    if focus_dropped > 0 {
-        emit(shared, pid, generation, seq, "focus", "dropped-full", 1);
     }
 }
 

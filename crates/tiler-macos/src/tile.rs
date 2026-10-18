@@ -266,6 +266,7 @@ pub fn product_catalogue() -> Vec<crate::runtime_types::TileBinding> {
     catalogue.extend(crate::workspace_select::bindings());
     catalogue
 }
+
 /// Whether a discovered (pid, bundle) may be launched under a scoped
 /// allowlist: exact membership at the effect gate (Ghostty, own bundle,
 /// protected terminals, and unknown bundles never pass), never the process
@@ -1949,18 +1950,39 @@ mod native {
                 };
                 let id = crate::workspace_input::workspace_action_id(&claim.action)
                     .unwrap_or("unknown-select");
+                // The operation identity rides out of the claim before the
+                // drain consumes it: the proven outcome reports back under
+                // the same id so the core settles its planner-owned view
+                // target (never replayed).
+                let operation_id = claim.operation_id.clone();
                 let outcome =
                     crate::workspace_select::drain_live_claimed(&mut select_state, claim, &gates);
                 handle.release_select_after_drain();
                 match outcome {
-                    Ok((effect, reaped)) => eprintln!(
-                        "tiler-macos dev select action={} changed={} caffeinate_reaped={} complete=true",
-                        id, effect.changed, reaped,
-                    ),
-                    Err(reason) => eprintln!(
-                        "tiler-macos dev select action={} refused reason={} complete=false",
-                        id, reason,
-                    ),
+                    Ok((effect, reaped)) => {
+                        eprintln!(
+                            "tiler-macos dev select action={} changed={} caffeinate_reaped={} complete=true",
+                            id, effect.changed, reaped,
+                        );
+                        if let Some(operation_id) = operation_id.as_deref() {
+                            handle.report_select_outcome(
+                                operation_id,
+                                crate::runtime::SelectDrainOutcome::Applied,
+                            );
+                        }
+                    }
+                    Err(reason) => {
+                        eprintln!(
+                            "tiler-macos dev select action={} refused reason={} complete=false",
+                            id, reason,
+                        );
+                        if let Some(operation_id) = operation_id.as_deref() {
+                            handle.report_select_outcome(
+                                operation_id,
+                                crate::select_feedback::classify_select_drain_error(&reason),
+                            );
+                        }
+                    }
                 }
             }
 

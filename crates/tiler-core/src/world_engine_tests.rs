@@ -1730,6 +1730,7 @@ fn command_result_drag_preview_carries_core_rect_and_hover() {
         hover,
         domain,
         source,
+        target,
         revision,
     }) = reply.command_result.clone()
     else {
@@ -1742,6 +1743,9 @@ fn command_result_drag_preview_carries_core_rect_and_hover() {
     assert_eq!(domain.output.0, "out");
     assert_eq!(domain.workspace.0, "ws1");
     assert_eq!(source, domain, "same-domain capture");
+    // Insertion-neighbor identity (never the mover): the overlay orders
+    // above this window, so the result must name it exactly.
+    assert_eq!(target.0, "win-b", "neighbor target, not the mover");
     let hover = hover.expect("core hover prior always carried");
     assert_eq!(hover.prior_domain, domain);
     assert_eq!(hover.revision, revision);
@@ -1755,6 +1759,7 @@ fn command_result_drag_preview_carries_core_rect_and_hover() {
     let encoded = encode_reply_canonical(&reply);
     assert!(encoded.contains("\"op\":\"drag-preview\""));
     assert!(encoded.contains("\"domainOut\":\"out\""));
+    assert!(encoded.contains("\"win\":\"win-b\""), "{encoded}");
     assert!(reply_estimate(&reply) >= encoded.len());
 }
 

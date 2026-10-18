@@ -770,7 +770,7 @@ fn cold_born_fullscreen_only_holds_slotless() {
     );
     assert_eq!(fixture.handle.diagnostics().frames_emitted, 0);
     assert!(
-        has_reply(&fixture, "reconcile-projection"),
+        has_reply(&fixture, "reconcile-accepted"),
         "hold converges, never refuses: {:?}",
         fixture.handle.diagnostics().core_replies
     );
@@ -831,7 +831,7 @@ fn cold_fixed_only_floats_automatic() {
         "cold fixed floats automatic"
     );
     assert!(
-        has_reply(&fixture, "reconcile-projection"),
+        has_reply(&fixture, "reconcile-accepted"),
         "admission converges, never refuses: {:?}",
         fixture.handle.diagnostics().core_replies
     );
@@ -869,7 +869,7 @@ fn cold_mixed_fixed_and_tile_first_observation() {
     );
     assert_eq!(desired_names(&fixture), vec!["1001_12"]);
     assert!(
-        has_reply(&fixture, "reconcile-tiled"),
+        has_reply(&fixture, "reconcile-accepted"),
         "mixed seed converges: {:?}",
         fixture.handle.diagnostics().core_replies
     );
@@ -964,7 +964,7 @@ fn fullscreen_exit_reclassifies_fresh_hints_not_birth_hints() {
         "both born arrivals hold (birth hints decide nothing)"
     );
     assert!(
-        has_reply(&fixture, "reconcile-projection"),
+        has_reply(&fixture, "reconcile-accepted"),
         "cold double hold converges: {:?}",
         fixture.handle.diagnostics().core_replies
     );
@@ -1022,7 +1022,7 @@ fn dialog_with_fullscreen_holds_truthful_without_writes() {
         "fullscreen dialog takes no allocation"
     );
     assert!(
-        has_reply(&fixture, "reconcile-projection"),
+        has_reply(&fixture, "reconcile-accepted"),
         "cold dialog hold converges: {:?}",
         fixture.handle.diagnostics().core_replies
     );

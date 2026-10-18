@@ -77,6 +77,7 @@ pub mod owned_control;
 pub mod ownership;
 pub mod probe_target;
 pub mod runtime;
+pub mod runtime_apps;
 pub mod runtime_backend;
 mod runtime_core;
 mod runtime_input;
@@ -84,11 +85,13 @@ pub mod runtime_lifecycle;
 pub mod runtime_log;
 mod runtime_native;
 mod runtime_observe;
+mod runtime_shared;
 mod runtime_thread;
 pub mod runtime_types;
 mod runtime_worker;
 pub mod scope;
 pub mod scope_inspect;
+mod select_feedback;
 pub mod session;
 pub mod space_direct_probe;
 pub mod space_drag_diag;
@@ -120,6 +123,13 @@ mod workspace_input_tests;
 pub mod workspace_select;
 #[cfg(test)]
 mod workspace_select_tests;
+pub(crate) mod world_builder;
+pub(crate) mod world_command_map;
+pub(crate) mod world_dispatch;
+pub(crate) mod world_runtime;
+#[cfg(test)]
+mod world_runtime_tests;
+pub(crate) mod world_sequencer;
 
 /// Stable probe bundle identity. Fixed across runs for TCC stability.
 pub const BUNDLE_ID: &str = "io.github.omnitiler.macos.probe";

@@ -1,25 +1,24 @@
 #![forbid(unsafe_code)]
 
-//! Phase 1 core adapter: pure retained observation state plus the
-//! [`tiler_core`] event constructor. No threads, locks, or sinks: owners
-//! in [`crate::runtime_thread`] own these values and drive them.
+//! Phase 1 core adapter: pure retained observation state plus the shared
+//! wire-flag normalization. No threads, locks, or sinks: owners in
+//! [`crate::runtime_thread`] own these values and drive them; reports are
+//! built by [`crate::world_builder`] over this retained truth.
 
 use std::collections::BTreeMap;
 
 use tiler_core::{
-    boundary::{CoreCommand, CoreEvent},
     directional::{OutputId, WindowId, WorkspaceId},
     geometry::Rect,
-    ids::{CorrelationId, GenerationId, OwnerId},
     seed::EngineWindow,
     session::{DomainKey, OutputDomain, Session},
     size_hints::{FixedSizePredicate, WindowSizeHints, is_fixed_size_with},
     window_policy::should_hold_born_fullscreen,
+    world_report::MinimizedEntry,
 };
 
 use crate::runtime_types::{
-    NativeContext, ObservedWindow, PHASE1_BOUNDS, PHASE1_GAP, PHASE1_GENERATION, PHASE1_OUTER_GAP,
-    PHASE1_OUTPUT, PHASE1_OWNER, PHASE1_WORKSPACE, ScopedWindowMeta, parse_window_id, window_id,
+    NativeContext, ObservedWindow, PHASE1_GAP, ScopedWindowMeta, parse_window_id, window_id,
 };
 
 // -- Engine retained state -----------------------------------------------------
@@ -140,24 +139,24 @@ pub(crate) struct RetainedCore {
     /// observed must not advance this; input acts on this subject.
     pub(crate) observed_focus: Option<WindowId>,
     pub(crate) focus_seq: u64,
-    pub(crate) last_revision: u64,
-    pub(crate) correlation: u64,
     /// Native-mode window→domain homing, keyed by runtime window id
     /// (`"<pid>_<wid>"`). Refreshed on every scoped observation (members
     /// only) and pruned per reporting PID, so input subjects always resolve
     /// against current homing — never a stale domain.
     pub(crate) window_domains: BTreeMap<String, DomainKey>,
-    /// Native-mode topology revision of the last applied scoped
-    /// observation (`0` until the first). Drives retired-domain release:
-    /// domain keys absent from a newer revision retire before planning.
+    /// Native-mode topology revision of the last dispatched report (`0`
+    /// until the first). Fences drag-drop press revisions against
+    /// mid-gesture resnapshots.
     pub(crate) native_revision: u64,
-    /// Native-mode known domains (key plus authoritative bounds) for
-    /// retirement diffing and release events.
+    /// Native-mode known domains (key plus authoritative bounds) for the
+    /// read-only occupancy grouping and minimized-home validity. Refreshed
+    /// from the dispatch context on every world report.
     pub(crate) known_domains: BTreeMap<DomainKey, OutputDomain>,
-    /// Native-mode per-domain core revision cursor, echoed into each
-    /// domain's events. Sessions advance independently per domain; a single
-    /// shared cursor would misreport every domain but one.
-    pub(crate) domain_revisions: BTreeMap<DomainKey, u64>,
+    /// Native-mode explicit minimized lifetimes from classifier exclusions,
+    /// keyed by runtime window id (`"<pid>_<wid>"`). Refreshed per scoped
+    /// observation from last-known homing; reported as explicit world
+    /// minimized entries (never silent absence, never inferred close).
+    pub(crate) minimized: BTreeMap<String, MinimizedEntry>,
     /// Keyboard-resize repeat cursor (Windows `ResizeRepeat` parity,
     /// macOS-local): the press index for the next resize dispatch. Key-up
     /// never resets it — like KDE/Windows, only a focused-window, direction,
@@ -235,85 +234,14 @@ pub(crate) fn clear_focus_into(retained: &mut RetainedCore, pid: u32) {
     }
 }
 
-/// Deterministic FNV-1a fingerprint over sorted `(window, rect)` pairs,
-/// mirroring the Windows adapter helper shape.
-pub(crate) fn fingerprint(windows: &[(String, Rect)]) -> u64 {
-    let mut sorted: Vec<(&String, &Rect)> = windows.iter().map(|(t, r)| (t, r)).collect();
-    sorted.sort_by(|a, b| a.0.cmp(b.0));
-    let mut hash: u64 = 0xcbf29ce484222325;
-    for (token, rect) in sorted {
-        for byte in token.as_bytes() {
-            hash ^= u64::from(*byte);
-            hash = hash.wrapping_mul(0x100000001b3);
-        }
-        for word in [rect.x, rect.y, rect.w, rect.h] {
-            for byte in word.to_le_bytes() {
-                hash ^= u64::from(byte);
-                hash = hash.wrapping_mul(0x100000001b3);
-            }
-        }
-    }
-    hash
-}
-
-pub(crate) fn skeleton_domain() -> OutputDomain {
-    OutputDomain {
-        id: OutputId(PHASE1_OUTPUT.to_owned()),
-        workspace: WorkspaceId(PHASE1_WORKSPACE.to_owned()),
-        bounds: PHASE1_BOUNDS,
-        gap: PHASE1_GAP,
-        adjacent: BTreeMap::new(),
-    }
-}
-
-pub(crate) fn skeleton_key() -> DomainKey {
-    DomainKey {
-        output: OutputId(PHASE1_OUTPUT.to_owned()),
-        workspace: WorkspaceId(PHASE1_WORKSPACE.to_owned()),
-    }
-}
-
-pub(crate) fn build_event(
-    retained: &mut RetainedCore,
-    focused_override: Option<WindowId>,
-    closed: Vec<WindowId>,
-    command: CoreCommand,
-    session: Option<&Session>,
-    predicate: FixedSizePredicate,
-) -> CoreEvent {
-    let mut rows: Vec<(String, Rect)> = Vec::new();
-    let mut windows: Vec<EngineWindow> = Vec::new();
-    for (pid, app) in &retained.apps {
-        collect_app_windows(
-            &mut rows,
-            &mut windows,
-            *pid,
-            &app.windows,
-            PHASE1_OUTPUT,
-            PHASE1_WORKSPACE,
-            session,
-            predicate,
-        );
-    }
-    assemble_event(
-        retained,
-        retained.last_revision,
-        &rows,
-        windows,
-        skeleton_domain(),
-        skeleton_key(),
-        focused_override,
-        closed,
-        command,
-    )
-}
-
 /// Collect one app's retained windows into core wire rows for a single
 /// domain: fingerprint rows plus normalized [`EngineWindow`] values homed to
 /// exactly (`output`, `workspace`). Shared by the synthetic path (all apps
 /// into the skeleton domain) and the native path (member apps per domain).
+/// Also shared by the additive world-state builder
+/// ([`crate::world_builder`]), so legacy and world wire flags stay identical.
 #[allow(clippy::too_many_arguments)]
-fn collect_app_windows(
+pub(crate) fn collect_app_windows(
     rows: &mut Vec<(String, Rect)>,
     windows: &mut Vec<EngineWindow>,
     pid: u32,
@@ -355,48 +283,6 @@ fn collect_app_windows(
             fixed_suppress: false,
             hints: w.hints,
         });
-    }
-}
-
-/// Assemble one [`CoreEvent`] over already-collected wire rows: fingerprint,
-/// correlation advance, and focus resolution. Domain, revision, and command
-/// ride exactly as given — one call per domain in native mode, one call
-/// total in synthetic mode.
-#[allow(clippy::too_many_arguments)]
-fn assemble_event(
-    retained: &mut RetainedCore,
-    revision: u64,
-    rows: &[(String, Rect)],
-    windows: Vec<EngineWindow>,
-    domain: OutputDomain,
-    domain_key: DomainKey,
-    focused_override: Option<WindowId>,
-    closed: Vec<WindowId>,
-    command: CoreCommand,
-) -> CoreEvent {
-    retained.correlation += 1;
-    let fingerprint = fingerprint(rows);
-    let focused_window = focused_override
-        .or_else(|| retained.observed_focus.clone())
-        .unwrap_or(WindowId(String::new()));
-    CoreEvent {
-        owner: OwnerId::parse(PHASE1_OWNER).expect("skeleton owner token"),
-        generation: GenerationId::parse(PHASE1_GENERATION).expect("skeleton generation token"),
-        correlation: CorrelationId::parse(&format!("phase-1-{}", retained.correlation))
-            .expect("skeleton correlation token"),
-        revision,
-        fingerprint,
-        domain,
-        domain_key,
-        outer_gap: PHASE1_OUTER_GAP,
-        focused_window,
-        windows,
-        closed_windows: closed,
-        directional: None,
-        directional_target_outer_gap: None,
-        target_domain: None,
-        target_windows: Vec::new(),
-        command,
     }
 }
 
@@ -594,117 +480,56 @@ pub(crate) fn note_scoped_members(
     }
 }
 
-/// Native-mode domain view: the authoritative [`OutputDomain`] plus its key
-/// for one tile domain, derived from the shared [`NativeContext`].
-pub(crate) struct NativeDomainView {
-    pub(crate) key: DomainKey,
-    pub(crate) domain: OutputDomain,
+/// Record synthetic (metadataless) homing: every retained window of one
+/// PID belongs to the skeleton domain. Legacy observations carry no Space
+/// membership, so without this the world builder could not home, focus,
+/// or close a single synthetic window.
+pub(crate) fn note_synthetic_homing(
+    retained: &mut RetainedCore,
+    pid: u32,
+    windows: &[ObservedWindow],
+) {
+    use tiler_core::directional::{OutputId, WorkspaceId};
+    let mut members: BTreeMap<DomainKey, Vec<ObservedWindow>> = BTreeMap::new();
+    members.insert(
+        DomainKey {
+            output: OutputId(crate::runtime_types::PHASE1_OUTPUT.to_owned()),
+            workspace: WorkspaceId(crate::runtime_types::PHASE1_WORKSPACE.to_owned()),
+        },
+        windows.to_vec(),
+    );
+    note_scoped_members(retained, pid, &members);
 }
 
-/// Adapter-side outer-gap inset for one native tile domain: the visible
-/// work area minus the shared outer margin on every side (KDE
-/// `domain-gap.ts` and Windows `tiling_domain_bounds` parity, both 8/8
-/// defaults). The core plans into these bounds as-is, so handing it the raw
-/// work area tiles edge-to-edge with no outer margin. A degenerate work
-/// area that cannot carry the margin keeps its raw rect rather than tiling
-/// nothing (unreachable on real displays; inset fails only below 16px per
-/// axis with the current gap).
-#[must_use]
-pub(crate) fn tile_domain_bounds(visible: Rect) -> Rect {
-    tiler_core::geometry::inset_bounds(visible, PHASE1_OUTER_GAP).unwrap_or(visible)
-}
-
-/// Native-mode domain views from the shared context: every retainable Space
-/// per display becomes one core domain planned into its display's visible
-/// work area (menu/Dock-excluded integer units — never the skeleton
-/// bounds) minus the adapter-side outer-gap inset. Order follows the
-/// context (display order, Spaces in row order). Callers split current
-/// (actuate) from hidden (reconcile without emission) via
-/// [`NativeContext::is_current`].
-pub(crate) fn native_domain_views(
-    ctx: &crate::runtime_types::NativeContext,
-) -> Vec<NativeDomainView> {
-    ctx.domains
-        .iter()
-        .map(|d| {
-            let key = DomainKey {
-                output: d.output.clone(),
-                workspace: d.workspace.clone(),
-            };
-            let domain = OutputDomain {
-                id: d.output.clone(),
-                workspace: d.workspace.clone(),
-                bounds: tile_domain_bounds(d.visible),
+/// Refresh retained dispatch context from the report's native context:
+/// known domains (key plus authoritative work-area bounds) for the
+/// read-only occupancy grouping and minimized-home validity, plus the
+/// topology revision fencing drag-drop press revisions. Called on every
+/// world dispatch (observations, inputs, terminates) so teardown paths
+/// converge too. Returns true when the revision is newly adopted (the
+/// caller logs the convergence evidence).
+pub(crate) fn note_dispatch_context(retained: &mut RetainedCore, ctx: &NativeContext) -> bool {
+    let adopted = ctx.revision != retained.native_revision;
+    retained.known_domains.clear();
+    for domain in &ctx.domains {
+        retained.known_domains.insert(
+            DomainKey {
+                output: domain.output.clone(),
+                workspace: domain.workspace.clone(),
+            },
+            OutputDomain {
+                id: domain.output.clone(),
+                workspace: domain.workspace.clone(),
+                // Keys drive occupancy and home validity; bounds ride the
+                // authoritative work area for inspection honesty.
+                bounds: domain.visible,
                 gap: PHASE1_GAP,
                 adjacent: BTreeMap::new(),
-            };
-            NativeDomainView { key, domain }
-        })
-        .collect()
-}
-
-/// Placeholder domain for a release event whose authoritative bounds are
-/// already gone from retention (defensive only: retirement always finds
-/// the key in `known_domains`). Shape-only filler — the release path
-/// never validates bounds, gaps, or membership.
-pub(crate) fn retired_domain_placeholder(key: &DomainKey) -> OutputDomain {
-    OutputDomain {
-        id: key.output.clone(),
-        workspace: key.workspace.clone(),
-        bounds: Rect {
-            x: 0,
-            y: 0,
-            w: 1,
-            h: 1,
-        },
-        gap: 0,
-        adjacent: BTreeMap::new(),
-    }
-}
-
-/// Build one native core event for a single tile domain: only that domain's
-/// member windows ride (already filtered by exact current-Space membership),
-/// homed to exactly the domain key, with that domain session's lifetime for
-/// wire normalization and that domain's revision cursor. One call per
-/// domain per observation; the engine converges each independently, so
-/// sessions stay per-display without any additive core API.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn build_native_event(
-    retained: &mut RetainedCore,
-    view: &NativeDomainView,
-    member_apps: &[(u32, Vec<ObservedWindow>)],
-    focused_override: Option<WindowId>,
-    closed: Vec<WindowId>,
-    command: CoreCommand,
-    session: Option<&Session>,
-    predicate: FixedSizePredicate,
-    revision: u64,
-) -> CoreEvent {
-    let mut rows: Vec<(String, Rect)> = Vec::new();
-    let mut windows: Vec<EngineWindow> = Vec::new();
-    for (pid, observed) in member_apps {
-        collect_app_windows(
-            &mut rows,
-            &mut windows,
-            *pid,
-            observed,
-            &view.key.output.0,
-            &view.key.workspace.0,
-            session,
-            predicate,
+            },
         );
     }
-    assemble_event(
-        retained,
-        revision,
-        &rows,
-        windows,
-        view.domain.clone(),
-        view.key.clone(),
-        focused_override,
-        closed,
-        command,
-    )
+    retained.native_revision = ctx.revision;
+    adopted
 }
 
 #[cfg(test)]
@@ -930,53 +755,6 @@ mod tests {
     }
 
     #[test]
-    fn tile_domain_bounds_carries_kde_windows_outer_margin() {
-        // Adapter-side outer-gap inset (KDE `domain-gap.ts` / Windows
-        // `tiling_domain_bounds` parity, 8/8 defaults): the visible work
-        // area shrinks by the outer gap on every side before the core
-        // plans, so tiled frames keep the work-area edge margin. Inner
-        // sibling spacing stays core-owned (`PHASE1_GAP` on the domain).
-        assert_eq!(
-            tile_domain_bounds(Rect {
-                x: 0,
-                y: 0,
-                w: 1440,
-                h: 900,
-            }),
-            Rect {
-                x: 8,
-                y: 8,
-                w: 1424,
-                h: 884,
-            }
-        );
-        // Offset work areas keep their origin under the inset.
-        assert_eq!(
-            tile_domain_bounds(Rect {
-                x: 1440,
-                y: 0,
-                w: 1440,
-                h: 900,
-            }),
-            Rect {
-                x: 1448,
-                y: 8,
-                w: 1424,
-                h: 884,
-            }
-        );
-        // A degenerate work area that cannot carry the margin keeps its
-        // raw rect instead of tiling nothing.
-        let tiny = Rect {
-            x: 0,
-            y: 0,
-            w: 10,
-            h: 900,
-        };
-        assert_eq!(tile_domain_bounds(tiny), tiny);
-    }
-
-    #[test]
     fn resize_repeat_continues_only_on_focus_direction_mode_match() {
         // Exact Windows `resize_repeat_next` parity: first press is index
         // 0 (the shared 12px step), continuation bumps the stored next,
@@ -1013,43 +791,6 @@ mod tests {
         assert_eq!(index, 41);
     }
 
-    #[test]
-    fn fingerprint_is_order_independent() {
-        let a = vec![
-            (
-                "b".to_owned(),
-                Rect {
-                    x: 0,
-                    y: 0,
-                    w: 1,
-                    h: 1,
-                },
-            ),
-            (
-                "a".to_owned(),
-                Rect {
-                    x: 1,
-                    y: 1,
-                    w: 2,
-                    h: 2,
-                },
-            ),
-        ];
-        let mut b = a.clone();
-        b.reverse();
-        assert_eq!(fingerprint(&a), fingerprint(&b));
-        let c = vec![(
-            "a".to_owned(),
-            Rect {
-                x: 9,
-                y: 9,
-                w: 2,
-                h: 2,
-            },
-        )];
-        assert_ne!(fingerprint(&a), fingerprint(&c));
-    }
-
     // -- Native member partition -------------------------------------------------
 
     use crate::runtime_types::{NativeContext, NativeDomain, ScopedWindowMeta};
@@ -1066,6 +807,7 @@ mod tests {
                     workspace: WorkspaceId("space-11".to_owned()),
                     space: 11,
                     current: true,
+                    readable: true,
                     bounds: Rect {
                         x: 0,
                         y: 0,
@@ -1086,6 +828,7 @@ mod tests {
                     workspace: WorkspaceId("space-21".to_owned()),
                     space: 21,
                     current: true,
+                    readable: true,
                     bounds: Rect {
                         x: 1440,
                         y: 0,
@@ -1151,9 +894,21 @@ mod tests {
                 .insert((*id).to_owned(), (*key).clone());
         }
         for key in known {
-            retained
-                .known_domains
-                .insert(key.clone(), retired_domain_placeholder(key));
+            retained.known_domains.insert(
+                key.clone(),
+                OutputDomain {
+                    id: key.output.clone(),
+                    workspace: key.workspace.clone(),
+                    bounds: Rect {
+                        x: 0,
+                        y: 0,
+                        w: 1,
+                        h: 1,
+                    },
+                    gap: 0,
+                    adjacent: BTreeMap::new(),
+                },
+            );
         }
         retained
     }

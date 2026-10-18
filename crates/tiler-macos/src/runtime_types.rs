@@ -168,6 +168,10 @@ pub struct NativeDomain {
     /// per display whose plans actuate. Hidden domains reconcile
     /// membership without frames or focus.
     pub current: bool,
+    /// False for homed-but-unreadable Spaces (type read gap): retained
+    /// hidden with an explicit world hold and no write authority, never
+    /// actuated — a transient read gap must not release its layout.
+    pub readable: bool,
     /// Full display rect in integer CG top-left points.
     pub bounds: Rect,
     /// Tiling work area in integer CG top-left points.
@@ -288,6 +292,10 @@ impl NativeContext {
                 let mut per_display = Vec::new();
                 for sid in ordered {
                     let actuated = Some(sid) == current_user;
+                    // Homed-but-unreadable Spaces stay retained hidden with
+                    // no write authority (world hold); only proven user
+                    // Spaces read.
+                    let readable = kinds.get(&sid).is_some_and(|kind| kind.is_some());
                     match kinds.get(&sid) {
                         // Proven non-user: never a domain (game safety).
                         Some(Some(kind)) if !matches!(kind, crate::ffi::SlsSpaceType::User) => {
@@ -304,6 +312,7 @@ impl NativeContext {
                         workspace: WorkspaceId(crate::topology::workspace_key(sid)),
                         space: sid,
                         current: actuated,
+                        readable,
                         bounds,
                         visible,
                     });
@@ -612,6 +621,11 @@ pub struct ClaimedSelect {
     pub expected_sid: Option<u64>,
     pub ui_generation: u64,
     pub topology_revision: Option<u64>,
+    /// Stable world-command operation identity (`op-<command_seq>`) minted
+    /// at engine dispatch: the main-thread drain reports its native outcome
+    /// under this id so the core settles the planner-owned view target
+    /// (never replayed). `None` until the engine binds the claim.
+    pub operation_id: Option<String>,
 }
 
 impl ClaimedSelect {
@@ -623,6 +637,7 @@ impl ClaimedSelect {
             expected_sid: None,
             ui_generation: 0,
             topology_revision: None,
+            operation_id: None,
         }
     }
 
@@ -640,6 +655,7 @@ impl ClaimedSelect {
             expected_sid: Some(expected_sid),
             ui_generation,
             topology_revision: Some(topology_revision),
+            operation_id: None,
         }
     }
 }
@@ -959,9 +975,11 @@ pub struct RuntimeDiagnostics {
     /// never dispatched. The armed select-only subset enqueues instead (see
     /// `input_select_enqueued`).
     pub input_refused_unsupported: u64,
-    /// Armed select-only workspace actions accepted by the engine without a
-    /// focused-window subject and handed to the main-thread tile controller
-    /// (one pending claim; no core contact, no plans).
+    /// Armed select-only workspace actions accepted by the engine: one
+    /// planner-owned world command per press (planner history converges)
+    /// plus one pending claim handed to the main-thread tile controller.
+    /// The drain reports its proven native outcome back under the claim's
+    /// operation identity, settling the retained view target.
     pub input_select_enqueued: u64,
     /// Armed select-only actions refused before enqueue (no published
     /// native topology yet, or a select already claimed/pending — concurrent

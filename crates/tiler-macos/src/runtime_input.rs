@@ -148,6 +148,9 @@ pub(crate) fn input_main_bound(
             }
             orientation_held = true;
         }
+        // Bump before enqueue (see `invalidate_clock` in runtime): the
+        // engine may dequeue the instant the job lands.
+        crate::runtime::invalidate_clock(&shared);
         if !inbox.try_send_data(EngineJob::InputAction { action }) {
             lock_shared(&shared).diagnostics.data_dropped_full += 1;
         }

@@ -43,13 +43,15 @@ use std::time::{Duration, Instant};
 
 use crate::runtime_backend::{AxBackendFactory, InputSourceFactory};
 use crate::runtime_input::input_main_bound;
-use crate::runtime_lifecycle::{
-    EngineExit, InputExit, LiveHandle, LoggerExit, WorkerExit, classify_shutdown, join_exited,
-};
+use crate::runtime_lifecycle::{LiveHandle, classify_shutdown, join_exited};
 pub use crate::runtime_lifecycle::{ReapReport, ShutdownOutcome, ShutdownReport};
-use crate::runtime_log::{LogEvent, LogSink, StderrSink, sanitize_backend_reason, spawn_logger};
+use crate::runtime_log::{LogSink, StderrSink, sanitize_backend_reason, spawn_logger};
 use crate::runtime_thread::{EngineJob, FocusSlot, FrameSlot, Inbox, engine_main};
-use crate::runtime_worker::app_worker_main;
+/// Stable pre-move path for the product select outcome: the handoff lane
+/// lives in [`crate::select_feedback`]; this re-export keeps drain and
+/// test call sites unchanged.
+pub use crate::select_feedback::SelectDrainOutcome;
+use crate::world_sequencer::ObservationClock;
 
 pub use crate::focus_route::FocusRoute;
 pub use crate::runtime_types::{
@@ -66,9 +68,6 @@ pub use crate::topology::TopologySnapshot;
 /// Shared fixed-size admission predicate plus hint vector, re-exported so
 /// offline tests drive both D1 predicate modes without a core dependency.
 pub use tiler_core::size_hints::{FixedSizePredicate, WindowSizeHints};
-
-/// Cap for the structured lifecycle log; oldest entries rotate out.
-const LOG_CAP: usize = 512;
 
 /// Recoverable failed start: the startup error plus the retained handle
 /// and its bounded cleanup report. The handle stays reachable so the
@@ -148,243 +147,14 @@ pub struct ScopedObservation {
 }
 
 // -- Shared lifecycle state ----------------------------------------------------
-
-pub(crate) struct AppRecord {
-    pub(crate) generation: u64,
-    pub(crate) terminated: bool,
-    stop: Arc<AtomicBool>,
-    pub(crate) frames: Arc<FrameSlot>,
-    /// Latest-wins focus slot for the owning AX worker (the SAME owner
-    /// that observed the window dispatches focus). Stopped alongside
-    /// `frames` on terminate/shutdown/drop so queued focus never outlives
-    /// its lifetime.
-    pub(crate) focus: Arc<FocusSlot>,
-    /// Backend readiness set by the worker inside its owning thread: `None`
-    /// while the backend is still being created, `Ok(())` once it exists,
-    /// `Err` when creation was refused. Polled by [`RuntimeHandle::launch_app`]
-    /// (bounded) and [`RuntimeHandle::worker_ready`].
-    ready: Arc<Mutex<Option<Result<(), String>>>>,
-    worker: Option<std::thread::JoinHandle<WorkerExit>>,
-    worker_name: String,
-}
-
-/// Live native-context cell: the single shared source every setter leg,
-// the worker rebind path, and the engine read on every fence. Stored by
-// [`RuntimeHandle::update_topology`] (and cleared by
-// [`RuntimeHandle::invalidate_topology`]) under the shared lock; cloned
-// out as a stable handle for owner threads, which then read it lock-free
-// per fence. Replaced wholesale per snapshot, never mutated in place, so
-// readers always see one consistent revision. Plain data only.
-#[derive(Debug, Clone, Default)]
-pub struct NativeContextCell(Arc<Mutex<Option<Arc<NativeContext>>>>);
-
-impl NativeContextCell {
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Publish a freshly derived context (or clear it with `None`).
-    pub fn store(&self, ctx: Option<Arc<NativeContext>>) {
-        *self.0.lock().unwrap_or_else(|poison| poison.into_inner()) = ctx;
-    }
-
-    /// Load the current context, if any.
-    #[must_use]
-    pub fn load(&self) -> Option<Arc<NativeContext>> {
-        self.0
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .clone()
-    }
-}
-
-pub(crate) struct Shared {
-    pub(crate) config: RuntimeConfig,
-    generation_counter: u64,
-    log_counter: u64,
-    start: Instant,
-    pub(crate) apps: BTreeMap<u32, AppRecord>,
-    /// Current native topology snapshot (the main-thread controller owns
-    /// the cadence). `None` until the first
-    /// [`RuntimeHandle::update_topology`]; synthetic mode never sets it.
-    pub(crate) topology: Option<TopologySnapshot>,
-    /// Current display/Space revision fence. Synthetic mode holds 0 so every
-    /// legacy command (revision 0) passes; native mode tracks the latest
-    /// snapshot fingerprint.
-    pub(crate) topology_revision: u64,
-    /// Derived native tile context (per-display current-user-Space domains
-    /// in integer work areas), published by the main-thread supplier
-    /// alongside the snapshot. Retired by [`NativeContextCell`] below;
-    /// kept here so the engine can fence without an extra hop.
-    /// `None` until the first successful derivation; scoped observations
-    /// and effects fence while it is absent.
-    pub(crate) native_context: Option<Arc<NativeContext>>,
-    /// Live cell handle cloned into per-app backends at bind time. The
-    /// single shared source for every setter-leg fence read; written
-    /// synchronously by [`RuntimeHandle::update_topology`] (and cleared by
-    /// [`RuntimeHandle::invalidate_topology`]), so a topology update
-    /// mid-plan fences the very next leg — not just the next command.
-    pub(crate) native_cell: NativeContextCell,
-    /// One pending product select claim (armed select-only actions): set by
-    /// the engine without blocking, claimed and drained by the main-thread
-    /// tile controller. `select_busy` marks a drain in progress so
-    /// concurrent presses serialize/refuse instead of overlapping; both are
-    /// short critical sections only (never held across the blocking effect).
-    /// Indicator clicks ride as full [`ClaimedSelect`] bindings (expected
-    /// SID plus UI generation plus topology revision); tap chords ride
-    /// binding-free. The drain refuses a bound claim whose ordinal no
-    /// longer names its SID or whose revision drifted.
-    pub(crate) select_pending: Option<ClaimedSelect>,
-    pub(crate) select_busy: bool,
-    /// Main-thread-supplied global focus evidence (workspace-frontmost PID
-    /// plus bundle, plain IDs — never AX reads: the main thread performs no
-    /// AX under any cadence). The AX focused leg (`ax_focus`) is NOT read on
-    /// the main thread: each owning per-app AX worker reads the bounded
-    /// systemwide leg on its own thread (`sys_focus`) and stamps it over
-    /// `ax_focus` at send time, so a hung app can never stall the
-    /// controller. The engine promotes an app-local focused window to
-    /// observed truth only on full agreement; `None` (no evidence yet)
-    /// withholds promotion, never guesses.
-    pub(crate) focus_evidence: Option<FocusEvidence>,
-    zombies: Vec<LiveHandle>,
-    engine_handle: Option<std::thread::JoinHandle<EngineExit>>,
-    input_handle: Option<std::thread::JoinHandle<InputExit>>,
-    logger_handle: Option<std::thread::JoinHandle<LoggerExit>>,
-    /// Parked input thread for prompt stop wake (`unpark` after `stop_input`
-    /// is set; an `unpark` before `park` grants a permit, so no wake is
-    /// lost).
-    pub(crate) input_thread: Option<std::thread::Thread>,
-    /// Cached terminal shutdown report: a repeated stop replays the exact
-    /// terminal report instead of hiding a panic/timeout/unclean behind
-    /// `AlreadyStopped`.
-    terminal: Option<ShutdownReport>,
-    admission_closed: bool,
-    stop_engine: Arc<AtomicBool>,
-    stop_input: Arc<AtomicBool>,
-    stop_logger: Arc<AtomicBool>,
-    log_tx: Option<std::sync::mpsc::SyncSender<LogEvent>>,
-    pub(crate) diagnostics: RuntimeDiagnostics,
-    log: VecDeque<LifecycleLogEntry>,
-    pub(crate) last_desired: Vec<DesiredFrame>,
-}
-
-/// Lock the shared state, recovering from poisoning so stop/reap/diagnostics
-/// stay usable after a supervised thread panic. Panics never hold this lock
-/// (workers panic inside backends, the engine panics outside the lock), so
-/// recovery only inherits already-committed counters.
-pub(crate) fn lock_shared(shared: &Mutex<Shared>) -> std::sync::MutexGuard<'_, Shared> {
-    shared.lock().unwrap_or_else(|poison| poison.into_inner())
-}
-
-/// Lock the focus outbox with the same poison recovery.
-pub(crate) fn lock_focus(
-    queue: &Mutex<Vec<FocusRequest>>,
-) -> std::sync::MutexGuard<'_, Vec<FocusRequest>> {
-    queue.lock().unwrap_or_else(|poison| poison.into_inner())
-}
-
-impl Shared {
-    /// Push one ring entry and forward its copy to the bounded async sink
-    /// under the SAME lock. Sequence allocation, ring order, and channel
-    /// enqueue order are therefore identical, so the sink observes the same
-    /// monotonic correlation sequence as the ring. The enqueue is a single
-    /// `try_send` does not wait for queue space or sink I/O: a full or gone
-    /// queue drops the async copy counted. Only the dedicated logger thread
-    /// calls the sink's `write`. The ring entry is always kept. See [`emit`].
-    pub(crate) fn log(
-        &mut self,
-        pid: u32,
-        generation: u64,
-        ref_id: u64,
-        kind: &'static str,
-        outcome: &'static str,
-        count: u64,
-    ) {
-        self.log_counter += 1;
-        if self.log.len() >= LOG_CAP {
-            self.log.pop_front();
-            self.diagnostics.log_rotated += 1;
-        }
-        let timestamp_ms = self.start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-        let entry = LifecycleLogEntry {
-            seq: self.log_counter,
-            timestamp_ms,
-            pid,
-            generation,
-            ref_id,
-            kind,
-            outcome,
-            count,
-        };
-        self.log.push_back(entry);
-        let event = LogEvent {
-            seq: self.log_counter,
-            timestamp_ms,
-            pid,
-            generation,
-            ref_id,
-            kind,
-            outcome,
-            count,
-        };
-        if let Some(tx) = self.log_tx.clone()
-            && tx.try_send(event).is_err()
-        {
-            self.diagnostics.logger_dropped += 1;
-        }
-    }
-
-    pub(crate) fn count_reply(&mut self, token: &str) {
-        *self
-            .diagnostics
-            .core_replies
-            .entry(token.to_owned())
-            .or_insert(0) += 1;
-    }
-
-    pub(crate) fn count_completion(&mut self, token: &str) {
-        *self
-            .diagnostics
-            .completions
-            .entry(token.to_owned())
-            .or_insert(0) += 1;
-    }
-}
-
-/// Append one ring entry and forward its copy to the bounded async sink
-/// under the SAME shared lock. Sequence allocation, ring order, and channel
-/// enqueue order are therefore identical, so the sink observes the same
-/// monotonic correlation sequence as the ring. The enqueue is a single
-/// `try_send` (does not wait for queue space: a full or gone queue drops the
-/// async copy counted via `logger_dropped`); the ring entry is always kept.
-/// Only the dedicated logger thread ever blocks, in `write` — never an
-/// engine/input/app owner holding shared state.
-pub(crate) fn emit(
-    shared: &Arc<Mutex<Shared>>,
-    pid: u32,
-    generation: u64,
-    ref_id: u64,
-    kind: &'static str,
-    outcome: &'static str,
-    count: u64,
-) {
-    lock_shared(shared).log(pid, generation, ref_id, kind, outcome, count);
-}
-
-/// True while the engine owner is alive (spawned and not proven exited).
-/// Admission consults this so work is refused — never queued — once the
-/// engine is dead.
-pub(crate) fn engine_alive(shared: &Mutex<Shared>) -> bool {
-    let guard = lock_shared(shared);
-    if guard.admission_closed {
-        return false;
-    }
-    guard
-        .engine_handle
-        .as_ref()
-        .is_none_or(|h| !h.is_finished())
-}
+// The single shared cell plus its lock/clock/log helpers live in
+// [`crate::runtime_shared`] (re-exported here so every existing
+// `crate::runtime::{Shared, ...}` path keeps working); per-app lifetime
+// admission lives in [`crate::runtime_apps`].
+pub use crate::runtime_shared::{MidflightHook, NativeContextCell, PostAcceptHook};
+pub(crate) use crate::runtime_shared::{
+    Shared, emit, engine_alive, invalidate_clock, lock_focus, lock_shared,
+};
 
 // -- Runtime -------------------------------------------------------------------
 
@@ -479,6 +249,9 @@ impl Runtime {
                 log_counter: 0,
                 start: Instant::now(),
                 apps: BTreeMap::new(),
+                clock: Arc::new(ObservationClock::new()),
+                midflight_hook: Mutex::new(None),
+                post_accept_hook: Mutex::new(None),
                 topology: None,
                 topology_revision: 0,
                 native_context: None,
@@ -521,6 +294,9 @@ impl Runtime {
             log_counter: 0,
             start: Instant::now(),
             apps: BTreeMap::new(),
+            clock: Arc::new(ObservationClock::new()),
+            midflight_hook: Mutex::new(None),
+            post_accept_hook: Mutex::new(None),
             topology: None,
             topology_revision: 0,
             native_context: None,
@@ -797,10 +573,10 @@ fn cleanup_failed_start(
 /// [`RuntimeHandle::reap`], which wait bounded. Safe to use from the main
 /// thread; never activates the desktop.
 pub struct RuntimeHandle {
-    shared: Arc<Mutex<Shared>>,
-    inbox: Arc<Inbox>,
-    focus_queue: Arc<Mutex<Vec<FocusRequest>>>,
-    ax_factory: Arc<dyn AxBackendFactory>,
+    pub(crate) shared: Arc<Mutex<Shared>>,
+    pub(crate) inbox: Arc<Inbox>,
+    pub(crate) focus_queue: Arc<Mutex<Vec<FocusRequest>>>,
+    pub(crate) ax_factory: Arc<dyn AxBackendFactory>,
 }
 
 // -- Read-only retained workspace occupancy -------------------------------------
@@ -835,383 +611,6 @@ pub struct WorkspaceOccupancyReport {
 }
 
 impl RuntimeHandle {
-    /// Admit one application PID: allocate the next monotonic generation and
-    /// spawn its worker, which creates the AX backend inside the owning
-    /// thread and reports its own `Launch` to the engine once the backend
-    /// exists. Returns the generation immediately without waiting for
-    /// backend readiness: this is the nonblocking path for the main/UI
-    /// thread. Poll [`RuntimeHandle::worker_ready`] for backend readiness;
-    /// backend creation can never stall the main thread, the engine, or
-    /// another app. Refuses overlapping replacement while the previous
-    /// generation still executes. No extra thread is created: the worker
-    /// itself is the only new thread.
-    pub fn launch_app_async(&self, pid: u32) -> Result<u64, StartupError> {
-        if pid <= 1 {
-            return Err(StartupError::InvalidConfig(format!(
-                "refusing reserved pid {pid}"
-            )));
-        }
-        if !engine_alive(&self.shared) {
-            return Err(StartupError::AdmissionClosed);
-        }
-        // Reap any already-exited worker for this PID so a finished
-        // generation never blocks replacement; a still-executing one
-        // refuses the overlap. The join happens outside the shared lock.
-        let finished_worker = {
-            let guard = lock_shared(&self.shared);
-            if guard.admission_closed {
-                return Err(StartupError::AdmissionClosed);
-            }
-            let prior = guard.apps.get(&pid).map(|record| {
-                let finished = record.worker.as_ref().is_some_and(|h| h.is_finished());
-                (record.generation, finished)
-            });
-            if let Some((generation, false)) = prior {
-                return Err(StartupError::PreviousGenerationRunning { pid, generation });
-            }
-            prior.map(|(generation, _)| generation)
-        };
-        if let Some(generation) = finished_worker {
-            // Proven exited above; join outside the lock, then remove only if
-            // the generation did not change under us.
-            let worker = {
-                let mut guard = lock_shared(&self.shared);
-                guard
-                    .apps
-                    .get_mut(&pid)
-                    .filter(|record| record.generation == generation)
-                    .and_then(|record| record.worker.take())
-            };
-            if let Some(worker) = worker {
-                let (panicked, unclean) = match worker.join() {
-                    Err(_) => (true, false),
-                    Ok(WorkerExit::Clean) => (false, false),
-                    Ok(WorkerExit::Unclean { .. }) => (false, true),
-                };
-                // Persistent evidence: a reaped panic or unclean teardown
-                // still poisons the terminal shutdown.
-                if panicked {
-                    lock_shared(&self.shared).diagnostics.worker_panics_observed += 1;
-                    emit(
-                        &self.shared,
-                        pid,
-                        generation,
-                        0,
-                        "worker",
-                        "panic-reaped",
-                        0,
-                    );
-                } else if unclean {
-                    lock_shared(&self.shared)
-                        .diagnostics
-                        .worker_unclean_observed += 1;
-                    emit(
-                        &self.shared,
-                        pid,
-                        generation,
-                        0,
-                        "worker",
-                        "unclean-reaped",
-                        0,
-                    );
-                }
-                let mut guard = lock_shared(&self.shared);
-                let current = guard.apps.get(&pid).map(|record| record.generation);
-                if current == Some(generation) {
-                    guard.apps.remove(&pid);
-                }
-            }
-            // Re-check admission and overlap after the join.
-            let guard = lock_shared(&self.shared);
-            if guard.admission_closed {
-                return Err(StartupError::AdmissionClosed);
-            }
-            if let Some(record) = guard.apps.get(&pid) {
-                return Err(StartupError::PreviousGenerationRunning {
-                    pid,
-                    generation: record.generation,
-                });
-            }
-        }
-        let (frames, focus, stop, ready, generation) = {
-            let mut guard = lock_shared(&self.shared);
-            // A retained (timed-out) handle for this PID also blocks overlap.
-            let blocked = guard.zombies.iter().any(|z| match z {
-                LiveHandle::Worker {
-                    pid: zpid,
-                    generation: _,
-                    handle,
-                } => *zpid == pid && !handle.is_finished(),
-                _ => false,
-            });
-            if blocked {
-                let generation = guard
-                    .zombies
-                    .iter()
-                    .filter_map(|z| match z {
-                        LiveHandle::Worker {
-                            pid: zpid,
-                            generation,
-                            ..
-                        } if *zpid == pid => Some(*generation),
-                        _ => None,
-                    })
-                    .max()
-                    .unwrap_or(0);
-                return Err(StartupError::PreviousGenerationRunning { pid, generation });
-            }
-            guard.generation_counter += 1;
-            let generation = guard.generation_counter;
-            let frames = Arc::new(FrameSlot::new());
-            let focus = Arc::new(FocusSlot::new());
-            let stop = Arc::new(AtomicBool::new(false));
-            let ready = Arc::new(Mutex::new(None));
-            guard.apps.insert(
-                pid,
-                AppRecord {
-                    generation,
-                    terminated: false,
-                    stop: Arc::clone(&stop),
-                    frames: Arc::clone(&frames),
-                    focus: Arc::clone(&focus),
-                    ready: Arc::clone(&ready),
-                    worker: None,
-                    worker_name: format!("phase1-ax-{pid}"),
-                },
-            );
-            (frames, focus, stop, ready, generation)
-        };
-
-        let worker_shared = Arc::clone(&self.shared);
-        let worker_inbox = Arc::clone(&self.inbox);
-        let worker_factory = Arc::clone(&self.ax_factory);
-        let worker_name = format!("phase1-ax-{pid}");
-        let worker = std::thread::Builder::new()
-            .name(worker_name.clone())
-            .spawn(move || {
-                app_worker_main(
-                    pid,
-                    generation,
-                    worker_factory,
-                    frames,
-                    focus,
-                    worker_inbox,
-                    worker_shared,
-                    stop,
-                    ready,
-                )
-            })
-            .map_err(|e| {
-                lock_shared(&self.shared).apps.remove(&pid);
-                StartupError::WorkerSpawn(e.to_string())
-            })?;
-        {
-            let mut guard = lock_shared(&self.shared);
-            if let Some(record) = guard.apps.get_mut(&pid) {
-                record.worker = Some(worker);
-                record.worker_name = worker_name;
-            }
-        }
-        emit(&self.shared, pid, generation, 0, "lifecycle", "launched", 0);
-        Ok(generation)
-    }
-
-    /// Synchronous launch convenience: [`RuntimeHandle::launch_app_async`]
-    /// plus a bounded wait for backend readiness. Offline/controller use
-    /// only — never call from the main (AppKit/UI) thread, because a slow
-    /// backend blocks the caller until `worker_ready_timeout`. Main/UI code
-    /// uses `launch_app_async` and polls [`RuntimeHandle::worker_ready`].
-    pub fn launch_app(&self, pid: u32) -> Result<u64, StartupError> {
-        let generation = self.launch_app_async(pid)?;
-        let ready_timeout = { lock_shared(&self.shared).config.worker_ready_timeout };
-        let deadline = Instant::now() + ready_timeout;
-        loop {
-            let state = self.worker_ready(pid);
-            match state {
-                WorkerReadiness::Ready => {
-                    // The worker reported its own Launch before marking
-                    // ready, so admission is already queued. A concurrent
-                    // stop still tears this down instead of leaking it.
-                    if lock_shared(&self.shared).admission_closed {
-                        self.remove_app_entry(pid);
-                        return Err(StartupError::AdmissionClosed);
-                    }
-                    return Ok(generation);
-                }
-                WorkerReadiness::Failed(reason) => {
-                    self.remove_app_entry(pid);
-                    return Err(StartupError::BackendRefused(reason));
-                }
-                WorkerReadiness::UnknownPid => {
-                    // Removed concurrently (stop raced launch).
-                    return Err(StartupError::AdmissionClosed);
-                }
-                WorkerReadiness::Pending => {
-                    if Instant::now() >= deadline {
-                        self.remove_app_entry(pid);
-                        return Err(StartupError::WorkerNotReady);
-                    }
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-            }
-        }
-    }
-
-    /// Backend readiness for the nonblocking launch path: `Pending` while
-    /// the worker is still creating its backend inside the owning thread,
-    /// `Ready` once it exists (and its engine `Launch` is queued),
-    /// `Failed` with the refusal reason, `UnknownPid` for no such app.
-    pub fn worker_ready(&self, pid: u32) -> WorkerReadiness {
-        let guard = lock_shared(&self.shared);
-        let Some(record) = guard.apps.get(&pid) else {
-            return WorkerReadiness::UnknownPid;
-        };
-        match record
-            .ready
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .clone()
-        {
-            None => WorkerReadiness::Pending,
-            Some(Ok(())) => WorkerReadiness::Ready,
-            Some(Err(reason)) => WorkerReadiness::Failed(reason),
-        }
-    }
-
-    fn remove_app_entry(&self, pid: u32) {
-        let (zombie, generation) = {
-            let mut guard = lock_shared(&self.shared);
-            let generation = guard.apps.get(&pid).map(|r| r.generation).unwrap_or(0);
-            let zombie = guard.apps.remove(&pid).and_then(|record| {
-                record.stop.store(true, Ordering::SeqCst);
-                record.frames.stop();
-                record.focus.stop();
-                record.worker.map(|handle| LiveHandle::Worker {
-                    pid,
-                    generation: record.generation,
-                    handle,
-                })
-            });
-            (zombie, generation)
-        };
-        // Join only a proven exit, outside the shared lock; a still-blocking
-        // backend stays reaped later via `reap`.
-        if let Some(handle) = zombie {
-            let (_, panics, unclean, retained) = join_exited(vec![handle]);
-            if panics > 0 {
-                lock_shared(&self.shared).diagnostics.worker_panics_observed += panics as u64;
-                emit(
-                    &self.shared,
-                    pid,
-                    generation,
-                    0,
-                    "worker",
-                    "panic-reaped",
-                    0,
-                );
-            }
-            if unclean > 0 {
-                lock_shared(&self.shared)
-                    .diagnostics
-                    .worker_unclean_observed += unclean as u64;
-                emit(
-                    &self.shared,
-                    pid,
-                    generation,
-                    0,
-                    "worker",
-                    "unclean-reaped",
-                    0,
-                );
-            }
-            if !retained.is_empty() {
-                emit(
-                    &self.shared,
-                    pid,
-                    generation,
-                    0,
-                    "worker",
-                    "not-ready-retained",
-                    0,
-                );
-                lock_shared(&self.shared).zombies.extend(retained);
-            }
-        }
-        self.inbox.wake_all();
-    }
-
-    /// Mark an app terminated: queued frame work is dropped, queued focus
-    /// requests for the app are purged, the worker is signalled, and late
-    /// results are rejected by generation. Unaffected apps keep running.
-    pub fn terminate_app(&self, pid: u32) -> TerminateOutcome {
-        let (generation, frames) = {
-            let mut guard = lock_shared(&self.shared);
-            if guard.admission_closed {
-                return TerminateOutcome::RuntimeStopped;
-            }
-            let state = guard.apps.get(&pid).map(|record| {
-                (
-                    record.generation,
-                    record.terminated,
-                    Arc::clone(&record.stop),
-                    Arc::clone(&record.frames),
-                )
-            });
-            let Some((generation, terminated, stop, frames)) = state else {
-                return TerminateOutcome::UnknownPid;
-            };
-            if terminated {
-                return TerminateOutcome::AlreadyTerminated;
-            }
-            if let Some(record) = guard.apps.get_mut(&pid) {
-                record.terminated = true;
-            }
-            stop.store(true, Ordering::SeqCst);
-            (generation, frames)
-        };
-        emit(
-            &self.shared,
-            pid,
-            generation,
-            0,
-            "lifecycle",
-            "terminated",
-            0,
-        );
-        frames.stop();
-        if let Some(record) = lock_shared(&self.shared).apps.get(&pid) {
-            record.focus.stop();
-        }
-        // Purge queued focus for the dead app: dispatch must never outlive
-        // its lifetime. Sequential locks only (focus, then shared): holding
-        // the focus guard across a shared lock would invert the
-        // shared-then-focus order used by shutdown and deadlock.
-        let purged = {
-            let mut queue = lock_focus(&self.focus_queue);
-            let before = queue.len();
-            queue.retain(|request| request.pid != pid);
-            (before - queue.len()) as u64
-        };
-        if purged > 0 {
-            lock_shared(&self.shared).diagnostics.terminated_invalidated += purged;
-            emit(
-                &self.shared,
-                pid,
-                0,
-                0,
-                "focus",
-                "terminated-purged",
-                purged,
-            );
-        }
-        // Control lane: never dropped by data saturation.
-        let _ = self
-            .inbox
-            .send_control(EngineJob::Terminate { pid, generation });
-        self.inbox.wake_all();
-        TerminateOutcome::Terminated { generation }
-    }
-
     /// Submit one typed AX observation. The observation carries its
     /// originating app lifetime: a generation that does not match the live
     /// one is refused as `StaleGeneration` (counted) instead of being
@@ -1285,30 +684,14 @@ impl RuntimeHandle {
             windows: obs.windows,
             focused_wid: obs.focused_wid,
         };
+        // Bump before enqueue (see `invalidate_clock`): the engine may
+        // dequeue the instant the job lands.
+        invalidate_clock(&self.shared);
         if self.inbox.try_send_data(job) {
             SubmitOutcome::Accepted
         } else {
             lock_shared(&self.shared).diagnostics.data_dropped_full += 1;
             SubmitOutcome::EngineQueueFull
-        }
-    }
-
-    /// Emit the lifecycle event for tests and future platform shims.
-    /// Currently `Launch` maps to [`RuntimeHandle::launch_app`] and
-    /// `Terminate` to [`RuntimeHandle::terminate_app`].
-    pub fn submit_lifecycle(&self, event: LifecycleEvent) -> Result<u64, StartupError> {
-        match event {
-            LifecycleEvent::Launch { pid } => self.launch_app(pid),
-            LifecycleEvent::Terminate { pid } => match self.terminate_app(pid) {
-                TerminateOutcome::Terminated { generation } => Ok(generation),
-                TerminateOutcome::UnknownPid => Err(StartupError::InvalidConfig(format!(
-                    "terminate: unknown pid {pid}"
-                ))),
-                TerminateOutcome::AlreadyTerminated => Err(StartupError::InvalidConfig(format!(
-                    "terminate: pid {pid} already terminated"
-                ))),
-                TerminateOutcome::RuntimeStopped => Err(StartupError::AdmissionClosed),
-            },
         }
     }
 
@@ -1365,6 +748,7 @@ impl RuntimeHandle {
         }
         let purged = {
             let mut guard = lock_shared(&self.shared);
+            let changed = guard.topology_revision != revision;
             guard.topology = Some(snapshot);
             guard.topology_revision = revision;
             guard.native_context = context.clone();
@@ -1372,8 +756,24 @@ impl RuntimeHandle {
             let mut queue = lock_focus(&self.focus_queue);
             let before = queue.len();
             queue.retain(|request| request.topology_revision == revision);
-            (before - queue.len()) as u64
+            ((before - queue.len()) as u64, changed)
         };
+        let (purged, changed) = purged;
+        if changed {
+            // New display/Space facts change future reports (domains,
+            // current flags, homing): fence any in-flight reply so it
+            // cannot actuate over superseded topology. Republishing an
+            // identical revision moves nothing.
+            //
+            // Mark-without-job audit: this advances the clock with no
+            // queued job. Safety comes from the emission gate instead: a
+            // post-stamp update fails the watermark equality, and a
+            // pre-stamp update after the dispatch snapshot fails the
+            // topology-revision revalidation — either way no stale frame
+            // reaches a native setter. The next dispatch re-snapshots the
+            // fresh context and converges.
+            invalidate_clock(&self.shared);
+        }
         if purged > 0 {
             lock_shared(&self.shared).diagnostics.stale_dropped += purged;
             emit(&self.shared, 0, 0, 0, "topology", "focus-purged", purged);
@@ -1407,6 +807,12 @@ impl RuntimeHandle {
             }
         };
         if changed {
+            // Mark-without-job audit (see `update_topology_with`): the
+            // engine never reads shared focus evidence at dispatch — each
+            // owning worker stamps it into its snapshots — so there is no
+            // incorporable truth to count here. The mark only fences
+            // in-flight replies; the next snapshot-carrying job converges.
+            invalidate_clock(&self.shared);
             emit(&self.shared, 0, 0, 0, "focus", "evidence-updated", 0);
         }
     }
@@ -1425,6 +831,11 @@ impl RuntimeHandle {
             guard.native_context = None;
             guard.native_cell.store(None);
         }
+        // Mark-without-job audit (see `update_topology_with`): clearing
+        // the context fails the emission gate's revision revalidation for
+        // any dispatch holding the retired snapshot, so no frame actuates
+        // under it; the next dispatch refuses no-context instead.
+        invalidate_clock(&self.shared);
         emit(&self.shared, 0, 0, 0, "topology", "invalidated", 0);
     }
 
@@ -1569,6 +980,9 @@ impl RuntimeHandle {
                 revision: obs.revision,
             },
         };
+        // Bump before enqueue (see `invalidate_clock`): the engine may
+        // dequeue the instant the job lands.
+        invalidate_clock(&self.shared);
         if self.inbox.try_send_data(job) {
             SubmitOutcome::Accepted
         } else {
@@ -1586,6 +1000,8 @@ impl RuntimeHandle {
         if !engine_alive(&self.shared) {
             return SubmitOutcome::AdmissionClosed;
         }
+        // Bump before enqueue (see `invalidate_clock`).
+        invalidate_clock(&self.shared);
         if self.inbox.try_send_data(EngineJob::InputAction { action }) {
             SubmitOutcome::Accepted
         } else {
@@ -1614,6 +1030,8 @@ impl RuntimeHandle {
         if !engine_alive(&self.shared) {
             return SubmitOutcome::AdmissionClosed;
         }
+        // Bump before enqueue (see `invalidate_clock`).
+        invalidate_clock(&self.shared);
         if self.inbox.try_send_data(EngineJob::IndicatorSelect {
             action,
             expected_sid,
@@ -1636,6 +1054,8 @@ impl RuntimeHandle {
         if !engine_alive(&self.shared) {
             return SubmitOutcome::AdmissionClosed;
         }
+        // Bump before enqueue (see `invalidate_clock`).
+        invalidate_clock(&self.shared);
         if self.inbox.try_send_data(EngineJob::InputAction {
             action: InputSemanticAction::ToggleFloat,
         }) {
@@ -1657,6 +1077,8 @@ impl RuntimeHandle {
         if !engine_alive(&self.shared) {
             return SubmitOutcome::AdmissionClosed;
         }
+        // Bump before enqueue (see `invalidate_clock`).
+        invalidate_clock(&self.shared);
         if self.inbox.try_send_data(EngineJob::InputAction {
             action: InputSemanticAction::DragDrop {
                 window: request.window,
@@ -1706,6 +1128,27 @@ impl RuntimeHandle {
         self.inbox.send_control(EngineJob::TestPanic)
     }
 
+    /// Deterministic-test rendezvous only (see [`MidflightHook`]): install
+    /// or clear the once-per-flight engine hook. Never used by production
+    /// paths; unset before shutdown so no dispatch can block on a test.
+    pub fn set_midflight_hook_for_test(&self, hook: Option<MidflightHook>) {
+        *lock_shared(&self.shared)
+            .midflight_hook
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner()) = hook;
+    }
+
+    /// Deterministic-test rendezvous only (see [`PostAcceptHook`]): install
+    /// or clear the once-per-accepted-reply engine hook. Never used by
+    /// production paths; unset before shutdown so no dispatch can block on
+    /// a test.
+    pub fn set_post_accept_hook_for_test(&self, hook: Option<PostAcceptHook>) {
+        *lock_shared(&self.shared)
+            .post_accept_hook
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner()) = hook;
+    }
+
     /// Wait until the engine has processed every job submitted before this
     /// call (FIFO barrier). Returns false on timeout or after stop.
     pub fn flush(&self, timeout: Duration) -> bool {
@@ -1736,41 +1179,6 @@ impl RuntimeHandle {
             return None;
         }
         rx.recv_timeout(timeout).ok()
-    }
-
-    /// Claim one pending product select for the main-thread drain: takes the
-    /// pending claim (action plus, for indicator clicks, the immutable
-    /// render-time SID/generation/revision binding) and marks the slot busy
-    /// so concurrent engine enqueues serialize/refuse instead of overlapping
-    /// (`None` when nothing is pending or a drain is already in progress).
-    /// Short critical section only — never held across the blocking effect.
-    /// Pair every `Some` with [`RuntimeHandle::release_select_after_drain`].
-    pub fn claim_select_for_drain(&self) -> Option<ClaimedSelect> {
-        let mut guard = lock_shared(&self.shared);
-        if guard.select_busy || guard.select_pending.is_none() {
-            return None;
-        }
-        guard.select_busy = true;
-        guard.select_pending.take()
-    }
-
-    /// Release the select claim after the main-thread drain settles
-    /// (success, gate refusal, drift, or no effect — every path releases
-    /// exactly once; a sent press is never replayed).
-    pub fn release_select_after_drain(&self) {
-        lock_shared(&self.shared).select_busy = false;
-    }
-
-    /// Drop a pending (unclaimed) product select without dispatching: the
-    /// lock/secure/stale-topology paths refuse narrowly instead of running
-    /// a switch under an unsafe context. Returns whether one was dropped.
-    /// Never touches a drain in progress.
-    pub fn discard_select_pending(&self) -> bool {
-        let mut guard = lock_shared(&self.shared);
-        if guard.select_busy {
-            return false;
-        }
-        guard.select_pending.take().is_some()
     }
 
     /// Drain queued focus requests (dispatched, never verified). Freshness

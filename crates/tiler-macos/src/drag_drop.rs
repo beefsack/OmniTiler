@@ -922,6 +922,30 @@ pub fn engine_preview(engine: &mut Engine, event: CoreEvent) -> PreviewOutcome {
     classify_preview_reply(&engine.handle(&event))
 }
 
+/// Map one world-route preview rejection kind to its pure outcome (shared
+/// by live and duplicate-preview paths so refusal vocabulary cannot
+/// diverge). World counterpart to [`classify_preview_reply`]: the legacy
+/// path classifies [`CoreReply`], this one classifies world rejection
+/// kinds — including `pending-exists`, which cancels dead exactly like the
+/// legacy single-flight arm.
+pub(crate) fn map_preview_rejection(kind: &'static str) -> crate::drag_drop::PreviewOutcome {
+    use crate::drag_drop::PreviewOutcome;
+    match kind {
+        "unsupported-capability" => PreviewOutcome::HideTransient {
+            reason: "centre-unsupported",
+        },
+        "unchanged" => PreviewOutcome::HideTransient { reason: "self" },
+        "cross-domain-mismatch" => PreviewOutcome::HideTransient { reason: "outside" },
+        "pending-exists" => PreviewOutcome::CancelDead {
+            reason: "single-flight",
+        },
+        "single-flight" | "request-superseded" => PreviewOutcome::CancelDead {
+            reason: "single-flight",
+        },
+        _ => PreviewOutcome::HideTransient { reason: kind },
+    }
+}
+
 /// Synchronous drop outcome from the shared Engine oracle.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DropOutcome {
@@ -1649,6 +1673,40 @@ mod tests {
                 hints: tiler_core::size_hints::WindowSizeHints::none(),
             },
         ]
+    }
+
+    #[test]
+    fn world_preview_rejections_map_without_dropping() {
+        // World-route counterpart to the legacy classifier below: transient
+        // refusals hide (the gesture stays for the next sample);
+        // single-flight/superseded/pending cancel dead; unknown kinds hide
+        // under their own token (never a dropped reply).
+        assert!(matches!(
+            map_preview_rejection("unchanged"),
+            PreviewOutcome::HideTransient { reason: "self" }
+        ));
+        assert!(matches!(
+            map_preview_rejection("cross-domain-mismatch"),
+            PreviewOutcome::HideTransient { reason: "outside" }
+        ));
+        assert!(matches!(
+            map_preview_rejection("request-superseded"),
+            PreviewOutcome::CancelDead { .. }
+        ));
+        // Pending engine plans cancel dead (legacy `pending-exists`
+        // parity: terminate the gesture, overlay cleared).
+        assert!(matches!(
+            map_preview_rejection("pending-exists"),
+            PreviewOutcome::CancelDead {
+                reason: "single-flight"
+            }
+        ));
+        assert!(matches!(
+            map_preview_rejection("generation-mismatch"),
+            PreviewOutcome::HideTransient {
+                reason: "generation-mismatch"
+            }
+        ));
     }
 
     #[test]

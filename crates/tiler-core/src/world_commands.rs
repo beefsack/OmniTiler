@@ -68,12 +68,11 @@ impl WorldEngine {
                     };
                 }
                 self.note_command(command_seq);
-                CommandApplied::Effect(OneShotEffect {
-                    id: format!("fx-{command_seq}"),
-                    kind: crate::world_report::EffectKind::Focus,
-                    target: window.clone(),
-                    issued_revision: self.state_revision + 1,
-                })
+                CommandApplied::Effect(OneShotEffect::explicit_focus(
+                    command_seq,
+                    window.clone(),
+                    self.state_revision + 1,
+                ))
             }
             WorldCommand::Send {
                 window,
@@ -1140,6 +1139,7 @@ impl WorldEngine {
                 hover: Some(plan.preview.hover_prior()),
                 domain: plan.preview.domain.clone(),
                 source: plan.preview.source_domain.clone(),
+                target: plan.preview.target_window.clone(),
                 revision: plan.preview.revision,
             }),
             CoreReply::Tiled(plan) if plan.kind == TiledKind::ToggleFloat => {
@@ -1275,12 +1275,11 @@ impl WorldEngine {
             }
             CoreReply::FocusDirectional(plan) => {
                 self.note_command(command_seq);
-                CommandApplied::Effect(OneShotEffect {
-                    id: format!("fx-{command_seq}"),
-                    kind: crate::world_report::EffectKind::Focus,
-                    target: plan.to_window.clone(),
-                    issued_revision: self.state_revision + 1,
-                })
+                CommandApplied::Effect(OneShotEffect::explicit_focus(
+                    command_seq,
+                    plan.to_window.clone(),
+                    self.state_revision + 1,
+                ))
             }
             CoreReply::SendWorkspace(_) | CoreReply::SendOutput(_) => {
                 // Pair-route sends that surface here (same-domain

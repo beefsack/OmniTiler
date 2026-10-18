@@ -2220,6 +2220,18 @@ platform API behavior.
   boundary decisions for the migrated KDE path. The legacy domain interface
   and its bounds remain transitional for Windows/macOS, not a KDE fallback.
 
+- **Tentative macOS complete-world mapping, 2026-10-18:** represent observed
+  native Spaces in per-output-local mode, without inventing logical creation
+  or ordinary window-transfer capability. Preserve the existing 18 armed
+  select-only bindings and explicit-command-only native focus; this migration
+  does not adopt additional admission policy. Carry the insertion-neighbor
+  identity in the additive world drag-preview `target` / wire `win` field to
+  preserve the existing overlay contract. Submitted invalidation is not proof
+  of incorporated observations: revalidate the watermark, topology and queued
+  incorporable truth immediately before effects/setters, with observation-only
+  catch-up and no command replay. Offline delivery is verified; live acceptance
+  remains pending. [Evidence](changes/macos-full-state-replies.md).
+
 - Core extraction (user 2026-09-30): portable core completed through K1
   (visual policy in `tiler-core::visual`) under KDE first, with KWin fixtures
   and applicable live checks. K2 settings/action intent and K3 difference

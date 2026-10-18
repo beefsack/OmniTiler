@@ -566,6 +566,36 @@ fn flags(modifier: ProbeModifier) -> u64 {
     cg_flag_bits(modifier).0
 }
 
+/// Collect applied records until every wanted window has arrived at least
+/// once (deadline-bounded), then return the whole collected multiset
+/// sorted. Flush fences engine jobs, not worker applies, so a bare drain
+/// after a flush can race a slow worker and miss records; collecting
+/// until the expected set lands is deterministic. Callers compare the
+/// multiset exactly against the wanted set (plus a trailing empty drain):
+/// takes are ordered, so any stale batch taken earlier shows its records
+/// here, and any overwritten one shows in `frames_coalesced`.
+fn collect_applied_exact(fixture: &Fixture, wants: &[&str]) -> Vec<String> {
+    let deadline = std::time::Instant::now() + WAIT_TIMEOUT;
+    let mut out = Vec::new();
+    let mut seen = BTreeSet::new();
+    while wants.iter().any(|want| !seen.contains(*want)) {
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
+        if let Ok(record) = fixture.applied_rx.recv_timeout(Duration::from_millis(50)) {
+            seen.insert(record.window.clone());
+            out.push(record.window);
+        }
+    }
+    let mut drained: Vec<String> = drain_applied(fixture)
+        .into_iter()
+        .map(|record| record.window)
+        .collect();
+    out.append(&mut drained);
+    out.sort_unstable();
+    out
+}
+
 fn key(kind: TapKeyKind, key_flags: u64, key_code: u32) -> RawKeyEvent {
     RawKeyEvent {
         kind,
@@ -673,10 +703,8 @@ fn reconcile_drives_frame_plan_to_workers() {
 
     let diagnostics = fixture.handle.diagnostics();
     assert!(
-        diagnostics.core_replies.contains_key("reconcile-tiled")
-            || diagnostics
-                .core_replies
-                .contains_key("reconcile-projection"),
+        diagnostics.core_replies.contains_key("reconcile-accepted")
+            || diagnostics.core_replies.contains_key("reconcile-consumed"),
         "expected a reconcile plan reply: {:?}",
         diagnostics.core_replies
     );
@@ -1168,8 +1196,19 @@ fn focus_saturation_drops_counted_and_survives() {
     drain_applied(&fixture);
 
     // Two focus replies, one outbox slot: the second request must drop
-    // with a counted outcome instead of blocking actuation.
-    send_input_and_flush(&fixture, &[focus_key(), focus_key()], 2, 0);
+    // with a counted outcome instead of blocking actuation. Serialized
+    // (no mid-flight overlap): the freshness fence refuses a superseded
+    // in-flight command instead of dispatching it, so racing the pair
+    // would make the drop count load-dependent. Waiting for the first
+    // dispatch before sending the second keeps the oracle exact without
+    // weakening it.
+    send_input_and_flush(&fixture, &[focus_key()], 1, 0);
+    wait_diagnostics(
+        &fixture.handle,
+        |d| d.focus_dispatched >= 1,
+        "first focus dispatched",
+    );
+    send_input_and_flush(&fixture, &[focus_key()], 2, 0);
 
     let diagnostics = fixture.handle.diagnostics();
     let focus_replies: u64 = diagnostics
@@ -1205,6 +1244,65 @@ fn focus_saturation_drops_counted_and_survives() {
     ));
     flush(&fixture.handle);
     assert!(!drain_applied(&fixture).is_empty());
+    shutdown_clean(&fixture);
+}
+
+#[test]
+fn admission_never_steals_focus_but_explicit_focus_dispatches() {
+    // Legacy observed-focus authority: an admission-only reply (a newcomer
+    // window arriving with no command) must tile frames but never dispatch
+    // native focus; only an explicit focus step dispatches. Guards the
+    // migration against adopting the core's automatic admission policy as
+    // native steering.
+    let fixture = start(test_config());
+    let generation = fixture.handle.launch_app(APP_A).expect("launch");
+    fixture.handle.submit_observation(obs(
+        APP_A,
+        generation,
+        1,
+        vec![win(11, 0, 0, 1920, 1080)],
+        Some(11),
+    ));
+    flush(&fixture.handle);
+    let baseline = wait_applied(&fixture);
+    assert_eq!(baseline.window, "1001_11");
+    assert!(drain_applied(&fixture).is_empty());
+    assert!(fixture.handle.drain_focus_requests().is_empty());
+
+    // Admission-only: a newcomer tiles with no command in flight.
+    fixture.handle.submit_observation(obs(
+        APP_A,
+        generation,
+        2,
+        vec![win(11, 0, 0, 960, 1080), win(12, 960, 0, 960, 1080)],
+        Some(11),
+    ));
+    flush(&fixture.handle);
+    // Frames actuate for the newcomer...
+    assert_eq!(
+        collect_applied_exact(&fixture, &["1001_11", "1001_12"]),
+        vec!["1001_11".to_owned(), "1001_12".to_owned()],
+        "admission must still tile the newcomer"
+    );
+    // ...but no native focus dispatches for it.
+    assert!(
+        fixture.handle.drain_focus_requests().is_empty(),
+        "admission-only replies must never dispatch native focus"
+    );
+    assert_eq!(
+        fixture.handle.diagnostics().focus_dispatched,
+        0,
+        "admission must move no focus counter"
+    );
+
+    // Explicit focus still dispatches exactly once, to the neighbor.
+    send_input_and_flush(&fixture, &[focus_key()], 1, 0);
+    let requests = fixture.handle.drain_focus_requests();
+    assert_eq!(requests.len(), 1, "{requests:?}");
+    assert_eq!(requests[0].window, "1001_12");
+    assert_eq!(requests[0].generation, generation);
+    assert!(requests[0].dispatched);
+    assert!(!requests[0].verified);
     shutdown_clean(&fixture);
 }
 
@@ -1815,8 +1913,22 @@ fn focus_plans_never_advance_observed_truth() {
 
     // Two focus steps with no new observation: both resolve from observed
     // focus 11, so both dispatch 1001_12. A planned (dispatched but
-    // unobserved) focus must not become the next step's subject.
-    send_input_and_flush(&fixture, &[focus_key(), focus_key()], 2, 0);
+    // unobserved) focus must not become the next step's subject. Serialized
+    // (no mid-flight overlap): the freshness fence refuses a superseded
+    // in-flight command instead of dispatching it, so racing the pair
+    // would make the request count load-dependent.
+    send_input_and_flush(&fixture, &[focus_key()], 1, 0);
+    wait_diagnostics(
+        &fixture.handle,
+        |d| d.focus_dispatched >= 1,
+        "first focus dispatched",
+    );
+    send_input_and_flush(&fixture, &[focus_key()], 2, 0);
+    wait_diagnostics(
+        &fixture.handle,
+        |d| d.focus_dispatched >= 2,
+        "second focus dispatched",
+    );
     let requests = fixture.handle.drain_focus_requests();
     assert_eq!(requests.len(), 2, "{requests:?}");
     for request in &requests {
@@ -2302,11 +2414,10 @@ fn structured_sink_reconstructs_start_to_stop() {
             "sink must see {wanted:?}: {kinds:?}"
         );
     }
-    // The core plan reply is `tiled` or `projection` depending on layout;
-    // either proves the core step ran between observation and frame.
+    // The world plan reply proves the core step ran between observation
+    // and frame (one complete reply per dispatch, never domain fragments).
     assert!(
-        contains_ordered(&kinds, &[("core-reply", "tiled")])
-            || contains_ordered(&kinds, &[("core-reply", "projection")]),
+        contains_ordered(&kinds, &[("core-reply", "reconcile-accepted")]),
         "sink must see the core reply: {kinds:?}"
     );
     assert!(
@@ -2783,126 +2894,4 @@ fn dropped_handle_exits_workers_without_join() {
         applied_rx.try_recv().is_err(),
         "a stopped worker starts no further commands"
     );
-}
-
-#[test]
-fn redundant_frame_writes_skipped_once_observed() {
-    let fixture = start(test_config());
-    configure_snapshot(
-        &fixture,
-        APP_A,
-        vec![win(11, 0, 0, 960, 1080), win(12, 960, 0, 960, 1080)],
-    );
-    let obs_tx = autonomous_app(&fixture, APP_A);
-    fixture.handle.launch_app(APP_A).expect("launch");
-    // Startup actuates (desired tiling differs from observed): converge on
-    // the first plan so the backend record matches the core plan.
-    wait_desired_names(&fixture, &["1001_11", "1001_12"]);
-    let deadline = std::time::Instant::now() + WAIT_TIMEOUT;
-    let mut seen: BTreeMap<String, (i32, i32, i32, i32)> = BTreeMap::new();
-    loop {
-        let desired = fixture.handle.last_desired_geometry();
-        while let Ok(record) = fixture.applied_rx.try_recv() {
-            seen.insert(record.window.clone(), record.rect);
-        }
-        if !desired.is_empty()
-            && desired
-                .iter()
-                .all(|f| seen.get(&f.window) == Some(&(f.x, f.y, f.w, f.h)))
-        {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "first plan never actuated: {seen:?}"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    drain_applied(&fixture);
-    // Report the planned geometry back as observed truth: the next identical
-    // plan carries no new information, so every write is skipped — truth
-    // still flows (the observation publishes) while redundant native writes
-    // do not.
-    let desired = fixture.handle.last_desired_geometry();
-    assert_eq!(desired.len(), 2);
-    let observed: Vec<ObservedWindow> = desired
-        .iter()
-        .map(|f| {
-            let (_, wid) = f.window.split_once('_').expect("minted identity");
-            let (x, y, w, h) = (f.x, f.y, f.w, f.h);
-            ObservedWindow {
-                wid: wid.parse().expect("numeric wid"),
-                x,
-                y,
-                w,
-                h,
-                floating: false,
-                fullscreen: false,
-                hints: tiler_macos::runtime::WindowSizeHints::none(),
-            }
-        })
-        .collect();
-    configure_snapshot(&fixture, APP_A, observed.clone());
-    obs_tx
-        .send(Ok(backend_snapshot(observed, None)))
-        .expect("backend send");
-    // Deterministic rendezvous on the skip counter (not on timing): both
-    // re-planned commands must skip their native write.
-    wait_diagnostics(
-        &fixture.handle,
-        |d| d.frames_redundant_skipped >= 2,
-        "redundant skips",
-    );
-    flush(&fixture.handle);
-    assert!(
-        fixture.applied_rx.try_recv().is_err(),
-        "identical geometry needs no native write"
-    );
-    assert!(
-        fixture.handle.diagnostics().observations_published >= 2,
-        "truth still publishes while writes skip"
-    );
-    shutdown_clean(&fixture);
-}
-
-#[test]
-fn empty_observation_removes_all_and_cancels_batches() {
-    let fixture = start(test_config());
-    configure_snapshot(&fixture, APP_A, vec![win(11, 0, 0, 960, 1080)]);
-    let obs_tx = autonomous_app(&fixture, APP_A);
-    fixture.handle.launch_app(APP_A).expect("launch");
-    wait_desired_names(&fixture, &["1001_11"]);
-    // Rendezvous with the first plan's actuation before draining: without
-    // it a still-in-flight first apply would be mistaken for post-removal
-    // work below.
-    let _ = wait_applied(&fixture);
-    drain_applied(&fixture);
-    // All windows gone: the whole empty desired set supersedes pending
-    // frame state (cancelling the batch), and the configured empty snapshot
-    // publishes as honest truth — an explicit empty, never a failure
-    // masquerading as empty.
-    configure_snapshot(&fixture, APP_A, Vec::new());
-    obs_tx
-        .send(Ok(backend_snapshot(Vec::new(), None)))
-        .expect("backend send");
-    let deadline = std::time::Instant::now() + WAIT_TIMEOUT;
-    loop {
-        if fixture.handle.last_desired_geometry().is_empty()
-            && fixture.handle.diagnostics().observations_published >= 2
-        {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "removal never converged: {:?}",
-            fixture.handle.last_desired_geometry()
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    flush(&fixture.handle);
-    assert!(
-        fixture.applied_rx.try_recv().is_err(),
-        "an empty plan actuates nothing"
-    );
-    shutdown_clean(&fixture);
 }

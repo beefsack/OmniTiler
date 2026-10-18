@@ -189,6 +189,32 @@ pub struct OneShotEffect {
     pub issued_revision: u64,
 }
 
+impl OneShotEffect {
+    /// Mint the explicit-focus outcome of executed focus command `seq`.
+    /// The `fx-<seq>` identity correlates the effect with its dispatching
+    /// command; automatic admission intents mint `af-<window>` instead and
+    /// must never actuate focus on adapters keeping observed-focus
+    /// authority (see [`OneShotEffect::is_explicit_focus_for`]).
+    #[must_use]
+    pub fn explicit_focus(command_seq: u64, target: WindowId, issued_revision: u64) -> Self {
+        Self {
+            id: format!("fx-{command_seq}"),
+            kind: EffectKind::Focus,
+            target,
+            issued_revision,
+        }
+    }
+
+    /// True when this effect is the explicit-focus outcome of command `seq`
+    /// (exact identity correlation, never a prefix heuristic): every other
+    /// focus effect is an automatic admission intent and must not dispatch
+    /// native focus where observations keep observed-focus authority.
+    #[must_use]
+    pub fn is_explicit_focus_for(&self, command_seq: u64) -> bool {
+        self.kind == EffectKind::Focus && self.id == format!("fx-{command_seq}")
+    }
+}
+
 /// Retained transfer/view target (D3=A): stays outstanding until confirmed,
 /// superseded by newer external input, or settled by native refusal.
 /// Stable operation identity fences ambiguous outcomes; a possibly-executed
@@ -617,12 +643,16 @@ pub enum CommandResult {
     /// Read-only drag-preview: the derived proposed rect plus the carried
     /// hover prior for the next preview or the final drop. `domain` is the
     /// resolution (pointer) domain, `source` the capture domain the mover
-    /// leaves. Never commits, never advances the revision.
+    /// leaves. `target` is the insertion-neighbor window the overlay orders
+    /// above (core-resolved, never the mover: carrier ordering needs the
+    /// neighbor identity, not the subject). Never commits, never advances
+    /// the revision.
     DragPreview {
         rect: Rect,
         hover: Option<DragHoverPrior>,
         domain: DomainKey,
         source: DomainKey,
+        target: WindowId,
         revision: u64,
     },
     /// Intentional-float placement: `rect` is the effective float rectangle

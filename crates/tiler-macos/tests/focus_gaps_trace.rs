@@ -521,7 +521,7 @@ fn native_focus_walk_retains_at_edge_per_tier1() {
     assert!(
         diagnostics
             .core_replies
-            .get("focus-rejected")
+            .get("focus-rejected-unchanged")
             .copied()
             .unwrap_or(0)
             >= 1,
@@ -531,7 +531,7 @@ fn native_focus_walk_retains_at_edge_per_tier1() {
     assert_eq!(
         diagnostics
             .core_replies
-            .get("focus-focus-directional")
+            .get("focus-accepted")
             .copied()
             .unwrap_or(0),
         2,

@@ -211,17 +211,20 @@ pub fn command_result_estimate(result: &Option<CommandResult>) -> usize {
             hover,
             domain,
             source,
+            target,
             revision,
         } => {
             // {"op":"drag-preview","rev":"","domainOut":"","domainWs":"",
-            // "sourceOut":"","sourceWs":"","rect":[],"hover":} = 105
-            // punctuation plus the revision digits and hover body.
-            let mut bytes = 105
+            // "sourceOut":"","sourceWs":"","rect":[],"hover":,"win":""}
+            // = 113 punctuation plus the revision digits, hover body, and
+            // target id.
+            let mut bytes = 113
                 + u64_len(*revision)
                 + json_string_len(&domain.output.0)
                 + json_string_len(&domain.workspace.0)
                 + json_string_len(&source.output.0)
                 + json_string_len(&source.workspace.0)
+                + json_string_len(&target.0)
                 + rect_len(*rect);
             bytes += match hover {
                 None => 4,
@@ -1000,6 +1003,7 @@ pub fn encode_command_result(out: &mut String, result: &Option<CommandResult>) {
             hover,
             domain,
             source,
+            target,
             revision,
         } => {
             out.push_str("{\"op\":\"drag-preview\",\"rev\":\"");
@@ -1046,6 +1050,8 @@ pub fn encode_command_result(out: &mut String, result: &Option<CommandResult>) {
                     out.push('}');
                 }
             }
+            out.push_str(",\"win\":");
+            push_json_string(out, &target.0);
             out.push('}');
         }
         Result::Float {

@@ -443,6 +443,36 @@ fn wait_applied(fixture: &Fixture, window: &str) -> AppliedRecord {
     }
 }
 
+/// Wait for applied frames for two windows regardless of arrival order
+/// (deadline-bounded). Sequential `wait_applied` calls race when two
+/// workers apply concurrently: the first wait discards the second
+/// window's only record and the second wait starves. Returns both
+/// records in the requested order.
+fn wait_applied_pair(
+    fixture: &Fixture,
+    first: &str,
+    second: &str,
+) -> (AppliedRecord, AppliedRecord) {
+    let deadline = std::time::Instant::now() + WAIT;
+    let mut seen: [Option<AppliedRecord>; 2] = [None, None];
+    while seen[0].is_none() || seen[1].is_none() {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            panic!("no applied frames for {first} and {second}");
+        }
+        match fixture.applied_rx.recv_timeout(remaining) {
+            Ok(record) if record.2 == first && seen[0].is_none() => seen[0] = Some(record),
+            Ok(record) if record.2 == second && seen[1].is_none() => seen[1] = Some(record),
+            Ok(_) => continue,
+            Err(_) => panic!("no applied frames for {first} and {second}"),
+        }
+    }
+    (
+        seen[0].clone().expect("seen"),
+        seen[1].clone().expect("seen"),
+    )
+}
+
 /// Wait for the next applied frame for `window` whose rect equals
 /// `expected`: superseded records from pre-drain dispatches (same window,
 /// older geometry landing after the test's channel drain — flush fences
@@ -534,8 +564,7 @@ fn native_plans_land_inside_actual_work_areas_divided_per_domain() {
     // Both domains plan into their own actual work areas: the frames the
     // workers actuate prove per-domain core sessions (a skeleton session
     // would tile both windows into one 1920x1080 domain instead).
-    let a = wait_applied(&fixture, "1001_1");
-    let b = wait_applied(&fixture, "1002_2");
+    let (a, b) = wait_applied_pair(&fixture, "1001_1", "1002_2");
     let areas = work_areas();
     assert_eq!((a.0, a.4), (APP_A, revision));
     assert_eq!((b.0, b.4), (APP_B, revision));
@@ -573,16 +602,17 @@ fn native_plans_land_inside_actual_work_areas_divided_per_domain() {
         a.3,
         b.3
     );
-    // Both domain replies counted (two tiled plans, one per domain).
+    // Both observations dispatch (one complete world reply each — no
+    // domain fragments).
     let diagnostics = fixture.handle.diagnostics();
     assert!(
         diagnostics
             .core_replies
-            .get("reconcile-tiled")
+            .get("reconcile-accepted")
             .copied()
             .unwrap_or(0)
             >= 2,
-        "each domain plans independently: {diagnostics:?}"
+        "each observation dispatches independently: {diagnostics:?}"
     );
     shutdown_clean(&fixture);
 }
@@ -623,7 +653,13 @@ fn engine_omits_without_membership_never_infers_geometry() {
     );
     let diagnostics = wait_diagnostics(
         &fixture.handle,
-        |d| d.core_replies.get("reconcile-tiled").copied().unwrap_or(0) >= 1,
+        |d| {
+            d.core_replies
+                .get("reconcile-accepted")
+                .copied()
+                .unwrap_or(0)
+                >= 1
+        },
         "domain plan",
     );
     let _ = diagnostics;
@@ -1223,8 +1259,7 @@ fn deleted_space_retires_domain_and_reseeds() {
     fixture.handle.launch_app(APP_A).expect("launch A");
     fixture.handle.launch_app(APP_B).expect("launch B");
     assert!(fixture.handle.flush(FLUSH));
-    let _ = wait_applied(&fixture, "1001_1");
-    let _ = wait_applied(&fixture, "1002_2");
+    let _ = wait_applied_pair(&fixture, "1001_1", "1002_2");
     while fixture.applied_rx.try_recv().is_ok() {}
 
     let mut moved = two_display_snapshot();
@@ -1266,20 +1301,21 @@ fn deleted_space_retires_domain_and_reseeds() {
     );
     assert!(fixture.handle.flush(FLUSH));
     // Both windows re-actuate inside their (unchanged) work areas.
-    let a = wait_applied(&fixture, "1001_1");
-    let b = wait_applied(&fixture, "1002_2");
+    let (a, b) = wait_applied_pair(&fixture, "1001_1", "1002_2");
     let areas = work_areas();
     assert!(within(a.3, areas[0]), "reseeded domain tiles d1: {:?}", a.3);
     assert!(within(b.3, areas[1]), "stable domain tiles d2: {:?}", b.3);
-    // Retirement evidence is on the ring (the space-11 session is gone:
-    // its Space left the display, not merely the foreground).
+    // Convergence evidence is on the ring (the engine adopted the new
+    // topology through a full world report; the space-11 session retired
+    // core-internally — its Space left the display, not merely the
+    // foreground — while the re-actuation above proves the reseed).
     assert!(
         fixture
             .handle
             .log_snapshot()
             .iter()
-            .any(|e| e.kind == "domain" && e.outcome == "retired"),
-        "deleted Space must retire its domain"
+            .any(|e| e.kind == "domain" && e.outcome == "topology-adopted"),
+        "deleted Space must converge its removal"
     );
     shutdown_clean(&fixture);
 }
@@ -1788,8 +1824,7 @@ fn skip_then_actual_removal_releases() {
         SubmitOutcome::Accepted
     );
     assert!(fixture.handle.flush(FLUSH));
-    let _ = wait_applied(&fixture, "1001_1");
-    let _ = wait_applied(&fixture, "1002_2");
+    let _ = wait_applied_pair(&fixture, "1001_1", "1002_2");
     while fixture.applied_rx.try_recv().is_ok() {}
     // Skip display 1 first (unhomable row, still present): parked, never
     // released, no writes into it.
@@ -1875,8 +1910,8 @@ fn skip_then_actual_removal_releases() {
             .handle
             .log_snapshot()
             .iter()
-            .any(|e| e.kind == "domain" && e.outcome == "retired"),
-        "actually-removed display must release"
+            .any(|e| e.kind == "domain" && e.outcome == "topology-adopted"),
+        "actually-removed display must converge its release"
     );
     let desired: Vec<String> = fixture
         .handle
@@ -1923,8 +1958,7 @@ fn removed_display_retires_its_domains() {
         SubmitOutcome::Accepted
     );
     assert!(fixture.handle.flush(FLUSH));
-    let _ = wait_applied(&fixture, "1001_1");
-    let _ = wait_applied(&fixture, "1002_2");
+    let _ = wait_applied_pair(&fixture, "1001_1", "1002_2");
     while fixture.applied_rx.try_recv().is_ok() {}
     // Display 2 unplugged: single display, single row.
     let single = topology::build_snapshot(
@@ -1956,8 +1990,8 @@ fn removed_display_retires_its_domains() {
             .handle
             .log_snapshot()
             .iter()
-            .any(|e| e.kind == "domain" && e.outcome == "retired"),
-        "removed display must retire its domain"
+            .any(|e| e.kind == "domain" && e.outcome == "topology-adopted"),
+        "removed display must converge its removal"
     );
     let desired: Vec<String> = fixture
         .handle
@@ -2655,7 +2689,6 @@ fn select_claim_release_discard_protocol() {
     // busy); release frees the claim with nothing left pending; discard
     // drops a fresh pending without dispatch and never touches a drain
     // in progress. No live tap, no Spaces, no desktop effect.
-    use tiler_macos::runtime::ClaimedSelect;
     use tiler_macos::runtime::InputSemanticAction as Action;
     let bindings = select_product_bindings();
     let fixture = start(select_config(bindings.clone()));
@@ -2671,9 +2704,24 @@ fn select_claim_release_discard_protocol() {
         "select enqueued for claim",
     );
     assert!(fixture.handle.flush(FLUSH));
+    let claimed = fixture
+        .handle
+        .claim_select_for_drain()
+        .expect("pending claim");
+    assert_eq!(claimed.action, Action::WorkspaceSelect { index: 2 });
     assert_eq!(
-        fixture.handle.claim_select_for_drain(),
-        Some(ClaimedSelect::tap(Action::WorkspaceSelect { index: 2 }))
+        (
+            claimed.expected_sid,
+            claimed.ui_generation,
+            claimed.topology_revision
+        ),
+        (None, 0, None),
+        "tap claim rides binding-free"
+    );
+    assert_eq!(
+        claimed.operation_id.as_deref(),
+        Some("op-1"),
+        "claim binds the world operation identity for drain feedback"
     );
     assert!(fixture.handle.claim_select_for_drain().is_none());
     assert!(
@@ -2692,5 +2740,137 @@ fn select_claim_release_discard_protocol() {
     assert!(fixture.handle.discard_select_pending());
     assert!(!fixture.handle.discard_select_pending());
     assert!(fixture.handle.claim_select_for_drain().is_none());
+    shutdown_clean(&fixture);
+}
+
+#[test]
+fn select_drain_and_discard_outcomes_stage_feedback_end_to_end() {
+    // Proven drain/discard outcomes travel the full honest path from the
+    // public handoff to a staged engine row: the drain reports its bound
+    // operation outcome, a discard stages proven refusal for its bound
+    // claim, and both land ring-observable as staged feedback for the
+    // next world report — so the core settles the planner-owned view
+    // target instead of retaining it. No live tap, no Spaces.
+    use tiler_macos::runtime::{InputSemanticAction as Action, SelectDrainOutcome};
+    let bindings = select_product_bindings();
+    let fixture = start(select_config(bindings.clone()));
+    fixture
+        .handle
+        .update_topology_with(two_space_snapshot(), &user_space);
+    let staged_count = || {
+        fixture
+            .handle
+            .log_snapshot()
+            .iter()
+            .filter(|e| e.kind == "feedback" && e.outcome == "staged")
+            .count()
+    };
+    // Drain path: admitted select, claimed, released, outcome reported.
+    // The chord travels the async input thread, so the diagnostics wait
+    // (existing helper) proves engine admission before the flush barrier
+    // fences the rest.
+    send_select_chord(&fixture, &bindings, Action::WorkspaceSelect { index: 2 });
+    wait_diagnostics(
+        &fixture.handle,
+        |d| d.input_select_enqueued == 1,
+        "select enqueued for claim",
+    );
+    assert!(fixture.handle.flush(FLUSH));
+    let claimed = fixture.handle.claim_select_for_drain().expect("claim");
+    let op = claimed.operation_id.clone().expect("bound operation id");
+    fixture.handle.release_select_after_drain();
+    fixture
+        .handle
+        .report_select_outcome(&op, SelectDrainOutcome::Applied);
+    assert!(fixture.handle.flush(FLUSH));
+    assert_eq!(staged_count(), 1, "drain outcome must stage exactly once");
+    // Discard path: a second pending claim dropped without dispatch still
+    // stages its proven refusal (unbound claims stage nothing).
+    send_select_chord(&fixture, &bindings, Action::WorkspacePrevious);
+    wait_diagnostics(
+        &fixture.handle,
+        |d| d.input_select_enqueued == 2,
+        "second select enqueued",
+    );
+    assert!(fixture.handle.flush(FLUSH));
+    assert!(fixture.handle.discard_select_pending());
+    assert!(fixture.handle.flush(FLUSH));
+    assert_eq!(
+        staged_count(),
+        2,
+        "discarded bound claim must stage its refusal"
+    );
+    shutdown_clean(&fixture);
+}
+
+#[test]
+fn stale_select_flight_still_binds_claim_and_never_replays() {
+    // A racing observation mid-select-flight refuses the stale reply, but
+    // the planner-owned command already executed core-side (at-most-once):
+    // the pending claim still binds under its operation identity for drain
+    // feedback (no immediate redispatch from stale retained truth — the
+    // queued successors converge instead), and the racing select refuses
+    // busy instead of replaying. Channel rendezvous only.
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tiler_macos::runtime::{InputSemanticAction as Action, MidflightHook};
+    let bindings = select_product_bindings();
+    let fixture = start(select_config(bindings.clone()));
+    fixture
+        .handle
+        .update_topology_with(two_space_snapshot(), &user_space);
+    let (flight_open_tx, flight_open_rx) = mpsc::channel::<()>();
+    let (proceed_tx, proceed_rx) = mpsc::channel::<()>();
+    let proceed_rx = Mutex::new(proceed_rx);
+    let first = Arc::new(AtomicBool::new(true));
+    let hook: MidflightHook = Arc::new(move || {
+        if !first.swap(false, Ordering::SeqCst) {
+            return;
+        }
+        let _ = flight_open_tx.send(());
+        let _ = proceed_rx.lock().expect("mutex").recv();
+    });
+    fixture.handle.set_midflight_hook_for_test(Some(hook));
+    // First select opens its flight and parks mid-flight.
+    send_select_chord(&fixture, &bindings, Action::WorkspaceSelect { index: 2 });
+    flight_open_rx
+        .recv_timeout(WAIT)
+        .expect("select flight must open");
+    // Racing select arrives while the request is outstanding: it marks
+    // the watermark past the flight (and later refuses busy — never a
+    // second dispatch of the consumed command).
+    assert_eq!(
+        fixture
+            .handle
+            .submit_input_action(Action::WorkspaceSelect { index: 3 }),
+        SubmitOutcome::Accepted
+    );
+    proceed_tx.send(()).expect("engine parked mid-flight");
+    assert!(fixture.handle.flush(FLUSH));
+    fixture.handle.set_midflight_hook_for_test(None);
+    // Stale command reply refused with no stale emission; the claim bound
+    // with its operation identity exactly once; the racer refused busy.
+    let diagnostics = fixture.handle.diagnostics();
+    assert!(
+        diagnostics
+            .core_replies
+            .get("select-refused-stale-observation")
+            .copied()
+            .unwrap_or(0)
+            >= 1,
+        "stale select reply must refuse: {:?}",
+        diagnostics.core_replies
+    );
+    assert_eq!(diagnostics.input_select_enqueued, 1);
+    assert!(
+        diagnostics.input_select_refused >= 1,
+        "racing select must refuse busy: {diagnostics:?}"
+    );
+    let claimed = fixture.handle.claim_select_for_drain().expect("claim");
+    assert_eq!(
+        claimed.operation_id.as_deref(),
+        Some("op-1"),
+        "stale select still binds its operation identity"
+    );
+    fixture.handle.release_select_after_drain();
     shutdown_clean(&fixture);
 }

@@ -241,7 +241,8 @@ decisions of 2026-09-24 are under
   `wip/windows-world-diff` with 50 passing fixtures; acceptance rejected for
   the mapping gap, not delivered W2. Runtime adoption remains pending;
   handover lists options and concurrent native-gate failures.
-- P1 | macOS: adopt full world-state core replies | Replace per-domain reply
+- P1 | macOS: adopt full world-state core replies | delivered offline;
+  pending live verification. Replaced per-domain reply
   concatenation/cursors with world revision and input watermark, preserving
   AppKit/engine/AX thread ownership, per-app generations, latest-wins frame
   slots, observed-focus authority and native Space capability refusals.
@@ -250,7 +251,14 @@ decisions of 2026-09-24 are under
   observed Spaces without inventing Windows/KDE logical creation or ordinary
   window-transfer capability. Native Space operations remain capability-gated
   until separately established. The legacy domain API remains compiling,
-  not behaviorally migrated.
+  not behaviorally migrated. Queue-coherence/emission fences forbid stale
+  setters under newer submitted input; admission-only replies preserve native
+  focus. Bundle build/verify, 897 macOS tests, core/protocol, host-side Windows,
+  strict clippy and formatting pass. Unsafe unchanged (114, all in `ffi.rs`).
+  Live smoke was not run: owned-window admission, directional focus/move,
+  float, close reflow, select-only switch, border and indicator remain pending,
+  with raw protected-window before/after records required.
+  [Evidence and exact pending procedure](changes/macos-full-state-replies.md#pending-live-verification).
 - P1 | Windows Xbox shortcut conflicts (Win+G, Win+F11) | User 2026-10-16
   approved choices implemented offline: Compatible float `Ctrl+Win+G`,
   fullscreen `Ctrl+Win+F11`, exact Ctrl-arm routing and hold/release coverage;

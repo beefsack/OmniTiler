@@ -50,6 +50,9 @@ fn send_observation(
         windows: snapshot.windows.clone(),
         focused_wid: snapshot.focused_wid,
     };
+    // Bump before enqueue (see `invalidate_clock` in runtime): the engine
+    // may dequeue the instant the job lands.
+    crate::runtime::invalidate_clock(shared);
     if inbox.try_send_data(job) {
         lock_shared(shared).diagnostics.observations_published += 1;
         emit(
@@ -86,6 +89,9 @@ fn send_observation_scoped(
         seq,
         snapshot: snapshot.clone(),
     };
+    // Bump before enqueue (see `invalidate_clock` in runtime): the engine
+    // may dequeue the instant the job lands.
+    crate::runtime::invalidate_clock(shared);
     if inbox.try_send_data(job) {
         lock_shared(shared).diagnostics.observations_published += 1;
         emit(
