@@ -341,12 +341,148 @@ impl<B: ManagedSendBackend> DragBackend for ProvingWithChords<'_, '_, B> {
     }
 }
 
+/// Char bound for the sanitized reason on one effect-owner refusal line.
+pub(crate) const EFFECT_REFUSAL_DETAIL_CHARS: usize = 200;
+
+/// Char bound for the operation-identity echo on one effect-owner line.
+pub(crate) const EFFECT_REFUSAL_OP_CHARS: usize = 64;
+
+/// Char bound for the stage token on one effect-owner line (stages are
+/// short internal literals; the bound only defends against misuse).
+pub(crate) const EFFECT_REFUSAL_STAGE_CHARS: usize = 32;
+
+/// Sanitize free-form refusal detail into one bounded line fragment:
+/// control chars (including newlines) become spaces, whitespace runs
+/// collapse, empty becomes `unspecified`, char-truncated to `bound`.
+/// Callers pass tokens only — never posted values, locations, bindings,
+/// or window content.
+#[must_use]
+pub(crate) fn sanitize_refusal_detail(detail: &str, bound: usize) -> String {
+    let flat: String = detail
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let collapsed = flat.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        return "unspecified".to_owned();
+    }
+    if collapsed.chars().count() > bound {
+        collapsed.chars().take(bound).collect()
+    } else {
+        collapsed
+    }
+}
+
+/// Token-only classification of one holder-chord resolve error: the raw
+/// resolver errors carry entry debug and keycode numbers, so the owner
+/// line carries only this token. Matches the resolver's own static
+/// strings in [`crate::desktop_shortcuts::resolve_numbered_chord`].
+#[must_use]
+pub(crate) fn classify_holder_chord_error(err: &str) -> &'static str {
+    if err.contains("disabled or unbound") {
+        "holder-disabled"
+    } else if err.contains("out of range") {
+        "holder-unrepresentable"
+    } else if err.contains("not the default") {
+        "holder-customized"
+    } else if err.contains("no default digit chord") {
+        "holder-unmappable"
+    } else {
+        "holder-chord-refused"
+    }
+}
+
+/// One bounded single-line rendering of a non-applied effect settlement
+/// for the dedicated owner log: outcome token, pinned target SID,
+/// operation identity, refusing stage, sanitized reason, and
+/// per-operation post deltas (counts only). Pure (no logging):
+/// [`log_effect_refusal`] is the only emitter.
+#[must_use]
+pub(crate) fn format_effect_refusal_line(
+    target_sid: u64,
+    operation_id: &str,
+    outcome: SendEffectOutcome,
+    stage: &str,
+    reason: &str,
+    start: PostCounts,
+    end: PostCounts,
+) -> String {
+    let outcome_token = match outcome {
+        SendEffectOutcome::Applied => "applied",
+        SendEffectOutcome::RefusedProven => "refused",
+        SendEffectOutcome::PossiblyExecuted => "possibly-executed",
+    };
+    format!(
+        "tiler-macos send effect {outcome_token} target={target_sid} op={} stage={} reason={} dposts=md:{} mu:{} kd:{} ku:{}",
+        sanitize_refusal_detail(operation_id, EFFECT_REFUSAL_OP_CHARS),
+        sanitize_refusal_detail(stage, EFFECT_REFUSAL_STAGE_CHARS),
+        sanitize_refusal_detail(reason, EFFECT_REFUSAL_DETAIL_CHARS),
+        end.mouse_down.saturating_sub(start.mouse_down),
+        end.mouse_up.saturating_sub(start.mouse_up),
+        end.key_down.saturating_sub(start.key_down),
+        end.key_up.saturating_sub(start.key_up),
+    )
+}
+
+/// The single effect-owner refusal emitter: one bounded token-only line
+/// on the dedicated owner (never the engine/AppKit), only for non-applied
+/// terminal outcomes. No-op on `Applied`.
+fn log_effect_refusal(
+    target: &ManagedSendTarget,
+    outcome: SendEffectOutcome,
+    stage: &str,
+    reason: &str,
+    start: PostCounts,
+    end: PostCounts,
+) {
+    if outcome == SendEffectOutcome::Applied {
+        return;
+    }
+    let line = format_effect_refusal_line(
+        target.target_sid(),
+        target.operation_id(),
+        outcome,
+        stage,
+        reason,
+        start,
+        end,
+    );
+    eprintln!("{line}");
+}
+
+/// Proven-refusal terminal for [`execute_managed_send`]: logs the single
+/// bounded token-only owner line, then returns the outcome. `end` is the
+/// backend counts at refusal time (deltas against `start` prove how much
+/// posted this operation — zero on every pre-actuation path below).
+fn refuse_proven(
+    target: &ManagedSendTarget,
+    stage: &'static str,
+    reason: &str,
+    start: PostCounts,
+    end: PostCounts,
+) -> (SendEffectOutcome, Option<LegOk>) {
+    log_effect_refusal(
+        target,
+        SendEffectOutcome::RefusedProven,
+        stage,
+        reason,
+        start,
+        end,
+    );
+    (SendEffectOutcome::RefusedProven, None)
+}
+
 /// Execute one pinned-target managed send on the calling (effect-owner)
 /// thread. Returns the terminal outcome plus the exact leg readback on
 /// success. Never submits, finishes, polls, or releases the handoff — the
 /// threaded owner below does that — but honors its stop request between
 /// edges. History is NOT advanced here: the main thread notes arrival after
 /// polling an `Applied` completion.
+///
+/// Every non-applied terminal logs one bounded token-only line on this
+/// owner via [`log_effect_refusal`] (outcome, stage, sanitized reason,
+/// per-operation post deltas) so a settled refusal names its refusing leg
+/// without touching key material, titles, or completion plumbing.
 pub(crate) fn execute_managed_send<B: ManagedSendBackend>(
     target: &ManagedSendTarget,
     backend: &mut B,
@@ -359,21 +495,62 @@ pub(crate) fn execute_managed_send<B: ManagedSendBackend>(
     // Stop before touching the desktop: a cancel that landed between take
     // and execute reports a proven refusal (nothing posted this operation).
     if handoff.cancel_requested() {
-        return (SendEffectOutcome::RefusedProven, None);
+        return refuse_proven(
+            target,
+            "cancel",
+            "managed send cancel requested before further posts",
+            start_counts,
+            backend.counts(),
+        );
     }
     let gates = backend.read_gates();
     if !gates.session_unlocked {
-        return (SendEffectOutcome::RefusedProven, None);
+        return refuse_proven(
+            target,
+            "gates",
+            "send gated: session-locked",
+            start_counts,
+            backend.counts(),
+        );
     }
     if gates.secure_active {
-        return (SendEffectOutcome::RefusedProven, None);
+        return refuse_proven(
+            target,
+            "gates",
+            "send gated: secure-active",
+            start_counts,
+            backend.counts(),
+        );
     }
     if gates.lock_screen {
-        return (SendEffectOutcome::RefusedProven, None);
+        return refuse_proven(
+            target,
+            "gates",
+            "send gated: lock-screen",
+            start_counts,
+            backend.counts(),
+        );
     }
     match backend.display_count() {
         Ok(1) => {}
-        Ok(_) | Err(_) => return (SendEffectOutcome::RefusedProven, None),
+        Ok(other) => {
+            return refuse_proven(
+                target,
+                "display",
+                &format!("single-display rule: {other} displays"),
+                start_counts,
+                backend.counts(),
+            );
+        }
+        Err(detail) => {
+            return refuse_proven(
+                target,
+                "display",
+                &format!("display count unreadable ({detail})"),
+                start_counts,
+                backend.counts(),
+            );
+        }
     }
     // No standalone admission proof here: the per-edge adapter below
     // re-proves the pinned target before every down-edge (including
@@ -384,10 +561,24 @@ pub(crate) fn execute_managed_send<B: ManagedSendBackend>(
     // accessor.
     let fresh_row = match backend.snapshot() {
         Ok(row) => row,
-        Err(_) => return (SendEffectOutcome::RefusedProven, None),
+        Err(detail) => {
+            return refuse_proven(
+                target,
+                "snapshot",
+                &format!("fresh row unreadable ({detail})"),
+                start_counts,
+                backend.counts(),
+            );
+        }
     };
     if fresh_row.validate().is_err() {
-        return (SendEffectOutcome::RefusedProven, None);
+        return refuse_proven(
+            target,
+            "row",
+            "workspace row/current identity unprovable",
+            start_counts,
+            backend.counts(),
+        );
     }
     // SID-pinned ordinal: the position of the pinned SID in the fresh row
     // names the Desktop-N holder. A missing SID refuses (never guess); a
@@ -397,47 +588,102 @@ pub(crate) fn execute_managed_send<B: ManagedSendBackend>(
         .iter()
         .position(|s| *s == target.target_sid())
     else {
-        return (SendEffectOutcome::RefusedProven, None);
+        return refuse_proven(
+            target,
+            "target",
+            "pinned target SID absent from the fresh row; refusing",
+            start_counts,
+            backend.counts(),
+        );
     };
     let desktop = match u32::try_from(position + 1) {
         Ok(d) if (1..=9).contains(&d) => d,
-        _ => return (SendEffectOutcome::RefusedProven, None),
+        _ => {
+            return refuse_proven(
+                target,
+                "target",
+                "pinned target ordinal past Desktop-9; unmappable",
+                start_counts,
+                backend.counts(),
+            );
+        }
     };
     let symbolic = match crate::desktop_shortcuts::desktop_symbolic_id(desktop) {
         Some(id) => id,
-        None => return (SendEffectOutcome::RefusedProven, None),
+        None => {
+            return refuse_proven(
+                target,
+                "target",
+                "desktop symbolic unresolvable",
+                start_counts,
+                backend.counts(),
+            );
+        }
     };
     let entry = match backend.read_holder(symbolic) {
         Ok(entry) => entry,
-        Err(_) => return (SendEffectOutcome::RefusedProven, None),
+        // Never echo the store error: it may carry paths. The stage plus
+        // the fixed token already discriminate the leg.
+        Err(_) => {
+            return refuse_proven(
+                target,
+                "holder",
+                "holder-unreadable",
+                start_counts,
+                backend.counts(),
+            );
+        }
     };
     let (keycode, flags) = match resolve_numbered_chord(desktop, entry) {
         Ok(pair) => pair,
-        Err(_) => return (SendEffectOutcome::RefusedProven, None),
+        // Never echo the resolver error: it carries entry keycodes.
+        Err(detail) => {
+            return refuse_proven(
+                target,
+                "holder-chord",
+                classify_holder_chord_error(&detail),
+                start_counts,
+                backend.counts(),
+            );
+        }
     };
     let goal = target.target_sid();
     let mut adapter = ProvingWithChords::with_chord(backend, target, handoff, (keycode, flags));
     let mut notes = Vec::new();
     match crate::space_drag_transfer::run_drag_leg(&mut adapter, goal, goal, "send", &mut notes) {
         Ok(leg) => (SendEffectOutcome::Applied, Some(leg)),
-        Err(LegError::Refused { stage, .. }) if stage != "readback" => {
+        Err(LegError::Refused { stage, reason }) if stage != "readback" => {
             // A stop or proof refusal after the chord started is uncertain:
             // the switch may have fired before the refusal. Only a refusal
             // with zero key-down posts *this operation* is proven
             // pre-actuation (delta from the entry baseline, never the
             // cumulative backend totals).
-            let key_down_delta = adapter
-                .inner
-                .counts()
-                .key_down
-                .saturating_sub(start_counts.key_down);
-            if key_down_delta > 0 {
-                (SendEffectOutcome::PossiblyExecuted, None)
+            let end = adapter.inner.counts();
+            let outcome = if end.key_down.saturating_sub(start_counts.key_down) > 0 {
+                SendEffectOutcome::PossiblyExecuted
             } else {
-                (SendEffectOutcome::RefusedProven, None)
-            }
+                SendEffectOutcome::RefusedProven
+            };
+            log_effect_refusal(target, outcome, stage, &reason, start_counts, end);
+            (outcome, None)
         }
-        Err(_) => (SendEffectOutcome::PossiblyExecuted, None),
+        Err(other) => {
+            let (stage, reason) = match &other {
+                LegError::Refused { stage, reason } => (*stage, reason.clone()),
+                LegError::NoEffect { .. } => ("readback", other.describe()),
+                LegError::UnresolvedPending { .. } => ("pending", other.describe()),
+                LegError::ReleaseFailed { .. } => ("release", other.describe()),
+            };
+            log_effect_refusal(
+                target,
+                SendEffectOutcome::PossiblyExecuted,
+                stage,
+                &reason,
+                start_counts,
+                adapter.inner.counts(),
+            );
+            (SendEffectOutcome::PossiblyExecuted, None)
+        }
     }
 }
 

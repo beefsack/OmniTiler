@@ -14,7 +14,9 @@ use std::time::Duration;
 
 use tiler_core::directional::{OutputId, WorkspaceId};
 
-use crate::desktop_shortcuts::{ShortcutEntry, desktop_digit_keycode, desktop_symbolic_id};
+use crate::desktop_shortcuts::{
+    ShortcutEntry, desktop_digit_keycode, desktop_symbolic_id, resolve_numbered_chord,
+};
 use crate::space_drag_transfer::{DragStep, PostCounts};
 use crate::workspace_select::{SelectionSnapshot, SelectionState};
 use crate::workspace_send::{SendGates, bindings};
@@ -22,8 +24,9 @@ use crate::workspace_send_effect::{
     ManagedSendTarget, SendEffectHandoff, SendEffectOutcome, SendFreshEvidence, prove_managed_send,
 };
 use crate::workspace_send_managed::{
-    ManagedPostPermit, ManagedSendBackend, ManagedSendThread, authorize_managed_edge,
-    completion_for, execute_managed_send,
+    EFFECT_REFUSAL_DETAIL_CHARS, ManagedPostPermit, ManagedSendBackend, ManagedSendThread,
+    authorize_managed_edge, classify_holder_chord_error, completion_for, execute_managed_send,
+    format_effect_refusal_line, sanitize_refusal_detail,
 };
 
 const CG_CTRL: u64 = 0x0004_0000;
@@ -1243,4 +1246,222 @@ fn managed_arming_and_holder_wiring_armed_for_numbered_follow() {
             && !source.contains("ensure_holders_for_preset"),
         "no startup holder writes from the managed path this unit"
     );
+}
+
+#[test]
+fn effect_refusal_detail_is_bounded_single_line() {
+    assert_eq!(sanitize_refusal_detail("", 200), "unspecified");
+    assert_eq!(sanitize_refusal_detail("  a\nb\tc  ", 200), "a b c");
+    assert_eq!(
+        sanitize_refusal_detail("refused-send-focus-mismatch", 200),
+        "refused-send-focus-mismatch"
+    );
+    let long = "x".repeat(500);
+    let cut = sanitize_refusal_detail(&long, EFFECT_REFUSAL_DETAIL_CHARS);
+    assert_eq!(cut.chars().count(), EFFECT_REFUSAL_DETAIL_CHARS);
+    assert!(!cut.contains('\n'));
+    // Vertical whitespace and control chars never survive, even mid-token.
+    assert_eq!(sanitize_refusal_detail("a\r\nb\x07c", 200), "a b c");
+}
+
+#[test]
+fn effect_refusal_holder_chord_tokens_carry_no_key_material() {
+    let digit_2 = desktop_digit_keycode(2).unwrap();
+    // Disabled holder: raw names the cause; token fixes it without values.
+    let raw = resolve_numbered_chord(
+        2,
+        ShortcutEntry {
+            enabled: false,
+            keycode: digit_2,
+            modifiers: CG_CTRL,
+        },
+    )
+    .expect_err("disabled holder refuses");
+    assert!(raw.contains("disabled or unbound"));
+    assert_eq!(classify_holder_chord_error(&raw), "holder-disabled");
+    // Customized holder: raw echoes the entry debug (keycode/modifiers
+    // numbers); the token carries none.
+    let raw = resolve_numbered_chord(
+        2,
+        ShortcutEntry {
+            enabled: true,
+            keycode: digit_2,
+            modifiers: CG_CTRL | 0x0002_0000,
+        },
+    )
+    .expect_err("customized holder refuses");
+    assert!(raw.contains("not the default"));
+    assert!(raw.contains("keycode"), "raw leaks entry debug: {raw}");
+    assert_eq!(classify_holder_chord_error(&raw), "holder-customized");
+    // Unrepresentable keycode: raw echoes the number; token does not.
+    let raw = resolve_numbered_chord(
+        2,
+        ShortcutEntry {
+            enabled: true,
+            keycode: 999,
+            modifiers: CG_CTRL,
+        },
+    )
+    .expect_err("unrepresentable keycode refuses");
+    assert!(raw.contains("out of range"));
+    assert!(raw.contains("999"), "raw echoes the number: {raw}");
+    assert_eq!(classify_holder_chord_error(&raw), "holder-unrepresentable");
+    // Unmappable desktop: no digit chord exists past the catalogue.
+    let raw = resolve_numbered_chord(
+        11,
+        ShortcutEntry {
+            enabled: true,
+            keycode: digit_2,
+            modifiers: CG_CTRL,
+        },
+    )
+    .expect_err("desktop 11 has no digit chord");
+    assert!(raw.contains("no default digit chord"));
+    assert_eq!(classify_holder_chord_error(&raw), "holder-unmappable");
+    assert_eq!(
+        classify_holder_chord_error("some future resolver text"),
+        "holder-chord-refused"
+    );
+    // No token carries digits, entry debug, or key names.
+    for token in [
+        "holder-disabled",
+        "holder-unrepresentable",
+        "holder-customized",
+        "holder-unmappable",
+        "holder-chord-refused",
+    ] {
+        assert!(
+            !token.chars().any(|c| c.is_ascii_digit()),
+            "{token} carries no numbers"
+        );
+    }
+}
+
+#[test]
+fn effect_refusal_line_shape_names_stage_and_deltas() {
+    let start = PostCounts {
+        mouse_down: 2,
+        mouse_up: 2,
+        key_down: 1,
+        key_up: 1,
+    };
+    let end = PostCounts {
+        mouse_down: 3,
+        mouse_up: 3,
+        key_down: 1,
+        key_up: 1,
+    };
+    let line = format_effect_refusal_line(
+        277,
+        "op-3",
+        SendEffectOutcome::RefusedProven,
+        "leg-setup",
+        "send leg-setup managed proof refused: refused-send-focus-mismatch",
+        start,
+        end,
+    );
+    assert_eq!(
+        line,
+        "tiler-macos send effect refused target=277 op=op-3 stage=leg-setup \
+         reason=send leg-setup managed proof refused: refused-send-focus-mismatch \
+         dposts=md:1 mu:1 kd:0 ku:0"
+    );
+    // Long reasons truncate; the whole line stays bounded and single-line.
+    let big = format_effect_refusal_line(
+        277,
+        "op-3",
+        SendEffectOutcome::PossiblyExecuted,
+        "readback",
+        &"y".repeat(500),
+        start,
+        start,
+    );
+    assert!(!big.contains('\n'));
+    assert!(
+        big.chars().count() <= 420,
+        "bounded line, got {} chars",
+        big.chars().count()
+    );
+    assert!(big.starts_with("tiler-macos send effect possibly-executed target=277 "));
+}
+
+#[test]
+fn effect_refusal_row_stage_refuses_without_posts() {
+    // Current Space missing from the row: identity unprovable, zero posts.
+    let handoff = SendEffectHandoff::new();
+    let mut backend = FakeManaged::new();
+    backend.snapshot = Ok(SelectionSnapshot {
+        display: "display-a".to_owned(),
+        spaces: vec![20, 3, 7],
+        current: 999,
+    });
+    let (outcome, _) = execute(&target(), &mut backend, &handoff);
+    assert_eq!(outcome, SendEffectOutcome::RefusedProven);
+    assert_eq!(backend.counts.total(), 0);
+    // Duplicate SIDs likewise refuse.
+    let handoff = SendEffectHandoff::new();
+    let mut backend = FakeManaged::new();
+    backend.snapshot = Ok(SelectionSnapshot {
+        display: "display-a".to_owned(),
+        spaces: vec![20, 3, 3],
+        current: 20,
+    });
+    let (outcome, _) = execute(&target(), &mut backend, &handoff);
+    assert_eq!(outcome, SendEffectOutcome::RefusedProven);
+    assert_eq!(backend.counts.total(), 0);
+}
+
+#[test]
+fn effect_owner_emits_exactly_one_bounded_refusal_line_site() {
+    let source = include_str!("workspace_send_managed.rs");
+    assert_eq!(
+        source.matches("eprintln!").count(),
+        1,
+        "single owner refusal emitter"
+    );
+    assert!(
+        source.contains("eprintln!(\"{line}\");"),
+        "the emitter prints only the formatted line"
+    );
+    // Every pre-actuation gate names its stage at the refusal site.
+    for stage in [
+        "\"cancel\"",
+        "\"gates\"",
+        "\"display\"",
+        "\"snapshot\"",
+        "\"row\"",
+        "\"target\"",
+        "\"holder\"",
+        "\"holder-chord\"",
+    ] {
+        assert!(
+            source.contains(stage),
+            "early refusal names its stage {stage}"
+        );
+    }
+    // The formatter renders counts only: no posted values, locations,
+    // bindings, or window content may reach the line.
+    let region = source
+        .split("fn format_effect_refusal_line")
+        .nth(1)
+        .expect("formatter present")
+        .split("fn log_effect_refusal")
+        .next()
+        .expect("formatter ends at the emitter");
+    for forbidden in [
+        "keycode",
+        "flags",
+        "permit",
+        "entry",
+        "point",
+        "title",
+        "chord",
+        "ShortcutEntry",
+        "modifiers",
+    ] {
+        assert!(
+            !region.contains(forbidden),
+            "refusal line formats counts only, never {forbidden}"
+        );
+    }
 }
