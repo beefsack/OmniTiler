@@ -302,6 +302,34 @@ impl SendProofRefusal {
     }
 }
 
+/// Blind-evidence root: which single unreadable read collapsed one
+/// [`SendFreshEvidence`] to unknown. Diagnostic only — the proof verdict
+/// stays [`SendProofRefusal::UnknownManaged`] for every root, so managed
+/// proof, permits, and refusal behavior never change. Token-only (never
+/// window content, never posted values).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlindRoot {
+    /// The engine no longer manages the subject, the query raced
+    /// teardown, or the bounded query elapsed.
+    EngineFacts,
+    /// The joined fresh topology (display legs plus SLS rows) unreadable.
+    Topology,
+    /// The fresh SLS Space membership for the subject unreadable.
+    Membership,
+}
+
+impl BlindRoot {
+    /// Stable log token for the blind root.
+    #[must_use]
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::EngineFacts => "engine-facts",
+            Self::Topology => "topology",
+            Self::Membership => "membership",
+        }
+    }
+}
+
 /// Pure fresh-proof verdict for one pinned target: every leg must name the
 /// pinned target, or the send refuses without actuation and without replay.
 /// A pure focus swap — the subject still managed and readable while focus

@@ -24,7 +24,7 @@ use crate::space_drag_transfer::DragStep;
 use crate::workspace_select::SelectionSnapshot;
 use crate::workspace_send::{LiveSendController, SendGates, send_drain_outcome_for};
 use crate::workspace_send_effect::{
-    ManagedSendTarget, SendEffectHandoff, SendEffectOutcome, SendFreshEvidence,
+    BlindRoot, ManagedSendTarget, SendEffectHandoff, SendEffectOutcome, SendFreshEvidence,
 };
 use crate::workspace_send_managed::{ManagedSendBackend, ManagedSendThread, execute_managed_send};
 use crate::workspace_send_native::{
@@ -656,7 +656,8 @@ fn live_proof_refuses_unmanaged_and_unknown_membership() {
 #[test]
 fn live_proof_refuses_unknown_topology_and_revision_drift() {
     let target = pinned_target();
-    // Unreadable topology: unknown revision refuses (no skip leg).
+    // Unreadable topology at the snapshot read: snapshot-stage refusal
+    // (no blind root is assembled — proof never runs).
     let lane = handoff();
     let mut backend = LiveManagedSendBackend::new({
         let mut readers = FakeReaders::new();
@@ -1279,4 +1280,59 @@ fn live_hotkey_to_feedback_pathway_with_injected_readers() {
             "{action:?}"
         );
     }
+}
+
+#[test]
+fn live_blind_root_discriminates_engine_topology_membership() {
+    // One live inverse refusal (`refused-send-unknown-managed`) collapses
+    // three unreadable roots; the backend must name exactly which one
+    // collapsed, with zero native posts at setup in every case.
+    let target = pinned_target();
+    // Engine facts unreadable while topology and membership stay healthy:
+    // reports engine-facts — never mislabeled as topology.
+    let lane = handoff();
+    let mut backend = LiveManagedSendBackend::new({
+        let mut readers = FakeReaders::new();
+        readers.engine_base = None;
+        readers
+    });
+    let (outcome, leg) = execute_managed_send(&target, &mut backend, &lane);
+    assert_eq!(outcome, SendEffectOutcome::RefusedProven);
+    assert!(leg.is_none());
+    assert_eq!(backend.blind_root(), Some(BlindRoot::EngineFacts));
+    assert_eq!(backend.counts().key_down, 0, "no chord posted");
+    assert_eq!(backend.counts().mouse_down, 0, "no grab posted");
+    // Topology unreadable at the proof read (the snapshot read at call 0
+    // stays healthy): reports topology.
+    let lane = handoff();
+    let mut backend = LiveManagedSendBackend::new({
+        let mut readers = FakeReaders::new();
+        readers.topo_err_at = Some(1);
+        readers
+    });
+    let (outcome, leg) = execute_managed_send(&target, &mut backend, &lane);
+    assert_eq!(outcome, SendEffectOutcome::RefusedProven);
+    assert!(leg.is_none());
+    assert_eq!(backend.blind_root(), Some(BlindRoot::Topology));
+    assert_eq!(backend.counts().key_down, 0, "no chord posted");
+    assert_eq!(backend.counts().mouse_down, 0, "no grab posted");
+    // Membership unreadable while engine and topology stay healthy:
+    // reports membership.
+    let lane = handoff();
+    let mut backend = LiveManagedSendBackend::new({
+        let mut readers = FakeReaders::new();
+        readers.fail_spaces.insert(WID);
+        readers
+    });
+    let (outcome, leg) = execute_managed_send(&target, &mut backend, &lane);
+    assert_eq!(outcome, SendEffectOutcome::RefusedProven);
+    assert!(leg.is_none());
+    assert_eq!(backend.blind_root(), Some(BlindRoot::Membership));
+    assert_eq!(backend.counts().key_down, 0, "no chord posted");
+    assert_eq!(backend.counts().mouse_down, 0, "no grab posted");
+    // Fully readable evidence assembles with no blind root.
+    let mut backend = LiveManagedSendBackend::new(FakeReaders::new());
+    let evidence = backend.fresh_evidence(&target);
+    assert_eq!(evidence.managed_current, Some(true));
+    assert_eq!(backend.blind_root(), None);
 }

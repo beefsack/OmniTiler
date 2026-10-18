@@ -85,8 +85,8 @@ use crate::space_drag_transfer::{DragBackend, DragStep, LegError, LegOk, PostCou
 use crate::workspace_select::SelectionSnapshot;
 use crate::workspace_send::SendGates;
 use crate::workspace_send_effect::{
-    ManagedSendTarget, SendCompletion, SendEffectHandoff, SendEffectOutcome, SendFreshEvidence,
-    SendProofRefusal, prove_managed_send,
+    BlindRoot, ManagedSendTarget, SendCompletion, SendEffectHandoff, SendEffectOutcome,
+    SendFreshEvidence, SendProofRefusal, prove_managed_send,
 };
 
 /// Injectable managed-send backend for the dedicated effect owner.
@@ -112,6 +112,15 @@ pub trait ManagedSendBackend: Send {
     /// calls this before every down-edge). Carries the backend-selected
     /// fresh grab point both hit-tests named.
     fn fresh_evidence(&mut self, target: &ManagedSendTarget) -> SendFreshEvidence;
+    /// Blind-evidence root for the most recent [`ManagedSendBackend::fresh_evidence`]
+    /// call: which single unreadable read collapsed the evidence to
+    /// unknown (`None` when the last call was fully readable, or when the
+    /// backend does not report a root). Diagnostic only — the proof
+    /// verdict is unchanged. Defaults to unreported so a backend that
+    /// never sets a root is never mislabeled as any specific root.
+    fn blind_root(&self) -> Option<BlindRoot> {
+        None
+    }
     /// Select this leg's goal before any post (refusing here posts nothing).
     /// Consumes one proof permit binding the exact point/chord.
     fn begin_leg(&mut self, permit: ManagedPostPermit, goal: u64) -> Result<(), String>;
@@ -260,8 +269,11 @@ impl<'a, 'h, B: ManagedSendBackend> ProvingWithChords<'a, 'h, B> {
 
     fn authorize(&mut self, edge: &'static str) -> Result<ManagedPostPermit, String> {
         let fresh = self.inner.fresh_evidence(self.target);
-        let permit = authorize_managed_edge(self.target, &fresh, self.chord)
-            .map_err(|r| format!("{edge} managed proof refused: {}", r.token()))?;
+        let root = self.inner.blind_root();
+        let permit = match authorize_managed_edge(self.target, &fresh, self.chord) {
+            Ok(permit) => permit,
+            Err(refusal) => return Err(format_proof_refusal_reason(edge, refusal, root)),
+        };
         if let Some(pinned) = self.pinned_point
             && permit.point() != pinned
         {
@@ -389,6 +401,30 @@ pub(crate) fn classify_holder_chord_error(err: &str) -> &'static str {
         "holder-unmappable"
     } else {
         "holder-chord-refused"
+    }
+}
+
+/// One bounded refusal reason for a refused actuation edge: the edge plus
+/// the refusing proof token, with the token-only blind root appended for
+/// [`SendProofRefusal::UnknownManaged`] only. A missing root reports
+/// `unreported` — never a guessed root — so a backend that never sets a
+/// blind root (e.g. an engine-facts `None` flowing through a backend
+/// without root reporting) can never be silently mislabeled as topology
+/// or membership. Pure (no logging).
+#[must_use]
+pub(crate) fn format_proof_refusal_reason(
+    edge: &str,
+    refusal: SendProofRefusal,
+    blind: Option<BlindRoot>,
+) -> String {
+    if refusal == SendProofRefusal::UnknownManaged {
+        let root = blind.map_or("unreported", BlindRoot::token);
+        format!(
+            "{edge} managed proof refused: {} (blind-root={root})",
+            refusal.token()
+        )
+    } else {
+        format!("{edge} managed proof refused: {}", refusal.token())
     }
 }
 

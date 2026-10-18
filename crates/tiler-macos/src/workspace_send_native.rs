@@ -31,7 +31,7 @@ use crate::space_drag_transfer::{
 use crate::synth::HidMouseKind;
 use crate::workspace_select::SelectionSnapshot;
 use crate::workspace_send::SendGates;
-use crate::workspace_send_effect::{ManagedSendTarget, SendFreshEvidence};
+use crate::workspace_send_effect::{BlindRoot, ManagedSendTarget, SendFreshEvidence};
 use crate::workspace_send_managed::{ManagedPostPermit, ManagedSendBackend, ManagedSendThread};
 
 /// Joined fresh send topology from one read set: the single-display user
@@ -308,25 +308,29 @@ fn read_ax_subject_state(pid: u32, wid: u32) -> AxSubjectState {
     state
 }
 
-/// Blind evidence: every leg unknown. A single unreadable root (topology,
-/// membership, identity) collapses to this — the proof refuses at the
-/// first unknown leg without actuation.
-fn blind_evidence() -> SendFreshEvidence {
-    SendFreshEvidence {
-        managed_current: None,
-        fullscreen: None,
-        minimized: None,
-        live_generation: None,
-        live_revision: None,
-        live_source: None,
-        source_current: None,
-        focused_window: None,
-        focus_agrees: None,
-        geometry_ok: None,
-        grab_point: None,
-        ax_hit: None,
-        ws_hit: None,
-    }
+/// Blind evidence plus its root: every leg unknown, with the single
+/// unreadable read named for refusal-only diagnosis. The proof verdict
+/// stays [`SendProofRefusal::UnknownManaged`] for every root — the root
+/// only names which read collapsed, never window content.
+fn blind_evidence(root: BlindRoot) -> (SendFreshEvidence, Option<BlindRoot>) {
+    (
+        SendFreshEvidence {
+            managed_current: None,
+            fullscreen: None,
+            minimized: None,
+            live_generation: None,
+            live_revision: None,
+            live_source: None,
+            source_current: None,
+            focused_window: None,
+            focus_agrees: None,
+            geometry_ok: None,
+            grab_point: None,
+            ax_hit: None,
+            ws_hit: None,
+        },
+        Some(root),
+    )
 }
 
 /// Assemble one fresh-proof evidence set for a pinned target from the
@@ -341,7 +345,9 @@ fn blind_evidence() -> SendFreshEvidence {
 /// forbids. Revision coherence needs both legs: the retained engine
 /// revision must still pin-match admission (else stale), and the fresh
 /// native fingerprint must join the engine revision (else unknown — never
-/// guessed). Grab selection tries the frame-derived titlebar candidates in
+/// guessed). Returns the evidence plus the blind root (`Some` only when
+/// the evidence collapsed to blind — fully readable evidence reports no
+/// root). Grab selection tries the frame-derived titlebar candidates in
 /// order and keeps the first point where BOTH the positional AX hit and
 /// the WindowServer hit name the pinned target (input-reaching proof, not
 /// rectangle stacking); no fully-clear point refuses with no new input
@@ -349,14 +355,14 @@ fn blind_evidence() -> SendFreshEvidence {
 fn assemble_evidence<R: SendNativeReaders>(
     readers: &mut R,
     target: &ManagedSendTarget,
-) -> SendFreshEvidence {
+) -> (SendFreshEvidence, Option<BlindRoot>) {
     let pid = target.pid();
     let wid = target.wid();
     let Some(engine) = readers.engine_facts(target.window()) else {
-        return blind_evidence();
+        return blind_evidence(BlindRoot::EngineFacts);
     };
     let Some(topo) = readers.fresh_topology().ok() else {
-        return blind_evidence();
+        return blind_evidence(BlindRoot::Topology);
     };
     let live_revision = if topo.revision == engine.revision {
         Some(engine.revision)
@@ -367,7 +373,7 @@ fn assemble_evidence<R: SendNativeReaders>(
     // Unknown membership collapses: without fresh membership no scope leg
     // is provable.
     if spaces.is_none() {
-        return blind_evidence();
+        return blind_evidence(BlindRoot::Membership);
     }
     let source_space = topo
         .context
@@ -437,7 +443,7 @@ fn assemble_evidence<R: SendNativeReaders>(
             }
         }
     }
-    SendFreshEvidence {
+    let evidence = SendFreshEvidence {
         managed_current,
         fullscreen,
         minimized,
@@ -451,7 +457,8 @@ fn assemble_evidence<R: SendNativeReaders>(
         grab_point,
         ax_hit,
         ws_hit,
-    }
+    };
+    (evidence, None)
 }
 
 /// Live managed-send backend over injectable native readers: the production
@@ -474,6 +481,7 @@ pub struct LiveManagedSendBackend<R: SendNativeReaders> {
     goal: Option<u64>,
     last_point: Option<(f64, f64)>,
     key_held: Option<(u32, u64)>,
+    blind_root: Option<BlindRoot>,
     counts: PostCounts,
 }
 
@@ -495,6 +503,7 @@ impl<R: SendNativeReaders> LiveManagedSendBackend<R> {
             goal: None,
             last_point: None,
             key_held: None,
+            blind_root: None,
             counts: PostCounts::default(),
         }
     }
@@ -556,7 +565,12 @@ impl<R: SendNativeReaders> ManagedSendBackend for LiveManagedSendBackend<R> {
     }
     fn fresh_evidence(&mut self, target: &ManagedSendTarget) -> SendFreshEvidence {
         self.subject = Some((target.pid(), target.wid()));
-        assemble_evidence(&mut self.readers, target)
+        let (evidence, root) = assemble_evidence(&mut self.readers, target);
+        self.blind_root = root;
+        evidence
+    }
+    fn blind_root(&self) -> Option<BlindRoot> {
+        self.blind_root
     }
     fn begin_leg(&mut self, permit: ManagedPostPermit, goal: u64) -> Result<(), String> {
         // Selection only (no OS post): the per-edge proof already ran in

@@ -21,12 +21,13 @@ use crate::space_drag_transfer::{DragStep, PostCounts};
 use crate::workspace_select::{SelectionSnapshot, SelectionState};
 use crate::workspace_send::{SendGates, bindings};
 use crate::workspace_send_effect::{
-    ManagedSendTarget, SendEffectHandoff, SendEffectOutcome, SendFreshEvidence, prove_managed_send,
+    BlindRoot, ManagedSendTarget, SendEffectHandoff, SendEffectOutcome, SendFreshEvidence,
+    SendProofRefusal, prove_managed_send,
 };
 use crate::workspace_send_managed::{
     EFFECT_REFUSAL_DETAIL_CHARS, ManagedPostPermit, ManagedSendBackend, ManagedSendThread,
     authorize_managed_edge, classify_holder_chord_error, completion_for, execute_managed_send,
-    format_effect_refusal_line, sanitize_refusal_detail,
+    format_effect_refusal_line, format_proof_refusal_reason, sanitize_refusal_detail,
 };
 
 const CG_CTRL: u64 = 0x0004_0000;
@@ -1463,5 +1464,45 @@ fn effect_owner_emits_exactly_one_bounded_refusal_line_site() {
             !region.contains(forbidden),
             "refusal line formats counts only, never {forbidden}"
         );
+    }
+}
+
+#[test]
+fn proof_refusal_reason_names_blind_root_only_for_unknown_managed() {
+    // Each blind root gets a distinct token-only suffix so one live
+    // refusal line discriminates engine-facts vs topology vs membership.
+    for (root, token) in [
+        (BlindRoot::EngineFacts, "engine-facts"),
+        (BlindRoot::Topology, "topology"),
+        (BlindRoot::Membership, "membership"),
+    ] {
+        let reason =
+            format_proof_refusal_reason("leg-setup", SendProofRefusal::UnknownManaged, Some(root));
+        assert!(
+            reason.contains("refused-send-unknown-managed"),
+            "keeps the proof token"
+        );
+        assert!(
+            reason.contains(&format!("(blind-root={token})")),
+            "names the {token} root"
+        );
+    }
+    // A backend that never reports a root is labeled unreported — never
+    // silently mislabeled as topology or membership.
+    let reason = format_proof_refusal_reason("leg-setup", SendProofRefusal::UnknownManaged, None);
+    assert!(reason.contains("(blind-root=unreported)"), "{reason}");
+    // Any other refusal leg carries no blind suffix even when a stale
+    // root stands.
+    for refusal in [
+        SendProofRefusal::NotManaged,
+        SendProofRefusal::FocusMismatch,
+        SendProofRefusal::RevisionDrift,
+    ] {
+        let reason = format_proof_refusal_reason("leg-setup", refusal, Some(BlindRoot::Topology));
+        assert!(
+            !reason.contains("blind-root"),
+            "{refusal:?} carries no blind suffix: {reason}"
+        );
+        assert!(reason.contains(refusal.token()), "{reason}");
     }
 }
