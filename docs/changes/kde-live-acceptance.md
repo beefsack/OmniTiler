@@ -66,10 +66,11 @@
   desktop and pointer were restored; both disposable clients and helper scripts
   were removed, effects matched, and development returned DOWN.
 - Restoration to the initial desktop/configuration identity was incomplete.
-  The current inventory and native tiling entries are accepted as the new fixture
-  baseline (tentative, pending user review). No manual configuration rollback is
-  planned. A fresh exact configuration backup and native window/desktop, pointer,
-  effect and shortcut snapshots were captured before further testing; later
+  The recreated empty second desktop's new identity and KWin's own default
+  tiling-layout entries are the accepted fixture baseline (user 2026-10-18).
+  No manual configuration rollback is planned. A fresh exact configuration backup
+  and native window/desktop, pointer, effect and shortcut snapshots were captured
+  before further testing; later
   restoration comparisons use that baseline. The original preimage is retained.
 
 ## Offline verification and review
@@ -81,9 +82,9 @@
 - Independent evidence review confirmed the immediate-retile observations,
   protected-window preservation, lifecycle teardown and baseline drift. It did
   not accept a claim of exact desktop restoration or complete native acceptance.
-- No tentative product decisions were made. The fixture-baseline decision above
-  is tentative, pending user review. Unverified Settings, full-state and
-  single-output cases retain their previous pending status.
+- No product decisions were made during the run. The fixture baseline above
+  is user-accepted. Unverified Settings, full-state and single-output cases
+  retain their previous pending status.
 
 ## Settings native shell re-check, 2026-10-18
 
@@ -206,8 +207,9 @@
 - Installed disposable-client candidates reported resizable native hints. An
   owned minimal Qt Widgets client supplied genuine equal positive bounds on both
   axes; KWin reported normal, non-dialog, non-resizable, equal minimum/maximum
-  dimensions. Using this helper is a tentative fixture decision, pending user
-  review; it is not game, borderless-client or general application acceptance.
+  dimensions. This minimal Qt client is the accepted standard fixed-size test
+  fixture (user 2026-10-18); it is not game, borderless-client or general
+  application acceptance.
 - D6 sampled pass: enabling the disposable workspace left the automatic fixed
   float at its original frame with zero geometry writes. An ordinary editor
   control tiled while the fixed client stayed untouched. Changed hints,
@@ -393,7 +395,7 @@
 
 - Independent review accepted only the bounded claims above. Fresh Planner and
   KWin bundle builds passed; no production source or tests changed. No new product
-  decision was made; the earlier tentative fixture decisions remain unchanged.
+  decision was made during the run; the fixture decisions above are user-accepted.
 - The final owned third desktop was removed only after controller/Planner stop.
   Its exact added native tiling group was surgically removed; the retained tiling
   inventory matched the preimage. Final configuration and shortcut hashes matched

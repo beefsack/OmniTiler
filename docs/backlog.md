@@ -29,6 +29,8 @@ decisions of 2026-09-24 are under
   two-output pass (mixed scale, offset outputs) over the multi-output
   must-pass checks ([coverage](research/two-output-test-environment.md),
   [checks](#multi-output-setup)); fix defects found and record outcomes.
+  User 2026-10-18: use a physical two-output setup for native testing; the
+  researched VM route is not being pursued now.
   [Partial native pass](changes/kde-dual-output-live.md): D06 focused-output
   routing corrected and opposite-pointer admission reverified both ways;
   output follow/stay, workspace source-empty/spare lifecycle and native
@@ -294,16 +296,17 @@ decisions of 2026-09-24 are under
 - P0 | 0.1 release (KDE Plasma, Windows, macOS) | User 2026-10-17: 0.1
   covers all three platforms, aiming for feature parity with KDE as far as
   is sensible per host ([scope](decisions.md#scope-and-platform-goals)).
-  Pending: define with the user the Windows and macOS 0.1 gates and parity
-  scope (fold in the Windows release gate item and the macOS port item);
-  the KDE gate below is unchanged. Originally the KDE-only MVP (user
-  2026-10-10). Must-pass gate: VISION
+  User 2026-10-18: the KDE categories below and approved 57-check triage
+  classification are the shared 0.1 gate template. Windows and macOS each propose
+  applicable checks, documented host-difference exceptions and platform-specific
+  extras for user approval ([decision](decisions.md#scope-and-platform-goals)).
+  Originally the KDE-only MVP (user 2026-10-10). Must-pass gate: VISION
   reliability (sleep/wake, output plug/unplug, resolution/scaling changes,
   fullscreen applications, underlying configuration changes), gaming/fullscreen
   non-interference, core journeys (tiling, focus/move, workspaces, multi-output,
-  border, shortcuts, settings, restart), and missing/failed/removed effect
-  leaves tiling working and KWin stable. Other live checks may ship as listed
-  known issues provided none crashes or silently stops tiling; no separate
+  border, shortcuts, settings, restart), and missing/failed/removed companion
+  leaves tiling working (and KWin stable on KDE). Other live checks may ship as
+  listed known issues provided none crashes or silently stops tiling; no separate
   dogfood period. Includes these pending pieces:
   - [OPEN-requirement triage and live-check gate](research/release-0.1-triage.md):
     User 2026-10-10 approved recommendation (a) for 15 units: D02, D04, D05,
@@ -327,7 +330,7 @@ decisions of 2026-09-24 are under
     have no setting. [User decisions](research/release-0.1-triage.md#user-decisions-2026-10-12).
   - Release gates owned by their own items: 0.1 packaging (mainstream install
     path), External NixOS/Home Manager validation, Ubuntu 26.04/26.10
-    acceptance, Licensing and OBS release handoff redesign (all below).
+    acceptance and Licensing (all below); OBS handoff scripting is part of packaging.
   - Workspace tiling toggle Meta+Y (KDE) delivered offline 2026-10-11
     ([record](changes/archive/kde-workspace-tiling-shortcut.md)); Win+Y (Windows
     item 21) delivered offline 2026-10-13
@@ -338,6 +341,10 @@ decisions of 2026-09-24 are under
   ([candidate lessons](research/non-native-tiler-host-interaction.md#candidate-lessons-for-this-project),
   [cross-cutting findings](research/non-native-tiler-host-interaction.md#cross-cutting-findings),
   [evidence](changes/archive/non-native-tiler-host-interaction.md)).
+- P0 | Windows: propose 0.1 gate exceptions against the shared template |
+  Apply the [shared gate decision](decisions.md#scope-and-platform-goals) for user approval.
+- P0 | macOS: propose 0.1 gate exceptions against the shared template |
+  Apply the [shared gate decision](decisions.md#scope-and-platform-goals) for user approval.
 - P1 | Ubuntu 26.04/26.10 acceptance | KWin 6.6 floor selected by user
   2026-10-11 and delivered offline; release 6.6.4, updates 6.6.6 and 26.10
   6.7.5 two-package builds and full apt install/upgrade/removal solver acceptance
@@ -361,14 +368,11 @@ decisions of 2026-09-24 are under
   change). [Evidence](changes/archive/third-party-notices.md). Audit gate delivered
   2026-10-12: keep `licenses`, `bans`, `sources`; per-distro closure and vendored
   inventory recorded; [evidence](changes/archive/licensing-audit-gate.md).
-- OPEN | OBS release handoff redesign | User 2026-10-13 left OPEN; possibly
-  later than 0.1 and possibly not a blocker, neither decided. No route
-  selected. Prior recommendation remains research only. Candidate routes:
-  SCM bridge (git recipes plus exact checksum, no OBS password in CI), scoped
-  token triggering OBS-side asset fetch (including a version-free latest asset
-  without pinned checksum), or Route 3 manual scripted `osc commit` per
-  release. Candidate feasibility remains unresearched; narrow tokens cannot
-  upload sources/checksums. [Research](research/distribution-package-feasibility/obs-release-handoff.md).
+- P2 | OBS release handoff redesign | Route selected by user 2026-10-18;
+  no longer an open release decision or separate blocker. Route 3 scripting
+  belongs to 0.1 packaging below, deferred until close to 0.1. Automation
+  (Route 1 bot account or SCM bridge) is post-0.1.
+  [Decision and route](research/distribution-package-feasibility/obs-release-handoff.md#selected-route-3-consequences).
 - P2 | [Push code down](principles.md#layering) | Recurring post-0.1 passes: move logic from host-coupled
   `kwin/src` TypeScript and `kwin/native-effect` C++ (including settings and
   shortcut reconciliation) into system-specific Rust, then into the agnostic
@@ -3964,10 +3968,10 @@ decisions of 2026-09-24 are under
   OBS builds release tags only into one stable repository: openSUSE Tumbleweed,
   Fedora 43/44 with updates repos; Arch via AUR PKGBUILD, not OBS pacman.
   Ubuntu 26.04/26.10 support delivered offline under the KWin 6.6 floor;
-  [evidence](changes/archive/kwin-6.6-support.md). KDE neon OBS provisioning
-  remains unverified. User creates OBS
-  account/project, GitHub-to-OBS token and AUR account next; spec, PKGBUILD
-  and OBS service prep may proceed offline.
+  [evidence](changes/archive/kwin-6.6-support.md). KDE neon is out of 0.1.
+  User 2026-10-18: maintainer OBS and AUR accounts now exist; project creation
+  and remaining account-dependent steps are deferred until close to 0.1.
+  Spec, PKGBUILD and OBS service prep may proceed offline.
   Acceptance: core script/planner/tray independent of optional ABI-bound effect;
   KWin updates remain possible without the companion (Debian exactly pins the
   compiled-against KWin build); mismatched/absent effect degrades borders/drag preview
@@ -3983,11 +3987,10 @@ decisions of 2026-09-24 are under
   Tumbleweed/Fedora 44 RPM, Arch split and Ubuntu 26.04 Debian containers;
   Fedora 43 passed an earlier source-contract probe. External Nix validation
   remains separate. Settings ownership is delivered: both KCMs remain in core
-  when the effect is absent. Packaging item remains P1: resolve
-  OBS stable-source/checksum decision (0.1 blocker status OPEN) before enabling token,
-  deliver third-party notices, provision accounts/targets
-  and prove remaining solver/live-session behavior (Ubuntu apt solver passed). Neon target
-  provisioning remains open.
+  when the effect is absent. Packaging item remains P1: implement the selected
+  [Route 3 handoff script](research/distribution-package-feasibility/obs-release-handoff.md#selected-route-3-consequences)
+  close to 0.1, provision targets, complete third-party notice delivery and prove
+  remaining solver/live-session behavior (Ubuntu apt solver passed).
   [Preparation](changes/archive/release-0.1-offline-packaging.md)
 - P2 | Simplify drag preview + cross-output drop code | Post-live cleanup only:
   cut advisory `hover_prior` validation, lag-only fences, verbose comments;

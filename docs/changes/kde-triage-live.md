@@ -197,18 +197,22 @@ Previously recorded native/offline evidence is unchanged.
   of the runtime float-intent store documented in
   `crates/omnitiler/src/float_intent_store.rs`. The actual store contains membership
   for the existing applications and was modified during the run; its preimage was
-  not captured. Preserve it rather than guessing an empty preimage. Future capture
-  must back up the actual runtime file, including absence, before development starts.
+  not captured. User 2026-10-18 accepted leaving it as found until session end
+  rather than guessing an empty preimage. Future capture must back up the actual
+  runtime file, including absence, before development starts.
 - Existing asynchronous overlay diagnostic, fixed-client restart and two-domain
   held-scope investigations remain parked; no new evidence resolves them.
-- No tentative product decision or replacement-baseline acceptance was made.
+- No product decision or replacement-baseline acceptance was made during the run;
+  the later fixture disposition is recorded above and in
+  [KDE live acceptance](kde-live-acceptance.md#fixture-failure-and-restoration-blocker).
 
 ## Restoration and evidence review
 
 - **Desktop restored: no.** Count is unchanged, but the original second desktop's
   identity/name was replaced by the owned fixture desktop. Its original identity
-  was not recovered. The desktop and uncertain runtime-store state are preserved
-  for disposition; no fabricated identity or broad configuration rollback occurred.
+  was not recovered. The desktop and uncertain runtime-store state were preserved;
+  their later accepted disposition is linked above. No fabricated identity or
+  broad configuration rollback occurred.
 - Native observer endpoint comparisons show Ghostty and Firefox identities,
   frames, membership and active state unchanged; the same observer's current
   desktop and cursor fields also match. Separate loaded-effect, KGlobalAccel-owner
@@ -226,6 +230,6 @@ Previously recorded native/offline evidence is unchanged.
   restored float-intent bytes and diagnosed workspace defects. Only the bounded
   observations above are accepted. Raw inventories retain native identifiers and
   remain outside the repository; the durable record intentionally omits them.
-- Initial next step: disposition the changed backing desktop and uncertain runtime
-  store, repair preimage/wire capture, then run one discriminating trailing-selection
-  fixture before resuming any D-unit journey.
+- The changed desktop/store disposition is now accepted as linked above. Repair
+  preimage/wire capture, then run one discriminating trailing-selection fixture
+  before resuming any D-unit journey.

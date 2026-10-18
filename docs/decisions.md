@@ -379,9 +379,14 @@ platform API behavior.
 
 - User decision 2026-10-17 (supersedes the KDE-only scope below): release
   0.1 covers KDE Plasma, Windows and macOS. The goal is feature parity with
-  KDE on Windows and macOS, as far as is sensible for each host. Per-platform
-  gates and the exact parity scope are still to be defined with the user;
-  the KDE gate below stands.
+  KDE on Windows and macOS, as far as is sensible for each host.
+- User decision 2026-10-18: the KDE gate categories below (VISION reliability,
+  gaming/fullscreen non-interference, core journeys, missing/failed companion
+  leaves tiling working, settings and restart) and the approved 57-check triage
+  classification form the common 0.1 gate template. Windows and macOS each
+  propose applicable checks, documented host-difference exceptions and
+  platform-specific extras for user approval; exact host parity remains subject
+  to that approval. The KDE gate is unchanged.
 - User decisions 2026-10-10 (0.1 release scope and gate):
   - Release 0.1 is the existing MVP on KDE Plasma only (superseded
     2026-10-17, above). Windows continues
@@ -409,7 +414,8 @@ platform API behavior.
     openSUSE Tumbleweed, Fedora 43/44 with updates repos, and Arch via an AUR
     PKGBUILD (not an OBS pacman repo). Ubuntu 26.04/26.10 support was selected
     on 2026-10-11 under [KDE Support Floor](#kde-support-floor). Attempt KDE
-    neon; return to the user for a decision if too challenging.
+    neon; return to the user for a decision if too challenging (superseded by
+    the 2026-10-18 [delivery decision](#delivery-and-installation)).
 - Windows package/update channel (user 2026-10-10): deferred to Windows
   release planning, then decided from a short research refresh under the
   existing most-obvious-and-unsurprising criterion.
@@ -2733,10 +2739,9 @@ platform API behavior.
 - OBS attempt constraints ([research](research/distribution-package-feasibility/obs.md)):
   the source archive's pre-built JS bundle removes the distro Node build
   requirement. Ubuntu's ECM/API floors are resolved by the KWin 6.6 delivery
-  above. KDE neon still needs OBS provisioning, which is unverified.
-- Next, the user creates the OBS
-  account/project, GitHub-to-OBS token and AUR account. Packaging prep (spec,
-  PKGBUILD, OBS service files) may proceed offline before then.
+  above. Target scope follows the release handoff decision below.
+- Account/provisioning status and timing are tracked in the
+  [0.1 packaging backlog](backlog.md#open-work); offline prep may proceed.
 - Offline packaging uses
   `omnitiler` for core and `omnitiler-native-effect` for the
   effect only, with both KCMs in core and recipes under `packaging/`. Release
@@ -2750,19 +2755,20 @@ platform API behavior.
   [Preparation and evidence](changes/archive/release-0.1-offline-packaging.md).
 - Settings ownership is resolved under [Settings, Tray and First-Run](#settings-tray-and-first-run):
   removing only the companion preserves Settings/Configure/Revert in core.
-  Ubuntu's core and effect packages build offline; neon provisioning remains
-  unresolved.
+  Ubuntu's core and effect packages build offline.
 - Offline preparation does not complete OBS delivery: the guarded post-release
   tag webhook exists, but `trigger_services` cannot update the stable
-  package's pinned source URL/checksum. Keep `OBS_TOKEN` unset until that
-  automated handoff is resolved. The source-service template currently needs
-  a manual source commit after release; it is not an approved replacement
-  for tag-only automated delivery. No accounts or release tags were created.
-- User review 2026-10-13: OBS release handoff remains OPEN; no route selected.
-  It may come in a later version and may not block 0.1, but neither is decided.
-  Research candidates include SCM bridge/git-backed recipes plus exact checksum,
-  scoped-token triggers of OBS-side work, and Route 3, a manual scripted
-  `osc commit` per release. [Research](research/distribution-package-feasibility/obs-release-handoff.md).
+  package's pinned source URL/checksum; it is not the source-delivery mechanism.
+- User decision 2026-10-18 (OBS release handoff): select Route 3 for 0.1,
+  maintainer-run scripted `osc commit` per release using the release archive,
+  `bump-version.sh` and checksum sidecar with pinned `download_url` + `verify_file`.
+  The archive is the single source-delivery mechanism; Ubuntu 26.04/26.10,
+  Tumbleweed and Fedora share the route, with neon out of 0.1. The post-release
+  webhook rebuild trigger remains optional/unset; `OBS_TOKEN` stays unset until
+  automation is implemented and tested. Route 1 bot-account automation or an SCM
+  bridge is post-0.1; a dedicated bot account applies only if automation is later
+  selected. Scripting is 0.1 packaging work deferred until close to release.
+  [Research disposition](research/distribution-package-feasibility/obs-release-handoff.md#decision-disposition-user-2026-10-18).
 - Publishing prerequisite: tool-based dependency/license audit and vendored
   attribution inventory are delivered; third-party notice artifacts remain
   required before 0.1. First-party MIT licensing and the

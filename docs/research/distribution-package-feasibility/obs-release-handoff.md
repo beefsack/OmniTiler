@@ -1,12 +1,12 @@
 # OBS release handoff: tag to stable sources/checksums
 
-- Research date: 2026-10-13. Status: **OPEN after user review; no route selected**.
+- Research date: 2026-10-13. Status: **Route 3 selected for 0.1 (user 2026-10-18)**;
+  [decision](../../decisions.md#delivery-and-installation).
 - Prior recommendation (research only, not selected): GitHub Actions with a
   dedicated least-privilege OBS bot account to `osc commit` bumped recipes and
   real checksum, pinned `download_url` + `verify_file`, then `tag_push` webhook.
-- User 2026-10-13 left this OPEN. Possibly not a 0.1 blocker and possibly a
-  later-version item; neither decided. No account/credential/route selection.
-- Scope: stable release tags (`vX.Y.Z`) delivering sources/checksums into OBS for packages `omnitiler` and `omnitiler-native-effect`. No accounts, tokens, projects, or packages were created; no authenticated OBS calls were made.
+- The 2026-10-13 open route review is resolved; automation is post-0.1.
+- Scope: stable release tags (`vX.Y.Z`) delivering sources/checksums into OBS for packages `omnitiler` and `omnitiler-native-effect`. This research created no accounts, tokens, projects or packages and made no authenticated OBS calls.
 - Current pipeline state: `release.yml` builds the deterministic archive and publishes the GitHub Release, then `obs-trigger` fires a synthetic `tag_push` webhook that only re-runs `trigger_services` on already-committed OBS sources. Every release still needs a manual `osc` source update first. Details in [installation](../../installation.md#obs-wiring-provisioning-gated-nothing-created).
 
 ## Background: what must be delivered per release
@@ -92,7 +92,7 @@
   confirms Jenkins use, not the OBS-upload step. Exact OBS citation unresolved.
   These gaps select no route and remain for clarification.
 
-## Additional candidate routes (not yet researched)
+## Additional candidate routes (not selected; post-0.1 research)
 
 - SCM bridge: CI pushes recipes plus exact checksum to git, OBS syncs;
   no OBS password in CI. Git-backed package semantics replace `osc commit`;
@@ -100,8 +100,6 @@
 - Rancher-desktop-style scoped trigger/OBS-side fetch, using a version-free
   `releases/latest/download` asset and no pinned checksum. This is a candidate,
   not a verified claim about the cited stable service or an integrity decision.
-- Route 3: manual scripted `osc commit` per release, also raised in review.
-  No selection; candidate automation/auth/acceptance tradeoffs remain OPEN.
 
 ## Ubuntu 26.04/26.10 requirements folded in
 
@@ -110,12 +108,14 @@
 - Debian recipe notes for the handoff: `DEB_BUILD_PROFILES=noeffect` builds core-only without `kwin-dev` (useful while a KWin bump awaits its effect rebuild); Debian's exact KWin pin requires a matching rebuild or companion removal before the host upgrade flows. Rebuild/publish latency after a distro KWin release is unbounded (DoD polling/queue/build/publish), so a same-day KWin release can precede its rebuilt effect; the loader IID check plus independent core are the mitigation, not the handoff.
 - KDE neon: no OBS target provisioning exists (upstream [open-build-service#19317](https://github.com/openSUSE/open-build-service/issues/19317)); out of scope for this handoff either way.
 
-## Consequences if the prior recommendation were selected
+## Selected Route 3 consequences
 
-- Accept: one high-value secret (bot password) in GitHub secrets, rotated manually; a dedicated OBS account to create and own.
-- Keep: pinned `download_url` + `verify_file` service (fail-closed placeholders until provisioned), post-release `tag_push` webhook (now as a rebuild/verify trigger after the commit lands, ordering: release -> `osc commit` -> webhook), `OBS_TOKEN` unset until provisioning resolves and the end-to-end run is tested.
+- Apply the [2026-10-18 release decision](../../decisions.md#delivery-and-installation),
+  not the prior Route 1 recommendation. The maintainer runs the handoff each release;
+  no OBS bot password enters GitHub secrets for 0.1.
+- Both packages (`omnitiler`, `omnitiler-native-effect`) ride the same commit:
+  one archive, one checksum, bumped recipes covering both stanzas.
 - Do not build: `obs_scm`/`cargo_vendor` tag-fetching chains, `buildtime` downloads, raw-checkout services, repo-level GitHub webhooks (race asset creation), `branch_package` for stable delivery (suffixed packages).
-- Both packages (`omnitiler`, `omnitiler-native-effect`) ride the same commit: one archive, one checksum, bumped recipes covering both stanzas.
 
 ## Unknowns (need provisioning/POC, not guesses)
 
@@ -128,15 +128,17 @@
 7. Ubuntu:26.04 OBS-side pocket list/ordering and selected buildinfo versions (confirm at provisioning).
 8. Token operations beyond the four verified in code.
 
-## Tentative decisions (awaiting user review)
+## Decision disposition (user 2026-10-18)
 
-- (T1) Dedicated OBS bot account, write rights only on the stable project; human credentials never enter GitHub secrets.
-- (T2) Keep the release-tarball contract as the single source-delivery mechanism; no OBS-side tag fetching for 0.1.
-- (T3) `OBS_TOKEN` (workflow token) stays unset until the Route 1 handoff is implemented and tested end-to-end; manual `osc` fallback remains documented until then.
-- (T4) Ubuntu 26.04/26.10 and Tumbleweed/Fedora targets share the handoff; neon stays out of scope for 0.1.
+- T1: only if later automation is chosen, use a dedicated OBS bot account with
+  stable-project-only write rights; human credentials never enter GitHub secrets.
+- T2 (single release-archive source), T3 (token unset until tested automation)
+  and T4 (shared distro route, neon excluded): settled by the
+  [release decision](../../decisions.md#delivery-and-installation).
 
-## Next action (OPEN)
+## Next action
 
-- Clarify conflicting prior-art citations and research the additional candidates
-  before the next route review. Release-blocker status, route and provisioning
-  remain undecided; no implementation or end-to-end claim.
+- Implement and test the manual handoff script under
+  [0.1 packaging](../../backlog.md#open-work), deferred until close to 0.1.
+  Prior-art citation clarification and automation research are post-0.1;
+  no implementation or end-to-end claim is made here.
