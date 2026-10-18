@@ -56,10 +56,11 @@
   payloads and are excluded from complete-wire claims. Evidence keys include
   `wire.jsonl`, `mig-journal.txt`, `t05pre/post`, `t02sendR/L`, `t02stayR/L`,
   `l2r4pre/post/ret`, `bpostR`, `cpostR`, and baseline/restoration snapshots.
-- Final accepted-tree gates: Rust workspace **3216/3216**, KWin **1885/1885**,
+- Final integrated accepted-tree gates: Rust workspace **3280/3280**, KWin **1885/1885**,
   typecheck, script/Planner build, strict all-target workspace Clippy, formatting
-  and portable-core gate pass. Dependency-notice verification was blocked by
-  unavailable dependency-fetch network access; no dependency changed.
+  and portable-core gate pass. Dependency-notice verification remains blocked by
+  an uncached platform dependency under frozen/offline checking; no dependency
+  changed.
 - Restoration: protected frames/membership/outputs and shown views match their
   captured baselines, including settled recovery of an arbitrary frame after
   teardown. Output configuration, panels and shortcuts are restored; owned

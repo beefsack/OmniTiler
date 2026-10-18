@@ -135,7 +135,7 @@ decisions of 2026-09-24 are under
     mutation and post-gap local focus remain pending. T05 is parked above; T06
     rendering and exact-tree R4 still need distinct evidence. Protected frames,
     views, outputs/settings restored; development DOWN; newer external focus/
-    pointer changes preserved. Final Rust workspace 3216/3216, KWin 1885/1885.
+    pointer changes preserved. Final integrated Rust workspace 3280/3280, KWin 1885/1885.
 - P0 | KDE floating dialog pushed behind other windows | User live 2026-10-16:
   Steam dialogs (game-launch controller prompt; fixed-size startup loading
   dialog, admitted floating) repeatedly drop behind Steam or a terminal on the
