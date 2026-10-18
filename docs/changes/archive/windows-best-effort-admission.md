@@ -79,9 +79,11 @@
   lifetime, recovery and D16/D23 fences rather than importing KDE actuation.
 - Both explicit output sends and R4 capacity-float results refuse
   `float-no-remap`, preserving source Engine/membership. Windows has no
-  established move-only float frame remap/arrival proof. This is the selected
-  operation boundary, not a silent success. Recommendation: retain refusal;
-  approve a remap policy separately before enabling these transfers.
+  established move-only float frame remap/arrival proof for this route.
+  User accepted 2026-10-18 (T2): retain this refusal until a remap rule is
+  separately approved. This is the accepted operation boundary, not a silent
+  success or rejection of existing whole-workspace migration remaps.
+  [Decision](../../decisions.md#best-effort-admission).
 - Drag capacity floating remains an honest refusal/snap-back until preview can
   represent that fallback. Overlap preview/drop parity still needs native proof.
 - Pure route gap synchronization remains Engine-only. Any committed D7 victims

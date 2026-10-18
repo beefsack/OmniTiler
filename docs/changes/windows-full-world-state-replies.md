@@ -2,11 +2,13 @@
 
 ## Goal and status
 
-- 2026-10-18: **parked: native-to-world migration mapping unresolved;
-  core-produced migration/refill acceptance blocked.** W2 prototype preserved
-  on `wip/windows-world-diff`, not accepted or enabled. Additive constructor
-  prerequisite and W1 offline capture/ordering
-  fixtures delivered under the tentative selection below. The earlier W1
+- User direction 2026-10-18: **parked pending core-owned output topology;
+  core-produced migration/refill acceptance blocked.** Windows will not build
+  its own adjacency mapping. [Shared proposal](shared-core-owned-output-topology.md)
+  is ready for cross-stream review; KDE stream is expected to deliver core+KDE.
+  W2 prototype preserved on `wip/windows-world-diff`, not accepted or enabled.
+  Additive constructor prerequisite and W1 offline capture/ordering fixtures
+  delivered under the accepted constructor selection below. The earlier W1
   prototype remains withdrawn; the replacement starts from native sources.
   W2-W4 and runtime adoption remain pending. Windows remains on its working
   legacy domain API. No host behavior change.
@@ -24,7 +26,7 @@
   with [D23/13f delivery](shared-core-d23-rehome-and-13f-maximize-base.md),
   consuming its approved additions rather than implementing a competing rule.
 
-## Constructor prerequisite and tentative selection
+## Constructor prerequisite and accepted selection
 
 | Policy | Current Windows owner | Current world constructor |
 | --- | --- | --- |
@@ -47,7 +49,7 @@
   complete world observation must carry truthful state and retain native gates.
   The existing `world_route_carries_linux_policy_opt_ins` test locks the Linux
   constructor choices.
-- Options:
+- Options considered before acceptance:
   1. Recommended: additive `WorldEngine` construction accepting the existing
      Engine policy configuration, keeping `new` and KDE defaults unchanged.
      Windows keeps fixed admission/send enabled and the core maximized fence
@@ -60,17 +62,19 @@
      but the backlog item remains unimplemented.
 - Do not fake `fixed_suppress`, automatic origin or maximized state to bypass
   the mismatch; those facts have distinct user-override and native-safety meaning.
-- Tentative selection, pending user review (2026-10-18): option 1, additive
+- User accepted 2026-10-18 (T1): option 1, additive
   constructor configuration with existing constructors/defaults unchanged.
   `WorldEngine::new_with_config(core_generation: &str, config:
   WorldEngineConfig) -> Option<Self>` accepts exactly `fixed_send_admission`
   and `maximized_focus_fence`. `Default` remains `false`/`true`; Windows uses
   `true`/`false`. Fixed-size admission stays enabled in both profiles.
+  Delivered in `0869f08c`; [accepted architecture decision](../decisions.md#engine-architecture-and-convergence).
 - No KDE, macOS or wire/protocol changes. The KDE and macOS streams should be
   told of this additive core API; notification is pending. Their existing
   constructor calls and behavior remain unchanged. No D23/13f changes included.
-- Exact next action: choose the native-to-world migration mapping described
-  in the parked handover below before resuming W2 acceptance.
+- Exact next action: route the shared topology proposal to KDE/macOS; resume
+  Windows W2 acceptance after core-owned topology delivery, not a Windows
+  native-to-world adjacency implementation.
 
 ## Ordered releasable slices
 
@@ -241,8 +245,10 @@
     W3 must prove bootstrap preserves native modes through the existing world
     command contract before any desired state can actuate.
   - Adjacency is intentionally empty, matching the native domain builder.
-    W3 must retain existing native cross-output resolution or establish its
-    faithful world-command mapping, not copy KDE topology heuristics.
+    User direction 2026-10-18 supersedes adapter mapping: shared core must
+    retain FULL monitor positions and derive targets. Windows supplies its
+    existing FULL topology geometry, not KDE heuristics or a Windows map;
+    [proposal](shared-core-owned-output-topology.md).
 - W2-W4, runtime/live adoption and physical/two-output acceptance remain pending.
   The backlog item remains unimplemented until cutover and acceptance.
 
@@ -309,17 +315,16 @@
   tests are not sufficient integration evidence. Do not inject KDE adjacency
   merely to turn the missing product route into a passing test.
 - Existing native resolution does exist: `migration.rs` uses
-  `select_migration_target` over full monitor rectangles. The material choice
-  is mapping that native selection faithfully into one world authority,
-  without KDE heuristics or two active policy paths.
-- Options:
-  1. Recommended: approve a bounded native-to-world mapping design reusing
-     the existing Windows selector; prove actual migration/refill capture,
-     feedback and re-observation before accepting W2.
-  2. Defer adoption and keep the working legacy Windows owner; prototype
-     remains offline diagnostic evidence.
-  3. Broaden shared commands for directly resolved targets, only as separate
-     coordinated core/protocol work if option 1 cannot preserve the contract.
+  `select_migration_target` over full monitor rectangles. Its shared selector
+  is useful parity evidence, not a reason to add another Windows authority.
+- User direction 2026-10-18 supersedes the earlier native-to-world mapping
+  options: keep adoption parked until core owns monitor topology and derives
+  adjacency from reported FULL rectangles. Windows will not implement an
+  adjacency mapping. [Cross-stream proposal](shared-core-owned-output-topology.md)
+  separates current world/legacy selection rules and their explicit review.
+  After shared delivery, prove actual migration/refill capture, feedback and
+  re-observation with empty adapter adjacency before accepting W2. The working
+  legacy owner remains active meanwhile; prototype evidence is not acceptance.
 - Before integrating concurrent best-effort admission, four-package locked
   build/test/strict all-target clippy, formatting and whitespace gates passed:
   **2,695 passed, 0 failed, 1 ignored across 65 suites**. No new unsafe,
@@ -342,7 +347,9 @@
   separately required, not hidden by the branch split.
 - Upstream `cf422d2f` CI run 39053584901 failed its Windows test job before
   this documentation-only update; the other seven jobs passed.
-- Exact next action: user decision on option 1 versus deferral; then mapping
-  design/review and the blocked migration/refill acceptance. W3 remains
+- Exact next action: KDE stream reviews and delivers core-owned topology with
+  KDE integration; then Windows resumes blocked migration/refill acceptance
+  without Windows adjacency code. Reconcile the preserved prototype's native
+  gate failures against current main before claiming new acceptance. W3 remains
   blocked on accepted W2 plus hidden/fullscreen/bootstrap parity. Do not
   enable the facade.

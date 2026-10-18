@@ -2148,6 +2148,12 @@ platform API behavior.
   float preview it refuses/snaps back, never floats only at finish. Promised
   old slots/migration first preserve retained topology, then D7/D9 rather
   than silently choosing a new anchor. Host capabilities remain gates.
+- User accepted 2026-10-18 (T2): Windows explicit output-send and R4
+  capacity-float transfers refuse `float-no-remap`, preserving source Engine
+  and membership, until a remap rule is separately approved. This is a bounded
+  host capability gate under D6, not a shared selection change or a change to
+  existing whole-workspace migration remaps.
+  [Windows delivery and limitations](changes/archive/windows-best-effort-admission.md#host-differences-and-bounded-limitations).
 - D7: float the shortest newest-first eligible victim prefix until retained
   projection succeeds, contracting branches with existing survivor-share
   rules. Order is first successful tiled admission, preserved for the same
@@ -2219,6 +2225,22 @@ platform API behavior.
   supersede older no-world-sequence, KDE `DescribePlan` and 1 MiB/64 KiB
   boundary decisions for the migrated KDE path. The legacy domain interface
   and its bounds remain transitional for Windows/macOS, not a KDE fallback.
+- User accepted 2026-10-18 (T1): additive
+  `WorldEngine::new_with_config(&str, WorldEngineConfig) -> Option<Self>`
+  configures `fixed_send_admission` and `maximized_focus_fence` at construction.
+  Existing `new`/Default remain `false`/`true`; Windows uses `true`/`false`
+  to preserve automatic fixed-float sends and its adapter-owned maximized
+  focus gates. Fixed-size admission remains enabled in both profiles. No wire
+  policy fields, KDE/macOS behavior change or world-adoption acceptance is
+  implied. Delivered in `0869f08c`;
+  [constructor evidence](changes/windows-full-world-state-replies.md#constructor-prerequisite-and-accepted-selection).
+- User direction 2026-10-18: core must own monitor topology, retaining FULL
+  monitor positions in world state and deriving output adjacency itself.
+  Adapters supply geometry in complete world reports, including initialization
+  and updates. Windows full-world adoption stays parked pending this shared
+  delivery; Windows will not build its own adjacency mapping. Selection-policy
+  alignment is not silently decided by ownership extraction.
+  [Cross-stream proposal and open questions](changes/shared-core-owned-output-topology.md).
 
 - **Tentative macOS complete-world mapping, 2026-10-18:** represent observed
   native Spaces in per-output-local mode, without inventing logical creation

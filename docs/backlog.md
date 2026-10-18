@@ -178,8 +178,8 @@ decisions of 2026-09-24 are under
   overlap, retry and catalog controls are covered by producer-shaped fixtures and
   independent safety review. Native four-package gates: **2,750 passed, 0 failed,
   1 ignored**; all eight CI jobs pass (`6c4bcefd`, run 39083833668).
-  Pending scoped live checks and host limitations (cross-output float
-  transfers safely refuse without an established remap):
+  Pending scoped live checks; User accepted 2026-10-18 (T2): cross-output
+  capacity-float transfers refuse until a remap rule is separately approved:
   [record](changes/archive/windows-best-effort-admission.md).
 - P1 | macOS: adopt best-effort admission | Consume the shared D1-D10 policy
   with full-world adoption below; retain/echo ordinary float classification
@@ -221,8 +221,10 @@ decisions of 2026-09-24 are under
   dropped the float without an explicit toggle. Add the producer-shaped offline
   replay first, then fix any uncommanded loss of settled float intent.
   [Investigation](changes/kde-triage-live.md#parked-restart-intent-loss-investigation).
-- P1 | Windows: adopt full world-state core replies | parked: native-to-world
-  migration mapping unresolved; core-produced migration/refill acceptance blocked. Replace
+- P1 | Windows: adopt full world-state core replies | parked pending
+  [core-owned output topology](changes/shared-core-owned-output-topology.md),
+  User direction 2026-10-18; no Windows adjacency mapping will be built.
+  Core-produced migration/refill acceptance remains blocked. Replace
   adapter-triggered trailing policy and per-op application with complete
   observed world reports and host diffs; move scope/history/mapping policy
   into the world state; preserve recovery ledger/window properties/native
@@ -233,14 +235,24 @@ decisions of 2026-09-24 are under
   lifetime/gesture fences, refused targets, partial transfer and follow proof
   in all workspace modes. Native acceptance remains separately required.
   The legacy domain API remains compiling, not behaviorally migrated.
-  Tentative constructor prerequisite selected 2026-10-18, pending user review:
+  User accepted constructor prerequisite 2026-10-18 (T1):
   additive core configuration preserves existing defaults and Windows send/
   maximized policies without wire changes. [Slices and evidence](changes/windows-full-world-state-replies.md);
   constructor prerequisite delivered in `0869f08c` and replacement W1 capture/
   sequencing in `c73e4cc7` (CI green). W2 test-only prototype preserved on
   `wip/windows-world-diff` with 50 passing fixtures; acceptance rejected for
-  the mapping gap, not delivered W2. Runtime adoption remains pending;
-  handover lists options and concurrent native-gate failures.
+  the topology gap, not delivered W2. Resume after shared core+KDE delivery,
+  with no Windows adjacency code; runtime adoption remains pending and the
+  handover retains concurrent native-gate failures requiring reconciliation.
+- P1 | Shared core: own output topology | Proposal ready for cross-stream
+  review, User direction 2026-10-18: retain FULL monitor rectangles from world
+  reports and derive adjacency/targets in core, not adapters. KDE stream to
+  deliver core+KDE; Windows world adoption resumes afterward without Windows
+  adjacency code; macOS adopts shared topology over its delivered world reports.
+  Preserve per-use selection rules; split-edge world/legacy alignment needs
+  explicit review.
+  [Proposal](changes/shared-core-owned-output-topology.md), alongside the
+  [D23/13f proposal](changes/shared-core-d23-rehome-and-13f-maximize-base.md).
 - P1 | macOS: adopt full world-state core replies | delivered offline;
   pending live verification. Replaced per-domain reply
   concatenation/cursors with world revision and input watermark, preserving

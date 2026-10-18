@@ -11,7 +11,9 @@
   adjacency database, topology initialization RPC, polling or new setting.
 - Non-goals: new selection semantics without an explicit decision, native
   capability expansion, float-remap policy, workspace-scope redesign, or
-  enabling pending Windows/macOS runtime adoption in this change.
+  enabling Windows runtime adoption or expanding macOS runtime capabilities.
+  macOS full-world adoption landed separately in `182ba9a6`, offline only;
+  [native acceptance remains pending](macos-full-state-replies.md#pending-live-verification).
 
 ## 1. Verified current state
 
@@ -25,7 +27,7 @@
 | KDE: `kwin/src/world-observe.ts:272-349,634-686,744-768` | KWin computes unique-reciprocal adjacency from FULL Output `geometry`, copies it into each domain, and also sends the same FULL rectangle as topology `rect`. Domain bounds are separate per-desktop `clientArea` work areas. |
 | Windows: `crates/tiler-windows/src/tiling_sys/world_capture.rs:665-681,721-754` | Offline world capture sends FULL `MonitorArea.full` in topology geometry, raw work-area domain bounds plus outer gap, and empty adjacency. This blocks real world migration/refill acceptance; [W2 remains parked](windows-full-world-state-replies.md#w2-design-first-outcome-parked). |
 | Windows legacy: `crates/tiler-windows/src/workspace_owner/directional.rs:47-94`; `migration.rs:198-229` | Native topology is read adapter-side; target selection already calls shared core `select_for_window` / `select_for_migration`, then attaches a reciprocal resolved pair. No Windows world adjacency mapping exists or should be added. |
-| macOS: `crates/tiler-macos/src/runtime_core.rs:604-644`; `topology.rs:124-195` | Current native domains use visible/menu-Dock-excluded work areas minus outer gap and empty adjacency. There is no `WorldReport`/`WorldEngine` producer in the macOS source today. Topology already distinguishes FULL `cg_bounds` from `visible`; future reports must send FULL bounds, not the current domain work area. |
+| macOS: `crates/tiler-macos/src/world_builder.rs:172-260`; `runtime_types.rs:154-179`; `topology.rs:124-195` | Full-world adoption is delivered offline in `182ba9a6`, live pending. World domains send raw visible/menu-Dock-excluded work areas with outer gap separately, and empty adjacency. Topology geometry currently also sends `domain.visible`, not FULL bounds. `NativeDomain.bounds` already retains the FULL converted `cg_bounds`; use it for topology without changing work-area placement. |
 
 ### Selection rules are not interchangeable today
 
@@ -56,7 +58,8 @@
    never as permission to infer geometry from a client or work area.
    Domain `bounds` remains the distinct work-area field, with current
    per-domain outer-gap handling unchanged. KDE and Windows already send
-   FULL geometry; macOS must add it when adopting world reports.
+   FULL geometry; macOS must replace its world topology's current `visible`
+   rectangle with the already-available FULL `NativeDomain.bounds`.
 2. Retain validated live output ids, FULL rectangles and completeness in
    `WorldEngine` for every workspace mode, initialized/replaced by accepted
    complete reports before command planning. Reuse existing facts where
@@ -103,8 +106,8 @@
 | --- | --- |
 | KDE | Delete script-owned world adjacency after parity proof; retain FULL geometry and work areas. Ordinary two-output focus, R4 move, send, migration/refill and hotplug behavior must remain unchanged. Recheck native two-output behavior: offline map equality alone does not prove settlement, gaps or focus. Split-edge alignment requires the explicit decision below. |
 | Windows | Keep the working legacy runtime and W2 prototype parked until the shared change lands. Resume world migration/refill capture and re-observation using existing FULL reports, with **no Windows adjacency implementation**. Configuration acceptance and cross-output capacity-float refusal remain separate decisions. |
-| macOS | When adopting world reports, map display UUIDs and FULL `cg_bounds` independently of visible work areas; keep AX/AppKit threading and native Space capability gates. Display arrangement must be verified, not inferred from Space order or focused display. No send capability is enabled here. |
-| Coordinates / scale | One coherent coordinate space within each adapter report for FULL rects, work areas, window frames and pointer facts. Windows physical pixels, KWin host geometry units and macOS CG/AX top-left points need not share a universal unit. Never independently multiply mixed-scale monitor origins/extents or subtract panels before adjacency. macOS conversion is `primary_h - (y + h)`, with negative origins preserved (`topology.rs:146-195`). Check rounding at shared edges. |
+| macOS | Update the delivered world builder to report FULL `NativeDomain.bounds`, independently of visible work areas; retain display identity/UUID homing, AX/AppKit threading and native Space capability gates. Display arrangement must be verified, not inferred from Space order or focused display. This corrects the geometry carrier without reopening world adoption or enabling sends. |
+| Coordinates / scale | One coherent coordinate space within each adapter report for FULL rects, work areas, window frames and pointer facts. Windows physical pixels, KWin host geometry units and macOS CG/AX top-left points need not share a universal unit. Never independently multiply mixed-scale monitor origins/extents or subtract panels before adjacency. macOS conversion is `primary_h - (y + h)`, with negative origins preserved (`topology.rs:149-195`); integer conversion rounds 1:1 and refuses invalid/unrepresentable geometry (`:64-101`). Check rounding at shared edges. |
 | Gaps / non-touching / mirrored outputs | Preserve exact edge-touch, positive overlap and no wrap. Real gaps and corner-only contact produce no directional candidate; do not invent nearest-neighbor or tolerance rules. Overlapping/mirrored arrangements need deterministic fixtures, not accidental order dependence. |
 | Hotplug / partial enumeration | Missing/invalid FULL rects, duplicate ids or incomplete topology must refuse topology-dependent crossing, migration and remap narrowly; never derive from the readable subset or treat an omitted output as unplugged. Retain disconnect facts separately, no stale-edge actuation. Unaffected local work and later complete-report recovery remain available. Existing displacement already fences incomplete inventory; distinguish monitor completeness from unrelated window-read failures before broadening holds. |
 
@@ -135,8 +138,9 @@
   claim. Keep work-area/outer-gap and native-property fixtures.
 - Adapter offline tests: KDE producer/codec/replay without authoritative
   adjacency; Windows actual W1 capture -> configured WorldEngine -> migration/
-  refill feedback/re-observation with empty adapter adjacency; macOS UUID/full
-  vs visible conversion, negative/above-primary origins, scale-independent
+  refill feedback/re-observation with empty adapter adjacency; macOS builder
+  FULL-vs-visible topology fixtures, UUID/full vs visible conversion,
+  negative/above-primary origins, scale-independent
   points, missing primary and separate-Spaces ambiguity. No mock adjacency
   injection to manufacture a Windows acceptance result.
 - Future live journeys: KDE two-output focus/move and follow/stay send both
@@ -168,8 +172,9 @@
 2. Windows stream resumes the [parked W2 handover](windows-full-world-state-replies.md#blocker-preservation-and-exact-next-action)
    after shared delivery, proves real migration/refill roundtrips and reconciles
    existing native-gate failures before acceptance; W3 remains an atomic cutover.
-3. macOS stream adopts FULL topology with its full-world work, verifies display
-   arrangement and retains unsupported native-Space/transfer refusals.
+3. macOS stream updates its delivered world builder to FULL topology and consumes
+   shared derivation, verifies display arrangement, and retains unsupported
+   native-Space/transfer refusals. Existing offline adoption is not reopened.
 
 - Exact next action: route this proposal to KDE and macOS streams; KDE reviews
   the per-use selection decision and starts the core+KDE offline unit. Windows
