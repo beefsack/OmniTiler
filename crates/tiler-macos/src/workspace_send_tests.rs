@@ -643,7 +643,7 @@ fn armed_hotkey_admits_and_maps_to_transfer_feedback() {
 }
 
 #[test]
-fn readiness_line_pins_scoped_runtime_and_tap_ready() {
+fn readiness_line_pins_scoped_runtime_config() {
     assert_eq!(
         format_send_readiness_line("tap", "authentic", 1, 57),
         "tiler-macos send readiness runtime-started input=tap preset=authentic scopes=1 chords=57",

@@ -11,10 +11,10 @@ use crate::workspace_send_native::{
 
 fn frame() -> crate::ffi::AxFrame {
     crate::ffi::AxFrame {
-        x: 0.0,
-        y: 30.0,
-        w: 1150.0,
-        h: 1139.0,
+        x: 100.0,
+        y: 200.0,
+        w: 800.0,
+        h: 600.0,
     }
 }
 
@@ -32,21 +32,21 @@ fn step_names_match_the_diagnostic_kind_vocabulary() {
 #[test]
 fn leg_begin_pins_goal_grab_frame_and_relative_offset() {
     assert_eq!(
-        format_native_leg_begin_line(277, (575.0, 54.0), frame()),
-        "tiler-macos send native leg-begin goal=277 grab=(575,54) frame=(0,30,1150,1139) rel=(575,24)",
+        format_native_leg_begin_line(277, (500.0, 400.0), frame()),
+        "tiler-macos send native leg-begin goal=277 grab=(500,400) frame=(100,200,800,600) rel=(400,200)",
     );
 }
 
 #[test]
 fn mouse_line_carries_elapsed_point_and_frame_relative_offset() {
     assert_eq!(
-        format_native_mouse_line("mouse-down", 12, (575.0, 54.0), Some(frame())),
-        "tiler-macos send native ev=mouse-down t_ms=12 pt=(575,54) rel=(575,24)",
+        format_native_mouse_line("mouse-down", 12, (500.0, 400.0), Some(frame())),
+        "tiler-macos send native ev=mouse-down t_ms=12 pt=(500,400) rel=(400,200)",
     );
     // Frameless posts still trace the point (never a guessed relative).
     assert_eq!(
-        format_native_mouse_line("mouse-move", 3, (575.0, 54.0), None),
-        "tiler-macos send native ev=mouse-move t_ms=3 pt=(575,54)",
+        format_native_mouse_line("mouse-move", 3, (500.0, 400.0), None),
+        "tiler-macos send native ev=mouse-move t_ms=3 pt=(500,400)",
     );
 }
 
