@@ -33,8 +33,10 @@
 //!   [`SendEffectHandoff::poll_completion_for`]). Requests and completions
 //!   fence on the same operation identity plus lifetime generation and
 //!   topology revision; stale results drop counted without replay.
-//!   Cancellation is explicit ([`SendEffectHandoff::cancel`]) and the lane
-//!   idles after poll or cancel — nothing dispatches after shutdown.
+//!   Cancellation is a request-to-stop ([`SendEffectHandoff::cancel`]):
+//!   pending and completed requests drop, an inflight one stays busy and
+//!   flagged until its terminal completion or a shutdown
+//!   [`SendEffectHandoff::release`] after the owner thread has exited.
 //!
 //! Future native integration (not this unit): the dedicated owner thread
 //! runs fresh create/use/drop AX reads plus the bounded
@@ -207,8 +209,9 @@ pub struct SendFreshEvidence {
     pub fullscreen: Option<bool>,
     /// Fresh lifetime generation for the subject PID.
     pub live_generation: Option<u64>,
-    /// Fresh topology revision (`None` when the backend reports none —
-    /// the revision leg is then skipped, exactly like the select drain).
+    /// Fresh topology revision. Always required: an unknown or
+    /// unreadable revision refuses (no select-backend-style skip leg for
+    /// product send proof).
     pub live_revision: Option<u64>,
     /// Fresh domain homing the subject window.
     pub live_source: Option<DomainKey>,
@@ -236,6 +239,7 @@ pub enum SendProofRefusal {
     Fullscreen,
     UnknownGeneration,
     GenerationMismatch,
+    UnknownRevision,
     RevisionDrift,
     UnknownSource,
     SourceMoved,
@@ -264,6 +268,7 @@ impl SendProofRefusal {
             Self::Fullscreen => "refused-send-fullscreen",
             Self::UnknownGeneration => "refused-send-unknown-generation",
             Self::GenerationMismatch => "refused-send-stale-lifetime",
+            Self::UnknownRevision => "refused-send-unknown-revision",
             Self::RevisionDrift => "refused-send-revision-drift",
             Self::UnknownSource => "refused-send-unknown-source",
             Self::SourceMoved => "refused-send-source-moved",
@@ -308,10 +313,12 @@ pub fn prove_managed_send(
         }
         Some(_) => {}
     }
-    if let (Some(live), pinned) = (fresh.live_revision, target.revision)
-        && live != pinned
-    {
-        return Err(SendProofRefusal::RevisionDrift);
+    match fresh.live_revision {
+        None => return Err(SendProofRefusal::UnknownRevision),
+        Some(live) if live != target.revision => {
+            return Err(SendProofRefusal::RevisionDrift);
+        }
+        Some(_) => {}
     }
     match fresh.live_source.as_ref() {
         None => return Err(SendProofRefusal::UnknownSource),
@@ -380,6 +387,10 @@ struct Lane {
     pending: Option<ManagedSendTarget>,
     inflight: Option<ManagedSendTarget>,
     completion: Option<SendCompletion>,
+    /// Owner-visible stop request for an inflight request. Set only by
+    /// [`SendEffectHandoff::cancel`] while inflight stands; cleared by the
+    /// terminal [`SendEffectHandoff::finish`] or [`SendEffectHandoff::release`].
+    cancel_requested: bool,
     stale_dropped: u64,
 }
 
@@ -388,7 +399,11 @@ struct Lane {
 /// finishes off the engine/AppKit/per-app observation owners, and the main
 /// thread polls completion nonblocking. Busy while a request is pending,
 /// inflight, or completed-but-unpolled: concurrent submits refuse instead
-/// of overlapping, and a sent press is never replayed.
+/// of overlapping, and a sent press is never replayed. Cancellation is a
+/// request-to-stop, never a lane reopen: while an effect is inflight the
+/// lane stays busy until the terminal completion or a shutdown release
+/// after the owner thread has exited — a cancelled inflight never admits
+/// a new physical effect concurrently.
 #[derive(Debug, Default)]
 pub struct SendEffectHandoff {
     inner: Mutex<Lane>,
@@ -439,7 +454,9 @@ impl SendEffectHandoff {
 
     /// Dedicated-owner finish: stage the completion for the main thread.
     /// Returns false (counted, no replay) when nothing is inflight or the
-    /// completion names another operation, lifetime, or revision.
+    /// completion names another operation, lifetime, or revision. A
+    /// terminal finish also resolves a pending stop request: it is the
+    /// completion — not the cancel — that frees the active lane.
     pub fn finish(&self, completion: SendCompletion) -> bool {
         let mut lane = self
             .inner
@@ -458,6 +475,7 @@ impl SendEffectHandoff {
         }
         lane.inflight = None;
         lane.completion = Some(completion);
+        lane.cancel_requested = false;
         true
     }
 
@@ -481,10 +499,47 @@ impl SendEffectHandoff {
         Some(completion)
     }
 
-    /// Explicit cancellation: drop any pending, inflight, or completed
-    /// request. Returns whether anything was outstanding. Nothing
-    /// dispatches after cancel — the shutdown path.
+    /// Explicit cancellation (request-to-stop): drop any pending or
+    /// completed-but-unpolled request and flag a stop for an inflight one.
+    /// An inflight effect is NOT cleared and the lane stays busy — only
+    /// its terminal [`SendEffectHandoff::finish`] or a shutdown
+    /// [`SendEffectHandoff::release`] after the owner thread has exited
+    /// frees the active lane, so a cancelled inflight never admits a new
+    /// physical effect concurrently. Returns whether anything was
+    /// outstanding.
     pub fn cancel(&self) -> bool {
+        let mut lane = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let had = lane.pending.is_some() || lane.inflight.is_some() || lane.completion.is_some();
+        lane.pending = None;
+        lane.completion = None;
+        if lane.inflight.is_some() {
+            lane.cancel_requested = true;
+        }
+        had
+    }
+
+    /// Owner-visible stop request: true once [`SendEffectHandoff::cancel`]
+    /// ran while an effect was inflight and until its terminal finish or
+    /// a shutdown release. The dedicated owner polls this nonblocking
+    /// between proof/actuation edges and stops early without posting
+    /// further edges.
+    #[must_use]
+    pub fn cancel_requested(&self) -> bool {
+        self.inner
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .cancel_requested
+    }
+
+    /// Shutdown release: drop any pending, inflight, or completed request
+    /// and clear a stop request. Call only after the dedicated owner
+    /// thread has exited (joined) — never while the owner may still
+    /// actuate, or the single-lane physical-effect invariant breaks.
+    /// Returns whether anything was outstanding.
+    pub fn release(&self) -> bool {
         let mut lane = self
             .inner
             .lock()
@@ -493,6 +548,7 @@ impl SendEffectHandoff {
         lane.pending = None;
         lane.inflight = None;
         lane.completion = None;
+        lane.cancel_requested = false;
         had
     }
 
@@ -623,10 +679,27 @@ mod tests {
     }
 
     #[test]
-    fn proof_skips_revision_leg_without_backend_revision() {
+    fn proof_refuses_unknown_revision_alongside_drift() {
+        // Product send proof requires the fresh revision: unknown refuses
+        // (no select-backend-style skip leg), mismatch refuses, exact
+        // succeeds.
+        let pinned = target();
         let mut fresh = fresh_ok();
         fresh.live_revision = None;
-        assert!(prove_managed_send(&target(), &fresh).is_ok());
+        assert_eq!(
+            prove_managed_send(&pinned, &fresh),
+            Err(SendProofRefusal::UnknownRevision)
+        );
+        let mut fresh = fresh_ok();
+        fresh.live_revision = Some(10);
+        assert_eq!(
+            prove_managed_send(&pinned, &fresh),
+            Err(SendProofRefusal::RevisionDrift)
+        );
+        assert_eq!(
+            SendProofRefusal::UnknownRevision.token(),
+            "refused-send-unknown-revision"
+        );
     }
 
     #[test]
@@ -879,20 +952,69 @@ mod tests {
 
     #[test]
     fn handoff_cancel_clears_every_stage() {
-        for stage in ["pending", "inflight", "completed"] {
+        // Pending and completed requests drop and idle the lane.
+        for stage in ["pending", "completed"] {
             let lane = SendEffectHandoff::new();
             let pinned = target();
+            assert!(!lane.cancel_requested(), "{stage} starts unflagged");
             lane.submit(pinned.clone()).expect("submits");
-            if stage != "pending" {
-                lane.take_for_owner().expect("takes");
-            }
             if stage == "completed" {
+                lane.take_for_owner().expect("takes");
                 assert!(lane.finish(completion_for(&pinned, SendEffectOutcome::Applied)));
             }
             assert!(lane.is_busy(), "{stage} is busy");
             assert!(lane.cancel(), "{stage} cancels");
             assert!(!lane.is_busy(), "{stage} idles after cancel");
+            assert!(!lane.cancel_requested(), "{stage} flags no owner stop");
             assert_eq!(lane.stale_dropped(), 0, "cancel is not stale");
         }
+        // Inflight cancel is a request-to-stop, not a lane reopen: the
+        // lane stays busy and flagged, refuses new physical effects, and
+        // only the terminal finish frees it.
+        let lane = SendEffectHandoff::new();
+        let pinned = target();
+        lane.submit(pinned.clone()).expect("submits");
+        lane.take_for_owner().expect("takes");
+        assert!(lane.cancel(), "inflight cancels");
+        assert!(lane.is_busy(), "inflight cancel keeps the lane busy");
+        assert!(lane.cancel_requested(), "owner sees the stop request");
+        assert_eq!(
+            lane.submit(pinned.clone()),
+            Err("send-effect-busy"),
+            "no concurrent physical effect while inflight stands"
+        );
+        assert!(
+            lane.finish(completion_for(&pinned, SendEffectOutcome::PossiblyExecuted)),
+            "terminal finish still lands after cancel"
+        );
+        assert!(
+            !lane.cancel_requested(),
+            "terminal finish resolves the stop request"
+        );
+        let done = lane
+            .poll_completion_for(&pinned)
+            .expect("main polls the terminal completion");
+        assert_eq!(done.outcome, SendEffectOutcome::PossiblyExecuted);
+        assert!(!lane.is_busy());
+        assert_eq!(lane.stale_dropped(), 0, "cancel is not stale");
+    }
+
+    #[test]
+    fn handoff_release_frees_only_after_owner_exit() {
+        // Shutdown path: cancel flags the stop, and release frees the lane
+        // once the owner thread has exited (joined) — never while the
+        // owner may still actuate.
+        let lane = SendEffectHandoff::new();
+        let pinned = target();
+        assert!(!lane.release(), "idle release reports idle");
+        lane.submit(pinned.clone()).expect("submits");
+        lane.take_for_owner().expect("takes");
+        assert!(lane.cancel(), "inflight cancels");
+        assert!(lane.is_busy(), "lane stays busy for the exiting owner");
+        assert!(lane.release(), "shutdown release frees the active lane");
+        assert!(!lane.is_busy());
+        assert!(!lane.cancel_requested());
+        lane.submit(pinned)
+            .expect("next request submits after release");
     }
 }
