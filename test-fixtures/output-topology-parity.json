@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "note": "Frozen capture of kwin world-observe computeAdjacency (strict unique-reciprocal exact edge-touch, positive overlap, no wrap) for shared core/KDE parity. Rust consumes this in tiler-core/tests/output_topology_parity.rs; the next KDE unit consumes the same file against world-observe computeAdjacency. expected maps every output name to its direction map (empty object when nothing resolves). Do not edit expectations without the explicit split-edge policy decision in docs/changes/shared-core-owned-output-topology.md section 5.",
+  "note": "Shared core/KDE output-topology parity fixture (strict unique-reciprocal exact edge-touch, positive overlap, no wrap). Rust consumes this in tiler-core/tests/output_topology_parity.rs; KDE consumes the same file in kwin/tests/output-topology-parity.test.ts against the frozen oracle and the production strict resolver. expected maps every output name to its direction map (empty object when nothing resolves). Do not edit expectations without the explicit split-edge policy decision in docs/changes/shared-core-owned-output-topology.md section 5.",
   "cases": [
     {
       "name": "two-output-horizontal",

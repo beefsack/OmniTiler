@@ -1,12 +1,12 @@
 //! Shared core/KDE output-topology parity (strict unique-reciprocal map).
 //!
-//! Consumes `test-fixtures/output-topology-parity.json`, the frozen capture
-//! of `kwin/src/world-observe.ts::computeAdjacency`, and requires exact map
-//! equality from the core derivation in
-//! [`tiler_core::output_selection::unique_reciprocal_adjacency`]. The next
-//! KDE unit consumes the same file against the TypeScript implementation;
-//! any approved split-edge policy-alignment delta needs separately named
-//! expected-result tests, never an edit of this file's expectations.
+//! Consumes `test-fixtures/output-topology-parity.json`, the shared strict
+//! unique-reciprocal fixture, and requires exact map equality from the core
+//! derivation in [`tiler_core::output_selection::unique_reciprocal_adjacency`].
+//! KDE consumes the same file in `kwin/tests/output-topology-parity.test.ts`
+//! against the frozen oracle and the production strict resolver; any approved
+//! split-edge policy-alignment delta needs separately named expected-result
+//! tests, never an edit of this file's expectations.
 
 use tiler_core::directional::{Direction, OutputId};
 use tiler_core::geometry::Rect;
