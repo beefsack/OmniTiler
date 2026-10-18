@@ -112,6 +112,12 @@ declare enum LayoutDirection {
 interface VirtualDesktop {
     readonly id: string;
     readonly x11DesktopNumber?: number;
+    // Writable: src/virtualdesktops.h at pinned v6.7.5 declares
+    //     Q_PROPERTY(QString name READ name WRITE setName NOTIFY nameChanged)
+    // Assigning renames the desktop. The controller writes only a
+    // newly-created exactly-attributed desktop to its friendly `Desktop N`
+    // name, never an adopted or existing desktop.
+    name: string;
 }
 
 // src/core/output.h: only scripting-exposed Q_PROPERTY members. uuid() is

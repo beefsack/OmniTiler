@@ -128,7 +128,8 @@ fn minimized_predicate_and_new_commands_decode() {
     use tiler_core::world_report::WorldCommand;
     // Explicit minimized lifetime plus either-axis ingress decode typed.
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
-    value["minimized"] = serde_json::json!([{"win": "win-m", "out": "out", "ws": "ws"}]);
+    value["minimized"] =
+        serde_json::json!([{"win": "win-m", "out": "out", "ws": "ws", "sticky": false}]);
     value["predicate"] = serde_json::Value::String("either-axis-fixed".to_owned());
     // Minimized entries live outside domain membership: drop win-a from
     // the domain so the report stays consistent.
@@ -137,6 +138,20 @@ fn minimized_predicate_and_new_commands_decode() {
     let report = decode_request(&value.to_string()).expect("decodes");
     assert_eq!(report.minimized.len(), 1);
     assert_eq!(report.minimized[0].window.0, "win-m");
+    assert!(
+        !report.minimized[0].sticky,
+        "minimized sticky decodes typed"
+    );
+    // A missing sticky key refuses instead of defaulting: unreadable
+    // sticky never invents false at this boundary.
+    let mut missing_sticky: serde_json::Value =
+        serde_json::from_str(&value.to_string()).expect("valid");
+    missing_sticky["minimized"][0]
+        .as_object_mut()
+        .expect("object")
+        .remove("sticky");
+    let error = decode_request(&missing_sticky.to_string()).expect_err("missing sticky refuses");
+    assert_eq!(error.kind, "malformed");
     assert_eq!(
         report.fixed_size_predicate,
         tiler_core::size_hints::FixedSizePredicate::EitherAxis
@@ -169,7 +184,8 @@ fn minimized_predicate_and_new_commands_decode() {
     decode_request(&missing.to_string()).expect_err("missing refill refuses");
     // Minimized overlap with live membership refuses as snapshot-invalid.
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
-    value["minimized"] = serde_json::json!([{"win": "win-a", "out": "out", "ws": "ws"}]);
+    value["minimized"] =
+        serde_json::json!([{"win": "win-a", "out": "out", "ws": "ws", "sticky": false}]);
     let error = decode_request(&value.to_string()).expect_err("overlap refuses");
     assert_eq!(error.kind, "snapshot-invalid");
     // Numbered sends (0..=9) and the tiling toggle decode typed.
@@ -305,7 +321,7 @@ fn request_estimate_bounds_actual_wire_bytes() {
          \"fixedSuppress\":false,\
          \"hints\":{{\"minW\":1,\"minH\":null,\"maxW\":16384,\"maxH\":null}}}}],\
          \"closed\":[]}}],\
-         \"minimized\":[{{\"win\":\"win-m\",\"out\":\"out\",\"ws\":\"ws\"}}],\
+         \"minimized\":[{{\"win\":\"win-m\",\"out\":\"out\",\"ws\":\"ws\",\"sticky\":false}}],\
          \"predicate\":\"either-axis-fixed\",\"refill\":\"last-remaining-workspace\",\"defaultTiled\":true,\"focused\":\"\",\
          \"complete\":true,\"gesture\":false,\
          \"feedback\":[{{\"op\":\"op-9\",\"kind\":\"property\",\"outcome\":\"applied\",\
@@ -396,8 +412,8 @@ fn request_estimate_covers_new_field_deltas() {
     for (minimized, predicate, cmd_seq, command) in [
         (
             serde_json::json!([
-                {"win": "win-m1", "out": "out", "ws": "ws"},
-                {"win": "win-m2", "out": "out", "ws": "ws"},
+                {"win": "win-m1", "out": "out", "ws": "ws", "sticky": false},
+                {"win": "win-m2", "out": "out", "ws": "ws", "sticky": true},
             ]),
             "either-axis-fixed",
             "3",

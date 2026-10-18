@@ -167,6 +167,46 @@ pub fn rebuild_shared_order(live_order: &[String]) -> Vec<String> {
     live_order.to_vec()
 }
 
+/// Startup/adoption ownership claims for local/global-unique scopes: each
+/// output owns its shown current unless that native is already owned
+/// elsewhere. A shared current stays single-homed under the earliest
+/// claimant (callers pass the primary first); every other shower is
+/// reported for the conversion pass, which gives it a fresh backing.
+/// Only unassigned live ids are ever claimed, so retained post-startup
+/// ownership, migration, and displacement are never disturbed.
+///
+/// Returns the claimed assignment plus the `(output, foreign current)`
+/// pairs still needing a fresh backing.
+#[allow(clippy::type_complexity)]
+#[must_use]
+pub fn claim_visible_currents(
+    assignments: &BTreeMap<String, Vec<String>>,
+    currents_primary_first: &[(String, String)],
+    live_order: &[String],
+) -> (BTreeMap<String, Vec<String>>, Vec<(String, String)>) {
+    let live: BTreeSet<&str> = live_order.iter().map(String::as_str).collect();
+    let mut next = assignments.clone();
+    let mut converting = Vec::new();
+    for (output, current) in currents_primary_first {
+        if !live.contains(current.as_str()) {
+            continue;
+        }
+        if next.values().any(|ids| ids.iter().any(|id| id == current)) {
+            let own = next
+                .get(output)
+                .is_some_and(|ids| ids.iter().any(|id| id == current));
+            if !own {
+                converting.push((output.clone(), current.clone()));
+            }
+            continue;
+        }
+        next.entry(output.clone())
+            .or_default()
+            .push(current.clone());
+    }
+    (next, converting)
+}
+
 /// One disconnected output's preserved workspace unit: the live native
 /// ids that belonged to the removed origin plus the surviving output
 /// currently hosting them. Workspaces move as a unit with then-current

@@ -276,6 +276,7 @@ pub(crate) fn refresh_minimized(
                         window: WindowId(id),
                         output: key.output,
                         workspace: key.workspace,
+                        sticky: false,
                     },
                 );
             }

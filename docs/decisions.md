@@ -1154,6 +1154,30 @@ platform API behavior.
     selection never consults or restores prior-view history (R-WS-08 history
     still records observed hotplug changes per 1.5). Session-local scope, no
     restart-persistent mapping or return guarantee.
+- User decisions 2026-10-18, KDE per-output-local startup conversion:
+  - A native desktop initially shown on multiple outputs has one owner: the
+    startup primary. Every other showing output receives its own fresh backing
+    desktop; its non-sticky windows on the shared desktop change membership
+    without changing output or floating/fullscreen/maximized state. Minimized
+    non-sticky windows convert without being restored; sticky windows, including
+    minimized sticky windows, are exempt.
+  - A different pre-existing native current on a secondary output belongs to
+    that output. One ring per native desktop; visible-current evidence is not
+    additional ownership. Core owns conversion and mapping policy; KDE executes
+    membership/view changes only after fresh backing attribution. Incomplete or
+    unreadable startup reports do not establish ownership or authorize conversion.
+  - Create desktops with the unique logical token for exact-name attribution,
+    then rename only the proven bound native to a friendly KDE-style name.
+    Tentative presentation: `Desktop N`, using the one-based native position at
+    proof time. Names need not remain unique after retirement/reordering and are
+    never identities; retained native-ID proof survives rename.
+  - Implementation uses the reported startup-primary fact (KDE currently mirrors
+    `activeScreen`, falling back to output order), latched by the first complete
+    conversion report. Physical-primary versus focused-output startup semantics
+    remain a separate discriminator, not a change to the topology carrier.
+  - Delivered with native KWin 6.7.5 shared/distinct-current, state-preservation,
+    independent switching, two-way output-send and normal controller-restart
+    evidence. [Outcome](changes/archive/kde-startup-desktop-ownership.md).
 - KDE: tray writes only `defaultTiled` and requests KWin reconfigure; only a
   running KWin reread/snapshot confirms it. Per-workspace overrides are
   session-only and reset on script reload; shared mode toggles the backing

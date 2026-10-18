@@ -133,6 +133,7 @@ fn digest_covers_every_section() {
         window: WindowId("win-m".to_owned()),
         output: OutputId("out".to_owned()),
         workspace: crate::directional::WorkspaceId("ws".to_owned()),
+        sticky: false,
     }];
     assert_ne!(report_digest(&changed), digest);
     let mut changed = base.clone();
@@ -266,6 +267,7 @@ fn minimized_entries_reject_overlap_and_duplicates() {
         window: WindowId("win-m".to_owned()),
         output: OutputId("out".to_owned()),
         workspace: WorkspaceId("ws".to_owned()),
+        sticky: false,
     };
     // Live overlap refuses: a minimized window is absent from membership.
     let mut bad = test_report();
@@ -273,6 +275,7 @@ fn minimized_entries_reject_overlap_and_duplicates() {
         window: WindowId("win-a".to_owned()),
         output: OutputId("out".to_owned()),
         workspace: WorkspaceId("ws".to_owned()),
+        sticky: false,
     }];
     assert!(!validate_report(&bad));
     // Closed overlap refuses: contradictory input fails closed.
@@ -292,6 +295,7 @@ fn minimized_entries_reject_overlap_and_duplicates() {
         window: WindowId("win-m".to_owned()),
         output: OutputId("bad id".to_owned()),
         workspace: WorkspaceId("ws".to_owned()),
+        sticky: false,
     }];
     assert!(!validate_report(&bad));
     // New command shapes validate: send-numbered allows 0..=9 only,

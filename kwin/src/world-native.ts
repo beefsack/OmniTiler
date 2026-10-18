@@ -858,6 +858,45 @@ export function createWorldApplyHost(
                 return null;
             }
         },
+        renameDesktop: (nativeId, name) => {
+            // Scripted rename through the writable `VirtualDesktop.name`
+            // Q_PROPERTY (WRITE `setName`, pinned v6.7.5
+            // `src/virtualdesktops.h:60`): the apply loop calls this only
+            // for a newly-created exactly-attributed desktop while it still
+            // carries its logical token, never for adopted or existing
+            // desktops. Truthful read-back decides; any failure keeps the
+            // id-based creation proof (the caller never re-creates).
+            try {
+                const all = decodeList(readProp(surface, "desktops"), MAX_NATIVE_DESKTOPS);
+                if (all === null) {
+                    return false;
+                }
+                for (const d of all) {
+                    if (typeof d === "object" && d !== null && readProp(d as object, "id") === nativeId) {
+                        let ok = false;
+                        try {
+                            ok = Reflect.set(d as object, "name", name);
+                        } catch (error) {
+                            void error;
+                            ok = false;
+                        }
+                        if (!ok) {
+                            return false;
+                        }
+                        try {
+                            return readProp(d as object, "name") === name;
+                        } catch (error) {
+                            void error;
+                            return false;
+                        }
+                    }
+                }
+                return false;
+            } catch (error) {
+                void error;
+                return false;
+            }
+        },
         removeDesktop: (nativeId) => {
             try {
                 const fn = readProp(surface, "removeDesktop");

@@ -31,10 +31,10 @@ use tiler_core::workspace::plan_trailing;
 use tiler_core::workspace_scope::{
     DEFAULT_WORKSPACE_MODE, LiveView, MigrationRefill, MigrationRefusal, MigrationRequest,
     PreviousTarget, ScopeHistory, ScopedTopology, TrailingSelection, WORKSPACE_MODE_TOKENS,
-    WorkspaceMode, apply_migration, apply_swap_assignments, mode_token, parse_workspace_mode,
-    plan_global_swap, plan_migration, rebuild_global_mapping, rebuild_local_mapping,
-    rebuild_shared_order, resolve_numbered, resolve_relative_send, resolve_relative_step,
-    resolve_trailing, scoped_ring_ids, scoped_trailing_facts,
+    WorkspaceMode, apply_migration, apply_swap_assignments, claim_visible_currents, mode_token,
+    parse_workspace_mode, plan_global_swap, plan_migration, rebuild_global_mapping,
+    rebuild_local_mapping, rebuild_shared_order, resolve_numbered, resolve_relative_send,
+    resolve_relative_step, resolve_trailing, scoped_ring_ids, scoped_trailing_facts,
 };
 
 fn topo(outputs: &[&str], live: &[&str], assignments: &[(&str, &[&str])]) -> ScopedTopology {
@@ -891,4 +891,61 @@ fn disconnect_discards_and_reconnect_primes_without_consulting() {
     // A later observed change records from the primed baseline.
     assert!(history.observe("out-r", "ws-4", &scope_r));
     assert_eq!(history.previous("out-r").as_deref(), Some("ws-d"));
+}
+
+#[test]
+fn claim_visible_currents_partitions_shared_and_distinct() {
+    let assignments: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let live = ring(&["ws-1", "ws-2", "ws-3"]);
+    // Primary first: the shared current stays under the primary; the
+    // secondary with a distinct current owns it.
+    let (claimed, converting) = claim_visible_currents(
+        &assignments,
+        &[
+            ("out-1".to_owned(), "ws-1".to_owned()),
+            ("out-2".to_owned(), "ws-1".to_owned()),
+            ("out-3".to_owned(), "ws-2".to_owned()),
+        ],
+        &live,
+    );
+    assert_eq!(claimed.get("out-1"), Some(&ring(&["ws-1"])));
+    assert_eq!(claimed.get("out-2"), None);
+    assert_eq!(claimed.get("out-3"), Some(&ring(&["ws-2"])));
+    assert_eq!(
+        converting,
+        vec![("out-2".to_owned(), "ws-1".to_owned())],
+        "only the second shower of a shared current converts"
+    );
+}
+
+#[test]
+fn claim_visible_currents_never_steals_or_duplicates() {
+    let assignments: BTreeMap<String, Vec<String>> = BTreeMap::from([
+        ("out-1".to_owned(), ring(&["ws-1", "ws-2"])),
+        ("out-2".to_owned(), ring(&["ws-3"])),
+    ]);
+    let live = ring(&["ws-1", "ws-2", "ws-3"]);
+    // Every current is already owned: nothing moves, nothing converts.
+    let (claimed, converting) = claim_visible_currents(
+        &assignments,
+        &[
+            ("out-1".to_owned(), "ws-1".to_owned()),
+            ("out-2".to_owned(), "ws-1".to_owned()),
+        ],
+        &live,
+    );
+    assert_eq!(claimed, assignments);
+    assert_eq!(
+        converting,
+        vec![("out-2".to_owned(), "ws-1".to_owned())],
+        "showing a foreign-owned current converts without stealing it"
+    );
+    // Unknown currents claim nothing.
+    let (claimed, converting) = claim_visible_currents(
+        &BTreeMap::new(),
+        &[("out-1".to_owned(), "ws-gone".to_owned())],
+        &live,
+    );
+    assert!(claimed.values().all(|ids| ids.is_empty()));
+    assert!(converting.is_empty());
 }

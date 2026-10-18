@@ -56,6 +56,14 @@ export interface ApplyEnv {
     // guess. Optional only for offline doubles; production always
     // provides it.
     listDesktops?: () => Array<{ readonly id: string; readonly name: string }> | null;
+    // Friendly rename of a newly-created exactly-attributed desktop
+    // (`VirtualDesktop.name` WRITE `setName` at pinned v6.7.5): attempted
+    // only on the proven bound native while it still carries its logical
+    // token name, best-effort after the binding is stored. A missing
+    // capability, a failed write, or a failed read-back never loses the
+    // id-based binding and never re-creates. Optional only for offline
+    // doubles; production always provides it.
+    renameDesktop?: (nativeId: string, name: string) => boolean;
     removeDesktop: (nativeId: string) => boolean;
     focusWindow: (ref: object) => boolean;
     desktopOccupants: (nativeId: string) => { total: number; readable: boolean };
@@ -228,6 +236,51 @@ function safeResolve(resolve: () => object | null): object | null {
     }
 }
 
+// Friendly KDE-style name for a proven desktop: `Desktop N` with the
+// native one-based position in the proving enumeration (mirroring KWin's
+// own `defaultName`, i18n `Desktop %1`). Position comes from the snapshot
+// that proved the binding, never from reply order. A logical token
+// (`[a-z0-9-]`) can never collide with this shape (space, uppercase).
+function friendlyDesktopName(
+    live: ReadonlyArray<{ readonly id: string; readonly name: string }>,
+    bound: string,
+): string | null {
+    const at = live.findIndex((d) => d.id === bound);
+    if (at < 0) {
+        return null;
+    }
+    return `Desktop ${at + 1}`;
+}
+
+// Rename exactly the proven desktop while it still carries its logical
+// token name. Adopted, unproven, already-renamed, and existing desktops
+// never match (their names differ from the token). Best-effort after the
+// id-based binding is stored: any failure keeps the proof, never
+// re-creates, and never steals another desktop.
+function renameProvenDesktop(
+    env: ApplyEnv,
+    live: ReadonlyArray<{ readonly id: string; readonly name: string }>,
+    logical: string,
+    bound: string | null,
+): void {
+    if (env.renameDesktop === undefined || bound === null) {
+        return;
+    }
+    const entry = live.find((d) => d.id === bound);
+    if (entry === undefined || entry.name !== logical) {
+        return;
+    }
+    const friendly = friendlyDesktopName(live, bound);
+    if (friendly === null || entry.name === friendly) {
+        return;
+    }
+    try {
+        env.renameDesktop(bound, friendly);
+    } catch (error) {
+        void error;
+    }
+}
+
 // Pinned KWin native echo (window.cpp `finishInteractiveOutputChange`,
 // called at the tail of `sendToOutput` and on `outputChanged`): moving a
 // single-desktop window whose workspace is the old output's current onto a
@@ -381,6 +434,14 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             if (!byWin.has(w.win)) {
                 byWin.set(w.win, w);
             }
+        }
+    }
+    // Minimized lifetimes carry full local carriers (live ref plus native
+    // sticky) so conversion membership actuates on them; domain rows above
+    // win the dedupe when a lifetime appears in both.
+    for (const m of observation.minimized) {
+        if (!byWin.has(m.win)) {
+            byWin.set(m.win, m);
         }
     }
     const liveDesktopIds = new Set<string>();
@@ -553,6 +614,13 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
         // Resolve before arming: unresolvable targets hold with no attempt
         // recorded, so the retained core target retries on a later report.
         const needOutMove = liveHome.out !== targetOut;
+        // Minimized lifetimes actuate membership only, never an output
+        // send: conversion never changes output, so a cross-output target
+        // for a minimized window holds fail-closed here.
+        if (observed.minimized && needOutMove) {
+            result.held += 1;
+            continue;
+        }
         const outRef: object | null = needOutMove ? safeResolve(() => env.resolveOutput(targetOut)) : null;
         const wsRef = safeResolve(() => env.desktopById(targetWs));
         if ((needOutMove && outRef === null) || wsRef === null) {
@@ -865,6 +933,7 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
                 result.held += 1;
                 continue;
             }
+            renameProvenDesktop(env, delayed, logical, recovered);
             state.settleAttempt(`create-${logical}`, "applied", "");
             result.creations += 1;
             continue;
@@ -926,6 +995,7 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
         } else {
             const bound = state.recoverCreationByName(logical, after);
             if (bound !== null) {
+                renameProvenDesktop(env, after, logical, bound);
                 state.settleAttempt(`create-${logical}`, "applied", "");
                 result.creations += 1;
             } else {

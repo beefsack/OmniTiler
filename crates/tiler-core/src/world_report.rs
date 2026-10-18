@@ -448,12 +448,16 @@ pub struct WorkspaceBinding {
 /// homed on its workspace. Reported separately from active tiled domain
 /// membership (minimized windows are absent from `DomainReport.windows`);
 /// the core never tiles them and never writes frames for them. Overlap
-/// with live membership or explicit closes refuses fail-closed.
+/// with live membership or explicit closes refuses fail-closed. `sticky`
+/// is the adapter-read native all-desktop state, required exactly like
+/// the homing ids: startup conversion moves only non-sticky minimized
+/// members, and the wire refuses a missing key instead of defaulting.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MinimizedEntry {
     pub window: WindowId,
     pub output: OutputId,
     pub workspace: crate::directional::WorkspaceId,
+    pub sticky: bool,
 }
 
 /// Explicit world commands. At most one per report; observation-only
@@ -859,6 +863,7 @@ pub fn report_digest(report: &WorldReport) -> u64 {
             feed(&mut hash, &part);
             sep(&mut hash);
         }
+        flag(&mut hash, entry.sticky);
     }
     for topology in &report.topology {
         for part in [

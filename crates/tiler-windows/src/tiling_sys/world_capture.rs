@@ -407,6 +407,7 @@ pub(super) fn capture_world(
                             window: WindowId(live_token.clone()),
                             output: OutputId(mapped.clone()),
                             workspace: WorkspaceId(workspace.clone()),
+                            sticky,
                         });
                         continue;
                     }
@@ -540,6 +541,7 @@ pub(super) fn capture_world(
                             window: WindowId(live_token.clone()),
                             output: OutputId(mapped.clone()),
                             workspace: WorkspaceId(workspace.clone()),
+                            sticky,
                         });
                         continue;
                     }
@@ -611,6 +613,7 @@ pub(super) fn capture_world(
                         window: WindowId(live_token.clone()),
                         output: OutputId(mapped.clone()),
                         workspace: WorkspaceId(workspace.clone()),
+                        sticky,
                     });
                     continue;
                 }

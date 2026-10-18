@@ -865,6 +865,7 @@ fn minimized_list_is_explicit_and_keeps_occupancy() {
         window: WindowId("win-b".to_owned()),
         output: OutputId("out-2".to_owned()),
         workspace: WorkspaceId("ws1".to_owned()),
+        sticky: false,
     }];
     let reply = accepted(&mut engine, &minimized);
     let rows: Vec<_> = reply
@@ -884,13 +885,16 @@ fn minimized_list_is_explicit_and_keeps_occupancy() {
         "out-2/ws1"
     );
     // Occupancy counts the minimized lifetime: the trailing policy keeps
-    // the sole-minimized workspace instead of removing it.
-    let ws_row = reply
-        .workspaces
-        .iter()
-        .find(|w| w.id == "ws1" && w.output.0 == "out-2")
-        .expect("ws1 row on out-2");
-    assert!(ws_row.existence, "minimized-occupied workspace is retained");
+    // the sole-minimized workspace instead of removing it. The shared
+    // native current is primary-owned at startup (one ring per native),
+    // so the retained row is homed under out-1, never duplicated.
+    let ws_rows: Vec<_> = reply.workspaces.iter().filter(|w| w.id == "ws1").collect();
+    assert_eq!(ws_rows.len(), 1, "shared native homed exactly once");
+    assert_eq!(ws_rows[0].output.0, "out-1", "primary owns shared current");
+    assert!(
+        ws_rows[0].existence,
+        "minimized-occupied workspace is retained"
+    );
     // A repeated omission is still a minimize, never an inferred close:
     // the explicit row persists across the gap.
     let mut again = two_output_report(3, 2);
@@ -1083,6 +1087,7 @@ fn capacity_mixed_roster_keeps_minimized_rows() {
             window: WindowId("win-min".to_owned()),
             output: OutputId("out-1".to_owned()),
             workspace: WorkspaceId("ws1".to_owned()),
+            sticky: false,
         }];
         base
     };

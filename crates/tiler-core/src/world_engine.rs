@@ -240,6 +240,18 @@ pub struct WorldEngine {
     /// removed origins mapped to their preserved workspace units plus the
     /// hosting survivor. Shared mode never displaces.
     pub(crate) displaced: BTreeMap<String, crate::workspace_scope::DisplacedEntry>,
+    /// Planner-owned per-output-local startup conversion: outputs still
+    /// showing a foreign-owned shared current, mapped to that shared
+    /// native id. Each receives its own fresh backing plus membership-only
+    /// conversion of its non-sticky windows, then the entry clears (view
+    /// moved on, output disconnected, or conversion fired). Entries are
+    /// only ever created while [`WorldEngine::startup_pending`] holds, so
+    /// post-startup explicit views are never converted.
+    pub(crate) startup_conversion: BTreeMap<OutputId, String>,
+    /// True until the startup conversion pass runs on a complete report.
+    /// Survives incomplete startup reports so delayed readback still
+    /// converts; cleared once the pass runs. Incarnation resets re-arm.
+    pub(crate) startup_pending: bool,
     /// Last observed native output facts by stable output key (geometry
     /// plus active-screen primary). Updated for every live output on
     /// every accepted report; removed origins keep their disconnect-time
@@ -367,6 +379,8 @@ impl WorldEngine {
             shared_order: Vec::new(),
             history: ScopeHistory::new(),
             displaced: BTreeMap::new(),
+            startup_conversion: BTreeMap::new(),
+            startup_pending: true,
             output_facts: BTreeMap::new(),
             live_topology: BTreeMap::new(),
             tiling: BTreeMap::new(),
@@ -429,6 +443,8 @@ impl WorldEngine {
         self.shared_order.clear();
         self.history = ScopeHistory::new();
         self.displaced.clear();
+        self.startup_conversion.clear();
+        self.startup_pending = true;
         self.output_facts.clear();
         self.live_topology.clear();
         self.command_result = None;

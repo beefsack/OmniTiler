@@ -13,10 +13,10 @@ use crate::seed::EngineWindow;
 use crate::session::{DomainKey, RefusalKind};
 use crate::workspace::plan_trailing;
 use crate::workspace_scope::{
-    LiveView, ScopedTopology, WorkspaceMode, rebuild_global_mapping, rebuild_local_mapping,
-    rebuild_shared_order, scoped_ring_ids, scoped_trailing_facts,
+    LiveView, ScopedTopology, WorkspaceMode, claim_visible_currents, rebuild_global_mapping,
+    rebuild_local_mapping, rebuild_shared_order, scoped_ring_ids, scoped_trailing_facts,
 };
-use crate::world_engine::WorldEngine;
+use crate::world_engine::{RetainedTransfer, WorldEngine};
 use crate::world_report::{
     CommandResult, FloatOrigin, HoldReason, OneShotEffect, OutputDesire, ScopeAuthority,
     ScopeStatus, TilingMode, TransferKind, TransferTarget, WORLD_CONTRACT_VERSION, WindowDesire,
@@ -492,10 +492,18 @@ impl WorldEngine {
                     continue;
                 }
                 let member_hold = window_holds.get(&window.0).copied();
+                // A minimized lifetime under an outstanding membership
+                // transfer rides the target homing (one homing), keeping
+                // minimized frame authority: the adapter actuates only the
+                // desktop set, never geometry or unminimize.
+                let (home_output, home_workspace) = redirect
+                    .get(&window.0)
+                    .map(|(target, _)| (target.output.clone(), target.workspace.0.clone()))
+                    .unwrap_or((output.clone(), workspace.0.clone()));
                 windows.push(WindowDesire {
                     lifetime: window,
-                    output: output.clone(),
-                    workspace: workspace.0.clone(),
+                    output: home_output,
+                    workspace: home_workspace,
                     allocation: None,
                     effective_frame: None,
                     frame_authority: ScopeAuthority::Hold(HoldReason::Minimized),
@@ -513,7 +521,17 @@ impl WorldEngine {
         // row at the transfer target homing (frame untouched, never
         // allocation or geometry). Ordinary engine-committed sends already
         // carry sweep rows, so the emitted guard keeps exactly one homing.
+        // Minimized lifetimes never ride this lane: the minimized loops
+        // above and below emit them with minimized frame authority.
+        let minimized_ids: BTreeSet<&str> = report
+            .minimized
+            .iter()
+            .map(|entry| entry.window.0.as_str())
+            .collect();
         for (window_id, (key, _)) in &redirect {
+            if minimized_ids.contains(window_id.as_str()) {
+                continue;
+            }
             if !emitted.insert(window_id.clone()) {
                 continue;
             }
@@ -544,6 +562,14 @@ impl WorldEngine {
                 continue;
             }
             let member_hold = window_holds.get(&entry.window.0).copied();
+            // A minimized lifetime under an outstanding membership
+            // transfer rides the target homing (one homing), keeping
+            // minimized frame authority. The scope-hold lookup follows
+            // the resolved homing.
+            let (home_output, home_workspace) = redirect
+                .get(&entry.window.0)
+                .map(|(target, _)| (target.output.clone(), target.workspace.clone()))
+                .unwrap_or((entry.output.clone(), entry.workspace.clone()));
             // A minimized lifetime homed on a held scope carries that
             // scope's hold on membership: unreadable scopes use the report
             // hold, sweep-held scopes (including geometric exhaustion) the
@@ -553,7 +579,7 @@ impl WorldEngine {
                 .domains
                 .iter()
                 .find(|domain| {
-                    domain.domain.id == entry.output && domain.domain.workspace == entry.workspace
+                    domain.domain.id == home_output && domain.domain.workspace == home_workspace
                 })
                 .and_then(|domain| {
                     if !domain.readable {
@@ -564,8 +590,8 @@ impl WorldEngine {
                 });
             windows.push(WindowDesire {
                 lifetime: entry.window.clone(),
-                output: entry.output.clone(),
-                workspace: entry.workspace.0.clone(),
+                output: home_output,
+                workspace: home_workspace.0.clone(),
                 allocation: None,
                 effective_frame: None,
                 frame_authority: ScopeAuthority::Hold(HoldReason::Minimized),
@@ -956,28 +982,62 @@ impl WorldEngine {
             // Native ids observed outside every retained ring (hotplug,
             // adopted natives) are listed stably after the ring, except
             // ids homed in another scope ring (never a second row under
-            // another output). The output's own current view always
-            // keeps its row even when assigned elsewhere, so visibility
-            // never loses its mode/lifecycle row.
-            for native in &topology.native_order {
-                if !ring.iter().any(|id| id == native)
-                    && (!assigned.contains(native.as_str()) || *native == topology.current_native)
-                {
-                    let held = !readable_complete;
-                    rows.push(WorkspaceDesire {
-                        id: native.clone(),
-                        output: topology.output.clone(),
-                        native_binding: Some(native.clone()),
-                        logical_id: logical_of.get(native.as_str()).map(|s| (*s).to_owned()),
-                        scope: workspace_scope_key(report.workspace_mode, &topology.output),
-                        order: rows.len(),
-                        tiling_mode: self.workspace_tiling_mode(&topology.output, native),
-                        existence: true,
-                        hold: held.then_some(HoldReason::IncompleteInventory),
-                    });
+            // another output: one ring per native, and visible-current
+            // evidence never creates ring ownership; the output row
+            // carries the view). The output's own current view keeps its
+            // row only when the current is unassigned, so visibility
+            // never loses its mode/lifecycle row while staying single-homed.
+            // While complete mapping evidence is unavailable the fallback is
+            // omitted entirely: unowned natives get no provisional rows
+            // under any output (no invented ownership, no generic echo
+            // under multiple outputs). Retained ring rows above still
+            // publish, held, single-homed.
+            if report_complete_for_mapping(report) {
+                for native in &topology.native_order {
+                    if !ring.iter().any(|id| id == native) && !assigned.contains(native.as_str()) {
+                        let held = !readable_complete;
+                        rows.push(WorkspaceDesire {
+                            id: native.clone(),
+                            output: topology.output.clone(),
+                            native_binding: Some(native.clone()),
+                            logical_id: logical_of.get(native.as_str()).map(|s| (*s).to_owned()),
+                            scope: workspace_scope_key(report.workspace_mode, &topology.output),
+                            order: rows.len(),
+                            tiling_mode: self.workspace_tiling_mode(&topology.output, native),
+                            existence: true,
+                            hold: held.then_some(HoldReason::IncompleteInventory),
+                        });
+                    }
                 }
             }
-            if plan.need_append && readable_complete {
+            // Startup conversion owns this output's pending token: the fresh
+            // backing rides exactly one unbound row until its binding proves
+            // the native id. Never cancelled as a spare and never minted
+            // here (converge owns minting); the logical token is never a
+            // native id.
+            let converting = report.workspace_mode == WorkspaceMode::PerOutputLocal
+                && self.startup_conversion.contains_key(&topology.output);
+            if converting {
+                if readable_complete
+                    && let Some(pending) = self
+                        .pending_creations
+                        .iter()
+                        .find(|pending| pending.output == topology.output)
+                {
+                    let logical = pending.logical_id.clone();
+                    rows.push(WorkspaceDesire {
+                        id: logical.clone(),
+                        output: topology.output.clone(),
+                        native_binding: None,
+                        logical_id: Some(logical),
+                        scope: workspace_scope_key(report.workspace_mode, &topology.output),
+                        order: rows.len(),
+                        tiling_mode: seed_tiling_mode(report),
+                        existence: true,
+                        hold: None,
+                    });
+                }
+            } else if plan.need_append && readable_complete {
                 // Exhaustion refuses the new token: no row is appended (the
                 // next report retries), never a wrapped or aliased token.
                 if let Some(logical) = self.pending_token(&topology.output) {
@@ -1087,66 +1147,121 @@ impl WorldEngine {
             .iter()
             .map(|topology| topology.output.0.clone())
             .collect();
-        let primary = outputs.first().cloned();
-        // Seed assignments from reported bindings (logical->native grouped
-        // by output, in native topology order) so multi-output partitions
-        // survive rebuilds; the retained mapping wins for ids both know,
-        // and rebuild adopts any leftover live id onto the primary.
-        let mut assignments = self.mapping.clone();
-        if !report.bindings.is_empty() {
-            let mut seeded: BTreeMap<String, Vec<String>> = BTreeMap::new();
-            for topology in &report.topology {
-                let mut ids: Vec<String> = report
-                    .bindings
-                    .iter()
-                    .filter(|binding| binding.output == topology.output)
-                    .map(|binding| binding.native_id.clone())
-                    .filter(|id| live_order.iter().any(|live| live == id))
-                    .collect();
-                ids.sort_by_key(|id| {
-                    live_order
-                        .iter()
-                        .position(|live| live == id)
-                        .unwrap_or(usize::MAX)
-                });
-                ids.dedup();
-                if !ids.is_empty() {
-                    seeded.insert(topology.output.0.clone(), ids);
-                }
-            }
-            if !seeded.is_empty() {
-                // Retained entries for live outputs win member-by-member:
-                // keep retained ids that are still live, then append newly
-                // bound ids the retained mapping does not know.
-                for (output, ids) in seeded {
-                    let entry = assignments.entry(output).or_default();
-                    entry.retain(|id| live_order.iter().any(|live| live == id));
-                    for id in ids {
-                        if !entry.iter().any(|kept| kept == &id) {
-                            entry.push(id);
+        // Wired active-screen primary, else deterministic first order
+        // (mirrors the hotplug nearest-survivor primary in
+        // converge_displacement).
+        let primary = report
+            .topology
+            .iter()
+            .find(|topology| topology.primary)
+            .map(|topology| topology.output.0.clone())
+            .or_else(|| outputs.first().cloned());
+        // Fail-closed mapping ownership: partial enumeration or an unreadable
+        // domain never moves ownership. The retained mapping, displacement
+        // records, and conversion entries all read the frozen mapping
+        // meanwhile; history below still observes (existing behavior).
+        // Post-startup explicit ownership therefore never regresses on a
+        // partial report, and the startup pass runs only on the first
+        // complete report.
+        if report_complete_for_mapping(report) {
+            // Claim unassigned shown currents first (primary first): a
+            // distinct pre-existing current belongs to its output; an
+            // already-owned shared current stays single-homed for the
+            // conversion pass below. Only unassigned ids move, so retained
+            // ownership, migration, and displacement stay authoritative.
+            // Observed views outrank every binding seed below.
+            let mut assignments = self.mapping.clone();
+            if report.workspace_mode != WorkspaceMode::Shared {
+                let mut currents: Vec<(String, String)> = Vec::new();
+                if let Some(primary) = primary.clone() {
+                    for topology in &report.topology {
+                        if topology.output.0 == primary {
+                            currents
+                                .push((topology.output.0.clone(), topology.current_native.clone()));
                         }
                     }
                 }
+                for topology in &report.topology {
+                    if primary.as_deref() != Some(topology.output.0.as_str()) {
+                        currents.push((topology.output.0.clone(), topology.current_native.clone()));
+                    }
+                }
+                let (claimed, _) = claim_visible_currents(&assignments, &currents, &live_order);
+                assignments = claimed;
             }
+            // Seed ownership from reported bindings in report order.
+            // Retained mapping always wins: a seed never moves an id that is
+            // already homed elsewhere, so stale or ambiguous evidence is
+            // ignored deterministically instead of stealing. Two narrow
+            // exceptions place unhomed ids: exact outstanding pending-token
+            // proof (logical plus output match a pending creation) rehomes
+            // the bound native unless it is shown anywhere, and a genuine
+            // logical id (never the generic native->native fallback echo)
+            // fills a still-unassigned native. The fallback echo carries no
+            // ownership: at fresh startup the adapter reports no bindings at
+            // all, and legacy snapshots homing everything at the primary
+            // must not override the observed distinct currents above.
+            if !report.bindings.is_empty() {
+                let live_set: BTreeSet<&str> = live_order.iter().map(String::as_str).collect();
+                for binding in &report.bindings {
+                    if !live_set.contains(binding.native_id.as_str()) {
+                        continue;
+                    }
+                    let pending_proof = self.pending_creations.iter().any(|pending| {
+                        pending.output == binding.output && pending.logical_id == binding.logical_id
+                    });
+                    let homed = assignments
+                        .values()
+                        .any(|ids| ids.iter().any(|id| id == &binding.native_id));
+                    if pending_proof {
+                        // Never rehome a shown workspace: the fresh backing
+                        // proves a newly adopted native, not a viewed one.
+                        let shown = report
+                            .topology
+                            .iter()
+                            .any(|topology| topology.current_native == binding.native_id);
+                        if shown {
+                            continue;
+                        }
+                        for (other, list) in assignments.iter_mut() {
+                            if *other != binding.output.0 {
+                                list.retain(|id| id != &binding.native_id);
+                            }
+                        }
+                        let entry = assignments.entry(binding.output.0.clone()).or_default();
+                        if !entry.iter().any(|kept| kept == &binding.native_id) {
+                            entry.push(binding.native_id.clone());
+                        }
+                    } else if !homed && binding.logical_id != binding.native_id {
+                        assignments
+                            .entry(binding.output.0.clone())
+                            .or_default()
+                            .push(binding.native_id.clone());
+                    }
+                }
+            }
+            let topology = ScopedTopology {
+                outputs,
+                live_order: live_order.clone(),
+                assignments,
+                primary,
+            };
+            let rebuilt = match report.workspace_mode {
+                WorkspaceMode::GlobalUnique => rebuild_global_mapping(&topology),
+                WorkspaceMode::PerOutputLocal | WorkspaceMode::Shared => {
+                    rebuild_local_mapping(&topology)
+                }
+            };
+            self.mapping = rebuilt.mapping;
+            self.shared_order = rebuild_shared_order(&live_order);
         }
-        let topology = ScopedTopology {
-            outputs,
-            live_order: live_order.clone(),
-            assignments,
-            primary,
-        };
-        let rebuilt = match report.workspace_mode {
-            WorkspaceMode::GlobalUnique => rebuild_global_mapping(&topology),
-            WorkspaceMode::PerOutputLocal | WorkspaceMode::Shared => {
-                rebuild_local_mapping(&topology)
-            }
-        };
-        self.mapping = rebuilt.mapping;
-        self.shared_order = rebuild_shared_order(&live_order);
         // Hotplug displacement/return moves mapping entries between
         // scopes before history observes this report's views, so rings
         // and rows see displaced units under their survivor immediately.
         self.converge_displacement(report);
+        // Startup conversion mints fresh backings and, once their bindings
+        // prove the native ids, converts members and views.
+        self.converge_startup_conversion(report);
         // Verified view observations: current natives scoped by the fresh
         // mapping rings. Same-workspace views never record; unknown
         // currents record nothing; absent outputs are discarded.
@@ -1174,6 +1289,192 @@ impl WorldEngine {
             self.history
                 .observe_shared(&live_order, &first.current_native);
         }
+    }
+
+    /// Per-output-local startup conversion (D2): outputs still showing a
+    /// foreign-owned shared current receive their own fresh backing plus
+    /// membership-only conversion of their non-sticky windows, without
+    /// changing output and preserving float/fullscreen/maximize. Distinct
+    /// currents already belong to their outputs via the claim pass above.
+    /// Fail-closed like displacement: partial enumeration never mints
+    /// backings or moves members. One ring per native throughout: the
+    /// shared current is never duplicated, even while conversion pends.
+    /// Post-startup explicit views are never converted: fresh backings
+    /// mint only while [`WorldEngine::startup_pending`] holds.
+    pub(crate) fn converge_startup_conversion(&mut self, report: &WorldReport) {
+        if report.workspace_mode != WorkspaceMode::PerOutputLocal {
+            return;
+        }
+        // Same fail-closed bar as mapping ownership above: partial
+        // enumeration or an unreadable domain never mints backings, moves
+        // members, or consumes the startup pass.
+        if !report_complete_for_mapping(report) {
+            return;
+        }
+        let live_order = live_native_order(report);
+        let live: BTreeSet<&str> = live_order.iter().map(String::as_str).collect();
+        // Entries whose view moved on (explicit input wins) or whose output
+        // is gone clear without actuation.
+        let mut gone: Vec<OutputId> = Vec::new();
+        for (output, shared) in &self.startup_conversion {
+            if current_view(report, output) != Some(shared.as_str()) {
+                gone.push(output.clone());
+            }
+        }
+        for output in gone {
+            self.startup_conversion.remove(&output);
+        }
+        let epoch = self.state_revision;
+        let mut fresh_views: Vec<(OutputId, String)> = Vec::new();
+        let mut fresh_members: Vec<(WindowId, DomainKey, DomainKey)> = Vec::new();
+        for topology in &report.topology {
+            let output = &topology.output;
+            let current = topology.current_native.clone();
+            // Owned or unknown currents need nothing: only a live current
+            // homed in another scope converts.
+            let owned = self
+                .mapping
+                .get(&output.0)
+                .is_some_and(|ids| ids.iter().any(|id| id == &current));
+            if owned || !live.contains(current.as_str()) {
+                continue;
+            }
+            let foreign = self
+                .mapping
+                .values()
+                .any(|ids| ids.iter().any(|id| id == &current));
+            if !foreign {
+                continue;
+            }
+            if !self.startup_conversion.contains_key(output) {
+                if !self.startup_pending {
+                    continue;
+                }
+                // Fresh backing, minted once: the pending logical token
+                // rides the workspace rows until its binding proves the
+                // native id. The token is never a native id, and nothing
+                // moves before the binding lands.
+                if self.pending_token(output).is_none() {
+                    continue;
+                }
+                self.startup_conversion
+                    .insert(output.clone(), current.clone());
+            }
+            let Some(shared) = self.startup_conversion.get(output).cloned() else {
+                continue;
+            };
+            if shared != current {
+                continue;
+            }
+            // Fresh binding event: the pending token resolved to a live
+            // native under this output. Convert the shared native's
+            // non-sticky members within the same output and follow the view.
+            let Some(native) = self
+                .pending_creations
+                .iter()
+                .find(|pending| pending.output == *output)
+                .and_then(|pending| {
+                    report
+                        .bindings
+                        .iter()
+                        .find(|binding| {
+                            binding.output == *output && binding.logical_id == pending.logical_id
+                        })
+                        .map(|binding| binding.native_id.clone())
+                })
+            else {
+                continue;
+            };
+            if !live.contains(native.as_str()) || native == shared {
+                self.startup_conversion.remove(output);
+                continue;
+            }
+            for domain in &report.domains {
+                if domain.domain.id != *output || domain.domain.workspace.0 != shared {
+                    continue;
+                }
+                for window in &domain.windows {
+                    // Sticky windows belong everywhere already and never
+                    // move; outstanding transfers and float placements never
+                    // duplicate.
+                    if window.sticky {
+                        continue;
+                    }
+                    if self.retained.iter().any(|retained| {
+                        matches!(&retained.target.kind, TransferKind::Window(w) if w == &window.window)
+                    }) {
+                        continue;
+                    }
+                    if self
+                        .retained_floats
+                        .iter()
+                        .any(|held| held.window == window.window)
+                    {
+                        continue;
+                    }
+                    let source = DomainKey {
+                        output: output.clone(),
+                        workspace: WorkspaceId(shared.clone()),
+                    };
+                    let dest = DomainKey {
+                        output: output.clone(),
+                        workspace: WorkspaceId(native.clone()),
+                    };
+                    fresh_members.push((window.window.clone(), dest, source));
+                }
+            }
+            // Non-sticky minimized lifetimes homed on the shared native
+            // convert with the rest: membership-only, same output, never
+            // unminimized by the core (the row keeps minimized frame
+            // authority at the target; the adapter actuates only the
+            // desktop set). Sticky minimized lifetimes are exempt.
+            for entry in &report.minimized {
+                if entry.output != *output || entry.workspace.0 != shared || entry.sticky {
+                    continue;
+                }
+                if self.retained.iter().any(|retained| {
+                    matches!(&retained.target.kind, TransferKind::Window(w) if w == &entry.window)
+                }) {
+                    continue;
+                }
+                let source = DomainKey {
+                    output: output.clone(),
+                    workspace: WorkspaceId(shared.clone()),
+                };
+                let dest = DomainKey {
+                    output: output.clone(),
+                    workspace: WorkspaceId(native.clone()),
+                };
+                fresh_members.push((entry.window.clone(), dest, source));
+            }
+            fresh_views.push((output.clone(), native));
+            self.startup_conversion.remove(output);
+        }
+        // Policy member transfers: one stable membership-only intent per
+        // affected member (the adapter moves them natively under the same
+        // output; observation proof settles through the shared path).
+        for (index, (window, target, source)) in fresh_members.into_iter().enumerate() {
+            let operation_id = format!("op-scm-{epoch}-{index}");
+            self.retained
+                .retain(|retained| !matches!(&retained.target.kind, TransferKind::Window(w) if w == &window));
+            self.retained.push(RetainedTransfer {
+                target: TransferTarget {
+                    operation_id,
+                    kind: TransferKind::Window(window),
+                    target_output: target.output,
+                    target_workspace: target.workspace.0,
+                    follow: false,
+                    held: false,
+                },
+                policy: true,
+                source_output: source.output,
+                source_workspace: source.workspace.0,
+            });
+        }
+        for (index, (output, workspace)) in fresh_views.into_iter().enumerate() {
+            self.retain_policy_view(&output, &workspace, format!("op-scv-{epoch}-{index}"));
+        }
+        self.startup_pending = false;
     }
 
     /// Desired output views: retained view targets win; otherwise the mapped
@@ -1228,7 +1529,28 @@ pub(crate) fn observed_homing(report: &WorldReport, window: &WindowId) -> Option
             return Some(domain.domain.key());
         }
     }
+    // Minimized lifetimes home explicitly outside domain membership;
+    // a minimized window observed at a homing confirms and settles the
+    // same retained transfers as a domain member there.
+    for entry in &report.minimized {
+        if entry.window == *window {
+            return Some(DomainKey {
+                output: entry.output.clone(),
+                workspace: entry.workspace.clone(),
+            });
+        }
+    }
     None
+}
+
+/// Complete-enough report for mapping ownership (startup partition,
+/// binding seeds, adoption, conversion): full inventory, complete
+/// topology on every output, and every reported domain readable. Partial
+/// evidence freezes ownership instead of moving it.
+pub(crate) fn report_complete_for_mapping(report: &WorldReport) -> bool {
+    report.inventory_complete
+        && report.topology.iter().all(|topology| topology.complete)
+        && report.domains.iter().all(|domain| domain.readable)
 }
 
 /// Live native workspace ids in deterministic topology order.

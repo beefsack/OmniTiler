@@ -415,4 +415,22 @@ describe("world apply host desktop creation", () => {
         const host = createWorldApplyHost(surface as object, (v, p) => Reflect.get(v as object, p));
         assert.equal(host.listDesktops?.(), null);
     });
+
+    it("renames by id with read-back proof and refuses unknown ids", () => {
+        const surface = {
+            desktops: [{ id: "ws1", name: "wl-1" }, { id: "ws2", name: "WS2" }],
+        };
+        const host = createWorldApplyHost(surface as object, (v, p) => Reflect.get(v as object, p));
+        assert.equal(host.renameDesktop?.("ws1", "Desktop 1"), true);
+        assert.deepEqual(host.listDesktops?.(), [{ id: "ws1", name: "Desktop 1" }, { id: "ws2", name: "WS2" }]);
+        assert.equal(host.renameDesktop?.("missing", "Desktop 9"), false);
+    });
+
+    it("fails rename closed when the write cannot stick", () => {
+        const frozen = Object.freeze({ id: "ws1", name: "wl-1" });
+        const surface = { desktops: [frozen, { id: "ws2", name: "WS2" }] };
+        const host = createWorldApplyHost(surface as object, (v, p) => Reflect.get(v as object, p));
+        assert.equal(host.renameDesktop?.("ws1", "Desktop 1"), false);
+        assert.equal(host.listDesktops?.()?.[0]?.name, "wl-1");
+    });
 });

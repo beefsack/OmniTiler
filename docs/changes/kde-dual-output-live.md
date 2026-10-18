@@ -13,6 +13,15 @@
 
 ## Current continuation (2026-10-18)
 
+- Startup ownership and friendly names completed 2026-10-18:
+  [bounded outcome](archive/kde-startup-desktop-ownership.md). Core now owns
+  single-homed startup conversion; KDE applies membership-only moves after
+  backing proof and renames newly bound desktops. Native shared/distinct-current
+  enable, all sampled exceptional states, independent switching, both output-send
+  directions and normal controller restart pass. Exact protected/configuration/
+  runtime restoration verified; normal desktop lifecycle churn retained. This
+  does not complete the remaining multi-output inventory or T05 migration.
+
 - Priority: reproduce the reported output-local workspace count/switch fault,
   correct confirmed implementation defects, recover the unbounded-size T05
   regressions, then resume the remaining non-drag inventory legs.

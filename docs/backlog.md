@@ -101,7 +101,7 @@ decisions of 2026-09-24 are under
      repeat still fails identically. Parked pending per-member echo/membership
      branch evidence; no native whole-migration pass claimed.
     [Reproduction](changes/kde-dual-output-live.md#whole-workspace-migration-unbounded-maximum-size-refusal-2026-10-15).
-  - DEFECT reported | User 2026-10-18: in two-output use some outputs show
+   - DEFECT corrected and reverified | User 2026-10-18: in two-output use some outputs show
      too many workspaces, and workspace switching does not work correctly on
      some outputs. Switching refusal reproduced diagnostically: secondary
      ordinal 3 rejects `selection-unknown`, primary switches. Full-state native
@@ -109,22 +109,16 @@ decisions of 2026-09-24 are under
      with complete wire/native evidence. That repeat exposed missing local
      creation-binding feedback; fixed offline with four producer regressions,
      combined typecheck/build and 1850 KWin tests passing. Binding fix reverified
-     live with bound scoped spare and output-local numbered switching. Startup
-     duplicate-ring ownership still blocks output sends
-     with `cross-domain-mismatch`; no workspace partition policy changed.
-     NEXT | User decision 2026-10-18 (startup conversion, per-output-local):
-     a native desktop shown on several outputs at enable stays owned by the
-     primary; each other output gets its own backing desktop and that output's
-     windows from the shared desktop change membership to it without changing
-     output (preserve floating/fullscreen/maximized state; sticky exempt). A
-     different pre-existing desktop shown on a secondary output at enable
-     belongs to that output. One ring per native; visible-current is not
-     ownership. Resolves the "Shown secondary current outside its managed
-     ring" and "Full-state startup rings" TBD rows.
-     User decision 2026-10-18 (created desktop names): create with the unique
-     logical token for exact-name attribution, then rename the bound desktop
-     to a friendly KDE-style name; prove scripted rename and that it cannot
-     confuse later attribution.
+      live with bound scoped spare and output-local numbered switching.
+      User decisions 2026-10-18 delivered: core single-homes startup natives,
+      gives shared-current secondary outputs fresh backing with membership-only
+      conversion (float/fullscreen/maximized/minimized preserved; sticky exempt),
+      and owns distinct secondary currents on that output. KDE binds by unique
+      token then renames to `Desktop N`. Native shared/distinct startup,
+      independent numbered/relative switching, output-send follow both directions,
+      exceptional-state preservation and normal controller restart pass; exact
+      protected/config/runtime restoration verified. Final integrated offline
+      gates and qualified limits: [outcome](changes/archive/kde-startup-desktop-ownership.md).
   - Current-world native continuation: T03 numbered/adjacent relative/history
     checks pass 10/10 across both outputs with independence. Ring wrap, presets,
     shared refusal and physical delivery remain pending. T02 explicit follow

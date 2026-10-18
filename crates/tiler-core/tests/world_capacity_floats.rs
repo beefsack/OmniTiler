@@ -335,6 +335,7 @@ fn minimized_float_restores_without_tile_slot() {
         window: WindowId(target.clone()),
         output: OutputId("out".to_owned()),
         workspace: WorkspaceId("ws".to_owned()),
+        sticky: false,
     }];
     let reply = accepted(&mut engine, &minimized);
     let row = row_of(&reply, &target);

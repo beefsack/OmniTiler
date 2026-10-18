@@ -40,7 +40,7 @@
 //! windows[]: {win, out, ws, rect:[x,y,w,h], floating:bool, fitExcluded:bool,
 //!             fullscreen:bool, maximized:bool, sticky:bool, fixedAuto:bool,
 //!             fixedSuppress:bool, hints:{minW,maxW,minH,maxH: i32|null}}
-//! minimized[]: {win, out, ws}
+//! minimized[]: {win, out, ws, sticky:bool}
 //! predicate: "both-axes-fixed"|"either-axis-fixed"
 //! refill: "last-remaining-workspace"|"most-recently-used-workspace"
 //! anchorFallback: "largest-splittable-window"|"closest-splittable-relative"|"no-search"
@@ -589,11 +589,12 @@ fn decode_binding(value: &serde_json::Value) -> Result<WorkspaceBinding> {
 
 fn decode_minimized(value: &serde_json::Value) -> Result<MinimizedEntry> {
     let map = as_object(value)?;
-    check_keys(map, &["win", "out", "ws"])?;
+    check_keys(map, &["win", "out", "ws", "sticky"])?;
     Ok(MinimizedEntry {
         window: WindowId(req_id(map, "win")?),
         output: OutputId(req_id(map, "out")?),
         workspace: WorkspaceId(req_id(map, "ws")?),
+        sticky: req_bool(map, "sticky")?,
     })
 }
 

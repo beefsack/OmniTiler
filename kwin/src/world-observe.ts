@@ -113,8 +113,11 @@ export interface WorldObservation {
     // Explicit minimized lifetimes, separate from active tiled domain
     // membership. Minimized windows are absent from `domains[].windows`;
     // the report carries them here so the core never tiles them and never
-    // infers a close from their absence.
-    minimized: Array<{ win: string; out: string; ws: string }>;
+    // infers a close from their absence. Entries are full local
+    // `ObservedWindow` carriers (including the live client ref and the
+    // native sticky state) so the apply loop can membership-actuate them;
+    // only win/out/ws/sticky ride the wire.
+    minimized: ObservedWindow[];
     // Ingress fixed-size admission predicate wire token. The core applies it
     // to subsequent admissions only, never reclassifying retained windows.
     predicate: "both-axes-fixed" | "either-axis-fixed";
@@ -661,7 +664,7 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
     const minimized: WorldObservation["minimized"] = [];
     for (const w of liveById.values()) {
         if (w.minimized) {
-            minimized.push({ win: w.win, out: w.out, ws: w.ws });
+            minimized.push(w);
         }
     }
     const closed = [...env.knownClosed()].filter((id) => isOpaqueId(id) && !liveById.has(id));

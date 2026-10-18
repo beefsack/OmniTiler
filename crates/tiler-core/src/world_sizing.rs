@@ -365,8 +365,10 @@ pub fn report_estimate(report: &WorldReport) -> usize {
         + bool_len(report.inventory_complete)
         + bool_len(report.gesture_barrier);
     for entry in &report.minimized {
-        // {"win":S,"out":S,"ws":S} = 21 punctuation plus one comma.
-        bytes += 22
+        // {"win":S,"out":S,"ws":S,"sticky":B} = 31 punctuation plus one
+        // comma and the exact bool width.
+        bytes += 32
+            + bool_len(entry.sticky)
             + json_string_len(&entry.window.0)
             + json_string_len(&entry.output.0)
             + json_string_len(&entry.workspace.0);

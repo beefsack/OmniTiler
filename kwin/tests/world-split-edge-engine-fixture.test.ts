@@ -694,7 +694,7 @@ describe("world split-edge selection through the production entry (real Engine)"
             assert.equal(h.currentByOutput.get(target.name)?.id, "ws-a", "target view shows the migrated workspace");
             const topView = h.currentByOutput.get(h.screens.top.name);
             assert.ok(topView !== undefined && topView.id.startsWith("native-"), "source refills to a created trailing spare");
-            assert.equal(topView?.name, "wl-1", "the spare carries the core logical token");
+            assert.equal(topView?.name, "Desktop 4", "the proven spare carries its friendly position name, not the token");
             assert.deepEqual(
                 h.viewSwitches.slice(0, 2),
                 [`out-bottom-right->ws-a`, `out-top->${topView?.id as string}`],

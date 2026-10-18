@@ -102,8 +102,9 @@ describe("creation binding handoff", () => {
             ],
         }));
         assert.equal(h.world.created.length, 1);
-        const native = h.world.desktops.find((d) => d.name === "wl-1");
+        const native = h.world.desktops.find((d) => d.id === h.world.created[0]);
         assert.ok(native !== undefined);
+        assert.equal(native.name, "Desktop 3", "proven desktop renamed to its native one-based position");
         dispatchObserve(h);
         const row = bindingsOf(h).find((b) => b.logical === "wl-1");
         assert.ok(row !== undefined, `expected wl-1 binding, got ${JSON.stringify(bindingsOf(h))}`);
@@ -122,8 +123,9 @@ describe("creation binding handoff", () => {
                 { id: "wl-1", out: "out-secondary", bind: "", logical: "wl-1", scope: "out", order: 2, mode: "tiled", exist: true, hold: "" },
             ],
         }));
-        const native = h.world.desktops.find((d) => d.name === "wl-1");
+        const native = h.world.desktops.find((d) => d.id === h.world.created[0]);
         assert.ok(native !== undefined);
+        assert.equal(native.name, "Desktop 3", "proven desktop renamed to its native one-based position");
         // Generic fallback echo must still be corrected by pending.
         const r2 = dispatchObserve(h);
         h.lastCall("DescribeWorld").callback(ACC("gen-1", r2.req, r2.obs, "2", {
@@ -191,6 +193,11 @@ describe("creation binding handoff", () => {
             ],
         }));
         assert.equal(h.world.created.length, 0, "delayed recovery must not append");
+        assert.equal(
+            h.world.desktops.find((d) => d.id === "native-9")?.name,
+            "Desktop 3",
+            "delayed proof renames to its enumerated position",
+        );
         dispatchObserve(h);
         const row = bindingsOf(h).find((b) => b.logical === "wl-1");
         assert.ok(row !== undefined, `delayed recovery should publish, got ${JSON.stringify(bindingsOf(h))}`);
@@ -210,10 +217,12 @@ describe("creation binding handoff", () => {
             ],
         }));
         assert.equal(h.world.created.length, 2);
-        const n1 = h.world.desktops.find((d) => d.name === "wl-1");
-        const n2 = h.world.desktops.find((d) => d.name === "wl-2");
+        const n1 = h.world.desktops.find((d) => d.id === h.world.created[0]);
+        const n2 = h.world.desktops.find((d) => d.id === h.world.created[1]);
         assert.ok(n1 !== undefined && n2 !== undefined);
         assert.notEqual(n1.id, n2.id, "no duplicate native binding");
+        assert.equal(n1.name, "Desktop 3");
+        assert.equal(n2.name, "Desktop 4", "second token uses its own enumerated position");
         dispatchObserve(h);
         const rows = bindingsOf(h);
         const r1 = rows.find((b) => b.logical === "wl-1");

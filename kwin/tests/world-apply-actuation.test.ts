@@ -883,7 +883,7 @@ describe("world actuation identity and proof", () => {
         dispatchAndReply(h, rev, { workspaces: [unboundA, unboundB] });
         assert.equal(h.world.createCalls, 2, "ambiguous token never repeats, bound token never repeats");
         const names = h.world.desktops.map((d) => d.name);
-        assert.equal(names.filter((n) => n === "wl-a").length, 1);
+        assert.equal(names.filter((n) => n === "Desktop 4").length, 1, "proven token renamed to its enumerated position");
         assert.ok(!names.includes("wl-b"), "no fabricated binding");
     });
 
@@ -903,7 +903,8 @@ describe("world actuation identity and proof", () => {
         assert.equal(h.world.created.length, 2, "two natives created");
         assert.ok(h.logs.some((l) => l.includes(" mk=2 ")), "both creations prove same-flight");
         const names = h.world.desktops.map((d) => d.name);
-        assert.ok(names.includes("wl-a") && names.includes("wl-b"), "each native carries its token name");
+        assert.ok(names.includes("Desktop 4") && names.includes("Desktop 5"), "each proven native carries its friendly position name");
+        assert.ok(!names.includes("wl-a") && !names.includes("wl-b"), "token names leave the inventory after binding");
         h.fire("desktopsChanged");
         dispatchAndReply(h, rev, { workspaces: [unboundA, unboundB] });
         assert.equal(h.world.createCalls, 2, "no perpetual ambiguity, no repeats");
@@ -959,7 +960,7 @@ describe("world actuation identity and proof", () => {
         h.fire("desktopsChanged");
         dispatchAndReply(h, rev, { workspaces: [unbound] });
         assert.equal(h.world.createCalls, 1, "fresh readable baseline permits the first native attempt");
-        assert.equal(h.world.desktops.filter((d) => d.name === "wl-1").length, 1);
+        assert.equal(h.world.desktops.filter((d) => d.name === "Desktop 4").length, 1, "proven desktop carries its friendly position name");
     });
 
     it("settles a named delayed creation exactly once without another native call", () => {
@@ -1008,8 +1009,8 @@ describe("world actuation identity and proof", () => {
         dispatchAndReply(h, rev, { workspaces: [unboundA, unboundB] });
         assert.ok(h.world.createCalls <= before + 2, "recovery converges without duplication");
         const boundNames = h.world.desktops.map((d) => d.name);
-        const aCount = boundNames.filter((n) => n === "wl-a").length;
-        const bCount = boundNames.filter((n) => n === "wl-b").length;
+        const aCount = boundNames.filter((n) => n === "Desktop 4").length;
+        const bCount = boundNames.filter((n) => n === "Desktop 5").length;
         assert.ok(aCount <= 1 && bCount <= 1, "no token created twice");
     });
 

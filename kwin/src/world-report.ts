@@ -623,7 +623,7 @@ export function buildWorldReportJson(input: WorldReportJsonInput): string | null
         `{"op":${esc(f.op)},"kind":${esc(f.kind)},"outcome":${esc(f.outcome)},"hold":${esc(f.hold)}}`,
     ).join(",");
     const minimized = observation.minimized.map((m) =>
-        `{"win":${esc(m.win)},"out":${esc(m.out)},"ws":${esc(m.ws)}}`,
+        `{"win":${esc(m.win)},"out":${esc(m.out)},"ws":${esc(m.ws)},"sticky":${m.sticky ? "true" : "false"}}`,
     ).join(",");
     const commandJson = command === null ? "null" : JSON.stringify(command);
     const defaultTiled = input.defaultTiled;

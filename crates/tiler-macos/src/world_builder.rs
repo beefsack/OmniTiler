@@ -1023,6 +1023,7 @@ mod tests {
             window: WindowId("1001_9".to_owned()),
             output: OutputId("macos-display-1".to_owned()),
             workspace: tiler_core::directional::WorkspaceId("space-11".to_owned()),
+            sticky: false,
         }];
         let report = assemble(
             &ctx,
@@ -1206,6 +1207,7 @@ mod tests {
             window: WindowId("1001_1".to_owned()),
             output: OutputId("macos-display-1".to_owned()),
             workspace: tiler_core::directional::WorkspaceId("space-11".to_owned()),
+            sticky: false,
         }];
         let report = assemble(
             &ctx,
