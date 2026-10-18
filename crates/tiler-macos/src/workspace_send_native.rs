@@ -86,7 +86,9 @@ pub trait SendNativeReaders: Send {
     /// legs below supplement it but never replace it.
     fn engine_facts(&mut self, window: &str) -> Option<crate::runtime_core::EngineManagedFacts>;
     /// Joined fresh topology (row plus revision plus context from one read
-    /// set — the ordinal/revision/homing coherence root).
+    /// set — the ordinal/revision/homing coherence root). The display legs
+    /// are latest-wins main-thread publications; rows, types, membership
+    /// and current stay fresh native reads on this thread.
     fn fresh_topology(&mut self) -> Result<SendTopology, String>;
     /// Fresh native display-row count (product single-display rule).
     fn display_count(&mut self) -> Result<usize, String>;
@@ -124,10 +126,15 @@ pub trait SendNativeReaders: Send {
 const ENGINE_FACTS_TIMEOUT_MS: u64 = 200;
 
 /// Production native readers over the calling (effect-owner) thread: fresh
-/// OS reads plus tagged HID posts. Compiles on every host (off-macOS stubs
-/// refuse as unavailable); no new `unsafe` — only the maintained
-/// `objc2`/libc wrappers in [`crate::ffi`], [`crate::synth`], and
-/// [`crate::focus`].
+/// OS reads plus tagged HID posts. The AppKit-only display legs (display
+/// list plus separate-Spaces mode) arrive as latest-wins main-thread
+/// publications loaded without touching AppKit (never a synchronous main
+/// wait, never a poll); SLS rows, Space types, membership, AX, CG and focus
+/// legs stay fresh reads on this thread, so the revision identity is
+/// unchanged and every per-edge check stays live. Compiles on every host
+/// (off-macOS stubs refuse as unavailable); no new `unsafe` — only the
+/// maintained `objc2`/libc wrappers in [`crate::ffi`], [`crate::synth`],
+/// and [`crate::focus`].
 pub struct OsSendReaders {
     handle: RuntimeHandle,
     store: crate::desktop_shortcuts::LiveStore,
@@ -166,12 +173,28 @@ impl SendNativeReaders for OsSendReaders {
         )
     }
     fn fresh_topology(&mut self) -> Result<SendTopology, String> {
-        let ns = crate::ffi::ns_display_snapshot()
-            .map_err(|e| format!("send topology unreadable: display snapshot ({e})"))?;
+        // AppKit-only legs never run here: the main thread publishes them
+        // latest-wins (startup plus each revision change) and this owner
+        // loads them under a brief lock — no synchronous main wait, no
+        // poll, no cached topology. Absent publications refuse before any
+        // post, exactly like an unreadable snapshot. SLS rows and Space
+        // types below stay fresh reads on this thread, so the fingerprint
+        // revision identity is unchanged and per-edge row/ordinal/current
+        // checks stay live.
+        let published = self.handle.published_display_inputs().ok_or_else(|| {
+            "send topology unreadable: display snapshot unpublished (no main-thread publish yet)"
+                .to_owned()
+        })?;
         let rows = crate::ffi::sls_display_rows()
             .map_err(|e| format!("send topology unreadable: space rows ({e})"))?;
-        let separate = crate::ffi::ns_separate_spaces();
-        let snapshot = crate::topology::build_snapshot(&ns, &rows, separate);
+        let revision =
+            crate::topology::fingerprint_snapshot(&published.displays, &rows, published.separate);
+        let snapshot = crate::topology::TopologySnapshot {
+            displays: published.displays.clone(),
+            rows,
+            separate_spaces: published.separate,
+            revision,
+        };
         let revision = snapshot.revision;
         let (context, _) =
             NativeContext::derive(&snapshot, &|sid| crate::ffi::sls_space_type(sid).ok());

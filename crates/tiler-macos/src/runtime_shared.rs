@@ -55,6 +55,20 @@ pub(crate) struct AppRecord {
 // out as a stable handle for owner threads, which then read it lock-free
 // per fence. Replaced wholesale per snapshot, never mutated in place, so
 // readers always see one consistent revision. Plain data only.
+/// Latest-wins main-thread display inputs for effect-owner topology
+/// joins: the plain AppKit display list plus the separate-Spaces mode,
+/// published on every snapshot publish (startup plus each revision change)
+/// and cleared on invalidation. The effect owner re-reads fresh SLS rows
+/// and Space types itself and rebuilds the identical fingerprint —
+/// display inputs ride latest-wins, never a cached topology, and every
+/// per-edge Space/ordinal/current check stays a fresh native read. Plain
+/// data only; the brief lock never waits on the main thread.
+#[derive(Debug, Clone, Default)]
+pub struct PublishedDisplayInputs {
+    pub displays: Vec<crate::topology::DisplayGeometry>,
+    pub separate: Option<bool>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct NativeContextCell(Arc<Mutex<Option<Arc<NativeContext>>>>);
 
@@ -130,6 +144,14 @@ pub(crate) struct Shared {
     /// the cadence). `None` until the first
     /// [`RuntimeHandle::update_topology`]; synthetic mode never sets it.
     pub(crate) topology: Option<TopologySnapshot>,
+    /// Latest-wins main-thread display inputs (the AppKit-only legs of
+    /// [`TopologySnapshot`]). Published alongside `topology` on every
+    /// [`RuntimeHandle::update_topology`] and cleared by
+    /// [`RuntimeHandle::invalidate_topology`]. The dedicated managed-send
+    /// effect owner loads these without touching AppKit and joins them
+    /// with its own fresh SLS rows — never a cached topology, never a
+    /// synchronous main-thread wait.
+    pub(crate) display_inputs: Option<PublishedDisplayInputs>,
     /// Current display/Space revision fence. Synthetic mode holds 0 so every
     /// legacy command (revision 0) passes; native mode tracks the latest
     /// snapshot fingerprint.

@@ -152,7 +152,9 @@ pub struct ScopedObservation {
 // `crate::runtime::{Shared, ...}` path keeps working); per-app lifetime
 // admission lives in [`crate::runtime_apps`].
 pub use crate::runtime_core::EngineManagedFacts;
-pub use crate::runtime_shared::{MidflightHook, NativeContextCell, PostAcceptHook};
+pub use crate::runtime_shared::{
+    MidflightHook, NativeContextCell, PostAcceptHook, PublishedDisplayInputs,
+};
 pub(crate) use crate::runtime_shared::{
     Shared, emit, engine_alive, invalidate_clock, lock_focus, lock_shared,
 };
@@ -254,6 +256,7 @@ impl Runtime {
                 midflight_hook: Mutex::new(None),
                 post_accept_hook: Mutex::new(None),
                 topology: None,
+                display_inputs: None,
                 topology_revision: 0,
                 native_context: None,
                 select_pending: None,
@@ -299,6 +302,7 @@ impl Runtime {
             midflight_hook: Mutex::new(None),
             post_accept_hook: Mutex::new(None),
             topology: None,
+            display_inputs: None,
             topology_revision: 0,
             native_context: None,
             select_pending: None,
@@ -724,6 +728,10 @@ impl RuntimeHandle {
         space_type: &dyn Fn(u64) -> Option<crate::ffi::SlsSpaceType>,
     ) -> u64 {
         let revision = snapshot.revision;
+        let inputs = PublishedDisplayInputs {
+            displays: snapshot.displays.clone(),
+            separate: snapshot.separate_spaces,
+        };
         let native = matches!(
             lock_shared(&self.shared).config.topology_mode,
             crate::runtime_types::TopologyMode::Native
@@ -752,6 +760,7 @@ impl RuntimeHandle {
             let mut guard = lock_shared(&self.shared);
             let changed = guard.topology_revision != revision;
             guard.topology = Some(snapshot);
+            guard.display_inputs = Some(inputs);
             guard.topology_revision = revision;
             guard.native_context = context.clone();
             guard.native_cell.store(context);
@@ -830,6 +839,7 @@ impl RuntimeHandle {
         {
             let mut guard = lock_shared(&self.shared);
             guard.topology = None;
+            guard.display_inputs = None;
             guard.native_context = None;
             guard.native_cell.store(None);
         }
@@ -847,6 +857,19 @@ impl RuntimeHandle {
             .topology
             .as_ref()
             .map(|t| t.revision)
+    }
+
+    /// Latest-wins main-thread display inputs for the dedicated
+    /// managed-send effect owner (the AppKit-only legs of the topology
+    /// fingerprint). `None` until the first [`RuntimeHandle::update_topology`]
+    /// and after [`RuntimeHandle::invalidate_topology`] — both refuse the
+    /// send before any post. A brief shared-lock clone only: never waits on
+    /// the main thread, never polls. The owner joins these with its own
+    /// fresh SLS rows and Space types, so the revision identity is unchanged
+    /// and every per-edge Space/ordinal/current check stays a fresh native
+    /// read — never a cached topology.
+    pub fn published_display_inputs(&self) -> Option<PublishedDisplayInputs> {
+        lock_shared(&self.shared).display_inputs.clone()
     }
 
     /// Submit one revision-tagged scoped observation. The windows must
