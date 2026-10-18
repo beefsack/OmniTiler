@@ -73,6 +73,10 @@ decisions of 2026-09-24 are under
     observer passes it through and the migrate validator caps sizes at 16384.
     Two RED regressions are specified for recreation; fix, then repeat live T05.
     [Reproduction](changes/kde-dual-output-live.md#whole-workspace-migration-unbounded-maximum-size-refusal-2026-10-15).
+  - DEFECT reported | User 2026-10-18: in two-output use some outputs show
+    too many workspaces, and workspace switching does not work correctly on
+    some outputs. Unreproduced; capture a minimal discriminating sequence
+    (workspace mode, per-output desktop counts, switch command and result).
   - Remaining agent-feasible non-drag legs (T02 last legs, T03 history, T05
     migration, T06 border/underlay on both outputs, exact-tree R4 repeat) were
     interrupted before results; restart from the inventory.
