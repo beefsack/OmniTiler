@@ -285,9 +285,13 @@ function renameProvenDesktop(
 // called at the tail of `sendToOutput` and on `outputChanged`): moving a
 // single-desktop window whose workspace is the old output's current onto a
 // new output synchronously re-homes it onto the NEW output's current
-// desktop. Immediately after our own output setter inside the same armed
-// operation, exactly (targetOut, capturedTargetCurrent) is the expected
-// echo of our own call, never external input. Tolerate ONLY that: the
+// desktop. Proven T05 lag shape: the desktop echo lands synchronously while
+// `readLiveMembership` still names the SOURCE output until native output
+// propagation completes (destination reports later). Immediately after our
+// own output setter inside the same armed operation, exactly
+// (targetOut, capturedTargetCurrent) and exactly
+// (sourceOut, capturedTargetCurrent) are the expected echoes of our own
+// call, never external input. Tolerate ONLY those two: the
 // source observed workspace must still be the source-output current, the
 // captured target current must name a valid desktop, the fresh views must
 // be unchanged, the same window must still be listed, and
@@ -297,6 +301,19 @@ function renameProvenDesktop(
 // existing superseded/hold paths. The caller then sets the requested
 // target workspace on the same flight, never a retry and never a
 // pre-switched destination view.
+// Bounded gate tag for per-member migration diagnostics ("ok" only for
+// the exact expected echo); callers treat any non-"ok" tag as a refusal
+// with identical behavior.
+type NativeEchoGate =
+    | "ok"
+    | "skipped"
+    | "null-view"
+    | "shape"
+    | "src-current"
+    | "bad-target"
+    | "view-race"
+    | "unlisted"
+    | "stale";
 function tolerateNativeOutputEcho(
     env: ApplyEnv,
     reply: WorldReply,
@@ -306,20 +323,27 @@ function tolerateNativeOutputEcho(
     tgtViewBefore: string | null,
     midHome: { out: string; ws: string },
     targetOut: string,
-): boolean {
+): NativeEchoGate {
     if (srcViewBefore === null || tgtViewBefore === null) {
-        return false;
+        return "null-view";
     }
-    if (midHome.out !== targetOut || midHome.ws !== tgtViewBefore) {
-        return false;
+    // Exact expected echoes only: the synchronous target-output echo and
+    // the proven same-flight source-output lag echo (T05 desktop lands
+    // before output propagation). Any other output/desktop is a third
+    // location.
+    if (midHome.ws !== tgtViewBefore) {
+        return "shape";
+    }
+    if (midHome.out !== targetOut && midHome.out !== observed.out) {
+        return "shape";
     }
     // The echo only fires for a window homed on the source current.
     if (srcViewBefore !== observed.ws) {
-        return false;
+        return "src-current";
     }
     // The captured target current must name a valid desktop.
     if (safeResolve(() => env.desktopById(tgtViewBefore)) === null) {
-        return false;
+        return "bad-target";
     }
     // Fresh views must be unchanged: a raced view switch or an unreadable
     // view fails closed instead of adopting the echo.
@@ -338,7 +362,7 @@ function tolerateNativeOutputEcho(
         tgtNow = null;
     }
     if (srcNow !== srcViewBefore || tgtNow !== tgtViewBefore) {
-        return false;
+        return "view-race";
     }
     let listed = false;
     try {
@@ -348,9 +372,33 @@ function tolerateNativeOutputEcho(
         listed = false;
     }
     if (!listed) {
-        return false;
+        return "unlisted";
     }
-    return betweenStepsOk(env, reply, entryObs, observed);
+    return betweenStepsOk(env, reply, entryObs, observed) ? "ok" : "stale";
+}
+
+// Bounded per-member homing shape for migration diagnostics: pure string
+// comparison over already-read homing, no new native reads, no raw ids.
+type MigrationHomeShape = "target" | "source" | "partial" | "third" | "unreadable";
+function migrationHomeShape(
+    home: { out: string; ws: string } | null,
+    observed: ObservedWindow,
+    target: { out: string; ws: string },
+): MigrationHomeShape {
+    if (home === null) {
+        return "unreadable";
+    }
+    if (home.out === target.out && home.ws === target.ws) {
+        return "target";
+    }
+    if (home.out === observed.out && home.ws === observed.ws) {
+        return "source";
+    }
+    if ((home.out === target.out && home.ws === observed.ws) ||
+        (home.out === observed.out && home.ws === target.ws)) {
+        return "partial";
+    }
+    return "third";
 }
 
 function liveViewShowsOn(env: ApplyEnv, out: string, wsNativeId: string): boolean {
@@ -359,6 +407,16 @@ function liveViewShowsOn(env: ApplyEnv, out: string, wsNativeId: string): boolea
     } catch (error) {
         void error;
         return false;
+    }
+}
+
+// Log-only per-member migration trace: never throws, never actuates, never
+// changes settlement. All fields are bounded tags or counts, no raw ids.
+function traceMigrate(env: ApplyEnv, message: string): void {
+    try {
+        env.log(message);
+    } catch (error) {
+        void error;
     }
 }
 
@@ -693,8 +751,10 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
         // The exact expected native echo of our own output setter is
         // tolerated (same flight continues to the desktop set below);
         // every other third location still proves external input.
-        const echoOk = outAttempted && !threw && outOk && midHome !== null &&
-            tolerateNativeOutputEcho(env, reply, entryObs, observed, echoSrcView, echoTgtView, midHome, targetOut);
+        const echoGate: NativeEchoGate = outAttempted && !threw && outOk && midHome !== null
+            ? tolerateNativeOutputEcho(env, reply, entryObs, observed, echoSrcView, echoTgtView, midHome, targetOut)
+            : "skipped";
+        const echoOk = echoGate === "ok";
         if (midHome === null || (!echoOk && ((midHome.out !== observed.out && midHome.out !== targetOut) || (midHome.ws !== observed.ws && midHome.ws !== targetWs)))) {
             // Third-location proof arrived between the two setters: external
             // input supersedes; never fight it.
@@ -1283,18 +1343,23 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
         // it somewhere unexpected; the migration supersedes as a whole
         // rather than fighting per-member battles.
         let superseded = false;
+        let scanIdx = -1;
         for (const id of members) {
+            scanIdx += 1;
             const observed = byWin.get(id);
             if (observed === undefined) {
                 continue;
             }
             const home = liveHomeOf(observed.ref);
+            const pre = migrationHomeShape(home, observed, t);
             if (home === null) {
+                traceMigrate(env, `omnitiler:world:migrate-prescan op=${t.op} idx=${scanIdx}/${members.length} pre=${pre} branch=held-unreadable`);
                 result.held += 1;
                 superseded = true;
                 break;
             }
             if (home.out === t.out && home.ws === t.ws) {
+                traceMigrate(env, `omnitiler:world:migrate-prescan op=${t.op} idx=${scanIdx}/${members.length} pre=${pre} branch=already-homed`);
                 continue;
             }
             const atSource = home.out === observed.out && home.ws === observed.ws;
@@ -1302,10 +1367,12 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
                 (home.out === t.out && home.ws === observed.ws) ||
                 (home.out === observed.out && home.ws === t.ws);
             if (!atSource && !partialProgress) {
+                traceMigrate(env, `omnitiler:world:migrate-prescan op=${t.op} idx=${scanIdx}/${members.length} pre=${pre} branch=superseded`);
                 state.settleAttempt(t.op, "superseded-external", "");
                 superseded = true;
                 break;
             }
+            traceMigrate(env, `omnitiler:world:migrate-prescan op=${t.op} idx=${scanIdx}/${members.length} pre=${pre} branch=pending`);
         }
         if (superseded) {
             if (midApplyStopped(env, entryObs)) {
@@ -1319,22 +1386,28 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
         let armed = false;
         let failed = false;
         let unproven = false;
+        let actIdx = -1;
         for (const id of members) {
+            actIdx += 1;
             const observed = byWin.get(id);
             if (observed === undefined) {
                 continue;
             }
             let home = liveHomeOf(observed.ref);
+            const pre = migrationHomeShape(home, observed, t);
             if (home === null) {
+                traceMigrate(env, `omnitiler:world:migrate-member op=${t.op} idx=${actIdx}/${members.length} pre=${pre} srcView=null tgtView=null echo=skipped set=skipped proof=unreadable branch=failed-home-unreadable`);
                 result.held += 1;
                 failed = true;
                 break;
             }
             if (home.out === t.out && home.ws === t.ws) {
+                traceMigrate(env, `omnitiler:world:migrate-member op=${t.op} idx=${actIdx}/${members.length} pre=${pre} srcView=na tgtView=na echo=skipped set=skipped proof=target branch=already-homed`);
                 state.noteAppliedWindowTarget(id, t.op, t.out, t.ws);
                 continue;
             }
             if (!preSetterOk(env, reply, entryObs, observed, false)) {
+                traceMigrate(env, `omnitiler:world:migrate-member op=${t.op} idx=${actIdx}/${members.length} pre=${pre} srcView=na tgtView=na echo=skipped set=skipped proof=${pre} branch=failed-preset`);
                 result.stoppedMidApply = true;
                 break;
             }
@@ -1342,6 +1415,7 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             const outRef: object | null = needOutMove ? safeResolve(() => env.resolveOutput(t.out)) : null;
             const wsRef = safeResolve(() => env.desktopById(t.ws));
             if ((needOutMove && outRef === null) || wsRef === null) {
+                traceMigrate(env, `omnitiler:world:migrate-member op=${t.op} idx=${actIdx}/${members.length} pre=${pre} srcView=na tgtView=na echo=skipped set=skipped proof=${pre} branch=failed-resolve`);
                 result.held += 1;
                 failed = true;
                 break;
@@ -1379,6 +1453,7 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
                     threw = true;
                 }
                 if (!betweenStepsOk(env, reply, entryObs, observed)) {
+                    traceMigrate(env, `omnitiler:world:migrate-member op=${t.op} idx=${actIdx}/${members.length} pre=${pre} srcView=${echoSrcView === null ? "null" : "ok"} tgtView=${echoTgtView === null ? "null" : "ok"} echo=skipped set=skipped proof=${pre} branch=failed-between`);
                     result.held += 1;
                     failed = true;
                     break;
@@ -1391,6 +1466,7 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
                 home = null;
             }
             if (home !== null && home.out === t.out && home.ws === t.ws) {
+                traceMigrate(env, `omnitiler:world:migrate-member op=${t.op} idx=${actIdx}/${members.length} pre=${pre} srcView=${echoSrcView === null ? "null" : "ok"} tgtView=${echoTgtView === null ? "null" : "ok"} echo=skipped set=skipped proof=target branch=homed-no-write`);
                 result.membershipWrites += 1;
                 state.noteAppliedWindowTarget(id, t.op, t.out, t.ws);
                 continue;
@@ -1399,21 +1475,30 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             // tolerated (the same flight continues to the desktop set
             // below); a throw or any other third location still fails
             // closed for the whole migration.
-            const echoOk = needOutMove && outOk && !threw && home !== null &&
-                tolerateNativeOutputEcho(env, reply, entryObs, observed, echoSrcView, echoTgtView, home, t.out);
+            const echoGate: NativeEchoGate = needOutMove && outOk && !threw && home !== null
+                ? tolerateNativeOutputEcho(env, reply, entryObs, observed, echoSrcView, echoTgtView, home, t.out)
+                : "skipped";
+            const echoOk = echoGate === "ok";
+            const midShape = migrationHomeShape(home, observed, t);
             if (home === null || (!echoOk && ((home.out !== observed.out && home.out !== t.out) ||
                 (home.ws !== observed.ws && home.ws !== t.ws)))) {
+                traceMigrate(env, `omnitiler:world:migrate-member op=${t.op} idx=${actIdx}/${members.length} pre=${pre} srcView=${echoSrcView === null ? "null" : "ok"} tgtView=${echoTgtView === null ? "null" : "ok"} echo=${echoGate} set=skipped proof=${midShape} branch=superseded`);
                 state.settleAttempt(t.op, "superseded-external", "");
                 superseded = true;
                 break;
             }
+            let setTag = "skipped";
             if (home.ws !== t.ws && wsRef !== null) {
                 try {
                     if (env.setMembership(observed.ref, t.ws, wsRef)) {
                         result.membershipWrites += 1;
+                        setTag = "done-true";
+                    } else {
+                        setTag = "done-false";
                     }
                 } catch (error) {
                     void error;
+                    setTag = "threw";
                 }
             }
             let proof: { out: string; ws: string } | null = null;
@@ -1423,9 +1508,12 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
                 void error;
                 proof = null;
             }
+            const proofShape = migrationHomeShape(proof, observed, t);
             if (proof !== null && proof.out === t.out && proof.ws === t.ws) {
+                traceMigrate(env, `omnitiler:world:migrate-member op=${t.op} idx=${actIdx}/${members.length} pre=${pre} srcView=${echoSrcView === null ? "null" : "ok"} tgtView=${echoTgtView === null ? "null" : "ok"} echo=${echoGate} set=${setTag} proof=${proofShape} branch=homed`);
                 state.noteAppliedWindowTarget(id, t.op, t.out, t.ws);
             } else {
+                traceMigrate(env, `omnitiler:world:migrate-member op=${t.op} idx=${actIdx}/${members.length} pre=${pre} srcView=${echoSrcView === null ? "null" : "ok"} tgtView=${echoTgtView === null ? "null" : "ok"} echo=${echoGate} set=${setTag} proof=${proofShape} branch=held-unproven`);
                 result.held += 1;
                 unproven = true;
             }

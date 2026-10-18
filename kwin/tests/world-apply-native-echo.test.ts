@@ -48,6 +48,7 @@ interface FakeWin {
 interface Hooks {
     onSend?: (id: string) => void;
     breakTargetView?: boolean;
+    lagOutput?: boolean;
 }
 
 const desk = (id: string): FakeDesk => ({ id, name: `ws-${id.slice(0, 4)}` });
@@ -105,12 +106,20 @@ function makeSurface(hooks: Hooks = {}): {
             sendCalls.push(`${ref.internalId}=>${outRef.name}`);
             hooks.onSend?.(ref.internalId);
             const oldOut = ref.output;
-            ref.output = { name: outRef.name };
             const curNew = currents.get(outRef.name) ?? null;
+            const curOld = currents.get(oldOut.name) ?? null;
+            // Producer-shaped output lag (T05): the desktop echo lands
+            // synchronously while the output field still names the source
+            // until native propagation completes. `lagOutput` keeps the
+            // output on the source while applying the exact pinned desktop
+            // replacement, so `readLiveMembership` observes
+            // (sourceOut, capturedTargetCurrent).
+            if (hooks.lagOutput !== true) {
+                ref.output = { name: outRef.name };
+            }
             if (curNew !== null && ref.desktops.some((d) => d.id === curNew.id)) {
                 return;
             }
-            const curOld = currents.get(oldOut.name) ?? null;
             if (curNew !== null && curOld !== null && curNew.id === curOld.id) {
                 return;
             }
@@ -415,5 +424,153 @@ describe("world native output echo", () => {
         applyThroughHost(surf, state, reply, obs);
         assert.equal(surf.sendCalls.length, 1, "settled migration never retried");
         assert.deepEqual(surf.viewCalls, [], "still no view moves");
+    });
+});
+
+describe("world migration per-member diagnostics", () => {
+    const collect = (
+        surf: ReturnType<typeof makeSurface>,
+        state: WorldAdapterState,
+        reply: WorldReply,
+    ): string[] => {
+        const lines: string[] = [];
+        const host = createWorldApplyHost(surf.surface as object, readProp);
+        applyWorldReply({ ...host, state, observation: observe(surf), reply, log: (m: string) => lines.push(m) });
+        return lines;
+    };
+    const memberLines = (lines: string[]): string[] => lines.filter((l) => l.includes("migrate-member"));
+    const prescanLines = (lines: string[]): string[] => lines.filter((l) => l.includes("migrate-prescan"));
+
+    it("emits per-member echo/set/proof evidence on the happy path", () => {
+        const surf = makeSurface();
+        const reply = migrationReply();
+        const state = freshState(reply);
+        const lines = collect(surf, state, reply);
+        const pre = prescanLines(lines);
+        assert.equal(pre.length, 2, "one prescan line per member");
+        for (const [i, line] of pre.entries()) {
+            assert.match(line, new RegExp(`idx=${i}/2 pre=source branch=pending`), "readable source homing");
+        }
+        const members = memberLines(lines);
+        assert.equal(members.length, 2, "one actuation line per member");
+        for (const [i, line] of members.entries()) {
+            assert.match(
+                line,
+                new RegExp(`idx=${i}/2 pre=source srcView=ok tgtView=ok echo=ok set=done-true proof=target branch=homed`),
+                "captured views, echo subgate, setter result and proof per member",
+            );
+        }
+        for (const line of [...pre, ...members]) {
+            assert.ok(!line.includes("win-"), `no raw window ids: ${line}`);
+        }
+    });
+
+    it("names the failing echo subgate and proof shape on a third-location refusal", () => {
+        const surf = makeSurface({
+            onSend: (id) => {
+                if (id === "win-a") {
+                    const w = surf.wins.find((cand) => cand.internalId === id) as FakeWin;
+                    w.desktops = [desk(DX)];
+                }
+            },
+        });
+        const reply = migrationReply();
+        const state = freshState(reply);
+        const lines = collect(surf, state, reply);
+        const members = memberLines(lines);
+        assert.equal(members.length, 1, "actuation stops at the refused member");
+        assert.match(
+            members[0] as string,
+            /idx=0\/2 pre=source srcView=ok tgtView=ok echo=shape set=skipped proof=third branch=superseded/,
+            "third-location shape and shape-gate refusal are named",
+        );
+        assert.ok(!(members[0] as string).includes("win-"), "no raw window ids");
+    });
+});
+
+describe("world native output lag (T05 producer shape)", () => {
+    it("tolerates the same-flight source-output lag echo and finishes both memberships", () => {
+        const surf = makeSurface({ lagOutput: true });
+        const reply = migrationReply();
+        const state = freshState(reply);
+        const obs = observe(surf);
+        const out = applyThroughHost(surf, state, reply, obs);
+        // Both members ride the same armed operation: exactly one native
+        // output send each, then the requested desktop set on the same
+        // flight. The lag echo (sourceOut, capturedTargetCurrent) is
+        // tolerated, never a superseded-external refusal stranding the
+        // second member.
+        assert.deepEqual(surf.sendCalls, [`win-a=>${HDMI}`, `win-b=>${HDMI}`]);
+        assert.notEqual(state.pendingFeedback.find((f) => f.op === "op-22")?.outcome ?? "none", "superseded-external");
+        assert.equal(out.held >= 1, true, "deferred output completion holds without views");
+        assert.deepEqual(surf.viewCalls, [], "no follow or refill view before all arrivals prove");
+        assert.equal(surf.wins.every((w) => w.desktops[0]?.id === D6), true, "requested membership set on both");
+        assert.equal(state.appliedWindowTarget.has("win-a"), false, "no premature arrival claim");
+        assert.equal(state.appliedWindowTarget.has("win-b"), false, "no premature arrival claim");
+        // Deferred native propagation completes without repeat writes, then
+        // arrival proves and both views follow.
+        for (const w of surf.wins) {
+            w.output = { name: HDMI };
+        }
+        const second = applyThroughHost(surf, state, reply, observe(surf));
+        assert.deepEqual(surf.sendCalls, [`win-a=>${HDMI}`, `win-b=>${HDMI}`], "no repeat output sends");
+        assert.deepEqual(surf.viewCalls, [`${HDMI}->${D6}`, `${DP}->${D3}`]);
+        assert.equal(second.held, 0);
+        assert.deepEqual(state.appliedWindowTarget.get("win-a"), { op: "op-22", out: HDMI, ws: D6 });
+        assert.deepEqual(state.appliedWindowTarget.get("win-b"), { op: "op-22", out: HDMI, ws: D6 });
+    });
+
+    it("still fails closed on an unrelated desktop during the lag window", () => {
+        const surf = makeSurface({
+            lagOutput: true,
+            onSend: (id) => {
+                if (id === "win-a") {
+                    const w = surf.wins.find((cand) => cand.internalId === id) as FakeWin;
+                    w.desktops = [desk(DX)];
+                }
+            },
+        });
+        const reply = migrationReply();
+        const state = freshState(reply);
+        const out = applyThroughHost(surf, state, reply, observe(surf));
+        void out;
+        assert.equal(surf.sendCalls.length, 1, "no second-member call after unrelated proof");
+        assert.deepEqual(surf.viewCalls, [], "no views on unrelated proof");
+        assert.deepEqual(
+            state.pendingFeedback.find((f) => f.op === "op-22")?.outcome,
+            "superseded-external",
+        );
+    });
+
+    it("ordinary sends tolerate the same-flight lag echo without premature follow", () => {
+        const surf = makeSurface({ lagOutput: true });
+        const reply: WorldReply = {
+            adapter: "test-adapter", gen: "gen-1", req: "req-1", obs: "", rev: "1",
+            ready: true, consumed: false,
+            scopes: [], workspaces: [], outputs: [],
+            windows: [windowRow("win-a", HDMI, DY)],
+            transfers: [
+                { op: "op-1", kind: "window", win: "win-a", out: HDMI, ws: DY, follow: true, held: false },
+            ],
+            effects: [],
+            result: null,
+        };
+        const state = freshState(reply);
+        const out = applyThroughHost(surf, state, reply, observe(surf));
+        // Lag echo tolerated: no superseded-external, membership set on the
+        // same flight, follow view waits for exact-target arrival.
+        assert.equal(surf.sendCalls.length, 1);
+        assert.notEqual(state.pendingFeedback.find((f) => f.op === "op-1")?.outcome ?? "none", "superseded-external");
+        assert.deepEqual(surf.wins.find((w) => w.internalId === "win-a")?.desktops[0]?.id, DY);
+        assert.deepEqual(surf.viewCalls, [], "no follow before exact-target arrival");
+        void out;
+        for (const w of surf.wins) {
+            if (w.internalId === "win-a") {
+                w.output = { name: HDMI };
+            }
+        }
+        const second = applyThroughHost(surf, state, reply, observe(surf));
+        assert.deepEqual(surf.viewCalls, [`${HDMI}->${DY}`]);
+        void second;
     });
 });

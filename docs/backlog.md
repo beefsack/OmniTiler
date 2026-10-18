@@ -56,7 +56,7 @@ decisions of 2026-09-24 are under
   routing corrected and opposite-pointer admission reverified both ways;
   output follow/stay, workspace source-empty/spare lifecycle and native
   fullscreen/maximize restore have sampled evidence. Output-send diagnostics
-  and R4 own-mover tolerance reverified live; latest KWin suite passes 1535
+   and R4 own-mover tolerance reverified live; latest KWin suite passes 1885
   tests. Unified input/callback wrapper and post-query polling repair pass
   offline review. Software disable/return, priority and vertical send subcases
   pass. Protected placement restored and development stopped. Remaining
@@ -97,9 +97,13 @@ decisions of 2026-09-24 are under
      pass with bounded minimum + INT_MAX maximum; a complete-wire live command
      now accepts them. Native T05 then exposed KWin's output-send desktop echo
      being misclassified as external input, stranding the second member. Narrow
-     echo handling passes offline (typecheck/build, 1862 KWin tests) but its native
-     repeat still fails identically. Parked pending per-member echo/membership
-     branch evidence; no native whole-migration pass claimed.
+      branch evidence now proves desktop membership can echo before native output
+      readback changes. The bounded same-flight source-output-lag correction moves
+      both members; typecheck/build and 1885 KWin tests pass. Whole migration is
+      still blocked by global-inventory confirmation and ambiguous source refill.
+      Unshipped confirmation prototypes lose target follow or retain a no-op
+      feedback storm after member closure. Next: replay exact arrival/refill/
+      feedback before another fix; no native whole-migration pass claimed.
     [Reproduction](changes/kde-dual-output-live.md#whole-workspace-migration-unbounded-maximum-size-refusal-2026-10-15).
    - DEFECT corrected and reverified | User 2026-10-18: in two-output use some outputs show
      too many workspaces, and workspace switching does not work correctly on
@@ -122,10 +126,16 @@ decisions of 2026-09-24 are under
   - Current-world native continuation: T03 numbered/adjacent relative/history
     checks pass 10/10 across both outputs with independence. Ring wrap, presets,
     shared refusal and physical delivery remain pending. T02 explicit follow
-    passes left-to-right; inverse refuses retained `scope-held` after an
-    `unreadable` source-domain observation (trigger unrooted), so stay was not
-    attempted. Replay the exact observation offline before retry. T05 is parked
-    above; T06 rendering and exact-tree R4 still need their distinct evidence.
+    now passes the original two-peer right-follow/left-return and both stays on
+    the prototype-integrated tree; earlier retained `scope-held` did not recur.
+    Final KDE-only repeat stopped at the protected-active fixture gate before
+    dispatch. Ordinary local precedence/focus and occupied R4 geometry pass;
+    flat allocation/frame evidence does not prove exact tree structure. Reversible
+    opposite-edge selection and positive-gap no-cross/no-wrap pass; panel/work-area
+    mutation and post-gap local focus remain pending. T05 is parked above; T06
+    rendering and exact-tree R4 still need distinct evidence. Protected frames,
+    views, outputs/settings restored; development DOWN; newer external focus/
+    pointer changes preserved. Final Rust workspace 3216/3216, KWin 1885/1885.
 - P0 | KDE floating dialog pushed behind other windows | User live 2026-10-16:
   Steam dialogs (game-launch controller prompt; fixed-size startup loading
   dialog, admitted floating) repeatedly drop behind Steam or a terminal on the
