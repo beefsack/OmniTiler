@@ -1,5 +1,68 @@
 # macOS managed native workspaces
 
+## Grab repair and inverse blocker checkpoint (2026-10-19)
+
+**TextEdit product outward send-follow now passes; product roundtrip remains
+blocked by a fresh managed-facts query receiving no reply.** This supersedes
+the transfer-failure status below, not the incomplete acceptance checklist.
+
+- A same-document, same-frame diagnostic isolated the grab: changing only x
+  from .2-width to .8-width at y+8 changed no-carry into outward/inverse carry.
+  Scoped images showed the failing press opened the document rename/location
+  popover. Images were inspected and deleted. Exact hit roles were StaticText
+  at .2/.35, MenuButton at .5, and Window/StandardWindow at .65/.8; all five
+  nevertheless joined the same AX/WindowServer owner.
+- `bcafc1d8` plus independent test correction `da63ebbf` requires the exact hit
+  element to be `AXWindow`/`AXStandardWindow`, then retains both owner joins and
+  candidate order. Role and owner come from the same element-at-position read.
+  Producer-shaped regressions fail with owner-only selection and pass with the
+  filter, including actual posted points and zero-post refusals. Tags, key-up
+  flags, event source/tap, delays, per-edge proofs and release remain unchanged.
+  **Tentative eligibility restriction:** a window with no plain-window candidate
+  refuses narrowly; draggable text-only titlebars may therefore be unsupported.
+- Reviewed diagnostic-only `24ba1c0c` adds record-gated Escape to dismiss the
+  owned document's popover; `19c924f8`/`539ff428` add a read-only, identically
+  record-gated candidate-role inspector. Neither arms a product action.
+- Two repaired product outward sends settle `Applied`, with exact target
+  membership/current, focus following and target retiling. They select the first
+  plain candidate (.65 or .35 as the retained layout changes). Native indicator
+  state follows current Desktop 2; scoped target UI/border crops were inspected
+  and deleted. Indicator pixels and a complete inverse/layout/border roundtrip
+  remain unverified. No automatic return command or reconciliation switch-back
+  is observed or present in the traced send path.
+- An early inverse from a fresh Desktop-2-started runtime exposed a separate
+  native-ordinal/scoped-ring mismatch: native order `[1,277]` versus stable core
+  ring `[277,1]` made `SendNumbered(1)` self-target. `e63ff6a8` plus independent
+  semantic regression `54e533e9`/fixture correction `d5a05fdf` resolve the native
+  SID once at admission and dispatch explicit core `Send`, preserving shared
+  core numbering, follow/feedback and pinned drain validation. Old and fixed
+  commands demonstrably reject/accept against the same producer-shaped report.
+  Numbered select has the analogous adapter mismatch and still needs its own fix.
+- Inverse now admits the exact native target, but its first fresh proof refuses
+  `engine-facts-noreply`, with zero effect posts. First observed near 115 seconds
+  of a 120-second run, it recurs mid-runtime: admission at 63815 ms, observer
+  teardown at 63969 ms, then the same refusal. Shutdown is Clean at 120 seconds.
+  Teardown/query causal order is **unknown**; no timeout, authority or retry
+  behavior is changed. After both refusals the document is restored by the
+  independently proven diagnostic, not counted as product inverse acceptance.
+- Final code gates at `d5a05fdf`: 898 macOS library tests plus integration suites,
+  411 core library tests plus integration suites, strict all-target macOS/core
+  clippy, format and unsafe guardrail pass. Hosted
+  [39156662870](https://github.com/beefsack/OmniTiler/actions/runs/39156662870)
+  passes. Unsafe remains **114 blocks**, all in `ffi.rs`; added hit-detail code
+  uses existing safe wrappers. No dependencies added.
+- Holders/preimages, original current and topology are restored; raw protected
+  window records match. Own runtimes, helpers, TextEdit process and display-awake
+  children are gone; own document/record files are removed. Existing extra Space
+  remains; disposable documents may reopen through Resume. No screenshots remain.
+
+Next: correlate managed-facts enqueue, engine receive/reply and requester outcome
+with observer teardown, without changing behavior; then prove product outward
+and inverse early in one bounded run. Complete both retained layouts, indicator
+pixels and following-border acceptance. Repair numbered-select target parity
+separately. Same-current no-op remains tentative (current refusal unchanged);
+send-stay, trailing lifecycle and per-display attribution remain pending.
+
 ## Sequence discriminator checkpoint (2026-10-19)
 
 **TextEdit product send-follow still fails; no sequence fix is selected.**
@@ -229,14 +292,15 @@ trailing-Space lifecycle and multi-display work parked.
 ### Dogfood checklist
 
 - **Current status:** basic actions and existing-Space selects can be checked;
-  helper outward product send-follow passes, but TextEdit outward transfer fails
-  with full posts, no carry and `PossiblyExecuted`. Historical TextEdit diagnostic
-  carry reproduces, but its positive control fails on a tiled frame. Reviewed
-  diagnostic input proof and live startup/admitted-subject/native timing logs
-  establish dispatch identity, not transfer acceptance. Numbered sends remain
-  armed but not dogfood-ready; no new actions are armed. Require observed runtime
-  readiness and scoped-subject admission before dispatch. Product inverse,
-  roundtrip layouts, indicator and following-border acceptance remain pending.
+  TextEdit outward product send-follow now passes after excluding title controls
+  from grab selection. Inverse admits but refuses before posting because fresh
+  managed-facts readback receives no reply; product roundtrip is not accepted.
+  Numbered sends remain armed but not dogfood-ready; no new actions are armed.
+  Startup on a non-first Desktop also exposes a numbered-select target mismatch;
+  that adapter repair is pending. Require observed runtime readiness and scoped
+  subject admission. Inverse, both retained layouts, indicator pixels and full
+  following-border acceptance remain pending; native outward indicator state and
+  scoped target UI/border crops alone do not close them.
 - The usual user entry is `mise exec -- just dev trace`. It builds/signs before
   launch, is unbounded and unscoped, and can tile ordinary terminal windows.
   For this disposable TextEdit check, use the scoped, explicit Authentic/Ctrl
