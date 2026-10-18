@@ -125,8 +125,7 @@ pub fn group_underlay_chord_held(win_held: bool, shift_held: bool) -> bool {
 /// focused-window interactive move. Interactive resize alone never triggers;
 /// the chord stays independent and can still show the underlay during resize.
 /// Move-start evidence never depends on modifier observation: the move arm is
-/// a separate input. The same OR feeds a future Win+drag producer, which only
-/// needs to supply the move arm.
+/// a separate input.
 #[must_use]
 pub fn group_underlay_trigger(chord_held: bool, matching_move_active: bool) -> bool {
     chord_held || matching_move_active
