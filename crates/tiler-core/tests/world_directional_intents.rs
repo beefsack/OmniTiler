@@ -1390,76 +1390,111 @@ fn unreadable_topology_refuses_and_gap_runs_local_or_refuses() {
 }
 
 #[test]
-fn pinned_r4_identity_survives_mover_relocation_without_rerank() {
-    // Dispatch pins source+u2 (centre seam). After the mover relocates
-    // onto u2, re-ranking with the relocated frame would pick
-    // differently, but the pinned pair still validates against fresh
-    // topology: forward+reverse touch hold, so the pair is retained.
-    use tiler_core::world_engine::WorldEngine as Engine;
-    let engine = Engine::new("gen-1").expect("valid");
-    let _ = engine;
-    let src = OutputId("src".to_owned());
-    let u1 = OutputId("u1".to_owned());
-    let u2 = OutputId("u2".to_owned());
-    // Fresh topology entries (FULL): src below, u1/u2 above.
-    let entries = vec![
-        tiler_core::output_selection::OutputEntry {
-            id: src.clone(),
-            rect: rect(0, 1080, 1920, 1080),
+fn r4_flight_fences_second_move_pre_engine_without_rerank() {
+    // Production-path pin proof: after an exhausted R4 move retains its
+    // identity-pinned flight, a second move for the same window refuses as
+    // transfer-in-flight pre-engine (no re-rank, no second transfer, no
+    // sequence consumption, no mutation). Covers both the lagging cross
+    // path and the gap-topology local fallback path, which shares the
+    // same fence through the local envelope.
+    let mover = window_rect("win-a", "src", "ws", 860, 1150, 200, 200);
+    let report = three_output_report(
+        1,
+        rect(0, 1080, 1920, 1080),
+        rect(0, 0, 960, 1080),
+        rect(960, 0, 960, 1080),
+        mover,
+    );
+    let mut engine = WorldEngine::new("gen-1").expect("valid");
+    accepted(&mut engine, &report);
+    let mut cmd = report.clone();
+    with_command(
+        &mut cmd,
+        2,
+        112,
+        WorldCommand::MoveDirectional {
+            window: WindowId("win-a".to_owned()),
+            direction: "up".to_owned(),
+            same_axis: tiler_core::directional::SameAxisMove::GroupWithNeighbor,
         },
-        tiler_core::output_selection::OutputEntry {
-            id: u1.clone(),
-            rect: rect(0, 0, 960, 1080),
-        },
-        tiler_core::output_selection::OutputEntry {
-            id: u2.clone(),
-            rect: rect(960, 0, 960, 1080),
-        },
-    ];
-    // Dispatch frame centres on the seam (x=960): selects u2.
-    let dispatch = rect(860, 1150, 200, 200);
-    let picked = tiler_core::output_selection::select_for_window(
-        tiler_core::directional::Direction::Up,
-        &entries[0],
-        &dispatch,
-        &entries,
-    )
-    .expect("readable")
-    .expect("candidate");
-    assert_eq!(picked.id, u2);
-    // Relocated frame sits deep over u1's column; a fresh rank would
-    // pick u1, proving the mover moved. The pinned u2 pair must still
-    // touch reciprocally in the same topology.
-    let relocated = rect(100, 100, 200, 200);
-    let reranked = tiler_core::output_selection::select_for_window(
-        tiler_core::directional::Direction::Up,
-        &entries[0],
-        &relocated,
-        &entries,
-    )
-    .expect("readable")
-    .expect("candidate");
-    assert_eq!(reranked.id, u1, "relocated frame would rerank to u1");
-    let fwd = tiler_core::output_selection::candidates_in_direction(
-        &entries[0],
-        tiler_core::directional::Direction::Up,
-        &entries,
-    )
-    .expect("readable");
-    assert!(fwd.iter().any(|c| c.id == u2), "pinned u2 still forward");
-    let back = tiler_core::output_selection::OutputEntry {
-        id: u2.clone(),
-        rect: rect(960, 0, 960, 1080),
-    };
-    let rev = tiler_core::output_selection::candidates_in_direction(
-        &back,
-        tiler_core::directional::Direction::Down,
-        &entries,
-    )
-    .expect("readable");
+    );
+    let reply = accepted(&mut engine, &cmd);
+    assert_eq!(homing(&reply, "win-a"), Some("u2/ws".to_owned()));
     assert!(
-        rev.iter().any(|c| c.id == src),
-        "pinned pair still reciprocal without rerank"
+        reply
+            .transfers
+            .iter()
+            .any(|t| matches!(t.kind, TransferKind::Window(_)) && t.target_output.0 == "u2")
+    );
+    let settled_revision = engine.state_revision();
+    // Lagging observation (mover still at the source) with a fresh move
+    // command: pre-engine fence, never a re-rank.
+    let mut again = report.clone();
+    with_command(
+        &mut again,
+        3,
+        113,
+        WorldCommand::MoveDirectional {
+            window: WindowId("win-a".to_owned()),
+            direction: "up".to_owned(),
+            same_axis: tiler_core::directional::SameAxisMove::GroupWithNeighbor,
+        },
+    );
+    match engine.handle_report(&again) {
+        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "transfer-in-flight"),
+        other => panic!("second move while flight outstanding refuses, got {other:?}"),
+    }
+    assert_eq!(
+        engine.state_revision(),
+        settled_revision,
+        "pre-engine refusal mutates nothing"
+    );
+    // Gap topology forcing the no-candidate local fallback under the same
+    // lagging window: the same fence fires before any local mutation.
+    let mut gap = report.clone();
+    gap.topology[0].geometry = Some(rect(0, 2000, 800, 600));
+    gap.topology[1].geometry = Some(rect(0, 0, 800, 600));
+    gap.topology[2].geometry = Some(rect(3000, 0, 800, 600));
+    with_command(
+        &mut gap,
+        4,
+        114,
+        WorldCommand::MoveDirectional {
+            window: WindowId("win-a".to_owned()),
+            direction: "up".to_owned(),
+            same_axis: tiler_core::directional::SameAxisMove::GroupWithNeighbor,
+        },
+    );
+    match engine.handle_report(&gap) {
+        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "transfer-in-flight"),
+        other => panic!("gap local move while flight outstanding refuses, got {other:?}"),
+    }
+    assert_eq!(
+        engine.state_revision(),
+        settled_revision,
+        "gap-path refusal mutates nothing"
+    );
+    // The retained flight survives both refusals with its stable identity:
+    // an observation-only lag report keeps the single pinned transfer.
+    let mut lag = report.clone();
+    lag.request_seq = 5;
+    lag.request_id = "req-5".to_owned();
+    lag.observation_seq = 5;
+    let lag_reply = accepted(&mut engine, &lag);
+    assert_eq!(homing(&lag_reply, "win-a"), Some("u2/ws".to_owned()));
+    let flights: Vec<_> = lag_reply
+        .transfers
+        .iter()
+        .filter(|t| matches!(t.kind, TransferKind::Window(_)))
+        .collect();
+    assert_eq!(
+        flights.len(),
+        1,
+        "exactly the pinned flight, never a second"
+    );
+    assert_eq!(
+        flights[0].operation_id, "op-112",
+        "stable identity across refusals"
     );
 }
 
@@ -1688,4 +1723,72 @@ fn r4_exhausted_move_retains_identity_pinned_transfer_and_settles_on_arrival() {
         .expect("reverse move pins a fresh transfer");
     assert_eq!(back_transfer.operation_id, "op-113");
     assert_eq!(back_transfer.target_output.0, "src");
+}
+
+#[test]
+fn r4_capacity_float_fallback_retains_identity_pinned_window_transfer() {
+    // Tiny occupied readable target (1x1 FULL, one resident tile): the R4
+    // wrap plans but the affected projection exhausts, so the shared
+    // capacity-float send carries the mover slotless with one
+    // identity-pinned Window transfer (follow to the target view). The
+    // mover row homes at the target with no Controlled frame authority,
+    // so no invalid geometry can actuate.
+    use tiler_core::world_report::ScopeAuthority;
+    let tiny = rect(800, 0, 1, 1);
+    let mut report = two_output_report(1, Some(tiny));
+    report.topology[0].geometry = Some(rect(0, 0, 800, 600));
+    report.domains[0] = domain_report("out-a", "wa1", vec![engine_window("win-a", "out-a", "wa1")]);
+    report.domains[1] = DomainReport {
+        domain: OutputDomain {
+            id: OutputId("out-b".to_owned()),
+            workspace: WorkspaceId("wb1".to_owned()),
+            bounds: tiny,
+            gap: 0,
+            adjacent: BTreeMap::new(),
+        },
+        outer_gap: 0,
+        focused: WindowId("win-t".to_owned()),
+        windows: vec![window_rect("win-t", "out-b", "wb1", 800, 0, 1, 1)],
+        closed: Vec::new(),
+        readable: true,
+        hold: None,
+    };
+    let mut engine = WorldEngine::new("gen-1").expect("valid");
+    accepted(&mut engine, &report);
+    let mut cmd = report.clone();
+    with_command(
+        &mut cmd,
+        2,
+        171,
+        WorldCommand::MoveDirectional {
+            window: WindowId("win-a".to_owned()),
+            direction: "right".to_owned(),
+            same_axis: tiler_core::directional::SameAxisMove::GroupWithNeighbor,
+        },
+    );
+    let reply = accepted(&mut engine, &cmd);
+    let transfer = reply
+        .transfers
+        .iter()
+        .find(|t| matches!(t.kind, TransferKind::Window(_)))
+        .expect("exhausted R4 floats with a pinned transfer");
+    assert_eq!(transfer.operation_id, "op-171", "stable command identity");
+    assert_eq!(transfer.target_output.0, "out-b");
+    assert_eq!(transfer.target_workspace, "wb1", "target current view");
+    assert!(transfer.follow, "R4 fallback always follows the mover");
+    assert_eq!(homing(&reply, "win-a"), Some("out-b/wb1".to_owned()));
+    let row = reply
+        .windows
+        .iter()
+        .find(|w| w.lifetime.0 == "win-a")
+        .expect("mover row present");
+    assert!(
+        !matches!(row.frame_authority, ScopeAuthority::Controlled),
+        "slotless float carries no frame authority, frame_authority={:?}",
+        row.frame_authority
+    );
+    assert!(
+        row.allocation.is_none(),
+        "slotless float carries no allocation"
+    );
 }

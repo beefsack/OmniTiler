@@ -20,11 +20,11 @@ use crate::workspace_scope::{
     resolve_relative_send, resolve_relative_step, resolve_trailing,
 };
 use crate::world_engine::{
-    KIND_CREATION_EXHAUSTED, KIND_DIRECTION, KIND_FOCUS, KIND_MIGRATION, KIND_OPERATION,
-    KIND_SCOPE_HELD, KIND_SELECT_UNKNOWN, KIND_SEND_TARGET, KIND_SEND_WINDOW, KIND_SNAPSHOT,
-    MSG_CREATION_EXHAUSTED, MSG_DIRECTION, MSG_FOCUS, MSG_MIGRATION, MSG_OPERATION, MSG_SCOPE_HELD,
-    MSG_SELECT_UNKNOWN, MSG_SEND_TARGET, MSG_SEND_WINDOW, MSG_SNAPSHOT, RetainedTransfer,
-    WorldEngine,
+    KIND_CREATION_EXHAUSTED, KIND_DIRECTION, KIND_FOCUS, KIND_IN_FLIGHT, KIND_MIGRATION,
+    KIND_OPERATION, KIND_SCOPE_HELD, KIND_SELECT_UNKNOWN, KIND_SEND_TARGET, KIND_SEND_WINDOW,
+    KIND_SNAPSHOT, MSG_CREATION_EXHAUSTED, MSG_DIRECTION, MSG_FOCUS, MSG_IN_FLIGHT, MSG_MIGRATION,
+    MSG_OPERATION, MSG_SCOPE_HELD, MSG_SELECT_UNKNOWN, MSG_SEND_TARGET, MSG_SEND_WINDOW,
+    MSG_SNAPSHOT, RetainedTransfer, WorldEngine,
 };
 use crate::world_publish::{current_view, homed_occupancy, live_native_order};
 use crate::world_report::CommandResult;
@@ -660,6 +660,7 @@ impl WorldEngine {
                 command,
                 window,
                 direction,
+                None,
                 by_id,
                 held_scopes,
             ),
@@ -674,6 +675,7 @@ impl WorldEngine {
                 command,
                 window,
                 direction,
+                None,
                 by_id,
                 held_scopes,
             ),
@@ -700,13 +702,17 @@ impl WorldEngine {
 
     /// Cross-output directional move/focus through the core-derived pair.
     /// Moves resolve the target through the windowed FULL selector
-    /// (centre/span/left-top with reciprocal existence); focus keeps the
+    /// (centre/span/left-top with reciprocal existence) unless the caller
+    /// pins a dispatch-selected target, which validates against fresh
+    /// topology without re-ranking the mover frame; focus keeps the
     /// strict unique-reciprocal map. The source is the window's homing
     /// domain; the target resolves to the same workspace preferred, else
     /// the target output's current view, else the first readable domain
     /// there. No resolvable target or no readable target refuses without
     /// mutation: a cross-output request never silently runs as a local
-    /// move/focus. Unreadable topology refuses.
+    /// move/focus. Unreadable topology refuses. A pending window transfer
+    /// for the mover refuses as transfer-in-flight before any engine
+    /// mutation, exactly like the explicit send path.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn operation_directional(
         &mut self,
@@ -715,6 +721,7 @@ impl WorldEngine {
         command: &CoreCommand,
         window: &str,
         direction: &str,
+        pinned_target: Option<&OutputId>,
         by_id: &BTreeMap<&WindowId, &EngineWindow>,
         held_scopes: &BTreeSet<DomainKey>,
     ) -> CommandApplied {
@@ -735,6 +742,24 @@ impl WorldEngine {
                 message: MSG_SCOPE_HELD,
             };
         }
+        // Pending-transfer fence (same window, any origin): a newer move
+        // never mutates under an outstanding flight. Observation lag keeps
+        // the mover homed at the source, so without this the engine would
+        // see a plausible second move; the fence refuses before any
+        // convergence or commit, and the retained flight still settles on
+        // arrival proof. Sethled arrivals drop the flight before commands
+        // run, so settled retries proceed.
+        if matches!(command, CoreCommand::Move { .. })
+            && self.retained.iter().any(|r| match &r.target.kind {
+                TransferKind::Window(w) => w == &window_id,
+                TransferKind::View | TransferKind::Migration => false,
+            })
+        {
+            return CommandApplied::Rejected {
+                kind: KIND_IN_FLIGHT,
+                message: MSG_IN_FLIGHT,
+            };
+        }
         let is_move = matches!(command, CoreCommand::Move { .. });
         let pair = if is_move {
             let Some(direction_parsed) = parse_direction_token(direction) else {
@@ -743,22 +768,52 @@ impl WorldEngine {
                     message: MSG_OPERATION,
                 };
             };
-            match self.directional_pair_for_window(
-                report,
-                &source_key,
-                direction_parsed,
-                &source_row.rect,
-                held_scopes,
-            ) {
-                Ok(pair) => pair,
-                Err(_) => {
+            if let Some(pinned) = pinned_target {
+                // Dispatch-pinned target: validate forward/reverse touch on
+                // fresh topology (reverse uniqueness not required); the
+                // relocated mover frame is never consulted.
+                let Some(source_report) = report
+                    .domains
+                    .iter()
+                    .find(|d| d.readable && d.domain.key() == source_key)
+                else {
                     return CommandApplied::Rejected {
                         kind: KIND_OPERATION,
                         message: MSG_OPERATION,
                     };
+                };
+                self.directional_pair_for_target(
+                    report,
+                    &source_key,
+                    source_report,
+                    direction_parsed,
+                    pinned,
+                    held_scopes,
+                )
+            } else {
+                match self.directional_pair_for_window(
+                    report,
+                    &source_key,
+                    direction_parsed,
+                    &source_row.rect,
+                    held_scopes,
+                ) {
+                    Ok(pair) => pair,
+                    Err(_) => {
+                        return CommandApplied::Rejected {
+                            kind: KIND_OPERATION,
+                            message: MSG_OPERATION,
+                        };
+                    }
                 }
             }
         } else {
+            if pinned_target.is_some() {
+                return CommandApplied::Rejected {
+                    kind: KIND_OPERATION,
+                    message: MSG_OPERATION,
+                };
+            }
             self.directional_pair_for(report, &source_key, direction, held_scopes)
         };
         let Some(((source_domain, source_key), (target_domain, target_key), target_outer, _)) =
@@ -797,134 +852,6 @@ impl WorldEngine {
         // both-domain rows (source first), exactly like the legacy
         // directional route: source-only rows would starve the target side
         // and refuse as unchanged.
-        let Some(target_report) = report
-            .domains
-            .iter()
-            .find(|d| d.readable && d.domain.key() == target_key)
-        else {
-            return CommandApplied::Rejected {
-                kind: KIND_OPERATION,
-                message: MSG_OPERATION,
-            };
-        };
-        let mut combined = self.shielded_windows(&source_key, &source_report.windows, by_id);
-        combined.extend(self.shielded_windows(&target_key, &target_report.windows, by_id));
-        let mut closed = source_report.closed.clone();
-        closed.extend(target_report.closed.clone());
-        let (Some(inset_source), Some(inset_target)) = (
-            crate::world_engine::inset_world_domain(&source_domain, source_report.outer_gap),
-            crate::world_engine::inset_world_domain(&target_domain, target_outer),
-        ) else {
-            return CommandApplied::Rejected {
-                kind: KIND_SCOPE_HELD,
-                message: MSG_SCOPE_HELD,
-            };
-        };
-        let event = CoreEvent {
-            owner,
-            generation: self.core_generation.clone(),
-            correlation,
-            revision,
-            fingerprint,
-            domain: Engine::canonical_component_domain(&inset_source),
-            domain_key: source_key.clone(),
-            outer_gap: source_report.outer_gap,
-            focused_window: source_report.focused.clone(),
-            windows: combined,
-            closed_windows: closed,
-            directional: Some(vec![
-                (inset_source, source_key.clone()),
-                (inset_target, target_key),
-            ]),
-            directional_target_outer_gap: Some(target_outer),
-            target_domain: None,
-            target_windows: Vec::new(),
-            command: command.clone(),
-        };
-        self.finish_operation_event(report, command_seq, &event)
-    }
-
-    /// Pinned cross-output directional move/focus for a dispatch-selected
-    /// target: the same validated reciprocal pair as
-    /// [`WorldEngine::operation_directional`] but the target output is the
-    /// caller-pinned selection, never a re-rank of the mover frame. Fresh
-    /// topology only validates forward/reverse touch (reverse uniqueness
-    /// not required); the relocated mover frame is never consulted. `None`
-    /// refuses without mutation.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn operation_directional_pinned(
-        &mut self,
-        report: &WorldReport,
-        command_seq: u64,
-        command: &CoreCommand,
-        window: &str,
-        direction: &str,
-        pinned_target: &OutputId,
-        by_id: &BTreeMap<&WindowId, &EngineWindow>,
-        held_scopes: &BTreeSet<DomainKey>,
-    ) -> CommandApplied {
-        let window_id = WindowId(window.to_owned());
-        let Some(source_row) = by_id.get(&window_id) else {
-            return CommandApplied::Rejected {
-                kind: KIND_OPERATION,
-                message: MSG_OPERATION,
-            };
-        };
-        let source_key = DomainKey {
-            output: source_row.output.clone(),
-            workspace: source_row.workspace.clone(),
-        };
-        if held_scopes.contains(&source_key) {
-            return CommandApplied::Rejected {
-                kind: KIND_SCOPE_HELD,
-                message: MSG_SCOPE_HELD,
-            };
-        }
-        let Some(direction_parsed) = parse_direction_token(direction) else {
-            return CommandApplied::Rejected {
-                kind: KIND_OPERATION,
-                message: MSG_OPERATION,
-            };
-        };
-        let Some(source_report) = report
-            .domains
-            .iter()
-            .find(|d| d.readable && d.domain.key() == source_key)
-        else {
-            return CommandApplied::Rejected {
-                kind: KIND_OPERATION,
-                message: MSG_OPERATION,
-            };
-        };
-        let Some(((source_domain, source_key), (target_domain, target_key), target_outer, _)) =
-            self.directional_pair_for_target(
-                report,
-                &source_key,
-                source_report,
-                direction_parsed,
-                pinned_target,
-                held_scopes,
-            )
-        else {
-            return CommandApplied::Rejected {
-                kind: KIND_OPERATION,
-                message: MSG_OPERATION,
-            };
-        };
-        let (Some(owner), Some(correlation)) = (
-            OwnerId::parse(&report.owner),
-            CorrelationId::parse(&report.request_id),
-        ) else {
-            return CommandApplied::Rejected {
-                kind: KIND_SNAPSHOT,
-                message: MSG_SNAPSHOT,
-            };
-        };
-        let accepted = self
-            .engine
-            .session(&source_key)
-            .map(|s| (s.accepted_revision(), s.accepted_fingerprint()));
-        let (revision, fingerprint) = accepted.unwrap_or((0, 0));
         let Some(target_report) = report
             .domains
             .iter()
@@ -1035,6 +962,7 @@ impl WorldEngine {
                 &command,
                 &window.0,
                 direction,
+                None,
                 by_id,
                 held_scopes,
             );
@@ -1115,13 +1043,13 @@ impl WorldEngine {
                 cross_output_transfer: true,
                 same_axis_move: same_axis,
             };
-            return self.operation_directional_pinned(
+            return self.operation_directional(
                 report,
                 command_seq,
                 &command,
                 &window.0,
                 direction,
-                &target,
+                Some(&target),
                 by_id,
                 held_scopes,
             );
@@ -1544,7 +1472,11 @@ impl WorldEngine {
 
     /// Legacy local operation envelope: homing (or first readable) domain,
     /// no directional pair. Shared by local move/focus, read-only queries,
-    /// resizes, float toggles, and same-domain drag preview/drop.
+    /// resizes, float toggles, and same-domain drag preview/drop. A pending
+    /// window transfer for a move subject refuses as transfer-in-flight
+    /// before any engine mutation, exactly like the cross-output pair and
+    /// the explicit send path (covers the no-candidate local fallback when
+    /// topology turns to a gap under a flight).
     pub(crate) fn run_local_operation(
         &mut self,
         report: &WorldReport,
@@ -1553,6 +1485,18 @@ impl WorldEngine {
         by_id: &BTreeMap<&WindowId, &EngineWindow>,
         held_scopes: &BTreeSet<DomainKey>,
     ) -> CommandApplied {
+        if let CoreCommand::Move { window, .. } = command {
+            let window_id = WindowId(window.clone());
+            if self.retained.iter().any(|r| match &r.target.kind {
+                TransferKind::Window(w) => w == &window_id,
+                TransferKind::View | TransferKind::Migration => false,
+            }) {
+                return CommandApplied::Rejected {
+                    kind: KIND_IN_FLIGHT,
+                    message: MSG_IN_FLIGHT,
+                };
+            }
+        }
         let (domain_key, domain_report) =
             match operation_domain(report, command, by_id, held_scopes) {
                 Some(found) => found,
@@ -1762,7 +1706,10 @@ impl WorldEngine {
                 // gate defers foreign geometry, focus stays on the mover).
                 // Local R1-R3 plans (no cross) retain nothing: focus
                 // unchanged, no transfer. Uses the existing send transfer
-                // contract (Window kind, follow to the target view).
+                // contract (Window kind, follow to the target view). The
+                // same-window pending-transfer fence lives pre-engine in
+                // the pair/local routes; the in-flight skip below is only
+                // a no-double-retain backstop.
                 if let Some(cross) = &plan.cross {
                     let window = cross.intent_window.clone();
                     let in_flight = self.retained.iter().any(|r| match &r.target.kind {
@@ -1799,7 +1746,10 @@ impl WorldEngine {
             CoreReply::SendWorkspace(plan) | CoreReply::SendOutput(plan) => {
                 // Pair-route sends that surface here (R4 capacity-float
                 // fallback under a Move command) retain exactly like an
-                // explicit send: one identity-pinned window transfer.
+                // explicit send: one identity-pinned window transfer. The
+                // same-window pending-transfer fence lives pre-engine in
+                // the pair/local routes; the in-flight skip below is only
+                // a no-double-retain backstop.
                 let (window, source_output, source_workspace, target_output, target_workspace) =
                     match &plan.operation {
                         crate::contract::LifecycleOperation::MoveTiled {
