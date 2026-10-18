@@ -128,6 +128,10 @@
   frames/modes/membership/views/focus/pointer, output configuration, shortcuts,
   effects and float-store absence; development is DOWN, owned resources absent.
   Normal desktop lifecycle churn remains. No complete inventory gate is claimed.
+- Final integrated offline check: isolated-source core library **410/410** tests
+  pass, including exact T05 advisory hints; Rust formatting passes. Latest KWin
+  typecheck/build and **1862/1862** test pass remain current; subsequent changes
+  are records only. This does not override the native migration/send failures.
 
 ## Approach
 
