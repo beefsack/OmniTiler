@@ -335,9 +335,10 @@ interface Workspace {
     // SHA-256 6baa910b732d93c48c90f9c1cc685cc93d0b8de0cdf138c24192c045bc3a48e2:
     //     Q_SCRIPTABLE void createDesktop(int position, const QString &name)
     //     const
-    // Creates a desktop at the 1-based position and returns nothing. The
-    // controller re-enumerates `desktops` to resolve the new desktop and never
-    // relies on a return value.
+    // Creates a desktop at the zero-based position in [0, count] and
+    // returns nothing. The controller re-enumerates `desktops` (id plus
+    // native name) to resolve the new desktop and never relies on a
+    // return value.
     createDesktop(position: number, name: string): void;
     // src/scripting/workspace_wrapper.h:
     //     Q_INVOKABLE void removeDesktop(VirtualDesktop *desktop)

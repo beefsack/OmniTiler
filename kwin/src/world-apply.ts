@@ -46,7 +46,16 @@ export interface ApplyEnv {
     resolveOutput: (out: string) => object | null;
     resolveDesktop: (ws: string) => object | null;
     switchView: (desktopRef: object, outRef: object) => boolean;
-    createDesktop: () => string | null;
+    // KWin 6.7 void creation (workspace_wrapper.h, virtualdesktops.cpp):
+    // required zero-based position in [0, count] plus name, returns
+    // nothing. Proof comes only from fresh named enumeration
+    // (listDesktops), never a return value.
+    createDesktop: (position: number, name: string) => void;
+    // Fresh complete native inventory for creation proof (id plus native
+    // name per desktop). Null when unreadable or incomplete: hold, never
+    // guess. Optional only for offline doubles; production always
+    // provides it.
+    listDesktops?: () => Array<{ readonly id: string; readonly name: string }> | null;
     removeDesktop: (nativeId: string) => boolean;
     focusWindow: (ref: object) => boolean;
     desktopOccupants: (nativeId: string) => { total: number; readable: boolean };
@@ -740,14 +749,28 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             continue;
         }
         if (existing !== null && existing.bound === null) {
-            // Ambiguous create result: recover by enumeration against the
-            // pre-attempt baseline before any further attempt; never append
-            // blindly on identical replies.
-            const recovered = state.recoverCreationByEnumeration(logical, [...liveDesktopIds]);
+            // Ambiguous create result: recover by FRESH complete named
+            // enumeration with exact-name attribution before any further
+            // attempt; never append blindly on identical replies and never
+            // steal an unrelated appended desktop.
+            let delayed: Array<{ readonly id: string; readonly name: string }> | null = null;
+            try {
+                delayed = env.listDesktops?.() ?? null;
+            } catch (error) {
+                void error;
+                delayed = null;
+            }
+            if (delayed === null) {
+                result.held += 1;
+                continue;
+            }
+            const recovered = state.recoverCreationByName(logical, delayed);
             if (recovered === null) {
                 result.held += 1;
                 continue;
             }
+            state.settleAttempt(`create-${logical}`, "applied", "");
+            result.creations += 1;
             continue;
         }
         if (state.isHeldAmbiguous(`create-${logical}`)) {
@@ -758,33 +781,60 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             result.stoppedMidApply = true;
             break;
         }
-        const flight = state.startCreation(logical, ws.out, [...liveDesktopIds]);
+        // Fresh complete pre-attempt baseline per individual create: each
+        // token in the same reply starts from current native truth, never
+        // the shared stale observation, so a sibling creation never leaks
+        // into this token's baseline. Unreadable/incomplete holds with no
+        // native call and no row, so a later readable inventory can proceed.
+        let before: Array<{ readonly id: string; readonly name: string }> | null = null;
+        try {
+            before = env.listDesktops?.() ?? null;
+        } catch (error) {
+            void error;
+            before = null;
+        }
+        if (before === null) {
+            state.noteFeedback({ op: `create-${logical}`, kind: "creation", outcome: "unattempted", hold: "incomplete-inventory" });
+            result.held += 1;
+            continue;
+        }
+        const beforeIds = before.map((d) => d.id);
+        const flight = state.startCreation(logical, ws.out, beforeIds);
         if (flight === null) {
             result.held += 1;
             continue;
         }
+        // Zero-based append position in [0, count] (virtualdesktops.cpp
+        // clamp); the logical token rides as the native name for later
+        // exact-name attribution.
         state.armPossiblyExecuted(`create-${logical}`, "creation", ws.out);
-        let createdNative: string | null = null;
-        let threw = false;
         try {
-            createdNative = env.createDesktop();
+            env.createDesktop(beforeIds.length, logical);
         } catch (error) {
             void error;
-            threw = true;
         }
-        if (createdNative !== null && createdNative !== "") {
-            state.bindCreation(logical, createdNative);
-            state.settleAttempt(`create-${logical}`, "applied", "");
-            result.creations += 1;
-        } else if (threw) {
-            // A throw may have created natively: stay ambiguous and recover
-            // by enumeration, never blindly repeat.
+        // Void native proof only: a return value never binds. A throw, a
+        // no-op, or a silent success all stay ambiguous unless the fresh
+        // post-attempt snapshot shows exactly one desktop with this token's
+        // name beyond the pre-attempt baseline (throw+side-effect proves
+        // via the same path; unrelated names never bind).
+        let after: Array<{ readonly id: string; readonly name: string }> | null = null;
+        try {
+            after = env.listDesktops?.() ?? null;
+        } catch (error) {
+            void error;
+            after = null;
+        }
+        if (after === null) {
             result.held += 1;
         } else {
-            // Null/empty with no throw is still ambiguous (the native side
-            // may have acted): hold for enumeration recovery, never claim a
-            // proven refusal that would green-light a duplicate create.
-            result.held += 1;
+            const bound = state.recoverCreationByName(logical, after);
+            if (bound !== null) {
+                state.settleAttempt(`create-${logical}`, "applied", "");
+                result.creations += 1;
+            } else {
+                result.held += 1;
+            }
         }
         if (midApplyStopped(env, entryObs)) {
             result.stoppedMidApply = true;

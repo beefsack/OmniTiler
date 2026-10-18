@@ -10,6 +10,7 @@ import { startWorldAdapterEntry } from "../src/world-entry";
 
 interface FakeDesktop {
     id: string;
+    name: string;
 }
 interface FakeWindow {
     internalId: string;
@@ -52,7 +53,7 @@ interface CapturedCall {
     callback: (reply: unknown) => void;
 }
 
-const desk = (id: string): FakeDesktop => ({ id });
+const desk = (id: string, name?: string): FakeDesktop => ({ id, name: name ?? id });
 const win = (id: string, out: string, ws: FakeDesktop, x = 0): FakeWindow => {
     const fake: FakeWindow = {
         internalId: id,
@@ -201,11 +202,13 @@ function makeHarness(mode: unknown = "per-output-local", gesture = false, defaul
             }
         },
         sendClientToScreen: (_mover: unknown, _out: unknown) => undefined,
-        createDesktop: () => {
+        createDesktop: (...args: ReadonlyArray<unknown>) => {
+            if (args.length !== 2 || typeof args[0] !== "number" || typeof args[1] !== "string") {
+                throw new Error("Insufficient arguments");
+            }
             const id = `native-${world.desktops.length + 1}`;
-            world.desktops.push(desk(id));
+            world.desktops.push(desk(id, args[1] as string));
             world.created.push(id);
-            return world.desktops[world.desktops.length - 1] as object;
         },
         removeDesktop: (ref: unknown) => {
             const id = (ref as FakeDesktop).id;

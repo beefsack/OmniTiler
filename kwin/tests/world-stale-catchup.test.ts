@@ -147,9 +147,11 @@ function makeHarness(): Harness {
             }
         },
         sendClientToScreen: () => undefined,
-        createDesktop: () => {
+        createDesktop: (...args: ReadonlyArray<unknown>) => {
+            if (args.length !== 2 || typeof args[0] !== "number" || typeof args[1] !== "string") {
+                throw new Error("Insufficient arguments");
+            }
             world.created.push("native");
-            return null as unknown as object;
         },
         removeDesktop: () => {
             world.removed.push("native");

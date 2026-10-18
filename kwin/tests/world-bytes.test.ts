@@ -38,9 +38,9 @@ function makeSignal() {
 const LONG_ID = "w".repeat(128);
 
 function makeFixtureSurface() {
-    const ws1 = { id: "ws-1" };
-    const ws2 = { id: "ws-2" };
-    const ws3 = { id: "ws-3" };
+    const ws1 = { id: "ws-1", name: "Workspace 1" };
+    const ws2 = { id: "ws-2", name: "Workspace 2" };
+    const ws3 = { id: "ws-3", name: "Workspace 3" };
     const started = makeSignal();
     const stepped = makeSignal();
     const finished = makeSignal();
@@ -152,7 +152,7 @@ function makeFixtureSurface() {
         currentDesktopForScreen: (screen: { name: string }) => world.currentByScreen.get(screen.name) ?? null,
         setCurrentDesktopForScreen: () => undefined,
         sendClientToScreen: () => undefined,
-        createDesktop: () => null as unknown as object,
+        createDesktop: (_position: number, _name: string): void => undefined,
         removeDesktop: () => undefined,
         windowAdded: windowAdded.signal,
         windowRemoved: windowRemoved.signal,

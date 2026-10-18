@@ -11,6 +11,48 @@
 - Preserve existing windows and restore settings, output configuration and
   development lifecycle state.
 
+## Current continuation (2026-10-18)
+
+- Priority: reproduce the reported output-local workspace count/switch fault,
+  correct confirmed implementation defects, recover the unbounded-size T05
+  regressions, then resume the remaining non-drag inventory legs.
+- Diagnostic reproduction: an output with a one-entry ring accepts ordinal 1
+  as a no-op and rejects ordinal 3 with `selection-unknown`; the other output
+  switches to ordinal 3. Native desktop creation without arguments throws
+  `Insufficient arguments`. The full-state KDE create bridge uses that invalid
+  call, preventing the required scoped spare from being bound.
+- Investigate separately: startup adoption places unassigned natives on the
+  primary scope, while publication retains another output's current view as a
+  duplicate row. Do not change startup partition policy without resolving the
+  existing visible-current discriminator. Adjacency extraction is out of scope.
+- Evidence limits: this reproduction retained correlated redacted summaries and
+  native views, not complete request/reply payloads or direct effective-mode
+  readback. Original window frames were not captured, so frame restoration is
+  unverified. These are diagnostic observations, not clean inventory acceptance.
+- Teardown verified development DOWN, original memberships/views/focus and output
+  configuration, byte-identical shortcut configuration and original float-store
+  absence. Normal empty-desktop retirement was retained. Future live legs require
+  full frame baselines, complete request/reply capture and direct mode evidence.
+- Bounded work: repair the native creation contract with producer-shaped tests;
+  independently review lifecycle safety; repeat with a complete fixture; recover
+  T05 tests by stash identity and prove or repair their current production route.
+- Offline correction: use KWin's void `(position, name)` API with a zero-based
+  append position. Bind only a unique, fresh, exact-name native desktop from a
+  complete snapshot; each token has its own pre-call baseline and cannot share a
+  binding. Ambiguous native attempts never repeat; read-only preflight failures
+  remain unattempted and recoverable; delayed proof settles exactly once.
+- Review rejected shared-baseline/id-only recovery because it could steal a
+  sibling or unrelated desktop. A correction armed before a read-only baseline
+  and permanently held an unattempted token; that causal defect was narrowed to
+  arm immediately before the native call. Regression fixtures now drain feedback
+  before native invalidation and supply real desktop names; wire golds unchanged.
+- Accepted offline evidence: KWin typecheck/build and **1845/1845** tests pass;
+  focused lifecycle/entry/native/state/catchup tests **104/104** pass. Independent
+  lifecycle review accepts the final correction. No core scope-policy change.
+- Tentative implementation choice: newly created native desktops carry their
+  logical token as name for void-API attribution. Existing names are not changed;
+  workspace identity remains native-ID based. Live re-verification is pending.
+
 ## Approach
 
 - Establish owned native test clients, diagnostic capture and input delivery.

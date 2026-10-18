@@ -823,15 +823,36 @@ export function createWorldApplyHost(
                 return false;
             }
         },
-        createDesktop: () => {
+        createDesktop: (position, name) => {
+            const fn = readProp(surface, "createDesktop");
+            if (typeof fn !== "function") {
+                throw new Error("createDesktop-unavailable");
+            }
+            // KWin 6.7 void API: required zero-based position in [0, count]
+            // plus name, returns nothing. Throws (including Insufficient
+            // arguments) propagate so the apply loop holds ambiguous and
+            // recovers by named enumeration; no return value is ever read.
+            Reflect.apply(fn as (...a: ReadonlyArray<unknown>) => unknown, surface, [position, name]);
+        },
+        listDesktops: () => {
             try {
-                const fn = readProp(surface, "createDesktop");
-                if (typeof fn !== "function") {
+                const all = decodeList(readProp(surface, "desktops"), MAX_NATIVE_DESKTOPS);
+                if (all === null || all.length === 0) {
                     return null;
                 }
-                const created = Reflect.apply(fn as (...a: ReadonlyArray<never>) => unknown, surface, []) as object;
-                const id = readProp(created, "id");
-                return isOpaqueId(id) ? (id as string) : null;
+                const out: Array<{ id: string; name: string }> = [];
+                for (const d of all) {
+                    if (typeof d !== "object" || d === null) {
+                        return null;
+                    }
+                    const id = readProp(d as object, "id");
+                    const name = readProp(d as object, "name");
+                    if (!isOpaqueId(id) || typeof name !== "string") {
+                        return null;
+                    }
+                    out.push({ id: id as string, name });
+                }
+                return out;
             } catch (error) {
                 void error;
                 return null;

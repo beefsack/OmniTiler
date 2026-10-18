@@ -198,9 +198,20 @@ export class WorldAdapterState {
 
     bindCreation(logical: string, native: string): void {
         const row = this.creationFor(logical);
-        if (row !== null) {
-            row.bound = native;
+        if (row === null) {
+            return;
         }
+        // Never share one native binding between two logical tokens.
+        if (this.claimedNative(native, logical)) {
+            return;
+        }
+        row.bound = native;
+    }
+
+    // A native id already bound to a different pending logical token is
+    // never adopted or rebound elsewhere.
+    claimedNative(native: string, exceptLogical?: string): boolean {
+        return this.pendingCreations.some((c) => c.logical !== exceptLogical && c.bound === native);
     }
 
     // Recover a creation binding by enumeration: when the logical token has
@@ -217,10 +228,40 @@ export class WorldAdapterState {
         const fresh = liveNative.filter((id) => !base.includes(id));
         if (fresh.length === 1) {
             const bound = fresh[0] as string;
+            if (this.claimedNative(bound, logical)) {
+                return null;
+            }
             row.bound = bound;
             return bound;
         }
         return null;
+    }
+
+    // Name-attributed recovery for the void KWin create path: bind only the
+    // exact unique desktop whose native name matches the requested logical
+    // token among ids fresh beyond the pre-attempt baseline. Unrelated
+    // appended desktops (different names), duplicates, and already-claimed
+    // natives never bind. An explicit baseline overrides the stored one.
+    recoverCreationByName(
+        logical: string,
+        live: ReadonlyArray<{ readonly id: string; readonly name: string }>,
+        knownBefore?: ReadonlyArray<string>,
+    ): string | null {
+        const row = this.creationFor(logical);
+        if (row === null || row.bound !== null) {
+            return row?.bound ?? null;
+        }
+        const base = new Set<string>(knownBefore ?? row.knownBefore);
+        const candidates = live.filter((d) => d.name === logical && !base.has(d.id));
+        if (candidates.length !== 1) {
+            return null;
+        }
+        const bound = (candidates[0] as { id: string }).id;
+        if (this.claimedNative(bound, logical)) {
+            return null;
+        }
+        row.bound = bound;
+        return bound;
     }
 
     clampKey(win: string, target: string, constraints: string): string {

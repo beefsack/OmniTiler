@@ -386,3 +386,33 @@ describe("world apply host live safety", () => {
         assert.equal(safetyOf({} as object, throwing), null);
     });
 });
+
+describe("world apply host desktop creation", () => {
+    it("forwards zero-based position/name through the void KWin API", () => {
+        const seen: unknown[][] = [];
+        const surface = {
+            desktops: [{ id: "ws1", name: "WS1" }],
+            createDesktop: (...args: ReadonlyArray<unknown>): void => {
+                seen.push([...args]);
+            },
+        };
+        const host = createWorldApplyHost(surface as object, (v, p) => Reflect.get(v as object, p));
+        host.createDesktop(1, "wl-1");
+        assert.deepEqual(seen, [[1, "wl-1"]]);
+        assert.deepEqual(host.listDesktops?.(), [{ id: "ws1", name: "WS1" }]);
+    });
+
+    it("throws when the native method is missing so apply holds ambiguous", () => {
+        const host = createWorldApplyHost({} as object, (v, p) => Reflect.get(v as object, p));
+        assert.throws(() => host.createDesktop(0, "wl-1"));
+        assert.equal(host.listDesktops?.(), null);
+    });
+
+    it("reports null when any desktop name is unreadable", () => {
+        const surface = {
+            desktops: [{ id: "ws1", name: "WS1" }, { id: "ws2", name: 42 }],
+        };
+        const host = createWorldApplyHost(surface as object, (v, p) => Reflect.get(v as object, p));
+        assert.equal(host.listDesktops?.(), null);
+    });
+});

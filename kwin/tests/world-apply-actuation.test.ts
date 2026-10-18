@@ -17,6 +17,7 @@ import { parseWorldReply, isWorldRejection } from "../src/world-report";
 
 interface FakeDesktop {
     id: string;
+    name: string;
 }
 interface FakeWindow {
     internalId: string;
@@ -36,7 +37,8 @@ interface FakeWindow {
 interface Faults {
     deferMembership: boolean;
     throwMembership: "before" | "after" | null;
-    createLie: boolean;
+    createFaults: Record<string, "noop" | "throw-clean" | "throw-mutating">;
+    signalOnCreate: boolean;
     geometryEchoSignal: boolean;
 }
 interface FakeWorld {
@@ -48,6 +50,7 @@ interface FakeWorld {
     currentDesktop: FakeDesktop;
     created: string[];
     createCalls: number;
+    createArgs: unknown[][];
     removed: string[];
     focused: string[];
     viewSwitches: string[];
@@ -98,7 +101,7 @@ function fakeSignal(): FakeSignal {
     };
 }
 
-const desk = (id: string): FakeDesktop => ({ id });
+const desk = (id: string, name?: string): FakeDesktop => ({ id, name: name ?? id });
 const win = (id: string, out: string, ws: FakeDesktop, x = 0): FakeWindow => ({
     internalId: id,
     normalWindow: true,
@@ -116,12 +119,12 @@ const win = (id: string, out: string, ws: FakeDesktop, x = 0): FakeWindow => ({
 });
 
 function makeHarness(mode: unknown = "per-output-local"): Harness {
-    const faults: Faults = { deferMembership: false, throwMembership: null, createLie: false, geometryEchoSignal: false };
+    const faults: Faults = { deferMembership: false, throwMembership: null, createFaults: {}, signalOnCreate: false, geometryEchoSignal: false };
     const pendingMembership = new Map<string, FakeDesktop[]>();
     const rawApplyMembership = new Map<string, (refs: FakeDesktop[]) => void>();
-    const ws1 = desk("ws1");
-    const ws2 = desk("ws2");
-    const ws3 = desk("ws3");
+    const ws1 = desk("ws1", "WS1");
+    const ws2 = desk("ws2", "WS2");
+    const ws3 = desk("ws3", "WS3");
     const w1 = win("win-a", "out", ws1, 0);
     const w2 = win("win-b", "out", ws2, 0);
     const world: FakeWorld = {
@@ -133,6 +136,7 @@ function makeHarness(mode: unknown = "per-output-local"): Harness {
         currentDesktop: ws1,
         created: [],
         createCalls: 0,
+        createArgs: [],
         removed: [],
         focused: [],
         viewSwitches: [],
@@ -207,15 +211,32 @@ function makeHarness(mode: unknown = "per-output-local"): Harness {
                 world.outputWrites.push(`${w.internalId}=>${name}`);
             }
         },
-        createDesktop: () => {
+        createDesktop: (...args: ReadonlyArray<unknown>) => {
             world.createCalls += 1;
-            const id = `native-${world.desktops.length + 1}`;
-            world.desktops.push(desk(id));
-            world.created.push(id);
-            if (faults.createLie) {
-                return null as unknown as object;
+            world.createArgs.push([...args]);
+            // Producer-shaped KWin 6.7: required zero-based (position, name),
+            // void return. Wrong-arity calls throw Insufficient arguments,
+            // as live. The logical token rides as the native name.
+            if (args.length !== 2 || typeof args[0] !== "number" || typeof args[1] !== "string" || (args[1] as string) === "") {
+                throw new Error("Insufficient arguments");
             }
-            return world.desktops[world.desktops.length - 1] as object;
+            const name = args[1] as string;
+            const fault = faults.createFaults[name] ?? "ok";
+            if (fault === "throw-clean") {
+                throw new Error("create-boom-clean");
+            }
+            if (fault === "noop") {
+                return;
+            }
+            const id = `native-${world.desktops.length + 1}`;
+            world.desktops.push(desk(id, name));
+            world.created.push(id);
+            if (fault === "throw-mutating") {
+                throw new Error("create-boom-after-side-effect");
+            }
+            if (faults.signalOnCreate) {
+                fire("desktopsChanged");
+            }
         },
         removeDesktop: (ref: unknown) => {
             const id = (ref as FakeDesktop).id;
@@ -762,26 +783,234 @@ describe("world actuation identity and proof", () => {
         assert.ok(!h2.world.geometryWrites.some((w) => w.startsWith("win-b@22,22")), "input invalidation stops the rest");
     });
 
-    it("recovers an ambiguous creation from the pre-attempt baseline", () => {
+    it("creates with zero-based position/name and proves by enumeration", () => {
         const h = makeHarness();
         discover(h);
         const rev = { n: 0 };
         h.handle?.requestWorkspaceRelative(1);
-        h.faults.createLie = true;
         const unbound = {
             id: "wl-1", out: "out", bind: "", logical: "wl-1", scope: "out", order: 3, mode: "tiled", exist: true, hold: "",
         };
         dispatchAndReply(h, rev, { workspaces: [unbound] });
         assert.equal(h.world.createCalls, 1, "one creation flight");
-        assert.equal(h.world.created.length, 1, "native side did create despite the null");
-        // Identical unbound rows recover by enumeration: no second create.
-        h.faults.createLie = false;
+        assert.deepEqual(h.world.createArgs[0], [3, "wl-1"], "explicit zero-based position plus logical name");
+        assert.equal(h.world.created.length, 1, "void native created, enumeration proves");
+        // Identical unbound rows never repeat: enumeration already bound.
         h.fire("desktopsChanged");
         dispatchAndReply(h, rev, { workspaces: [unbound] });
-        assert.equal(h.world.createCalls, 1, "ambiguous create never repeats");
+        assert.equal(h.world.createCalls, 1, "bound create never repeats");
         h.fire("desktopsChanged");
         dispatchAndReply(h, rev, { workspaces: [unbound] });
         assert.equal(h.world.createCalls, 1, "still exactly one native create");
+    });
+
+    it("holds a no-op void create ambiguous without repeating", () => {
+        const h = makeHarness();
+        discover(h);
+        const rev = { n: 0 };
+        h.handle?.requestWorkspaceRelative(1);
+        h.faults.createFaults["wl-1"] = "noop";
+        const unbound = {
+            id: "wl-1", out: "out", bind: "", logical: "wl-1", scope: "out", order: 3, mode: "tiled", exist: true, hold: "",
+        };
+        dispatchAndReply(h, rev, { workspaces: [unbound] });
+        assert.equal(h.world.createCalls, 1);
+        assert.equal(h.world.created.length, 0, "no-op created nothing");
+        h.fire("desktopsChanged");
+        dispatchAndReply(h, rev, { workspaces: [unbound] });
+        assert.equal(h.world.createCalls, 1, "ambiguous no-op never repeats blindly");
+    });
+
+    it("recovers a mutating throw by name and holds a clean throw", () => {
+        const h = makeHarness();
+        discover(h);
+        const rev = { n: 0 };
+        h.handle?.requestWorkspaceRelative(1);
+        h.faults.createFaults["wl-1"] = "throw-mutating";
+        const unbound = {
+            id: "wl-1", out: "out", bind: "", logical: "wl-1", scope: "out", order: 3, mode: "tiled", exist: true, hold: "",
+        };
+        dispatchAndReply(h, rev, { workspaces: [unbound] });
+        assert.equal(h.world.createCalls, 1);
+        assert.equal(h.world.created.length, 1, "throw happened after the side-effect");
+        delete h.faults.createFaults["wl-1"];
+        h.fire("desktopsChanged");
+        dispatchAndReply(h, rev, { workspaces: [unbound] });
+        assert.equal(h.world.createCalls, 1, "throw+side-effect proves, never repeats");
+        const h2 = makeHarness();
+        discover(h2);
+        const rev2 = { n: 0 };
+        h2.handle?.requestWorkspaceRelative(1);
+        h2.faults.createFaults["wl-1"] = "throw-clean";
+        dispatchAndReply(h2, rev2, { workspaces: [unbound] });
+        assert.equal(h2.world.createCalls, 1);
+        assert.equal(h2.world.created.length, 0, "clean throw created nothing");
+        delete h2.faults.createFaults["wl-1"];
+        h2.fire("desktopsChanged");
+        dispatchAndReply(h2, rev2, { workspaces: [unbound] });
+        assert.equal(h2.world.createCalls, 1, "clean throw stays ambiguous, never repeats blindly");
+    });
+
+    it("never shares one native desktop between two tokens in the same reply", () => {
+        const h = makeHarness();
+        discover(h);
+        const rev = { n: 0 };
+        h.handle?.requestWorkspaceRelative(1);
+        // Second token clean-throws: it must not adopt the first token's desktop.
+        h.faults.createFaults["wl-b"] = "throw-clean";
+        const unboundA = {
+            id: "wl-a", out: "out", bind: "", logical: "wl-a", scope: "out", order: 3, mode: "tiled", exist: true, hold: "",
+        };
+        const unboundB = {
+            id: "wl-b", out: "out", bind: "", logical: "wl-b", scope: "out", order: 4, mode: "tiled", exist: true, hold: "",
+        };
+        dispatchAndReply(h, rev, { workspaces: [unboundA, unboundB] });
+        assert.equal(h.world.createCalls, 2, "each token attempts once from its own baseline");
+        assert.deepEqual(h.world.createArgs[0], [3, "wl-a"], "first token appends at count");
+        assert.deepEqual(h.world.createArgs[1], [4, "wl-b"], "second token baselines past the first creation");
+        assert.equal(h.world.created.length, 1, "only the first token created");
+        assert.ok(h.logs.some((l) => l.includes(" mk=1 ")), "only the proven token counts, no steal");
+        // The clean-throwing token stays ambiguous: possibly-executed rides,
+        // never the sibling's applied proof.
+        h.runTimers();
+        const fb = feedbackOf(h);
+        assert.equal(fb.find((f) => f["op"] === "create-wl-a")?.["outcome"], "applied");
+        assert.equal(fb.find((f) => f["op"] === "create-wl-b")?.["outcome"], "possibly-executed", "no steal of the sibling desktop");
+        // Next flight: the bound token never repeats and the ambiguous
+        // token never repeats blindly either.
+        delete h.faults.createFaults["wl-b"];
+        h.fire("desktopsChanged");
+        dispatchAndReply(h, rev, { workspaces: [unboundA, unboundB] });
+        assert.equal(h.world.createCalls, 2, "ambiguous token never repeats, bound token never repeats");
+        const names = h.world.desktops.map((d) => d.name);
+        assert.equal(names.filter((n) => n === "wl-a").length, 1);
+        assert.ok(!names.includes("wl-b"), "no fabricated binding");
+    });
+
+    it("binds two successful creates in the same reply independently", () => {
+        const h = makeHarness();
+        discover(h);
+        const rev = { n: 0 };
+        h.handle?.requestWorkspaceRelative(1);
+        const unboundA = {
+            id: "wl-a", out: "out", bind: "", logical: "wl-a", scope: "out", order: 3, mode: "tiled", exist: true, hold: "",
+        };
+        const unboundB = {
+            id: "wl-b", out: "out", bind: "", logical: "wl-b", scope: "out", order: 4, mode: "tiled", exist: true, hold: "",
+        };
+        dispatchAndReply(h, rev, { workspaces: [unboundA, unboundB] });
+        assert.equal(h.world.createCalls, 2);
+        assert.equal(h.world.created.length, 2, "two natives created");
+        assert.ok(h.logs.some((l) => l.includes(" mk=2 ")), "both creations prove same-flight");
+        const names = h.world.desktops.map((d) => d.name);
+        assert.ok(names.includes("wl-a") && names.includes("wl-b"), "each native carries its token name");
+        h.fire("desktopsChanged");
+        dispatchAndReply(h, rev, { workspaces: [unboundA, unboundB] });
+        assert.equal(h.world.createCalls, 2, "no perpetual ambiguity, no repeats");
+    });
+
+    it("never adopts an unrelated user-appended desktop while ambiguous", () => {
+        const h = makeHarness();
+        discover(h);
+        const rev = { n: 0 };
+        h.handle?.requestWorkspaceRelative(1);
+        h.faults.createFaults["wl-1"] = "noop";
+        const unbound = {
+            id: "wl-1", out: "out", bind: "", logical: "wl-1", scope: "out", order: 3, mode: "tiled", exist: true, hold: "",
+        };
+        dispatchAndReply(h, rev, { workspaces: [unbound] });
+        assert.equal(h.world.createCalls, 1);
+        // The user appends an unrelated desktop natively (different name).
+        h.world.desktops.push(desk("user-9", "User 9"));
+        delete h.faults.createFaults["wl-1"];
+        h.fire("desktopsChanged");
+        dispatchAndReply(h, rev, { workspaces: [unbound] });
+        assert.equal(h.world.createCalls, 1, "unrelated desktop never binds, no blind repeat");
+        h.runTimers();
+        const fb = feedbackOf(h);
+        assert.equal(fb.find((f) => f["op"] === "create-wl-1")?.["outcome"], "possibly-executed", "stays ambiguous, never proven by a stranger");
+        // Even healthy, the still-ambiguous token never re-attempts.
+        h.fire("desktopsChanged");
+        dispatchAndReply(h, rev, { workspaces: [unbound] });
+        assert.equal(h.world.createCalls, 1, "still held, still no repeat");
+        assert.ok(!h.world.desktops.map((d) => d.name).includes("wl-1"), "no fabricated binding");
+    });
+
+    it("holds an unreadable baseline unattempted and proceeds once readable", () => {
+        const h = makeHarness();
+        discover(h);
+        const rev = { n: 0 };
+        h.handle?.requestWorkspaceRelative(1);
+        const unbound = {
+            id: "wl-1", out: "out", bind: "", logical: "wl-1", scope: "out", order: 3, mode: "tiled", exist: true, hold: "",
+        };
+        // Corrupt one native name read: the named snapshot is incomplete,
+        // while id-only observation capture still succeeds.
+        const ws1 = h.world.desktops[0] as unknown as Record<string, unknown>;
+        const saved = ws1["name"];
+        ws1["name"] = 42;
+        dispatchAndReply(h, rev, { workspaces: [unbound] });
+        assert.equal(h.world.createCalls, 0, "incomplete inventory attempts nothing");
+        assert.equal(h.world.created.length, 0);
+        h.runTimers();
+        assert.equal(feedbackOf(h).find((f) => f["op"] === "create-wl-1")?.["outcome"], "unattempted", "read-only failure never claims a native attempt");
+        drain(h, rev);
+        ws1["name"] = saved;
+        h.fire("desktopsChanged");
+        dispatchAndReply(h, rev, { workspaces: [unbound] });
+        assert.equal(h.world.createCalls, 1, "fresh readable baseline permits the first native attempt");
+        assert.equal(h.world.desktops.filter((d) => d.name === "wl-1").length, 1);
+    });
+
+    it("settles a named delayed creation exactly once without another native call", () => {
+        const h = makeHarness();
+        discover(h);
+        const rev = { n: 0 };
+        h.handle?.requestWorkspaceRelative(1);
+        h.faults.createFaults["wl-1"] = "noop";
+        const unbound = {
+            id: "wl-1", out: "out", bind: "", logical: "wl-1", scope: "out", order: 3, mode: "tiled", exist: true, hold: "",
+        };
+        dispatchAndReply(h, rev, { workspaces: [unbound] });
+        h.world.desktops.push(desk("delayed-1", "wl-1"));
+        h.fire("desktopsChanged");
+        dispatchAndReply(h, rev, { workspaces: [unbound] });
+        assert.equal(h.world.createCalls, 1);
+        assert.equal(h.logs.filter((l) => l.includes(" mk=1 ")).length, 1);
+        h.runTimers();
+        assert.equal(feedbackOf(h).find((f) => f["op"] === "create-wl-1")?.["outcome"], "applied");
+        h.fire("desktopsChanged");
+        dispatchAndReply(h, rev, { workspaces: [unbound] });
+        assert.equal(h.world.createCalls, 1);
+        assert.equal(h.logs.filter((l) => l.includes(" mk=1 ")).length, 1);
+    });
+
+    it("survives a synchronous desktop signal during creation without duplication", () => {
+        const h = makeHarness();
+        discover(h);
+        const rev = { n: 0 };
+        h.handle?.requestWorkspaceRelative(1);
+        h.faults.signalOnCreate = true;
+        const unboundA = {
+            id: "wl-a", out: "out", bind: "", logical: "wl-a", scope: "out", order: 3, mode: "tiled", exist: true, hold: "",
+        };
+        const unboundB = {
+            id: "wl-b", out: "out", bind: "", logical: "wl-b", scope: "out", order: 4, mode: "tiled", exist: true, hold: "",
+        };
+        dispatchAndReply(h, rev, { workspaces: [unboundA, unboundB] });
+        assert.ok(h.world.createCalls >= 1, "creation attempted despite reentrant invalidation");
+        assert.ok(h.world.createCalls <= 2, "reentrancy never duplicates within one flight");
+        h.faults.signalOnCreate = false;
+        h.fire("desktopsChanged");
+        const before = h.world.createCalls;
+        dispatchAndReply(h, rev, { workspaces: [unboundA, unboundB] });
+        h.fire("desktopsChanged");
+        dispatchAndReply(h, rev, { workspaces: [unboundA, unboundB] });
+        assert.ok(h.world.createCalls <= before + 2, "recovery converges without duplication");
+        const boundNames = h.world.desktops.map((d) => d.name);
+        const aCount = boundNames.filter((n) => n === "wl-a").length;
+        const bCount = boundNames.filter((n) => n === "wl-b").length;
+        assert.ok(aCount <= 1 && bCount <= 1, "no token created twice");
     });
 
     it("removes only provably empty workspaces and keeps referenced ones", () => {

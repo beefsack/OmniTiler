@@ -202,6 +202,33 @@ describe("world adapter lifetime state", () => {
         assert.equal(state.creationFor("wl-1")?.bound, "native-9");
     });
 
+    it("never binds one native desktop to two logical tokens", () => {
+        const state = bound();
+        const a = state.startCreation("wl-a", "out", ["ws1"]);
+        assert.ok(a !== null);
+        // Same-flight proof binds by exact native name.
+        assert.equal(state.recoverCreationByName("wl-a", [
+            { id: "ws1", name: "WS1" },
+            { id: "native-4", name: "wl-a" },
+        ]), "native-4");
+        // A sibling token from a stale baseline must not adopt it: name
+        // mismatch and already claimed.
+        const b = state.startCreation("wl-b", "out", ["ws1"]);
+        assert.ok(b !== null);
+        assert.equal(state.recoverCreationByName("wl-b", [
+            { id: "ws1", name: "WS1" },
+            { id: "native-4", name: "wl-a" },
+        ]), null, "sibling desktop never adopted");
+        assert.equal(state.recoverCreationByEnumeration("wl-b", ["ws1", "native-4"], ["ws1"]), null, "any-fresh-id fallback never steals a claimed native");
+        assert.equal(state.creationFor("wl-b")?.bound, null);
+        // An unrelated user desktop never binds either.
+        assert.equal(state.recoverCreationByName("wl-b", [
+            { id: "ws1", name: "WS1" },
+            { id: "native-4", name: "wl-a" },
+            { id: "user-9", name: "User 9" },
+        ]), null);
+    });
+
     it("spends one-shot effects once and settles attempts explicitly", () => {
         const state = bound();
         assert.equal(state.markEffectSpent("fx-1"), true);

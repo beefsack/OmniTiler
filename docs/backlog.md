@@ -74,9 +74,13 @@ decisions of 2026-09-24 are under
     Two RED regressions are specified for recreation; fix, then repeat live T05.
     [Reproduction](changes/kde-dual-output-live.md#whole-workspace-migration-unbounded-maximum-size-refusal-2026-10-15).
   - DEFECT reported | User 2026-10-18: in two-output use some outputs show
-    too many workspaces, and workspace switching does not work correctly on
-    some outputs. Unreproduced; capture a minimal discriminating sequence
-    (workspace mode, per-output desktop counts, switch command and result).
+     too many workspaces, and workspace switching does not work correctly on
+     some outputs. Switching refusal reproduced diagnostically: secondary
+     ordinal 3 rejects `selection-unknown`, primary switches. Full-state native
+     desktop creation used the wrong KWin void API; fixed offline with named
+     enumeration proof, typecheck/build and 1845 KWin tests passing. Complete-wire
+     live repeat pending. Startup duplicate-ring ownership remains a separate
+     unresolved discriminator; no workspace partition policy changed.
   - Remaining agent-feasible non-drag legs (T02 last legs, T03 history, T05
     migration, T06 border/underlay on both outputs, exact-tree R4 repeat) were
     interrupted before results; restart from the inventory.
