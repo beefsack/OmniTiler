@@ -18,6 +18,21 @@ decisions of 2026-09-24 are under
   checks; (8) 0.1 packaging/NixOS/Ubuntu/licensing gates; (9) shared core and
   KDE module-size refactoring. Live passes recorded before the full-state
   route (2026-10-17) need repeating where that route changed the path.
+- P1 | Core/platform boundaries and shared acceptance baselines | User
+  2026-10-18: discuss with the user before planning. Goal: a consistent test
+  process over agreed cases, consistent with Tier 1 input tilers, for high
+  quality and cross-platform consistency. A maximal, high-quality core also
+  eases future targets (GNOME, Cinnamon) and lets window-manager developers
+  embed the core tiling library. Scope to agree:
+  - Core/platform functional boundary: the most sensible version of core,
+    with baseline acceptance tests that run against core alone.
+  - One shared baseline acceptance case set for KDE, Windows and macOS, minus
+    agreed, documented platform gaps.
+  - Platform test helpers: establish an initial tiling state; a test window
+    that can be created and changed dynamically without recreation
+    (decorations on/off; windowed, fullscreen, borderless; resizable or
+    fixed; size; minimum size; maximum size if hosts support it), with
+    several open at once.
 - P0 | KDE Meta+G unfloat does not re-tile until focus changes | Fixed offline
   2026-10-17, pending user re-check. The apply observation retained stale
   floating/fit-excluded flags after accepted unfloat; settle float departures
