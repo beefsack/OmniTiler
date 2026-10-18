@@ -56,7 +56,7 @@ function makeSurface() {
 }
 
 describe("world binding retention flags", () => {
-    it("pins the dispatched command target, clears everything else", () => {
+    it("pins nothing for direction-only sends (core resolves the target)", () => {
         const { surface } = makeSurface();
         const calls: Array<{ method: string; payload: string; callback: (reply: unknown) => void }> = [];
         const timers: Array<{ delay: number; cb: () => void }> = [];
@@ -113,14 +113,13 @@ describe("world binding retention flags", () => {
         assert.ok(sent !== undefined);
         const body = JSON.parse((sent as { payload: string }).payload) as Record<string, unknown>;
         const command = body["command"] as Record<string, unknown>;
-        assert.equal(command["op"], "send");
-        const target = command["ws"] as string;
+        assert.equal(command["op"], "send-directional");
         const bindings = body["bindings"] as Array<Record<string, unknown>>;
         assert.ok(bindings.length >= 2);
         for (const b of bindings) {
             assert.equal(b["disp"], false, "no native displaced source exists");
             assert.equal(b["managed"], true, "listed bindings are managed inventory");
-            assert.equal(b["pin"], b["native"] === target, `only the command target pins (native=${b["native"]} target=${target})`);
+            assert.equal(b["pin"], false, "direction-only intents name no workspace, so nothing pins");
         }
         handle.stop();
     });

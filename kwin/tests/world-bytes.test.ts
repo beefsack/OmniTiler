@@ -386,17 +386,19 @@ describe("world shared byte fixtures", () => {
             assert.ok(UPDATE, "reply-golden.json must exist for verification runs");
             replyCall(flow, "DescribeWorld")(acceptEmpty(observeBody["req"], observeBody["obs"], "1"));
         }
-        // A directed send pins exactly its target binding.
+        // A directed send is direction-only (core resolves the target):
+        // no endpoint is named, so no binding pins for the target.
         flow.handle.requestSendToOutput("right", false);
         runTimers(flow);
         const sendPayload = lastPayload(flow, "DescribeWorld");
         checkOrWrite("report-send.json", sendPayload);
         const sendBody = JSON.parse(sendPayload) as Record<string, unknown>;
         const sendCmd = sendBody["command"] as Record<string, unknown>;
-        assert.equal(sendCmd["op"], "send");
-        const target = sendCmd["ws"] as string;
+        assert.equal(sendCmd["op"], "send-directional");
+        assert.equal(sendCmd["direction"], "right");
+        assert.equal(sendCmd["follow"], false);
         for (const b of sendBody["bindings"] as Array<Record<string, unknown>>) {
-            assert.equal(b["pin"], b["native"] === target, "only the send target pins");
+            assert.equal(b["pin"], false, "direction-only send pins no binding");
         }
         replyCall(flow, "DescribeWorld")(acceptEmpty(sendBody["req"], sendBody["obs"], "2"));
         // A finished gesture routes an exact drop with source and null hover.

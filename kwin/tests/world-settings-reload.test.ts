@@ -221,10 +221,8 @@ function discover(h: Harness, gen = "gen-1"): void {
 function moveSameAxis(h: Harness): string {
     const req = JSON.parse(h.lastPayload("DescribeWorld")) as Record<string, unknown>;
     const cmd = req["command"] as Record<string, unknown>;
-    assert.equal(cmd["op"], "operation");
-    const inner = cmd["command"] as Record<string, unknown>;
-    assert.equal(inner["op"], "move");
-    return inner["sameAxis"] as string;
+    assert.equal(cmd["op"], "move-directional");
+    return cmd["sameAxis"] as string;
 }
 
 function resizePress(h: Harness): number {
@@ -395,11 +393,11 @@ describe("world shortcut settings", () => {
         const move = registered.get("omnitiler-move-right");
         assert.ok(move !== undefined);
         (move as () => void)();
-        const first = (commands[0] as Record<string, unknown>)["command"] as Record<string, unknown>;
+        const first = commands[0] as Record<string, unknown>;
         assert.equal(first["sameAxis"], "group-with-neighbor");
         sameAxis.value = "swap-with-neighbor";
         (move as () => void)();
-        const second = (commands[1] as Record<string, unknown>)["command"] as Record<string, unknown>;
+        const second = commands[1] as Record<string, unknown>;
         assert.equal(second["sameAxis"], "swap-with-neighbor");
     });
 
