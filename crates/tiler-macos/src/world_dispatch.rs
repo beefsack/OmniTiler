@@ -761,6 +761,24 @@ fn count_token(shared: &Arc<Mutex<Shared>>, token: &str) {
     lock_shared(shared).count_reply(token);
 }
 
+/// Static scope-hold token for the ring (`emit` needs `&'static str`):
+/// every [`HoldReason`](tiler_core::world_report::HoldReason) is
+/// enumerated, so a held scope names its reason with no per-reply
+/// allocation.
+fn hold_token(reason: tiler_core::world_report::HoldReason) -> &'static str {
+    use tiler_core::world_report::HoldReason;
+    match reason {
+        HoldReason::Unreadable => "held-unreadable",
+        HoldReason::IncompleteInventory => "held-incomplete-inventory",
+        HoldReason::GestureBarrier => "held-gesture-barrier",
+        HoldReason::RefusedTarget => "held-refused-target",
+        HoldReason::AmbiguousCreation => "held-ambiguous-creation",
+        HoldReason::OccupiedRemoval => "held-occupied-removal",
+        HoldReason::ConstraintClamp => "held-constraint-clamp",
+        HoldReason::Minimized => "held-minimized",
+    }
+}
+
 /// Consume one applied world reply: current-scope controlled frames into
 /// per-app latest-wins slots, focus effects into the outbox plus the
 /// owning slot, view-transfer hold settling for pending selects, and the
@@ -798,6 +816,16 @@ fn consume_world_reply(
                 .collect(),
         }
     };
+    // Held-scope visibility (diagnostic only): an applied reply whose scope
+    // holds authorizes no writes there, yet still counts as accepted with
+    // zero frames — without this line the hold is silent in the ring. One
+    // bounded line per held scope (holds are exceptional; controlled and
+    // untouched scopes log nothing).
+    for scope in &reply.scopes {
+        if let Some(reason) = scope.authority.hold_reason() {
+            emit(shared, pid, generation, seq, "scope", hold_token(reason), 0);
+        }
+    }
     // Plan-truth snapshot (current scopes only, matching the legacy merged
     // emission): every row carrying geometry — effective frame preferred,
     // allocation fallback (overlays keep plan truth without writes).

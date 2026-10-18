@@ -105,6 +105,13 @@ These rows select no new native behavior.
 | Sheet identity | Open parent A; open an attached sheet; close the sheet | Candidate floats a separately supplied sheet identity without writes; Silica resolves sheets to the parent. Native 2026-10-15: attached sheet had a separate CG surface but no separately joined AXWindows target; it stayed unchanged while main windows tiled and closed through the helper's endSheet path | AXSheets child traversal, distinct managed identity versus parent alias, and exact modal-focus/settled-geometry behavior remain TBD; native-child non-actuation does not prove a separate float member |
 | Transient fullscreen | Open a dialog/sheet; enter native fullscreen if supported; exit | Candidate preserves independent transient-float and fullscreen facts, with no geometry writes | Native feasibility, exact origin/hold outcome and focus TBD; no app-specific fullscreen behavior selected |
 
+### World-state focus-fallback discriminators
+
+| Variant | Minimal action sequence | Observed evidence | Unsupported outcome |
+| --- | --- | --- | --- |
+| Focused first admission disappears | Admit focused C, then unfocused A/B in separate reports; close C while its app remains alive and reports no focused window; re-observe A/B separately | Shared focus-stack append repair preserves MRU fallback and keeps the scope Controlled; deterministic core/macOS tests and owned three-app native reflow pass. Retained MRU order and observed-focus authority are unchanged ([record](../changes/macos-full-state-replies.md)) | Exact reference/native automatic focus-arrival ordering remains TBD; no automatic admission-focus policy selected |
+| Surviving tiles without any focus proof | Start a fresh domain with A/B and no observed focus; repeat after losing the last known focus without a resolving history entry | Existing strict focus binding is unchanged by the MRU repair; no permissive projection-without-focus rule is introduced | Reference outcome and whether to relax a genuine focus-None/empty mismatch remain TBD; test separately from focused-removal fallback |
+
 ### macOS native input discriminators
 
 | Variant | Minimal action sequence | Observed evidence | Unsupported outcome |

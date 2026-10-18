@@ -266,7 +266,7 @@ decisions of 2026-09-24 are under
   [Proposal](changes/shared-core-owned-output-topology.md), alongside the
   [D23/13f proposal](changes/shared-core-d23-rehome-and-13f-maximize-base.md).
 - P1 | macOS: adopt full world-state core replies | delivered offline;
-  pending live verification. Replaced per-domain reply
+  scoped live smoke partially verified. Replaced per-domain reply
   concatenation/cursors with world revision and input watermark, preserving
   AppKit/engine/AX thread ownership, per-app generations, latest-wins frame
   slots, observed-focus authority and native Space capability refusals.
@@ -277,12 +277,15 @@ decisions of 2026-09-24 are under
   until separately established. The legacy domain API remains compiling,
   not behaviorally migrated. Queue-coherence/emission fences forbid stale
   setters under newer submitted input; admission-only replies preserve native
-  focus. Bundle build/verify, 897 macOS tests, core/protocol, host-side Windows,
+  focus. Bundle build/verify, 901 macOS tests, core/protocol, host-side Windows,
   strict clippy and formatting pass. Unsafe unchanged (114, all in `ffi.rs`).
-  Live smoke was not run: owned-window admission, directional focus/move,
-  float, close reflow, select-only switch, border and indicator remain pending,
-  with raw protected-window before/after records required.
-  [Evidence and exact pending procedure](changes/macos-full-state-replies.md#pending-live-verification).
+  Owned admission, directional focus/move, float and close reflow pass live;
+  the three-app close exposed and verified a minimal shared MRU-fallback repair.
+  Border/indicator native state passes; visual appearance and runtime select
+  hotkeys remain pending. A separate Space probe stopped on external protected
+  frame drift and restored topology; it is not runtime-select acceptance.
+  Raw protected-window before/after records are retained.
+  [Evidence and exact remaining procedure](changes/macos-full-state-replies.md#exact-remaining-procedure).
 - P1 | Windows Xbox shortcut conflicts (Win+G, Win+F11) | User 2026-10-16
   approved choices implemented offline: Compatible float `Ctrl+Win+G`,
   fullscreen `Ctrl+Win+F11`, exact Ctrl-arm routing and hold/release coverage;

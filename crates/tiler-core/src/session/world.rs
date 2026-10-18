@@ -1612,14 +1612,17 @@ impl super::Session {
         // Fresh-seed MRU history (D8): per-leg commits used to push
         // each admitted leaf, so focused-removal fallback (sends,
         // unfocused closes) keeps its MRU instead of dropping to none.
-        // Only empty domain stacks seed from the serial order; retained
-        // history is never rewritten. The merged base stays local until
-        // commit: refusals below leave state exactly untouched.
+        // Newly admitted leaves append in serial order; retained history
+        // is never rewritten or reordered. The merged base stays local
+        // until commit: refusals below leave state exactly untouched.
         let mut stack_base = self.focus_stack.clone();
         for (key, leaves) in &seeded_order {
-            stack_base
-                .entry(key.clone())
-                .or_insert_with(|| leaves.clone());
+            let stack = stack_base.entry(key.clone()).or_default();
+            for leaf in leaves {
+                if !stack.contains(leaf) {
+                    stack.push(leaf.clone());
+                }
+            }
         }
         // Focus: observed tiled focus when valid, else retained focus when it
         // still resolves, else the existing MRU stack fallback, else None.
