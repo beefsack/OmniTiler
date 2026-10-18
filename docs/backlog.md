@@ -104,8 +104,11 @@ decisions of 2026-09-24 are under
   Source investigation 2026-10-16: no animation wait; 120 ms admission
   debounce plus planner IPC, and Wayland resize needs a client round trip
   after map. Tiling itself must not animate; goal is final geometry before
-  opening. Next: user-run single-window timing probe (admission, planner
-  send/reply, requested and actual geometry, screen recording).
+  opening. Timing-probe draft removed 2026-10-18: it instrumented only legacy
+  `DescribePlan`, not the production `DescribeWorld` route; no native timing
+  evidence was collected. Next: implement a trace-only world-route probe
+  (admission, planner send/reply, requested and signal-observed geometry),
+  then user-run single-window timing capture with a screen recording.
 - P1 | Shared settings schema and tabbed Settings | Settings dialog has too
   much on one page. Investigate a core-owned settings definition (tabs,
   fields, types, defaults, validation) that each platform renders natively and
