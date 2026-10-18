@@ -1218,13 +1218,31 @@ impl RuntimeHandle {
     /// Both non-managed variants refuse without actuation — never a guess,
     /// never an admission-pin substitute. Never blocks input or observation
     /// owners (only the caller waits).
+    ///
+    /// Each query emits one bounded metadata-only line on the caller
+    /// (effect owner): window identity plus the discriminated outcome plus
+    /// elapsed milliseconds. The engine owner emits the matching
+    /// receive/reply pair (see `ManagedFactsQuery` handling), so a live
+    /// `noreply-timeout` with no engine `received` proves queue blocking,
+    /// while `received` without a timely reply proves engine-side stall —
+    /// never guessed from the refusal token alone. Logging only; never a
+    /// gate, timeout, or retry change.
     pub fn query_managed_facts_read(
         &self,
         window: &str,
         timeout: std::time::Duration,
     ) -> crate::runtime_core::EngineFactsRead {
         use crate::runtime_shared::engine_alive;
+        let start = std::time::Instant::now();
         if !engine_alive(&self.shared) {
+            eprintln!(
+                "{}",
+                Self::format_engine_facts_query_line(
+                    window,
+                    "noreply-engine-down",
+                    start.elapsed()
+                )
+            );
             return crate::runtime_core::EngineFactsRead::NoReply;
         }
         let (tx, rx) = mpsc::channel::<Option<crate::runtime_core::EngineManagedFacts>>();
@@ -1232,13 +1250,59 @@ impl RuntimeHandle {
             window: window.to_owned(),
             reply: tx,
         }) {
+            eprintln!(
+                "{}",
+                Self::format_engine_facts_query_line(
+                    window,
+                    "noreply-inbox-closed",
+                    start.elapsed()
+                )
+            );
             return crate::runtime_core::EngineFactsRead::NoReply;
         }
-        match rx.recv_timeout(timeout) {
+        let outcome = match rx.recv_timeout(timeout) {
             Ok(Some(facts)) => crate::runtime_core::EngineFactsRead::Managed(facts),
             Ok(None) => crate::runtime_core::EngineFactsRead::Unmanaged,
             Err(_) => crate::runtime_core::EngineFactsRead::NoReply,
-        }
+        };
+        let token = match &outcome {
+            crate::runtime_core::EngineFactsRead::Managed(_) => "managed",
+            crate::runtime_core::EngineFactsRead::Unmanaged => "unmanaged",
+            crate::runtime_core::EngineFactsRead::NoReply => "noreply-timeout",
+        };
+        eprintln!(
+            "{}",
+            Self::format_engine_facts_query_line(window, token, start.elapsed())
+        );
+        outcome
+    }
+
+    /// One bounded metadata-only engine-facts query line for the dedicated
+    /// effect owner: window identity plus the discriminated outcome plus
+    /// elapsed milliseconds. Pure (the query above is the only emitter).
+    /// Window is the `"<pid>_<wid>"` identity — never titles, paths, or
+    /// posted values. Outcome is one fixed token from the query above.
+    pub(crate) fn format_engine_facts_query_line(
+        window: &str,
+        outcome: &str,
+        elapsed: std::time::Duration,
+    ) -> String {
+        let flat: String = window
+            .chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect();
+        let collapsed = flat.split_whitespace().collect::<Vec<_>>().join(" ");
+        let safe = if collapsed.is_empty() {
+            "unspecified".to_owned()
+        } else if collapsed.chars().count() > 32 {
+            collapsed.chars().take(32).collect()
+        } else {
+            collapsed
+        };
+        format!(
+            "tiler-macos send engine-facts query window={safe} outcome={outcome} elapsed_ms={}",
+            elapsed.as_millis().min(u128::from(u64::MAX)) as u64,
+        )
     }
 
     /// Query the engine's retained workspace occupancy (control lane, never
@@ -1613,5 +1677,62 @@ mod tests {
         cfg.engine_queue_depth = 8;
         cfg.focus_key = cfg.move_key;
         assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn engine_facts_query_line_names_window_outcome_and_elapsed() {
+        // Correlated requester line for the inverse `engine-facts-noreply`:
+        // window identity plus the discriminated outcome plus elapsed ms.
+        // Token-only (never titles, paths, or posted values).
+        for outcome in [
+            "managed",
+            "unmanaged",
+            "noreply-engine-down",
+            "noreply-inbox-closed",
+            "noreply-timeout",
+        ] {
+            let line = RuntimeHandle::format_engine_facts_query_line(
+                "4242_7",
+                outcome,
+                std::time::Duration::from_millis(12),
+            );
+            assert!(
+                line.contains("tiler-macos send engine-facts query"),
+                "{line}"
+            );
+            assert!(line.contains("window=4242_7"), "{line}");
+            assert!(line.contains(&format!("outcome={outcome}")), "{line}");
+            assert!(line.contains("elapsed_ms=12"), "{line}");
+        }
+        // Control chars collapse; empty withholds instead of guessing.
+        let line = RuntimeHandle::format_engine_facts_query_line(
+            "4242_7\ninjected",
+            "noreply-timeout",
+            std::time::Duration::from_millis(0),
+        );
+        assert!(!line.contains('\n'), "{line}");
+        assert!(line.contains("window=4242_7 injected"), "{line}");
+        let line = RuntimeHandle::format_engine_facts_query_line(
+            "",
+            "managed",
+            std::time::Duration::from_millis(1),
+        );
+        assert!(line.contains("window=unspecified"), "{line}");
+        // No user content in the formatter source: the renderer carries
+        // counts/IDs/tokens only.
+        let source = include_str!("runtime.rs");
+        let region = source
+            .split("fn format_engine_facts_query_line")
+            .nth(1)
+            .expect("formatter present")
+            .split("/// Query the engine's retained workspace occupancy")
+            .next()
+            .expect("formatter ends at occupancy");
+        for forbidden in ["title", "bundle", "path", "chord", "keycode", "flags"] {
+            assert!(
+                !region.contains(forbidden),
+                "query line carries no {forbidden}"
+            );
+        }
     }
 }

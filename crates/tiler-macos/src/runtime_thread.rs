@@ -1256,8 +1256,32 @@ fn process_job(
             // dedicated effect owner proves against this per edge. The
             // context rides the shared cell (same-thread read); a missing
             // context withholds actuation inside the publication.
+            // Correlated receive/reply pair for the requester's query line:
+            // `received` proves the query reached the engine (queue wait
+            // over), while `replied-managed` vs `replied-unmanaged`
+            // proves which retained verdict the engine sent. A requester
+            // `noreply-timeout` with no matching `received` proves queue
+            // blocking ahead of the query; `received` without a timely
+            // reply would prove engine-side stall instead. Ring logs only
+            // (numbers plus fixed tokens); never window content.
+            let (pid, generation) = crate::runtime_types::parse_window_id(&window)
+                .map(|(pid, _)| (pid, 0u64))
+                .unwrap_or((0, 0));
+            emit(shared, pid, generation, 0, "engine-facts", "received", 0);
             let ctx = lock_shared(shared).native_context.clone();
             let facts = retained.engine_managed_facts_for(&window, ctx.as_deref());
+            match &facts {
+                Some(facts) => emit(
+                    shared,
+                    pid,
+                    facts.generation,
+                    0,
+                    "engine-facts",
+                    "replied-managed",
+                    0,
+                ),
+                None => emit(shared, pid, 0, 0, "engine-facts", "replied-unmanaged", 0),
+            }
             let _ = reply.send(facts);
         }
         EngineJob::WorkspaceOccupancyQuery { reply } => {

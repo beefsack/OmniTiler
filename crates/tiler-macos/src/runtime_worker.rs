@@ -208,7 +208,13 @@ pub(crate) fn app_worker_main(
     // A stop that raced creation must not begin AX work: readiness was
     // already reported, so fall through to honest teardown instead.
     if stop.load(Ordering::SeqCst) || frames.is_stopped() {
-        return teardown_worker(&mut backend, &shared, pid, generation, 0);
+        let reason = match (stop.load(Ordering::SeqCst), frames.is_stopped()) {
+            (true, true) => "stop-and-frames",
+            (true, false) => "stop",
+            (false, true) => "frames-stopped",
+            (false, false) => "unreachable",
+        };
+        return teardown_worker(&mut backend, &shared, pid, generation, 0, reason);
     }
     let native_mode = matches!(
         lock_shared(&shared).config.topology_mode,
@@ -638,7 +644,13 @@ pub(crate) fn app_worker_main(
             break;
         }
     }
-    teardown_worker(&mut backend, &shared, pid, generation, seq)
+    let reason = match (stop.load(Ordering::SeqCst), frames.is_stopped()) {
+        (true, true) => "stop-and-frames",
+        (true, false) => "stop",
+        (false, true) => "frames-stopped",
+        (false, false) => "loop-exit",
+    };
+    teardown_worker(&mut backend, &shared, pid, generation, seq, reason)
 }
 
 /// Honest teardown: the outcome is logged and returned, never a silent
@@ -654,7 +666,18 @@ fn teardown_worker(
     pid: u32,
     generation: u64,
     seq: u64,
+    reason: &'static str,
 ) -> WorkerExit {
+    // Correlated teardown metadata: the stop reason (stop vs frames vs
+    // both) rides alongside the existing ring outcome, so a live
+    // `engine-facts-noreply` can be ordered against the observer exit —
+    // teardown-before-query proves re-keying loss, query-before-teardown
+    // proves the query failed while the observer still lived. Fixed
+    // tokens plus IDs only; never window content. Logging only.
+    eprintln!(
+        "{}",
+        format_observer_teardown_line(pid, generation, seq, reason)
+    );
     match backend.shutdown() {
         Ok(()) => {
             emit(shared, pid, generation, seq, "observer", "torn-down", 0);
@@ -676,6 +699,20 @@ fn teardown_worker(
             }
         }
     }
+}
+
+/// One bounded metadata-only observer teardown line: PID, generation,
+/// sequence, plus the fixed stop reason. Pure (the worker above is the
+/// only emitter).
+pub(crate) fn format_observer_teardown_line(
+    pid: u32,
+    generation: u64,
+    seq: u64,
+    reason: &str,
+) -> String {
+    format!(
+        "tiler-macos observer torn-down pid={pid} generation={generation} seq={seq} reason={reason}"
+    )
 }
 
 #[cfg(test)]
@@ -738,5 +775,23 @@ mod tests {
         assert_eq!(snapshot.focus_evidence, None);
         // The raw leg still rides the snapshot for direct readers.
         assert_eq!(snapshot.sys_focus, Some((4242, Some(7))));
+    }
+
+    #[test]
+    fn observer_teardown_line_names_ids_and_stop_reason() {
+        // Correlated teardown metadata for the inverse `engine-facts-noreply`:
+        // PID, generation, sequence, plus the fixed stop reason — so a live
+        // run orders observer exit against the engine-facts query. IDs and
+        // tokens only; never titles, bundles, or paths.
+        for reason in ["stop", "frames-stopped", "stop-and-frames", "loop-exit"] {
+            let line = format_observer_teardown_line(4242, 3, 11, reason);
+            assert_eq!(
+                line,
+                format!(
+                    "tiler-macos observer torn-down pid=4242 generation=3 seq=11 reason={reason}"
+                ),
+                "{reason}",
+            );
+        }
     }
 }
