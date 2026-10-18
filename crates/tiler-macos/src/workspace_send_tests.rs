@@ -656,6 +656,15 @@ fn readiness_line_pins_scoped_runtime_config() {
 }
 
 #[test]
+fn armed_chords_are_honest_per_input_route() {
+    // Tap route arms the whole effective catalogue; the off source parks
+    // until stop, so the readiness line reports zero there.
+    assert_eq!(send_armed_chords(true, 57), 57);
+    assert_eq!(send_armed_chords(false, 48), 0);
+    assert_eq!(send_armed_chords(false, 0), 0);
+}
+
+#[test]
 fn admitted_line_pins_subject_target_source_and_op() {
     assert_eq!(
         format_send_admitted_line("send-2", "4242_7", 277, 1, "main", "op-9"),

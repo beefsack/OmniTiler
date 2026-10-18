@@ -448,11 +448,15 @@ impl LiveSendController {
 }
 
 /// One bounded metadata-only readiness line for a scoped tile runtime,
-/// emitted once on the main thread right after startup: input route,
-/// preset, scope count, and armed chord count. Static config only (no
-/// titles, paths, or content); the holder-ensure outcome keeps its own
-/// line. Pure (the caller emits); the launch wrapper streams this stderr
-/// line live under `--stream`, before any teardown.
+/// emitted once on the main thread at the dispatch-ready boundary: after
+/// the runtime started (engine plus input-tap owner ready), the
+/// display/space observer installed, and the drag arm resolved (armed or
+/// parked with its reason). Input route, preset, scope count, and armed
+/// chord count; static config only (no titles, paths, or content). The
+/// holder-ensure outcome keeps its own earlier line. Pure (the caller
+/// emits); the launch wrapper streams this stderr line live under
+/// `--stream`, before any teardown, so a live operator gates dispatch on
+/// this observed line instead of sleeping.
 #[must_use]
 pub fn format_send_readiness_line(
     input: &str,
@@ -463,6 +467,15 @@ pub fn format_send_readiness_line(
     format!(
         "tiler-macos send readiness runtime-started input={input} preset={preset} scopes={scopes} chords={chords}"
     )
+}
+
+/// Honest armed chord count for the readiness line: the tap route arms
+/// the whole effective catalogue, while the off route arms nothing (the
+/// off source parks until stop). Pure (the caller passes the catalogue
+/// length it already computed for the terminal outcome).
+#[must_use]
+pub const fn send_armed_chords(input_is_tap: bool, catalogue_len: usize) -> usize {
+    if input_is_tap { catalogue_len } else { 0 }
 }
 
 /// One bounded metadata-only admission line for an engine-admitted send

@@ -1591,19 +1591,6 @@ mod native {
                 .unwrap_or_default(),
             )
         })?;
-        // Scoped-runtime readiness: one static line while the run lives
-        // (input route, preset, scope count, armed chords). Streams live
-        // under `--stream`; the holder-ensure outcome keeps its own line.
-        eprintln!(
-            "{}",
-            crate::workspace_send::format_send_readiness_line(
-                request.input.as_str(),
-                request.preset.as_str(),
-                request.scopes.len(),
-                active_chords,
-            )
-        );
-
         // Display/Space-change observer (events trigger resnapshot;
         // bounded fallback polling below covers a missed event).
         let (_guard, display_flag) = crate::ffi::install_display_change_guard()
@@ -1637,6 +1624,24 @@ mod native {
                 }
                 _ => None,
             };
+        // Dispatch-ready boundary: the runtime (engine plus input-tap
+        // owner) started, the display observer installed, and the drag arm
+        // resolved (armed, or parked with its reason above). Only now may a
+        // live operator gate dispatch on this line instead of sleeping; the
+        // holder-ensure outcome keeps its own earlier line. One static line
+        // while the run lives; streams live under `--stream`.
+        eprintln!(
+            "{}",
+            crate::workspace_send::format_send_readiness_line(
+                request.input.as_str(),
+                request.preset.as_str(),
+                request.scopes.len(),
+                crate::workspace_send::send_armed_chords(
+                    matches!(request.input, TileInput::Tap),
+                    active_chords,
+                ),
+            )
+        );
         let mut poll = TopologyPoll::new();
         let mut tracked: BTreeMap<u32, TrackedApp> = BTreeMap::new();
         // Durable per-runtime product select history: one two-view memory
