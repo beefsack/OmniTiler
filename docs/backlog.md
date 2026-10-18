@@ -159,6 +159,25 @@ decisions of 2026-09-24 are under
     Amend D8 and `REQ-SPC-04h`, qualify R-FLT-12; Windows unchanged. Accept
     only after live checks with a fixed-size windowed game, a focused
     fullscreen game and a modal dialog; game safety wins on conflict.
+  - User decision 2026-10-18 (option A): an automatic float that already has
+    keep-below set (user or app) receives no stacking writes and stays below;
+    pre-existing keep-above stays untouched; Meta+G keep-below
+    clearing/restoration is unchanged. KWin 6.7.5 exposes script-readable
+    `keepBelow` for Wayland clients with keep-above/below exclusivity.
+  - ROUTE GAP found 2026-10-18: production `kwin/src/entry.ts` starts only the
+    world adapter; the legacy `PlanAdapter` is never called. The focus
+    preservation fix (`0bc59d07`) lives in `PlanAdapter`, so it is not on the
+    shipped route; world-route focus preservation for automatic floats is
+    unverified (no equivalent guard or diagnostics found in `kwin/src/world-*.ts`).
+    A first keep-above attempt also targeted `PlanAdapter` and was discarded
+    unlanded. Production also lacks an established script-unload restoration
+    callback for project-owned keep-above.
+  - NEXT: implement keep-above (option A) on the world route beside the
+    existing manual/sticky keep-above handling in `kwin/src/world-native.ts`;
+    decide unload restoration (recommendation: match Meta+G world-route
+    behavior); verify or port automatic-float focus preservation to the world
+    route; then live checks above and the user Steam retest.
+    [Record](changes/kde-automatic-float-stacking.md).
 - P1 (after floating dialog defect) | KDE open-animation tile jump | New
   windows play the open effect at initial placement, then jump into the tile.
   Source investigation 2026-10-16: no animation wait; 120 ms admission
@@ -983,6 +1002,21 @@ decisions of 2026-09-24 are under
   and DPI/display/Explorer acceptance remain pending.
   [Research](research/windows-port/safe-win32-wrappers.md),
   [evidence](changes/archive/windows-unsafe-ffi-consolidation.md).
+- P1 | Remove legacy routes and code | User 2026-10-18: pre-0.1, prune legacy
+  aggressively; remove the legacy KDE plan route as soon as possible. Production
+  `kwin/src/entry.ts` runs only the world adapter, yet `plan-adapter.ts` (~13k
+  lines), `plan-adapter-entry.ts` (~10k), `workspace-send-adapter.ts` (~6.8k),
+  `workspace-send-adapter-entry.ts` and their tests/fixtures remain. Work done
+  there no longer ships (`0bc59d07` focus preservation, the removed timing
+  probe and a discarded keep-above attempt all targeted it). Move still-used
+  shared pieces first (e.g. `active-group-highlight.ts` imports plan contract
+  constants from `plan-adapter.ts`), port any behavior production still needs,
+  then delete. Also inventory other legacy items for removal, for example the
+  KDE planner `DescribePlan` method (still referenced by the effect FFI group
+  highlight and planner service), the legacy per-domain core API once Windows
+  and macOS finish world adoption, legacy-only spec/decision text, superseded fixtures,
+  native-only callers and dead settings, with a reviewed removal list and
+  per-platform dependencies before deleting.
 - P1 | Repository cleanup pass | User 2026-10-18: the repository has grown
   large and cluttered; schedule a cleanup pass soon. Inventory and remove
   obsolete harnesses/scripts (e.g. `scripts/custom-tile-acceptance.sh` and its
