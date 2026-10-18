@@ -576,6 +576,9 @@ export function buildWorldReportJson(input: WorldReportJsonInput): string | null
         const wins = d.windows.map((w) =>
             `{"win":${esc(w.win)},"out":${esc(w.out)},"ws":${esc(w.ws)},"rect":[${w.rect.x},${w.rect.y},${w.rect.w},${w.rect.h}],"floating":${w.floating ? "true" : "false"},"fitExcluded":${w.fitExcluded ? "true" : "false"},"fullscreen":${w.fullscreen ? "true" : "false"},"maximized":${w.maximized ? "true" : "false"},"sticky":${w.sticky ? "true" : "false"},"fixedAuto":${w.fixedAuto ? "true" : "false"},"fixedSuppress":${w.fixedSuppress ? "true" : "false"},"hints":{"minW":${w.hints.minW ?? "null"},"minH":${w.hints.minH ?? "null"},"maxW":${w.hints.maxW ?? "null"},"maxH":${w.hints.maxH ?? "null"}}}`,
         ).join(",");
+        // Deprecated wire-compat `adjacent`: production always emits {},
+        // the core ignores any carried map. Retained only for older core
+        // decoders that require the key.
         const adjacent = Object.entries(d.adjacent).map(([k, v]) => `${esc(k)}:${esc(v)}`).join(",");
         return `{"id":${esc(d.id)},"ws":${esc(d.ws)},"bounds":[${d.bounds.x},${d.bounds.y},${d.bounds.w},${d.bounds.h}],"gap":${d.gap},"outer":${d.outer},"focused":${esc(d.focused)},"readable":${d.readable ? "true" : "false"},"hold":${esc(d.hold)},"adjacent":{${adjacent}},"windows":[${wins}],"closed":[${d.closed.map(esc).join(",")}]}`;
     }).join(",");

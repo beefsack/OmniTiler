@@ -518,9 +518,10 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     const handleFloatFocus = floatNav.handleFloatFocus;
     const handleFloatMove = floatNav.handleFloatMove;
 
-    // Explicit output send by direction: observation resolves the adjacent
-    // output plus its current desktop; core owns the membership decision.
-    // Without adjacency or a readable target view, refuse with no writes.
+    // Explicit output send by direction: observation resolves the strict
+    // FULL-topology target plus its current desktop; core owns the
+    // membership decision. Without a resolvable target or a readable
+    // target view, refuse with no writes.
     const submitOutputSend = (direction: string, follow: boolean): boolean => {
         const obs = route.observeForCommand();
         const out = activeOutputName();
@@ -536,8 +537,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     };
 
     // Whole-workspace migration by direction: observation resolves the
-    // adjacent output and the source's current workspace; the scope policy
-    // decision stays in core. Without adjacency, refuse with no writes.
+    // strict FULL-topology target and the source's current workspace; the
+    // scope policy decision stays in core. Without a resolvable target,
+    // refuse with no writes.
     const submitMigration = (direction: string): boolean => {
         const obs = route.observeForCommand();
         const out = activeOutputName();
@@ -545,12 +547,11 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             return false;
         }
         const topo = obs.topology.find((t) => t.out === out);
-        const domain = obs.domains.find((d) => d.id === out);
-        const adjacentOut = domain?.adjacent[direction] ?? null;
-        if (topo === undefined || topo.current === "" || adjacentOut === null) {
+        const target = route.adjacentTarget(obs, out, direction);
+        if (topo === undefined || topo.current === "" || target === null) {
             return false;
         }
-        const cmd = cmdMigrateWorkspace(out, adjacentOut, topo.current);
+        const cmd = cmdMigrateWorkspace(out, target.out, topo.current);
         if (cmd === null) {
             return false;
         }

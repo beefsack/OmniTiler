@@ -95,6 +95,10 @@ export interface ObservedDomain {
     focused: string;
     readable: boolean;
     hold: string;
+    // Deprecated wire-compat carrier, always empty: the core owns output
+    // topology from the FULL `topology[].rect` rectangles and ignores any
+    // carried adjacency, even when contradictory. Retained only so older
+    // core decoders that require the key keep accepting reports.
     adjacent: Record<string, string>;
     windows: ObservedWindow[];
     closed: string[];
@@ -269,9 +273,13 @@ export interface ObserveEnv {
     fixedOriginOf?: (win: string, ref: object) => { readonly fixedAuto: boolean; readonly fixedSuppress: boolean } | null;
 }
 
-// FULL output rectangles plus unique-reciprocal exact edge-touch adjacency
-// per direction (observation only; the membership decision stays in core).
-// Non-unique touches omit the direction so callers refuse rather than guess.
+// FULL output rectangles for the core-owned topology authority (the
+// membership decision stays in core). The adapter reports every live
+// screen's FULL geometry in `topology[].rect` plus separate per-desktop
+// work-area `bounds`/outer gaps, and always emits an empty wire-compat
+// `adjacent` map that the core ignores. Strict unique-reciprocal
+// resolution for local command scoping lives in world-command-context
+// (`strictTopologyTarget`), never as an emitted map.
 function readScreenGeometry(ref: object): { x: number; y: number; w: number; h: number } | null {
     let geometry: unknown = undefined;
     try {
@@ -292,60 +300,6 @@ function readScreenGeometry(ref: object): { x: number; y: number; w: number; h: 
         return null;
     }
     return { x, y, w, h };
-}
-
-function computeAdjacency(names: ReadonlyArray<string>, rects: ReadonlyArray<{ x: number; y: number; w: number; h: number }>): Record<string, Record<string, string>> {
-    const out: Record<string, Record<string, string>> = {};
-    const overlapY = (a: { y: number; h: number }, b: { y: number; h: number }): number =>
-        Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
-    const overlapX = (a: { x: number; w: number }, b: { x: number; w: number }): number =>
-        Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
-    const touches = (s: number, t: number, dir: string): boolean => {
-        const src = rects[s] as { x: number; y: number; w: number; h: number };
-        const tgt = rects[t] as { x: number; y: number; w: number; h: number };
-        if (dir === "left") {
-            return tgt.x + tgt.w === src.x && overlapY(tgt, src) > 0;
-        }
-        if (dir === "right") {
-            return src.x + src.w === tgt.x && overlapY(tgt, src) > 0;
-        }
-        if (dir === "up") {
-            return tgt.y + tgt.h === src.y && overlapX(tgt, src) > 0;
-        }
-        return src.y + src.h === tgt.y && overlapX(tgt, src) > 0;
-    };
-    const opposite = (dir: string): string =>
-        dir === "left" ? "right" : dir === "right" ? "left" : dir === "up" ? "down" : "up";
-    for (let s = 0; s < names.length; s += 1) {
-        const row: Record<string, string> = {};
-        for (const dir of ["left", "right", "up", "down"] as const) {
-            const cands: number[] = [];
-            for (let t = 0; t < names.length; t += 1) {
-                if (t !== s && touches(s, t, dir)) {
-                    cands.push(t);
-                }
-            }
-            if (cands.length !== 1) {
-                continue;
-            }
-            const t = cands[0] as number;
-            // Reciprocal uniqueness: the target's opposite side must resolve
-            // back to exactly the source.
-            let reverse = 0;
-            let reverseHit = -1;
-            for (let u = 0; u < names.length; u += 1) {
-                if (u !== t && touches(t, u, opposite(dir))) {
-                    reverse += 1;
-                    reverseHit = u;
-                }
-            }
-            if (reverse === 1 && reverseHit === s) {
-                row[dir] = names[t] as string;
-            }
-        }
-        out[names[s] as string] = row;
-    }
-    return out;
 }
 
 // Capture the full world: every output's current desktop plus every known
@@ -633,21 +587,9 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
     }
     const screenRects: Array<{ x: number; y: number; w: number; h: number } | null> =
         screenEntries.map((s) => readScreenGeometry(s.ref));
-    const adjacencyByOutput: Record<string, Record<string, string>> = (() => {
-        const idx: number[] = [];
-        const nm: string[] = [];
-        const rc: Array<{ x: number; y: number; w: number; h: number }> = [];
-        for (let i = 0; i < screenEntries.length; i += 1) {
-            const r = screenRects[i];
-            if (r !== null && r !== undefined) {
-                idx.push(i);
-                nm.push((screenEntries[i] as { name: string }).name);
-                rc.push(r);
-            }
-        }
-        void idx;
-        return computeAdjacency(nm, rc);
-    })();
+    // No adapter-owned adjacency map is computed or emitted: the core owns
+    // output topology from the FULL `topology[].rect` rectangles below and
+    // ignores the deprecated wire-compat `adjacent` carrier (always empty).
     const gap = env.readGap();
     const outer = env.readOuterGap();
     const gesture = (() => {
@@ -679,7 +621,7 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
             focused: ws === screenCurrent ? activeId : "",
             readable: readable && bounds !== null,
             hold: bounds === null ? "unreadable" : hold,
-            adjacent: { ...(adjacencyByOutput[out] ?? {}) },
+            adjacent: {},
             windows: readable ? members.filter((m) => !m.minimized) : [],
             closed: [],
             complete: readable && bounds !== null,
@@ -742,9 +684,9 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
     const orderTruncated = nativeOrder.length > MAX_NATIVE_PER_OUTPUT;
     const topologyCompleteAll = topologyComplete && !orderTruncated;
     // Live native output geometry plus the active-screen primary, per
-    // output: independent native facts for hotplug nearest-survivor
-    // placement (never window frames). Geometry reuses the adjacency
-    // read; the primary mirrors the legacy active-screen key.
+    // output: independent native facts for the core-owned topology
+    // authority and hotplug nearest-survivor placement (never window
+    // frames). The primary mirrors the legacy active-screen key.
     const activeName: string | null = (() => {
         try {
             const screen = readProp(target, "activeScreen");
