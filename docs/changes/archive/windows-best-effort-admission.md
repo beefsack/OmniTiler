@@ -1,6 +1,7 @@
 # Windows best-effort admission adoption
 
-- Status: delivered offline, 2026-10-18; native acceptance remains pending below.
+- Status: delivered offline; partial scoped native evidence added 2026-10-18.
+  Full native acceptance remains pending below.
 
 ## Goal and scope
 
@@ -60,8 +61,9 @@
   **2,750 passed, 0 failed, 1 ignored across 68 suites** (Windows library:
   **1,167 passed, 1 ignored**). Workspace formatting, whitespace and changed-code
   unsafe checks pass; no new unsafe code, dependencies or other-host edits.
-- No live tiler run, test-app launch, injected input, taskbar change or overlay
-  was performed. Cargo fixtures are offline evidence, not desktop acceptance.
+- At offline delivery, no live tiler run, test-app launch, injected input,
+  taskbar change or overlay was performed. Cargo fixtures are offline evidence,
+  not desktop acceptance; the later partial native evidence is separate below.
 - Initial hosted CI at `18b69b61` passed seven jobs; Windows reported three
   failures in the new scripted marker fixtures. Their fake held gate consumed
   the test runner's real integrity instead of the scripted target's fact.
@@ -92,7 +94,54 @@
   Marker installation remains identity-gated, best-effort like ordinary float
   intent; missing values repair on later events without polling or a ledger.
 
-## Pending live checks
+## Scoped native follow-up, 2026-10-18
+
+- Native desktop, disposable identity-tagged helpers only; normal owners used
+  `tile --user-start --scope-exe tiler-test-window.exe`, with keyboard Snap
+  takeover and mouse Snap prevention disabled for these journeys. Separate
+  lifecycle/proof runs are not used as admission-policy acceptance.
+- Source `76a34040`, clean tree. SHA-256: owner
+  `C09D5917E7023EE2EBF294B37B193A877B6B7ECEB8F5D52DFE14D1A5ABB27054`;
+  helper `42D0440C3F28B0A725FF34B0206F954F9A0DCC5DCAFDC6263012B12AE8B89887`.
+  Exact process/start/session/integrity identities, display/window preimages,
+  logs and rectangle snapshots remain in external scoped evidence, journey
+  groups `be-admit-20261018` and `be-admit2-20261018`.
+- Repeated locked four-package build/test and strict all-target clippy passed:
+  **2,750 passed, 0 failed, 1 ignored** at the live source. After integrating
+  upstream through `8b05a888`, all gates passed again: **2,753 passed, 0 failed,
+  1 ignored**. Workspace formatting and whitespace checks passed. Rust/cargo
+  1.99.0, native MSVC target. The later gates are offline-only; native observations
+  remain bound to `76a34040` and do not close the unverified native legs.
+
+| Check | Outcome | Accepted observation or remaining gap |
+| --- | --- | --- |
+| Exhaust a domain by gap growth; default capacity float | Pass, bounded | `d-gapshrink`: 220 admitted at gaps 8/8, then file-route 64/64 produced 210 capacity floats and 10 reflowed survivors. `f-shrink120`: 120 admitted, then the same change produced 110 capacity floats and 10 reflowed survivors. All 320 float-marker readbacks were `ok`; every victim retained its pre-repair frame. |
+| Fresh exhaustion; largest-splittable fallback | Not-run to acceptance | Fresh batches did not reach geometric exhaustion. Minimum-size hints are not the positive-projection admission threshold; those batches do not prove fallback or fresh capacity floating. |
+| Newest-first shortest eviction prefix; protected members | Partial | Capacity repair, victim-frame preservation and survivor reflow passed. Successful admission order was not captured; marker-log order is unordered membership iteration, not eviction order. Newest-first/minimal-prefix and protected-member claims remain offline-only. |
+| Failed unfloat retention; later successful retry; no auto-tile | Not-run to acceptance | Foreground-qualified retry was not established under exhaustion. An exploratory unfloat reported a one-pixel native readback mismatch; neither that result nor unmanaged/no-op CLI replies proves this check. |
+| Hidden-domain repair | Partial | A hidden/select roundtrip had no hidden rectangle changes. It did not cause capacity repair while hidden, so selection-time victim registration remains unverified. |
+| Restart capacity floats as ordinary floats | Not-run to acceptance | Surviving helper frames matched, but the new owner's observed roster was empty after helper expiry/identity rejection. Frame equality alone is not re-adoption proof. |
+| Same-output capacity sends, follow and stay | Not-run to acceptance | No accepted capacity-float send/arrival proof was captured; requests without managed foreground do not count. |
+| Allow-overlap, fresh admission and real shrink | Not-run | No accepted live overlap-policy journey; no preview/drop or navigation claim. |
+| Catalog controls, choices and help | Partial | Native accessibility enumeration exposed both admission groups, largest/closest/no-search and float/allow-overlap choices, four tabs and no-reflow help. Full traversal/layout and save/reopen were not established. |
+| Changed policy Apply, save/reopen and no reflow | Not-run to acceptance | Apply invocation did not produce a verified save. Unchanged frames after a zero-edit invocation do not prove changed-policy Apply. File-route gap adoption did work; it is not UI persistence evidence. |
+| Cross-output capacity-float refusal (T2) | Not-run | Only one output was available; accepted refusal policy is unchanged. |
+| Cleanup and exact restoration | Pass | Verified owner stop plus independent restore, final `mise exec -- just stop`, no remaining owner/helper processes or recovery requests/ledger. Original settings bytes matched the backup exactly. Valid taskbar and Mouse Snap/SPI pre/post readbacks matched. |
+
+- Review found no established production defect. Apparent unexplained workspace
+  selections were attributable to test-script CLI calls. A foreground change
+  without a recorded target identity is excluded from focus evidence. Helpers
+  are not permanently non-activating: no-activate show/move flags preserve focus
+  for those calls only. Settings Apply can present owned conflict/result modals;
+  invocation without confirmed modal completion/save is not acceptance.
+- Procedure limits: the helper lifetime is bounded to 600 seconds; expiry
+  invalidated the restart leg. Stop repeated focus/Apply attempts rather than
+  infer a product defect or weaken native identity/input guards. No production
+  fix, fixture change, dependency change or new product decision was made.
+- Physical shortcuts, games, drag preview/drop, broader application behavior
+  and multi-output acceptance are not implied. Remaining checks stay open.
+
+## Remaining live checks
 
 - Before execution, follow [Windows preflight/recovery](../../live-windows-testing.md):
   exact source/artifact/owner identities, owned-helper-only scope, baseline
@@ -131,5 +180,8 @@
   overlays, restored Mouse Snap/session settings, revealed windows and clean
   recovery ledger. Physical keyboard/game/multi-output acceptance is not implied.
 
-- Exact next action: execute the pending scoped native checks when available;
-  retain cross-output float refusal until a separate safe-remap policy exists.
+- Exact next action: validate a foreground-qualified helper interaction and
+  owned Settings modal/save completion first, then run short, separate journeys
+  for fresh exhaustion, admission-ordered shrink, retry, restart before helper
+  expiry, same-output follow/stay and overlap. Retain cross-output float refusal;
+  verify that leg only when a second output is available.

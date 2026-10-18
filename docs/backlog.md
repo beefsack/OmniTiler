@@ -194,7 +194,12 @@ decisions of 2026-09-24 are under
   overlap, retry and catalog controls are covered by producer-shaped fixtures and
   independent safety review. Native four-package gates: **2,750 passed, 0 failed,
   1 ignored**; all eight CI jobs pass (`6c4bcefd`, run 39083833668).
-  Pending scoped live checks; User accepted 2026-10-18 (T2): cross-output
+  Partial scoped native checks 2026-10-18: gap-growth capacity repair preserved
+  all 320 victim frames and verified ordinary-float markers; cleanup and exact
+  settings/taskbar/SPI restoration passed. Fresh exhaustion/fallback, ordered
+  shrink, retry, capacity restart, sends, overlap and changed-policy Apply remain
+  unverified; focus/Settings interaction and helper expiry limited the procedure.
+  User accepted 2026-10-18 (T2): cross-output
   capacity-float transfers refuse until a remap rule is separately approved:
   [record](changes/archive/windows-best-effort-admission.md).
 - P1 | macOS: adopt best-effort admission | Consume the shared D1-D10 policy
