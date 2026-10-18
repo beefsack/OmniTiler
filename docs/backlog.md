@@ -4073,20 +4073,19 @@ decisions of 2026-09-24 are under
       remains 114. [Outcome](changes/archive/macos-full-state-replies.md#final-outcome-2026-10-18).
    3. Finish managed native workspaces. **2026-10-19:** numbered send-follow
       Ctrl+Shift+1-9 is armed; outward product transfer, membership/current and
-      focus-follow pass on an owned helper. Authentic holder enable/Revert and
-       Compatible zero mutation pass. TextEdit roundtrip is blocked by input
-       authority: existing owned-post requires helper foreground, not TextEdit;
-       no new live run or product defect is established. Resolve physical input
-       versus an exact-disposable TextEdit input proof, then procedure 1 under one
-       scoped runtime with log-based readiness (never file mtimes). Helper
-       roundtrip is no longer a prerequisite. Then same-current honest no-op,
-       send-stay, trailing empty selection/send/indicator slot and per-display
-       numbering. Two-display live checks remain pending. Last source gates:
-      1010 macOS tests, strict clippy/format, signed build/verify; unsafe 114,
-      unchanged in ffi.rs. Current Space 1/settings restored, exact protected
-      records match, no owned processes remain. Existing Space 277 and three
-      disposable TextEdit documents remain; unknown occupancy still blocks
-      removal. [Current checkpoint and dogfood checklist](changes/macos-managed-workspaces.md#product-send-follow-partial-live-checkpoint-2026-10-19).
+       focus-follow pass on an owned helper. Authentic holder enable/Revert and
+       Compatible zero mutation pass. Reviewed disposable `textedit-post` closes
+       input ownership, but two TextEdit outward sends fully post and settle
+       `PossiblyExecuted` without carry (brief Space switch/return); no inverse.
+       Not dogfood-ready. Next: admitted-subject/readback diagnostics and observable
+       runtime log readiness before a new discriminator, then scoped roundtrip.
+       Same-current honest no-op, send-stay, trailing selection/send/indicator and
+       per-display numbering follow; two-display checks pending. Final 1030 macOS
+       tests and strict clippy/format pass; signed build/verify passes before the
+       test-only Windows-fixture repair. Unsafe 114, unchanged in ffi.rs. Current
+       Space/settings and exact protected records restored, no owned processes
+       remain; existing Space 277 retained, residual documents may Resume.
+       [Current checkpoint and dogfood checklist](changes/macos-managed-workspaces.md#product-send-follow-partial-live-checkpoint-2026-10-19).
   4. Drag/drop overlays, re-scoped (user 2026-10-17): no modifier+drag; the
      producer is a passively observed native title-bar drag of a managed
      window, matching Windows' title-bar route, with physical user acceptance.

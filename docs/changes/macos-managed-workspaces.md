@@ -2,48 +2,55 @@
 
 ## Product send-follow partial live checkpoint (2026-10-19)
 
-**Outward numbered product send-follow works; TextEdit roundtrip acceptance is
-blocked by input ownership, not runtime readiness.** No product cause or fix is
-established. Do not yet treat numbered sends as dogfood-ready.
+**Disposable TextEdit input proof is implemented and reviewed; product transfer
+fails live.** Numbered send-follow remains armed, but is not dogfood-ready.
 
-- At `7641167b`, outward product `send-2` again receives admission and settles
-  `Applied`: exact helper membership `[1]` -> `[277]`, current 277, focus follows,
-  indicator current=2 and border updates agree. No scoped image was inspected;
-  visual layout/border/indicator acceptance remains pending.
-- Follow-up runs dispatch no inverse: one exceeds the required lifetime margin;
-  another starts on 277 and `send-2` settles `Applied` without moving. Current
-  native send ordinals follow SLS order `[1,277]`, even when current is 277.
-  The previous current-first scoped-ring explanation of an earlier refusal is
-  withdrawn as unproven: that engine mapping is not the current native send
-  ordinal resolver. Same-current `Applied` no-op behavior is observed, not a new
-  product decision.
-- The earlier inverse refusal still names only `engine-facts`, with helper
-  observer teardown 264 ms after admission and no anchored holder age. Expiry
-  remains possible. Reviewed diagnostics `c052ae08`/`bbf7eb00` distinguish
-  `engine-facts-unmanaged` from `engine-facts-noreply`, preserving zero-post
-  refusal. **Neither split token has yet been observed on a live inverse.**
-- Earlier helper runs falsely abort on settings-backup and helper-record mtime
-  predicates. Those predicates are rejected; no further helper roundtrip is a
-  prerequisite to TextEdit acceptance.
-- **TextEdit input blocker, independently source-verified at `ec9a2083`:**
-  `owned_control.rs` constructs `OwnedPostTarget::from_spawn_record` and requires
-  fresh `focus::read_agreement` before each key edge. `synth.rs` authenticates a
-  helper spawn record and joins its exact CG/AX window. A helper-targeted chord
-  therefore refuses while TextEdit is focused; focusing the helper changes the
-  admitted product subject. TextEdit has no accepted owned-post target proof.
-  The separate managed-send permit does not authorize diagnostic input posting.
-  No existing TextEdit chord-post route was found, and no live run, ownership
-  bypass or new action arming was attempted in this investigation.
-- Last macOS source gates remain **1010 tests**, strict all-target clippy,
-  format and signed build/verify. No production code or dependencies change in
-  this follow-up. [CI 39135233669](https://github.com/beefsack/OmniTiler/actions/runs/39135233669)
-  passes at `428d53ac`; the intervening change is KDE/core work, not macOS runtime
-  code. Unsafe remains **114 blocks**, all in unchanged `ffi.rs`.
-- Current Space is restored through the existing guarded select route. Final
-  topology is `[1,277]`, current 1; holders match baseline with no preimage.
-  Owned helpers/runtimes/display-awake children are gone. Preexisting Space 277
-  and disposable TextEdit documents remain. Final raw protected-window records
-  exactly match the baseline below, including onscreen state:
+- `c5ef44b8`/`be80c38d`/`809c59ca` add diagnostic-only `textedit-post` with
+  `--record PATH --nonce HEX --chord send-2` (also `send-1` and existing bounded
+  owned-post chords). Before each normal edge it requires exact frontmost
+  TextEdit PID/bundle, focused/main AX window, focus-oracle and CG agreement,
+  plus a document canonically inside the run directory or a random title token.
+  Path traversal, symlink escapes and foreign file-URL hosts refuse. Helper
+  ownership and product arming are unchanged. **Tentative:** this narrow
+  disposable-document proof, not a generic ordinary-app posting authority.
+- Explicit release and unwind cleanup clear held modifiers; handled SIGINT/TERM
+  latch cancellation and release first. SIGKILL, abort, power loss and sequential
+  proof/post races remain limitations. Live legs require observed inactive Secure
+  Input even though the existing platform-wide unknown-state policy is unchanged.
+- At `809c59ca`, two TextEdit-only Authentic runs post `send-2`, reach
+  `send-accepted`/`send-enqueued`/`submitted`, and execute all four effect posts
+  (`md:1 mu:1 kd:1 ku:1`). Both settle `PossiblyExecuted`: subject membership
+  stays `[1]`; current briefly switches `1 -> 277 -> 1` in about 0.8 seconds.
+  No inverse is attempted. The first run has a Save sheet; a fresh, visually
+  sheet-free reproduction refutes that as a sufficient explanation. Both run
+  scoped runtimes for the wrapper's maximum 120 seconds and shut down Clean.
+- Pre-dispatch readiness is only native layout/border/process state; runtime
+  startup/admission logs are read after teardown, not observed before dispatch.
+  This does not satisfy the requested log-based readiness procedure. Five
+  TextEdit windows occupy the source Space; trigger proof identifies the exact
+  disposable window, but the admission log omits the admitted window identity.
+  Roundtrip, both layouts, following border and indicator acceptance remain open.
+- Offline tracing excludes the supposed second select (`input_select_enqueued:1`
+  plus `input_ignored:1` is normal send down/up accounting), own-switch filtering,
+  explicit runtime focus/raise, and setup selects as causes. Earlier helper
+  `Applied` evidence used the same full HID drag path, not keys alone. Native
+  bounce actor and TextEdit carry failure remain unproven; no product fix is made.
+  Tagged TextEdit delivery remains an unisolated difference from the earlier
+  successful untagged TextEdit discriminator. Do not change drag geometry or
+  remove provenance on that hypothesis alone.
+- Final offline gates at `0edfe355`: **1030 macOS tests**, strict all-target clippy
+  and format pass. The preceding signed build/verify passes; main executable
+  SHA-256 is `7f542e82c557003cb3177dc052d71493168a80f3bb0d9b52d3700b521ded6143`.
+  `0edfe355` repairs Windows-only test-fixture failures without production changes.
+  Unsafe remains **114 blocks**, all in unchanged `ffi.rs`; no dependencies added.
+- Holders restore 9/9 without failures or retained preimage; topology is `[1,277]`,
+  current 1. Owned runtimes/helpers/display-awake children are gone. Run documents
+  and files are removed; TextEdit exits after exact-process cleanup because its
+  document enumeration/close scripting hangs. Preexisting Space 277 remains;
+  residual documents may reopen through Resume. Three scoped images are inspected
+  and deleted (sheet, clean window, clean window with active border); none proves
+  successful transfer. Final raw protected-window records exactly match the
+  baseline below, including onscreen state:
 
   ```json
   [
@@ -57,16 +64,14 @@ established. Do not yet treat numbered sends as dogfood-ready.
   ]
   ```
 
-Next: resolve TextEdit input authority: either use user physical chords or define
-and review an exact-disposable TextEdit input proof without weakening helper
-ownership. Then execute procedure 1 under one scoped 120-second runtime, using
-observed runtime startup/admission lines, never file mtimes. Require outward and
-inverse membership/focus, both layouts, indicator, border and scoped visual
-evidence. Same-current honest no-op semantics follow that acceptance; shared
-KDE/Windows alignment is tentative pending source comparison and a discriminating
-spec row. Send-stay, trailing lifecycle and per-display work remain parked;
-two-display live checks remain pending. Display-handoff acquisition remains
-tentative.
+Next: add bounded metadata-only admitted-subject and native send/readback
+diagnostics, and expose startup/admission logs during the scoped runtime. Review
+before a new live discriminator; no identical retry or speculative geometry fix.
+Then complete TextEdit outward/inverse acceptance under one scoped runtime.
+Same-current honest no-op alignment with core/KDE/Windows remains tentative,
+pending source comparison and a discriminating spec row. Send-stay, trailing
+lifecycle and per-display work remain pending in that order; two-display live
+checks remain pending. Display-handoff acquisition remains tentative.
 
 ## Effect-owner display handoff checkpoint (2026-10-18)
 
@@ -179,12 +184,12 @@ trailing-Space lifecycle and multi-display work parked.
 ### Dogfood checklist
 
 - **Current status:** basic actions and existing-Space selects can be checked;
-  outward helper product send-follow passes, but TextEdit roundtrip/visual
-  acceptance is pending. Existing owned-post requires helper foreground and
-  cannot deliver a chord with TextEdit focused. Resolve input authority before
-  synthetic TextEdit acceptance; no helper roundtrip prerequisite remains. No
-  new actions are armed. Earlier refusals and readiness aborts are not successful
-  roundtrip acceptance.
+  helper outward product send-follow passes, but TextEdit outward transfer fails
+  with full posts, no carry and `PossiblyExecuted`. The reviewed diagnostic-only
+  `textedit-post` closes input ownership, not transfer acceptance. Numbered sends
+  remain armed but not dogfood-ready; no new actions are armed. Diagnose the
+  admitted subject/readback and require observed startup/admission logs before
+  another scoped attempt. No inverse or roundtrip/visual pass is claimed.
 - The usual user entry is `mise exec -- just dev trace`. It builds/signs before
   launch, is unbounded and unscoped, and can tile ordinary terminal windows.
   For this disposable TextEdit check, use the scoped, explicit Authentic/Ctrl
