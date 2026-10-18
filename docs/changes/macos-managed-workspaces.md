@@ -2,9 +2,9 @@
 
 ## Product send-follow partial live checkpoint (2026-10-19)
 
-**Outward numbered product send-follow works; anchored inverse and TextEdit
-acceptance remain incomplete.** No product cause or fix is established. Do not
-yet treat numbered sends as dogfood-ready.
+**Outward numbered product send-follow works; TextEdit roundtrip acceptance is
+blocked by input ownership, not runtime readiness.** No product cause or fix is
+established. Do not yet treat numbered sends as dogfood-ready.
 
 - At `7641167b`, outward product `send-2` again receives admission and settles
   `Applied`: exact helper membership `[1]` -> `[277]`, current 277, focus follows,
@@ -22,15 +22,18 @@ yet treat numbered sends as dogfood-ready.
   remains possible. Reviewed diagnostics `c052ae08`/`bbf7eb00` distinguish
   `engine-facts-unmanaged` from `engine-facts-noreply`, preserving zero-post
   refusal. **Neither split token has yet been observed on a live inverse.**
-- **Current blocker is diagnostic readiness, not a proven product failure.**
-  A compressed run falsely aborts on a settings-backup mtime predicate despite
-  runtime startup about two seconds after launch and a full Clean 120-second
-  session. Extending the wait is not justified. Replacing that predicate with
-  streamed holder/runtime-start evidence passes 16 offline assertions and source
-  review, but the next run aborts earlier on the helper session-record mtime
-  predicate. The holder reports `ready:true` and exact-child stop; why the record
-  predicate missed it is unproven. No runtime or input post occurs in that final
-  attempt. The offline fixtures did not establish the full live readiness path.
+- Earlier helper runs falsely abort on settings-backup and helper-record mtime
+  predicates. Those predicates are rejected; no further helper roundtrip is a
+  prerequisite to TextEdit acceptance.
+- **TextEdit input blocker, independently source-verified at `ec9a2083`:**
+  `owned_control.rs` constructs `OwnedPostTarget::from_spawn_record` and requires
+  fresh `focus::read_agreement` before each key edge. `synth.rs` authenticates a
+  helper spawn record and joins its exact CG/AX window. A helper-targeted chord
+  therefore refuses while TextEdit is focused; focusing the helper changes the
+  admitted product subject. TextEdit has no accepted owned-post target proof.
+  The separate managed-send permit does not authorize diagnostic input posting.
+  No existing TextEdit chord-post route was found, and no live run, ownership
+  bypass or new action arming was attempted in this investigation.
 - Last macOS source gates remain **1010 tests**, strict all-target clippy,
   format and signed build/verify. No production code or dependencies change in
   this follow-up. [CI 39135233669](https://github.com/beefsack/OmniTiler/actions/runs/39135233669)
@@ -54,16 +57,16 @@ yet treat numbered sends as dogfood-ready.
   ]
   ```
 
-Next: accept actual helper and runtime ready evidence end to end, not file
-mtimes, before another live run. Then one same-runtime/helper
-`send-2` -> `send-1`, with timestamps before both owner launches, fresh identity
-and liveness per leg and at least 30 seconds remaining on both owners immediately
-before the inverse. The LS holder accepts at most 110 seconds; runtime accepts
-120. Attribute any `unmanaged` reply against that lifetime proof. TextEdit
-procedure 1 and scoped visual acceptance follow a proven roundtrip. Send-stay,
-trailing lifecycle and per-display work remain parked; two-display live checks
-remain pending. Display-handoff acquisition remains tentative; no same-current
-send policy is selected here.
+Next: resolve TextEdit input authority: either use user physical chords or define
+and review an exact-disposable TextEdit input proof without weakening helper
+ownership. Then execute procedure 1 under one scoped 120-second runtime, using
+observed runtime startup/admission lines, never file mtimes. Require outward and
+inverse membership/focus, both layouts, indicator, border and scoped visual
+evidence. Same-current honest no-op semantics follow that acceptance; shared
+KDE/Windows alignment is tentative pending source comparison and a discriminating
+spec row. Send-stay, trailing lifecycle and per-display work remain parked;
+two-display live checks remain pending. Display-handoff acquisition remains
+tentative.
 
 ## Effect-owner display handoff checkpoint (2026-10-18)
 
@@ -176,11 +179,12 @@ trailing-Space lifecycle and multi-display work parked.
 ### Dogfood checklist
 
 - **Current status:** basic actions and existing-Space selects can be checked;
-  outward product send-follow passes, but diagnostic readiness blocks the
-  lifetime-anchored inverse. TextEdit/visual acceptance remains pending. No new
-  actions are armed. Earlier refusals and readiness aborts are not successful
-  roundtrip acceptance. This supersedes earlier select-only and no-settings-write
-  descriptions for the current executable.
+  outward helper product send-follow passes, but TextEdit roundtrip/visual
+  acceptance is pending. Existing owned-post requires helper foreground and
+  cannot deliver a chord with TextEdit focused. Resolve input authority before
+  synthetic TextEdit acceptance; no helper roundtrip prerequisite remains. No
+  new actions are armed. Earlier refusals and readiness aborts are not successful
+  roundtrip acceptance.
 - The usual user entry is `mise exec -- just dev trace`. It builds/signs before
   launch, is unbounded and unscoped, and can tile ordinary terminal windows.
   For this disposable TextEdit check, use the scoped, explicit Authentic/Ctrl
@@ -193,7 +197,7 @@ trailing-Space lifecycle and multi-display work parked.
   mise exec -- just preflight-app
   mise exec -- just launch -- spaces-desktop-status
   mise exec -- just launch -- spaces-diagnose
-  mise exec -- just dev trace --scope com.apple.TextEdit --preset authentic --ctrl ctrl --seconds 60
+  mise exec -- just tile --user-start --scope com.apple.TextEdit --input tap --preset authentic --seconds 120
   ```
 
 - Authentic automatically enables standard Desktop-1..9 holders with unchanged
@@ -204,7 +208,7 @@ trailing-Space lifecycle and multi-display work parked.
   slot. Try Ctrl+H/J/K/L for focus, Ctrl+Shift+H/J/K/L for movement, and Ctrl+G
   to float then re-tile. The border should follow the focused managed window;
   the indicator should track the current native Space.
-- **After the owned-helper roundtrip passes:** focus one
+- **Procedure 1, physical chords or reviewed TextEdit input proof:** focus one
   disposable Desktop-1 document, press Ctrl+Shift+2, wait for settlement, then
   Ctrl+Shift+1 to return it. Require exact membership and focus-follow, reflow on
   both Spaces, retained slots on revisiting, current indicator and following

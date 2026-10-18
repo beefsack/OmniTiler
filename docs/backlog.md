@@ -4074,13 +4074,14 @@ decisions of 2026-09-24 are under
    3. Finish managed native workspaces. **2026-10-19:** numbered send-follow
       Ctrl+Shift+1-9 is armed; outward product transfer, membership/current and
       focus-follow pass on an owned helper. Authentic holder enable/Revert and
-      Compatible zero mutation pass. Anchored inverse remains incomplete:
-      diagnostic readiness predicates abort before inverse posting; no product
-      cause or fix is proven. Next accept helper/runtime ready evidence end to end,
-      then same-runtime send-2/send-1 with fresh liveness and >=30 seconds on both
-      owners before inverse. TextEdit/layout/border/indicator acceptance follows;
-      then send-stay, trailing empty selection/send/indicator slot and per-display
-      numbering. Two-display live checks remain pending. Last source gates:
+       Compatible zero mutation pass. TextEdit roundtrip is blocked by input
+       authority: existing owned-post requires helper foreground, not TextEdit;
+       no new live run or product defect is established. Resolve physical input
+       versus an exact-disposable TextEdit input proof, then procedure 1 under one
+       scoped runtime with log-based readiness (never file mtimes). Helper
+       roundtrip is no longer a prerequisite. Then same-current honest no-op,
+       send-stay, trailing empty selection/send/indicator slot and per-display
+       numbering. Two-display live checks remain pending. Last source gates:
       1010 macOS tests, strict clippy/format, signed build/verify; unsafe 114,
       unchanged in ffi.rs. Current Space 1/settings restored, exact protected
       records match, no owned processes remain. Existing Space 277 and three
