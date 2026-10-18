@@ -132,6 +132,8 @@ pub mod workspace_send_managed;
 mod workspace_send_managed_tests;
 pub mod workspace_send_native;
 #[cfg(test)]
+mod workspace_send_native_tests;
+#[cfg(test)]
 mod workspace_send_tests;
 pub(crate) mod world_builder;
 pub(crate) mod world_command_map;

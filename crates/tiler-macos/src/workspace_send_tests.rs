@@ -641,3 +641,24 @@ fn armed_hotkey_admits_and_maps_to_transfer_feedback() {
         );
     }
 }
+
+#[test]
+fn readiness_line_pins_scoped_runtime_and_tap_ready() {
+    assert_eq!(
+        format_send_readiness_line("tap", "authentic", 1, 57),
+        "tiler-macos send readiness runtime-started input=tap preset=authentic scopes=1 chords=57",
+    );
+    // Off route and zero-touch preset render verbatim (never guessed).
+    assert_eq!(
+        format_send_readiness_line("off", "compatible", 0, 48),
+        "tiler-macos send readiness runtime-started input=off preset=compatible scopes=0 chords=48",
+    );
+}
+
+#[test]
+fn admitted_line_pins_subject_target_source_and_op() {
+    assert_eq!(
+        format_send_admitted_line("send-2", "4242_7", 277, 1, "main", "op-9"),
+        "tiler-macos send admitted action=send-2 subject=4242_7 target=277 from=1 display=main op=op-9 submitted complete=false",
+    );
+}

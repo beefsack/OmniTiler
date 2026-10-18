@@ -313,8 +313,15 @@ fn read_ax_subject_state(pid: u32, wid: u32) -> AxSubjectState {
 /// Blind evidence plus its root: every leg unknown, with the single
 /// unreadable read named for refusal-only diagnosis. The proof verdict
 /// stays [`SendProofRefusal::UnknownManaged`] for every root — the root
-/// only names which read collapsed, never window content.
-fn blind_evidence(root: BlindRoot) -> (SendFreshEvidence, Option<BlindRoot>) {
+/// only names which read collapsed, never window content. No frame travels
+/// with blind evidence (nothing was proven); the frame slot stays `None`.
+fn blind_evidence(
+    root: BlindRoot,
+) -> (
+    SendFreshEvidence,
+    Option<BlindRoot>,
+    Option<crate::ffi::AxFrame>,
+) {
     (
         SendFreshEvidence {
             managed_current: None,
@@ -332,6 +339,7 @@ fn blind_evidence(root: BlindRoot) -> (SendFreshEvidence, Option<BlindRoot>) {
             ws_hit: None,
         },
         Some(root),
+        None,
     )
 }
 
@@ -357,7 +365,11 @@ fn blind_evidence(root: BlindRoot) -> (SendFreshEvidence, Option<BlindRoot>) {
 fn assemble_evidence<R: SendNativeReaders>(
     readers: &mut R,
     target: &ManagedSendTarget,
-) -> (SendFreshEvidence, Option<BlindRoot>) {
+) -> (
+    SendFreshEvidence,
+    Option<BlindRoot>,
+    Option<crate::ffi::AxFrame>,
+) {
     let pid = target.pid();
     let wid = target.wid();
     let engine = match readers.engine_facts(target.window()) {
@@ -466,7 +478,7 @@ fn assemble_evidence<R: SendNativeReaders>(
         ax_hit,
         ws_hit,
     };
-    (evidence, None)
+    (evidence, None, ax.frame)
 }
 
 /// Live managed-send backend over injectable native readers: the production
@@ -491,12 +503,115 @@ pub struct LiveManagedSendBackend<R: SendNativeReaders> {
     key_held: Option<(u32, u64)>,
     blind_root: Option<BlindRoot>,
     counts: PostCounts,
+    /// Leg clock start (set in `begin_leg`): every native event/readback
+    /// line below reports elapsed milliseconds against this base, so the
+    /// effective down->drag->chord->up timing compares directly with the
+    /// diagnostic `t_ms` series. Logging only; never a gate or timeout.
+    leg_t0: Option<std::time::Instant>,
+    /// Last proven subject frame plus the backend-selected grab point
+    /// (stored in `fresh_evidence` where both are live): event lines
+    /// report the grab relative to this frame. Logging only.
+    leg_frame: Option<crate::ffi::AxFrame>,
+    leg_grab: Option<(f64, f64)>,
+    /// Settle-pair change tracking (logging only): the latest membership
+    /// read plus the last logged `(membership, current)` pair. Only a
+    /// first or changed pair emits a readback line, so the bounded poll
+    /// stays quiet while the outcome is stable.
+    settle_m: Option<Vec<u64>>,
+    settle_prev: Option<(Option<Vec<u64>>, Option<u64>)>,
 }
 
 #[derive(Debug, Clone)]
 struct TopologyAnchor {
     spaces: Vec<u64>,
     revision: u64,
+}
+
+/// Drag-step token for the native event trace (matches the diagnostic
+/// `kind` vocabulary: `mouse-move`, `mouse-down`, `mouse-dragged`,
+/// `mouse-up`). Pure.
+#[must_use]
+pub(crate) const fn native_step_name(step: DragStep) -> &'static str {
+    match step {
+        DragStep::MouseMove => "mouse-move",
+        DragStep::MouseDown => "mouse-down",
+        DragStep::MouseDragged => "mouse-dragged",
+        DragStep::MouseUp => "mouse-up",
+        _ => "mouse-unknown",
+    }
+}
+
+/// One bounded metadata-only native leg-begin line: goal SID plus the
+/// backend-selected grab point relative to the proven subject frame
+/// (whole points; IDs and geometry only). Pure (the owner emits once per
+/// leg in `begin_leg`).
+#[must_use]
+pub(crate) fn format_native_leg_begin_line(
+    goal: u64,
+    grab: (f64, f64),
+    frame: crate::ffi::AxFrame,
+) -> String {
+    format!(
+        "tiler-macos send native leg-begin goal={goal} grab=({:.0},{:.0}) frame=({:.0},{:.0},{:.0},{:.0}) rel=({:.0},{:.0})",
+        grab.0,
+        grab.1,
+        frame.x,
+        frame.y,
+        frame.w,
+        frame.h,
+        grab.0 - frame.x,
+        grab.1 - frame.y,
+    )
+}
+
+/// One bounded metadata-only native mouse-event line at the actual post
+/// site: elapsed milliseconds against the leg clock, the posted point, and
+/// the point relative to the proven frame when known. Pure.
+#[must_use]
+pub(crate) fn format_native_mouse_line(
+    ev: &str,
+    t_ms: u64,
+    point: (f64, f64),
+    frame: Option<crate::ffi::AxFrame>,
+) -> String {
+    match frame {
+        Some(frame) => format!(
+            "tiler-macos send native ev={ev} t_ms={t_ms} pt=({:.0},{:.0}) rel=({:.0},{:.0})",
+            point.0,
+            point.1,
+            point.0 - frame.x,
+            point.1 - frame.y,
+        ),
+        None => format!(
+            "tiler-macos send native ev={ev} t_ms={t_ms} pt=({:.0},{:.0})",
+            point.0, point.1,
+        ),
+    }
+}
+
+/// One bounded metadata-only native key-event line at the actual post
+/// site: elapsed milliseconds, keycode, and flags (hex, like the
+/// diagnostic chord notes). Pure.
+#[must_use]
+pub(crate) fn format_native_key_line(ev: &str, t_ms: u64, keycode: u32, flags: u64) -> String {
+    format!("tiler-macos send native ev={ev} t_ms={t_ms} key={keycode:#x} flags={flags:#x}")
+}
+
+/// One bounded metadata-only native settle-readback line: elapsed
+/// milliseconds, the freshly read membership/current pair, and whether
+/// it changed since the last logged pair. The owner emits the first pair
+/// (`changed=false` baseline) and each changed pair only, so a stable
+/// poll stays quiet. Pure.
+#[must_use]
+pub(crate) fn format_native_readback_line(
+    t_ms: u64,
+    membership: &Option<Vec<u64>>,
+    current: &Option<u64>,
+    changed: bool,
+) -> String {
+    format!(
+        "tiler-macos send native readback t_ms={t_ms} membership={membership:?} current={current:?} changed={changed}"
+    )
 }
 
 impl<R: SendNativeReaders> LiveManagedSendBackend<R> {
@@ -513,7 +628,20 @@ impl<R: SendNativeReaders> LiveManagedSendBackend<R> {
             key_held: None,
             blind_root: None,
             counts: PostCounts::default(),
+            leg_t0: None,
+            leg_frame: None,
+            leg_grab: None,
+            settle_m: None,
+            settle_prev: None,
         }
+    }
+
+    /// Elapsed milliseconds against the leg clock (0 before `begin_leg`).
+    /// Logging only; never a gate or timeout.
+    fn leg_elapsed_ms(&self) -> u64 {
+        self.leg_t0
+            .map(|t0| t0.elapsed().as_millis().min(u128::from(u64::MAX)) as u64)
+            .unwrap_or(0)
     }
 
     /// Fresh anchor coherence for one down-edge: the target SID must still
@@ -563,6 +691,11 @@ impl<R: SendNativeReaders> ManagedSendBackend for LiveManagedSendBackend<R> {
         self.goal = None;
         self.last_point = None;
         self.key_held = None;
+        self.leg_t0 = None;
+        self.leg_frame = None;
+        self.leg_grab = None;
+        self.settle_m = None;
+        self.settle_prev = None;
         Ok(topo.row)
     }
     fn display_count(&mut self) -> Result<usize, String> {
@@ -573,8 +706,18 @@ impl<R: SendNativeReaders> ManagedSendBackend for LiveManagedSendBackend<R> {
     }
     fn fresh_evidence(&mut self, target: &ManagedSendTarget) -> SendFreshEvidence {
         self.subject = Some((target.pid(), target.wid()));
-        let (evidence, root) = assemble_evidence(&mut self.readers, target);
+        let (evidence, root, frame) = assemble_evidence(&mut self.readers, target);
         self.blind_root = root;
+        // Retain the proven geometry for the native event trace: the
+        // adapter pins the first proven grab point, so every later edge
+        // logs against this frame. Keep the first good pair per leg
+        // (snapshot clears per operation); logging only, never a gate.
+        if frame.is_some() {
+            self.leg_frame = frame;
+        }
+        if evidence.grab_point.is_some() {
+            self.leg_grab = evidence.grab_point;
+        }
         evidence
     }
     fn blind_root(&self) -> Option<BlindRoot> {
@@ -588,6 +731,15 @@ impl<R: SendNativeReaders> ManagedSendBackend for LiveManagedSendBackend<R> {
         let _ = permit;
         self.check_anchor(goal)?;
         self.goal = Some(goal);
+        // Start the leg clock and the settle-pair log baseline, then emit
+        // the single leg-begin trace when the setup proof retained
+        // geometry (absent only when no edge proved yet — never a gate).
+        self.leg_t0 = Some(std::time::Instant::now());
+        self.settle_m = None;
+        self.settle_prev = None;
+        if let (Some(grab), Some(frame)) = (self.leg_grab, self.leg_frame) {
+            eprintln!("{}", format_native_leg_begin_line(goal, grab, frame));
+        }
         Ok(())
     }
     fn post_mouse(&mut self, permit: ManagedPostPermit, step: DragStep) -> Result<(), String> {
@@ -612,6 +764,15 @@ impl<R: SendNativeReaders> ManagedSendBackend for LiveManagedSendBackend<R> {
             self.last_point = Some(permit.point());
             self.counts.mouse_down += 1;
         }
+        eprintln!(
+            "{}",
+            format_native_mouse_line(
+                native_step_name(step),
+                self.leg_elapsed_ms(),
+                permit.point(),
+                self.leg_frame,
+            )
+        );
         Ok(())
     }
     fn post_key_down(&mut self, permit: ManagedPostPermit) -> Result<(), String> {
@@ -625,6 +786,10 @@ impl<R: SendNativeReaders> ManagedSendBackend for LiveManagedSendBackend<R> {
             .map_err(|e| format!("managed chord post refused: {e}"))?;
         self.key_held = Some(chord);
         self.counts.key_down += 1;
+        eprintln!(
+            "{}",
+            format_native_key_line("chord-down", self.leg_elapsed_ms(), chord.0, chord.1)
+        );
         Ok(())
     }
     fn release_mouse(&mut self) -> Result<(), String> {
@@ -638,6 +803,10 @@ impl<R: SendNativeReaders> ManagedSendBackend for LiveManagedSendBackend<R> {
             .hid_mouse(DragStep::MouseUp, point)
             .map_err(|e| format!("managed mouse release refused: {e}"))?;
         self.counts.mouse_up += 1;
+        eprintln!(
+            "{}",
+            format_native_mouse_line("mouse-up", self.leg_elapsed_ms(), point, self.leg_frame)
+        );
         Ok(())
     }
     fn release_key(&mut self) -> Result<(), String> {
@@ -648,14 +817,34 @@ impl<R: SendNativeReaders> ManagedSendBackend for LiveManagedSendBackend<R> {
             .hid_key(keycode, flags, false)
             .map_err(|e| format!("managed key release refused: {e}"))?;
         self.counts.key_up += 1;
+        eprintln!(
+            "{}",
+            format_native_key_line("key-up", self.leg_elapsed_ms(), keycode, flags)
+        );
         Ok(())
     }
     fn read_membership(&mut self) -> Option<Vec<u64>> {
         let (_, wid) = self.subject?;
-        self.readers.subject_spaces(wid).ok()
+        let membership = self.readers.subject_spaces(wid).ok();
+        // Stage the latest pair for the change-only readback trace below.
+        self.settle_m = membership.clone();
+        membership
     }
     fn read_current(&mut self) -> Option<u64> {
-        self.readers.read_current()
+        let current = self.readers.read_current();
+        // Changed-only settle trace: the first pair is the baseline
+        // (`changed=false`); later identical polls stay quiet. Logging
+        // only — the verdict still reads the returned values.
+        let pair = (self.settle_m.clone(), current);
+        if self.settle_prev.as_ref() != Some(&pair) {
+            let changed = self.settle_prev.is_some();
+            eprintln!(
+                "{}",
+                format_native_readback_line(self.leg_elapsed_ms(), &pair.0, &pair.1, changed)
+            );
+            self.settle_prev = Some(pair);
+        }
+        current
     }
     fn counts(&self) -> PostCounts {
         self.counts

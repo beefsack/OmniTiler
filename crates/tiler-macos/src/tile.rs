@@ -1591,6 +1591,18 @@ mod native {
                 .unwrap_or_default(),
             )
         })?;
+        // Scoped-runtime readiness: one static line while the run lives
+        // (input route, preset, scope count, armed chords). Streams live
+        // under `--stream`; the holder-ensure outcome keeps its own line.
+        eprintln!(
+            "{}",
+            crate::workspace_send::format_send_readiness_line(
+                request.input.as_str(),
+                request.preset.as_str(),
+                request.scopes.len(),
+                active_chords,
+            )
+        );
 
         // Display/Space-change observer (events trigger resnapshot;
         // bounded fallback polling below covers a missed event).
@@ -2052,6 +2064,19 @@ mod native {
                     let row = last_snapshot.as_ref().and_then(|live| {
                         crate::workspace_select::user_row_from_rows(&live.rows, 0).ok()
                     });
+                    // Admission trace, formatted before the submit consumes
+                    // the row: pins the exact subject/target/source/op while
+                    // the run lives. Emitted on the submitted path only.
+                    let admitted = row.as_ref().map(|row| {
+                        crate::workspace_send::format_send_admitted_line(
+                            id,
+                            claim.send_subject.as_deref().unwrap_or("none"),
+                            claim.expected_sid.unwrap_or(0),
+                            row.current,
+                            &row.display,
+                            claim.operation_id.as_deref().unwrap_or("none"),
+                        )
+                    });
                     let submit = match row {
                         Some(row) => {
                             let handle_clone = handle.clone();
@@ -2068,7 +2093,12 @@ mod native {
                     handle.release_select_after_drain();
                     match submit {
                         Ok(()) => {
-                            eprintln!("tiler-macos send action={} submitted complete=false", id,);
+                            eprintln!(
+                                "{}",
+                                admitted
+                                    .as_deref()
+                                    .unwrap_or("tiler-macos send admitted missing-context")
+                            );
                         }
                         Err(reason) => {
                             eprintln!(

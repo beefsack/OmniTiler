@@ -446,3 +446,41 @@ impl LiveSendController {
         None
     }
 }
+
+/// One bounded metadata-only readiness line for a scoped tile runtime,
+/// emitted once on the main thread right after startup: input route,
+/// preset, scope count, and armed chord count. Static config only (no
+/// titles, paths, or content); the holder-ensure outcome keeps its own
+/// line. Pure (the caller emits); the launch wrapper streams this stderr
+/// line live under `--stream`, before any teardown.
+#[must_use]
+pub fn format_send_readiness_line(
+    input: &str,
+    preset: &str,
+    scopes: usize,
+    chords: usize,
+) -> String {
+    format!(
+        "tiler-macos send readiness runtime-started input={input} preset={preset} scopes={scopes} chords={chords}"
+    )
+}
+
+/// One bounded metadata-only admission line for an engine-admitted send
+/// claim at submit time: the pinned `"<pid>_<wid>"` subject, the target
+/// SID, the source Space the send follows away from, the display, and the
+/// operation identity. IDs only (never titles, content, or paths). Pure
+/// (the caller emits on the submitted path only); streams live under
+/// `--stream` like every stderr line, before any teardown.
+#[must_use]
+pub fn format_send_admitted_line(
+    action: &str,
+    subject: &str,
+    target: u64,
+    from: u64,
+    display: &str,
+    op: &str,
+) -> String {
+    format!(
+        "tiler-macos send admitted action={action} subject={subject} target={target} from={from} display={display} op={op} submitted complete=false"
+    )
+}
