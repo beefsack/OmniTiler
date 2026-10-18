@@ -435,6 +435,7 @@ decisions of 2026-09-24 are under
   dropping it is more sensible. Modifier+drag is mainly a Linux idiom; native
   title-bar drag is the norm on Windows and macOS, and macOS will not add a
   modifier+drag producer. Discussion only; no change until the user decides.
+  [Implementation, evidence, options and recommendation](changes/windows-win-drag-review.md).
 - P1 | Windows launcher geometry fighting | Hint/timeout flap correlates
   with repeated four-window writes. User-approved lifetime-bound declared-hint
   reuse on timeout (no expiry), rate-limited per-window diagnostics and
