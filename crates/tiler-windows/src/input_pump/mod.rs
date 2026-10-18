@@ -17,17 +17,16 @@
 //!   pump never wait on an owner-held mutex. Full is an explicit fault with
 //!   the item preserved for retry; fresh admission closes immediately and no
 //!   unbounded owner backlog accumulates.
-//! - Input drains the real bounded classifier queues into single-outstanding
+//! - Input drains the real bounded classifier queue into single-outstanding
 //!   [`Outbox`] batches outside callbacks. While an outbox is occupied the
-//!   pump skips draining so items wait in the original queues under their own
+//!   pump skips draining so items wait in the original queue under their own
 //!   cap+priority rules; a refused offer retries from a thread-local pending
-//!   slot, never a second lossy queue. Saturated new Downs pass through and
-//!   terminal Up/Cancel edges keep their guaranteed delivery end to end.
-//! - Esc ordering uses shared atomic [`EscClock`]s sampled directly at
-//!   WinEvent START/END (owner) and mouse Down/Up plus Esc edges (input).
+//!   slot, never a second lossy queue.
+//! - Esc ordering uses the shared atomic [`EscClock`] sampled directly at
+//!   WinEvent START/END (owner) and Esc edges (input).
 //!   Delayed batch sequences never decide cancellation.
-//! - Both hooks stay together on this pump for the synchronous mouse-Down
-//!   `arm_windrag_mask` plus the E8 reserve/send/stamp reentry path.
+//! - The keyboard hook lives on this pump for the E8 reserve/send/stamp
+//!   reentry path.
 //! - Moves pass through; no motion intent stream.
 //! - Logging stays owner-side: the pump publishes bounded [`InputDiag`]
 //!   samples; queue age and heartbeat gaps carry explicit non-latency limits.
@@ -45,7 +44,6 @@ use crate::input_handoff::{
     DiagSlot, INBOX_CAP, Inbox, InboxItem, InputSnapshot, Outbox, SharedSnapshot, TaggedBatch,
 };
 use crate::snapkey::{KeyboardConfig, QueuedSnapEvent};
-use crate::win_mouse::WinDragEdge;
 
 mod backoff;
 mod channels;
@@ -60,7 +58,7 @@ pub(crate) use backoff::classify_input_wait;
 pub use backoff::{CONTENTION_RETRY, InputWaitReason, READY_WAIT, STOP_WAIT, install_backoff_secs};
 pub use channels::InputChannels;
 pub use fake::FakeBackend;
-pub use inbox_sender::{InboxSender, SAFETY_INVALIDATES_CAP};
+pub use inbox_sender::InboxSender;
 pub use snapshot::{shared_snapshot, snap_batch_age_us};
 
 #[cfg(windows)]

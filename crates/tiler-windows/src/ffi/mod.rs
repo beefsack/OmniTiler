@@ -21,7 +21,7 @@
 //!   callback contexts owned here.
 //! - [`hooks`]: WinEvent hook install/uninstall plus the single `extern`
 //!   trampoline forwarding to a safe caller-supplied sink.
-//! - [`llhook`]: low-level keyboard/mouse hook ownership: the three
+//! - [`llhook`]: low-level keyboard hook ownership: the two
 //!   `extern` trampolines copy OS payloads into safe event structs, then
 //!   invoke the installing thread's policy callback (consume or pass).
 //! - [`sysparam`]: session-only system-parameter reads/writes.
@@ -80,14 +80,13 @@ pub use input::{
     KeyPairSend, async_key_down, cursor_pos, pack_mouse_lparam, prime_foreground_key,
     send_key_pair, tick_count,
 };
-pub use llhook::{
-    HookVerdict, KeyEvent, MouseEvent, SnapKeyHook, WinArrowHook, WinMouseHook, clear_snapkey_sink,
-    clear_winarrow_sink, clear_winmouse_sink, install_snapkey_hook, install_winarrow_hook,
-    install_winmouse_hook, set_snapkey_sink, set_winarrow_sink, set_winmouse_sink,
-    uninstall_snapkey_hook, uninstall_winarrow_hook, uninstall_winmouse_hook,
-};
 #[cfg(test)]
-pub use llhook::{drive_snapkey, drive_winmouse};
+pub use llhook::drive_snapkey;
+pub use llhook::{
+    HookVerdict, KeyEvent, SnapKeyHook, WinArrowHook, clear_snapkey_sink, clear_winarrow_sink,
+    install_snapkey_hook, install_winarrow_hook, set_snapkey_sink, set_winarrow_sink,
+    uninstall_snapkey_hook, uninstall_winarrow_hook,
+};
 pub use overlay::{
     OverlayClass, create_overlay_window, destroy_overlay, dwm_colorization, hide_overlay,
     overlay_alive, place_above, place_below, present_layered, present_preview, take_accent_dirty,
@@ -121,9 +120,9 @@ pub use tray::{
 pub use window::{
     MinmaxQuery, PositionAfter, attach_thread_input, class_name, cloaked, current_thread_id,
     desktop_window, dpi_for_window, extended_frame_bounds, foreground_window, get_prop,
-    hit_test_at, is_iconic, is_visible, is_window, is_zoomed, owner_of, parent_of, point_root,
-    post_close, query_minmax, reapply_frame, remove_prop, seed_minmax_info, set_foreground_window,
-    set_prop, set_topmost, set_window_placement, set_window_pos, set_window_pos_after,
+    hit_test_at, is_iconic, is_visible, is_window, is_zoomed, owner_of, parent_of, post_close,
+    query_minmax, reapply_frame, remove_prop, seed_minmax_info, set_foreground_window, set_prop,
+    set_topmost, set_window_placement, set_window_pos, set_window_pos_after,
     set_window_pos_detailed, set_window_style, set_window_text, shell_window, show_window,
     show_window_async, show_window_prev_visible, take_prop, try_class_name, window_exstyle,
     window_pid, window_placement, window_rect, window_style, window_style_checked,

@@ -1,9 +1,9 @@
 #![forbid(unsafe_code)]
 use super::{SnapshotOffer, owner_snap_dropped, plan_snapshot_offer};
 use crate::input_handoff::{
-    Inbox, InboxItem, InputSnapshot, SharedSnapshot, WindragOrigin, fence_base_generation,
-    fence_test_allocate, fence_test_serial, keyboard_fresh_gate, note_policy_applied,
-    note_policy_published, policy_fence_pending,
+    Inbox, InboxItem, InputSnapshot, SharedSnapshot, fence_base_generation, fence_test_allocate,
+    fence_test_serial, keyboard_fresh_gate, note_policy_applied, note_policy_published,
+    policy_fence_pending,
 };
 use crate::input_pump::InboxSender;
 use crate::snapkey::{KeyboardConfig, SnapOrigin};
@@ -20,7 +20,6 @@ fn snapshot_with(takeover: bool, hwnds: &[u64]) -> InputSnapshot {
         remap: Vec::new(),
         disabled: Vec::new(),
         snap_origins: HashMap::new(),
-        windrag_origins: HashMap::new(),
         active: takeover,
         trace: false,
     };
@@ -32,43 +31,31 @@ fn snapshot_with(takeover: bool, hwnds: &[u64]) -> InputSnapshot {
             creation: "c".to_owned(),
         };
         snap.snap_origins.insert(*hwnd, origin.clone());
-        snap.windrag_origins.insert(
-            *hwnd,
-            WindragOrigin {
-                origin,
-                tag: Some(format!("tag-{hwnd}")),
-            },
-        );
     }
     snap
 }
 
 #[test]
-fn plan_skips_unchanged_forces_cleared_and_retries_armed() {
+fn plan_skips_unchanged_and_retries_armed() {
     let last: SharedSnapshot = Arc::new(snapshot_with(true, &[7]));
     let same = snapshot_with(true, &[7]);
     assert_eq!(
-        plan_snapshot_offer(Some(&last), &same, None, false),
+        plan_snapshot_offer(Some(&last), &same, None),
         SnapshotOffer::Skip
-    );
-    // A pending clear forces the unchanged republish.
-    assert_eq!(
-        plan_snapshot_offer(Some(&last), &same, None, true),
-        SnapshotOffer::Fresh
     );
     // A refused policy offer resends with its armed generation even for
     // a revert to `last` (never Skip) and never inflates a new one.
     assert_eq!(
-        plan_snapshot_offer(Some(&last), &same, Some(41), false),
+        plan_snapshot_offer(Some(&last), &same, Some(41)),
         SnapshotOffer::Retry(41)
     );
     let changed = snapshot_with(false, &[]);
     assert_eq!(
-        plan_snapshot_offer(Some(&last), &changed, None, false),
+        plan_snapshot_offer(Some(&last), &changed, None),
         SnapshotOffer::Fresh
     );
     assert_eq!(
-        plan_snapshot_offer(None, &changed, None, false),
+        plan_snapshot_offer(None, &changed, None),
         SnapshotOffer::Fresh
     );
 }
@@ -93,12 +80,10 @@ fn refused_policy_reverts_with_reused_generation_and_fence_pairs() {
     for _ in 0..crate::input_handoff::INBOX_CAP {
         sender.offer(InboxItem::ClearEsc).expect("fits");
     }
-    sender
-        .offer(InboxItem::InvalidateWindrag(200))
-        .expect("buffered");
+    sender.offer(InboxItem::ClearEsc).expect("buffered");
     let mut candidate_b = snapshot_with(false, &[]);
     assert_eq!(
-        plan_snapshot_offer(last.as_ref(), &candidate_b, retry_gen, false),
+        plan_snapshot_offer(last.as_ref(), &candidate_b, retry_gen),
         SnapshotOffer::Fresh
     );
     published_gen += 1;
@@ -118,7 +103,7 @@ fn refused_policy_reverts_with_reused_generation_and_fence_pairs() {
     // armed generation, not a fresh bump.
     let revert = snapshot_with(true, &[7]);
     assert_eq!(
-        plan_snapshot_offer(last.as_ref(), &revert, retry_gen, false),
+        plan_snapshot_offer(last.as_ref(), &revert, retry_gen),
         SnapshotOffer::Retry(armed)
     );
     // Pump drains; the retry lands behind the retained safety control.
@@ -134,13 +119,13 @@ fn refused_policy_reverts_with_reused_generation_and_fence_pairs() {
     retry_gen = None;
     assert!(last.as_ref().is_some_and(|s| s.generation == armed));
     assert_eq!(retry_gen, None);
-    // Ordered behind the retained invalidation, then the pump ack for
+    // Ordered behind the retained control, then the pump ack for
     // the revert (content equals the applied policy) clears the fence
     // and fresh consumption resumes.
     assert_eq!(
         inbox.drain(),
         vec![
-            InboxItem::InvalidateWindrag(200),
+            InboxItem::ClearEsc,
             InboxItem::Snapshot(last.expect("accepted")),
         ]
     );
@@ -149,41 +134,6 @@ fn refused_policy_reverts_with_reused_generation_and_fence_pairs() {
     note_policy_applied(armed);
     assert!(!policy_fence_pending());
     assert!(keyboard_fresh_gate(true));
-}
-
-#[test]
-fn clear_forces_unchanged_republish_until_accepted() {
-    // Production sender flag + production plan: an absorbed clear forces
-    // the unchanged desired snapshot; the force clears only on accept.
-    let inbox = Arc::new(Inbox::new());
-    let mut sender = InboxSender::new(Arc::clone(&inbox));
-    let last: SharedSnapshot = Arc::new(snapshot_with(true, &[7]));
-    let mut force = false;
-    let mut last_clear_seen = 0u64;
-    sender.offer(InboxItem::ClearWindrag).expect("absorbed");
-    assert_eq!(sender.windrag_cleared(), 1);
-    if sender.windrag_cleared() != last_clear_seen {
-        last_clear_seen = sender.windrag_cleared();
-        force = true;
-    }
-    let same = snapshot_with(true, &[7]);
-    assert_eq!(
-        plan_snapshot_offer(Some(&last), &same, None, force),
-        SnapshotOffer::Fresh
-    );
-    sender
-        .offer(InboxItem::Snapshot(Arc::new(same)))
-        .expect("accepted");
-    force = false;
-    assert!(!force);
-    assert_eq!(last_clear_seen, 1);
-    assert_eq!(
-        inbox.drain(),
-        vec![
-            InboxItem::ClearWindrag,
-            InboxItem::Snapshot(Arc::new(snapshot_with(true, &[7]))),
-        ]
-    );
 }
 
 #[test]

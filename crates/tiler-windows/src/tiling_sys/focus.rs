@@ -127,64 +127,7 @@ pub(super) fn publish_managed(
         .into_iter()
         .map(|origin| (origin.hwnd, origin))
         .collect();
-    // Tiled-only mouse origins: the keyboard map minus intentional floats
-    // and sticky members, so Win+Left on those passes through natively.
-    // Maximized/fullscreen members are retained (never observed), so they
-    // are absent by construction. Each entry carries the live member tag
-    // read here on the owner thread, so the hook snapshot needs no native
-    // reads in the callback.
-    let mut windrag: HashMap<u64, WinDragPublished> = HashMap::new();
-    for window in observed {
-        let origin = snap_origin_of(window);
-        let Some(key) = state
-            .member_tokens
-            .iter()
-            .find(|(_, token)| token.as_str() == window.token.as_str())
-            .map(|(key, _)| key.clone())
-        else {
-            continue;
-        };
-        if state.sticky.contains_key(&key) {
-            continue;
-        }
-        if let Some(loc) = state.workspaces.member_loc(&key)
-            && (engine_is_float(state, &loc.output, &loc.workspace, &window.token)
-                || !workspace_mode_tiled(state, &loc.output, &loc.workspace))
-        {
-            continue;
-        }
-        windrag.insert(
-            origin.hwnd,
-            WinDragPublished {
-                origin,
-                tag: crate::product_hide::sys::read_member_tag(window.hwnd),
-            },
-        );
-    }
-    state.windrag_origins = windrag;
-    // Change-only hook-feed evidence: the callback binds against this many
-    // tiled origins (identity stays out of the log).
-    let origin_count = state.windrag_origins.len();
-    if state.windrag_origin_logged != Some(origin_count) {
-        state.windrag_origin_logged = Some(origin_count);
-        log_json_at(
-            &state.log_path,
-            serde_json::json!({"event":"windrag-origins","tick":state.tick,"count": origin_count}),
-        );
-    }
-    // Drop pre-gesture state for windows that left management, and disarm
-    // the hook slot for them so a stale bound down can never settle later.
-    // Routes through the input bridge on the product path (ordered FIFO with
-    // snapshots); same-thread direct call on proof paths.
-    for hwnd in state
-        .gesture_producer
-        .keys()
-        .copied()
-        .filter(|hwnd| !state.managed.contains(hwnd))
-        .collect::<Vec<_>>()
-    {
-        offer_input_control(state, InboxItem::InvalidateWindrag(hwnd));
-    }
+    // Drop pre-gesture state for windows that left management.
     state
         .esc_latched
         .retain(|hwnd| state.managed.contains(hwnd));
@@ -202,15 +145,6 @@ pub(super) fn publish_managed(
         .retain(|hwnd, _| state.managed.contains(hwnd));
     state
         .gesture_start_tag
-        .retain(|hwnd, _| state.managed.contains(hwnd));
-    state
-        .gesture_producer
-        .retain(|hwnd, _| state.managed.contains(hwnd));
-    state
-        .windrag_start_cursor
-        .retain(|hwnd, _| state.managed.contains(hwnd));
-    state
-        .windrag_bound
         .retain(|hwnd, _| state.managed.contains(hwnd));
 }
 

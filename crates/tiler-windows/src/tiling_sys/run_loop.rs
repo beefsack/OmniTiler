@@ -185,13 +185,6 @@ pub(super) fn run_tile_loop(
         mask_sends: 0,
         mask_send_max_us: 0,
         snap_origins: HashMap::new(),
-        windrag_origins: HashMap::new(),
-        gesture_producer: HashMap::new(),
-        windrag_start_cursor: HashMap::new(),
-        windrag_bound: HashMap::new(),
-        windrag_dropped: 0,
-        windrag_origin_logged: None,
-        windrag_stats_logged: (0, 0, 0, 0),
         snap_advance: None,
         resize_repeat: None,
         last_enumerated: 0,
@@ -512,45 +505,20 @@ pub(super) fn run_tile_loop(
     // bounded backoff retries below: failure degrades to keyboard-unavailable
     // (nothing consumes) while tiling continues, never a refused run.
     //
-    // Product `tile` runs both hooks on one dedicated input pump instead
-    // (stage 1): the callbacks never run on this owner thread, so owner
-    // observation, Engine, actuation and I/O cannot delay delivery. Proof
-    // commands keep the legacy same-thread hooks below untouched.
+    // Product `tile` runs the keyboard hook on one dedicated input pump
+    // instead (stage 1): the callback never runs on this owner thread, so
+    // owner observation, Engine, actuation and I/O cannot delay delivery.
+    // Proof commands keep the legacy same-thread hook below untouched.
     let use_input_thread = !proof && !shortcut_proof && !workspace_proof;
     let mut snap_hook = None;
     let mut snap_failures: u32 = 0;
     let mut snap_retry_at: Option<Instant> = None;
-    // Project Win+Left hook on the loop thread, same pump as the keyboard
-    // hook. Installed once when takeover holds; normal runs also install it
-    // while takeover is off so a live settings re-enable takes effect (the
-    // gate below keeps everything passing through until then). Install
-    // failure degrades to title-bar-only movement (Win+Left passes through
-    // natively) while tiling continues, never a refused run.
-    //
-    // Product path: owned by the input pump instead (same install-while-off
-    // contract, same pass-through gate via snapshots).
-    let windrag_hook = if !use_input_thread && (takeover || !proof) {
-        match crate::win_mouse::sys::install() {
-            Ok(hook) => {
-                log_json_at(&log_path, serde_json::json!({"event":"windrag-available"}));
-                Some(hook)
-            }
-            Err(message) => {
-                log_json_at(
-                    &log_path,
-                    serde_json::json!({"event":"windrag-unavailable","cause": message}),
-                );
-                None
-            }
-        }
-    } else {
-        None
-    };
-    // Dedicated input pump for the product path: both LL hooks plus their
-    // synchronous classifiers on one thread. Readiness uses a bounded wait;
-    // install failures retry on the pump with the same 5s-doubling/60s-cap
-    // vocabulary and the loop keeps tiling degraded meanwhile. A spawn
-    // failure degrades the same way (no hooks, tiling continues).
+    // Dedicated input pump for the product path: the LL keyboard hook
+    // plus its synchronous classifier on one thread. Readiness uses a
+    // bounded wait; install failures retry on the pump with the same
+    // 5s-doubling/60s-cap vocabulary and the loop keeps tiling degraded
+    // meanwhile. A spawn failure degrades the same way (no hooks, tiling
+    // continues).
     if use_input_thread {
         match InputHandle::spawn(state.keyboard) {
             Ok(mut handle) => {
@@ -559,12 +527,12 @@ pub(super) fn run_tile_loop(
                         &log_path,
                         if event.recovered {
                             serde_json::json!({
-                                "event": if event.hook == "keyboard" { "snap-available" } else { "windrag-available" },
+                                "event": "snap-available",
                                 "producer": "input-pump",
                             })
                         } else {
                             serde_json::json!({
-                                "event": if event.hook == "keyboard" { "snap-unavailable" } else { "windrag-unavailable" },
+                                "event": "snap-unavailable",
                                 "attempt": event.attempt,
                                 "retry_secs": event.retry_secs,
                                 "producer": "input-pump",
@@ -598,8 +566,6 @@ pub(super) fn run_tile_loop(
                     handle,
                     last_snapshot: None,
                     retry_gen: None,
-                    force_snapshot: false,
-                    last_clear_seen: 0,
                     published_gen: fence_base_generation(),
                     applied_gen: 0,
                     last_faults: 0,
@@ -764,7 +730,7 @@ pub(super) fn run_tile_loop(
     // naturally occurring owner turn; quiet runs flush one final read-only
     // summary at clean loop exit instead of waking for it.
     let mut trace_last = Instant::now();
-    // Trace-only health window (input ages, owner work, windrag transport):
+    // Trace-only health window (input ages plus owner work):
     // plain local, never shared across threads. Each loop iteration lends
     // it to its `OwnerWorkGuard` for the turn; the pending end-of-run
     // summary flushes after the loop below. Untouched (and unborrowed)
@@ -819,9 +785,6 @@ pub(super) fn run_tile_loop(
         // Trace-only owner-work sequence: counted only when tracing so
         // default runs pay no timer/counter work.
         let mut owner_seq: u64 = 0;
-        // Last observed windrag offer count for change-only transport
-        // observations (replaces the per-offer `windrag-transport` line).
-        let mut trace_windrag_offers: u64 = 0;
         // Last observed pump turn/offer counts for change-only input
         // observations: a fresh turn (or batch/drop) samples the slot
         // once; an unchanged diag is never resampled. No per-turn file
@@ -1104,13 +1067,11 @@ pub(super) fn run_tile_loop(
                 &mut snap_hook,
                 &mut snap_failures,
                 &mut snap_retry_at,
-                windrag_hook.is_some(),
                 &mut snap_want,
                 &mut tray,
                 &mut gaming,
                 &mut trace_last_turns,
                 &mut trace_last_offers,
-                &mut trace_windrag_offers,
                 woke,
             );
             woke = woke_out;
@@ -1260,14 +1221,6 @@ pub(super) fn run_tile_loop(
         // case, but success is recorded, never fabricated.
         let ok = crate::snapkey::sys::uninstall(&mut snap);
         let mut release = serde_json::json!({"event":"snap-release","ok": ok});
-        if !ok {
-            release["note"] = serde_json::json!("release failed; process exit releases the hook");
-        }
-        log_json_at(&log_path, release);
-    }
-    if let Some(mut mouse) = windrag_hook {
-        let ok = crate::win_mouse::sys::uninstall(&mut mouse);
-        let mut release = serde_json::json!({"event":"windrag-release","ok": ok});
         if !ok {
             release["note"] = serde_json::json!("release failed; process exit releases the hook");
         }

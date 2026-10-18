@@ -74,9 +74,5 @@ pub use queue::{
 mod shift_sync_tests;
 
 #[cfg(test)]
-#[path = "tests_windrag_mask.rs"]
-mod windrag_mask_tests;
-
-#[cfg(test)]
 #[path = "tests_history.rs"]
 mod history_tests;

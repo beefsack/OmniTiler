@@ -14,8 +14,6 @@ pub struct InputChannels {
     /// Input -> owner snap batches, tagged with the applied policy
     /// generation at drain time.
     pub snap_outbox: Arc<Outbox<TaggedBatch<QueuedSnapEvent>>>,
-    /// Input -> owner windrag batches, tagged like [`Self::snap_outbox`].
-    pub windrag_outbox: Arc<Outbox<TaggedBatch<WinDragEdge>>>,
     /// Input -> owner trace callback summaries (closed vocabulary only).
     pub cb_outbox: Arc<Outbox<Vec<crate::snapkey::CallbackDiag>>>,
     /// Bounded diagnostics published by the pump.
@@ -30,7 +28,7 @@ pub struct InputChannels {
     /// Stop requested by the owner; pump unhooks on its own thread and acks.
     pub stop_flag: Arc<AtomicBool>,
     /// Owner-intent wake: auto-reset kernel event signaled by the pump after
-    /// each accepted keyboard/mouse batch (fresh or pending-retry). Stays
+    /// each accepted keyboard batch (fresh or pending-retry). Stays
     /// pending between offer and the owner outer wait; coalesces bursts.
     /// `None` only when creation failed (spawn refuses cleanly).
     #[cfg(windows)]
@@ -71,7 +69,6 @@ impl InputChannels {
         Self {
             inbox: Arc::new(Inbox::new()),
             snap_outbox: Arc::new(Outbox::new()),
-            windrag_outbox: Arc::new(Outbox::new()),
             cb_outbox: Arc::new(Outbox::new()),
             diag: Arc::new(DiagSlot::new()),
             applied_policy_gen: Arc::new(std::sync::atomic::AtomicU64::new(0)),

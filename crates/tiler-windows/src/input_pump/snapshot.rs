@@ -48,7 +48,6 @@ pub fn shared_snapshot(
     remap: Vec<crate::snapkey::ChordRemap>,
     disabled: Vec<crate::snapkey::ChordDisable>,
     snap_origins: std::collections::HashMap<u64, crate::snapkey::SnapOrigin>,
-    windrag_origins: std::collections::HashMap<u64, crate::input_handoff::WindragOrigin>,
     active: bool,
     trace: bool,
 ) -> SharedSnapshot {
@@ -58,7 +57,6 @@ pub fn shared_snapshot(
         remap,
         disabled,
         snap_origins,
-        windrag_origins,
         active,
         trace,
     })

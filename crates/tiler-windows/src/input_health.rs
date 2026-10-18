@@ -36,8 +36,6 @@ pub const PUMP_AGE_OUTLIER_US: u64 = 50_000;
 pub const DISPATCH_OUTLIER_US: u64 = 10_000;
 /// Owner non-wait work outlier threshold, microseconds.
 pub const OWNER_BUSY_OUTLIER_US: u64 = 50_000;
-/// Windrag pump-offer-to-owner-take outlier threshold, microseconds.
-pub const TRANSPORT_OUTLIER_US: u64 = 50_000;
 /// Summary/outlier-repeat window: at most one summary and one repeated
 /// outlier per stream per second, apart from the final marked run flush.
 pub const SUMMARY_WINDOW: Duration = Duration::from_secs(1);
@@ -45,8 +43,6 @@ pub const SUMMARY_WINDOW: Duration = Duration::from_secs(1);
 /// Honest scope strings (kept identical to the per-turn logs replaced).
 pub const INPUT_SCOPE: &str = "classifier-queue-plus-pump-transport-only";
 pub const INPUT_EXCLUDES: &str = "native-delivery-latency";
-pub const TRANSPORT_SCOPE: &str = "pump-offer-to-owner-take-only";
-pub const TRANSPORT_EXCLUDES: &str = "queue-wait-and-native-delivery";
 pub const OWNER_SCOPE: &str = "owner-non-wait-work-after-pump-only";
 pub const OWNER_EXCLUDES: &str = "pump-wait-plus-callback-delivery-plus-sample-write";
 
@@ -110,14 +106,6 @@ struct OwnerWin {
     last_outlier: Option<Instant>,
 }
 
-#[derive(Debug, Default)]
-struct WindragWin {
-    samples: u64,
-    transport_max: u64,
-    outliers: u64,
-    last_outlier: Option<Instant>,
-}
-
 /// Windowed health aggregator. Plain struct, no interior mutability:
 /// the owner-work guard holds the only `&mut` borrow during a turn,
 /// so no `RefCell` borrow tracking or shared-ownership machinery.
@@ -127,7 +115,6 @@ pub struct Health {
     last_emit: Option<Instant>,
     input: InputWin,
     owner: OwnerWin,
-    windrag: WindragWin,
 }
 
 impl Health {
@@ -155,7 +142,7 @@ impl Health {
     }
 
     fn has_activity(&self) -> bool {
-        self.input.samples > 0 || self.owner.samples > 0 || self.windrag.samples > 0
+        self.input.samples > 0 || self.owner.samples > 0
     }
 
     /// Record one input observation; returns the immediate outlier line
@@ -262,35 +249,6 @@ impl Health {
         }))
     }
 
-    /// Record one windrag transport sample; outlier rules mirror
-    /// [`Self::observe_input`].
-    pub fn observe_windrag(
-        &mut self,
-        now: Instant,
-        transport_us: u64,
-    ) -> Option<serde_json::Value> {
-        self.start_window(now);
-        let w = &mut self.windrag;
-        w.samples = w.samples.saturating_add(1);
-        w.transport_max = w.transport_max.max(transport_us);
-        if transport_us <= TRANSPORT_OUTLIER_US {
-            return None;
-        }
-        w.outliers = w.outliers.saturating_add(1);
-        if !Self::repeat_due(w.last_outlier, now) {
-            return None;
-        }
-        w.last_outlier = Some(now);
-        Some(serde_json::json!({
-            "event": "windrag-transport-outlier",
-            "transport_us": transport_us,
-            "threshold_us": TRANSPORT_OUTLIER_US,
-            "stream_outliers_total": w.outliers,
-            "scope": TRANSPORT_SCOPE,
-            "excludes": TRANSPORT_EXCLUDES,
-        }))
-    }
-
     fn window_us(&self, now: Instant) -> u64 {
         self.window_start
             .map(|start| {
@@ -352,33 +310,14 @@ impl Health {
             }
             out.push(line);
         }
-        if self.windrag.samples > 0 {
-            let mut line = serde_json::json!({
-                "event": "windrag-transport-summary",
-                "window_us": window_us,
-                "samples": self.windrag.samples,
-                "transport_max_us": self.windrag.transport_max,
-                "outliers": self.windrag.outliers,
-                "scope": TRANSPORT_SCOPE,
-                "excludes": TRANSPORT_EXCLUDES,
-                "note": "last-offer-per-owner-observation-coalesced-offers-unmeasured",
-            });
-            if let Some(flushed) = flushed {
-                line["flushed"] = flushed.into();
-            }
-            out.push(line);
-        }
         // Retain per-stream outlier throttle timestamps across the
         // aggregate reset (see `emit` docs).
         let input_outlier = self.input.last_outlier;
         let owner_outlier = self.owner.last_outlier;
-        let windrag_outlier = self.windrag.last_outlier;
         self.input = InputWin::default();
         self.owner = OwnerWin::default();
-        self.windrag = WindragWin::default();
         self.input.last_outlier = input_outlier;
         self.owner.last_outlier = owner_outlier;
-        self.windrag.last_outlier = windrag_outlier;
         self.window_start = None;
         self.last_emit = Some(now);
         out
@@ -516,9 +455,6 @@ mod tests {
         let mut health = Health::new();
         assert!(health.observe_owner(start, owner(50_000)).is_none());
         assert!(health.observe_owner(start, owner(50_001)).is_some());
-        let mut health = Health::new();
-        assert!(health.observe_windrag(start, 50_000).is_none());
-        assert!(health.observe_windrag(start, 50_001).is_some());
     }
 
     #[test]
@@ -562,14 +498,12 @@ mod tests {
                 .is_some()
         );
         assert!(health.observe_owner(start, owner(60_000)).is_some());
-        assert!(health.observe_windrag(start, 60_000).is_some());
         assert!(
             health
                 .observe_input(start, age_only(61_000, 61_000, 2))
                 .is_none()
         );
         assert!(health.observe_owner(start, owner(61_000)).is_none());
-        assert!(health.observe_windrag(start, 61_000).is_none());
     }
 
     #[test]
@@ -582,7 +516,6 @@ mod tests {
         enum Stream {
             Input,
             Owner,
-            Windrag,
         }
         fn breach(health: &mut Health, stream: Stream, now: Instant) -> bool {
             match stream {
@@ -590,7 +523,6 @@ mod tests {
                     .observe_input(now, age_only(60_000, 60_000, 1))
                     .is_some(),
                 Stream::Owner => health.observe_owner(now, owner(60_000)).is_some(),
-                Stream::Windrag => health.observe_windrag(now, 60_000).is_some(),
             }
         }
         fn calm(health: &mut Health, stream: Stream, now: Instant) {
@@ -600,9 +532,6 @@ mod tests {
                 }
                 Stream::Owner => {
                     health.observe_owner(now, owner(100));
-                }
-                Stream::Windrag => {
-                    health.observe_windrag(now, 100);
                 }
             }
         }
@@ -614,7 +543,7 @@ mod tests {
                 _ => health.take_end_of_run(now).len(),
             }
         }
-        for stream in [Stream::Input, Stream::Owner, Stream::Windrag] {
+        for stream in [Stream::Input, Stream::Owner] {
             // Due flush just after a late-window outlier: the calm
             // observation opens the window so the flush lands ~1ms after
             // the outlier.
@@ -754,10 +683,10 @@ mod tests {
     fn end_of_run_flushes_pending_regardless_of_throttle() {
         let mut health = Health::new();
         let start = t0();
-        health.observe_windrag(start, 1_000);
+        health.observe_input(start, age_only(1_000, 2_000, 7));
         let lines = health.take_end_of_run(start + Duration::from_millis(10));
         assert_eq!(lines.len(), 1);
-        assert_eq!(lines[0]["event"], "windrag-transport-summary");
+        assert_eq!(lines[0]["event"], "input-queue-summary");
         assert_eq!(lines[0]["flushed"], "end-of-run");
         assert!(
             health
@@ -841,10 +770,9 @@ mod tests {
             .observe_input(start, age_only(60_000, 70_000, 1))
             .expect("outlier");
         health.observe_owner(start, owner(60_000));
-        health.observe_windrag(start, 60_000);
         let mut lines = health.take_due(start + SUMMARY_WINDOW);
         lines.push(outlier);
-        assert_eq!(lines.len(), 4);
+        assert_eq!(lines.len(), 3);
         for line in &lines {
             let text = line.to_string().to_lowercase();
             for banned in ["hwnd", "pid", "exe", "title", "token"] {
@@ -863,11 +791,5 @@ mod tests {
             .find(|l| l["event"] == "owner-work-summary")
             .expect("owner summary");
         assert_eq!(owner_summary["scope"], OWNER_SCOPE);
-        let windrag_summary = lines
-            .iter()
-            .find(|l| l["event"] == "windrag-transport-summary")
-            .expect("windrag summary");
-        assert_eq!(windrag_summary["scope"], TRANSPORT_SCOPE);
-        assert_eq!(windrag_summary["transport_max_us"], 60_000);
     }
 }

@@ -4,9 +4,7 @@ use super::{
     KeyboardConfig, MarkedDiagBuf, MarkedKeyDiag, ModDiagBuf, QueuedMask, QueuedSnapEvent,
     SnapClassify, SnapOrigin, SnapQueue,
 };
-use crate::input_handoff::{
-    SharedSnapshot, global_esc_clock, global_windrag_esc_clock, keyboard_fresh_gate,
-};
+use crate::input_handoff::{SharedSnapshot, global_esc_clock, keyboard_fresh_gate};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::time::Instant;
@@ -64,22 +62,6 @@ struct SnapHookState {
     /// `esc_edge`. Never reset by take/clear so START snapshots stay
     /// ordered across pumps.
     esc_seq: u64,
-    /// Project-gesture cancel edge for an open Win+Left drag: set on
-    /// EVERY Esc down (physical or injected, marked or unmarked),
-    /// pass-through always, never consumed, never a command, never
-    /// classifier state. The product hook filters injected keys from
-    /// all commands; this edge is the one deliberate exception so a
-    /// synthetic SendInput Esc still cancels the pointer-tracked
-    /// project journey (there is no native modal loop to cancel it, so
-    /// without this the synthetic proof could never cancel). A physical
-    /// Esc sets both this and the native `esc_edge`; a synthetic Esc
-    /// sets only this. The owner latches it per open windrag gesture
-    /// whose START sequence predates the edge, exactly like the native
-    /// path. Hookless runs never set it.
-    windrag_esc_edge: bool,
-    /// Monotonic sequence of all Esc down edges (physical plus
-    /// injected) backing the windrag cancel edge. Never reset.
-    windrag_esc_seq: u64,
 }
 
 thread_local! {
@@ -91,12 +73,6 @@ thread_local! {
 /// pump restarts can never mismatch clocks.
 pub fn shared_esc_seq() -> u64 {
     global_esc_clock().load()
-}
-
-/// Direct sample of the process-global windrag Esc clock for mouse
-/// Down/Up. Same singleton contract as [`shared_esc_seq`].
-pub fn shared_windrag_esc_seq() -> u64 {
-    global_windrag_esc_clock().load()
 }
 
 /// Pump-thread sample of the tracked Win+Shift chord level: `(win, shift)`
@@ -212,28 +188,6 @@ pub fn clear_esc_edge() {
     });
 }
 
-/// Ordered windrag invalidation from the input pump (FIFO between
-/// snapshots): drops the cached origin so later Downs cannot rebind
-/// until a fresh snapshot republishes it. Held-pair state is untouched:
-/// consumed holds ride their stored verdict to the paired key-up.
-pub fn apply_invalidate_windrag(hwnd: u64) {
-    SNAP.with(|s| {
-        if let Some(st) = s.borrow_mut().as_mut() {
-            st.origins.remove(&hwnd);
-        }
-    });
-}
-
-/// Suspend/teardown path only: drop all cached origins. Held pairs keep
-/// their stored verdicts; no new chord binds until a fresh snapshot.
-pub fn apply_clear_windrag_origins() {
-    SNAP.with(|s| {
-        if let Some(st) = s.borrow_mut().as_mut() {
-            st.origins.clear();
-        }
-    });
-}
-
 /// Apply one whole owner snapshot outside callbacks (input pump only).
 /// Whole-payload FIFO order preserved by the caller; never called from a
 /// hook callback. Stale queued actions drain only when the classifier
@@ -263,16 +217,6 @@ pub fn apply_snapshot(snap: &SharedSnapshot, policy_changed: bool) -> usize {
     })
 }
 
-/// Drop a stale windrag Esc edge without acting (suspend/teardown path
-/// only), alongside [`clear_esc_edge`]. Gesture START snapshots the
-/// sequence instead of clearing, so a same-batch edge stays ordered.
-pub fn clear_windrag_esc_edge() {
-    SNAP.with(|s| {
-        if let Some(st) = s.borrow_mut().as_mut() {
-            st.windrag_esc_edge = false;
-        }
-    });
-}
 /// Monotonic sequence of physical Esc down edges. The owner snapshots
 /// this at each gesture START and latches only edges with a newer
 /// sequence, so pre-gesture taps never cancel and fast cancel taps that
@@ -280,49 +224,6 @@ pub fn clear_windrag_esc_edge() {
 /// installed.
 pub fn esc_seq() -> u64 {
     SNAP.with(|s| s.borrow().as_ref().map(|st| st.esc_seq).unwrap_or(0))
-}
-
-/// Owner drain for the project-gesture cancel edge: consume-once, true
-/// when any Esc down (physical or injected) arrived since the last take.
-/// The owner latches it per open windrag gesture whose down-time
-/// sequence predates the edge. Always false when the hook is not
-/// installed. The sequence counter is never reset here; compare with
-/// [`windrag_esc_seq`].
-pub fn take_windrag_esc_edge() -> bool {
-    SNAP.with(|s| {
-        let mut borrow = s.borrow_mut();
-        match borrow.as_mut() {
-            Some(st) => std::mem::replace(&mut st.windrag_esc_edge, false),
-            None => false,
-        }
-    })
-}
-
-/// Monotonic sequence of all Esc down edges (physical plus injected).
-/// The owner snapshots this at each windrag down and latches only edges
-/// with a newer sequence. Zero when the hook is not installed.
-pub fn windrag_esc_seq() -> u64 {
-    SNAP.with(|s| {
-        s.borrow()
-            .as_ref()
-            .map(|st| st.windrag_esc_seq)
-            .unwrap_or(0)
-    })
-}
-
-/// Arm the Start-menu mask for a consumed project Win+Left gesture.
-/// Called by the mouse hook on the same thread after it consumes a
-/// Win+Left down: the physical Win hold still needs the E8 pair at
-/// Win-up. No-op when the keyboard hook is not installed. Injected
-/// Win-ups never reach the reserve (the callback filters injected
-/// input), so a synthetic hold never sends the product mask and leaves
-/// no stale flag: the classifier never saw the synthetic Win at all.
-pub fn arm_windrag_mask() {
-    SNAP.with(|s| {
-        if let Some(st) = s.borrow_mut().as_mut() {
-            st.machine.note_windrag_consumed();
-        }
-    });
 }
 
 /// Bind the chord-time origin: the managed identity under the foreground
@@ -468,30 +369,6 @@ fn handle_key_event(ev: crate::ffi::KeyEvent) -> crate::ffi::HookVerdict {
                         });
                     });
                 }
-                // Project-gesture cancel edge: an injected Esc down still
-                // cancels an open Win+Left drag even though injected keys
-                // never become commands. Pass-through always, never
-                // consumed, never classifier state, never a log: the
-                // owner latches it per open windrag gesture only. This
-                // is the one deliberate injected exception (the native
-                // modal loop cancels synthetics natively, but the
-                // stationary project hold has no modal loop).
-                if vk == super::VK_ESCAPE && flags & LLKHF_UP == 0 {
-                    SNAP.with(|s| {
-                        if let Some(st) = s.borrow_mut().as_mut() {
-                            st.windrag_esc_edge = true;
-                            st.windrag_esc_seq = st.windrag_esc_seq.wrapping_add(1);
-                        }
-                    });
-                    // Direct atomic publish in the callback: the owner
-                    // settle sees this edge even if a WinEvent END lands
-                    // before the pump forwards anything. The sequence
-                    // still decides cancellation, so the flag alone never
-                    // cancels.
-                    global_windrag_esc_clock().bump();
-                    crate::input_handoff::global_windrag_esc_edge()
-                        .store(true, std::sync::atomic::Ordering::SeqCst);
-                }
                 return HookVerdict::Pass;
             }
         }
@@ -508,26 +385,19 @@ fn handle_key_event(ev: crate::ffi::KeyEvent) -> crate::ffi::HookVerdict {
         // logged, never set from injected or proof-marked input. The
         // owner snapshots the sequence at START and latches only newer
         // edges; hookless paths never set it so their semantics are
-        // unchanged. A physical Esc down additionally sets the
-        // project-gesture cancel edge below so open Win+Left drags
-        // cancel through the same keypress.
+        // unchanged.
         if !marked && !is_up && vk == super::VK_ESCAPE {
             SNAP.with(|s| {
                 if let Some(st) = s.borrow_mut().as_mut() {
                     st.esc_edge = true;
                     st.esc_seq = st.esc_seq.wrapping_add(1);
-                    st.windrag_esc_edge = true;
-                    st.windrag_esc_seq = st.windrag_esc_seq.wrapping_add(1);
                 }
             });
             // Direct atomic publish in the callback (see the injected
             // path above): no pump-forwarding delay can hide an Esc that
             // lands just before a WinEvent END.
             global_esc_clock().bump();
-            global_windrag_esc_clock().bump();
             crate::input_handoff::global_esc_edge()
-                .store(true, std::sync::atomic::Ordering::SeqCst);
-            crate::input_handoff::global_windrag_esc_edge()
                 .store(true, std::sync::atomic::Ordering::SeqCst);
         }
         if is_up && super::is_win_vk(vk) {
@@ -943,9 +813,6 @@ pub fn mask_evidence(mask: &QueuedMask) -> serde_json::Value {
         super::MaskTrigger::LaunchTerminal => serde_json::json!({
             "trigger_op": "launch-terminal",
         }),
-        super::MaskTrigger::WinDrag => serde_json::json!({
-            "trigger_op": "windrag",
-        }),
     };
     value["inserted"] = serde_json::Value::from(mask.inserted);
     value["release_sent"] = serde_json::Value::from(mask.release_sent);
@@ -972,8 +839,6 @@ pub fn install(config: KeyboardConfig) -> std::result::Result<crate::ffi::SnapKe
             mask_send_max_us: 0,
             esc_edge: false,
             esc_seq: 0,
-            windrag_esc_edge: false,
-            windrag_esc_seq: 0,
         });
     });
     crate::ffi::set_snapkey_sink(handle_key_event);
@@ -1010,8 +875,6 @@ pub fn install_proof(
             mask_send_max_us: 0,
             esc_edge: false,
             esc_seq: 0,
-            windrag_esc_edge: false,
-            windrag_esc_seq: 0,
         });
     });
     crate::ffi::set_snapkey_sink(handle_key_event);
@@ -1145,7 +1008,7 @@ pub fn uninstall(hook: &mut crate::ffi::SnapKeyHook) -> bool {
 }
 
 /// Test-only mask-obligation probe (no hooks, no native calls): true
-/// while a consumed gesture (chord or windrag) still owes the Win-up E8
+/// while a consumed chord still owes the Win-up E8
 /// pair. Driven directly in callback tests that must not perform a real
 /// `SendInput`.
 #[cfg(test)]
@@ -1169,21 +1032,18 @@ pub fn test_keyboard_origins() -> HashMap<u64, SnapOrigin> {
     })
 }
 
-/// Pump-thread drain of this thread's hook-state Esc-cancel edges (no
-/// hooks: `(false, false)`). The input pump calls this between message
+/// Pump-thread drain of this thread's hook-state Esc-cancel edge (no
+/// hooks: `false`). The input pump calls this between message
 /// drains to wake the owner once per edge; the product owner latches
-/// through the process-global edges, so consuming here steals nothing.
+/// through the process-global edge, so consuming here steals nothing.
 /// Legacy same-thread owners never share this thread's state.
-pub fn take_pump_esc_edges() -> (bool, bool) {
+pub fn take_pump_esc_edge() -> bool {
     SNAP.with(|s| {
         let mut borrow = s.borrow_mut();
         let Some(st) = borrow.as_mut() else {
-            return (false, false);
+            return false;
         };
-        let edges = (st.esc_edge, st.windrag_esc_edge);
-        st.esc_edge = false;
-        st.windrag_esc_edge = false;
-        edges
+        std::mem::replace(&mut st.esc_edge, false)
     })
 }
 /// Test-only hook-state installer (no `SetWindowsHookExW`, no native
@@ -1209,8 +1069,6 @@ pub fn test_ensure_state(config: KeyboardConfig) {
             mask_send_max_us: 0,
             esc_edge: false,
             esc_seq: 0,
-            windrag_esc_edge: false,
-            windrag_esc_seq: 0,
         });
     });
 }

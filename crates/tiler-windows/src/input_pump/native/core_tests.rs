@@ -1,8 +1,7 @@
 #![forbid(unsafe_code)]
 use super::*;
 use crate::input_handoff::{
-    InboxItem, InputSnapshot, SharedSnapshot, TaggedBatch, WindragOrigin, global_esc_clock,
-    global_windrag_esc_clock,
+    InboxItem, InputSnapshot, SharedSnapshot, TaggedBatch, global_esc_clock,
 };
 use crate::snapkey::{KeyboardConfig, SnapClassify, SnapOrigin};
 use std::collections::HashMap;
@@ -23,18 +22,17 @@ fn snapshot_with(policy_generation: u64, takeover: bool) -> SharedSnapshot {
         remap: Vec::new(),
         disabled: Vec::new(),
         snap_origins: HashMap::new(),
-        windrag_origins: HashMap::new(),
         active: takeover,
         trace: false,
     })
 }
 
 #[test]
-fn install_retry_reports_then_readies_on_both_hooks() {
-    // Keyboard fails twice, mouse succeeds: no readiness until both
-    // install; every failure is reported with its backoff.
+fn install_retry_reports_then_readies_on_keyboard() {
+    // Keyboard fails twice then succeeds: no readiness until it
+    // installs; every failure is reported with its backoff.
     let (channels, signals) = test_channels();
-    let backend = super::super::FakeBackend::new(vec![false, false, true], vec![true], true);
+    let backend = super::super::FakeBackend::new(vec![false, false, true], true);
     let mut core = PumpCore::new(
         backend,
         Arc::clone(&channels),
@@ -44,11 +42,11 @@ fn install_retry_reports_then_readies_on_both_hooks() {
             allow_win_l: false,
         },
     );
-    // First turn: both install attempts run (keyboard fails).
+    // First turn: the install attempt runs (keyboard fails).
     assert!(!core.step());
     assert!(!signals.is_ready());
     assert_eq!(core.keyboard_failures, 1);
-    assert!(core.mouse_hook.is_some());
+    assert!(core.keyboard_hook.is_none());
     // Backoff (5s) blocks immediate retry: force due.
     core.keyboard_retry_at = Some(Instant::now());
     assert!(!core.step());
@@ -67,7 +65,7 @@ fn retry_uses_latest_snapshot_policy_not_spawn_config() {
     // process-global fence, which races guarded fence tests.
     let _guard = crate::input_handoff::fence_test_serial();
     let (channels, signals) = test_channels();
-    let backend = super::super::FakeBackend::new(vec![false, true], vec![true], true);
+    let backend = super::super::FakeBackend::new(vec![false, true], true);
     let mut core = PumpCore::new(
         backend,
         Arc::clone(&channels),
@@ -91,18 +89,18 @@ fn retry_uses_latest_snapshot_policy_not_spawn_config() {
 
 #[test]
 fn inbox_controls_apply_in_fifo_order() {
-    // Snapshot, invalidate, snapshot through the real step with
-    // hook-free TLS fixtures (no hooks, no native calls): the middle
-    // control must apply between the two policies. Serial guard:
-    // the step applies generations to the process-global fence.
+    // Snapshot, ClearEsc, snapshot through the real step with a
+    // hook-free TLS fixture (no hooks, no native calls): policies
+    // must apply in order and the Esc clear must not disturb them.
+    // Serial guard: the step applies generations to the
+    // process-global fence.
     let _guard = crate::input_handoff::fence_test_serial();
     crate::snapkey::sys::test_ensure_state(KeyboardConfig {
         takeover: true,
         allow_win_l: false,
     });
-    crate::win_mouse::sys::test_ensure_state();
     let (channels, signals) = test_channels();
-    let backend = super::super::FakeBackend::new(vec![true], vec![true], true);
+    let backend = super::super::FakeBackend::new(vec![true], true);
     let mut core = PumpCore::new(
         backend,
         Arc::clone(&channels),
@@ -130,26 +128,15 @@ fn inbox_controls_apply_in_fifo_order() {
         .inbox
         .push(InboxItem::Snapshot(first))
         .expect("fits");
-    channels
-        .inbox
-        .push(InboxItem::InvalidateWindrag(7))
-        .expect("fits");
+    channels.inbox.push(InboxItem::ClearEsc).expect("fits");
     channels
         .inbox
         .push(InboxItem::Snapshot(snapshot_with(2, false)))
         .expect("fits");
     assert!(!core.step());
-    // Applied keyboard origins lost hwnd 7 while the second
-    // snapshot's changed policy (takeover off) applied; the mouse
-    // snapshot dropped it too.
-    assert!(!crate::snapkey::sys::test_keyboard_origins().contains_key(&7));
-    assert!(
-        !crate::win_mouse::sys::test_snapshot()
-            .windrag_origins
-            .contains_key(&7)
-    );
-    // Policy generations advanced in order; the invalidated origin
-    // never rebound through the later snapshot.
+    // The second snapshot's changed policy (takeover off) applied and
+    // its empty origin map replaced the first.
+    assert!(crate::snapkey::sys::test_keyboard_origins().is_empty());
     assert_eq!(
         channels
             .applied_policy_gen
@@ -157,22 +144,20 @@ fn inbox_controls_apply_in_fifo_order() {
         2
     );
     crate::snapkey::sys::test_clear_state();
-    crate::win_mouse::sys::test_clear_state();
 }
 
 #[test]
 fn retained_snapshot_reapplies_after_initial_install() {
     // Snapshot applied while TLS is absent (install pending), then
-    // both hooks install through the real step: the retained snapshot
-    // must restore origins/gates onto the fresh empty hook state.
-    // Without the reapply the installs would leave empty state with
-    // change-gated publication never republishing it. Serial guard:
-    // the step applies generations to the process-global fence.
+    // the keyboard hook installs through the real step: the retained
+    // snapshot must restore origins/gates onto the fresh empty hook
+    // state. Without the reapply the install would leave empty state
+    // with change-gated publication never republishing it. Serial
+    // guard: the step applies generations to the process-global fence.
     let _guard = crate::input_handoff::fence_test_serial();
     crate::snapkey::sys::test_clear_state();
-    crate::win_mouse::sys::test_clear_state();
     let (channels, signals) = test_channels();
-    let backend = super::super::FakeBackend::new(vec![true], vec![true], true);
+    let backend = super::super::FakeBackend::new(vec![true], true);
     let mut core = PumpCore::new(
         backend,
         Arc::clone(&channels),
@@ -192,37 +177,18 @@ fn retained_snapshot_reapplies_after_initial_install() {
                 creation: "c".to_owned(),
             },
         );
-    Arc::get_mut(&mut snap)
-        .expect("unique")
-        .windrag_origins
-        .insert(
-            7,
-            WindragOrigin {
-                origin: SnapOrigin {
-                    hwnd: 7,
-                    token: "t".to_owned(),
-                    pid: 1,
-                    creation: "c".to_owned(),
-                },
-                tag: Some("tag-7".to_owned()),
-            },
-        );
     channels
         .inbox
         .push(InboxItem::Snapshot(snap))
         .expect("fits");
     assert!(!core.step());
     assert!(core.keyboard_hook.is_some());
-    assert!(core.mouse_hook.is_some());
     // The install used the retained policy, not the stale spawn init.
     assert!(core.backend.keyboard_configs.contains(&KeyboardConfig {
         takeover: true,
         allow_win_l: false,
     }));
     assert!(crate::snapkey::sys::test_keyboard_origins().contains_key(&7));
-    let mouse = crate::win_mouse::sys::test_snapshot();
-    assert!(mouse.windrag_origins.contains_key(&7));
-    assert!(mouse.active);
     assert_eq!(
         channels
             .applied_policy_gen
@@ -230,20 +196,18 @@ fn retained_snapshot_reapplies_after_initial_install() {
         11
     );
     crate::snapkey::sys::test_clear_state();
-    crate::win_mouse::sys::test_clear_state();
 }
 
 #[test]
-fn retained_snapshot_reapplies_after_partial_install_failure() {
-    // Keyboard installs while mouse keeps failing; the later mouse
-    // recovery through the real step must still restore the retained
-    // mouse snapshot (origins plus gate). Serial guard: the step
-    // applies generations to the process-global fence.
+fn retained_snapshot_reapplies_after_install_retry() {
+    // Keyboard install fails while a snapshot waits; the later retry
+    // through the real step must still restore the retained snapshot
+    // (origins plus gate). Serial guard: the step applies generations
+    // to the process-global fence.
     let _guard = crate::input_handoff::fence_test_serial();
     crate::snapkey::sys::test_clear_state();
-    crate::win_mouse::sys::test_clear_state();
     let (channels, signals) = test_channels();
-    let backend = super::super::FakeBackend::new(vec![true], vec![false, true], true);
+    let backend = super::super::FakeBackend::new(vec![false, true], true);
     let mut core = PumpCore::new(
         backend,
         Arc::clone(&channels),
@@ -253,224 +217,14 @@ fn retained_snapshot_reapplies_after_partial_install_failure() {
     let mut snap = snapshot_with(21, true);
     Arc::get_mut(&mut snap)
         .expect("unique")
-        .windrag_origins
-        .insert(
-            7,
-            WindragOrigin {
-                origin: SnapOrigin {
-                    hwnd: 7,
-                    token: "t".to_owned(),
-                    pid: 1,
-                    creation: "c".to_owned(),
-                },
-                tag: Some("tag-7".to_owned()),
-            },
-        );
-    channels
-        .inbox
-        .push(InboxItem::Snapshot(snap))
-        .expect("fits");
-    assert!(!core.step());
-    assert!(core.keyboard_hook.is_some());
-    assert!(core.mouse_hook.is_none());
-    assert_eq!(core.mouse_failures, 1);
-    // Mouse retry due now: recovery installs and reapplies.
-    core.mouse_retry_at = Some(Instant::now());
-    assert!(!core.step());
-    assert!(core.mouse_hook.is_some());
-    assert!(signals.is_ready());
-    let mouse = crate::win_mouse::sys::test_snapshot();
-    assert!(mouse.windrag_origins.contains_key(&7));
-    assert!(mouse.active);
-    crate::snapkey::sys::test_clear_state();
-    crate::win_mouse::sys::test_clear_state();
-}
-
-#[test]
-fn clear_forgets_retained_then_forced_same_snapshot_restores() {
-    // Clear drops both hook origin maps and the retention; the
-    // owner's forced republish of the UNCHANGED desired snapshot
-    // (same content, same generation: no policy change, no bump)
-    // restores origins through the real step. Without the force the
-    // cleared origins would stay absent forever under change-gated
-    // publication. Serial guard: the step applies generations to the
-    // process-global fence.
-    let _guard = crate::input_handoff::fence_test_serial();
-    crate::snapkey::sys::test_clear_state();
-    crate::win_mouse::sys::test_clear_state();
-    let (channels, signals) = test_channels();
-    let backend = super::super::FakeBackend::new(vec![true], vec![true], true);
-    let mut core = PumpCore::new(
-        backend,
-        Arc::clone(&channels),
-        Arc::clone(&signals),
-        KeyboardConfig {
-            takeover: true,
-            allow_win_l: false,
-        },
-    );
-    assert!(!core.step());
-    let mut snap = snapshot_with(5, true);
-    let origin = SnapOrigin {
-        hwnd: 7,
-        token: "t".to_owned(),
-        pid: 1,
-        creation: "c".to_owned(),
-    };
-    Arc::get_mut(&mut snap)
-        .expect("unique")
         .snap_origins
-        .insert(7, origin.clone());
-    Arc::get_mut(&mut snap)
-        .expect("unique")
-        .windrag_origins
         .insert(
             7,
-            WindragOrigin {
-                origin,
-                tag: Some("tag-7".to_owned()),
-            },
-        );
-    channels
-        .inbox
-        .push(InboxItem::Snapshot(Arc::clone(&snap)))
-        .expect("fits");
-    assert!(!core.step());
-    assert!(crate::snapkey::sys::test_keyboard_origins().contains_key(&7));
-    assert!(
-        crate::win_mouse::sys::test_snapshot()
-            .windrag_origins
-            .contains_key(&7)
-    );
-    channels.inbox.push(InboxItem::ClearWindrag).expect("fits");
-    assert!(!core.step());
-    assert!(crate::snapkey::sys::test_keyboard_origins().is_empty());
-    assert!(
-        crate::win_mouse::sys::test_snapshot()
-            .windrag_origins
-            .is_empty()
-    );
-    // Forced republish of the unchanged snapshot restores both maps.
-    channels
-        .inbox
-        .push(InboxItem::Snapshot(snap))
-        .expect("fits");
-    assert!(!core.step());
-    assert!(crate::snapkey::sys::test_keyboard_origins().contains_key(&7));
-    assert!(
-        crate::win_mouse::sys::test_snapshot()
-            .windrag_origins
-            .contains_key(&7)
-    );
-    assert_eq!(
-        channels
-            .applied_policy_gen
-            .load(std::sync::atomic::Ordering::SeqCst),
-        5
-    );
-    crate::snapkey::sys::test_clear_state();
-    crate::win_mouse::sys::test_clear_state();
-}
-
-#[test]
-fn install_with_queued_invalidate_does_not_rearm() {
-    // Snapshot and invalidation queued before the hooks exist: the
-    // step applies to absent TLS, installs empty hook state, then
-    // reapplies the retention. The retention must have forgotten the
-    // invalidated origin, or the install would rearm it. Serial
-    // guard: the step applies generations to the process-global
-    // fence.
-    let _guard = crate::input_handoff::fence_test_serial();
-    crate::snapkey::sys::test_clear_state();
-    crate::win_mouse::sys::test_clear_state();
-    let (channels, signals) = test_channels();
-    let backend = super::super::FakeBackend::new(vec![true], vec![true], true);
-    let mut core = PumpCore::new(
-        backend,
-        Arc::clone(&channels),
-        Arc::clone(&signals),
-        KeyboardConfig::disabled(),
-    );
-    let mut snap = snapshot_with(40, true);
-    let origin = SnapOrigin {
-        hwnd: 7,
-        token: "t".to_owned(),
-        pid: 1,
-        creation: "c".to_owned(),
-    };
-    Arc::get_mut(&mut snap)
-        .expect("unique")
-        .snap_origins
-        .insert(7, origin.clone());
-    Arc::get_mut(&mut snap)
-        .expect("unique")
-        .windrag_origins
-        .insert(
-            7,
-            WindragOrigin {
-                origin,
-                tag: Some("tag-7".to_owned()),
-            },
-        );
-    channels
-        .inbox
-        .push(InboxItem::Snapshot(snap))
-        .expect("fits");
-    channels
-        .inbox
-        .push(InboxItem::InvalidateWindrag(7))
-        .expect("fits");
-    assert!(!core.step());
-    assert!(core.keyboard_hook.is_some());
-    assert!(core.mouse_hook.is_some());
-    assert!(!crate::snapkey::sys::test_keyboard_origins().contains_key(&7));
-    assert!(
-        !crate::win_mouse::sys::test_snapshot()
-            .windrag_origins
-            .contains_key(&7)
-    );
-    crate::snapkey::sys::test_clear_state();
-    crate::win_mouse::sys::test_clear_state();
-}
-
-#[test]
-fn keyboard_recovers_without_rearming_invalidated_origin() {
-    // Keyboard fails while the mouse installs (gate closed, no mask
-    // source), an invalidation lands, then the keyboard recovers:
-    // the mouse gate must reinstall in the recovered direction
-    // (closed -> open) from the retention without rearming the
-    // invalidated origin on either hook. Serial guard: the step
-    // applies generations to the process-global fence.
-    let _guard = crate::input_handoff::fence_test_serial();
-    crate::snapkey::sys::test_clear_state();
-    crate::win_mouse::sys::test_clear_state();
-    let (channels, signals) = test_channels();
-    let backend = super::super::FakeBackend::new(vec![false, true], vec![true], true);
-    let mut core = PumpCore::new(
-        backend,
-        Arc::clone(&channels),
-        Arc::clone(&signals),
-        KeyboardConfig::disabled(),
-    );
-    let mut snap = snapshot_with(9, true);
-    let origin = SnapOrigin {
-        hwnd: 7,
-        token: "t".to_owned(),
-        pid: 1,
-        creation: "c".to_owned(),
-    };
-    Arc::get_mut(&mut snap)
-        .expect("unique")
-        .snap_origins
-        .insert(7, origin.clone());
-    Arc::get_mut(&mut snap)
-        .expect("unique")
-        .windrag_origins
-        .insert(
-            7,
-            WindragOrigin {
-                origin,
-                tag: Some("tag-7".to_owned()),
+            SnapOrigin {
+                hwnd: 7,
+                token: "t".to_owned(),
+                pid: 1,
+                creation: "c".to_owned(),
             },
         );
     channels
@@ -479,39 +233,16 @@ fn keyboard_recovers_without_rearming_invalidated_origin() {
         .expect("fits");
     assert!(!core.step());
     assert!(core.keyboard_hook.is_none());
-    assert!(core.mouse_hook.is_some());
-    // Mouse installed without the keyboard: origins present but the
-    // fresh-Down gate closed.
-    assert!(
-        crate::win_mouse::sys::test_snapshot()
-            .windrag_origins
-            .contains_key(&7)
-    );
-    assert!(!crate::win_mouse::sys::test_keyboard_installed());
-    channels
-        .inbox
-        .push(InboxItem::InvalidateWindrag(7))
-        .expect("fits");
+    assert_eq!(core.keyboard_failures, 1);
+    assert!(!signals.is_ready());
+    // Keyboard retry due now: recovery installs and reapplies the
+    // retained origins.
     core.keyboard_retry_at = Some(Instant::now());
     assert!(!core.step());
     assert!(core.keyboard_hook.is_some());
-    // Recovery installed the retained policy, not the stale spawn
-    // init, and neither hook rearmed the invalidated origin.
-    assert!(core.backend.keyboard_configs.contains(&KeyboardConfig {
-        takeover: true,
-        allow_win_l: false,
-    }));
-    assert!(!crate::snapkey::sys::test_keyboard_origins().contains_key(&7));
-    assert!(
-        !crate::win_mouse::sys::test_snapshot()
-            .windrag_origins
-            .contains_key(&7)
-    );
-    // The mouse gate recovered with the keyboard (closed -> open).
-    assert!(crate::win_mouse::sys::test_keyboard_installed());
-    assert!(crate::win_mouse::sys::test_snapshot().active);
+    assert!(signals.is_ready());
+    assert!(crate::snapkey::sys::test_keyboard_origins().contains_key(&7));
     crate::snapkey::sys::test_clear_state();
-    crate::win_mouse::sys::test_clear_state();
 }
 
 #[test]
@@ -527,9 +258,8 @@ fn revert_snapshot_advances_ack_with_equal_content() {
         takeover: true,
         allow_win_l: false,
     });
-    crate::win_mouse::sys::test_ensure_state();
     let (channels, signals) = test_channels();
-    let backend = super::super::FakeBackend::new(vec![true], vec![true], true);
+    let backend = super::super::FakeBackend::new(vec![true], true);
     let mut core = PumpCore::new(
         backend,
         Arc::clone(&channels),
@@ -564,28 +294,24 @@ fn revert_snapshot_advances_ack_with_equal_content() {
         6
     );
     crate::snapkey::sys::test_clear_state();
-    crate::win_mouse::sys::test_clear_state();
 }
 
 #[test]
-fn stalled_overflow_escalates_and_resumes_through_pump_seam() {
+fn stalled_clear_esc_applies_and_resumes_through_pump_seam() {
     // Production sender plus production pump step: a stalled
-    // transport absorbing far more distinct invalidations than the
-    // fixed cap escalates to a clear the pump applies (origins
-    // dropped on both hooks, latched suspend clears applied), then a
-    // resume snapshot restores; the cycle repeats. Proves bounded
-    // lossless delivery end to end: no rearm of obsolete origins, no
-    // lost suspend clears, fixed slot state throughout. Serial
-    // guard: the step applies generations (and `ClearEsc` global
-    // edges) process-globally, racing fence/edge tests.
+    // transport carrying the suspend-clear obligation applies it
+    // through the pump (latched Esc edge cleared, origins untouched),
+    // then a resume snapshot restores; the cycle repeats. Proves
+    // bounded lossless delivery end to end: no lost suspend clears.
+    // Serial guard: the step applies generations (and `ClearEsc`
+    // global edges) process-globally, racing fence/edge tests.
     let _guard = crate::input_handoff::fence_test_serial();
     use crate::input_handoff::INBOX_CAP;
     use crate::snapkey::VK_ESCAPE;
-    use crate::snapkey::sys::{take_esc_edge, take_windrag_esc_edge, test_drive_llproc};
+    use crate::snapkey::sys::{take_esc_edge, test_drive_llproc};
     crate::snapkey::sys::test_clear_state();
-    crate::win_mouse::sys::test_clear_state();
     let (channels, signals) = test_channels();
-    let backend = super::super::FakeBackend::new(vec![true], vec![true], true);
+    let backend = super::super::FakeBackend::new(vec![true], true);
     let mut core = PumpCore::new(
         backend,
         Arc::clone(&channels),
@@ -599,11 +325,7 @@ fn stalled_overflow_escalates_and_resumes_through_pump_seam() {
     assert!(signals.is_ready());
     let mut sender = super::super::InboxSender::new(Arc::clone(&channels.inbox));
     for cycle in 0..2u64 {
-        // Publish origins and apply through the real step (the resume
-        // path: in production the owner's change-gated flow rebuilds
-        // after managed-set churn, which is also what produced the
-        // invalidations, so fresher snapshots rearm only live
-        // origins and never obsolete ones).
+        // Publish origins and apply through the real step.
         let mut snap = snapshot_with(100 + cycle, true);
         for hwnd in [7u64, 8] {
             let origin = SnapOrigin {
@@ -616,16 +338,6 @@ fn stalled_overflow_escalates_and_resumes_through_pump_seam() {
                 .expect("unique")
                 .snap_origins
                 .insert(hwnd, origin.clone());
-            Arc::get_mut(&mut snap)
-                .expect("unique")
-                .windrag_origins
-                .insert(
-                    hwnd,
-                    WindragOrigin {
-                        origin,
-                        tag: Some("tag".to_owned()),
-                    },
-                );
         }
         channels
             .inbox
@@ -633,36 +345,16 @@ fn stalled_overflow_escalates_and_resumes_through_pump_seam() {
             .expect("fits");
         assert!(!core.step());
         assert!(crate::snapkey::sys::test_keyboard_origins().contains_key(&7));
-        assert!(
-            crate::win_mouse::sys::test_snapshot()
-                .windrag_origins
-                .contains_key(&8)
-        );
-        // Latch suspend-clear edges through the real callback, prove
+        // Latch the suspend-clear edge through the real callback, prove
         // latched, re-latch for the cycle.
         test_drive_llproc(VK_ESCAPE, 0, 0, 0);
         assert!(take_esc_edge());
-        assert!(take_windrag_esc_edge());
         test_drive_llproc(VK_ESCAPE, 0, 0, 0);
-        // Stall with harmless idempotent filler (unknown HWNDs touch
-        // nothing), then churn far past the fixed cap plus the
-        // suspend-clear obligation.
-        for n in 0..INBOX_CAP {
-            channels
-                .inbox
-                .push(InboxItem::InvalidateWindrag(900 + n as u64))
-                .expect("fits");
+        // Stall the inbox, then absorb the suspend-clear obligation.
+        for _ in 0..INBOX_CAP {
+            channels.inbox.push(InboxItem::ClearEsc).expect("fits");
         }
-        sender
-            .offer(InboxItem::InvalidateWindrag(500 + cycle))
-            .expect("buffered");
-        for hwnd in 0..40u64 {
-            sender
-                .offer(InboxItem::InvalidateWindrag(2000 + cycle * 100 + hwnd))
-                .expect("absorbed");
-        }
-        sender.offer(InboxItem::ClearEsc).expect("absorbed");
-        assert!(sender.safety_len() <= super::super::SAFETY_INVALIDATES_CAP + 2);
+        sender.offer(InboxItem::ClearEsc).expect("buffered");
         // Drain through real pump steps interleaved with sender
         // retries; ends with a step so the inbox is fully applied.
         for _ in 0..16 {
@@ -673,19 +365,12 @@ fn stalled_overflow_escalates_and_resumes_through_pump_seam() {
         assert_eq!(sender.safety_len(), 0);
         assert!(!sender.admission_closed);
         assert!(channels.inbox.is_empty());
-        // Escalated clear applied: origins dropped on both hooks...
-        assert!(crate::snapkey::sys::test_keyboard_origins().is_empty());
-        assert!(
-            crate::win_mouse::sys::test_snapshot()
-                .windrag_origins
-                .is_empty()
-        );
-        // ...and the latched suspend clears applied, not lost.
+        // Origins survive the suspend clear...
+        assert!(crate::snapkey::sys::test_keyboard_origins().contains_key(&7));
+        // ...and the latched suspend clear applied, not lost.
         assert!(!take_esc_edge());
-        assert!(!take_windrag_esc_edge());
     }
     crate::snapkey::sys::test_clear_state();
-    crate::win_mouse::sys::test_clear_state();
 }
 
 #[test]
@@ -699,9 +384,8 @@ fn policy_change_drains_stale_once_with_ack() {
         takeover: true,
         allow_win_l: false,
     });
-    crate::win_mouse::sys::test_ensure_state();
     let (channels, signals) = test_channels();
-    let backend = super::super::FakeBackend::new(vec![true], vec![true], true);
+    let backend = super::super::FakeBackend::new(vec![true], true);
     let mut core = PumpCore::new(
         backend,
         Arc::clone(&channels),
@@ -736,12 +420,11 @@ fn policy_change_drains_stale_once_with_ack() {
         1
     );
     crate::snapkey::sys::test_clear_state();
-    crate::win_mouse::sys::test_clear_state();
 }
 
 #[test]
-fn pending_stall_preserves_tagged_terminal_order() {
-    // Terminal Up queued behind an occupied outbox waits in the real
+fn pending_stall_preserves_tagged_order() {
+    // Queued snap intent behind an occupied outbox waits in the real
     // queue and arrives tagged after release; a parked batch keeps
     // its original generation when it finally offers. Serial guard:
     // the step applies generations to the process-global fence.
@@ -750,9 +433,8 @@ fn pending_stall_preserves_tagged_terminal_order() {
         takeover: true,
         allow_win_l: false,
     });
-    crate::win_mouse::sys::test_ensure_state();
     let (channels, signals) = test_channels();
-    let backend = super::super::FakeBackend::new(vec![true], vec![true], true);
+    let backend = super::super::FakeBackend::new(vec![true], true);
     let mut core = PumpCore::new(
         backend,
         Arc::clone(&channels),
@@ -769,36 +451,18 @@ fn pending_stall_preserves_tagged_terminal_order() {
         .expect("fits");
     assert!(!core.step());
     channels
-        .windrag_outbox
-        .put(TaggedBatch::new(
-            1,
-            vec![crate::win_mouse::WinDragEdge {
-                hwnd: 1,
-                kind: crate::win_mouse::WinDragKind::Down,
-                x: 0,
-                y: 0,
-                esc_seq: 0,
-                snapshot: None,
-            }],
-        ))
+        .snap_outbox
+        .put(TaggedBatch::new(1, vec![dummy_snap()]))
         .expect("occupy");
-    crate::win_mouse::sys::test_push_edge(crate::win_mouse::WinDragEdge {
-        hwnd: 7,
-        kind: crate::win_mouse::WinDragKind::Up,
-        x: 2,
-        y: 3,
-        esc_seq: 1,
-        snapshot: None,
-    });
-    // Occupied: the terminal Up waits in the real queue.
+    assert!(crate::snapkey::sys::test_push_queued(dummy_snap()));
+    // Occupied: the queued intent waits in the real queue.
     assert!(!core.step());
-    assert!(core.pending_windrag.is_none());
-    channels.windrag_outbox.take().expect("release");
+    assert!(core.pending_snap.is_none());
+    channels.snap_outbox.take().expect("release");
     assert!(!core.step());
-    let batch = channels.windrag_outbox.take().expect("offered");
+    let batch = channels.snap_outbox.take().expect("offered");
     assert_eq!(batch.generation, 1);
     assert_eq!(batch.items.len(), 1);
-    assert_eq!(batch.items[0].kind, crate::win_mouse::WinDragKind::Up);
     // Parked batches keep their drain-time generation on retry.
     core.pending_snap = Some(TaggedBatch::new(1, Vec::new()));
     channels
@@ -813,7 +477,6 @@ fn pending_stall_preserves_tagged_terminal_order() {
     let batch = channels.snap_outbox.take().expect("offered");
     assert_eq!(batch.generation, 1);
     crate::snapkey::sys::test_clear_state();
-    crate::win_mouse::sys::test_clear_state();
 }
 
 #[test]
@@ -821,7 +484,7 @@ fn stop_unhook_failure_retries_bounded_then_reports_unclean() {
     // Permanent unhook failure: bounded creator-side retry, then an
     // unclean terminal report (never claims clean, never hangs).
     let (channels, signals) = test_channels();
-    let backend = super::super::FakeBackend::new(vec![true], vec![true], true);
+    let backend = super::super::FakeBackend::new(vec![true], true);
     let mut core = PumpCore::new(
         backend,
         Arc::clone(&channels),
@@ -1039,7 +702,6 @@ fn esc_clocks_are_process_singletons() {
     global_esc_clock().bump();
     assert!(global_esc_clock().load() >= before.wrapping_add(2));
     let _ = SnapClassify::new(KeyboardConfig::disabled());
-    let _ = global_windrag_esc_clock().load();
 }
 
 fn wake_signaled(channels: &InputChannels) -> bool {
@@ -1063,22 +725,11 @@ fn dummy_snap() -> crate::snapkey::QueuedSnapEvent {
     })
 }
 
-fn dummy_windrag() -> crate::win_mouse::WinDragEdge {
-    crate::win_mouse::WinDragEdge {
-        hwnd: 7,
-        kind: crate::win_mouse::WinDragKind::Down,
-        x: 1,
-        y: 2,
-        esc_seq: 0,
-        snapshot: None,
-    }
-}
-
 fn installed_core(
     channels: &Arc<InputChannels>,
     signals: &Arc<PumpSignals>,
 ) -> PumpCore<super::super::FakeBackend> {
-    let backend = super::super::FakeBackend::new(vec![true], vec![true], true);
+    let backend = super::super::FakeBackend::new(vec![true], true);
     let mut core = PumpCore::new(
         backend,
         Arc::clone(channels),
@@ -1090,7 +741,6 @@ fn installed_core(
     );
     assert!(!core.step());
     assert!(core.keyboard_hook.is_some());
-    assert!(core.mouse_hook.is_some());
     assert!(!wake_signaled(channels));
     core
 }
@@ -1113,7 +763,6 @@ fn snap_offer_signals_single_publication() {
         takeover: true,
         allow_win_l: false,
     });
-    crate::win_mouse::sys::test_ensure_state();
     let (channels, signals) = test_channels();
     let mut core = installed_core(&channels, &signals);
     assert!(crate::snapkey::sys::test_push_queued(dummy_snap()));
@@ -1123,34 +772,6 @@ fn snap_offer_signals_single_publication() {
     assert!(!wake_signaled(&channels));
     channels.snap_outbox.take().expect("batch");
     crate::snapkey::sys::test_clear_state();
-    crate::win_mouse::sys::test_clear_state();
-}
-
-#[test]
-fn snap_and_windrag_offers_share_one_pending_wake() {
-    // Coalescing: one turn offering both a snap and a windrag batch
-    // occupies both outboxes but leaves a single pending wake.
-    crate::snapkey::sys::test_ensure_state(KeyboardConfig {
-        takeover: true,
-        allow_win_l: false,
-    });
-    crate::win_mouse::sys::test_ensure_state();
-    let (channels, signals) = test_channels();
-    let mut core = installed_core(&channels, &signals);
-    assert!(crate::snapkey::sys::test_push_queued(dummy_snap()));
-    crate::win_mouse::sys::test_push_edge(dummy_windrag());
-    assert!(!core.step());
-    assert!(channels.snap_outbox.occupied());
-    assert!(channels.windrag_outbox.occupied());
-    assert!(wake_signaled(&channels));
-    assert!(!wake_signaled(&channels));
-    assert_eq!(channels.snap_outbox.take().expect("batch").items.len(), 1);
-    assert_eq!(
-        channels.windrag_outbox.take().expect("batch").items.len(),
-        1
-    );
-    crate::snapkey::sys::test_clear_state();
-    crate::win_mouse::sys::test_clear_state();
 }
 
 #[test]
@@ -1164,7 +785,6 @@ fn take_republish_interleaving_delivers_next_wake() {
         takeover: true,
         allow_win_l: false,
     });
-    crate::win_mouse::sys::test_ensure_state();
     let (channels, signals) = test_channels();
     let mut core = installed_core(&channels, &signals);
     assert!(crate::snapkey::sys::test_push_queued(dummy_snap()));
@@ -1182,7 +802,6 @@ fn take_republish_interleaving_delivers_next_wake() {
     assert!(channels.snap_outbox.take().is_none());
     assert!(!wake_signaled(&channels));
     crate::snapkey::sys::test_clear_state();
-    crate::win_mouse::sys::test_clear_state();
 }
 
 #[test]
@@ -1194,7 +813,6 @@ fn occupied_snap_waits_without_wake_and_retry_signals() {
         takeover: true,
         allow_win_l: false,
     });
-    crate::win_mouse::sys::test_ensure_state();
     let (channels, signals) = test_channels();
     let mut core = installed_core(&channels, &signals);
     channels
@@ -1227,7 +845,6 @@ fn occupied_snap_waits_without_wake_and_retry_signals() {
     assert!(wake_signaled(&channels));
     channels.snap_outbox.take().expect("batch");
     crate::snapkey::sys::test_clear_state();
-    crate::win_mouse::sys::test_clear_state();
 }
 
 #[test]
@@ -1236,13 +853,12 @@ fn chord_transition_signals_with_empty_batches_and_steady_stays_quiet() {
     // transition must still wake the owner; steady levels must not. Drives
     // the real callback (no hooks, no `SendInput`: Win-up is never driven,
     // Shift carries no mask obligation) and asserts the wake arrives with
-    // both outboxes empty, so it is the transition-only path, not a batch.
+    // the outbox empty, so it is the transition-only path, not a batch.
     use windows_sys::Win32::UI::WindowsAndMessaging::LLKHF_UP;
     crate::snapkey::sys::test_ensure_state(KeyboardConfig {
         takeover: true,
         allow_win_l: false,
     });
-    crate::win_mouse::sys::test_ensure_state();
     let (channels, signals) = test_channels();
     let mut core = installed_core(&channels, &signals);
     assert_eq!(crate::snapkey::sys::chord_levels(), (false, false));
@@ -1259,7 +875,6 @@ fn chord_transition_signals_with_empty_batches_and_steady_stays_quiet() {
     assert!(wake_signaled(&channels));
     assert!(!wake_signaled(&channels));
     assert!(!channels.snap_outbox.occupied());
-    assert!(!channels.windrag_outbox.occupied());
     // Steady hold: no repeated wake.
     assert!(!core.step());
     assert!(!wake_signaled(&channels));
@@ -1270,7 +885,6 @@ fn chord_transition_signals_with_empty_batches_and_steady_stays_quiet() {
     assert!(!wake_signaled(&channels));
     assert!(!channels.snap_outbox.occupied());
     crate::snapkey::sys::test_clear_state();
-    crate::win_mouse::sys::test_clear_state();
 }
 
 #[test]
@@ -1287,7 +901,6 @@ fn esc_edge_signals_once_without_stealing_the_owner_latch() {
         takeover: true,
         allow_win_l: false,
     });
-    crate::win_mouse::sys::test_ensure_state();
     let (channels, signals) = test_channels();
     let mut core = installed_core(&channels, &signals);
     crate::snapkey::sys::test_drive_llproc(crate::snapkey::VK_ESCAPE, 1, 0, 0);
@@ -1308,35 +921,10 @@ fn esc_edge_signals_once_without_stealing_the_owner_latch() {
     );
     // Owner-side consumption (as the tick drain does) quiets everything.
     crate::input_handoff::global_esc_edge().store(false, Ordering::SeqCst);
-    crate::input_handoff::global_windrag_esc_edge().store(false, Ordering::SeqCst);
     crate::snapkey::sys::clear_esc_edge();
-    crate::snapkey::sys::clear_windrag_esc_edge();
     assert!(!core.step());
     assert!(!wake_signaled(&channels));
     crate::snapkey::sys::test_clear_state();
-    crate::win_mouse::sys::test_clear_state();
-}
-
-#[test]
-fn windrag_offer_signals_while_diag_only_step_does_not() {
-    // Mouse batches wake; a diagnostics-only turn never does.
-    crate::snapkey::sys::test_ensure_state(KeyboardConfig {
-        takeover: true,
-        allow_win_l: false,
-    });
-    crate::win_mouse::sys::test_ensure_state();
-    let (channels, signals) = test_channels();
-    let mut core = installed_core(&channels, &signals);
-    crate::win_mouse::sys::test_push_edge(dummy_windrag());
-    assert!(!core.step());
-    assert!(channels.windrag_outbox.occupied());
-    assert!(wake_signaled(&channels));
-    channels.windrag_outbox.take().expect("batch");
-    // Diagnostics publish every turn; with empty queues nothing wakes.
-    assert!(!core.step());
-    assert!(!wake_signaled(&channels));
-    crate::snapkey::sys::test_clear_state();
-    crate::win_mouse::sys::test_clear_state();
 }
 
 #[test]
@@ -1354,7 +942,6 @@ fn stalled_retry_wakes_once_on_capacity_freed() {
         takeover: true,
         allow_win_l: false,
     });
-    crate::win_mouse::sys::test_ensure_state();
     let (channels, signals) = test_channels();
     let mut core = installed_core(&channels, &signals);
     // Fill the inbox to its cap through the real bounded push.
@@ -1391,7 +978,6 @@ fn stalled_retry_wakes_once_on_capacity_freed() {
     assert!(!core.step());
     assert!(!wake_signaled(&channels), "no repeat signal once clear");
     crate::snapkey::sys::test_clear_state();
-    crate::win_mouse::sys::test_clear_state();
 }
 
 #[test]
@@ -1411,7 +997,6 @@ fn stalled_retry_survives_drain_between_refusal_and_flag_store() {
         takeover: true,
         allow_win_l: false,
     });
-    crate::win_mouse::sys::test_ensure_state();
     let (channels, signals) = test_channels();
     let mut core = installed_core(&channels, &signals);
     for _ in 0..crate::input_handoff::INBOX_CAP {
@@ -1449,7 +1034,6 @@ fn stalled_retry_survives_drain_between_refusal_and_flag_store() {
     assert!(!core.step());
     assert!(!wake_signaled(&channels), "no repeat signal once clear");
     crate::snapkey::sys::test_clear_state();
-    crate::win_mouse::sys::test_clear_state();
 }
 
 fn work_signaled(channels: &InputChannels) -> bool {
@@ -1526,7 +1110,7 @@ fn next_timer_idles_without_deadline_and_retries_on_deadline() {
     // idles with `u32::MAX` (INFINITE); a failed install schedules
     // its backoff as the wait deadline; recovery idles again.
     let (channels, signals) = test_channels();
-    let backend = super::super::FakeBackend::new(vec![false], vec![true], true);
+    let backend = super::super::FakeBackend::new(vec![false], true);
     let mut core = PumpCore::new(
         backend,
         Arc::clone(&channels),
@@ -1538,7 +1122,6 @@ fn next_timer_idles_without_deadline_and_retries_on_deadline() {
     );
     assert!(!core.step());
     assert!(core.keyboard_hook.is_none());
-    assert!(core.mouse_hook.is_some());
     let due = core.next_timer().expect("keyboard retry pending");
     let secs = due.saturating_duration_since(Instant::now()).as_secs();
     assert!(
@@ -1567,7 +1150,6 @@ fn next_timer_idles_without_deadline_and_retries_on_deadline() {
         "fully idle waits indefinitely"
     );
     crate::snapkey::sys::test_clear_state();
-    crate::win_mouse::sys::test_clear_state();
 }
 
 #[test]
@@ -1580,7 +1162,6 @@ fn publish_after_wait_race_applies_without_loss() {
         takeover: true,
         allow_win_l: false,
     });
-    crate::win_mouse::sys::test_ensure_state();
     let (channels, signals) = test_channels();
     let mut core = installed_core(&channels, &signals);
     channels.inbox.push(InboxItem::ClearEsc).expect("fits");
@@ -1589,7 +1170,6 @@ fn publish_after_wait_race_applies_without_loss() {
     assert!(!core.step());
     assert!(channels.inbox.is_empty(), "published control applied");
     crate::snapkey::sys::test_clear_state();
-    crate::win_mouse::sys::test_clear_state();
 }
 
 #[test]
@@ -1601,7 +1181,6 @@ fn drain_wakes_parked_retry_after_backpressure() {
         takeover: true,
         allow_win_l: false,
     });
-    crate::win_mouse::sys::test_ensure_state();
     let (channels, signals) = test_channels();
     let mut core = installed_core(&channels, &signals);
     channels
@@ -1618,7 +1197,6 @@ fn drain_wakes_parked_retry_after_backpressure() {
     assert!(channels.snap_outbox.occupied());
     channels.snap_outbox.take().expect("batch");
     crate::snapkey::sys::test_clear_state();
-    crate::win_mouse::sys::test_clear_state();
 }
 
 #[test]
@@ -1648,24 +1226,19 @@ fn pre_wait_callback_work_transfers_before_blocking() {
         takeover: true,
         allow_win_l: false,
     });
-    crate::win_mouse::sys::test_ensure_state();
     let (channels, signals) = test_channels();
     let mut core = installed_core(&channels, &signals);
     core.backend.assert_transferred_before_wait = true;
     core.backend.snap_on_drain.push(dummy_snap());
-    core.backend.windrag_on_drain.push(dummy_windrag());
     assert!(!core.step());
     assert!(channels.snap_outbox.occupied());
-    assert!(channels.windrag_outbox.occupied());
     assert_eq!(
         core.backend.pump_timeouts.last().copied(),
         Some(u32::MAX),
         "installed pump still idles after transferring"
     );
     channels.snap_outbox.take().expect("batch");
-    channels.windrag_outbox.take().expect("batch");
     crate::snapkey::sys::test_clear_state();
-    crate::win_mouse::sys::test_clear_state();
 }
 
 #[test]
@@ -1678,7 +1251,6 @@ fn inbox_contention_arms_bounded_retry_without_loss() {
         takeover: true,
         allow_win_l: false,
     });
-    crate::win_mouse::sys::test_ensure_state();
     let (channels, signals) = test_channels();
     let mut core = installed_core(&channels, &signals);
     channels.inbox.push(InboxItem::ClearEsc).expect("fits");
@@ -1707,7 +1279,6 @@ fn inbox_contention_arms_bounded_retry_without_loss() {
     assert!(channels.inbox.is_empty(), "control applied, never lost");
     assert_eq!(core.next_timer(), None, "clean turn clears the retry");
     crate::snapkey::sys::test_clear_state();
-    crate::win_mouse::sys::test_clear_state();
 }
 
 #[test]
@@ -1721,7 +1292,6 @@ fn outbox_contention_parks_and_retries_without_loss() {
         takeover: true,
         allow_win_l: false,
     });
-    crate::win_mouse::sys::test_ensure_state();
     let (channels, signals) = test_channels();
     let mut core = installed_core(&channels, &signals);
     assert!(crate::snapkey::sys::test_push_queued(dummy_snap()));
@@ -1751,5 +1321,4 @@ fn outbox_contention_parks_and_retries_without_loss() {
     assert_eq!(core.next_timer(), None, "clean turn clears the retry");
     channels.snap_outbox.take().expect("batch");
     crate::snapkey::sys::test_clear_state();
-    crate::win_mouse::sys::test_clear_state();
 }

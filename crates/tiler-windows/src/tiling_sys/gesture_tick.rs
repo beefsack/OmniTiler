@@ -25,21 +25,18 @@ pub(super) fn gesture_tick(
     clear_maximize_at_admission(state, me, &retained);
     let by_hwnd: HashMap<u64, &ObservedWindow> = observed.iter().map(|w| (w.hwnd, w)).collect();
     for hwnd in ended {
-        // Settle producer travels with the gesture: `native` for the
-        // title-bar modal loop, `windrag` for the project-driven Win+Left
-        // stationary hold. Absent entries settle as native.
-        let producer = state.gesture_producer.remove(hwnd).unwrap_or("native");
+        // Every gesture settles as native: the title-bar modal loop is
+        // the only producer.
+        let producer = "native";
         // Per-gesture START snapshot and END cursor travel with the gesture:
         // remove them here so each END settles exactly once.
         let start_key = state.gesture_start_key.remove(hwnd);
         let start_tag = state.gesture_start_tag.remove(hwnd);
         let end_cursor = state.gesture_end_cursor.remove(hwnd);
-        let start_cursor = state.windrag_start_cursor.remove(hwnd);
         // Modal move/size truth sampled once at START: read and clear here
         // so every END path (settle, cancel, refusal) leaves no stale arm.
         // The native branch below prefers it over rect comparison.
         let modal_kind = state.move_kind.remove(hwnd);
-        state.windrag_bound.remove(hwnd);
         state.gesture_esc_seq.remove(hwnd);
         state.gesture_end_seq.remove(hwnd);
         // Explicit Esc cancellation first: a cancelled native move restores
@@ -176,82 +173,37 @@ pub(super) fn gesture_tick(
         // Release cursor carried from the MOVESIZEEND event callback, never
         // re-read later: an END without a captured cursor routes as no-change
         // for moves (cursor-less), while resizes classify from geometry
-        // alone. The project Win+Left hold bypasses rect classification
-        // entirely: its frames stay at source by design, so the tracked
-        // POINTER journey (down point versus callback-bound release point)
-        // decides, through the same Engine drop route below.
-        let intent = if producer == "windrag" {
-            let (Some(start), Some(end)) = (start_cursor, end_cursor) else {
-                log_json_at(
-                    &log_path,
-                    serde_json::json!({
-                        "event": "gesture",
-                        "tick": state.tick,
-                        "op": "gesture",
-                        "disposition": "observed",
-                        "outcome": "gesture-no-change",
-                        "window": current.token,
-                        "producer": producer,
-                    }),
-                );
-                let fulls_owned = fulls.to_vec();
-                reconcile_tick(state, me, &fulls_owned, areas);
-                continue;
-            };
-            match settle_pointer_journey(start.0, start.1, end.0, end.1, false) {
-                WinSettle::Cancelled | WinSettle::NoChange => {
-                    // Esc reaches here only via the latch above; a zero
-                    // pointer journey makes no plan and changes no geometry.
-                    log_json_at(
-                        &log_path,
-                        serde_json::json!({
-                            "event": "gesture",
-                            "tick": state.tick,
-                            "op": "gesture",
-                            "disposition": "observed",
-                            "outcome": "gesture-no-change",
-                            "window": current.token,
-                            "producer": producer,
-                        }),
-                    );
-                    let fulls_owned = fulls.to_vec();
-                    reconcile_tick(state, me, &fulls_owned, areas);
-                    continue;
-                }
-                WinSettle::Drop { x, y } => GestureIntent::MoveDrop { x, y },
-            }
-        } else {
-            let cursor = end_cursor;
-            let Some(mut classified) = classify_gesture(&before, &current.visible, cursor) else {
-                // Zero movement (or a cursor-less move): nothing to route.
-                // Reconcile once so any native nudge is reasserted to the
-                // Engine allocation; topology unchanged.
-                log_json_at(
-                    &log_path,
-                    serde_json::json!({
-                        "event": "gesture",
-                        "tick": state.tick,
-                        "op": "gesture",
-                        "disposition": "observed",
-                        "outcome": "gesture-no-change",
-                        "window": current.token,
-                        "producer": producer,
-                    }),
-                );
-                let fulls_owned = fulls.to_vec();
-                reconcile_tick(state, me, &fulls_owned, areas);
-                continue;
-            };
-            // Modal truth over rect comparison (see
-            // `tiling::prefer_modal_move`): a caption-started move loop
-            // carries user move intent even through a system rescale.
-            classified = crate::tiling::prefer_modal_move(
-                classified,
-                cursor,
-                modal_kind.is_some_and(|kind| kind == MoveSizeKind::Move),
+        // alone.
+        let cursor = end_cursor;
+        let Some(mut classified) = classify_gesture(&before, &current.visible, cursor) else {
+            // Zero movement (or a cursor-less move): nothing to route.
+            // Reconcile once so any native nudge is reasserted to the
+            // Engine allocation; topology unchanged.
+            log_json_at(
+                &log_path,
+                serde_json::json!({
+                    "event": "gesture",
+                    "tick": state.tick,
+                    "op": "gesture",
+                    "disposition": "observed",
+                    "outcome": "gesture-no-change",
+                    "window": current.token,
+                    "producer": producer,
+                }),
             );
-            classified
+            let fulls_owned = fulls.to_vec();
+            reconcile_tick(state, me, &fulls_owned, areas);
+            continue;
         };
+        // Modal truth over rect comparison (see
+        // `tiling::prefer_modal_move`): a caption-started move loop
+        // carries user move intent even through a system rescale.
+        classified = crate::tiling::prefer_modal_move(
+            classified,
+            cursor,
+            modal_kind.is_some_and(|kind| kind == MoveSizeKind::Move),
+        );
+        let intent = classified;
         // The gesture window's own (output, workspace) session owns this
         // settle: same per-workspace routing as directional chords.
         let member_key = state
@@ -476,7 +428,6 @@ pub(super) fn gesture_tick(
             state.gesture_preview_start.remove(hwnd);
             state.gesture_start_cursor.remove(hwnd);
             state.gesture_end_cursor.remove(hwnd);
-            state.windrag_start_cursor.remove(hwnd);
             state.gesture_before.remove(hwnd);
             if occupied {
                 // A previous finish is still pending (overlapping END races):
@@ -503,10 +454,7 @@ pub(super) fn gesture_tick(
         }
         // Inline cross-output settle (same-thread path, no render bridge):
         // fresh suspend/elevated gates, immediate fence re-read, proven
-        // inline hide, then the shared Engine route. The pre-drop windrag
-        // focus below stays same-output only: cross drops follow-focus on
-        // the destination after the transfer instead of foregrounding the
-        // source first.
+        // inline hide, then the shared Engine route.
         if let (Some((dest_output, dest_workspace, x, y)), Some(fence)) =
             (cross_dest.as_ref(), cross_fence.as_ref())
         {
@@ -634,47 +582,6 @@ pub(super) fn gesture_tick(
                 correlation.as_str(),
             );
             continue;
-        }
-        // Project-driven Win+Left focus binding (KDE mover parity): the
-        // gesture owns the mover even when native focus lags (unfocused
-        // Win+Left starts without focusing). The Engine binds logical focus
-        // to the mover itself, but the native foreground needs the existing
-        // safe focus authority (E8-prime plus attach plus one setter with an
-        // exact readback; never the underlay `focused_window` value). Every
-        // gate above (START identity/lifetime fence, member match,
-        // sticky/float refusal, domain routing, same-output fence) passed
-        // before this effect. A failed actuation refuses with snap-back and
-        // no plan instead of dropping under a diverged foreground.
-        if producer == "windrag" {
-            let actuation = actuate_focus(state, me, fulls, &observed, &retained, &current.token);
-            if actuation.outcome != "focus-ok" {
-                log_json_at(
-                    &log_path,
-                    serde_json::json!({
-                        "event": "gesture",
-                        "tick": state.tick,
-                        "op": "gesture",
-                        "disposition": "refused",
-                        "outcome": "gesture-refused-focus",
-                        "window": current.token,
-                        "producer": producer,
-                    }),
-                );
-                let fulls_owned = fulls.to_vec();
-                reconcile_tick(state, me, &fulls_owned, areas);
-                continue;
-            }
-            log_json_at(
-                &log_path,
-                serde_json::json!({
-                    "event": "windrag-focus",
-                    "tick": state.tick,
-                    "phase": "drop",
-                    "outcome": "focus-ok",
-                    "window": current.token,
-                    "producer": producer,
-                }),
-            );
         }
         state.tick += 1;
         let correlation = state.correlation();
@@ -915,9 +822,6 @@ pub(super) fn gesture_tick(
             state.gesture_start_tag.clear();
         }
     }
-    state.gesture_producer.clear();
-    state.windrag_start_cursor.clear();
-    state.windrag_bound.clear();
     state.preview_bound.clear();
     state.preview_dead.clear();
     state.gesture_preview_start.clear();

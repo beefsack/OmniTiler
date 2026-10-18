@@ -38,7 +38,6 @@ pub mod tray;
 pub mod tray_pager;
 #[cfg(windows)]
 pub mod tray_sys;
-pub mod win_mouse;
 pub mod winarrow;
 pub mod workspace;
 pub mod workspace_owner;

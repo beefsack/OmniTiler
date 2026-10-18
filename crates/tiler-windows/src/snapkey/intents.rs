@@ -299,10 +299,6 @@ impl Classified {
 /// Which chord armed the Start-menu mask. Digits, history, resize, maximize,
 /// fullscreen, and float arm it exactly like directional chords: any consumed
 /// chord in the Win hold needs the E8 pair at Win-up, or the OS opens Start.
-/// `WinDrag` arms it for the project-driven Win+Left stationary gesture
-/// (parity item 7 second unit): the mouse hook consumes the click, so the
-/// keyboard classifier never sees a chord, but the Win hold still needs the
-/// same mask at release.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MaskTrigger {
     Snap {
@@ -339,7 +335,6 @@ pub enum MaskTrigger {
     WorkspaceTiling,
     LaunchBrowser,
     LaunchTerminal,
-    WinDrag,
 }
 
 /// Pure product chord classifier. Tracks both Win keys plus the Shift family

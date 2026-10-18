@@ -21,8 +21,8 @@ use crate::snapkey::{ChordDisable, ChordRemap, KeyboardConfig, SnapOrigin};
 /// the item returned for retention/retry, never a silent drop.
 pub const INBOX_CAP: usize = 8;
 
-/// Bound for one input -> owner batch. Matches both existing per-tick drain
-/// caps (`MAX_DISPATCH_PER_TICK`, `WINDRAG_MAX_DISPATCH_PER_TICK`).
+/// Bound for one input -> owner batch. Matches the existing per-tick drain
+/// cap (`MAX_DISPATCH_PER_TICK`).
 pub const OUTBOX_BATCH_CAP: usize = 8;
 
 /// START/END Esc comparison. Held gestures compare the live clock against
@@ -68,20 +68,14 @@ impl EscClock {
 /// re-registered per handle) so pump restarts in one process cannot bump a
 /// stale clock while the owner samples a fresh one.
 static GLOBAL_ESC: OnceLock<EscClock> = OnceLock::new();
-/// Process-global windrag Esc clock (physical plus injected Esc). Same
-/// singleton contract as [`global_esc_clock`]; sampled at mouse Down/Up.
-static GLOBAL_WINDRAG_ESC: OnceLock<EscClock> = OnceLock::new();
 /// Process-global native Esc edge (consume-once). Set directly in the hook
 /// callback alongside the clock bump, so an Esc arriving just before a
 /// WinEvent END is visible to the owner settle even before the pump forwards
 /// anything. Sequence comparison still decides cancellation; the flag alone
 /// never cancels.
 static GLOBAL_ESC_EDGE: AtomicBool = AtomicBool::new(false);
-/// Process-global windrag Esc edge (consume-once). Same contract as
-/// [`global_esc_edge`].
-static GLOBAL_WINDRAG_ESC_EDGE: AtomicBool = AtomicBool::new(false);
 /// Process-global trace-only delivery-gap accumulator: max native event
-/// timestamp (`KBDLLHOOKSTRUCT.time` / `MSLLHOOKSTRUCT.time`) to callback
+/// timestamp (`KBDLLHOOKSTRUCT.time`) to callback
 /// entry gap in milliseconds observed since the last pump publish. The pump
 /// reads and resets it per quantum; the owner logs it with explicit limits
 /// (tick-count domain only, never end-to-end latency).
@@ -93,22 +87,10 @@ pub fn global_esc_clock() -> &'static EscClock {
     GLOBAL_ESC.get_or_init(EscClock::new)
 }
 
-/// Process-global windrag Esc clock shared by callbacks and mouse Down/Up.
-#[must_use]
-pub fn global_windrag_esc_clock() -> &'static EscClock {
-    GLOBAL_WINDRAG_ESC.get_or_init(EscClock::new)
-}
-
 /// Process-global native Esc edge flag. Set in callbacks, consumed
 /// owner-side with `swap(false)`; cleared by ordered `ClearEsc` application.
 pub fn global_esc_edge() -> &'static AtomicBool {
     &GLOBAL_ESC_EDGE
-}
-
-/// Process-global windrag Esc edge flag. Same contract as
-/// [`global_esc_edge`].
-pub fn global_windrag_esc_edge() -> &'static AtomicBool {
-    &GLOBAL_WINDRAG_ESC_EDGE
 }
 
 /// Record one trace-only native-to-callback delivery gap sample (keeps the
@@ -121,15 +103,6 @@ pub fn record_delivery_gap_ms(gap_ms: u32) {
 #[must_use]
 pub fn take_delivery_gap_ms() -> u32 {
     GLOBAL_DELIVERY_GAP_MS.swap(0, Ordering::Relaxed)
-}
-
-/// Portable windrag origin: published tiled identity plus member tag.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct WindragOrigin {
-    /// Published tiled origin (HWND/PID/creation/token).
-    pub origin: SnapOrigin,
-    /// Member lifetime tag at publish time.
-    pub tag: Option<String>,
 }
 
 /// Complete owner-built input policy snapshot. Applied whole and in FIFO
@@ -155,8 +128,6 @@ pub struct InputSnapshot {
     pub disabled: Vec<ChordDisable>,
     /// Managed chord origins for callback binding.
     pub snap_origins: HashMap<u64, SnapOrigin>,
-    /// Tiled-only windrag origins plus tags.
-    pub windrag_origins: HashMap<u64, WindragOrigin>,
     /// Shortcut-handling gate (takeover plus pause sources).
     pub active: bool,
     /// Trace-only callback collection flag.
@@ -178,7 +149,6 @@ pub fn snapshot_content_eq(a: &InputSnapshot, b: &InputSnapshot) -> bool {
         && a.remap == b.remap
         && a.disabled == b.disabled
         && a.snap_origins == b.snap_origins
-        && a.windrag_origins == b.windrag_origins
         && a.active == b.active
         && a.trace == b.trace
 }
@@ -337,13 +307,6 @@ pub fn keyboard_fresh_gate(stored_active: bool) -> bool {
     stored_active && !policy_fence_pending()
 }
 
-/// Effective fresh-Down gate for mouse callbacks: both hooks installed plus
-/// the stored gate, closed further while the fence is pending.
-#[must_use]
-pub fn mouse_fresh_gate(snapshot_active: bool, keyboard_installed: bool) -> bool {
-    snapshot_active && keyboard_installed && !policy_fence_pending()
-}
-
 #[cfg(test)]
 static FENCE_TEST_SERIAL: Mutex<()> = Mutex::new(());
 
@@ -380,10 +343,6 @@ pub fn fence_test_allocate() -> u64 {
 pub enum InboxItem {
     /// Apply the whole snapshot (policy, tables, origins, gates).
     Snapshot(SharedSnapshot),
-    /// Disarm the windrag gesture for `hwnd`; the paired Up stays swallowed.
-    InvalidateWindrag(u64),
-    /// Disarm any armed windrag gesture (suspend/teardown only).
-    ClearWindrag,
     /// Drop a stale unlatched Esc edge (suspend/teardown only).
     ClearEsc,
 }
@@ -479,12 +438,7 @@ impl Inbox {
     #[must_use]
     pub fn has_safety(&self) -> bool {
         match self.inner.try_lock() {
-            Ok(guard) => guard.iter().any(|item| {
-                matches!(
-                    item,
-                    InboxItem::InvalidateWindrag(_) | InboxItem::ClearWindrag | InboxItem::ClearEsc
-                )
-            }),
+            Ok(guard) => guard.iter().any(|item| matches!(item, InboxItem::ClearEsc)),
             Err(_) => true,
         }
     }
@@ -634,8 +588,6 @@ impl<T> Outbox<T> {
 pub struct InputDiag {
     /// Snap classifier drops observed on the input pump.
     pub snap_dropped: u32,
-    /// Windrag classifier drops observed on the input pump.
-    pub windrag_dropped: u32,
     /// Callback-summary drops/filtered plus mask-send aggregate.
     pub cb_dropped: u32,
     /// Callback-summary privacy-filtered count.
@@ -644,9 +596,6 @@ pub struct InputDiag {
     pub mask_sends: u32,
     /// Max observed mask-send microseconds.
     pub mask_send_max_us: u32,
-    /// Hook delivery counters `(downs_seen, downs_consumed, ups_seen,
-    /// ups_consumed)`.
-    pub hook_stats: (u64, u64, u64, u64),
     /// Oldest queued item age at the last offer, microseconds. Snap batches
     /// only; the owner measures take-time age itself for dispatch decisions.
     pub queue_age_us: u64,
@@ -654,11 +603,6 @@ pub struct InputDiag {
     pub heartbeat_us: u64,
     /// Offers published so far.
     pub offers: u64,
-    /// Windrag offers published so far (change-only transport logging).
-    pub windrag_offers: u64,
-    /// Last windrag offer time for pump-to-owner transport measurement
-    /// (trace-only log; excludes queue wait and native delivery).
-    pub windrag_last_offer: Option<Instant>,
     /// Pump message turns completed: one drain-wait-drain-publish iteration
     /// (heartbeat liveness, always counted). Equals `waits`; stop before
     /// the wait returns early with neither a wait nor a turn.
@@ -686,7 +630,7 @@ pub struct InputDiag {
     /// since the last publish, trace-only. Tick-count domain only; excludes
     /// everything before the native timestamp and after callback entry.
     pub delivery_gap_ms: u32,
-    /// Thread-local parked batches awaiting outbox space (snap + windrag).
+    /// Thread-local parked batches awaiting outbox space (snap).
     pub pending_snap: usize,
     /// Callback-summary batches dropped on a full `cb_outbox`.
     pub cb_outbox_dropped: u32,
@@ -885,7 +829,7 @@ impl PumpLifecycle {
 mod tests {
     use super::{
         INBOX_CAP, Inbox, InboxItem, InputSnapshot, LifecycleError, OUTBOX_BATCH_CAP, Outbox,
-        PumpLifecycle, PumpState, SharedSnapshot, TaggedBatch, WindragOrigin, esc_edge_cancels,
+        PumpLifecycle, PumpState, SharedSnapshot, TaggedBatch, esc_edge_cancels,
         fence_base_generation, fence_test_allocate, fence_test_serial, note_policy_applied,
         note_policy_published, policy_fence_pending, pump_slot_release, pump_slot_reserved,
         pump_slot_test_serial, pump_slot_try_reserve,
@@ -893,9 +837,6 @@ mod tests {
     use crate::snapkey::{
         INTENT_QUEUE_CAP, KeyboardConfig, QueuedIntent, QueuedSnapEvent, SnapClassify, SnapEdge,
         SnapOp, SnapOrigin, SnapQueue, VK_H, VK_LWIN, classify_and_queue, win_up_mask_reserve,
-    };
-    use crate::win_mouse::{
-        UpOutcome, WINDRAG_QUEUE_CAP, WinDragEdge, WinDragKind, WinDragQueue, WinHookArm,
     };
     use std::collections::HashMap;
     use std::time::Instant;
@@ -920,19 +861,11 @@ mod tests {
             remap: Vec::new(),
             disabled: Vec::new(),
             snap_origins: HashMap::new(),
-            windrag_origins: HashMap::new(),
             active: takeover,
             trace: false,
         };
         for hwnd in hwnds {
             snap.snap_origins.insert(*hwnd, origin_of(*hwnd));
-            snap.windrag_origins.insert(
-                *hwnd,
-                WindragOrigin {
-                    origin: origin_of(*hwnd),
-                    tag: Some(format!("tag-{hwnd}")),
-                },
-            );
         }
         std::sync::Arc::new(snap)
     }
@@ -940,7 +873,6 @@ mod tests {
     struct Applied {
         machine: SnapClassify,
         snap_origins: HashMap<u64, SnapOrigin>,
-        windrag_origins: HashMap<u64, WindragOrigin>,
     }
 
     impl Applied {
@@ -948,7 +880,6 @@ mod tests {
             Self {
                 machine: SnapClassify::new(KeyboardConfig::disabled()),
                 snap_origins: HashMap::new(),
-                windrag_origins: HashMap::new(),
             }
         }
 
@@ -963,13 +894,8 @@ mod tests {
                     self.machine.set_remap(snap.remap.clone());
                     self.machine.set_disabled(snap.disabled.clone());
                     self.snap_origins = snap.snap_origins.clone();
-                    self.windrag_origins = snap.windrag_origins.clone();
                 }
-                InboxItem::InvalidateWindrag(hwnd) => {
-                    self.snap_origins.remove(hwnd);
-                    self.windrag_origins.remove(hwnd);
-                }
-                InboxItem::ClearWindrag | InboxItem::ClearEsc => {}
+                InboxItem::ClearEsc => {}
             }
         }
     }
@@ -1011,17 +937,6 @@ mod tests {
         })
     }
 
-    fn dummy_edge(kind: WinDragKind, hwnd: u64) -> WinDragEdge {
-        WinDragEdge {
-            hwnd,
-            kind,
-            x: 1,
-            y: 2,
-            esc_seq: 0,
-            snapshot: None,
-        }
-    }
-
     fn drain_queue(queue: &mut SnapQueue, limit: usize) -> Vec<QueuedSnapEvent> {
         let mut out = Vec::new();
         while out.len() < limit.max(1) {
@@ -1033,30 +948,14 @@ mod tests {
         out
     }
 
-    fn drain_windrag(queue: &mut WinDragQueue, limit: usize) -> Vec<WinDragEdge> {
-        let mut out = Vec::new();
-        while out.len() < limit.max(1) {
-            match queue.pop_front() {
-                Some(edge) => out.push(edge),
-                None => break,
-            }
-        }
-        out
-    }
-
     #[test]
-    fn snapshot_invalidate_snapshot_applies_strictly_in_order() {
-        // Regression shape for the marker bug: snapshot, invalidate, snapshot
-        // must apply as queued payloads, never with the later policy acting
-        // before the invalidation.
+    fn snapshot_snapshot_applies_strictly_in_order() {
+        // Snapshots apply as queued payloads, never with the later policy
+        // acting before the earlier one.
         let inbox = Inbox::new();
         let first = snapshot_with(&[7], true);
         let second = snapshot_with(&[], false);
-        let pushed = vec![
-            InboxItem::Snapshot(first),
-            InboxItem::InvalidateWindrag(7),
-            InboxItem::Snapshot(second),
-        ];
+        let pushed = vec![InboxItem::Snapshot(first), InboxItem::Snapshot(second)];
         for item in &pushed {
             inbox.push(item.clone()).expect("fits");
         }
@@ -1065,13 +964,9 @@ mod tests {
         let mut applied = Applied::new();
         applied.apply(&drained[0]);
         assert!(applied.snap_origins.contains_key(&7));
-        assert!(applied.windrag_origins.contains_key(&7));
         assert!(applied.machine.enabled);
         win_down(&mut applied.machine);
         let mut queue = SnapQueue::new();
-        // Bound at callback time against the applied map, like production.
-        let eligible = applied.windrag_origins.contains_key(&7);
-        assert!(eligible);
         assert_eq!(
             chord(&mut applied.machine, &mut queue, VK_H, true),
             Some(true)
@@ -1082,11 +977,6 @@ mod tests {
         );
         applied.apply(&drained[1]);
         assert!(!applied.snap_origins.contains_key(&7));
-        assert!(!applied.windrag_origins.contains_key(&7));
-        // Policy from the first snapshot still holds here: the later
-        // snapshot has not applied yet.
-        assert!(applied.machine.enabled);
-        applied.apply(&drained[2]);
         assert!(!applied.machine.enabled);
         let mut queue = SnapQueue::new();
         win_down(&mut applied.machine);
@@ -1105,14 +995,14 @@ mod tests {
         }
         assert_eq!(inbox.len(), INBOX_CAP);
         let refused = inbox
-            .push(InboxItem::InvalidateWindrag(7))
+            .push(InboxItem::ClearEsc)
             .expect_err("full retains the item");
-        assert_eq!(*refused, InboxItem::InvalidateWindrag(7));
+        assert_eq!(*refused, InboxItem::ClearEsc);
         let drained = inbox.drain();
         assert_eq!(drained.len(), INBOX_CAP);
         assert!(inbox.is_empty());
         inbox.push(*refused).expect("retry succeeds");
-        assert_eq!(inbox.drain(), vec![InboxItem::InvalidateWindrag(7)]);
+        assert_eq!(inbox.drain(), vec![InboxItem::ClearEsc]);
     }
 
     #[test]
@@ -1168,38 +1058,6 @@ mod tests {
     }
 
     #[test]
-    fn windrag_terminal_travels_outbox_end_to_end() {
-        let mut queue = WinDragQueue::new();
-        for n in 0..WINDRAG_QUEUE_CAP {
-            assert!(queue.push(dummy_edge(WinDragKind::Down, n as u64)));
-        }
-        assert!(!queue.push(dummy_edge(WinDragKind::Down, 999)));
-        queue.push_terminal(dummy_edge(WinDragKind::Up, 7));
-        // Batch size bounds live with the drain limits, not the slot: the
-        // single-outstanding slot refuses while occupied, never while sized.
-        let outbox: Outbox<TaggedBatch<WinDragEdge>> = Outbox::new();
-        let batch = drain_windrag(&mut queue, OUTBOX_BATCH_CAP);
-        assert_eq!(batch.len(), OUTBOX_BATCH_CAP);
-        outbox.put(TaggedBatch::new(3, batch)).expect("first offer");
-        // Single outstanding: a second offer returns intact while occupied.
-        let retry = TaggedBatch::new(3, vec![dummy_edge(WinDragKind::Cancel, 9)]);
-        let back = outbox.put(retry).expect_err("occupied");
-        assert_eq!(back.items, vec![dummy_edge(WinDragKind::Cancel, 9)]);
-        assert_eq!(outbox.offered(), 1);
-        assert_eq!(outbox.taken(), 0);
-        // Drain the rest behind the outstanding batch: the terminal Up is
-        // still queued in order behind, never stranded by the stall.
-        let rest = drain_windrag(&mut queue, WINDRAG_QUEUE_CAP);
-        assert_eq!(rest.last(), Some(&dummy_edge(WinDragKind::Up, 7)));
-        let first = outbox.take().expect("batch");
-        assert_eq!(first.items.len(), OUTBOX_BATCH_CAP);
-        assert_eq!(first.generation, 3);
-        assert_eq!(outbox.taken(), 1);
-        assert!(!outbox.occupied());
-        assert!(outbox.take().is_none());
-    }
-
-    #[test]
     fn tagged_batch_marks_superseded_policy_stale() {
         let fresh = TaggedBatch::new(4, vec![1u8, 2]);
         assert!(!fresh.is_stale(4));
@@ -1221,7 +1079,10 @@ mod tests {
         machine.set_gate_active(true);
         let mut queue = SnapQueue::new();
         win_down(&mut machine);
-        machine.note_windrag_consumed();
+        // Consumed chord arms the Win-up mask obligation for this hold.
+        assert_eq!(chord(&mut machine, &mut queue, VK_H, true), Some(true));
+        // Drain the chord event: only the mask obligation must survive.
+        drain_queue(&mut queue, INTENT_QUEUE_CAP);
         for _ in 0..INTENT_QUEUE_CAP {
             assert!(queue.push(dummy_intent()));
         }
@@ -1242,18 +1103,6 @@ mod tests {
         let taken = outbox.take().expect("take");
         assert_eq!(taken.items.len(), OUTBOX_BATCH_CAP);
         assert!(outbox.take().is_none());
-    }
-
-    #[test]
-    fn windrag_invalidation_keeps_swallow_until_up() {
-        // Ordered invalidation applied to the real arm: the paired Up after a
-        // consumed Down is swallowed exactly once.
-        let mut arm = WinHookArm::default();
-        assert!(arm.on_down(7, 1, 1, true, true));
-        assert!(arm.invalidate(7));
-        assert!(!arm.is_armed());
-        assert_eq!(arm.on_up(9, 9), UpOutcome::Swallowed);
-        assert_eq!(arm.on_up(9, 9), UpOutcome::Pass);
     }
 
     #[test]
@@ -1329,8 +1178,8 @@ mod tests {
             assert!(inbox.try_push(InboxItem::ClearEsc, &mut s));
         }
         let mut full_slot = None;
-        assert!(!inbox.try_push(InboxItem::InvalidateWindrag(7), &mut full_slot));
-        assert_eq!(full_slot, Some(InboxItem::InvalidateWindrag(7)));
+        assert!(!inbox.try_push(InboxItem::ClearEsc, &mut full_slot));
+        assert_eq!(full_slot, Some(InboxItem::ClearEsc));
         let outbox: Outbox<u8> = Outbox::new();
         assert!(outbox.try_put(7).expect("offer"));
         assert_eq!(outbox.try_occupied(), Some(true));
@@ -1363,21 +1212,19 @@ mod tests {
         // and applied before release, so parallel tests cannot disturb the
         // window and no pending fence leaks out.
         use super::{
-            fence_test_allocate, fence_test_serial, keyboard_fresh_gate, mouse_fresh_gate,
-            note_policy_applied, note_policy_published, policy_fence_pending,
+            fence_test_allocate, fence_test_serial, keyboard_fresh_gate, note_policy_applied,
+            note_policy_published, policy_fence_pending,
         };
         let _guard = fence_test_serial();
         let base = fence_test_allocate();
         note_policy_applied(base);
         assert!(!policy_fence_pending());
         assert!(keyboard_fresh_gate(true));
-        assert!(mouse_fresh_gate(true, true));
         // Owner publishes a newer policy: fresh refuses until the pump
         // applies it.
         note_policy_published(base + 1);
         assert!(policy_fence_pending());
         assert!(!keyboard_fresh_gate(true));
-        assert!(!mouse_fresh_gate(true, true));
         // A fresh chord under the fence passes through tracked (pass verdict
         // retained, never converted into a swallow).
         let mut machine = SnapClassify::new(KeyboardConfig {
@@ -1421,7 +1268,6 @@ mod tests {
         note_policy_applied(base + 1);
         assert!(!policy_fence_pending());
         assert!(keyboard_fresh_gate(true));
-        assert!(mouse_fresh_gate(true, true));
     }
 
     #[test]

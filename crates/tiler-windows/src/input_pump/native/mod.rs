@@ -1,11 +1,10 @@
 #![forbid(unsafe_code)]
 use super::{InputChannels, install_backoff_secs, snap_batch_age_us};
 use crate::input_handoff::{
-    InboxItem, InputDiag, InputSnapshot, OUTBOX_BATCH_CAP, PumpLifecycle, SharedSnapshot,
-    StopReport, TaggedBatch, note_policy_applied, snapshot_policy_eq, take_delivery_gap_ms,
+    InboxItem, InputDiag, OUTBOX_BATCH_CAP, PumpLifecycle, SharedSnapshot, StopReport, TaggedBatch,
+    note_policy_applied, snapshot_policy_eq, take_delivery_gap_ms,
 };
 use crate::snapkey::{KeyboardConfig, QueuedSnapEvent};
-use crate::win_mouse::WinDragEdge;
 use std::collections::VecDeque;
 use std::os::windows::io::OwnedHandle;
 use std::sync::{
@@ -23,16 +22,10 @@ use std::time::{Duration, Instant};
 pub trait NativeHooks {
     /// Installed keyboard hook token (real ffi owner, fake unit).
     type KeyboardHook;
-    /// Installed mouse hook token.
-    type MouseHook;
     /// Install the keyboard hook with the latest policy (`Err` = retry).
     fn install_keyboard(&mut self, config: KeyboardConfig) -> Result<Self::KeyboardHook, String>;
-    /// Install the mouse hook (`Err` = retry).
-    fn install_mouse(&mut self) -> Result<Self::MouseHook, String>;
     /// Release the keyboard hook on the creator thread.
     fn uninstall_keyboard(&mut self, hook: &mut Self::KeyboardHook) -> bool;
-    /// Release the mouse hook on the creator thread.
-    fn uninstall_mouse(&mut self, hook: &mut Self::MouseHook) -> bool;
     /// Deliver pending messages (LL callbacks) on the creator thread
     /// without waiting. Callbacks queue classifier work that the core
     /// transfers before blocking, so the final callback never strands
@@ -51,26 +44,17 @@ pub trait NativeHooks {
 }
 
 /// Production backend: real hook install/uninstall plus the creator-side
-/// message pump. Both hooks stay together on this thread.
+/// message pump. The keyboard hook lives on this thread.
 pub struct RealHooks;
 impl NativeHooks for RealHooks {
     type KeyboardHook = crate::ffi::SnapKeyHook;
-    type MouseHook = crate::ffi::WinMouseHook;
 
     fn install_keyboard(&mut self, config: KeyboardConfig) -> Result<Self::KeyboardHook, String> {
         crate::snapkey::sys::install(config)
     }
 
-    fn install_mouse(&mut self) -> Result<Self::MouseHook, String> {
-        crate::win_mouse::sys::install()
-    }
-
     fn uninstall_keyboard(&mut self, hook: &mut Self::KeyboardHook) -> bool {
         crate::snapkey::sys::uninstall(hook)
-    }
-
-    fn uninstall_mouse(&mut self, hook: &mut Self::MouseHook) -> bool {
-        crate::win_mouse::sys::uninstall(hook)
     }
 
     fn drain_messages(&mut self) {
@@ -103,7 +87,6 @@ impl super::FakeBackend {
 
 impl NativeHooks for super::FakeBackend {
     type KeyboardHook = ();
-    type MouseHook = ();
 
     fn install_keyboard(&mut self, config: KeyboardConfig) -> Result<Self::KeyboardHook, String> {
         self.keyboard_configs.push(config);
@@ -124,25 +107,7 @@ impl NativeHooks for super::FakeBackend {
         outcome
     }
 
-    fn install_mouse(&mut self) -> Result<Self::MouseHook, String> {
-        // Mirror production TLS init; cleared again below on failure.
-        // Test-only: no native effects.
-        #[cfg(test)]
-        crate::win_mouse::sys::test_ensure_state();
-        let outcome =
-            Self::next_scripted(&mut self.mouse_script, &mut self.mouse_attempts, "mouse");
-        #[cfg(test)]
-        if outcome.is_err() {
-            crate::win_mouse::sys::test_clear_state();
-        }
-        outcome
-    }
-
     fn uninstall_keyboard(&mut self, _hook: &mut Self::KeyboardHook) -> bool {
-        self.unhook_script.pop_front().unwrap_or(true)
-    }
-
-    fn uninstall_mouse(&mut self, _hook: &mut Self::MouseHook) -> bool {
         self.unhook_script.pop_front().unwrap_or(true)
     }
 
@@ -152,9 +117,6 @@ impl NativeHooks for super::FakeBackend {
         {
             for event in std::mem::take(&mut self.snap_on_drain) {
                 crate::snapkey::sys::test_push_queued(event);
-            }
-            for edge in std::mem::take(&mut self.windrag_on_drain) {
-                crate::win_mouse::sys::test_push_edge(edge);
             }
         }
     }
@@ -173,10 +135,8 @@ impl NativeHooks for super::FakeBackend {
         if self.assert_transferred_before_wait {
             let snap_left =
                 crate::snapkey::sys::drain_up_to(crate::input_handoff::OUTBOX_BATCH_CAP);
-            let mouse_left =
-                crate::win_mouse::sys::drain_up_to(crate::input_handoff::OUTBOX_BATCH_CAP);
             assert!(
-                snap_left.is_empty() && mouse_left.is_empty(),
+                snap_left.is_empty(),
                 "pre-wait drain queued work that never transferred before blocking"
             );
         }
@@ -192,7 +152,7 @@ impl NativeHooks for super::FakeBackend {
 /// The pump never logs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FailEvent {
-    /// `"keyboard"` or `"mouse"`.
+    /// `"keyboard"`.
     pub hook: &'static str,
     /// Consecutive attempt number.
     pub attempt: u32,
@@ -502,11 +462,8 @@ pub(crate) struct PumpCore<B: NativeHooks> {
     signals: Arc<PumpSignals>,
     spawn_config: KeyboardConfig,
     keyboard_hook: Option<B::KeyboardHook>,
-    mouse_hook: Option<B::MouseHook>,
     keyboard_failures: u32,
-    mouse_failures: u32,
     keyboard_retry_at: Option<Instant>,
-    mouse_retry_at: Option<Instant>,
     /// Transient try-lock contention observed on the last transfer
     /// (inbox drain, outbox probe/offer, callback summaries). Arms one
     /// bounded retry deadline; never a fixed poll.
@@ -517,8 +474,6 @@ pub(crate) struct PumpCore<B: NativeHooks> {
     latest: Option<SharedSnapshot>,
     /// Last applied snapshot (policy baseline for change detection).
     applied: Option<SharedSnapshot>,
-    /// Last mouse gate pushed (snapshot gate plus keyboard presence).
-    last_mouse_gate: Option<bool>,
     /// Last sampled Win+Shift chord level for the transition-only owner
     /// wake. `None` until the first sample with the keyboard hook
     /// installed, so install itself never wakes. Only genuine
@@ -527,7 +482,6 @@ pub(crate) struct PumpCore<B: NativeHooks> {
     /// purely a wake hint with no policy content.
     last_chord: Option<bool>,
     pending_snap: Option<TaggedBatch<QueuedSnapEvent>>,
-    pending_windrag: Option<TaggedBatch<WinDragEdge>>,
     diag: InputDiag,
     turns: u64,
     /// Cumulative native wait returns by reason (exactly one per wait;
@@ -556,19 +510,14 @@ impl<B: NativeHooks> PumpCore<B> {
             signals,
             spawn_config,
             keyboard_hook: None,
-            mouse_hook: None,
             keyboard_failures: 0,
-            mouse_failures: 0,
             keyboard_retry_at: None,
-            mouse_retry_at: None,
             contention: false,
             contention_retry_at: None,
             latest: None,
             applied: None,
-            last_mouse_gate: None,
             last_chord: None,
             pending_snap: None,
-            pending_windrag: None,
             diag: InputDiag::default(),
             turns: 0,
             wait_work: 0,
@@ -597,14 +546,13 @@ impl<B: NativeHooks> PumpCore<B> {
             .unwrap_or(0)
     }
 
-    /// One install attempt per missing hook; `None` until due. Each
+    /// One install attempt for the keyboard hook; `None` until due. A
     /// successful install reapplies the retained snapshot: install
     /// creates empty hook state, so without this a snapshot applied
     /// while TLS was absent would leave correct origins/gates missing
     /// indefinitely under change-gated publication.
     fn install_due(&mut self, now: Instant) {
         let mut keyboard_new = false;
-        let mut mouse_new = false;
         if self.keyboard_hook.is_none() && self.keyboard_retry_at.is_none_or(|at| now >= at) {
             match self.backend.install_keyboard(self.install_config()) {
                 Ok(hook) => {
@@ -635,43 +583,11 @@ impl<B: NativeHooks> PumpCore<B> {
                 }
             }
         }
-        if self.mouse_hook.is_none() && self.mouse_retry_at.is_none_or(|at| now >= at) {
-            match self.backend.install_mouse() {
-                Ok(hook) => {
-                    self.mouse_hook = Some(hook);
-                    mouse_new = true;
-                    let recovered = self.mouse_failures > 0;
-                    self.mouse_failures = 0;
-                    self.mouse_retry_at = None;
-                    if recovered {
-                        self.signals.note_failure(FailEvent {
-                            hook: "mouse",
-                            attempt: 0,
-                            retry_secs: 0,
-                            recovered: true,
-                        });
-                    }
-                }
-                Err(_) => {
-                    self.mouse_failures += 1;
-                    let backoff = install_backoff_secs(self.mouse_failures);
-                    self.mouse_retry_at = Some(now + Duration::from_secs(backoff));
-                    self.signals.note_failure(FailEvent {
-                        hook: "mouse",
-                        attempt: self.mouse_failures,
-                        retry_secs: backoff,
-                        recovered: false,
-                    });
-                }
-            }
-        }
-        if self.keyboard_hook.is_some() && self.mouse_hook.is_some() {
+        if self.keyboard_hook.is_some() {
             self.signals.note_ready();
         }
-        if (keyboard_new || mouse_new)
-            && let Some(snap) = self.latest.clone()
-        {
-            self.reapply_retained(&snap, keyboard_new, mouse_new);
+        if keyboard_new && let Some(snap) = self.latest.clone() {
+            self.reapply_retained(&snap);
         }
     }
 
@@ -679,63 +595,13 @@ impl<B: NativeHooks> PumpCore<B> {
     /// Policy tables restore whole; the stale-drain count is ignored
     /// (fresh queues are empty) and ack counters stay with the original
     /// apply, so this never double-counts.
-    fn reapply_retained(&mut self, snap: &SharedSnapshot, keyboard: bool, mouse: bool) {
-        if keyboard {
-            let _ = crate::snapkey::sys::apply_snapshot(snap, true);
-        }
-        if mouse {
-            crate::win_mouse::sys::apply_snapshot(snap, self.keyboard_hook.is_some());
-            self.last_mouse_gate = Some(snap.active && self.keyboard_hook.is_some());
-        }
+    fn reapply_retained(&mut self, snap: &SharedSnapshot) {
+        let _ = crate::snapkey::sys::apply_snapshot(snap, true);
     }
 
     /// Apply one FIFO item outside callbacks. Snapshots apply whole and
     /// in order; only a real policy change drains stale queued actions
-    /// (origins/gate republishes never flush); invalidations drop origins
-    /// without touching held-pair verdicts; terminal clears disarm
-    /// without inventing synthetic key cleanup.
-    /// Drop one origin from the retained snapshot so a later hook
-    /// install (`reapply_retained`) or mouse-gate refresh
-    /// (`refresh_mouse_gate`) reinstalls the invalidated state instead
-    /// of rearming it. Held-pair verdicts and terminal swallow
-    /// obligations are untouched (they live in the hook arm, not the
-    /// retained maps).
-    fn forget_retained_origin(&mut self, hwnd: u64) {
-        if let Some(latest) = self.latest.as_mut() {
-            let dot = |snap: &mut InputSnapshot| {
-                snap.snap_origins.remove(&hwnd);
-                snap.windrag_origins.remove(&hwnd);
-            };
-            if let Some(snap) = Arc::get_mut(latest) {
-                dot(snap);
-            } else {
-                let mut clone = (**latest).clone();
-                dot(&mut clone);
-                *latest = Arc::new(clone);
-            }
-        }
-    }
-
-    /// Drop every origin from the retained snapshot after a clear, for
-    /// the same no-rearm reason as [`Self::forget_retained_origin`].
-    /// The owner republishes live origins with a forced snapshot; the
-    /// cleared retention never rebinds obsolete ones first.
-    fn forget_retained_all(&mut self) {
-        if let Some(latest) = self.latest.as_mut() {
-            let dot = |snap: &mut InputSnapshot| {
-                snap.snap_origins.clear();
-                snap.windrag_origins.clear();
-            };
-            if let Some(snap) = Arc::get_mut(latest) {
-                dot(snap);
-            } else {
-                let mut clone = (**latest).clone();
-                dot(&mut clone);
-                *latest = Arc::new(clone);
-            }
-        }
-    }
-
+    /// (origins/gate republishes never flush).
     fn apply_item(&mut self, item: &InboxItem) {
         match item {
             InboxItem::Snapshot(snap) => {
@@ -744,8 +610,6 @@ impl<B: NativeHooks> PumpCore<B> {
                     .as_ref()
                     .is_none_or(|cur| !snapshot_policy_eq(cur, snap));
                 let stale = crate::snapkey::sys::apply_snapshot(snap, policy_changed);
-                crate::win_mouse::sys::apply_snapshot(snap, self.keyboard_hook.is_some());
-                self.last_mouse_gate = Some(snap.active && self.keyboard_hook.is_some());
                 // Acknowledgements advance monotonically even when the
                 // content equals the applied policy (owner revert after a
                 // refused policy change reuses the armed generation):
@@ -766,40 +630,10 @@ impl<B: NativeHooks> PumpCore<B> {
                 self.applied = Some(Arc::clone(snap));
                 self.latest = Some(Arc::clone(snap));
             }
-            InboxItem::InvalidateWindrag(hwnd) => {
-                crate::snapkey::sys::apply_invalidate_windrag(*hwnd);
-                crate::win_mouse::sys::apply_invalidate(*hwnd);
-                self.forget_retained_origin(*hwnd);
-            }
-            InboxItem::ClearWindrag => {
-                crate::snapkey::sys::apply_clear_windrag_origins();
-                crate::win_mouse::sys::apply_clear();
-                self.forget_retained_all();
-            }
             InboxItem::ClearEsc => {
                 crate::snapkey::sys::clear_esc_edge();
-                crate::snapkey::sys::clear_windrag_esc_edge();
                 crate::input_handoff::global_esc_edge().store(false, Ordering::SeqCst);
-                crate::input_handoff::global_windrag_esc_edge().store(false, Ordering::SeqCst);
             }
-        }
-    }
-
-    /// Re-push the mouse gate when keyboard presence changed without a
-    /// new snapshot (mouse consumes only with both hooks installed, since
-    /// a missing keyboard cannot send the mask).
-    fn refresh_mouse_gate(&mut self) {
-        let gate = self
-            .latest
-            .as_ref()
-            .map(|snap| snap.active && self.keyboard_hook.is_some())
-            .unwrap_or(false);
-        if self.last_mouse_gate != Some(gate)
-            && self.mouse_hook.is_some()
-            && let Some(snap) = self.latest.clone()
-        {
-            crate::win_mouse::sys::apply_snapshot(&snap, self.keyboard_hook.is_some());
-            self.last_mouse_gate = Some(gate);
         }
     }
 
@@ -827,20 +661,19 @@ impl<B: NativeHooks> PumpCore<B> {
         }
     }
 
-    /// Drain the hook-state Esc-cancel edges on this thread and signal the
-    /// owner wake when either was set. The Esc downs queue no batch, yet an
+    /// Drain the hook-state Esc-cancel edge on this thread and signal the
+    /// owner wake when it was set. The Esc downs queue no batch, yet an
     /// open gesture must latch and hide its preview promptly (previously
     /// the fixed poll delivered this; an event-driven owner would otherwise
-    /// wait for the END). Consumes only this thread's edges: the product
-    /// owner latches through the process-global edges, so this steals
+    /// wait for the END). Consumes only this thread's edge: the product
+    /// owner latches through the process-global edge, so this steals
     /// nothing, and one edge fires exactly one wake instead of signaling
     /// every step while the global stays set pending the owner drain.
     fn sample_cancel_edge(&mut self) {
         if self.keyboard_hook.is_none() {
             return;
         }
-        let (esc, windrag) = crate::snapkey::sys::take_pump_esc_edges();
-        if esc || windrag {
+        if crate::snapkey::sys::take_pump_esc_edge() {
             self.channels.notify_intent();
         }
     }
@@ -901,45 +734,6 @@ impl<B: NativeHooks> PumpCore<B> {
                 None => self.contention = true,
             }
         }
-        if let Some(pending) = self.pending_windrag.take() {
-            match self.channels.windrag_outbox.try_put(pending) {
-                Ok(_) => self.channels.notify_intent(),
-                Err(batch) => {
-                    if self.channels.windrag_outbox.try_occupied() != Some(true) {
-                        self.contention = true;
-                    }
-                    self.pending_windrag = Some(batch);
-                }
-            }
-        } else {
-            match self.channels.windrag_outbox.try_occupied() {
-                Some(true) => {}
-                Some(false) if self.mouse_hook.is_some() => {
-                    let items = crate::win_mouse::sys::drain_up_to(OUTBOX_BATCH_CAP);
-                    if !items.is_empty() {
-                        match self
-                            .channels
-                            .windrag_outbox
-                            .try_put(TaggedBatch::new(generation, items))
-                        {
-                            Ok(_) => {
-                                self.diag.windrag_offers += 1;
-                                self.diag.windrag_last_offer = trace.then(Instant::now);
-                                self.channels.notify_intent();
-                            }
-                            Err(batch) => {
-                                if self.channels.windrag_outbox.try_occupied() != Some(true) {
-                                    self.contention = true;
-                                }
-                                self.pending_windrag = Some(batch);
-                            }
-                        }
-                    }
-                }
-                Some(false) => {}
-                None => self.contention = true,
-            }
-        }
         match self.channels.cb_outbox.try_occupied() {
             Some(true) => {}
             Some(false) => {
@@ -963,13 +757,11 @@ impl<B: NativeHooks> PumpCore<B> {
     fn publish_diag(&mut self, dispatch_us: u64) {
         let trace = self.latest.as_ref().is_some_and(|snap| snap.trace);
         self.diag.snap_dropped = crate::snapkey::sys::queue_dropped();
-        self.diag.windrag_dropped = crate::win_mouse::sys::queue_dropped();
         self.diag.cb_dropped = crate::snapkey::sys::callback_diag_dropped();
         self.diag.cb_filtered = crate::snapkey::sys::callback_diag_filtered();
         let (sends, max_us) = crate::snapkey::sys::mask_send_stats();
         self.diag.mask_sends = sends;
         self.diag.mask_send_max_us = max_us;
-        self.diag.hook_stats = crate::win_mouse::sys::hook_stats();
         self.diag.turns = self.turns;
         self.diag.waits = self
             .wait_work
@@ -982,15 +774,14 @@ impl<B: NativeHooks> PumpCore<B> {
         self.diag.wait_failed = self.wait_failed;
         self.diag.dispatch_us = if trace { dispatch_us } else { 0 };
         self.diag.delivery_gap_ms = if trace { take_delivery_gap_ms() } else { 0 };
-        self.diag.pending_snap =
-            self.pending_snap.is_some() as usize + self.pending_windrag.is_some() as usize;
+        self.diag.pending_snap = usize::from(self.pending_snap.is_some());
         self.diag.cb_outbox_dropped = self.cb_outbox_dropped;
         let _ = self.channels.diag.try_publish(&self.diag);
     }
 
     /// Next wait deadline, if any. Install-retry dues plus one bounded
-    /// transient-contention retry. `None` means fully idle: both hooks
-    /// installed and no contention outstanding, so the pump may wait
+    /// transient-contention retry. `None` means fully idle: the keyboard
+    /// hook installed and no contention outstanding, so the pump may wait
     /// indefinitely. No wake is lost: owner inbox/control/flush/drain/
     /// stop signals break the wait through the work wake, hook-callback
     /// messages arrive through the message queue itself, and callback
@@ -1000,14 +791,6 @@ impl<B: NativeHooks> PumpCore<B> {
         let mut earliest: Option<Instant> = None;
         if self.keyboard_hook.is_none() {
             match self.keyboard_retry_at {
-                Some(due) => {
-                    earliest = Some(earliest.map_or(due, |prev| prev.min(due)));
-                }
-                None => return Some(Instant::now()),
-            }
-        }
-        if self.mouse_hook.is_none() {
-            match self.mouse_retry_at {
                 Some(due) => {
                     earliest = Some(earliest.map_or(due, |prev| prev.min(due)));
                 }
@@ -1027,9 +810,6 @@ impl<B: NativeHooks> PumpCore<B> {
         let now = Instant::now();
         if self.keyboard_hook.is_none() {
             self.keyboard_retry_at = Some(now);
-        }
-        if self.mouse_hook.is_none() {
-            self.mouse_retry_at = Some(now);
         }
     }
 
@@ -1066,7 +846,6 @@ impl<B: NativeHooks> PumpCore<B> {
         }
         let now = Instant::now();
         self.install_due(now);
-        self.refresh_mouse_gate();
         let pre_start = Instant::now();
         self.backend.drain_messages();
         self.offer_batches();
@@ -1143,17 +922,6 @@ impl<B: NativeHooks> PumpCore<B> {
             }
             unhook_ok &= ok;
         }
-        if let Some(mut hook) = self.mouse_hook.take() {
-            let mut ok = self.backend.uninstall_mouse(&mut hook);
-            for delay in RETRY_DELAYS_MS {
-                if ok {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(delay));
-                ok = self.backend.uninstall_mouse(&mut hook);
-            }
-            unhook_ok &= ok;
-        }
         StopReport {
             unhook_ok,
             clean: unhook_ok,
@@ -1161,7 +929,7 @@ impl<B: NativeHooks> PumpCore<B> {
     }
 }
 
-/// Pump thread body: installs both hooks on this thread, reports
+/// Pump thread body: installs the keyboard hook on this thread, reports
 /// readiness, exchanges batches, and unhooks here on stop. Never logs.
 /// The stop acknowledgement is recorded as the terminal act before
 /// returning; clean still requires a finished thread whose join succeeds

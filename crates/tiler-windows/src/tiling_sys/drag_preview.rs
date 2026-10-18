@@ -154,12 +154,7 @@ fn refresh_cross_drag_preview(
             .preview_bound
             .get(&hwnd)
             .and_then(|bound| bound.hover_prior.clone()),
-        producer: state
-            .gesture_producer
-            .get(&hwnd)
-            .copied()
-            .unwrap_or("native")
-            .to_owned(),
+        producer: "native".to_owned(),
         start_rect: state.gesture_before.get(&hwnd).copied(),
     };
     state
@@ -483,8 +478,7 @@ pub(super) fn prepare_cross_singleton_event(
 /// holds the loop: a separate owned click-through nonactivating filled
 /// target-slot surface ABOVE windows (KWin overlay-item analogue).
 ///
-/// Both accepted producers feed this path: the native caption modal loop
-/// (frame-following) and the stationary Win+Left hold (pointer-tracked).
+/// The native caption modal loop (frame-following) feeds this path.
 /// Each 100ms pump sample coalesces on pointer movement, assembles a fresh
 /// complete canonical domain observation with size hints, and routes the
 /// SAME Engine `DragPreview` resolver as the final drop, carrying the exact
@@ -503,11 +497,10 @@ pub(super) fn refresh_drag_preview(
     areas: &[MonitorArea],
 ) {
     use crate::active_border_sys::PREVIEW_DEFAULT_ARGB;
-    // Open gestures only: managed, held, with START capture. The producer
-    // distinguishes the stationary Win+Left hold (frames frozen by design)
-    // from the native modal loop. Resize-vs-move for the native loop is
-    // decided below from live frames, never from the START hit test (a
-    // top-edge caption grab hit-tests as a sizing border).
+    // Open gestures only: managed, held, with START capture. Resize-vs-move
+    // for the native loop is decided below from live frames, never from
+    // the START hit test (a top-edge caption grab hit-tests as a sizing
+    // border).
     let mut movers: Vec<u64> = state
         .active
         .iter()
@@ -536,16 +529,10 @@ pub(super) fn refresh_drag_preview(
             .active
             .iter()
             .filter(|hwnd| state.managed.contains(hwnd))
-            .map(|hwnd| {
-                if state.gesture_producer.get(hwnd).copied() == Some("windrag") {
-                    "windrag-unclassified"
-                } else {
-                    match state.move_kind.get(hwnd) {
-                        Some(MoveSizeKind::Move) => "move-unheld",
-                        Some(MoveSizeKind::Resize) => "resize",
-                        _ => "unknown",
-                    }
-                }
+            .map(|hwnd| match state.move_kind.get(hwnd) {
+                Some(MoveSizeKind::Move) => "move-unheld",
+                Some(MoveSizeKind::Resize) => "resize",
+                _ => "unknown",
             })
             .collect();
         if !held.is_empty() {
@@ -577,8 +564,8 @@ pub(super) fn refresh_drag_preview(
         return;
     }
     let hwnd = movers[0];
-    // Logical cancel hides IMMEDIATELY, never waiting for mouse-up (the
-    // stationary gesture has no native modal loop to end it).
+    // Logical cancel hides IMMEDIATELY, never waiting for the modal
+    // loop to end it.
     if state.esc_latched.contains(&hwnd) {
         hide_preview(state, "esc-cancelled");
         state.preview_bound.remove(&hwnd);
@@ -591,7 +578,6 @@ pub(super) fn refresh_drag_preview(
     if state.preview_dead.contains(&hwnd) {
         return;
     }
-    let is_windrag = state.gesture_producer.get(&hwnd).copied() == Some("windrag");
     // START-frozen source binding (token, output/workspace, revision): bound
     // at START, never rebound. Drift fails the whole gesture closed below.
     let Some(start) = state.gesture_preview_start.get(&hwnd).cloned() else {
@@ -641,11 +627,7 @@ pub(super) fn refresh_drag_preview(
         state.preview_dead.insert(hwnd);
         return;
     }
-    let Some((start_x, start_y)) = (if is_windrag {
-        state.windrag_start_cursor.get(&hwnd).copied()
-    } else {
-        state.gesture_start_cursor.get(&hwnd).copied()
-    }) else {
+    let Some((start_x, start_y)) = state.gesture_start_cursor.get(&hwnd).copied() else {
         hide_preview(state, "no-start");
         state.preview_bound.remove(&hwnd);
         state.preview_dead.insert(hwnd);

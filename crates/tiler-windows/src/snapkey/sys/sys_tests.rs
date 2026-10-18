@@ -1,8 +1,6 @@
 #![forbid(unsafe_code)]
 use super::*;
-use crate::input_handoff::{
-    global_esc_clock, global_esc_edge, global_windrag_esc_clock, global_windrag_esc_edge,
-};
+use crate::input_handoff::{global_esc_clock, global_esc_edge};
 use std::sync::atomic::Ordering;
 
 fn fresh_state() {
@@ -22,15 +20,8 @@ fn own_e8_reentry_passes_through_with_no_state_change() {
     let tls_before = SNAP.with(|s| {
         s.borrow()
             .as_ref()
-            .map(|st| {
-                (
-                    st.queue.len(),
-                    st.queue.dropped,
-                    st.esc_seq,
-                    st.windrag_esc_seq,
-                )
-            })
-            .unwrap_or((0, 0, 0, 0))
+            .map(|st| (st.queue.len(), st.queue.dropped, st.esc_seq))
+            .unwrap_or((0, 0, 0))
     });
     test_drive_llproc(super::super::VK_MASK, 0, LLKHF_INJECTED, 0);
     test_drive_llproc(super::super::VK_MASK, 0, LLKHF_INJECTED | LLKHF_UP, 0);
@@ -39,15 +30,8 @@ fn own_e8_reentry_passes_through_with_no_state_change() {
     let tls_after = SNAP.with(|s| {
         s.borrow()
             .as_ref()
-            .map(|st| {
-                (
-                    st.queue.len(),
-                    st.queue.dropped,
-                    st.esc_seq,
-                    st.windrag_esc_seq,
-                )
-            })
-            .unwrap_or((0, 0, 0, 0))
+            .map(|st| (st.queue.len(), st.queue.dropped, st.esc_seq))
+            .unwrap_or((0, 0, 0))
     });
     assert_eq!(tls_before, tls_after);
     // The reentry is trace-visible (closed E8 vocabulary) but never
@@ -67,46 +51,36 @@ fn own_e8_reentry_passes_through_with_no_state_change() {
 }
 
 #[test]
-fn physical_esc_sets_both_edges_and_bumps_both_clocks() {
+fn physical_esc_sets_edge_and_bumps_clock() {
     // Serial guard: the global edge assertions race a concurrent
     // pump `ClearEsc` apply (which stores false).
     let _guard = crate::input_handoff::fence_test_serial();
     fresh_state();
     let esc_before = global_esc_clock().load();
-    let windrag_before = global_windrag_esc_clock().load();
     test_drive_llproc(super::super::VK_ESCAPE, 1, 0, 0);
-    let (edge, windrag_edge) = SNAP.with(|s| {
-        s.borrow()
-            .as_ref()
-            .map(|st| (st.esc_edge, st.windrag_esc_edge))
-            .unwrap_or((false, false))
-    });
-    assert!(edge && windrag_edge);
+    let edge = SNAP.with(|s| s.borrow().as_ref().map(|st| st.esc_edge).unwrap_or(false));
+    assert!(edge);
     assert!(global_esc_clock().load() >= esc_before.wrapping_add(1));
-    assert!(global_windrag_esc_clock().load() >= windrag_before.wrapping_add(1));
     assert!(global_esc_edge().load(Ordering::SeqCst));
-    assert!(global_windrag_esc_edge().load(Ordering::SeqCst));
     test_clear_state();
 }
 
 #[test]
-fn injected_esc_sets_only_the_windrag_edge() {
+fn injected_esc_sets_no_edge() {
     // Synthetic Esc (unmarked, like a `SendInput` cancel): never a
-    // command, never the native edge, but still cancels an open
-    // Win+Left drag that has no native modal loop. Serial guard:
-    // same global-edge race as the physical Esc test above.
+    // command, never the native edge, passes through untouched.
+    // Serial guard: same global-edge race as the physical Esc test above.
     let _guard = crate::input_handoff::fence_test_serial();
     fresh_state();
     test_drive_llproc(super::super::VK_ESCAPE, 1, LLKHF_INJECTED, 0);
-    let (edge, windrag_edge, esc_seq_delta) = SNAP.with(|s| {
+    let (edge, esc_seq_delta) = SNAP.with(|s| {
         s.borrow()
             .as_ref()
-            .map(|st| (st.esc_edge, st.windrag_esc_edge, st.esc_seq))
-            .unwrap_or((true, false, 1))
+            .map(|st| (st.esc_edge, st.esc_seq))
+            .unwrap_or((true, 1))
     });
-    assert!(!edge && windrag_edge);
+    assert!(!edge);
     assert_eq!(esc_seq_delta, 0);
-    assert!(global_windrag_esc_edge().load(Ordering::SeqCst));
     test_clear_state();
 }
 

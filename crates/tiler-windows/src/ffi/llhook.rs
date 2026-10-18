@@ -1,6 +1,6 @@
-//! Low-level hook ownership (`WH_KEYBOARD_LL` / `WH_MOUSE_LL`).
+//! Low-level hook ownership (`WH_KEYBOARD_LL`).
 //!
-//! The three `extern "system"` trampolines live here and nowhere else.
+//! The two `extern "system"` trampolines live here and nowhere else.
 //! Each trampoline copies the OS payload into a safe event struct, then
 //! invokes the installing thread's policy callback with plain values only
 //! (never a raw pointer, never a validity obligation on the safe caller).
@@ -20,8 +20,8 @@ use std::rc::Rc;
 use windows_sys::Win32::Foundation::{HMODULE, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, HC_ACTION, HHOOK, HOOKPROC, KBDLLHOOKSTRUCT, MSLLHOOKSTRUCT, SetWindowsHookExW,
-    UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL,
+    CallNextHookEx, HC_ACTION, HHOOK, HOOKPROC, KBDLLHOOKSTRUCT, SetWindowsHookExW,
+    UnhookWindowsHookEx, WH_KEYBOARD_LL,
 };
 
 /// One copied low-level keyboard event: plain values only.
@@ -32,17 +32,6 @@ pub struct KeyEvent {
     pub flags: u32,
     pub time: u32,
     pub extra: u64,
-}
-
-/// One copied low-level mouse event: pointer position plus the event
-/// payload, plain values only.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MouseEvent {
-    pub x: i32,
-    pub y: i32,
-    pub mouse_data: u32,
-    pub flags: u32,
-    pub time: u32,
 }
 
 /// Policy verdict for one hook event: swallow it (`Consume`, returns `1`
@@ -57,13 +46,10 @@ pub enum HookVerdict {
 /// the hook, cleared with it. Thread-local (not process-global) so each
 /// hook thread keeps its own classifier and test threads stay isolated.
 type KeyPolicy = fn(KeyEvent) -> HookVerdict;
-/// Thread-local policy for the mouse hook: message plus the copied event.
-type MousePolicy = fn(u32, MouseEvent) -> HookVerdict;
 
 thread_local! {
     static SNAPKEY_SINK: RefCell<Option<KeyPolicy>> = const { RefCell::new(None) };
     static WINARROW_SINK: RefCell<Option<KeyPolicy>> = const { RefCell::new(None) };
-    static WINMOUSE_SINK: RefCell<Option<MousePolicy>> = const { RefCell::new(None) };
 }
 
 /// Install the snapkey classifier as this thread's keyboard policy. Called
@@ -85,16 +71,6 @@ pub fn set_winarrow_sink(sink: KeyPolicy) {
 /// Clear this thread's winarrow policy.
 pub fn clear_winarrow_sink() {
     WINARROW_SINK.with(|s| *s.borrow_mut() = None);
-}
-
-/// Install the windrag classifier as this thread's mouse policy.
-pub fn set_winmouse_sink(sink: MousePolicy) {
-    WINMOUSE_SINK.with(|s| *s.borrow_mut() = Some(sink));
-}
-
-/// Clear this thread's windrag policy.
-pub fn clear_winmouse_sink() {
-    WINMOUSE_SINK.with(|s| *s.borrow_mut() = None);
 }
 
 fn call_next(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -152,33 +128,6 @@ unsafe extern "system" fn winarrow_trampoline(
     }
 }
 
-unsafe extern "system" fn winmouse_trampoline(
-    code: i32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> LRESULT {
-    if code as u32 != HC_ACTION {
-        return call_next(code, wparam, lparam);
-    }
-    // Single-copy of the stable `MSLLHOOKSTRUCT` ABI, same contract.
-    let hook = unsafe { &*(lparam as *const MSLLHOOKSTRUCT) };
-    let event = MouseEvent {
-        x: hook.pt.x,
-        y: hook.pt.y,
-        mouse_data: hook.mouseData,
-        flags: hook.flags,
-        time: hook.time,
-    };
-    let sink = WINMOUSE_SINK.with(|s| *s.borrow());
-    let verdict = sink.and_then(|sink| {
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sink(wparam as u32, event))).ok()
-    });
-    match verdict {
-        Some(HookVerdict::Consume) => 1,
-        _ => call_next(code, wparam, lparam),
-    }
-}
-
 fn install_ll(id: i32, proc: HOOKPROC) -> Option<HHOOK> {
     let hmod: HMODULE = unsafe { GetModuleHandleW(std::ptr::null()) };
     let hook = unsafe { SetWindowsHookExW(id, proc, hmod, 0) };
@@ -203,12 +152,6 @@ pub struct WinArrowHook {
     _confine: PhantomData<Rc<()>>,
 }
 
-/// Installed windrag mouse hook; same confinement contract.
-pub struct WinMouseHook {
-    raw: HHOOK,
-    _confine: PhantomData<Rc<()>>,
-}
-
 /// Install the snapkey low-level keyboard hook on the calling thread; the
 /// caller must pump messages so the callback runs. `None` when the API
 /// refuses it (the caller degrades, as before).
@@ -223,15 +166,6 @@ pub fn install_snapkey_hook() -> Option<SnapKeyHook> {
 /// `None` when the API refuses it.
 pub fn install_winarrow_hook() -> Option<WinArrowHook> {
     install_ll(WH_KEYBOARD_LL, Some(winarrow_trampoline)).map(|raw| WinArrowHook {
-        raw,
-        _confine: PhantomData,
-    })
-}
-
-/// Install the windrag low-level mouse hook on the calling thread.
-/// `None` when the API refuses it.
-pub fn install_winmouse_hook() -> Option<WinMouseHook> {
-    install_ll(WH_MOUSE_LL, Some(winmouse_trampoline)).map(|raw| WinMouseHook {
         raw,
         _confine: PhantomData,
     })
@@ -257,15 +191,6 @@ pub fn uninstall_winarrow_hook(hook: &mut WinArrowHook) -> bool {
     true
 }
 
-/// Release the windrag hook; same retain-on-failure contract.
-pub fn uninstall_winmouse_hook(hook: &mut WinMouseHook) -> bool {
-    if !uninstall_ll(hook.raw) {
-        return false;
-    }
-    hook.raw = std::ptr::null_mut();
-    true
-}
-
 /// Test-only keyboard drive (no hooks, no native input calls): feeds one
 /// fabricated low-level key event through the real trampoline, so the
 /// single-copy plus verdict mapping runs exactly as in production. Safe
@@ -283,27 +208,6 @@ pub fn drive_snapkey(vk: u32, scan: u32, flags: u32, extra: u64) -> LRESULT {
     unsafe { snapkey_trampoline(HC_ACTION as i32, 0, &kb as *const KBDLLHOOKSTRUCT as isize) }
 }
 
-/// Test-only mouse drive (no hooks, no native input calls): feeds one
-/// fabricated low-level mouse button event through the real trampoline.
-#[cfg(test)]
-pub fn drive_winmouse(msg: u32, x: i32, y: i32) -> LRESULT {
-    use windows_sys::Win32::Foundation::POINT;
-    let hook = MSLLHOOKSTRUCT {
-        pt: POINT { x, y },
-        mouseData: 0,
-        flags: 0,
-        time: 0,
-        dwExtraInfo: 0,
-    };
-    unsafe {
-        winmouse_trampoline(
-            HC_ACTION as i32,
-            msg as usize,
-            &hook as *const MSLLHOOKSTRUCT as isize,
-        )
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -314,10 +218,6 @@ mod tests {
 
     fn pass_key(_: KeyEvent) -> HookVerdict {
         HookVerdict::Pass
-    }
-
-    fn consume_mouse(_: u32, _: MouseEvent) -> HookVerdict {
-        HookVerdict::Consume
     }
 
     #[test]
@@ -331,13 +231,6 @@ mod tests {
         clear_snapkey_sink();
         // No sink: fail-open pass-through, never consume.
         assert_ne!(drive_snapkey(0x41, 0, 0, 0), 1);
-    }
-
-    #[test]
-    fn mouse_verdict_maps_consume_to_one() {
-        set_winmouse_sink(consume_mouse);
-        assert_eq!(drive_winmouse(0x0201, 10, 20), 1);
-        clear_winmouse_sink();
     }
 
     #[test]

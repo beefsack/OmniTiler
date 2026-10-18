@@ -160,8 +160,8 @@ pub(super) fn dispatch_workspace_release(
 }
 
 /// Cancel stale drag and queued-action effects for one workspace after a
-/// mode toggle: in-flight gesture, preview, and Win+Left bindings anchored
-/// to its members can never settle into geometry writes afterwards. Queued
+/// mode toggle: in-flight gesture and preview bindings anchored to its
+/// members can never settle into geometry writes afterwards. Queued
 /// keyboard intents re-resolve the live mode at dispatch and refuse there.
 fn cancel_workspace_effects(state: &mut TileLoop, output: &str, workspace: &str) {
     let members = state.workspaces.workspace_members(output, workspace);
@@ -178,11 +178,6 @@ fn cancel_workspace_effects(state: &mut TileLoop, output: &str, workspace: &str)
         .gesture_end_cursor
         .retain(|hwnd, _| !hwnds.contains(hwnd));
     drop_entries(before, state.gesture_end_cursor.len());
-    let before = state.windrag_start_cursor.len();
-    state
-        .windrag_start_cursor
-        .retain(|hwnd, _| !hwnds.contains(hwnd));
-    drop_entries(before, state.windrag_start_cursor.len());
     let before = state.gesture_start_key.len();
     state
         .gesture_start_key
@@ -208,9 +203,6 @@ fn cancel_workspace_effects(state: &mut TileLoop, output: &str, workspace: &str)
         .gesture_end_seq
         .retain(|hwnd, _| !hwnds.contains(hwnd));
     drop_entries(before, state.gesture_end_seq.len());
-    let before = state.windrag_bound.len();
-    state.windrag_bound.retain(|hwnd, _| !hwnds.contains(hwnd));
-    drop_entries(before, state.windrag_bound.len());
     let before = state.move_kind.len();
     state.move_kind.retain(|hwnd, _| !hwnds.contains(hwnd));
     drop_entries(before, state.move_kind.len());
@@ -222,11 +214,6 @@ fn cancel_workspace_effects(state: &mut TileLoop, output: &str, workspace: &str)
     let before = state.preview_bound.len();
     state.preview_bound.retain(|hwnd, _| !hwnds.contains(hwnd));
     drop_entries(before, state.preview_bound.len());
-    let before = state.gesture_producer.len();
-    state
-        .gesture_producer
-        .retain(|hwnd, _| !hwnds.contains(hwnd));
-    drop_entries(before, state.gesture_producer.len());
     let before = state.active.len();
     state.active.retain(|hwnd| !hwnds.contains(hwnd));
     drop_entries(before, state.active.len());

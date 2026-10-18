@@ -179,10 +179,10 @@ pub(super) fn run_active_tick(
     }
     // An open managed gesture holds the loop for the drop-preview track:
     // pointer moves coalesce into one Engine preview sample per tick on
-    // both the native frame-following and the stationary Win+Left
-    // producers, driven by the armed gesture-sampling deadline (pointer
-    // motion itself produces no owner wake). The refresh itself gates
-    // resize/unknown/invalid holds; the wake only needs START capture.
+    // the native frame-following producer, driven by the armed
+    // gesture-sampling deadline (pointer motion itself produces no owner
+    // wake). The refresh itself gates resize/unknown/invalid holds; the
+    // wake only needs START capture.
     if !woke && gesture_sampling_open(state) {
         woke = true;
     }
@@ -295,9 +295,6 @@ pub(super) fn run_active_tick(
         state.gesture_end_cursor.clear();
         state.gesture_start_key.clear();
         state.gesture_start_tag.clear();
-        state.gesture_producer.clear();
-        state.windrag_start_cursor.clear();
-        state.windrag_bound.clear();
         state.preview_bound.clear();
         state.preview_dead.clear();
         state.gesture_preview_start.clear();
@@ -310,10 +307,6 @@ pub(super) fn run_active_tick(
         // sys calls on proof paths. Atomic sequencing guarantees a
         // pre-gesture edge never cancels a later gesture.
         offer_input_control(state, InboxItem::ClearEsc);
-        // A suspended session disarms the project hold with no
-        // replay; the consumed click already passed, so no half
-        // gesture can strand later.
-        offer_input_control(state, InboxItem::ClearWindrag);
         hide_border(state, "suspended");
         hide_underlay(state, "suspended");
         hide_preview(state, "suspended");
@@ -390,15 +383,6 @@ pub(super) fn run_active_tick(
         .gesture_end_seq
         .retain(|hwnd, _| state.managed.contains(hwnd));
     state
-        .gesture_producer
-        .retain(|hwnd, _| state.managed.contains(hwnd));
-    state
-        .windrag_start_cursor
-        .retain(|hwnd, _| state.managed.contains(hwnd));
-    state
-        .windrag_bound
-        .retain(|hwnd, _| state.managed.contains(hwnd));
-    state
         .preview_bound
         .retain(|hwnd, _| state.managed.contains(hwnd));
     state
@@ -422,31 +406,24 @@ pub(super) fn run_active_tick(
     // callback, never via level polling. Injected Esc never sets the
     // native edge (product hook filters injected keys), so synthetic
     // title-bar proof paths keep their no-change restore without
-    // claiming an explicit cancel; the project windrag edge below is
-    // the one deliberate injected exception (the stationary hold has
-    // no native modal loop to cancel it).
+    // claiming an explicit cancel.
     {
-        // Product path consumes the process-global edges published
+        // Product path consumes the process-global edge published
         // directly in hook callbacks (no pump-forwarding delay can
-        // hide an Esc landing just before a WinEvent END); sequences
-        // come from the global atomic clocks sampled directly, never
+        // hide an Esc landing just before a WinEvent END); the sequence
+        // comes from the global atomic clock sampled directly, never
         // a delayed batch. Cancellation still requires a newer
         // sequence than START, so stale flags never cancel.
-        let (esc_hit, now_seq, windrag_hit, windrag_now) = if state.input_bridge.is_some() {
+        let (esc_hit, now_seq) = if state.input_bridge.is_some() {
             (
                 crate::input_handoff::global_esc_edge()
                     .swap(false, std::sync::atomic::Ordering::SeqCst),
                 crate::snapkey::sys::shared_esc_seq(),
-                crate::input_handoff::global_windrag_esc_edge()
-                    .swap(false, std::sync::atomic::Ordering::SeqCst),
-                crate::snapkey::sys::shared_windrag_esc_seq(),
             )
         } else {
             (
                 crate::snapkey::sys::take_esc_edge(),
                 crate::snapkey::sys::esc_seq(),
-                crate::snapkey::sys::take_windrag_esc_edge(),
-                crate::snapkey::sys::windrag_esc_seq(),
             )
         };
         if esc_hit {
@@ -477,46 +454,9 @@ pub(super) fn run_active_tick(
                 }
             }
         }
-        // Project-gesture cancel edge (physical or injected Esc):
-        // latches open windrag gestures only, with the same
-        // START/END sequence ordering. Never admits a command;
-        // settle reports the explicit `gesture-cancelled-esc`.
-        if windrag_hit {
-            let now_seq = windrag_now;
-            for hwnd in state.active.iter() {
-                if !state.managed.contains(hwnd) {
-                    continue;
-                }
-                if state.gesture_producer.get(hwnd).copied() != Some("windrag") {
-                    continue;
-                }
-                let start_seq = state.gesture_esc_seq.get(hwnd).copied().unwrap_or(0);
-                if esc_edge_cancels(start_seq, now_seq) {
-                    state.esc_latched.insert(*hwnd);
-                }
-            }
-            for hwnd in ended.iter() {
-                if !state.managed.contains(hwnd) {
-                    continue;
-                }
-                if state.gesture_producer.get(hwnd).copied() != Some("windrag") {
-                    continue;
-                }
-                let (Some(start_seq), Some(end_seq)) = (
-                    state.gesture_esc_seq.get(hwnd).copied(),
-                    state.gesture_end_seq.get(hwnd).copied(),
-                ) else {
-                    continue;
-                };
-                if esc_edge_cancels(start_seq, end_seq) {
-                    state.esc_latched.insert(*hwnd);
-                }
-            }
-        }
     }
     // Logical cancel hides the preview IMMEDIATELY on latch, never
-    // waiting for mouse-up (the stationary gesture has no native
-    // modal loop to end it; the native loop ends on its own).
+    // waiting for the modal loop to end it.
     for hwnd in state.esc_latched.iter().copied().collect::<Vec<_>>() {
         if state.preview_bound.remove(&hwnd).is_some()
             || render_carrier_visible(state, RenderCarrier::Preview)
@@ -589,7 +529,7 @@ pub(super) fn run_active_tick(
         }
         // Drop-preview track on the armed gesture-sampling deadline while
         // held: fresh observation plus the shared Engine resolver per moved
-        // pointer, on both producers. No focus, no geometry writes.
+        // pointer. No focus, no geometry writes.
         refresh_drag_preview(state, me, &fulls, areas);
         // Due routine-frame summaries flush on this existing turn so
         // per-move preview aggregates never strand behind the hold.

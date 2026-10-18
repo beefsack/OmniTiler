@@ -268,11 +268,7 @@ use self::visibility_diag::{
     omission_summary, rehide_err_outcome, rehide_retired_detail, reveal_err_outcome,
     reveal_log_line, reveal_outcome, rollback_newly_hidden, stage_exceptions, stage_visibility,
 };
-#[cfg(test)]
-use self::windrag::clear_windrag_gesture_scoped;
-use self::windrag::{
-    capture_gesture_start, clear_windrag_gesture, esc_edge_cancels, windrag_down, windrag_up,
-};
+use self::windrag::{capture_gesture_start, esc_edge_cancels};
 #[cfg(test)]
 use self::workspace_mode::dispatch_workspace_release;
 use self::workspace_mode::read_topmost_now;
@@ -335,11 +331,6 @@ use crate::tiling::{
     inspect_stateless_verdict, is_borderless_fullscreen, parse_allowlist, parse_resize_request,
     parse_workspace_request, readback_outcome, scope_allows, scope_exe_basename,
     should_hold_born_fullscreen, tick_summary_signature, tiling_domain_bounds_with,
-};
-use crate::win_mouse::sys::WinDragPublished;
-use crate::win_mouse::{
-    WINDRAG_MAX_DISPATCH_PER_TICK, WinDragEdge, WinDragKind, WinDragSnapshot, WinSettle,
-    settle_pointer_journey, validate_windrag_down,
 };
 use crate::workspace::ManagedWorkspaces;
 type DynError = Box<dyn std::error::Error>;
@@ -448,43 +439,6 @@ struct TileLoop {
     /// Chord-time origin snapshots for the keyboard callback, refreshed with
     /// every complete observation alongside `managed`.
     snap_origins: HashMap<u64, SnapOrigin>,
-    /// Tiled-only managed origins for the Win+Left mouse callback,
-    /// refreshed with every complete observation alongside `managed`.
-    /// Floating and sticky members are excluded so their Win+Left passes
-    /// through natively (titlebar-only); maximized/fullscreen members are
-    /// retained, never observed, so they never appear here either.
-    /// Each entry also carries the member lifetime tag read at publish
-    /// time, so the hook can snapshot it into the Down edge with no native
-    /// reads in the callback. Exactness stays with the per-edge owner
-    /// recheck.
-    windrag_origins: HashMap<u64, WinDragPublished>,
-    /// Settle producer per open gesture HWND: `"native"` for the
-    /// title-bar modal loop, `"windrag"` for the project-driven Win+Left
-    /// stationary hold. Absent entries settle as native. Cleared on
-    /// END-settle/removal like `gesture_before`.
-    gesture_producer: HashMap<u64, &'static str>,
-    /// Down-time pointer per open windrag gesture HWND, bound in the hook
-    /// callback at down time. Settle compares it against the callback-bound
-    /// release pointer (pointer delta, not rect delta: the real window
-    /// keeps its source allocation mid-gesture). Cleared on END-settle/
-    /// removal like `gesture_before`.
-    windrag_start_cursor: HashMap<u64, (i32, i32)>,
-    /// Validated Down-time bound snapshot per open windrag gesture HWND.
-    /// Stored at arm time after the snapshot matches fresh evidence; the
-    /// Up requires this entry (bound matching, never a rebind), and settle
-    /// consumes it alongside the START fence. Cleared on END-settle/
-    /// removal like `gesture_before`.
-    windrag_bound: HashMap<u64, WinDragSnapshot>,
-    /// Last published windrag-queue loss count, for explicit drop evidence.
-    windrag_dropped: u32,
-    /// Last logged tiled-origin count for the mouse hook, for change-only
-    /// `windrag-origins` evidence (proves the hook binds against a live
-    /// managed set without logging identity).
-    windrag_origin_logged: Option<usize>,
-    /// Last logged hook delivery counters, for change-only
-    /// `windrag-hook-stats` evidence splitting callback delivery from owner
-    /// validation.
-    windrag_stats_logged: (u64, u64, u64, u64),
     /// Verified own-focus continuation across bounded drains. Set only on an
     /// exact verified owner actuation (`focus-ok`); cleared on external
     /// focus, lifetime mismatch, suspension, or gesture. Lets a stale chord
@@ -747,8 +701,7 @@ struct TileLoop {
     /// START-time pointer per open native gesture HWND, sampled at
     /// MoveSizeStart drain time. The preview zero gate compares the live
     /// cursor against this point (no preview on a title click with no
-    /// movement); the windrag path uses `windrag_start_cursor` instead.
-    /// Cleared on END-settle/removal like `gesture_before`.
+    /// movement). Cleared on END-settle/removal like `gesture_before`.
     gesture_start_cursor: HashMap<u64, (i32, i32)>,
     /// Process-owned drop-preview fill plus the last logged preview
     /// signature for change-only logging. Separate carrier above windows
@@ -921,20 +874,16 @@ pub(crate) enum SnapshotOffer {
 /// `retry_gen` and resends with its armed generation instead of early
 /// returning (a revert to `last_snapshot` would otherwise leave the armed
 /// fence pending forever) and instead of bumping a new generation (which
-/// would inflate generations on every stalled tick). A pending
-/// clear-driven `force` offers even unchanged content so cleared origins
-/// republish deterministically.
+/// would inflate generations on every stalled tick).
 pub(crate) fn plan_snapshot_offer(
     last: Option<&SharedSnapshot>,
     candidate: &crate::input_handoff::InputSnapshot,
     retry_gen: Option<u64>,
-    force: bool,
 ) -> SnapshotOffer {
     if let Some(generation) = retry_gen {
         return SnapshotOffer::Retry(generation);
     }
-    if !force
-        && let Some(last) = last
+    if let Some(last) = last
         && snapshot_content_eq(last, candidate)
     {
         return SnapshotOffer::Skip;
@@ -1257,10 +1206,6 @@ mod restart_adoption_tests;
 mod orientation_route_tests;
 
 #[cfg(test)]
-#[path = "tests_windrag.rs"]
-mod windrag_press_focus_tests;
-
-#[cfg(test)]
 #[path = "tests_intent_wake.rs"]
 mod intent_wake_tests;
 
@@ -1275,9 +1220,9 @@ mod launch_dispatch_tests;
 #[cfg(test)]
 /// Stage 3 combined transport/fault stress over the real production
 /// primitives (no TileLoop, no threads, no native calls): the input
-/// sender stall/escalation contract and the render latest-wins/safety
+/// sender stall contract and the render latest-wins/safety
 /// contract hold simultaneously, pinning the suspend-path dual handoff
-/// (infallible input clears plus all-carrier render hides with no stale
+/// (infallible input clear plus all-carrier render hides with no stale
 /// show presentable afterwards).
 #[path = "tests_stage3.rs"]
 mod stage3_combined_tests;

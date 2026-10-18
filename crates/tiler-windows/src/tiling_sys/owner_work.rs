@@ -18,9 +18,9 @@ use super::trace::log_json_at;
 /// only active wakes.
 ///
 /// The guard holds the iteration's only `&mut Health` borrow as a plain
-/// field (never `RefCell`, never shared ownership): input and windrag
-/// observations route through the guard mid-turn while `state` stays
-/// freely mutable, so no borrow is held across the rest of the loop.
+/// field (never `RefCell`, never shared ownership): input observations
+/// route through the guard mid-turn while `state` stays freely mutable,
+/// so no borrow is held across the rest of the loop.
 pub(super) struct OwnerWorkGuard<'h> {
     enabled: bool,
     log_path: Option<std::path::PathBuf>,
@@ -146,22 +146,6 @@ impl<'h> OwnerWorkGuard<'h> {
             pump_turns: diag.turns,
         };
         if let Some(line) = health.observe_input(Instant::now(), sample) {
-            log_json_at(log_path, line);
-        }
-    }
-
-    /// Records one windrag transport sample (`offered` is the pump offer
-    /// time); emits the immediate outlier line when it breaches. No-op
-    /// when tracing is off.
-    pub(super) fn observe_windrag(&mut self, offered: Instant) {
-        let (Some(health), Some(log_path)) = (self.health.as_mut(), self.log_path.as_ref()) else {
-            return;
-        };
-        let transport_us = Instant::now()
-            .duration_since(offered)
-            .as_micros()
-            .min(u128::from(u64::MAX)) as u64;
-        if let Some(line) = health.observe_windrag(Instant::now(), transport_us) {
             log_json_at(log_path, line);
         }
     }

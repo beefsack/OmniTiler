@@ -268,10 +268,8 @@ impl Present for NativePresent {
         });
         // Foreground fence on every carrier: the live foreground
         // lifetime must still match the desired foreground. A late
-        // switch (game, suspend, another window) refuses even when the
-        // mover itself is legitimately unfocused (Win+Left holds keep
-        // their existing semantics: only a *changed* foreground
-        // refuses, never an unfocused mover). An unreadable post-time
+        // switch (game, suspend, another window) refuses independently
+        // of mover focus. An unreadable post-time
         // foreground (`None`) refuses narrowly per the binding
         // contract: no unprovable stale show, while readable unchanged
         // foregrounds keep ordinary drag behavior.

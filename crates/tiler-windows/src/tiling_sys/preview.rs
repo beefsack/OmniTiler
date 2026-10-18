@@ -1,8 +1,8 @@
 #![forbid(unsafe_code)]
 /// START-frozen preview source binding: the exact mover token, source
 /// output/workspace, and accepted revision captured at gesture START
-/// (native MoveSizeStart drain or validated project Win+Left arm). The
-/// preview never rebinds mid-gesture: output/workspace/revision drift fails
+/// (native MoveSizeStart drain). The preview never rebinds mid-gesture:
+/// output/workspace/revision drift fails
 /// the whole gesture closed until settle. Source bounds stay at START.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct PreviewStartBinding {

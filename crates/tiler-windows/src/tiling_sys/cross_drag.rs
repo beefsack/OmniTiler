@@ -1,9 +1,9 @@
 #![forbid(unsafe_code)]
 use super::*;
 
-/// Cross-output drag-drop settle (REQ-MOU-03): native title-bar and Win-drag
-/// releases landing on another output join that output's CURRENT workspace at
-/// the pointer point through the shared Engine drop resolver, and the source
+/// Cross-output drag-drop settle (REQ-MOU-03): native title-bar releases
+/// landing on another output join that output's CURRENT workspace at the
+/// pointer point through the shared Engine drop resolver, and the source
 /// membership is removed. The destination is the output under the pointer at
 /// release (FULL-rectangle containment, never the directional adjacency
 /// selector), so sideways, stacked, and negative-coordinate arrangements all
@@ -12,8 +12,7 @@ use super::*;
 ///
 /// Producer split (REQ-DRAG-07): a native title-bar frame may physically move
 /// before END, so domain decisions use retained project membership and the
-/// pointer point, never the live frame monitor. A Win-drag keeps the source
-/// stationary with a moving render preview; the drop runs only after the
+/// pointer point, never the live frame monitor; the drop runs only after the
 /// proven preview-hide acknowledgement with fresh revalidation.
 pub(super) struct CrossDragSettle {
     pub(super) mover_token: String,

@@ -5,7 +5,7 @@ use super::owner_work::OwnerWorkGuard;
 use super::pager_host::sync_taskbar_pager;
 
 // Per-turn input intake for the tile loop: input-pump maintenance, snap hook
-// install, live settings, tray sync, snap/windrag batch takes with partition
+// install, live settings, tray sync, snap batch takes with partition
 // and settle, plus trace summaries. Returns the partitioned batches with the
 // accumulated wake flag; the caller moves them into the active tick.
 pub(super) struct Intake {
@@ -36,13 +36,11 @@ pub(super) fn pump_intake(
     snap_hook: &mut Option<crate::ffi::SnapKeyHook>,
     snap_failures: &mut u32,
     snap_retry_at: &mut Option<Instant>,
-    windrag_available: bool,
     snap_want: &mut bool,
     tray: &mut Option<crate::tray_sys::TrayOwner>,
     gaming: &mut Option<crate::gaming::GamingMonitor>,
     trace_last_turns: &mut u64,
     trace_last_offers: &mut u64,
-    trace_windrag_offers: &mut u64,
     mut woke: bool,
 ) -> Intake {
     // Best-effort keyboard hook with bounded backoff retries (5s
@@ -55,7 +53,7 @@ pub(super) fn pump_intake(
     // rebound table immediately.
     let takeover_live = (state.keyboard.takeover && !proof) || shortcut_proof || workspace_proof;
     if state.input_bridge.is_some() {
-        // Product path: the pump owns install/retry for both hooks.
+        // Product path: the pump owns install/retry for the keyboard hook.
         // Drain failure events for the owner writer; late readiness
         // completes here if the bounded startup wait expired first.
         // Then retry pending inbox payloads and poll the apply ack.
@@ -65,12 +63,12 @@ pub(super) fn pump_intake(
                     log_path,
                     if event.recovered {
                         serde_json::json!({
-                            "event": if event.hook == "keyboard" { "snap-available" } else { "windrag-available" },
+                            "event": "snap-available",
                             "producer": "input-pump",
                         })
                     } else {
                         serde_json::json!({
-                            "event": if event.hook == "keyboard" { "snap-unavailable" } else { "windrag-unavailable" },
+                            "event": "snap-unavailable",
                             "attempt": event.attempt,
                             "retry_secs": event.retry_secs,
                             "producer": "input-pump",
@@ -297,7 +295,6 @@ pub(super) fn pump_intake(
             remap: state.last_remap.clone(),
             disabled: state.last_disabled.clone(),
             snap_origins: state.snap_origins.clone(),
-            windrag_origins: state.windrag_origins.clone(),
             active: snap_gate_active,
             trace: state.trace,
         };
@@ -433,261 +430,6 @@ pub(super) fn pump_intake(
         woke = true;
     }
     let snap_events = directional_events;
-    // Project Win+Left edges ride the same pump and gate: the hook
-    // consumes downs/ups only while takeover holds, and every bound
-    // candidate revalidates against the last complete observation in
-    // `windrag_down` before anything arms. Downs pause tiling through
-    // the shared `active` set (frames stay at source: no mid-gesture
-    // writes); ups feed the shared `ended` settle below.
-    //
-    // Product path: edges arrive tagged from the input pump outbox.
-    // Drop loss clears through ordered inbox invalidations so hook
-    // disarm and owner state stay in FIFO order with snapshots.
-    // Batches tagged under a superseded policy are stale: Downs are
-    // refused without arming (a newer policy is live), while Ups and
-    // Cancels still flow (owner-side closes are no-ops without open
-    // gestures, preserving pair hygiene).
-    let windrag_edges: Vec<WinDragEdge> = if state.input_bridge.is_some() {
-        let taken: Option<crate::input_handoff::TaggedBatch<WinDragEdge>> =
-            state.input_bridge.as_ref().and_then(|bridge| {
-                let taken = bridge.channels.windrag_outbox.take();
-                // Freed outbox space: wake the pump so retained
-                // terminal Up/Cancel edges retry promptly instead of
-                // stranding behind an idle wait.
-                if taken.is_some() {
-                    bridge.channels.notify_work();
-                }
-                taken
-            });
-        let mut edges = Vec::new();
-        if let Some(tagged) = taken
-            && !tagged.is_empty()
-        {
-            woke = true;
-            let published = state
-                .input_bridge
-                .as_ref()
-                .map(|bridge| bridge.published_gen)
-                .unwrap_or(0);
-            if tagged.is_stale(published) {
-                let mut stale_downs = 0u32;
-                for edge in tagged.items {
-                    match edge.kind {
-                        WinDragKind::Down => stale_downs += 1,
-                        WinDragKind::Up | WinDragKind::Cancel => {
-                            edges.push(edge);
-                        }
-                    }
-                }
-                if stale_downs > 0 {
-                    log_json_at(
-                        log_path,
-                        serde_json::json!({
-                            "event": "windrag-stale",
-                            "cause": "config-change",
-                            "dropped": stale_downs,
-                        }),
-                    );
-                }
-            } else {
-                edges = tagged.items;
-            }
-        }
-        // Trace-only windrag transport into the health window
-        // (change-only offers; hook stats and drop lines below
-        // stay explicit). The transport covers pump offer to
-        // owner take only, never queue wait or native delivery.
-        if state.trace {
-            let (offers, last_offer) = state
-                .input_bridge
-                .as_ref()
-                .map(|bridge| {
-                    let diag = bridge.channels.diag.snapshot();
-                    (diag.windrag_offers, diag.windrag_last_offer)
-                })
-                .unwrap_or((0, None));
-            if offers != *trace_windrag_offers {
-                *trace_windrag_offers = offers;
-                if let Some(offered) = last_offer {
-                    owner_work.observe_windrag(offered);
-                }
-            }
-        }
-        if let Some(bridge) = state.input_bridge.as_ref() {
-            let diag = bridge.channels.diag.snapshot();
-            let stats = diag.hook_stats;
-            if stats != state.windrag_stats_logged {
-                state.windrag_stats_logged = stats;
-                log_json_at(
-                    log_path,
-                    serde_json::json!({
-                        "event": "windrag-hook-stats",
-                        "tick": state.tick,
-                        "downs_seen": stats.0,
-                        "downs_consumed": stats.1,
-                        "ups_seen": stats.2,
-                        "ups_consumed": stats.3,
-                    }),
-                );
-            }
-            if diag.windrag_dropped > state.windrag_dropped {
-                let lost = diag.windrag_dropped - state.windrag_dropped;
-                state.windrag_dropped = diag.windrag_dropped;
-                log_json_at(
-                    log_path,
-                    serde_json::json!({"event":"windrag-drop","lost": lost}),
-                );
-                if !state.windrag_bound.is_empty() {
-                    let open: Vec<u64> = state.windrag_bound.keys().copied().collect();
-                    for hwnd in open {
-                        clear_windrag_gesture(state, hwnd);
-                        if !offer_input_control(state, InboxItem::InvalidateWindrag(hwnd)) {
-                            log_json_at(
-                                log_path,
-                                serde_json::json!({
-                                    "event": "windrag-drop-loss-unreported",
-                                    "note": "invalidation held for retry; paired Up stays swallowed",
-                                }),
-                            );
-                        }
-                    }
-                    log_json_at(
-                        log_path,
-                        serde_json::json!({"event":"windrag-drop-loss","cleared": true}),
-                    );
-                    let fulls_owned = fulls.to_vec();
-                    reconcile_tick(state, me, &fulls_owned, areas);
-                }
-            }
-        }
-        edges
-    } else if windrag_available {
-        crate::win_mouse::sys::publish(&state.windrag_origins, snap_gate_active);
-        let stats = crate::win_mouse::sys::hook_stats();
-        if stats != state.windrag_stats_logged {
-            state.windrag_stats_logged = stats;
-            log_json_at(
-                log_path,
-                serde_json::json!({
-                    "event": "windrag-hook-stats",
-                    "tick": state.tick,
-                    "downs_seen": stats.0,
-                    "downs_consumed": stats.1,
-                    "ups_seen": stats.2,
-                    "ups_consumed": stats.3,
-                }),
-            );
-        }
-        let edges = crate::win_mouse::sys::drain_up_to(WINDRAG_MAX_DISPATCH_PER_TICK);
-        if !edges.is_empty() {
-            woke = true;
-        }
-        edges
-    } else {
-        Vec::new()
-    };
-    // Legacy drop-loss path (same-thread hooks only): the product
-    // pump reports loss above through the diag slot and ordered
-    // inbox invalidations, so this block stays proof/legacy only.
-    if !use_input_thread && windrag_available {
-        let dropped = crate::win_mouse::sys::queue_dropped();
-        if dropped > state.windrag_dropped {
-            let lost = dropped - state.windrag_dropped;
-            state.windrag_dropped = dropped;
-            log_json_at(
-                log_path,
-                serde_json::json!({"event":"windrag-drop","lost": lost}),
-            );
-            // A lost edge may have carried a Down whose gesture is
-            // open or an Up that would have closed one: discard every
-            // affected open project gesture rather than risk a
-            // stranded hold or a journey without its close. The hook
-            // is disarmed for them; their paired Ups stay swallowed.
-            if !state.windrag_bound.is_empty() {
-                let open: Vec<u64> = state.windrag_bound.keys().copied().collect();
-                for hwnd in open {
-                    clear_windrag_gesture(state, hwnd);
-                    crate::win_mouse::sys::invalidate(hwnd);
-                }
-                log_json_at(
-                    log_path,
-                    serde_json::json!({"event":"windrag-drop-loss","cleared": true}),
-                );
-                let fulls_owned = fulls.to_vec();
-                reconcile_tick(state, me, &fulls_owned, areas);
-            }
-        }
-    }
-    // Settle the drained edges (both paths): press-focus observation
-    // plus the shared windrag_down/up/cancel vocabulary. Only runs
-    // when edges wait; legacy and pump batches share this code.
-    if !windrag_edges.is_empty() {
-        // Press-focus observation for drained Downs: one fresh complete
-        // enumeration per pump (only when a Down waits) feeds the
-        // existing focus authority inside `windrag_down`. Token
-        // minting is idempotent with the later phase observations;
-        // an enumeration failure leaves empty slices so Downs refuse
-        // closed with no arm and no writes.
-        let mut press_observed: Vec<ObservedWindow> = Vec::new();
-        let mut press_retained: Vec<RetainedRow> = Vec::new();
-        if windrag_edges.iter().any(|e| e.kind == WinDragKind::Down) {
-            let mut skipped: Vec<(String, String)> = Vec::new();
-            if let Some(fresh) = state.observe(me, fulls, &mut skipped, &mut press_retained) {
-                press_observed = fresh;
-            }
-        }
-        for edge in windrag_edges {
-            match edge.kind {
-                WinDragKind::Down => {
-                    match windrag_down(state, me, &edge, fulls, &press_observed, &press_retained) {
-                        Ok(token) => {
-                            log_json_at(
-                                log_path,
-                                serde_json::json!({
-                                    "event": "windrag-down",
-                                    "tick": state.tick,
-                                    "window": token,
-                                    "producer": "windrag",
-                                }),
-                            );
-                        }
-                        Err(reason) => {
-                            log_json_at(
-                                log_path,
-                                serde_json::json!({
-                                    "event": "windrag-down-refused",
-                                    "tick": state.tick,
-                                    "reason": reason,
-                                    "producer": "windrag",
-                                }),
-                            );
-                        }
-                    }
-                }
-                WinDragKind::Up => {
-                    windrag_up(state, edge.hwnd, edge.x, edge.y, edge.esc_seq);
-                }
-                WinDragKind::Cancel => {
-                    // Hook-side disarm after a consumed Down: drop
-                    // the owner gesture with no plan and no geometry
-                    // change. The paired Up stays swallowed
-                    // hook-side; native gestures are untouched.
-                    if let Some(token) = clear_windrag_gesture(state, edge.hwnd) {
-                        log_json_at(
-                            log_path,
-                            serde_json::json!({
-                                "event": "windrag-cancel",
-                                "tick": state.tick,
-                                "outcome": "gesture-no-change",
-                                "window": token,
-                                "producer": "windrag",
-                            }),
-                        );
-                    }
-                }
-            }
-        }
-    }
     // Proof-only callback diagnostics for shortcut-proof: accepted
     // marked events as the callback saw them, drained to the proof
     // audit (never production logs) so live runs can distinguish

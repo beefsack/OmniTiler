@@ -8,14 +8,14 @@ use windows_sys::Win32::Graphics::Dwm::DwmGetWindowAttribute;
 use windows_sys::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GA_ROOT, GW_OWNER, GWL_EXSTYLE, GWL_STYLE, GetAncestor, GetClassNameW, GetDesktopWindow,
-    GetForegroundWindow, GetParent, GetPropW, GetShellWindow, GetSystemMetrics, GetWindow,
-    GetWindowLongW, GetWindowPlacement, GetWindowRect, GetWindowThreadProcessId, HWND_NOTOPMOST,
-    HWND_TOPMOST, IsIconic, IsWindow, IsWindowVisible, IsZoomed, MINMAXINFO, PostMessageW,
-    RemovePropW, SMTO_ABORTIFHUNG, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-    SWP_NOZORDER, SendMessageTimeoutW, SetForegroundWindow, SetPropW, SetWindowLongW,
-    SetWindowPlacement, SetWindowPos, SetWindowTextW, ShowWindow, ShowWindowAsync, WINDOWPLACEMENT,
-    WM_CLOSE, WM_GETMINMAXINFO, WM_NCHITTEST, WindowFromPoint,
+    GW_OWNER, GWL_EXSTYLE, GWL_STYLE, GetClassNameW, GetDesktopWindow, GetForegroundWindow,
+    GetParent, GetPropW, GetShellWindow, GetSystemMetrics, GetWindow, GetWindowLongW,
+    GetWindowPlacement, GetWindowRect, GetWindowThreadProcessId, HWND_NOTOPMOST, HWND_TOPMOST,
+    IsIconic, IsWindow, IsWindowVisible, IsZoomed, MINMAXINFO, PostMessageW, RemovePropW,
+    SMTO_ABORTIFHUNG, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+    SendMessageTimeoutW, SetForegroundWindow, SetPropW, SetWindowLongW, SetWindowPlacement,
+    SetWindowPos, SetWindowTextW, ShowWindow, ShowWindowAsync, WINDOWPLACEMENT, WM_CLOSE,
+    WM_GETMINMAXINFO, WM_NCHITTEST,
 };
 
 use super::hwnd_of;
@@ -430,19 +430,4 @@ pub fn set_window_pos_detailed(
 pub fn set_window_text(hwnd: u64, text: &str) -> bool {
     let wide: Vec<u16> = text.encode_utf16().chain([0]).collect();
     unsafe { SetWindowTextW(hwnd_of(hwnd), wide.as_ptr()) != 0 }
-}
-
-/// Root top-level window id under one cursor point: `WindowFromPoint` may
-/// hit a child, so the `GA_ROOT` ancestor is the bound subject. `None`
-/// when nothing is hit (fail closed, never guessed).
-pub fn point_root(x: i32, y: i32) -> Option<u64> {
-    use windows_sys::Win32::Foundation::POINT;
-    let hit = unsafe { WindowFromPoint(POINT { x, y }) };
-    if hit.is_null() {
-        return None;
-    }
-    let root = unsafe { GetAncestor(hit, GA_ROOT) };
-    let hwnd = if root.is_null() { hit } else { root };
-    let raw = hwnd as usize as u64;
-    if raw == 0 { None } else { Some(raw) }
 }

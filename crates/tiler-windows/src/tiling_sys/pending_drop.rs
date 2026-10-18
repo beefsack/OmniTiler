@@ -576,59 +576,6 @@ pub(super) fn service_pending_drop(
             }
         }
     }
-    if pending.producer == "windrag" {
-        // Fresh suspension fence after the proven hide, before any focus
-        // write: a fullscreen arrival (or elevated foreground) between END
-        // and the ack refuses with no focus and no Engine plan. The late
-        // fence inside `actuate_focus` stays the second guard for arrivals
-        // racing this re-entry.
-        if state.suspended || suspend_read(state, me, fulls).veto.block || foreground_elevated(me) {
-            log_json_at(
-                &log_path,
-                serde_json::json!({
-                    "event": "gesture",
-                    "tick": state.tick,
-                    "op": "gesture",
-                    "disposition": "refused",
-                    "outcome": "gesture-refused-focus",
-                    "window": current.token,
-                    "producer": pending.producer,
-                }),
-            );
-            let fulls_owned = fulls.to_vec();
-            reconcile_tick(state, me, &fulls_owned, areas);
-            return;
-        }
-        let actuation = actuate_focus(state, me, fulls, &observed, &retained, &current.token);
-        if actuation.outcome != "focus-ok" {
-            log_json_at(
-                &log_path,
-                serde_json::json!({
-                    "event": "gesture",
-                    "tick": state.tick,
-                    "op": "gesture",
-                    "disposition": "refused",
-                    "outcome": "gesture-refused-focus",
-                    "window": current.token,
-                    "producer": pending.producer,
-                }),
-            );
-            let fulls_owned = fulls.to_vec();
-            reconcile_tick(state, me, &fulls_owned, areas);
-            return;
-        }
-        log_json_at(
-            &log_path,
-            serde_json::json!({
-                "event": "windrag-focus",
-                "tick": state.tick,
-                "phase": "drop",
-                "outcome": "focus-ok",
-                "window": current.token,
-                "producer": pending.producer,
-            }),
-        );
-    }
     state.tick += 1;
     let correlation = state.correlation();
     let mut hint_cx = HintCx::new();

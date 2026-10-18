@@ -194,11 +194,7 @@ fn valid_fixture(
     inject_pending_tag(hwnd, Some("tag-2101".to_owned()));
     inject_pending_suspend(Some(false));
     inject_pending_elevated(Some(false));
-    if producer == "windrag" {
-        inject_pending_focus(Some("focus-ok"));
-    } else {
-        inject_pending_focus(None);
-    }
+    inject_pending_focus(None);
     inject_pending_stop(false);
     // Queue via the production END path (hide + bounded slot).
     let member_key = key.clone();
@@ -248,24 +244,6 @@ fn proven_hidden_executes_with_fresh_validation() {
         "drop converges via apply or reconcile, got {after:?}"
     );
     let _ = (token, hwnd);
-    clear_pending_seams();
-}
-
-#[test]
-fn windrag_proven_runs_focus_then_engine() {
-    let (mut state, me, areas, fulls, _key, _token, _hwnd) = valid_fixture("windrag");
-    service_pending_drop(&mut state, &me, &fulls, &areas);
-    let counters = pending_counters();
-    assert_eq!(counters.focus, 1, "windrag re-fences focus after ack");
-    assert_eq!(counters.engine, 1, "Engine runs after focus-ok");
-    assert!(
-        state
-            .render_bridge
-            .as_ref()
-            .and_then(|b| b.pending.as_ref())
-            .is_none(),
-        "proven windrag pending is consumed"
-    );
     clear_pending_seams();
 }
 
@@ -764,7 +742,7 @@ fn queue_cross_pending(
     let occupied = queue_pending_drop(
         state,
         &hwnd,
-        "windrag",
+        "native",
         GestureIntent::MoveDrop { x, y },
         token,
         Some(mover.clone()),
@@ -868,7 +846,7 @@ fn cross_pending_proven_hide_settles_transfer_with_arrival() {
         x,
         y,
         drop_prior: None,
-        producer: "windrag".to_owned(),
+        producer: "native".to_owned(),
         start_rect: Some(tiler_core::geometry::Rect {
             x: 100,
             y: 100,
@@ -1085,7 +1063,7 @@ fn cross_pending_native_moved_frame_commits_with_bounded_source_row() {
         x,
         y,
         drop_prior: None,
-        producer: "windrag".to_owned(),
+        producer: "native".to_owned(),
         start_rect: Some(start_rect),
     };
     let correlation = state.correlation();
@@ -1392,7 +1370,7 @@ fn cross_pending_empty_native_flow_admits_then_reflows() {
         x,
         y,
         drop_prior: None,
-        producer: "windrag".to_owned(),
+        producer: "native".to_owned(),
         start_rect: Some(start_rect),
     };
     let correlation = state.correlation();
@@ -1537,7 +1515,7 @@ fn cross_pending_occupied_late_topology_retains_source_and_engine() {
         x,
         y,
         drop_prior: None,
-        producer: "windrag".to_owned(),
+        producer: "native".to_owned(),
         start_rect: Some(start_rect),
     };
     let correlation = state.correlation();
@@ -1695,7 +1673,7 @@ fn cross_pending_occupied_failed_readback_retains_source_and_engine() {
         x,
         y,
         drop_prior: None,
-        producer: "windrag".to_owned(),
+        producer: "native".to_owned(),
         start_rect: Some(start_rect),
     };
     let correlation = state.correlation();
@@ -1843,7 +1821,7 @@ fn cross_pending_occupied_mismatch_retains_source_and_engine() {
         x,
         y,
         drop_prior: None,
-        producer: "windrag".to_owned(),
+        producer: "native".to_owned(),
         start_rect: Some(start_rect),
     };
     let correlation = state.correlation();
@@ -2149,7 +2127,7 @@ fn rig_empty_arrival(
         x,
         y,
         drop_prior: None,
-        producer: "windrag".to_owned(),
+        producer: "native".to_owned(),
         start_rect: Some(start_rect),
     };
     let correlation = state.correlation();
@@ -2696,69 +2674,6 @@ fn stop_while_pending_drops_without_actuation() {
     assert_eq!(counters.focus, 0);
     assert_eq!(counters.apply, 0);
     assert_eq!(counters.reconcile, 0);
-    clear_pending_seams();
-}
-
-#[test]
-fn cancel_clears_queued_finish() {
-    let (mut state, _me, _areas, _fulls, _key, _token, hwnd) = valid_fixture("native");
-    // Owner-side cancel for the same HWND drops the queued finish with
-    // no Engine/focus/geometry; the service then observes no slot.
-    state.gesture_producer.insert(hwnd, "windrag");
-    state.windrag_bound.insert(
-        hwnd,
-        crate::win_mouse::WinDragSnapshot {
-            origin: crate::snapkey::SnapOrigin {
-                hwnd,
-                token: "w-pending-1".to_owned(),
-                pid: 6001,
-                creation: "creation-2101".to_owned(),
-            },
-            tag: Some("tag-2101".to_owned()),
-        },
-    );
-    super::clear_windrag_gesture(&mut state, hwnd);
-    assert!(
-        state
-            .render_bridge
-            .as_ref()
-            .and_then(|b| b.pending.as_ref())
-            .is_none(),
-        "cancel drops the queued finish"
-    );
-    let counters = pending_counters();
-    assert_eq!(counters.engine, 0);
-    assert_eq!(counters.focus, 0);
-    assert_eq!(counters.apply, 0);
-    clear_pending_seams();
-}
-
-#[test]
-fn suspend_after_ack_refuses_before_focus() {
-    let (mut state, me, areas, fulls, _key, _token, _hwnd) = valid_fixture("windrag");
-    // Proven hide but a suspend arrival before the re-entry: the fresh
-    // suspension fence refuses before any focus write, with no Engine
-    // and no geometry. Invalidation drops the slot without converging,
-    // since the loop is suspended.
-    inject_pending_suspend(Some(true));
-    inject_pending_focus(Some("focus-ok"));
-    service_pending_drop(&mut state, &me, &fulls, &areas);
-    assert!(
-        state
-            .render_bridge
-            .as_ref()
-            .and_then(|b| b.pending.as_ref())
-            .is_none(),
-        "suspended drop is consumed"
-    );
-    let counters = pending_counters();
-    assert_eq!(counters.focus, 0, "suspend blocks focus even after ack");
-    assert_eq!(counters.engine, 0, "suspend blocks Engine even after ack");
-    assert_eq!(counters.apply, 0);
-    assert_eq!(
-        counters.reconcile, 0,
-        "suspended drop drops without converging"
-    );
     clear_pending_seams();
 }
 

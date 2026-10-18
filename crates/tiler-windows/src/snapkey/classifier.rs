@@ -275,25 +275,6 @@ impl SnapClassify {
         }
     }
 
-    /// Arm the Start-menu mask for a consumed project Win+Left gesture. The
-    /// mouse hook consumes the click so no keyboard chord ever lands, but a
-    /// physical Win hold still needs the E8 pair at Win-up or the OS opens
-    /// Start. Idempotent per hold: a second call keeps the first trigger.
-    /// NOOP absent tracked physical Win held: a synthetic Win hold never
-    /// enters classifier tracking (injected input is filtered), so arming
-    /// for it would persist pending and wrongly mask the next bare physical
-    /// Win tap. The existing Win-up reserve fires it once per hold and the
-    /// both-Wins terminal clears it, so no stale flag survives the hold.
-    pub fn note_windrag_consumed(&mut self) {
-        if !(self.win_l || self.win_r) {
-            return;
-        }
-        if self.mask_trigger.is_none() {
-            self.mask_trigger = Some(MaskTrigger::WinDrag);
-        }
-        self.mask_pending = true;
-    }
-
     /// Tracked modifier state for the callback's preheld check
     /// `(ctrl, alt, shift)`. A physically held Ctrl/Alt the classifier never
     /// saw (held before install, or injected past the callback guard) forces
@@ -614,14 +595,6 @@ impl SnapClassify {
         } else {
             None
         };
-        // A project Win+Left hold masks only at the terminal release: with
-        // both Win sides genuinely held, the first Win-up keeps the hold
-        // masked-pending instead of firing into a still-held Win (which
-        // would leave the second release unmasked). Catalog chord triggers
-        // keep the existing first-up policy; only WinDrag waits.
-        if trigger == Some(MaskTrigger::WinDrag) && (self.win_l || self.win_r) {
-            return None;
-        }
         if trigger.is_some() {
             self.mask_pending = false;
             self.hold_masked = true;

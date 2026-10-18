@@ -103,9 +103,7 @@ pub fn render_color_argb(((r, g, b), alpha): ((u8, u8, u8), u8)) -> String {
 /// Focused-only interactive move/size classification from the official
 /// `WM_NCHITTEST` result sampled at move/size start. `HTCAPTION` starts a
 /// move; sizing borders start a resize; anything else (client, menus,
-/// nowhere, errors, timeouts) is unknown and never triggers. Pure over the
-/// stable Win32 hit codes so the future Win+drag producer (parity item 7) can
-/// feed `Move` directly without a hit test.
+/// nowhere, errors, timeouts) is unknown and never triggers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MoveSizeKind {
     Move,

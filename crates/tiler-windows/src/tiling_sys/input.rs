@@ -26,14 +26,6 @@ pub(super) struct InputBridge {
     /// Cleared when a snapshot is accepted. Map-only refusals need none:
     /// unchanged `last_snapshot` re-offers them naturally with no fence.
     pub(super) retry_gen: Option<u64>,
-    /// Pending clear-driven full republish. Set when the sender absorbed a
-    /// `ClearWindrag` (a clear drops both hook origin maps while
-    /// `last_snapshot` still carries the old origins); forces the next offer
-    /// even when content is unchanged. Cleared only when a snapshot is
-    /// accepted (FIFO orders it behind the retained safety obligations).
-    pub(super) force_snapshot: bool,
-    /// Last observed sender clear count (transition-only force trigger).
-    pub(super) last_clear_seen: u64,
     /// Latest published policy generation.
     pub(super) published_gen: u64,
     /// Last observed applied policy generation.
@@ -87,8 +79,6 @@ pub(super) fn offer_input_control(state: &mut TileLoop, item: InboxItem) -> bool
     let Some(bridge) = state.input_bridge.as_mut() else {
         // Proof/legacy paths: same-thread hooks, direct sys call.
         match item {
-            InboxItem::InvalidateWindrag(hwnd) => crate::win_mouse::sys::invalidate(hwnd),
-            InboxItem::ClearWindrag => crate::win_mouse::sys::clear_armed(),
             InboxItem::ClearEsc => crate::snapkey::sys::clear_esc_edge(),
             InboxItem::Snapshot(_) => {}
         }
@@ -116,8 +106,8 @@ pub(super) fn offer_input_control(state: &mut TileLoop, item: InboxItem) -> bool
     }
 }
 
-/// Offer the per-tick snapshot when content changed (or when a retry or a
-/// clear-driven force is outstanding). Assigns policy generations (bumped
+/// Offer the per-tick snapshot when content changed (or when a retry
+/// is outstanding). Assigns policy generations (bumped
 /// only on real policy change, reused on retry), stages the config-change
 /// ack, and skips redundant offers so unchanged ticks send nothing and never
 /// flush classifier queues.
@@ -129,12 +119,6 @@ pub(super) fn offer_input_snapshot(
     let Some(bridge) = state.input_bridge.as_mut() else {
         return;
     };
-    // Clear-driven republish trigger: any sender-absorbed clear since the
-    // last observation forces the next offer even when content is unchanged.
-    if bridge.sender.windrag_cleared() != bridge.last_clear_seen {
-        bridge.last_clear_seen = bridge.sender.windrag_cleared();
-        bridge.force_snapshot = true;
-    }
     // Refusal this turn (set in the `Err` arms below): after the flag
     // settle, nudge the pump so a stalled inbox drains promptly. Ordered
     // after the store so the prompted drain always observes the armed flag
@@ -142,12 +126,7 @@ pub(super) fn offer_input_snapshot(
     // longer lose the wake); the pump's bounded contention retry covers a
     // contended prompted drain.
     let mut refused = false;
-    match plan_snapshot_offer(
-        bridge.last_snapshot.as_ref(),
-        &candidate,
-        bridge.retry_gen,
-        bridge.force_snapshot,
-    ) {
+    match plan_snapshot_offer(bridge.last_snapshot.as_ref(), &candidate, bridge.retry_gen) {
         SnapshotOffer::Skip => {
             // No offer attempted, but sender payloads may still be stuck
             // from an earlier failed flush: arm and nudge together so the
@@ -182,7 +161,6 @@ pub(super) fn offer_input_snapshot(
                 Ok(()) => {
                     bridge.last_snapshot = Some(shared);
                     bridge.retry_gen = None;
-                    bridge.force_snapshot = false;
                     bridge.channels.notify_work();
                 }
                 Err(_) => {
@@ -219,7 +197,6 @@ pub(super) fn offer_input_snapshot(
             {
                 Ok(()) => {
                     bridge.last_snapshot = Some(shared);
-                    bridge.force_snapshot = false;
                     bridge.channels.notify_work();
                 }
                 Err(_) => {

@@ -169,9 +169,8 @@ pub struct UnderlayDesired {
 /// The preview always presents in the topmost plane (like-for-like with the
 /// same-thread path); the mover band is never a requirement, only the mover
 /// lifetime identity is fenced. `foreground` fences the frame against a late
-/// foreground switch (game/suspend): the mover itself need not be focused
-/// (unfocused Win+Left holds keep their existing semantics), but a changed
-/// foreground identity refuses the present.
+/// foreground switch (game/suspend): a changed foreground identity refuses
+/// the present independently of the mover lifetime.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreviewDesired {
     pub generation: u64,
@@ -187,10 +186,8 @@ pub struct PreviewDesired {
     /// Owner-observed foreground identity at post time (`None` when the
     /// foreground read was unreadable: the renderer refuses narrowly on
     /// this fence, like any other unreadable fact per the binding contract.
-    /// Unfocused Win+Left holds keep their semantics when the foreground is
-    /// readable and unchanged; only an unprovable (unreadable) foreground
-    /// refuses, so no stale show can present without a proven unchanged
-    /// foreground. The mover fence still applies independently, and the
+    /// No stale show can present without a proven unchanged foreground.
+    /// The mover fence still applies independently, and the
     /// owner re-fences on its next refresh).
     pub foreground: Option<WindowLifetime>,
 }
