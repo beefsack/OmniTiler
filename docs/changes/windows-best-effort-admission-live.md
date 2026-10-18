@@ -1,6 +1,6 @@
 # Windows best-effort admission native follow-up
 
-- Status: selection correction confirmed natively; bounded gap-placement deltas classified as a host constraint at 125% scale; compensation policy and unfloat classification parked.
+- Status: selection correction confirmed natively; measured-roster follow-up remains partial. Fresh exhaustion, protected-member, retry, capacity-send and overlap-overflow acceptance remain open; no new Windows defect established.
 - Prior evidence: [offline delivery and partial native checks](archive/windows-best-effort-admission.md#scoped-native-follow-up-2026-10-18).
 
 ## Goal and scope
@@ -397,12 +397,84 @@
   `mise exec -- just stop` reported `stopped clean`, with `ready:false`, no owned
   processes and no recovery ledger. Cleanup does not fill the timing/hint limits.
 
+### Measured-roster follow-up, 2026-10-18/19
+
+- Source `d7b7811b`; external group `be-be3-20261018` retains helper
+  identities, measured bounds/hints, settings preimages, native steps and
+  `oracle-src` source/output. Owner SHA-256
+  `a45b473621fe55a9e8fa6e362aab1c3fbf058a6dc2cbbbc7388b3f6cbf248e9c`;
+  helper `6dc61923305cd88cd2d3d4377bba3682729e631dcf0cc9af5fb4a7761f72e852`.
+  Passive PMv2 helpers avoid the known unaware-window placement confound.
+- The real-Engine replay used inventoried native work-area/inset bounds, supported
+  64/64 gaps, measured hints and serial newest-focus admission. All 500 arrivals
+  remained tiled: 500 unique members/leaves, positive geometry and no newcomer
+  capacity float. This bounds one retained history only; it neither predicts a
+  first exhausted count nor proves other histories or policies inexhaustible.
+  A native 500-plus roster was not attempted. Largest-fallback anchor identity
+  was not exposed by the retained seam; no fallback acceptance is claimed.
+- Matched staged replay (40 serial admissions, 8/8 -> 64/64) selected exactly
+  the newest 30. Protecting the oldest 11 on the same pre-adoption tree made
+  the 29-eligible-victim repair hold; the successful 30-victim repair stops at
+  the first feasible prefix. This proves route-relative minimality offline,
+  not a universal packing bound or native intra-batch order.
+- Native shrink retained exactly the newest 30 frames, rewrote only the oldest
+  ten survivors and matched all ten survivor targets. Early/delayed paired
+  bounds were identical. Retained exports lack marker/membership and focus
+  observations, so this leg remains partial despite predicted victim-set parity.
+- A separate sticky-protected Engine replay excluded the newest sticky member
+  and selected 29 other victims. Windows repair rows do not carry sticky into
+  the Engine (`workspace_owner/rows.rs`, `tiling/reconcile.rs`); the native
+  sticky discriminator remains unrun. This is a diagnostic/product question,
+  not an established defect or selected change to protection semantics.
+- Four large helpers reached pre-float measurement, then the foreground gate
+  refused a foreign foreground. No float/unfloat intent, activation setter,
+  click or injected key occurred. Exposure, failed retry and later successful
+  retry therefore remain untested. Do not repeat this setup without an owned
+  foreground bootstrap; retain the no-foreign-attachment guard.
+- Capacity-send follow/stay and overlap overflow remain unrun. The earlier
+  unretained send-oracle source is not accepted as reproducible evidence; the
+  retained serial oracle does not exercise send or overlap policy. In particular,
+  default-policy admission through 500 is not an overlap-overflow bound.
+- Independent review accepted the bounded offline proofs and native paired
+  geometry, rejected marker/focus and overlap overclaims, and confirmed the
+  foreground abort. No production or retained test changes were made; full
+  four-package gates were not rerun. Oracle result logs intentionally use
+  result-bearing panic output; those test exits are not passing gate runs.
+- Recovery: shrink and unfloat-abort settings bytes/taskbar/SPI matched their
+  preimages and every helper exited. Inventory settings matched, but its
+  taskbar/SPI preimage was captured afterward; parity for that first leg is
+  reasoned from zero writes, not independently compared. Final independent
+  `mise exec -- just stop` returned `stopped clean`; fresh reads confirmed
+  settings-byte equality, taskbar/SPI equality, zero owners/helpers, `ready:false`
+  and no recovery ledger. Final recovery does not fill inventory's evidence gap.
+
 ## Blockers and exact next action
+
+- Remaining acceptance: fresh exhaustion with observed ordinary-anchor/fallback
+  identity; native newest-first minimal-prefix and protected-member proof;
+  genuine no-space unfloat retention followed by successful explicit retry;
+  capacity sends follow/stay; overlap overflow. Cross-output refusal remains
+  not-run with one output. The backlog item is not complete.
+- Next exhaustion fixture: retain a measured-bound oracle history that actually
+  reaches the first capacity float within a practical native roster, including
+  per-arrival candidate/anchor evidence; separately replay the actual mover
+  against that destination for follow and stay. The current 500-arrival history
+  supplies no such fixture. Do not substitute shrink victims or guessed counts.
+- Next shrink fixture: retain per-victim membership/marker and unchanged-focus
+  observations alongside matched retained-tree minimality; discriminate a
+  supported protected-state route before any production carrier change.
+- Next unfloat fixture: obtain an owned-helper foreground before the four-large-
+  helper explicit float/exposure/unfloat sequence, retaining per-entry paired
+  bounds and dispositions. This isolates settlement only; a failed no-space
+  retry still requires the separate genuinely exhausted oracle destination.
+- Next overlap fixture: replay the overlap policy itself with measured inputs
+  until positive target intersection/overflow is predicted, then execute that
+  exact bounded roster and retain native geometry/navigation observations.
 
 - Fresh, retry and send rosters did not produce the required no-space state;
   shrink victims are not proof that fresh/transfer admission cannot split.
-  The oracle-first journey above is designed offline; its native roster count
-  and feasibility remain unmeasured. Protected-member and full overlap geometry
+  The measured serial history above still has no exhausted roster; other
+  histories remain unmeasured. Protected-member and full overlap geometry
   legs remain open.
 - The Windows stale-row correction now has bounded source-bound hidden/visible
   victim-set and plan parity without changing D1-D10. Exact original hidden
@@ -426,8 +498,9 @@
   representability and native no-op behavior before proposing compensation.
 - Parked next fixture B: four large helpers; explicitly float the verified
   foreground last helper, preserving a large frame instead of relying on shrink
-  victims. Verify exposed client identity, then explicitly unfloat once under
-  the no-injection foreground rule with each rewritten neighbor's pre/early/
+  victims. Establish an owned-helper foreground first, verify exposed client
+  identity, then explicitly unfloat once under the no-injection foreground rule
+  with each rewritten neighbor's pre/early/
   delayed bounds and write disposition. Four helpers are not an exhaustion
   claim. No further native attempt is part of this completed bounded round.
 

@@ -306,9 +306,19 @@ decisions of 2026-09-24 are under
   markers; two-step shrink matched newest admission suffixes. Changed-policy
   Apply/save/reopen/no-reflow, live-roster ordinary-float restart persistence and
   exact settings/taskbar/SPI cleanup passed. Overlap-policy shrink kept 40 positive
-  tiles without floats. Remain open: true fresh exhaustion/fallback, shortest-prefix
-  and protected-member proof, failed-unfloat retention, capacity sends, geometric
-  overlap/overflow. Corrected hidden repair passed a bounded source-bound
+   tiles without floats. Measured-bound follow-up at `d7b7811b`: one default-policy
+   serial oracle history tiled all 500 arrivals, so no practical exhausted native
+   roster was established. Matched retained-tree replay proves a minimal 30-victim
+   repair offline; native PMv2 shrink preserved newest-30 frames and matched ten
+   survivor targets, but marker/focus observations were not retained. Four-large-
+   helper unfloat setup stopped at foreign-foreground qualification before any
+   intent. Remain open: true fresh exhaustion/fallback; native minimal-prefix and
+   protected-member proof; failed-unfloat retention then successful retry; capacity
+   sends follow/stay; geometric overlap/overflow (needs its own policy oracle).
+   Native sticky protection needs a discriminator for the adapter row-carrier
+   question, not an assumed fix. Cross-output remains not-run with one output.
+   Final stop/settings/taskbar/SPI/process cleanup verified; inventory's initial
+   taskbar/SPI preimage comparison is incomplete. Corrected hidden repair passed a bounded source-bound
   40-helper visible/hidden 8/8 -> 64/64 re-check at `79442633`: identical newest-30
   victim sets, marker outcomes, preserved victim frames and ten-survivor plans;
   hidden geometry writes stayed zero. Full tree identity/focus parity unproved.
