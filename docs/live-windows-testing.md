@@ -124,6 +124,26 @@ do not broaden cleanup or repeatedly restart the experiment.
   captured preimage and restore; the product pager itself only reads the
   switch (ABM_GETSTATE). This grants no new mutation authorization.
   ABM_SETSTATE: [Microsoft SHAppBarMessage](https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-shappbarmessage).
+- Reusable bounded-leg helpers are in
+  [windows-live-lib.ps1](../scripts/windows-live-lib.ps1) (dot-source only;
+  sourcing performs no live action). `mise exec -- just live-lib-check` and
+  `mise exec -- just live-lib-mock` run offline parser/seam and fault-injection
+  checks. Drivers must call leg cleanup and final cleanup from `finally`;
+  the library does not launch a journey or replace its recovery procedure.
+- Never fall back to clicks: one pre-guard fallback click reached the operator
+  terminal without injected keys. Park the leg instead.
+- A restorable preimage is an actual settings byte copy plus taskbar auto-hide
+  and Mouse Snap/SPI state, not hashes or visibility alone.
+- Helper lifetimes must cover the whole journey; mid-leg expiry invalidates
+  that leg.
+- Use system-aware/PMv2 helpers for exact geometry: unaware windows show a
+  one-pixel host-side offset at non-100% scale (host constraint; baseline
+  `9fa32420`), not adapter error.
+- Injected Win+M bypasses the owner entirely; shortcut chords stay physical
+  and user-owned.
+- Exhaustion fixtures use few large-declared-minimum helpers: a default-policy
+  500-arrival roster never exhausted, so shrink victims never prove fresh
+  no-space.
 - The normal owner ignores injected keyboard input. Agent journeys use the
   exact-owner test CLI controls (`workspace --float`/`--sticky`/
   `--fullscreen`, select/send), tray callbacks or injected mouse input;
@@ -185,6 +205,8 @@ do not broaden cleanup or repeatedly restart the experiment.
   overwrite prior journey evidence.
 - Independently verify screenshot/appearance conclusions; one pager miniature
   'missing' reading was an analysis error.
+- External evidence groups stay on the run host, never in the repository;
+  records here summarize them.
 - Sequential per-window visibility confirmation serializes each app response
   latency (workspace switches observed around 0.5-1.3 s); posting all effects
   then confirming together under one event-driven deadline reduced this

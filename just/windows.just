@@ -52,6 +52,16 @@ shortcuts-mock:
 shortcuts-stop run_dir:
     pwsh -NoProfile -File scripts/windows-shortcuts.ps1 -Stop -RunDir {{run_dir}}
 
+# Offline seam check for the reusable live-test library (no live effects):
+# parser + required/forbidden seam assertions after any lib edit.
+live-lib-check:
+    pwsh -NoProfile -File scripts/windows-live-lib-check.ps1
+
+# Offline fault-injection mock for the reusable live-test library: all
+# live-API functions are shadowed, files stay in a fresh temp dir.
+live-lib-mock:
+    pwsh -NoProfile -File scripts/windows-live-lib.mock.ps1
+
 # Bounded owned-helper visibility proof over the product nonce mechanism
 # (physical, medium, no hooks/policy). Never runs by default; never touches
 # non-owned windows. Callable directly:
