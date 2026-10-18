@@ -157,6 +157,7 @@ use self::minmax::{FreshHint, QueryCost, fixed_birth_for_slotless, hidden_hint_f
 pub(crate) use self::monitors::ensure_pm_v2;
 use self::monitors::{MonitorArea, all_monitors, monitor_fulls};
 pub(crate) use self::monitors::{mark_monitor_dirty, take_monitor_dirty};
+use self::native_drag::{capture_gesture_start, esc_edge_cancels};
 use self::observation::{cursor_pos, enumerate_hwnds};
 #[cfg(test)]
 use self::observe::WaitWake;
@@ -268,7 +269,6 @@ use self::visibility_diag::{
     omission_summary, rehide_err_outcome, rehide_retired_detail, reveal_err_outcome,
     reveal_log_line, reveal_outcome, rollback_newly_hidden, stage_exceptions, stage_visibility,
 };
-use self::windrag::{capture_gesture_start, esc_edge_cancels};
 #[cfg(test)]
 use self::workspace_mode::dispatch_workspace_release;
 use self::workspace_mode::read_topmost_now;
@@ -1058,7 +1058,7 @@ mod migration_run;
 
 mod migration_visibility;
 
-mod windrag;
+mod native_drag;
 
 mod pending_drop;
 
