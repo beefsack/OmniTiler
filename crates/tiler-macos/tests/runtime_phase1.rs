@@ -2895,3 +2895,74 @@ fn dropped_handle_exits_workers_without_join() {
         "a stopped worker starts no further commands"
     );
 }
+
+#[test]
+fn borrowed_clone_drop_leaves_engine_and_workers_usable() {
+    // Regression for the inverse-leg `outcome=noreply-engine-down`: the
+    // managed-send effect backend is constructed with a per-leg
+    // `handle.clone()`, and once its owner thread already exists the send
+    // controller drops the next leg's factory without spawning — dropping
+    // that borrowed clone. The old `Drop` signalled
+    // stop_engine/all-app stop/frames on EVERY clone drop, so the second
+    // leg killed the live engine before its facts query. Borrowed drops
+    // must leave the engine and observers usable; only the final owning
+    // handle drop tears down.
+    let fixture = start(test_config());
+    let generation = fixture.handle.launch_app(APP_A).expect("launch");
+    assert_eq!(
+        fixture.handle.submit_observation(obs(
+            APP_A,
+            generation,
+            1,
+            vec![win(11, 0, 0, 960, 1080)],
+            Some(11),
+        )),
+        SubmitOutcome::Accepted
+    );
+    flush(&fixture.handle);
+    // First leg's effect owner holds a clone for its lifetime ...
+    let _effect_backend_handle = fixture.handle.clone();
+    // ... while the second leg's factory (and its clone) drops without
+    // spawning because the owner thread already exists.
+    {
+        let handle_clone = fixture.handle.clone();
+        let factory = move || handle_clone;
+        drop(factory);
+    }
+    // Quiescence past engine-exit latency: pre-fix the engine is gone by
+    // now; post-fix it must still serve.
+    std::thread::sleep(Duration::from_secs(1));
+    assert!(
+        fixture.handle.is_running(),
+        "borrowed clone drop must not stop the engine"
+    );
+    assert!(
+        fixture.handle.flush(FLUSH_TIMEOUT),
+        "engine still answers barriers after borrowed drop"
+    );
+    assert_eq!(
+        fixture.handle.submit_observation(obs(
+            APP_A,
+            generation,
+            2,
+            vec![win(11, 0, 0, 960, 1080)],
+            Some(11),
+        )),
+        SubmitOutcome::Accepted,
+        "observers stay admitted after borrowed drop"
+    );
+    flush(&fixture.handle);
+    assert!(
+        fixture
+            .handle
+            .query_managed_facts("1001_11", WAIT_TIMEOUT)
+            .is_some(),
+        "engine still answers managed-facts queries after borrowed drop"
+    );
+    drop(_effect_backend_handle);
+    assert!(
+        fixture.handle.is_running(),
+        "effect-backend clone drop must not stop the engine either"
+    );
+    shutdown_clean(&fixture);
+}

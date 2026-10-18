@@ -249,6 +249,7 @@ impl Runtime {
                 spawn_logger(sink, config.log_queue_depth.max(1));
             let shared = Arc::new(Mutex::new(Shared {
                 config: config.clone(),
+                handles_live: 1,
                 generation_counter: 0,
                 log_counter: 0,
                 start: Instant::now(),
@@ -295,6 +296,7 @@ impl Runtime {
             spawn_logger(Arc::clone(&sink), config.log_queue_depth);
         let shared = Arc::new(Mutex::new(Shared {
             config: config.clone(),
+            handles_live: 1,
             generation_counter: 0,
             log_counter: 0,
             start: Instant::now(),
@@ -578,12 +580,33 @@ fn cleanup_failed_start(
 /// [`RuntimeHandle::flush`], [`RuntimeHandle::shutdown`] and
 /// [`RuntimeHandle::reap`], which wait bounded. Safe to use from the main
 /// thread; never activates the desktop.
-#[derive(Clone)]
+///
+/// Clones are borrowed: dropping a clone never stops the engine. Only the
+/// final owning handle drop tears down (see `Drop`); explicit
+/// [`RuntimeHandle::shutdown`] remains the bounded, report-carrying path.
+/// The live-handle count lives in [`Shared`] (threads hold `shared`, never
+/// a handle count), so borrowed drops are exact without growing this type.
 pub struct RuntimeHandle {
     pub(crate) shared: Arc<Mutex<Shared>>,
     pub(crate) inbox: Arc<Inbox>,
     pub(crate) focus_queue: Arc<Mutex<Vec<FocusRequest>>>,
     pub(crate) ax_factory: Arc<dyn AxBackendFactory>,
+}
+
+impl Clone for RuntimeHandle {
+    fn clone(&self) -> Self {
+        // Count the new borrowed owner under the shared lock (poison
+        // recovered like every other stop/reap path): the supervised
+        // threads hold `shared`, never this count, so it names live
+        // handles exactly.
+        lock_shared(&self.shared).handles_live += 1;
+        Self {
+            shared: Arc::clone(&self.shared),
+            inbox: Arc::clone(&self.inbox),
+            focus_queue: Arc::clone(&self.focus_queue),
+            ax_factory: Arc::clone(&self.ax_factory),
+        }
+    }
 }
 
 // -- Read-only retained workspace occupancy -------------------------------------
@@ -1623,15 +1646,33 @@ impl RuntimeHandle {
     }
 }
 
-/// Dropping the handle never leaves owners running forever: it signals
-/// every stop flag — engine, input, logger, AND each app worker (whose stop
-/// flag plus frame-slot stop wakes a worker parked in its multiplex wait)
-/// — unparks the input thread, and wakes the inbox without blocking or
-/// joining. A forgotten or failed-start handle therefore still tears down;
-/// [`RuntimeHandle::shutdown`] remains the bounded, report-carrying path.
+/// Dropping the final owning handle never leaves owners running forever:
+/// it signals every stop flag — engine, input, logger, AND each app worker
+/// (whose stop flag plus frame-slot stop wakes a worker parked in its
+/// multiplex wait) — unparks the input thread, and wakes the inbox without
+/// blocking or joining. Dropping a borrowed clone is a no-op: per-leg
+/// effect backends must never stop the live engine when their factory or
+/// backend drops. A forgotten or failed-start handle therefore still tears
+/// down once its last owner is gone; [`RuntimeHandle::shutdown`] remains
+/// the bounded, report-carrying path.
 /// Never panics.
 impl Drop for RuntimeHandle {
     fn drop(&mut self) {
+        // Borrowed clone: the live runtime keeps its owners. Only the
+        // final handle (the exact last live count) tears down. The count
+        // lives in `Shared` and is held solely by handles — never by the
+        // supervised threads, which hold `shared` itself — so, unlike a
+        // `shared` strong-count, it names handles exactly, including the
+        // second-leg send factory the controller drops without spawning
+        // once its owner thread already exists.
+        {
+            let mut guard = lock_shared(&self.shared);
+            if guard.handles_live > 1 {
+                guard.handles_live -= 1;
+                return;
+            }
+            guard.handles_live = 0;
+        }
         let (input_thread, stop_logger) = match self.shared.lock() {
             Ok(guard) => {
                 guard.stop_engine.store(true, Ordering::SeqCst);

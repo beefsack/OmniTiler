@@ -106,6 +106,11 @@ pub type PostAcceptHook = Arc<dyn Fn() + Send + Sync>;
 
 pub(crate) struct Shared {
     pub(crate) config: RuntimeConfig,
+    /// Live [`RuntimeHandle`] count, held solely by handles (clones bump,
+    /// drops release; supervised threads never touch it). The final owning
+    /// handle drop tears down; borrowed clone drops are no-ops — unlike a
+    /// `shared` strong-count, which threads also hold.
+    pub(crate) handles_live: usize,
     pub(crate) generation_counter: u64,
     pub(crate) log_counter: u64,
     pub(crate) start: Instant,
