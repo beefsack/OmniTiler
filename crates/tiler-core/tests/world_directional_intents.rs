@@ -1,12 +1,16 @@
 //! Direction-only world intents (core-owned topology): KDE sends
 //! win+direction or source+direction only with empty wire adjacency; the
-//! core resolves the strict unique-reciprocal target from retained FULL
-//! rects. Strict parity: a strict edge runs the cross pair and returns its
-//! result directly (no local fallback, preserving safety fences); local
-//! R1-R3 runs only with no strict target (single-output, ambiguous,
-//! partial, or focus up/down). Covers follow/stay sends, source-explicit
-//! migrate with no active window, topology retention independent of window
-//! inventory, and GlobalUnique mode.
+//! core resolves the target from retained FULL rects. Moves and
+//! directional sends rank multiple edge-touch candidates by mover-centre
+//! projection, then span overlap, then left/top (2026-10-09) with
+//! reciprocal edge existence (reverse uniqueness not required); migration
+//! ranks by largest shared edge then left/top, never window position.
+//! Focus keeps the strict unique-reciprocal rule and only crosses
+//! horizontally. Unreadable topology refuses; no candidate runs local
+//! (moves/focus) or refuses (sends/migration); no wrap. Covers
+//! follow/stay sends, source-explicit migrate with no active window,
+//! topology retention independent of window inventory, and GlobalUnique
+//! mode.
 
 use std::collections::BTreeMap;
 
@@ -234,9 +238,11 @@ fn focus_directional_crosses_two_outputs_without_wire_adjacency() {
 }
 
 #[test]
-fn move_directional_strict_cross_and_single_output_local() {
-    // Strict parity: with a strict edge, the cross pair returns directly
-    // (no local fallback). Distinct workspaces, two tiles in the source.
+fn move_directional_windowed_cross_and_single_output_local() {
+    // Windowed selection: with an edge-touch candidate, the cross pair
+    // returns directly (no local fallback). Distinct workspaces, two
+    // tiles in the source. The mover rect (x=10, 100 wide) centres on the
+    // single right candidate.
     let mut engine = WorldEngine::new("gen-1").expect("valid");
     accepted(
         &mut engine,
@@ -340,14 +346,14 @@ fn focus_up_never_crosses_even_with_vertical_topology() {
 }
 
 #[test]
-fn ambiguity_fences_send_and_migrate_but_focus_falls_back_local() {
+fn split_edge_move_send_migrate_select_but_focus_stays_local() {
     // Split edge: src wide below two outputs; upward touches are ambiguous
-    // so the strict map omits them. The src domain holds two vertically
-    // arranged tiles so the local up fallback has a target.
+    // under the strict map, but windowed moves/sends rank by the mover
+    // and migration ranks by largest edge. The src domain holds two
+    // vertically arranged tiles so the local up fallback has a target.
     let wide = rect(0, 600, 1600, 600);
     let up_l = rect(0, 0, 800, 600);
     let up_r = rect(800, 0, 800, 600);
-    let mut engine = WorldEngine::new("gen-1").expect("valid");
     let mut report = WorldReport {
         topology: vec![
             OutputTopology {
@@ -387,7 +393,32 @@ fn ambiguity_fences_send_and_migrate_but_focus_falls_back_local() {
             domain_report("up-l", "wu", vec![engine_window("win-u", "up-l", "wu")]),
             domain_report("up-r", "wu2", vec![engine_window("win-u2", "up-r", "wu2")]),
         ],
-        bindings: Vec::new(),
+        bindings: vec![
+            WorkspaceBinding {
+                logical_id: "lsrc".to_owned(),
+                native_id: "ws".to_owned(),
+                output: OutputId("src".to_owned()),
+                pinned: false,
+                displaced: false,
+                managed: true,
+            },
+            WorkspaceBinding {
+                logical_id: "lul".to_owned(),
+                native_id: "wu".to_owned(),
+                output: OutputId("up-l".to_owned()),
+                pinned: false,
+                displaced: false,
+                managed: true,
+            },
+            WorkspaceBinding {
+                logical_id: "lur".to_owned(),
+                native_id: "wu2".to_owned(),
+                output: OutputId("up-r".to_owned()),
+                pinned: false,
+                displaced: false,
+                managed: true,
+            },
+        ],
         focused_global: "win-s2".to_owned(),
         inventory_complete: true,
         ..two_output_report(1, Some(rect(0, 0, 800, 600)))
@@ -395,9 +426,13 @@ fn ambiguity_fences_send_and_migrate_but_focus_falls_back_local() {
     report.request_seq = 1;
     report.request_id = "req-1".to_owned();
     report.observation_seq = 1;
-    // Focused is win-s2 (bottom); local up goes to win-s (top).
+    // Focused is win-s2 (bottom); local up goes to win-s (top). Each leg
+    // below runs on a fresh engine so retained transfers never leak
+    // across legs.
+    // Send up from the wide source selects by mover centre: win-s2 at
+    // x=10 (100 wide, centre x=60) falls in up-l's shared edge [0,800).
+    let mut engine = WorldEngine::new("gen-1").expect("valid");
     accepted(&mut engine, &report);
-    // Send up from the wide source refuses (no strict target).
     let mut send = report.clone();
     with_command(
         &mut send,
@@ -409,15 +444,21 @@ fn ambiguity_fences_send_and_migrate_but_focus_falls_back_local() {
             follow: true,
         },
     );
-    match engine.handle_report(&send) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "send-target-unknown"),
-        other => panic!("expected send refusal, got {other:?}"),
-    }
-    // Migrate up refuses the same way.
+    let reply = accepted(&mut engine, &send);
+    let transfer = reply
+        .transfers
+        .iter()
+        .find(|t| matches!(t.kind, TransferKind::Window(_)))
+        .expect("windowed send retains a transfer");
+    assert_eq!(transfer.target_output.0, "up-l", "centre x=60 selects up-l");
+    // Migration up ignores the window and ranks largest edge: the tie
+    // (800 vs 800) breaks left/top to up-l.
+    let mut engine = WorldEngine::new("gen-1").expect("valid");
+    accepted(&mut engine, &report);
     let mut migrate = report.clone();
     with_command(
         &mut migrate,
-        3,
+        2,
         22,
         WorldCommand::MigrateDirectional {
             source_output: OutputId("src".to_owned()),
@@ -425,15 +466,21 @@ fn ambiguity_fences_send_and_migrate_but_focus_falls_back_local() {
             direction: "up".to_owned(),
         },
     );
-    match engine.handle_report(&migrate) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "migration-refused"),
-        other => panic!("expected migrate refusal, got {other:?}"),
-    }
+    let reply = accepted(&mut engine, &migrate);
+    assert!(
+        reply
+            .transfers
+            .iter()
+            .any(|t| matches!(t.kind, TransferKind::Migration) && t.target_output.0 == "up-l"),
+        "migration tie breaks left/top to up-l"
+    );
     // Focus up falls back to a local focus instead of refusing everything.
+    let mut engine = WorldEngine::new("gen-1").expect("valid");
+    accepted(&mut engine, &report);
     let mut focus = report.clone();
     with_command(
         &mut focus,
-        4,
+        2,
         23,
         WorldCommand::FocusDirectional {
             window: WindowId("win-s2".to_owned()),
@@ -720,4 +767,773 @@ fn global_unique_retains_topology_and_fences_directionally() {
         WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "send-target-unknown"),
         other => panic!("expected send fence on partial topology, got {other:?}"),
     }
+}
+
+// ---- world split-edge selection (2026-10-09 through the world route) ----
+//
+// R-MOV-12 discriminators, R-WS-27 two-candidate migration, strict
+// split-edge focus, ordinary two-output behavior, unreadable/no-candidate
+// fences, pinned R4 identity across mover relocation, and valid
+// reverse-ambiguous pairs. Geometries mirror the spec tables and the
+// shared selector fixtures; the world route resolves them through
+// MoveDirectional/SendDirectional/MigrateDirectional plus the operation
+// R4 pair, never carried adjacency.
+
+fn homing(reply: &tiler_core::world_report::WorldReply, window: &str) -> Option<String> {
+    reply
+        .windows
+        .iter()
+        .find(|w| w.lifetime.0 == window)
+        .map(|w| format!("{}/{}", w.output.0, w.workspace))
+}
+
+fn window_rect(id: &str, out: &str, ws: &str, x: i32, y: i32, w: i32, h: i32) -> EngineWindow {
+    EngineWindow {
+        window: WindowId(id.to_owned()),
+        output: OutputId(out.to_owned()),
+        workspace: WorkspaceId(ws.to_owned()),
+        rect: rect(x, y, w, h),
+        floating: false,
+        fit_excluded: false,
+        fullscreen: false,
+        maximized: false,
+        sticky: false,
+        fixed_auto: false,
+        fixed_suppress: false,
+        hints: tiler_core::size_hints::WindowSizeHints::none(),
+    }
+}
+
+/// Three-output world with caller-controlled FULL geometries, one shared
+/// workspace id, and empty wire adjacency. `mover` is the focused sole
+/// window on `src`; each upper output holds one window.
+fn three_output_report(
+    seq: u64,
+    src: Rect,
+    u1: Rect,
+    u2: Rect,
+    mover: EngineWindow,
+) -> WorldReport {
+    WorldReport {
+        topology: vec![
+            OutputTopology {
+                output: OutputId("src".to_owned()),
+                native_order: vec!["ws".to_owned()],
+                current_native: "ws".to_owned(),
+                complete: true,
+                geometry: Some(src),
+                primary: true,
+            },
+            OutputTopology {
+                output: OutputId("u1".to_owned()),
+                native_order: vec!["ws".to_owned()],
+                current_native: "ws".to_owned(),
+                complete: true,
+                geometry: Some(u1),
+                primary: false,
+            },
+            OutputTopology {
+                output: OutputId("u2".to_owned()),
+                native_order: vec!["ws".to_owned()],
+                current_native: "ws".to_owned(),
+                complete: true,
+                geometry: Some(u2),
+                primary: false,
+            },
+        ],
+        domains: vec![
+            domain_report("src", "ws", vec![mover]),
+            domain_report(
+                "u1",
+                "ws",
+                vec![window_rect("win-u1", "u1", "ws", 10, 10, 100, 100)],
+            ),
+            domain_report(
+                "u2",
+                "ws",
+                vec![window_rect("win-u2", "u2", "ws", 970, 10, 100, 100)],
+            ),
+        ],
+        bindings: Vec::new(),
+        focused_global: "win-a".to_owned(),
+        inventory_complete: true,
+        ..two_output_report(seq, Some(rect(0, 0, 800, 600)))
+    }
+}
+
+fn move_up_once(engine: &mut WorldEngine, report: &WorldReport, seq: u64) -> HomingReply {
+    let mut cmd = report.clone();
+    with_command(
+        &mut cmd,
+        seq,
+        seq + 100,
+        WorldCommand::MoveDirectional {
+            window: WindowId("win-a".to_owned()),
+            direction: "up".to_owned(),
+            same_axis: tiler_core::directional::SameAxisMove::GroupWithNeighbor,
+        },
+    );
+    accepted(engine, &cmd)
+}
+
+type HomingReply = tiler_core::world_report::WorldReply;
+
+#[test]
+fn r_mov12_world_seam_prefers_upper_interval() {
+    // Row 1: U1 [0,960), U2 [960,1920); A x=860 w=200 centre=960.
+    // Half-open containment puts the seam in the right edge: U2.
+    let mover = window_rect("win-a", "src", "ws", 860, 1150, 200, 200);
+    let report = three_output_report(
+        1,
+        rect(0, 1080, 1920, 1080),
+        rect(0, 0, 960, 1080),
+        rect(960, 0, 960, 1080),
+        mover,
+    );
+    let mut engine = WorldEngine::new("gen-1").expect("valid");
+    accepted(&mut engine, &report);
+    let reply = move_up_once(&mut engine, &report, 2);
+    assert_eq!(
+        homing(&reply, "win-a"),
+        Some("u2/ws".to_owned()),
+        "seam centre selects u2"
+    );
+}
+
+#[test]
+fn r_mov12_world_overlap_fallback_selects_larger_span() {
+    // Row 2: source [0,1600); uppers [0,400), [1200,1600); centre 850 in
+    // the gap; window [300,1400) overlaps 200 right vs 100 left: U2.
+    let mover = window_rect("win-a", "src", "ws", 300, 1150, 1100, 200);
+    let report = three_output_report(
+        1,
+        rect(0, 1080, 1600, 1080),
+        rect(0, 0, 400, 1080),
+        rect(1200, 0, 400, 1080),
+        mover,
+    );
+    let mut engine = WorldEngine::new("gen-1").expect("valid");
+    accepted(&mut engine, &report);
+    let reply = move_up_once(&mut engine, &report, 2);
+    assert_eq!(
+        homing(&reply, "win-a"),
+        Some("u2/ws".to_owned()),
+        "larger span selects u2"
+    );
+}
+
+#[test]
+fn r_mov12_world_both_centred_skips_overlap_to_left_top() {
+    // Row 3: overlapping uppers [0,1200), [400,1600); centre 1100 in
+    // both; U2 overlaps the span more yet left/top still picks U1.
+    let mover = window_rect("win-a", "src", "ws", 900, 1150, 400, 100);
+    let report = three_output_report(
+        1,
+        rect(0, 1080, 1600, 1080),
+        rect(0, 0, 1200, 1080),
+        rect(400, 0, 1200, 1080),
+        mover,
+    );
+    let mut engine = WorldEngine::new("gen-1").expect("valid");
+    accepted(&mut engine, &report);
+    let reply = move_up_once(&mut engine, &report, 2);
+    assert_eq!(
+        homing(&reply, "win-a"),
+        Some("u1/ws".to_owned()),
+        "both-centred skips overlap to u1"
+    );
+}
+
+#[test]
+fn r_mov12_world_send_matches_move_targets() {
+    // Directional sends rank identically to exhausted moves through the
+    // world route: the transfer names the selected output.
+    for (mover, expect) in [
+        (window_rect("win-a", "src", "ws", 860, 1150, 200, 200), "u2"),
+        (
+            window_rect("win-a", "src", "ws", 300, 1150, 1100, 200),
+            "u2",
+        ),
+        (window_rect("win-a", "src", "ws", 900, 1150, 400, 100), "u1"),
+    ] {
+        let geometries = if expect == "u2" && mover.rect.w == 200 {
+            (
+                rect(0, 1080, 1920, 1080),
+                rect(0, 0, 960, 1080),
+                rect(960, 0, 960, 1080),
+            )
+        } else if mover.rect.w == 1100 {
+            (
+                rect(0, 1080, 1600, 1080),
+                rect(0, 0, 400, 1080),
+                rect(1200, 0, 400, 1080),
+            )
+        } else {
+            (
+                rect(0, 1080, 1600, 1080),
+                rect(0, 0, 1200, 1080),
+                rect(400, 0, 1200, 1080),
+            )
+        };
+        let report = three_output_report(1, geometries.0, geometries.1, geometries.2, mover);
+        let mut engine = WorldEngine::new("gen-1").expect("valid");
+        accepted(&mut engine, &report);
+        let mut cmd = report.clone();
+        with_command(
+            &mut cmd,
+            2,
+            112,
+            WorldCommand::SendDirectional {
+                window: WindowId("win-a".to_owned()),
+                direction: "up".to_owned(),
+                follow: true,
+            },
+        );
+        let reply = accepted(&mut engine, &cmd);
+        let transfer = reply
+            .transfers
+            .iter()
+            .find(|t| matches!(t.kind, TransferKind::Window(_)))
+            .expect("send retains a transfer");
+        assert_eq!(
+            transfer.target_output.0, expect,
+            "send selects {expect} (mover {:?})",
+            report.domains[0].windows[0].rect
+        );
+    }
+}
+
+#[test]
+fn r_ws27_world_migration_selects_largest_edge_despite_window_centre() {
+    // L (0,1080,1920,1080) shows ws2; U1 (0,0,1200,1080, edge 1200) and
+    // U2 (1200,0,720,1080, edge 720) both touch above. B's centre x=1600
+    // projects onto U2, but migration ignores window position: U1 wins.
+    let report = WorldReport {
+        topology: vec![
+            OutputTopology {
+                output: OutputId("out-l".to_owned()),
+                native_order: vec!["ws2".to_owned()],
+                current_native: "ws2".to_owned(),
+                complete: true,
+                geometry: Some(rect(0, 1080, 1920, 1080)),
+                primary: true,
+            },
+            OutputTopology {
+                output: OutputId("u1".to_owned()),
+                native_order: vec!["wu1".to_owned()],
+                current_native: "wu1".to_owned(),
+                complete: true,
+                geometry: Some(rect(0, 0, 1200, 1080)),
+                primary: false,
+            },
+            OutputTopology {
+                output: OutputId("u2".to_owned()),
+                native_order: vec!["wu2".to_owned()],
+                current_native: "wu2".to_owned(),
+                complete: true,
+                geometry: Some(rect(1200, 0, 720, 1080)),
+                primary: false,
+            },
+        ],
+        bindings: vec![
+            WorkspaceBinding {
+                logical_id: "ll".to_owned(),
+                native_id: "ws2".to_owned(),
+                output: OutputId("out-l".to_owned()),
+                pinned: false,
+                displaced: false,
+                managed: true,
+            },
+            WorkspaceBinding {
+                logical_id: "l1".to_owned(),
+                native_id: "wu1".to_owned(),
+                output: OutputId("u1".to_owned()),
+                pinned: false,
+                displaced: false,
+                managed: true,
+            },
+            WorkspaceBinding {
+                logical_id: "l2".to_owned(),
+                native_id: "wu2".to_owned(),
+                output: OutputId("u2".to_owned()),
+                pinned: false,
+                displaced: false,
+                managed: true,
+            },
+        ],
+        domains: vec![
+            DomainReport {
+                domain: OutputDomain {
+                    id: OutputId("out-l".to_owned()),
+                    workspace: WorkspaceId("ws2".to_owned()),
+                    bounds: rect(0, 1080, 1920, 1080),
+                    gap: 0,
+                    adjacent: BTreeMap::new(),
+                },
+                outer_gap: 0,
+                focused: WindowId("win-b".to_owned()),
+                windows: vec![
+                    window_rect("win-a", "out-l", "ws2", 100, 1150, 100, 100),
+                    window_rect("win-b", "out-l", "ws2", 1550, 1150, 100, 100),
+                ],
+                closed: Vec::new(),
+                readable: true,
+                hold: None,
+            },
+            domain_report(
+                "u1",
+                "wu1",
+                vec![window_rect("win-u1", "u1", "wu1", 10, 10, 100, 100)],
+            ),
+            domain_report(
+                "u2",
+                "wu2",
+                vec![window_rect("win-u2", "u2", "wu2", 1210, 10, 100, 100)],
+            ),
+        ],
+        focused_global: "win-b".to_owned(),
+        inventory_complete: true,
+        ..two_output_report(1, Some(rect(0, 0, 800, 600)))
+    };
+    let mut engine = WorldEngine::new("gen-1").expect("valid");
+    accepted(&mut engine, &report);
+    let mut cmd = report.clone();
+    with_command(
+        &mut cmd,
+        2,
+        121,
+        WorldCommand::MigrateDirectional {
+            source_output: OutputId("out-l".to_owned()),
+            workspace: "ws2".to_owned(),
+            direction: "up".to_owned(),
+        },
+    );
+    let reply = accepted(&mut engine, &cmd);
+    assert!(
+        reply
+            .transfers
+            .iter()
+            .any(|t| matches!(t.kind, TransferKind::Migration)
+                && t.target_output.0 == "u1"
+                && t.target_workspace == "ws2"),
+        "migration selects u1 despite B centre on u2, transfers={:?}",
+        reply.transfers
+    );
+}
+
+#[test]
+fn strict_split_edge_focus_stays_local_while_move_selects() {
+    // Horizontal split: tall (0,0,800,1200) against top/bottom stacked
+    // pair. Strict focus right omits the multi-touch side, so focus
+    // stays local; the windowed move ranks the same side by mover y.
+    let tall = rect(0, 0, 800, 1200);
+    let top = rect(800, 0, 800, 600);
+    let bottom = rect(800, 600, 800, 600);
+    let mover = window_rect("win-a", "tall", "ws", 10, 50, 100, 100);
+    let report = WorldReport {
+        topology: vec![
+            OutputTopology {
+                output: OutputId("tall".to_owned()),
+                native_order: vec!["ws".to_owned()],
+                current_native: "ws".to_owned(),
+                complete: true,
+                geometry: Some(tall),
+                primary: true,
+            },
+            OutputTopology {
+                output: OutputId("top".to_owned()),
+                native_order: vec!["ws".to_owned()],
+                current_native: "ws".to_owned(),
+                complete: true,
+                geometry: Some(top),
+                primary: false,
+            },
+            OutputTopology {
+                output: OutputId("bot".to_owned()),
+                native_order: vec!["ws".to_owned()],
+                current_native: "ws".to_owned(),
+                complete: true,
+                geometry: Some(bottom),
+                primary: false,
+            },
+        ],
+        domains: vec![
+            DomainReport {
+                domain: OutputDomain {
+                    id: OutputId("tall".to_owned()),
+                    workspace: WorkspaceId("ws".to_owned()),
+                    bounds: tall,
+                    gap: 0,
+                    adjacent: BTreeMap::new(),
+                },
+                outer_gap: 0,
+                focused: WindowId("win-a".to_owned()),
+                windows: vec![
+                    mover.clone(),
+                    window_rect("win-a2", "tall", "ws", 10, 900, 100, 100),
+                ],
+                closed: Vec::new(),
+                readable: true,
+                hold: None,
+            },
+            domain_report(
+                "top",
+                "ws",
+                vec![window_rect("win-t", "top", "ws", 810, 10, 100, 100)],
+            ),
+            domain_report(
+                "bot",
+                "ws",
+                vec![window_rect("win-bo", "bot", "ws", 810, 610, 100, 100)],
+            ),
+        ],
+        bindings: Vec::new(),
+        focused_global: "win-a".to_owned(),
+        inventory_complete: true,
+        ..two_output_report(1, Some(rect(0, 0, 800, 600)))
+    };
+    let mut engine = WorldEngine::new("gen-1").expect("valid");
+    accepted(&mut engine, &report);
+    // Focus right stays local (strict multi-touch omits the side): with no
+    // local right neighbor the command refuses as unchanged, never
+    // crossing to top/bot.
+    let mut focus = report.clone();
+    with_command(
+        &mut focus,
+        2,
+        131,
+        WorldCommand::FocusDirectional {
+            window: WindowId("win-a".to_owned()),
+            direction: "right".to_owned(),
+            float_subject: false,
+        },
+    );
+    match engine.handle_report(&focus) {
+        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "unchanged"),
+        other => panic!("strict split-edge focus stays local, got {other:?}"),
+    }
+    // The windowed move ranks the same side on a sole-leaf source:
+    // mover centre y=100 falls in top's edge [0,600), so the mover
+    // lands on top. (A second local tile would let local R1 win, so the
+    // move leg uses a sole source like the R-MOV-12 legs above.)
+    let mut move_report = report.clone();
+    move_report.domains[0] = domain_report(
+        "tall",
+        "ws",
+        vec![window_rect("win-a", "tall", "ws", 10, 50, 100, 100)],
+    );
+    move_report.focused_global = "win-a".to_owned();
+    let mut engine = WorldEngine::new("gen-1").expect("valid");
+    accepted(&mut engine, &move_report);
+    let mut mv = move_report.clone();
+    with_command(
+        &mut mv,
+        2,
+        132,
+        WorldCommand::MoveDirectional {
+            window: WindowId("win-a".to_owned()),
+            direction: "right".to_owned(),
+            same_axis: tiler_core::directional::SameAxisMove::GroupWithNeighbor,
+        },
+    );
+    let reply = accepted(&mut engine, &mv);
+    assert_eq!(
+        homing(&reply, "win-a"),
+        Some("top/ws".to_owned()),
+        "windowed move selects top by centre"
+    );
+}
+
+#[test]
+fn ordinary_two_output_move_and_send_succeed() {
+    // Single-candidate ordinary neighbors cross in every route.
+    let mover = window_rect("win-a", "src", "ws", 10, 1150, 100, 100);
+    let report = three_output_report(
+        1,
+        rect(0, 1080, 1920, 1080),
+        rect(0, 0, 1920, 1080),
+        rect(3000, 0, 800, 600),
+        mover,
+    );
+    // u1 directly above src (edge [0,1920)); u2 far away, no touch.
+    let mut engine = WorldEngine::new("gen-1").expect("valid");
+    accepted(&mut engine, &report);
+    let reply = move_up_once(&mut engine, &report, 2);
+    assert_eq!(homing(&reply, "win-a"), Some("u1/ws".to_owned()));
+    let mut engine = WorldEngine::new("gen-1").expect("valid");
+    accepted(&mut engine, &report);
+    let mut send = report.clone();
+    with_command(
+        &mut send,
+        2,
+        142,
+        WorldCommand::SendDirectional {
+            window: WindowId("win-a".to_owned()),
+            direction: "up".to_owned(),
+            follow: false,
+        },
+    );
+    let reply = accepted(&mut engine, &send);
+    assert!(
+        reply.transfers.iter().any(|t| t.target_output.0 == "u1"),
+        "ordinary send reaches u1"
+    );
+}
+
+#[test]
+fn unreadable_topology_refuses_and_gap_runs_local_or_refuses() {
+    // Unreadable FULL (zero width) refuses moves/sends/migration without
+    // mutation; a clean gap (no touch) runs local move / refuses send.
+    let mover = window_rect("win-a", "src", "ws", 10, 1150, 100, 100);
+    let good = three_output_report(
+        1,
+        rect(0, 1080, 800, 600),
+        rect(0, 0, 800, 600),
+        rect(3000, 0, 800, 600),
+        mover.clone(),
+    );
+    let mut engine = WorldEngine::new("gen-1").expect("valid");
+    accepted(&mut engine, &good);
+    // Unreadable: u1 zero width.
+    let mut bad = good.clone();
+    bad.topology[1].geometry = Some(rect(0, 0, 0, 600));
+    bad.request_seq = 2;
+    bad.request_id = "req-2".to_owned();
+    bad.observation_seq = 2;
+    with_command(
+        &mut bad,
+        2,
+        151,
+        WorldCommand::MoveDirectional {
+            window: WindowId("win-a".to_owned()),
+            direction: "up".to_owned(),
+            same_axis: tiler_core::directional::SameAxisMove::GroupWithNeighbor,
+        },
+    );
+    match engine.handle_report(&bad) {
+        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "operation-refused"),
+        other => panic!("unreadable move refuses, got {other:?}"),
+    }
+    let mut bad_send = good.clone();
+    bad_send.request_seq = 2;
+    bad_send.request_id = "req-2".to_owned();
+    bad_send.observation_seq = 2;
+    with_command(
+        &mut bad_send,
+        2,
+        152,
+        WorldCommand::SendDirectional {
+            window: WindowId("win-a".to_owned()),
+            direction: "up".to_owned(),
+            follow: false,
+        },
+    );
+    bad_send.topology[1].geometry = Some(rect(0, 0, 0, 600));
+    match engine.handle_report(&bad_send) {
+        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "send-target-unknown"),
+        other => panic!("unreadable send refuses, got {other:?}"),
+    }
+    // Gap: u1 far away (no touch). Move runs local (accepted, mover
+    // stays on src); send refuses. Two tiles in the source give the local
+    // move a target (a sole leaf has no local move and refuses instead).
+    let mut gap = good.clone();
+    gap.topology[1].geometry = Some(rect(0, 0, 800, 600));
+    gap.topology[2].geometry = Some(rect(3000, 0, 800, 600));
+    // Move src away from u1: shift src so nothing touches.
+    gap.topology[0].geometry = Some(rect(0, 2000, 800, 600));
+    gap.domains[0] = domain_report(
+        "src",
+        "ws",
+        vec![
+            mover.clone(),
+            window_rect("win-a2", "src", "ws", 300, 1150, 100, 100),
+        ],
+    );
+    gap.request_seq = 3;
+    gap.request_id = "req-3".to_owned();
+    gap.observation_seq = 3;
+    with_command(
+        &mut gap,
+        3,
+        153,
+        WorldCommand::MoveDirectional {
+            window: WindowId("win-a".to_owned()),
+            direction: "up".to_owned(),
+            same_axis: tiler_core::directional::SameAxisMove::GroupWithNeighbor,
+        },
+    );
+    let reply = accepted(&mut engine, &gap);
+    assert_eq!(
+        homing(&reply, "win-a"),
+        Some("src/ws".to_owned()),
+        "gap move stays local"
+    );
+    let mut gap_send = good.clone();
+    gap_send.topology[0].geometry = Some(rect(0, 2000, 800, 600));
+    gap_send.request_seq = 4;
+    gap_send.request_id = "req-4".to_owned();
+    gap_send.observation_seq = 4;
+    with_command(
+        &mut gap_send,
+        4,
+        154,
+        WorldCommand::SendDirectional {
+            window: WindowId("win-a".to_owned()),
+            direction: "up".to_owned(),
+            follow: false,
+        },
+    );
+    match engine.handle_report(&gap_send) {
+        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "send-target-unknown"),
+        other => panic!("gap send refuses, got {other:?}"),
+    }
+}
+
+#[test]
+fn pinned_r4_identity_survives_mover_relocation_without_rerank() {
+    // Dispatch pins source+u2 (centre seam). After the mover relocates
+    // onto u2, re-ranking with the relocated frame would pick
+    // differently, but the pinned pair still validates against fresh
+    // topology: forward+reverse touch hold, so the pair is retained.
+    use tiler_core::world_engine::WorldEngine as Engine;
+    let engine = Engine::new("gen-1").expect("valid");
+    let _ = engine;
+    let src = OutputId("src".to_owned());
+    let u1 = OutputId("u1".to_owned());
+    let u2 = OutputId("u2".to_owned());
+    // Fresh topology entries (FULL): src below, u1/u2 above.
+    let entries = vec![
+        tiler_core::output_selection::OutputEntry {
+            id: src.clone(),
+            rect: rect(0, 1080, 1920, 1080),
+        },
+        tiler_core::output_selection::OutputEntry {
+            id: u1.clone(),
+            rect: rect(0, 0, 960, 1080),
+        },
+        tiler_core::output_selection::OutputEntry {
+            id: u2.clone(),
+            rect: rect(960, 0, 960, 1080),
+        },
+    ];
+    // Dispatch frame centres on the seam (x=960): selects u2.
+    let dispatch = rect(860, 1150, 200, 200);
+    let picked = tiler_core::output_selection::select_for_window(
+        tiler_core::directional::Direction::Up,
+        &entries[0],
+        &dispatch,
+        &entries,
+    )
+    .expect("readable")
+    .expect("candidate");
+    assert_eq!(picked.id, u2);
+    // Relocated frame sits deep over u1's column; a fresh rank would
+    // pick u1, proving the mover moved. The pinned u2 pair must still
+    // touch reciprocally in the same topology.
+    let relocated = rect(100, 100, 200, 200);
+    let reranked = tiler_core::output_selection::select_for_window(
+        tiler_core::directional::Direction::Up,
+        &entries[0],
+        &relocated,
+        &entries,
+    )
+    .expect("readable")
+    .expect("candidate");
+    assert_eq!(reranked.id, u1, "relocated frame would rerank to u1");
+    let fwd = tiler_core::output_selection::candidates_in_direction(
+        &entries[0],
+        tiler_core::directional::Direction::Up,
+        &entries,
+    )
+    .expect("readable");
+    assert!(fwd.iter().any(|c| c.id == u2), "pinned u2 still forward");
+    let back = tiler_core::output_selection::OutputEntry {
+        id: u2.clone(),
+        rect: rect(960, 0, 960, 1080),
+    };
+    let rev = tiler_core::output_selection::candidates_in_direction(
+        &back,
+        tiler_core::directional::Direction::Down,
+        &entries,
+    )
+    .expect("readable");
+    assert!(
+        rev.iter().any(|c| c.id == src),
+        "pinned pair still reciprocal without rerank"
+    );
+}
+
+#[test]
+fn reverse_ambiguous_pair_still_crosses_world_move() {
+    // Forward single, reverse double: src up touches only wide; wide
+    // down touches src plus src2. Strict uniqueness would omit, but the
+    // world windowed pair accepts reciprocal existence.
+    let wide = rect(0, 0, 1600, 600);
+    let src_rect = rect(0, 600, 800, 600);
+    let src2_rect = rect(800, 600, 800, 600);
+    let mover = window_rect("win-a", "src", "ws", 10, 650, 100, 100);
+    let report = WorldReport {
+        topology: vec![
+            OutputTopology {
+                output: OutputId("src".to_owned()),
+                native_order: vec!["ws".to_owned()],
+                current_native: "ws".to_owned(),
+                complete: true,
+                geometry: Some(src_rect),
+                primary: true,
+            },
+            OutputTopology {
+                output: OutputId("src2".to_owned()),
+                native_order: vec!["ws".to_owned()],
+                current_native: "ws".to_owned(),
+                complete: true,
+                geometry: Some(src2_rect),
+                primary: false,
+            },
+            OutputTopology {
+                output: OutputId("wide".to_owned()),
+                native_order: vec!["ws".to_owned()],
+                current_native: "ws".to_owned(),
+                complete: true,
+                geometry: Some(wide),
+                primary: false,
+            },
+        ],
+        domains: vec![
+            domain_report("src", "ws", vec![mover]),
+            domain_report(
+                "src2",
+                "ws",
+                vec![window_rect("win-s2", "src2", "ws", 810, 650, 100, 100)],
+            ),
+            domain_report(
+                "wide",
+                "ws",
+                vec![window_rect("win-w", "wide", "ws", 10, 10, 100, 100)],
+            ),
+        ],
+        bindings: Vec::new(),
+        focused_global: "win-a".to_owned(),
+        inventory_complete: true,
+        ..two_output_report(1, Some(rect(0, 0, 800, 600)))
+    };
+    let mut engine = WorldEngine::new("gen-1").expect("valid");
+    accepted(&mut engine, &report);
+    let mut cmd = report.clone();
+    with_command(
+        &mut cmd,
+        2,
+        161,
+        WorldCommand::MoveDirectional {
+            window: WindowId("win-a".to_owned()),
+            direction: "up".to_owned(),
+            same_axis: tiler_core::directional::SameAxisMove::GroupWithNeighbor,
+        },
+    );
+    let reply = accepted(&mut engine, &cmd);
+    assert_eq!(
+        homing(&reply, "win-a"),
+        Some("wide/ws".to_owned()),
+        "reverse-ambiguous pair still crosses"
+    );
 }
