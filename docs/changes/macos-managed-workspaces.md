@@ -1,5 +1,137 @@
 # macOS managed native workspaces
 
+## Product-tap refusal checkpoint (2026-10-18)
+
+**Numbered send-follow is armed but not ready for physical send dogfooding.**
+The owned-helper product tap reaches engine admission; native execution refuses
+before posting. TextEdit acceptance procedure 1, layout/focus/border/indicator
+transfer acceptance, and send-stay remain pending.
+
+- CI at `5950b795` passes all eight jobs
+  ([39122511678](https://github.com/beefsack/OmniTiler/actions/runs/39122511678)),
+  verifying the off-macOS unused-mut repair. Diagnostic-only `93d2b7f9` adds one
+  bounded effect-owner refusal line with stage, reason and per-operation post
+  counts, without changing admission, effects, completion or release semantics.
+  Independent review accepts it; 854 library tests plus integration suites,
+  strict all-target macOS clippy, format, signed build and separate verification
+  pass. Its [CI 39124331455](https://github.com/beefsack/OmniTiler/actions/runs/39124331455)
+  also passes all eight jobs. Unsafe remains **114 blocks**, all in unchanged
+  `ffi.rs`; no dependency changes.
+- Two bounded helper-only Authentic runs consume the owned `send-2` chord and
+  report `send-accepted`, `send-enqueued` and `submitted`, then settle `Refused`.
+  The first run's subsequent `send-1` is an expected same-current-Space refusal,
+  not an inverse transfer. The diagnostic run isolates the actual failure:
+
+  ```text
+  stage=snapshot
+  reason=fresh row unreadable (product send refuses: fresh row unreadable (send topology unreadable: display snapshot (display snapshot requires the main thread)))
+  dposts=md:0 mu:0 kd:0 ku:0
+  ```
+
+- `OsSendReaders::fresh_topology` calls main-thread-only
+  `ns_display_snapshot` on the dedicated effect owner. An offline spawned-thread
+  reproduction returns the same refusal. No transfer or inverse occurs; helper
+  membership stays `[1]`, current Space stays 1. This is a product defect, not
+  another dispatch or holder-delivery failure.
+- The topology revision includes visible display geometry, scale, ordered native
+  Space rows/current and separate-Spaces mode. Replacing AppKit data with CG
+  bounds or unknown mode would change the fingerprint, not repair the proof.
+  Next implementation requires a reviewed main-thread snapshot acquisition or
+  handoff contract, retaining fresh per-edge native row/ordinal validation and
+  engine-managed authority. No cached-snapshot authority substitution or weaker
+  revision domain is selected here.
+- Both signed runs report completed/Clean teardown. The launch wrapper exits 1
+  because diagnostic stderr is nonempty; its status is not the signed child's
+  outcome. Each Revert restores all nine disabled holders with unchanged chords,
+  no external edits/failures, and removes the owned preimage. Final topology is
+  `[1,277]`, current 1. Owned helpers, runtime owners and display-awake children
+  are gone. Existing Space 277 and the three reusable TextEdit documents remain;
+  no Space is created or removed.
+- Seven title-free protected-window records compare byte-identical before/after
+  each run. The following raw records are identical in the diagnostic run's
+  before and after responses:
+
+  ```json
+  [
+    {"bounds":{"h":1139.0,"w":1150.0,"x":0.0,"y":30.0},"layer":0,"onscreen":true,"pid":31863,"wid":3675},
+    {"bounds":{"h":64.0,"w":64.0,"x":0.0,"y":760.0},"layer":0,"onscreen":false,"pid":31863,"wid":3676},
+    {"bounds":{"h":1139.0,"w":1150.0,"x":0.0,"y":30.0},"layer":0,"onscreen":false,"pid":31863,"wid":3908},
+    {"bounds":{"h":30.0,"w":2240.0,"x":0.0,"y":0.0},"layer":0,"onscreen":false,"pid":31863,"wid":4064},
+    {"bounds":{"h":30.0,"w":2240.0,"x":0.0,"y":0.0},"layer":0,"onscreen":false,"pid":31863,"wid":4068},
+    {"bounds":{"h":30.0,"w":2240.0,"x":0.0,"y":0.0},"layer":0,"onscreen":false,"pid":31863,"wid":4070},
+    {"bounds":{"h":30.0,"w":2240.0,"x":0.0,"y":0.0},"layer":0,"onscreen":false,"pid":31863,"wid":4073}
+  ]
+  ```
+
+- No screenshots are taken: no transfer visual state is reached. Raw native and
+  terminal responses remain separate temporary evidence, not committed content.
+  Diagnostic-run main executable SHA-256:
+  `848201dcfc1b27888f8233b5dec530aaf608dc7822a0a0fc104561a52045bcb5`;
+  helper: `ee0ac6574157589ec390cecc6753838c4641661b68225db9ff899afe316255c5`.
+  Bundle IDs are `io.github.omnitiler.macos.probe` and
+  `io.github.omnitiler.macos.probe.helper`, signed by `OmniTiler Mac Dev` with
+  designated identifier plus certificate leaf
+  `H"040f96377aaf110a77905d453bb76681e7133319"`.
+
+Next: settle the fresh topology acquisition contract, add a regression exercising
+the real effect-thread reader boundary, implement and review the fix, then repeat
+one owned-helper product-tap roundtrip before TextEdit procedure 1. Keep send-stay,
+trailing-Space lifecycle and multi-display work parked.
+
+### Dogfood checklist
+
+- **Current status:** basic actions and existing-Space selects can be checked;
+  send-follow is blocked by the snapshot defect above. Do not treat its current
+  refusal as successful acceptance. This section supersedes earlier select-only
+  and no-settings-write descriptions for the current executable.
+- The usual user entry is `mise exec -- just dev trace`. It builds/signs before
+  launch, is unbounded and unscoped, and can tile ordinary terminal windows.
+  For this disposable TextEdit check, use the scoped, explicit Authentic/Ctrl
+  form instead. Start on Desktop 1 with two ordinary native Spaces, two
+  disposable TextEdit windows on Desktop 1 and one on Desktop 2. Require an
+  unlocked session, inactive Secure Input and the existing Accessibility grant.
+  Run these individually, inspecting each response before continuing:
+
+  ```text
+  mise exec -- just preflight-app
+  mise exec -- just launch -- spaces-desktop-status
+  mise exec -- just launch -- spaces-diagnose
+  mise exec -- just dev trace --scope com.apple.TextEdit --preset authentic --ctrl ctrl --seconds 60
+  ```
+
+- Authentic automatically enables standard Desktop-1..9 holders with unchanged
+  chords and durable owned preimages. It must not replace customized chords.
+  Compatible does not write holders. Record status before the run; do not
+  manually Apply settings just to hide a startup failure.
+- Try Ctrl+2 then Ctrl+1; check the current indicator and each window's retained
+  slot. Try Ctrl+H/J/K/L for focus, Ctrl+Shift+H/J/K/L for movement, and Ctrl+G
+  to float then re-tile. The border should follow the focused managed window;
+  the indicator should track the current native Space.
+- **After the snapshot fix and owned-helper roundtrip pass:** focus one
+  disposable Desktop-1 document, press Ctrl+Shift+2, wait for settlement, then
+  Ctrl+Shift+1 to return it. Require exact membership and focus-follow, reflow on
+  both Spaces, retained slots on revisiting, current indicator and following
+  border. Physical shortcut feel and Mission Control jank require this manual
+  observation; synthetic posting is not a substitute.
+- Send-stay, trailing empty-Space selection/send and multi-display transfers are
+  not ready. Use one display; do not try Ctrl+0 or Ctrl+Shift+0 as acceptance.
+- Wait for bounded teardown, or press Ctrl+C once for graceful stop; a second
+  terminal can run `mise exec -- just dev-stop`. Stop leaves window frames in
+  place. Then restore owned holders and inspect final state:
+
+  ```text
+  mise exec -- just launch -- spaces-desktop-revert
+  mise exec -- just launch -- spaces-desktop-status
+  mise exec -- just launch -- spaces-diagnose
+  ```
+
+- Report the commit, exact chord/action sequence, source/target desktop numbers,
+  expected versus actual membership/focus/layout, and whether the border or
+  indicator disagreed. Include the wrapper's printed log locations and relevant
+  `send effect`, `send settled` and terminal shutdown JSON, without application
+  content. Preserve a failed Revert response/preimage; do not delete recovery
+  data or repeatedly retry uncertain effects.
+
 ## Holder ownership live checkpoint (2026-10-18)
 
 **Automatic holder ownership passes; product transfer remains unproven.**
