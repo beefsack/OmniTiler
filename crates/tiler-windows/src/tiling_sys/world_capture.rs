@@ -212,7 +212,7 @@ fn capture_fixed(state: &TileLoop, key: &crate::workspace::WindowKey) -> (bool, 
 /// boundary (`observed_window_from_engine`), so carrying such a row as
 /// tiled would publish controlled frame authority for a window the adapter
 /// must not touch. Callers hold the domain instead.
-fn capture_facts_rideable(facts: &WindowFacts) -> bool {
+pub(super) fn capture_facts_rideable(facts: &WindowFacts) -> bool {
     match crate::tiling::classify(facts) {
         Ok(()) => true,
         Err(SkipReason::Fullscreen | SkipReason::Maximized) => true,

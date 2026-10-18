@@ -272,14 +272,20 @@ decisions of 2026-09-24 are under
   dropped the float without an explicit toggle. Add the producer-shaped offline
   replay first, then fix any uncommanded loss of settled float intent.
   [Investigation](changes/kde-triage-live.md#parked-restart-intent-loss-investigation).
-- P1 | Windows: adopt full world-state core replies | UNBLOCKED 2026-10-18:
-  shared topology prerequisite delivered offline in
-  [core/KDE](changes/archive/shared-core-owned-output-topology.md) (`f9bd2df1`);
-  the topology parking below no longer applies. Pending core alignment of world
+- P1 | Windows: adopt full world-state core replies | W2a gated offline
+  diagnostics delivered 2026-10-18: 54 fixtures reconciled onto current main;
+  native build/test/strict clippy/fmt/whitespace pass (2,839 passed, 1 ignored).
+  Real W1 FULL reports with empty adjacency now produce direction-only core
+  migration/refill, but target authority holds and no native attempt occurs.
+  W2 acceptance remains blocked on shared migration authority and pre-commit
+  T2 capacity-float crossing refusal; [proposals and exact next action](changes/windows-full-world-state-replies.md#w2b-cross-stream-proposals).
+  No Windows adjacency mapping, shared semantic edits or runtime cutover.
+  Shared topology prerequisite delivered offline in
+  [core/KDE](changes/archive/shared-core-owned-output-topology.md) (`f9bd2df1`).
+  Pending core alignment of world
   split-edge selection to the 2026-10-09 per-use rules (shared topology item)
   changes only multi-candidate edges, not the empty-adjacency contract.
-  Resume actual W1 migration/refill capture and re-observation with empty
-  adjacency; no Windows adjacency mapping. W2/native acceptance remains pending. Replace
+  W2/native acceptance remains pending. Replace
   adapter-triggered trailing policy and per-op application with complete
   observed world reports and host diffs; move scope/history/mapping policy
   into the world state; preserve recovery ledger/window properties/native
@@ -294,11 +300,10 @@ decisions of 2026-09-24 are under
   additive core configuration preserves existing defaults and Windows send/
   maximized policies without wire changes. [Slices and evidence](changes/windows-full-world-state-replies.md);
   constructor prerequisite delivered in `0869f08c` and replacement W1 capture/
-  sequencing in `c73e4cc7` (CI green). W2 test-only prototype preserved on
-  `wip/windows-world-diff` with 50 passing fixtures; acceptance rejected for
-  the topology gap, not delivered W2. Resume now with no Windows adjacency
-  code; runtime adoption remains pending and the handover retains concurrent
-  native-gate failures requiring reconciliation.
+  sequencing in `c73e4cc7` (CI green). Historical W2 prototype remains on
+  `wip/windows-world-diff`; its former native-gate failures no longer reproduce
+  on current main. W2a is diagnostic evidence only, not positive migration or
+  T2 parity acceptance; W3/W4 hidden/fullscreen/bootstrap/native gates remain.
 - P1 | Shared core: own output topology | Core+KDE delivered offline;
   native two-output validation pending. FULL world topology is retained in all
   modes and strict unique-reciprocal targets are core-derived; KDE sends only

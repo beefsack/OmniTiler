@@ -2,16 +2,17 @@
 
 ## Goal and status
 
-- User direction 2026-10-18: **parked pending core-owned output topology;
-  core-produced migration/refill acceptance blocked.** Windows will not build
-  its own adjacency mapping. [Shared proposal](archive/shared-core-owned-output-topology.md)
-  is ready for cross-stream review; KDE stream is expected to deliver core+KDE.
-  W2 prototype preserved on `wip/windows-world-diff`, not accepted or enabled.
-  Additive constructor prerequisite and W1 offline capture/ordering fixtures
-  delivered under the accepted constructor selection below. The earlier W1
-  prototype remains withdrawn; the replacement starts from native sources.
-  W2-W4 and runtime adoption remain pending. Windows remains on its working
-  legacy domain API. No host behavior change.
+- W2a delivered as a reviewed, gated offline diagnostic increment, 2026-10-18.
+  Core-owned [FULL topology](archive/shared-core-owned-output-topology.md)
+  (`f9bd2df1`) unblocked prototype reconciliation: Windows reports FULL monitor
+  rectangles and empty adjacency, and sends directional intent only. No Windows
+  target selection or adjacency mapping was added.
+- W2 acceptance is still blocked on positive migration/refill authority and T2
+  pre-commit refusal parity; see [W2b proposals](#w2b-cross-stream-proposals).
+  W2a is not runtime adoption or positive migration acceptance. W1/W2 modules
+  remain `#[cfg(test)]`; Windows keeps its working legacy domain API. Recovery,
+  native properties, admission and desktop behavior are unchanged. W3/W4,
+  hidden/fullscreen/bootstrap parity and native acceptance remain pending.
 - Goal: complete observed-world reports and host diffs against one full reply;
   move workspace lifecycle, scope, history and mapping policy into the retained
   in-process world state.
@@ -69,12 +70,13 @@
   and `maximized_focus_fence`. `Default` remains `false`/`true`; Windows uses
   `true`/`false`. Fixed-size admission stays enabled in both profiles.
   Delivered in `0869f08c`; [accepted architecture decision](../decisions.md#engine-architecture-and-convergence).
-- No KDE, macOS or wire/protocol changes. The KDE and macOS streams should be
-  told of this additive core API; notification is pending. Their existing
-  constructor calls and behavior remain unchanged. No D23/13f changes included.
-- Exact next action: route the shared topology proposal to KDE/macOS; resume
-  Windows W2 acceptance after core-owned topology delivery, not a Windows
-  native-to-world adjacency implementation.
+- No KDE, macOS or wire/protocol changes in the constructor prerequisite.
+  Their existing constructor calls and behavior remain unchanged. No D23/13f
+  changes included. W2a now proves the Windows profile against a separately
+  bootstrapped default-profile engine using actual captured reports.
+- The topology prerequisite has landed; the next prerequisite is W2b's shared
+  migration authority and Windows capacity-send refusal contract, not adapter
+  adjacency.
 
 ## Ordered releasable slices
 
@@ -86,7 +88,8 @@
 | Slice | Bounded change | Acceptance before landing |
 | --- | --- | --- |
 | W1: observation and ordering fixtures | Add complete world capture from topology, managed workspace inventory/bindings, active/hidden/minimized lifetimes, explicit closes, constraints, holds and native flags. Add tested in-process generation/bootstrap, observation/request/command counters, dirty-until-ack and feedback retention. Keep existing actuation active; exercise the new boundary offline only. | Real-shaped Windows fixtures cover unreadable inventories, hidden/iconic omission versus close, generation reset, stale replies, command consumption and observation-only catch-up. Inactive scaffolding cannot mutate the desktop. |
-| W2: full host-diff fixtures | Build the host-diff/feedback actuator against an offline native facade, not the running owner. Cover geometry/property authority, stable logical creation/binding recovery, occupied removal, transfer ambiguity and at-most-once effects. | Production-shaped fixtures cover fresh-frame diffs, overlay/durable-float holds, refusal context, identity/gesture/watermark rechecks, partial application, creation deduplication and follow proof. The running legacy owner is unchanged. |
+| W2a: gated host-diff diagnostics, delivered | Reconcile the parked host-diff/feedback facade onto current main; retain offline-only ownership. Cover geometry/property authority, creation/binding recovery, occupied removal, transfer ambiguity, at-most-once effects and actual FULL-topology directional migration ingress. | 54 fixtures and native gates pass; review accepts the diagnostic boundary only. Actual migration remains held; a passing diagnostic reproduces the T2 gap instead of claiming refusal parity. The running legacy owner is unchanged. |
+| W2b: full host-diff acceptance, pending | Resolve shared migration write authority and pre-commit T2 capability gating without adapter policy duplication. | Real W1 capture/core-produced migration/member/target-view/refill/feedback/arrival roundtrip; Windows capacity-float output-send and R4 refusal preserve source Engine and membership. No held-scope override or functional use of diagnostic float origin. |
 | W3: atomic runtime cutover | Replace the active Engine path with the in-process world boundary for all observation, local/cross-output operations, selection, tiling toggles, history, scope mapping, trailing lifecycle, sends and migration together. Preserve native registry/recovery ownership; mark possibly executed before dispatch and prove membership/view read-back. Reconcile D23/13f additions already delivered by their shared change. | Existing Windows regressions plus world fixtures pass in local/global-unique/shared modes. Cover admission, fixed/float/overlay sends, follow/stay, startup/history/swaps, trailing creation/removal, partial transfer/refusal and shared migration refusal. No competing active legacy Engine or adapter trailing-policy fallback. Independent safety review and bounded owned-window smoke pass before landing. |
 | W4: legacy cutoff and completion | Remove unreachable per-operation application/session policy queries and transitional scaffolding; retain renderer-only presentation, native safety and useful regression fixtures. | No active direct session query remains where a full reply replaces it. Full native gates/CI and any smoke affected by cleanup pass; remaining physical/two-output acceptance is explicitly distinguished. |
 
@@ -222,7 +225,7 @@
   and introduces no behavioral runtime path. Behavioral cutover still requires
   the bounded owned-window smoke and restoration evidence.
 
-### Exact next slice: W2
+### Original next slice: W2
 
 - Build the full host-diff/feedback actuator against an offline native facade;
   preserve current runtime ownership. Start with fresh-native-frame authority,
@@ -252,7 +255,7 @@
 - W2-W4, runtime/live adoption and physical/two-output acceptance remain pending.
   The backlog item remains unimplemented until cutover and acceptance.
 
-## W2 design-first outcome: parked
+## Historical W2 design-first outcome: parked
 
 - Two prototype revisions left five hazards reproduced by eight diagnostic
   failures: **32 passed, 8 failed**. One subsequent design-first correction
@@ -353,3 +356,82 @@
   gate failures against current main before claiming new acceptance. W3 remains
   blocked on accepted W2 plus hidden/fullscreen/bootstrap parity. Do not
   enable the facade.
+
+## W2a reconciled offline outcome
+
+- Reapplied only the parked Windows facade/fixtures from `677f49fa` and
+  `d3bf1fb9` onto current main. No old core or documentation changes were
+  replayed. The three preview/restart failures reported above no longer
+  reproduce. `world_capture` exposes its existing eligibility classifier to
+  the sibling test-only facade; no parallel safety classifier was introduced.
+- Accepted boundary: source-first fresh-frame/property authority, overlay and
+  float holds, lifetime/gesture/watermark fences, refusal tracking, logical
+  creation/binding recovery, occupied-removal refusal, partial/ambiguous
+  transfers and at-most-once follow/view/focus fixtures. Retired output and
+  operation view proofs are now pruned, with a regression fixture.
+- Actual W1 capture/sequencing sends `MigrateDirectional` with source context
+  and direction only. The report asserts exact FULL rectangles distinct from
+  work bounds and empty domain adjacency. Core produces `Migration` plus the
+  correlated source-refill View and member provenance. The unobserved target
+  scope is held; the facade truthfully performs no membership/view writes and
+  invents no attempt feedback. Re-observation retains the obligation. This is
+  ingress/hold evidence, not positive migration/refill convergence.
+- T1 fixtures prove Windows fixed-send opt-in and maximized-fence opt-out;
+  separately bootstrapped default-profile engines refuse the same commands.
+  `focus-mismatch` for default automatic-fixed send and `unchanged` for default
+  maximized focus are the existing shared refusal vocabulary.
+- The T2 diagnostic uses a real captured two-output world, a 25x25 destination
+  and direction-only send. It reproduces current core acceptance, capacity
+  floating desire, offline membership write and `Applied` feedback where legacy
+  Windows refuses `float-no-remap`. Diagnostic origin is asserted only; facade
+  code never branches on it. This test must become a refusal regression after
+  the shared prerequisite lands. It is explicitly not accepted product behavior.
+- Independent review accepted only this `#[cfg(test)]` diagnostic boundary.
+  Review corrected stale applied-view proof retention and confirmed that both
+  proposed shortcuts below would violate the existing contract. No production
+  owner, core/protocol/KDE/macOS code, dependency or unsafe change; no live test.
+- Verified four-package locked build/test and strict all-target clippy,
+  workspace formatting, unsafe guardrail and whitespace checks pass:
+  **2,839 passed, 0 failed, 1 ignored across 71 suites**, including **54 W2
+  fixtures**. CI result will be recorded after publication.
+- Tentative delivery choices: preserve/reconcile the test-only facade instead
+  of enabling it; split out W2a diagnostics rather than falsely accept W2;
+  retain a passing current-behavior T2 discriminator until shared correction.
+  No new durable product decision; T1, T2 and core topology ownership stand.
+
+### W2b cross-stream proposals
+
+1. **Migration authority (shared contract; no change made):** source workspace
+   exists only on source output before migration. `world_publish.rs` publishes
+   missing target sessions as `Hold(IncompleteInventory)` and migration rows
+   with held authority. `world_diff.rs` correctly requires controlled scope,
+   so no member arrives to satisfy `migration_confirmed`. KDE's current
+   `world-apply.ts` instead consumes `command_result.members` for migration
+   without this scope gate. `world_report.rs` describes those members as
+   provenance, with actuation riding snapshot rows and retained transfer.
+   Resolve the contract explicitly: publish narrowly actionable migration
+   authority while retaining ordinary holds, or explicitly specify transfer
+   authority precedence. Do not copy KDE's bypass or edit Windows scope facts.
+   Then prove positive member -> target view -> refill -> topology/binding
+   confirmation through actual W1 capture, feedback and re-observation.
+2. **T2 pre-commit capability gate (shared prerequisite; no change made):**
+   `world_sends.rs::execute_output_send` accepts the Engine's capacity-float
+   output-send outcome and retains a normal window transfer. Legacy Windows
+   discards its staged candidate for `float-no-remap`. A post-reply adapter
+   hold cannot preserve the already-mutated world Engine. Propose an additive
+   Windows capability/configuration route that refuses an unsupported
+   capacity-float crossing before world commit, preserving other platforms'
+   defaults and ordinary/D16 float behavior. Cover output-send and R4 paths.
+   Do not infer capabilities from `FloatOrigin`: its public contract explicitly
+   prohibits functional branching. No new protocol/feedback vocabulary or
+   adapter capacity policy was introduced here.
+
+- Minimal [action-sequence discriminators](../spec/reference-outcomes.md#windows-world-adoption-authority-discriminators)
+  preserve the two gaps; unsupported native outcomes remain TBD.
+- Exact next action: review these two shared proposals, deliver their accepted
+  additive contracts in the shared stream, then replace held/current-gap
+  diagnostics with positive migration/refill and source-preserving T2 refusal
+  regressions. Only then accept W2 and resume W3's atomic cutover. Hidden and
+  fullscreen liveness, tiling-mode bootstrap, all-mode parity and native
+  owned-window acceptance remain separate W3/W4 prerequisites. The active note
+  stays open; do not enable the facade.

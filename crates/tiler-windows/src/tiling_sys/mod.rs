@@ -1023,6 +1023,18 @@ mod world_capture;
 #[cfg(test)]
 mod world_sequencer;
 
+// W2 host-diff/feedback actuator (offline only): the future host diff over
+// typed replies against an offline native facade. Same W3 cutover gate;
+// never wires into the running owner before then.
+#[cfg(test)]
+mod world_diff;
+
+// W2 host-diff regression fixtures (offline only): source-first rigs over
+// real TileLoop/observed/retained sources plus the W1 capture boundary.
+// Same W3 cutover gate as `world_diff`.
+#[cfg(test)]
+mod world_diff_tests;
+
 mod reconcile;
 
 mod geometry;
