@@ -393,6 +393,10 @@ decisions of 2026-09-24 are under
   crossings before commit for output-send and R4 paths, with no protocol
   change and no `FloatOrigin` branching; subject to the caveat above.
   Parked until the two-output Windows host session; user 2026-10-19.
+- Windows physical/user-run acceptance is consolidated by setup in the
+  [Windows checklist](changes/windows-physical-checklist.md), including the
+  two-monitor migration/T2 checks paired with the preceding item. Each row
+  carries its approved gate IDs, pass criterion and source record.
 - P1 | Shared: tolerate host-settled geometry | User 2026-10-19: hosts often
   settle a window at a frame slightly different from the requested one (DPI
   virtualization rounding, character-cell size increments in terminals,
@@ -486,9 +490,8 @@ decisions of 2026-09-24 are under
   reinstall limits; no tiler uninstall or registry/policy writes.
   [Active record and physical plan](changes/windows-gaming-coexistence.md),
   [research limits](research/windows-port/xbox-shortcut-conflicts.md).
-  Pending physical acceptance: both Ctrl chords route only to tiler actions,
-  Ctrl+Win+F11 invokes no Windows function, Ctrl+Win+G does not open Game Bar,
-  hold/release/plain-Win behavior, conflict rows and Settings-page navigation.
+  Pending physical acceptance: [keyboard/shortcuts checklist](changes/windows-physical-checklist.md#single-monitor-keyboardshortcuts)
+  and [games checklist](changes/windows-physical-checklist.md#games).
 - P1 | Windows launcher geometry fighting | Hint/timeout flap correlates
   with repeated four-window writes. User-approved lifetime-bound declared-hint
   reuse on timeout (no expiry), rate-limited per-window diagnostics and
@@ -552,6 +555,7 @@ decisions of 2026-09-24 are under
     is a listed limitation. Native/physical acceptance against the shipping
     runtime route and delivery dependencies remain pending; gate definition
     approval is not release acceptance.
+    Pending journeys are grouped in the [Windows physical/user-run checklist](changes/windows-physical-checklist.md).
   - [OPEN-requirement triage and live-check gate](research/release-0.1-triage.md):
     User 2026-10-10 approved recommendation (a) for 15 units: D02, D04, D05,
     D06, D07, D08, D11, D14, D15, D17, D18 (no setting), D19, D20 (no lower
@@ -4463,7 +4467,9 @@ recorded separately from unexercised legs. Reference-WM checks test other compos
   only on real active-play switch-away; native result TBD.
 - Underlay candidate C visual check before 0.1: after default implementation,
   check `#662a82da` over black, white and grey wallpapers on KDE; Windows
-  matching visual check is queued with handoff item 24. No visual evidence yet.
+  matching visual and nested-placement checks are in the
+  [display/shell checklist](changes/windows-physical-checklist.md#displayshell).
+  No visual evidence yet.
 
 - 0.1 triage batch 1 (User 2026-10-10; native KDE checks outside the original
   Proposal B inventory). These are
@@ -4572,6 +4578,9 @@ recorded separately from unexercised legs. Reference-WM checks test other compos
 
 ### Windows session
 
+- All pending Windows physical/user-run checks, setup requirements and blocked
+  legs: [consolidated checklist](changes/windows-physical-checklist.md).
+  The dated notes below retain bounded evidence, not duplicate run instructions.
 - Scoped native follow-up 2026-10-18: optional border/underlay-off tiling and
   workspace hide/reveal passed a bounded helper leg; this upgrades N1 to partial,
   not complete visual-failure acceptance
@@ -4609,23 +4618,11 @@ recorded separately from unexercised legs. Reference-WM checks test other compos
   overlay hold/release with stable tiled main/sibling frames. No F11 sent; this
   modal-surface leg does not prove exclusive/borderless games or main-window
   fullscreen. Settings/SPI restored and all proven owned fixtures closed.
-- Placement physical acceptance (fixes live-API verified, ratified 2026-10-08):
-  dogfood startup adoption on Windows, Win+M maximize/restore and send returns.
-  Clean/tolerance-valid layouts keep their fit; overlap/minimum-infeasible fits
-  use sequential long-edge seeds, origin+minimum can overlap/exceed the work area.
-  Verify retained-overlay minima and bounded restore timing. KDE startup/B6/Q3
-  legs are listed below; the original Windows dogfood anchor remains unknown.
-  [Record](changes/archive/windows-placement-correctness.md).
-- Delivered Windows parity/settings/tray physical acceptance: maximize,
-  fullscreen, float/sticky, title-bar/Win-drag feel, physical shortcuts and
-  Snap Layouts/bar/Assist/shake; real Explorer restart and other DPI/output
-  arrangements; Steam/Firefox/UWP admission observations from the completed
-  [reference-WM comparison](research/windows-port/reference-wm-comparison.md).
-  Settings Apply/Revert and tray proof are delivered, not open
-  implementation; physical containment limitations remain disclosed/parked.
-  [Settings](changes/archive/windows-settings.md),
-  [tray/first-run](changes/archive/windows-tray-first-run.md),
-  [foreground acceptance](changes/archive/windows-foreground-acceptance.md).
+- Placement and parity/settings/tray remaining acceptance is in the
+  [checklist](changes/windows-physical-checklist.md); the original Windows
+  dogfood startup anchor remains unknown. Settings Apply/Revert and tray proof
+  are delivered, not open implementation; physical containment limitations
+  remain disclosed/parked. Native title-bar drag remains; Win+drag is removed.
 
 ### Reference WMs (user)
 
@@ -4840,15 +4837,9 @@ recorded separately from unexercised legs. Reference-WM checks test other compos
   distro/user assignments can differ. User-owned, no live result claimed.
   [Record](changes/archive/kde-workspace-tiling-shortcut.md),
   [steps](live-shortcut-override-verification.md#pending-workspace-tiling-default-metay).
-- Windows workspace tiling Win+Y (offline delivered 2026-10-13): under
-  Authentic, press physical Win+Y on tiled and floating workspaces to toggle
-  both ways; the tray checkbox must stay in sync and another workspace/saved
-  default must remain unchanged. Hold/release/repress: only discrete downs
-  toggle. Under Compatible the project toggle stays inert; record actual
-  Mixed Reality/OS behavior. Verify Settings Apply/Revert and both presets,
-  rebind/disable (old chord released, new chord adopted), and Snap-takeover-off
-  release. Native runtime and physical results TBD, user-owned.
-  [Record](changes/archive/windows-workspace-tiling-shortcut.md).
+- Windows workspace tiling Win+Y (offline delivered 2026-10-13): native runtime
+  and physical results TBD; [keyboard/shortcuts checklist](changes/windows-physical-checklist.md#single-monitor-keyboardshortcuts),
+  with the [source record](changes/archive/windows-workspace-tiling-shortcut.md).
 - Active border skips Plasma applet popups (user option A, 2026-09-29;
   KRunner out of scope for now): with an ordinary bordered window active,
   opening the Application Launcher or a tray popup hides the border and logs
@@ -4971,24 +4962,11 @@ recorded separately from unexercised legs. Reference-WM checks test other compos
 
 ### Multi-output setup
 
-- Windows item 12 (offline-complete 2026-10-15; user-owned physical journeys):
-  - Local/global-unique: Previous twice and full relative ring on each output,
-    with output-focus-alone leaving history unchanged.
-  - Global-unique: select a workspace visible elsewhere, then swap back; retain
-    distinct layouts/shares, float/overlay state, member homing and focus.
-  - Shared: select and send follow/stay from each output; preserve both
-    output-bound layouts, one logical history/ring/trailing spare and visible/
-    occupied cleanup protection. Restart with stable-key-first differing from
-    primary/focused output to discriminate the tentative startup anchor.
-  - In each mode, disconnect/reconnect with foreground on removed output, then
-    survivor; send explicitly and open new contents while absent. Verify
-    disconnected-output history discard/re-prime, reconnect selection independent
-    of history, conditional R-WS-17 second toggle, then-current local/global
-    displaced return versus shared no project displacement/return mapping.
-  - Repeat across mixed DPI/work areas with native frame/focus continuity and
-    verified graceful stop/settings/window restoration. Physical keyboard
-    delivery remains pending; nearest-survivor discrimination needs three outputs.
-  [Evidence and tentative boundaries](changes/archive/windows-workspace-scope-hotplug.md),
+- Windows item 12 (offline-complete 2026-10-15): remaining scope/history/ring,
+  shared startup-anchor, hotplug/R-WS-17 and mixed-DPI physical journeys are in
+  the [two-monitor checklist](changes/windows-physical-checklist.md#two-monitor-pc).
+  Nearest-survivor discrimination needs three outputs; physical keyboard
+  delivery and exact restoration remain pending. [Evidence and tentative boundaries](changes/archive/windows-workspace-scope-hotplug.md),
   [R-WS-17](spec/reference-outcomes/workspaces.md#r-ws-17-previous-around-disconnect-displacement-and-reconnect-return).
 
 - [Checklist and partial native results](changes/kde-dual-output-live.md):

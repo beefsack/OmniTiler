@@ -56,6 +56,10 @@
 
 - All 52 applicable base checks and all eight extras retain pending acceptance;
   P/O are not alternative spellings of a full pass.
+- The [consolidated physical/user-run checklist](windows-physical-checklist.md)
+  groups pending Windows journeys by setup and maps each row back to these
+  gate IDs, including WX1-WX8. Blocked implementation and fixture legs remain
+  explicit; the checklist does not replace this gate or claim acceptance.
 
 ### Original checks 1-53
 
