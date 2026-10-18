@@ -59,3 +59,5 @@
 
 - Locked four-package build/tests through `mise exec --`: 2,750 passed, 0 failed, 1 ignored. Strict all-target clippy, workspace formatting and whitespace checks passed; full gates rerun from PowerShell Core with durable external outputs (`pager-event-gates-20261018/ps7`). Rust/Cargo 1.99.0, MSVC target. No Rust or shared-core changes; hosted CI is separate.
 - The conditional pre-0.1 investigation is complete; timer replacement did not meet its acceptance condition. Existing icon refresh, suppression and retry behavior remain unchanged. No further implementation action is selected.
+- User-approved 2026-10-19: pager probe closed on this negative outcome; 2 s
+  timer retained, no replacement work selected.

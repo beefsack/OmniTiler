@@ -389,7 +389,10 @@ $env:INCLUDE
   No Nix/KWin/live tests in this job. Hosted runner preinstalled tools are
   **not** clean-runtime evidence [W10].
 - **P:** Windows sessions touching shared code must pass these native gates
-  plus all applicable Linux gates via CI or Linux.
+  plus all applicable Linux gates via CI or Linux. The Windows host has no
+  Linux/macOS build targets, so non-Windows compile errors surface first in
+  CI; after shared-core commits from other streams, check Windows CI too
+  (example regression repaired at `c75fe675`).
   Report Linux gates pending until green; physical KDE/Windows acceptance is
   user-owned. Do not claim deferred gates passed. `just dev` dispatches per OS
   from the root justfile (requires just >= 1.56; conditional imports of

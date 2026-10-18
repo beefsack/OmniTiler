@@ -31,7 +31,9 @@ Each numbered row is one candidate group. "Pending user review" means no removal
 
 - Proposed totals: 14 candidate groups; delete 0, archive 1, consolidate 0, keep 13. Three keep groups (2, 3, 6) were pending user review; none is selected for removal by this inventory. Group 5 belongs to separately queued implementation work (since delivered in `6308c722`).
 - User 2026-10-19 approved keeping groups 2, 3 and 6: archive records 2 and 3 after their physical acceptance; keep the group 6 D7 marker helpers while gate check 8 depends on tile-override markers.
-- Tentative cleanup choice: archive only the fully completed admission CI compatibility note; preserve active acceptance records even when implementation is delivered.
+- Cleanup choice (user-approved 2026-10-19): archive only the fully completed
+  admission CI compatibility note; preserve active acceptance records even
+  when implementation is delivered.
 - No dead source, fixtures, tests, scripts, feature flags or branches are selected for deletion.
 - Inventory review accepted the single archive move after correcting the script count, the test-only helper caller and the subsequently queued Win+drag decision. No source removal was approved by the evidence.
 - Applied: moved the 46-line admission CI compatibility note unchanged to [the archive](windows-admission-ci-compatibility.md); zero source/script/test deletions, zero changed test counts. The inventory is archived as the completed scope record; retained candidates remain at their current paths.

@@ -455,6 +455,8 @@
   genuine no-space unfloat retention followed by successful explicit retry;
   capacity sends follow/stay; overlap overflow. Cross-output refusal remains
   not-run with one output. The backlog item is not complete.
+- User-approved 2026-10-19: admission runs, diagnosis fix scope `d0326c2b`,
+  gap/DPI rounds and exhaustion journeys; unobserved legs remain open.
 - Next exhaustion fixture: retain a measured-bound oracle history that actually
   reaches the first capacity float within a practical native roster, including
   per-arrival candidate/anchor evidence; separately replay the actual mover

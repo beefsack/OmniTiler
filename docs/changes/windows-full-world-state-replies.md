@@ -417,6 +417,8 @@
   of enabling it; split out W2a diagnostics rather than falsely accept W2;
   retain a passing current-behavior T2 discriminator until shared correction.
   No new durable product decision; T1, T2 and core topology ownership stand.
+- User-approved 2026-10-19: the W2a delivery choices above stand; this does
+  not enable runtime adoption or establish positive T2 acceptance.
 
 ### W2b cross-stream proposals
 

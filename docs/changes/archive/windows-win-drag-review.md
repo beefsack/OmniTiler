@@ -86,6 +86,8 @@
   preview/drop/fence interfaces rather than refactor them. A stale future
   Win+drag comment in shared `visual.rs` is outside this Windows-only change;
   no shared runtime correction is needed.
+- User-approved 2026-10-19: corrected oracle accepted; native-drag helpers
+  retained (now `native_drag.rs` after `588179fe`).
 - Outcome: removal complete; the queued removal item is closed. No native
   preview product defect was established by the baseline discriminator. Next
   implementation action: none; physical shortcut acceptance remains pending.

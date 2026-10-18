@@ -152,3 +152,5 @@ The supplied dogfooding trace contains six successful workspace actions: one sen
   uncertain-claim or rollback acceptance. A bounded delayed-response fixture
   design and independently proven owned-window recovery are prerequisites to a
   future expiry leg; no new fault-injection mechanism is delivered or selected.
+- User-approved 2026-10-19: existing tentative 2,000 ms batch deadline kept;
+  no expiry-leg mechanism selected.

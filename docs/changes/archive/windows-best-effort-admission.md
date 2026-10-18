@@ -199,3 +199,5 @@
 - Exact next action: follow the [current discriminators](../windows-best-effort-admission-live.md#blockers-and-exact-next-action).
   Settings save/reopen and live-roster restart no longer need the earlier method
   repair. Retain cross-output refusal; verify it only with a second output.
+- User-approved 2026-10-19: admission runs, diagnosis fix scope `d0326c2b`,
+  gap/DPI rounds and exhaustion journeys documented in the live note.
