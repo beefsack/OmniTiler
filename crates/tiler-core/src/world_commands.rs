@@ -1,9 +1,9 @@
 //! World command execution (D2/D3): one fresh command per accepted report.
 //!
 //! Split from [`crate::world_engine`]: selection/send/migration commands,
-//! the [`CoreCommand`] operation bridge (report-derived directional pairs,
-//! cross-output drag sources, directional migration, domain release), and
-//! the shared reply settlement. Transition entry points stay on
+//! the [`CoreCommand`] operation bridge (core-topology-derived directional
+//! pairs, cross-output drag sources, directional migration, domain release),
+//! and the shared reply settlement. Transition entry points stay on
 //! [`crate::world_engine::WorldEngine`]; this module only extends its `impl`.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -310,9 +310,10 @@ impl WorldEngine {
             }
         };
         // Retained Engine rekey through the transactional migration plan.
-        // The direction derives from the source scope's carried output
-        // adjacency (no wrap); the target keeps the source workspace id on
-        // the target output with empty target membership (a different
+        // The direction derives from the retained core-owned FULL topology
+        // (strict unique-reciprocal, no wrap), never the carried adapter
+        // adjacency: the target keeps the source workspace id on the
+        // target output with empty target membership (a different
         // current workspace there stays KDE-native, same-workspace residue
         // refuses as occupied below).
         let source_key = DomainKey {
@@ -344,17 +345,7 @@ impl WorldEngine {
             };
         }
         let Some((direction, direction_token)) =
-            source_report.domain.adjacent.iter().find_map(|(dir, out)| {
-                (out == target_output).then_some((
-                    *dir,
-                    match dir {
-                        Direction::Left => "left",
-                        Direction::Right => "right",
-                        Direction::Up => "up",
-                        Direction::Down => "down",
-                    },
-                ))
-            })
+            self.core_topology_direction(source_output, target_output)
         else {
             return CommandApplied::Rejected {
                 kind: KIND_MIGRATION,
@@ -559,8 +550,9 @@ impl WorldEngine {
     /// supplies the observation envelope. Send operations retain a window
     /// transfer exactly like [`WorldCommand::Send`]; directional focus
     /// emits one at-most-once effect; read-only queries reconcile only.
-    /// Cross-output move/focus carry the report-derived directional pair
-    /// (adjacency-resolved, never silently local); cross-output drag
+    /// Cross-output move/focus carry the core-topology-derived directional
+    /// pair (strict unique-reciprocal, never carried adjacency, never
+    /// silently local); cross-output drag
     /// sources carry the source-first pair with combined rows; directional
     /// migration resolves through the world migration path; domain release
     /// drops the retained session. Anything unresolvable refuses without
@@ -650,11 +642,11 @@ impl WorldEngine {
         }
     }
 
-    /// Cross-output directional move/focus through the report-derived pair.
+    /// Cross-output directional move/focus through the core-derived pair.
     /// The source is the window's homing domain; the target resolves through
-    /// carried output adjacency (same workspace preferred, else the target
+    /// the retained FULL topology (same workspace preferred, else the target
     /// output's current view, else the first readable domain there). No
-    /// adjacency or no readable target refuses without mutation: a
+    /// resolvable target or no readable target refuses without mutation: a
     /// cross-output request never silently runs as a local move/focus.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn operation_directional(
@@ -684,8 +676,8 @@ impl WorldEngine {
                 message: MSG_SCOPE_HELD,
             };
         }
-        let Some(((source_domain, source_key), (target_domain, target_key), target_outer)) =
-            directional_pair_for(report, &source_key, direction, held_scopes)
+        let Some(((source_domain, source_key), (target_domain, target_key), target_outer, _)) =
+            self.directional_pair_for(report, &source_key, direction, held_scopes)
         else {
             return CommandApplied::Rejected {
                 kind: KIND_OPERATION,
@@ -993,10 +985,12 @@ impl WorldEngine {
     }
 
     /// Directional whole-workspace migration through the world path: the
-    /// operation domain supplies the source scope and the carried output
-    /// adjacency supplies the target output, reusing the same scope policy
-    /// as the explicit migration command. Refuses without mutation when the
-    /// direction has no adjacent output or the scope policy refuses.
+    /// operation domain supplies the source scope and the retained
+    /// core-owned FULL topology supplies the target output (strict
+    /// unique-reciprocal, never carried adjacency), reusing the same scope
+    /// policy as the explicit migration command. Refuses without mutation
+    /// when the direction has no resolvable target or the scope policy
+    /// refuses.
     pub(crate) fn operation_migration(
         &mut self,
         report: &WorldReport,
@@ -1005,7 +999,7 @@ impl WorldEngine {
         by_id: &BTreeMap<&WindowId, &EngineWindow>,
         held_scopes: &BTreeSet<DomainKey>,
     ) -> CommandApplied {
-        let (domain_key, domain_report) =
+        let (domain_key, _) =
             match operation_domain(report, &CoreCommand::ActiveGroup, by_id, held_scopes) {
                 Some(found) => found,
                 None => {
@@ -1015,15 +1009,18 @@ impl WorldEngine {
                     };
                 }
             };
-        let Some(target_output) =
-            parse_direction_token(direction).and_then(|d| domain_report.domain.adjacent.get(&d))
-        else {
+        let Some(direction) = parse_direction_token(direction) else {
             return CommandApplied::Rejected {
                 kind: KIND_OPERATION,
                 message: MSG_OPERATION,
             };
         };
-        let target_output = target_output.clone();
+        let Some(target_output) = self.core_topology_target(&domain_key.output, direction) else {
+            return CommandApplied::Rejected {
+                kind: KIND_OPERATION,
+                message: MSG_OPERATION,
+            };
+        };
         self.start_migration(
             report,
             command_seq,
@@ -1402,55 +1399,111 @@ pub(crate) fn parse_direction_token(direction: &str) -> Option<Direction> {
     }
 }
 
-/// Report-derived directional pair for a cross-output move/focus: the source
-/// domain plus the adjacency-resolved target domain (same workspace
-/// preferred, else the target output's current view, else the first readable
-/// non-held domain there), with the target's validated outer gap. `None`
-/// refuses without mutation: no adjacency, unreadable source, or no
-/// readable target.
-type DirectionalPair = ((OutputDomain, DomainKey), (OutputDomain, DomainKey), i32);
+/// Core-topology-derived directional pair for a cross-output move/focus:
+/// the source domain plus the retained FULL-topology target output in the
+/// requested direction (strict unique-reciprocal, never carried adapter
+/// adjacency), resolved to the same workspace preferred, else the target
+/// output's current view, else the first readable non-held domain there,
+/// with the target's validated outer gap. The returned domains carry the
+/// core-derived reciprocal pair adjacency (source names target, target
+/// names source back), so the Engine's existing reciprocal R4/session
+/// contracts validate a core derivation, not host facts. `None` refuses
+/// without mutation: no/incomplete/stale topology, no resolvable target,
+/// unreadable source, or no readable target.
+type DirectionalPair = (
+    (OutputDomain, DomainKey),
+    (OutputDomain, DomainKey),
+    i32,
+    Direction,
+);
 
-pub(crate) fn directional_pair_for(
-    report: &WorldReport,
-    source_key: &DomainKey,
-    direction: &str,
-    held_scopes: &BTreeSet<DomainKey>,
-) -> Option<DirectionalPair> {
-    let direction = parse_direction_token(direction)?;
-    let source = report
-        .domains
-        .iter()
-        .find(|d| d.readable && d.domain.key() == *source_key)?;
-    if held_scopes.contains(source_key) {
-        return None;
+impl WorldEngine {
+    /// Strict unique-reciprocal target output for one source in one
+    /// direction over the retained live FULL topology. `None` fences:
+    /// cleared topology, gaps, or ambiguous edges.
+    pub(crate) fn core_topology_target(
+        &self,
+        source: &OutputId,
+        direction: Direction,
+    ) -> Option<OutputId> {
+        let entries = self.live_topology_entries();
+        let map = crate::output_selection::unique_reciprocal_adjacency(&entries).ok()?;
+        map.get(&(source.clone(), direction)).cloned()
     }
-    let target_output = source.domain.adjacent.get(&direction)?.clone();
-    let current = report
-        .topology
-        .iter()
-        .find(|t| t.output == target_output)
-        .map(|t| t.current_native.clone());
-    let candidates: Vec<&crate::world_report::DomainReport> = report
-        .domains
-        .iter()
-        .filter(|d| {
-            d.readable && d.domain.id == target_output && !held_scopes.contains(&d.domain.key())
+
+    /// Strict unique-reciprocal direction from one output to another over
+    /// the retained live FULL topology, with the Engine direction token.
+    /// `None` fences, exactly like [`WorldEngine::core_topology_target`].
+    pub(crate) fn core_topology_direction(
+        &self,
+        source: &OutputId,
+        target: &OutputId,
+    ) -> Option<(Direction, &'static str)> {
+        const ORDER: [(Direction, &str); 4] = [
+            (Direction::Left, "left"),
+            (Direction::Right, "right"),
+            (Direction::Up, "up"),
+            (Direction::Down, "down"),
+        ];
+        ORDER.into_iter().find(|(direction, _)| {
+            self.core_topology_target(source, *direction).as_ref() == Some(target)
         })
-        .collect();
-    // Same workspace preferred (directional counterpart), else the target
-    // output's current view, else the first readable domain there.
-    let target = candidates
-        .iter()
-        .find(|d| d.domain.workspace.0 == source.domain.workspace.0)
-        .or_else(|| {
-            let wanted = current.as_deref()?;
-            candidates.iter().find(|d| d.domain.workspace.0 == wanted)
-        })
-        .or_else(|| candidates.first())
-        .copied()?;
-    Some((
-        (source.domain.clone(), source_key.clone()),
-        (target.domain.clone(), target.domain.key()),
-        target.outer_gap,
-    ))
+    }
+
+    pub(crate) fn directional_pair_for(
+        &self,
+        report: &WorldReport,
+        source_key: &DomainKey,
+        direction: &str,
+        held_scopes: &BTreeSet<DomainKey>,
+    ) -> Option<DirectionalPair> {
+        let direction = parse_direction_token(direction)?;
+        let source = report
+            .domains
+            .iter()
+            .find(|d| d.readable && d.domain.key() == *source_key)?;
+        if held_scopes.contains(source_key) {
+            return None;
+        }
+        let target_output = self.core_topology_target(&source_key.output, direction)?;
+        let current = report
+            .topology
+            .iter()
+            .find(|t| t.output == target_output)
+            .map(|t| t.current_native.clone());
+        let candidates: Vec<&crate::world_report::DomainReport> = report
+            .domains
+            .iter()
+            .filter(|d| {
+                d.readable && d.domain.id == target_output && !held_scopes.contains(&d.domain.key())
+            })
+            .collect();
+        // Same workspace preferred (directional counterpart), else the target
+        // output's current view, else the first readable domain there.
+        let target = candidates
+            .iter()
+            .find(|d| d.domain.workspace.0 == source.domain.workspace.0)
+            .or_else(|| {
+                let wanted = current.as_deref()?;
+                candidates.iter().find(|d| d.domain.workspace.0 == wanted)
+            })
+            .or_else(|| candidates.first())
+            .copied()?;
+        let opposite = match direction {
+            Direction::Left => Direction::Right,
+            Direction::Right => Direction::Left,
+            Direction::Up => Direction::Down,
+            Direction::Down => Direction::Up,
+        };
+        let mut source_domain = source.domain.clone();
+        let mut target_domain = target.domain.clone();
+        source_domain.adjacent = BTreeMap::from([(direction, target_output.clone())]);
+        target_domain.adjacent = BTreeMap::from([(opposite, source.domain.id.clone())]);
+        Some((
+            (source_domain, source_key.clone()),
+            (target_domain, target.domain.key()),
+            target.outer_gap,
+            direction,
+        ))
+    }
 }

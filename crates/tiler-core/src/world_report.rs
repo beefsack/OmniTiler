@@ -408,9 +408,19 @@ pub struct DomainReport {
 
 /// Per-output native topology: live backing ids in native order, the current
 /// view, whether enumeration was complete for this output, the live native
-/// output geometry when observed (used for hotplug nearest-survivor
-/// placement; never a window frame proxy), and whether this output is the
+/// FULL output geometry when observed, and whether this output is the
 /// active (primary) screen.
+///
+/// `geometry` is the core-owned topology authority: the FULL native output
+/// rectangle in one coherent adapter coordinate space, used for directional
+/// planning through the shared strict unique-reciprocal derivation (exact
+/// edge-touch, positive overlap, no wrap). A report claiming complete
+/// topology carries a valid FULL rectangle for every output; `None` stays
+/// representable for explicitly unreadable/partial observations and then
+/// narrowly fences topology-dependent crossing, migration, and remap (never
+/// an inferred work area, never a window frame proxy, and never permission
+/// to derive from the readable subset). Domain `bounds` remains the
+/// distinct work-area field, with outer-gap handling unchanged.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutputTopology {
     pub output: OutputId,

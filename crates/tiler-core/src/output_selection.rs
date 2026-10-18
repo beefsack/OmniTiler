@@ -1,12 +1,19 @@
 //! Position-based FULL-rectangle output candidate selection (2026-10-09).
 //!
 //! Pure, platform-neutral selector over adapter-normalized integer FULL
-//! output rectangles. Adapters own topology reads; this module only ranks
-//! presented rectangles so Rust and KDE share one rule. The protocol
-//! presents the adapter-resolved pair; no wire change is involved.
+//! output rectangles. The world owner retains the FULL rectangles and
+//! derives a strict unique-reciprocal adjacency map beside the per-use
+//! ranked selectors below, so directional world commands resolve from one
+//! shared rule. The protocol still carries the obsolete adapter-resolved
+//! pair for codec compatibility, but the world never reads it as authority.
 //!
 //! - Candidates: exact edge-touch with positive perpendicular overlap on
 //!   FULL rectangles (panel gaps never block). No wrap.
+//! - Strict map (KDE world parity): one direction maps to a target only
+//!   when exactly one candidate touches on that side AND exactly that
+//!   source touches the target back on the opposite side. Multiple forward
+//!   touches or non-unique reverse touches omit the direction, so callers
+//!   refuse rather than guess.
 //! - Windowed moves/sends (exhausted directional moves all four directions,
 //!   explicit output sends): the candidate whose shared edge contains the
 //!   moving window centre projection wins; else the largest overlap of the
@@ -18,10 +25,13 @@
 //!   uses `x`; centre containment is half-open `[start, end)` evaluated in
 //!   doubled coordinates so odd extents keep their exact `.5` centre; the
 //!   tertiary tie is the stable output id.
-//! - Reverse uniqueness is intentionally NOT required: candidates only need
-//!   forward edge-touch. A target touched by two sources on its opposite
-//!   side is still a valid forward target (valid reverse ambiguity
-//!   accepted); the adapter resolves the forward pair before presenting it.
+//! - Reverse uniqueness is intentionally NOT required by the per-use ranked
+//!   selectors: candidates only need forward edge-touch. A target touched by
+//!   two sources on its opposite side is still a valid forward target (valid
+//!   reverse ambiguity accepted); the adapter resolves the forward pair
+//!   before presenting it.
+
+use std::collections::BTreeMap;
 
 use crate::directional::{Direction, OutputId, WorkspaceId};
 use crate::geometry::Rect;
@@ -266,6 +276,56 @@ pub fn select_for_migration(
     Ok(candidates.into_iter().next())
 }
 
+/// Strict unique-reciprocal adjacency over FULL rectangles (KDE world
+/// parity, extracted 2026-10-18).
+///
+/// One `(source, direction)` maps to a target only when exactly one
+/// candidate touches the source on that side AND exactly that source
+/// touches the candidate back on the opposite side. Multiple forward
+/// touches (split edges) or non-unique reverse touches omit the direction,
+/// so callers refuse rather than guess; gaps, corner-only contact, and
+/// non-touching arrangements map to nothing. `Ok` maps are empty when no
+/// direction resolves. `Err` on any unreadable rectangle (non-positive
+/// extent or overflowing edge) or duplicate output id: callers refuse
+/// fail-closed, never derive from the readable subset.
+pub fn unique_reciprocal_adjacency(
+    all: &[OutputEntry],
+) -> Result<BTreeMap<(OutputId, Direction), OutputId>, SelectionError> {
+    const DIRECTIONS: [Direction; 4] = [
+        Direction::Left,
+        Direction::Right,
+        Direction::Up,
+        Direction::Down,
+    ];
+    const fn opposite(direction: Direction) -> Direction {
+        match direction {
+            Direction::Left => Direction::Right,
+            Direction::Right => Direction::Left,
+            Direction::Up => Direction::Down,
+            Direction::Down => Direction::Up,
+        }
+    }
+    let mut out = BTreeMap::new();
+    for source in all {
+        for direction in DIRECTIONS {
+            let candidates = candidates_in_direction(source, direction, all)?;
+            if candidates.len() != 1 {
+                continue;
+            }
+            let target = &candidates[0];
+            let back = OutputEntry {
+                id: target.id.clone(),
+                rect: target.rect,
+            };
+            let reverse = candidates_in_direction(&back, opposite(direction), all)?;
+            if reverse.len() == 1 && reverse[0].id == source.id {
+                out.insert((source.id.clone(), direction), target.id.clone());
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// R-WS-12 G-37 migration source-refill setting (decisions 2026-10-10 D5).
 ///
 /// One global setting with two validated values: `last-remaining-workspace`
@@ -345,6 +405,19 @@ mod tests {
             id: OutputId(id.to_owned()),
             rect: Rect { x, y, w, h },
         }
+    }
+
+    fn strict_map(all: &[OutputEntry]) -> BTreeMap<(OutputId, Direction), OutputId> {
+        unique_reciprocal_adjacency(all).expect("readable topology")
+    }
+
+    fn lookup<'a>(
+        map: &'a BTreeMap<(OutputId, Direction), OutputId>,
+        source: &'a str,
+        direction: Direction,
+    ) -> Option<&'a str> {
+        map.get(&(OutputId(source.to_owned()), direction))
+            .map(|id| id.0.as_str())
     }
 
     #[test]
@@ -504,6 +577,148 @@ mod tests {
                 &remaining,
             ),
             Some(workspace("ws-empty"))
+        );
+    }
+
+    #[test]
+    fn strict_map_two_outputs_reciprocal() {
+        let all = vec![
+            entry("left", 0, 0, 800, 600),
+            entry("right", 800, 0, 800, 600),
+        ];
+        let map = strict_map(&all);
+        assert_eq!(lookup(&map, "left", Direction::Right), Some("right"));
+        assert_eq!(lookup(&map, "right", Direction::Left), Some("left"));
+        assert_eq!(lookup(&map, "left", Direction::Left), None);
+        assert_eq!(lookup(&map, "left", Direction::Up), None);
+        assert_eq!(lookup(&map, "right", Direction::Down), None);
+    }
+
+    #[test]
+    fn strict_map_vertical_stack_and_negative_origins() {
+        let all = vec![
+            entry("top", -800, -600, 800, 600),
+            entry("bottom", -800, 0, 800, 600),
+        ];
+        let map = strict_map(&all);
+        assert_eq!(lookup(&map, "top", Direction::Down), Some("bottom"));
+        assert_eq!(lookup(&map, "bottom", Direction::Up), Some("top"));
+    }
+
+    #[test]
+    fn strict_map_three_in_row_middle_has_both() {
+        let all = vec![
+            entry("a", 0, 0, 800, 600),
+            entry("b", 800, 0, 800, 600),
+            entry("c", 1600, 0, 800, 600),
+        ];
+        let map = strict_map(&all);
+        assert_eq!(lookup(&map, "a", Direction::Right), Some("b"));
+        assert_eq!(lookup(&map, "b", Direction::Left), Some("a"));
+        assert_eq!(lookup(&map, "b", Direction::Right), Some("c"));
+        assert_eq!(lookup(&map, "c", Direction::Left), Some("b"));
+        assert_eq!(lookup(&map, "a", Direction::Left), None);
+        assert_eq!(lookup(&map, "c", Direction::Right), None);
+    }
+
+    #[test]
+    fn strict_map_split_edge_omits_multi_but_keeps_sibling_row() {
+        // Wide source under two outputs: the forward multi-touch omits the
+        // upward direction (and, by reverse count, each upper output's
+        // downward direction), while the upper row still resolves
+        // horizontally against each other.
+        let all = vec![
+            entry("src", 0, 600, 1600, 600),
+            entry("up-l", 0, 0, 800, 600),
+            entry("up-r", 800, 0, 800, 600),
+        ];
+        let map = strict_map(&all);
+        assert_eq!(lookup(&map, "src", Direction::Up), None);
+        assert_eq!(lookup(&map, "up-l", Direction::Down), None);
+        assert_eq!(lookup(&map, "up-r", Direction::Down), None);
+        assert_eq!(lookup(&map, "up-l", Direction::Right), Some("up-r"));
+        assert_eq!(lookup(&map, "up-r", Direction::Left), Some("up-l"));
+    }
+
+    #[test]
+    fn strict_map_reverse_ambiguity_omits_vertical_keeps_row() {
+        // Two sources above one wide target: each source's downward touch
+        // is single, but the target's opposite side is touched twice, so
+        // nothing vertical resolves; the top row still resolves
+        // horizontally.
+        let all = vec![
+            entry("s1", 0, 0, 800, 600),
+            entry("s2", 800, 0, 800, 600),
+            entry("wide", 0, 600, 1600, 600),
+        ];
+        let map = strict_map(&all);
+        assert_eq!(lookup(&map, "s1", Direction::Down), None);
+        assert_eq!(lookup(&map, "s2", Direction::Down), None);
+        assert_eq!(lookup(&map, "wide", Direction::Up), None);
+        assert_eq!(lookup(&map, "s1", Direction::Right), Some("s2"));
+        assert_eq!(lookup(&map, "s2", Direction::Left), Some("s1"));
+    }
+
+    #[test]
+    fn strict_map_tall_against_stacked_pair_omits_sides() {
+        // One tall output against two stacked halves: both side directions
+        // are ambiguous, while the stacked pair still resolves vertically.
+        let all = vec![
+            entry("tall", 0, 0, 800, 1200),
+            entry("top", 800, 0, 800, 600),
+            entry("bottom", 800, 600, 800, 600),
+        ];
+        let map = strict_map(&all);
+        assert_eq!(lookup(&map, "tall", Direction::Right), None);
+        assert_eq!(lookup(&map, "top", Direction::Left), None);
+        assert_eq!(lookup(&map, "bottom", Direction::Left), None);
+        assert_eq!(lookup(&map, "top", Direction::Down), Some("bottom"));
+        assert_eq!(lookup(&map, "bottom", Direction::Up), Some("top"));
+    }
+
+    #[test]
+    fn strict_map_gaps_and_corners_omit() {
+        let gap = vec![entry("a", 0, 0, 800, 600), entry("b", 900, 0, 800, 600)];
+        assert!(strict_map(&gap).is_empty());
+        // Corner-only contact overlaps zero: no candidate either way.
+        let corner = vec![entry("a", 0, 0, 800, 600), entry("b", 800, 600, 800, 600)];
+        assert!(strict_map(&corner).is_empty());
+        // Mirrored overlaps above a wide source: forward and reverse are
+        // both multi, so nothing resolves.
+        let mirrored = vec![
+            entry("src", 0, 600, 1600, 600),
+            entry("a", 0, 0, 1200, 600),
+            entry("b", 400, 0, 1200, 600),
+        ];
+        assert!(strict_map(&mirrored).is_empty());
+    }
+
+    #[test]
+    fn strict_map_single_output_is_empty() {
+        let all = vec![entry("solo", 0, 0, 800, 600)];
+        assert!(strict_map(&all).is_empty());
+        let empty: Vec<OutputEntry> = Vec::new();
+        assert!(strict_map(&empty).is_empty());
+    }
+
+    #[test]
+    fn strict_map_rejects_unreadable_and_duplicates() {
+        let source = entry("s", 0, 0, 800, 600);
+        let bad = entry("bad", 800, 0, 0, 600);
+        assert_eq!(
+            unique_reciprocal_adjacency(&[source.clone(), bad]),
+            Err(SelectionError::UnreadableTopology)
+        );
+        let dup = entry("s", 800, 0, 800, 600);
+        assert_eq!(
+            unique_reciprocal_adjacency(&[source.clone(), dup]),
+            Err(SelectionError::UnreadableTopology)
+        );
+        let overflow = entry("big", i32::MAX, 0, 1, 600);
+        let neighbor = entry("n", 0, 0, 800, 600);
+        assert_eq!(
+            unique_reciprocal_adjacency(&[overflow, neighbor]),
+            Err(SelectionError::UnreadableTopology)
         );
     }
 }

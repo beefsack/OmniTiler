@@ -246,6 +246,19 @@ pub struct WorldEngine {
     /// facts while a displacement record needs placement. Never a window
     /// frame proxy.
     pub(crate) output_facts: BTreeMap<String, crate::workspace_scope::OutputFacts>,
+    /// Core-owned live output topology: validated FULL native rectangles by
+    /// stable output id, retained from the last accepted report claiming
+    /// complete topology in EVERY workspace mode (never tied to hotplug
+    /// displacement: shared mode retains exactly like local modes).
+    /// Directional world commands resolve against this map through the
+    /// shared strict unique-reciprocal helper, never the carried adapter
+    /// adjacency. A report that is incomplete, partial, or carries a
+    /// missing/invalid/duplicate FULL rect clears the map, so
+    /// topology-dependent crossing, migration, and remap fence narrowly
+    /// until the next complete report instead of actuating on stale edges.
+    /// Disconnect-time facts for nearest-survivor placement stay in
+    /// [`WorldEngine::output_facts`].
+    pub(crate) live_topology: BTreeMap<String, Rect>,
     /// Planner-owned per-workspace tiling mode (legacy Meta+Y parity):
     /// absent means [`TilingMode::Tiled`]. Set through
     /// [`crate::world_report::WorldCommand::SetWorkspaceTiling`] or seeded
@@ -354,6 +367,7 @@ impl WorldEngine {
             history: ScopeHistory::new(),
             displaced: BTreeMap::new(),
             output_facts: BTreeMap::new(),
+            live_topology: BTreeMap::new(),
             tiling: BTreeMap::new(),
             floating_scopes: BTreeSet::new(),
             pending_sends: Vec::new(),
@@ -415,6 +429,7 @@ impl WorldEngine {
         self.history = ScopeHistory::new();
         self.displaced.clear();
         self.output_facts.clear();
+        self.live_topology.clear();
         self.command_result = None;
         self.last_adapter_incarnation = Some(adapter_incarnation.to_owned());
     }
@@ -435,6 +450,53 @@ impl WorldEngine {
     #[must_use]
     pub fn state_revision(&self) -> u64 {
         self.state_revision
+    }
+
+    /// Retain (or fence) the core-owned live output topology from one
+    /// accepted report, before any command planning on that same report.
+    /// A report claiming complete inventory with every topology entry
+    /// complete and carrying a valid FULL rectangle replaces the map;
+    /// anything else (partial inventory, incomplete entries, missing or
+    /// invalid rectangles, duplicate output ids) clears it, so
+    /// topology-dependent operations fence until the next complete
+    /// report. Never infers geometry from work areas or window frames.
+    pub(crate) fn retain_live_topology(&mut self, report: &WorldReport) {
+        let mut fresh: BTreeMap<String, Rect> = BTreeMap::new();
+        let mut complete = report.inventory_complete && !report.topology.is_empty();
+        for topology in &report.topology {
+            if !topology.complete {
+                complete = false;
+                break;
+            }
+            let Some(rect) = topology.geometry else {
+                complete = false;
+                break;
+            };
+            if topology.output.0.is_empty()
+                || !crate::bounds::valid_carried_rect(rect.x, rect.y, rect.w, rect.h)
+                || fresh.insert(topology.output.0.clone(), rect).is_some()
+            {
+                complete = false;
+                break;
+            }
+        }
+        if complete {
+            self.live_topology = fresh;
+        } else {
+            self.live_topology.clear();
+        }
+    }
+
+    /// Live FULL rectangles as shared selector entries, in stable output
+    /// order. Empty when no complete topology is retained.
+    pub(crate) fn live_topology_entries(&self) -> Vec<crate::output_selection::OutputEntry> {
+        self.live_topology
+            .iter()
+            .map(|(id, rect)| crate::output_selection::OutputEntry {
+                id: OutputId(id.clone()),
+                rect: *rect,
+            })
+            .collect()
     }
 
     /// Accept one complete report and publish one globally ordered reply.
@@ -700,6 +762,9 @@ impl WorldEngine {
         // Planner-owned workspace mapping/history converge before the sweep
         // so lifecycle rows and selection rings see this report's topology.
         self.converge_workspace_policy(report);
+        // Core-owned live output topology retains before the sweep so the
+        // same report's commands resolve against its own geometry.
+        self.retain_live_topology(report);
         // Retained membership before the sweep, per swept domain: the
         // admission-focus pass diffs this against converged state to find
         // genuinely new lifetimes. Only domains with a retained session
