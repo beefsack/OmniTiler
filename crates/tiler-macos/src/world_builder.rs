@@ -16,7 +16,10 @@
 //! - Logical bindings are always empty: no native logical creation and no
 //!   ordinary window transfer is invented. The core rebuilds its
 //!   planner-owned mapping from the reported topology each report.
-//! - Domain bounds carry the RAW visible work area with the report's
+//! - Topology `geometry` carries the FULL native output rectangle from the
+//!   already-retained [`NativeDomain`](crate::runtime_types::NativeDomain)
+//!   `bounds` (core-owned adjacency authority; wire `adjacent` stays
+//!   empty). Domain bounds carry the RAW visible work area with the report's
 //!   `domain_outer_gap` riding separately (native: [`PHASE1_OUTER_GAP`];
 //!   synthetic skeleton: `0`, which preserves the legacy skeleton's exact
 //!   edge-to-edge geometry because the [`WorldEngine`] always insets by the
@@ -201,9 +204,14 @@ pub(crate) fn build_report(input: &ReportInput<'_>) -> WorldReport {
         if domain.current {
             current_native.insert(domain.output.clone(), domain.workspace.0.clone());
         }
+        // Core-owned topology authority: FULL native rectangles from the
+        // already-retained display bounds (never the visible work area,
+        // never a window-frame proxy). Domain `bounds` below stays the
+        // separate visible work area; wire adjacency stays empty for core
+        // derivation.
         output_geometry
             .entry(domain.output.clone())
-            .or_insert(domain.visible);
+            .or_insert(domain.bounds);
     }
     let primary = input.primary_output.clone().unwrap_or_else(|| {
         output_order
@@ -359,17 +367,26 @@ mod tests {
         Rect { x, y, w, h }
     }
 
+    /// Real-producer-shaped display UUIDs: canonical CFUUID text from
+    /// `CGDisplayCreateUUIDFromDisplayID` (uppercase hex with dashes, via
+    /// `CFUUIDCreateString`), never a positional guess.
+    const UUID_1: &str = "A1B2C3D4-E5F6-47A8-B9C0-D1E2F3A4B5C6";
+    const UUID_2: &str = "0F1E2D3C-4B5A-6978-8796-A5B4C3D2E1F0";
+
     fn native_domain(cg_id: u32, space: u64, current: bool, x: i32, w: i32) -> NativeDomain {
+        let uuid = if cg_id == 1 { UUID_1 } else { UUID_2 };
         NativeDomain {
             cg_id,
-            uuid: Some(format!("uuid-{cg_id}")),
+            uuid: Some(uuid.to_owned()),
             output: OutputId(crate::topology::output_key(cg_id)),
             workspace: WorkspaceId(crate::topology::workspace_key(space)),
             space,
             current,
             readable: true,
+            // FULL display rect (core-owned topology authority).
             bounds: rect(x, 0, w, 900),
-            visible: rect(x, 0, w, 900),
+            // Menu-inset work area: topology must NOT collapse onto this.
+            visible: rect(x, 25, w, 875),
         }
     }
 
@@ -533,10 +550,358 @@ mod tests {
         // Raw visible work area rides with the outer gap separate (the
         // engine applies its single inset).
         assert_eq!(report.domains.len(), 3);
-        assert_eq!(report.domains[0].domain.bounds, rect(0, 0, 1440, 900));
+        assert_eq!(report.domains[0].domain.bounds, rect(0, 25, 1440, 875));
         assert_eq!(report.domains[0].outer_gap, PHASE1_OUTER_GAP);
+        // Core-owned topology carries the FULL display rect, never the
+        // visible work area; wire adjacency stays empty for core derivation.
+        assert_eq!(report.topology[0].geometry, Some(rect(0, 0, 1440, 900)));
+        assert_eq!(report.topology[1].geometry, Some(rect(1440, 0, 1440, 900)));
+        assert!(
+            report.domains.iter().all(|d| d.domain.adjacent.is_empty()),
+            "no adapter-owned adjacency"
+        );
         assert!(report.domains.iter().all(|d| d.readable));
         assert!(report.inventory_complete);
+    }
+
+    /// Real-producer display UUIDs for end-to-end fixtures below: canonical
+    /// CFUUID text from `CGDisplayCreateUUIDFromDisplayID` (uppercase hex
+    /// with dashes), matching the in-row SLS `"Display Identifier"` exactly.
+    const PROD_UUID_1: &str = "37AC4E19-0000-4000-8000-123456789ABC";
+    const PROD_UUID_2: &str = "9B4D2E1A-77C0-4F3B-9E52-0A1B2C3D4E5F";
+
+    #[test]
+    fn full_stacked_topology_report_accepted_despite_work_area_gap() {
+        use crate::runtime_types::NativeDomain;
+        use tiler_core::directional::{OutputId, WorkspaceId};
+        // Stacked pair: FULL rects edge-touch at y=0, while the menu/Dock
+        // insets leave the visible work areas gapped (upper bottom -32 vs
+        // lower top 25). Core-owned adjacency must derive from FULL, so the
+        // retained live rects are the FULL pair.
+        let ctx = NativeContext {
+            revision: 5,
+            domains: vec![
+                NativeDomain {
+                    cg_id: 1,
+                    uuid: Some(UUID_1.to_owned()),
+                    output: OutputId(crate::topology::output_key(1)),
+                    workspace: WorkspaceId(crate::topology::workspace_key(11)),
+                    space: 11,
+                    current: true,
+                    readable: true,
+                    bounds: rect(0, -900, 1440, 900),
+                    visible: rect(0, -900, 1440, 868),
+                },
+                NativeDomain {
+                    cg_id: 2,
+                    uuid: Some(UUID_2.to_owned()),
+                    output: OutputId(crate::topology::output_key(2)),
+                    workspace: WorkspaceId(crate::topology::workspace_key(21)),
+                    space: 21,
+                    current: true,
+                    readable: true,
+                    bounds: rect(0, 0, 1440, 900),
+                    visible: rect(0, 25, 1440, 875),
+                },
+            ],
+            skipped: Vec::new(),
+        };
+        let (members, sessions, focused, closed, unreadable) = empty_maps();
+        let report = assemble(
+            &ctx,
+            &members,
+            &sessions,
+            &focused,
+            &closed,
+            &unreadable,
+            &[],
+            &[],
+            "",
+            1,
+            1,
+        );
+        assert!(validate_report(&report));
+        assert_eq!(report.topology[0].geometry, Some(rect(0, -900, 1440, 900)));
+        assert_eq!(report.topology[1].geometry, Some(rect(0, 0, 1440, 900)));
+        // The visible pair demonstrably does NOT edge-touch: deriving
+        // topology from work areas would lose this edge.
+        assert_ne!(
+            report.domains[0].domain.bounds.y + report.domains[0].domain.bounds.h,
+            report.domains[1].domain.bounds.y,
+            "work areas are gapped; FULL is the adjacency authority"
+        );
+        let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
+        let reply = accepted(&report, &mut engine);
+        assert!(reply.ready, "FULL-topology report is accepted");
+        assert_eq!(engine.state_revision(), 1);
+    }
+
+    #[test]
+    fn producer_snapshot_rounds_fractional_shared_edge_to_exact_touch() {
+        use crate::ffi::{DisplayRect, NsDisplay, SlsDisplayRow, SlsSpaceType};
+        use crate::topology::build_snapshot;
+        // Real producer values: AppKit bottom-left points with a fractional
+        // shared edge (Retina 1512pt wide, secondary 0.4pt past the exact
+        // seam) plus menu/Dock visible insets. SLS rows ride shuffled to
+        // prove UUID-exact homing independent of row order.
+        let ns = vec![
+            NsDisplay {
+                cg_id: 1,
+                uuid: Some(PROD_UUID_1.to_owned()),
+                frame: DisplayRect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 1512.0,
+                    h: 982.0,
+                },
+                visible: DisplayRect {
+                    x: 0.0,
+                    y: 32.0,
+                    w: 1512.0,
+                    h: 925.0,
+                },
+                scale: 2.0,
+            },
+            NsDisplay {
+                cg_id: 2,
+                uuid: Some(PROD_UUID_2.to_owned()),
+                frame: DisplayRect {
+                    x: 1512.4,
+                    y: 0.0,
+                    w: 1512.0,
+                    h: 982.0,
+                },
+                visible: DisplayRect {
+                    x: 1512.4,
+                    y: 32.0,
+                    w: 1512.0,
+                    h: 925.0,
+                },
+                scale: 2.0,
+            },
+        ];
+        let rows = vec![
+            SlsDisplayRow {
+                identifier: Some(PROD_UUID_2.to_owned()),
+                spaces: vec![21],
+                current: Some(21),
+            },
+            SlsDisplayRow {
+                identifier: Some(PROD_UUID_1.to_owned()),
+                spaces: vec![11, 12],
+                current: Some(11),
+            },
+        ];
+        let snapshot = build_snapshot(&ns, &rows, Some(true));
+        let (ctx, skipped) = NativeContext::derive(&snapshot, &|_| Some(SlsSpaceType::User));
+        assert!(skipped.is_empty(), "both displays home: {skipped:?}");
+        assert_eq!(ctx.domains.len(), 3, "hidden Space retains its domain");
+        let (members, sessions, focused, closed, unreadable) = empty_maps();
+        let report = assemble(
+            &ctx,
+            &members,
+            &sessions,
+            &focused,
+            &closed,
+            &unreadable,
+            &[],
+            &[],
+            "",
+            1,
+            1,
+        );
+        assert!(validate_report(&report));
+        assert_eq!(report.topology.len(), 2);
+        // 1:1 rounding lands the fractional seam on the exact shared edge.
+        assert_eq!(report.topology[0].geometry, Some(rect(0, 0, 1512, 982)));
+        assert_eq!(report.topology[1].geometry, Some(rect(1512, 0, 1512, 982)));
+        // Domain bounds stay the converted visible work areas (menu inset
+        // survives conversion: AppKit y=32 of 982pt -> CG y=25).
+        let first_bounds = report.domains[0].domain.bounds;
+        assert_eq!((first_bounds.x, first_bounds.y), (0, 25));
+        // Display identity follows the CG id through shuffled rows; Space
+        // order and the focused display never move geometry.
+        assert_eq!(report.topology[0].output.0, "macos-display-1");
+        assert_eq!(
+            report.topology[0].native_order,
+            vec!["space-11".to_owned(), "space-12".to_owned()]
+        );
+        assert_eq!(report.topology[0].current_native, "space-11");
+        assert_eq!(report.topology[1].current_native, "space-21");
+        assert!(report.topology[0].primary, "display order owns primary");
+        assert!(
+            report.domains.iter().all(|d| d.domain.adjacent.is_empty()),
+            "no adapter-owned adjacency"
+        );
+        let mut engine = WorldEngine::new(GENERATION).expect("valid generation");
+        let reply = accepted(&report, &mut engine);
+        assert!(reply.ready, "rounded FULL-topology report is accepted");
+    }
+
+    #[test]
+    fn producer_snapshot_preserves_negative_and_above_primary_origins() {
+        use crate::ffi::{DisplayRect, NsDisplay, SlsDisplayRow, SlsSpaceType};
+        use crate::topology::build_snapshot;
+        // Primary 1440x900 at the AppKit origin; one display stacked above
+        // (AppKit y beyond the primary height -> negative CG y), one to the
+        // left (negative AppKit x passes through).
+        let ns = vec![
+            NsDisplay {
+                cg_id: 1,
+                uuid: Some(PROD_UUID_1.to_owned()),
+                frame: DisplayRect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 1440.0,
+                    h: 900.0,
+                },
+                visible: DisplayRect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 1440.0,
+                    h: 900.0,
+                },
+                scale: 2.0,
+            },
+            NsDisplay {
+                cg_id: 2,
+                uuid: Some(PROD_UUID_2.to_owned()),
+                frame: DisplayRect {
+                    x: 0.0,
+                    y: 900.0,
+                    w: 1440.0,
+                    h: 900.0,
+                },
+                visible: DisplayRect {
+                    x: 0.0,
+                    y: 900.0,
+                    w: 1440.0,
+                    h: 900.0,
+                },
+                scale: 1.0,
+            },
+            NsDisplay {
+                cg_id: 3,
+                uuid: Some("C7AA11BB-2C3D-4E5F-A6B7-C8D9E0F1A2B3".to_owned()),
+                frame: DisplayRect {
+                    x: -1440.0,
+                    y: 0.0,
+                    w: 1440.0,
+                    h: 900.0,
+                },
+                visible: DisplayRect {
+                    x: -1440.0,
+                    y: 0.0,
+                    w: 1440.0,
+                    h: 900.0,
+                },
+                scale: 2.0,
+            },
+        ];
+        let rows = vec![
+            SlsDisplayRow {
+                identifier: Some(PROD_UUID_1.to_owned()),
+                spaces: vec![11],
+                current: Some(11),
+            },
+            SlsDisplayRow {
+                identifier: Some(PROD_UUID_2.to_owned()),
+                spaces: vec![21],
+                current: Some(21),
+            },
+            SlsDisplayRow {
+                identifier: Some("C7AA11BB-2C3D-4E5F-A6B7-C8D9E0F1A2B3".to_owned()),
+                spaces: vec![31],
+                current: Some(31),
+            },
+        ];
+        let snapshot = build_snapshot(&ns, &rows, Some(true));
+        let (ctx, skipped) = NativeContext::derive(&snapshot, &|_| Some(SlsSpaceType::User));
+        assert!(skipped.is_empty(), "all three home: {skipped:?}");
+        let (members, sessions, focused, closed, unreadable) = empty_maps();
+        let report = assemble(
+            &ctx,
+            &members,
+            &sessions,
+            &focused,
+            &closed,
+            &unreadable,
+            &[],
+            &[],
+            "",
+            1,
+            1,
+        );
+        assert!(validate_report(&report));
+        let geometry = |out: &str| {
+            report
+                .topology
+                .iter()
+                .find(|t| t.output.0 == out)
+                .and_then(|t| t.geometry)
+        };
+        assert_eq!(geometry("macos-display-1"), Some(rect(0, 0, 1440, 900)));
+        assert_eq!(
+            geometry("macos-display-2"),
+            Some(rect(0, -900, 1440, 900)),
+            "above-primary converts to a negative CG origin"
+        );
+        assert_eq!(
+            geometry("macos-display-3"),
+            Some(rect(-1440, 0, 1440, 900)),
+            "left-of-primary keeps its negative origin"
+        );
+    }
+
+    #[test]
+    fn producer_snapshot_without_primary_yields_valid_empty_report() {
+        use crate::ffi::{DisplayRect, NsDisplay, SlsDisplayRow, SlsSpaceType};
+        use crate::topology::build_snapshot;
+        // No (0,0) AppKit origin anywhere: conversion refuses, the display
+        // is skipped with a reason, and the builder still returns a valid
+        // empty report that Unit B must NOT dispatch (KDE null parity).
+        let ns = vec![NsDisplay {
+            cg_id: 9,
+            uuid: Some(PROD_UUID_1.to_owned()),
+            frame: DisplayRect {
+                x: 100.0,
+                y: 100.0,
+                w: 800.0,
+                h: 600.0,
+            },
+            visible: DisplayRect {
+                x: 100.0,
+                y: 100.0,
+                w: 800.0,
+                h: 600.0,
+            },
+            scale: 2.0,
+        }];
+        let rows = vec![SlsDisplayRow {
+            identifier: Some(PROD_UUID_1.to_owned()),
+            spaces: vec![91],
+            current: Some(91),
+        }];
+        let snapshot = build_snapshot(&ns, &rows, Some(true));
+        let (ctx, skipped) = NativeContext::derive(&snapshot, &|_| Some(SlsSpaceType::User));
+        assert_eq!(ctx.domains.len(), 0, "no converted geometry, no domains");
+        assert_eq!(skipped.len(), 1, "skipped honestly, never guessed");
+        let (members, sessions, focused, closed, unreadable) = empty_maps();
+        let report = assemble(
+            &ctx,
+            &members,
+            &sessions,
+            &focused,
+            &closed,
+            &unreadable,
+            &[],
+            &[],
+            "",
+            1,
+            1,
+        );
+        assert!(validate_report(&report));
+        assert!(report.domains.is_empty() && report.topology.is_empty());
     }
 
     #[test]

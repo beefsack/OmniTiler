@@ -122,12 +122,13 @@
   feedback and re-observation. Do not add Windows adjacency code. Reconcile the
   preserved prototype's native gate failures before W2 acceptance; runtime W3
   remains a separate atomic cutover. Do not silently standardize Windows focus.
-- macOS: change world topology from `domain.visible` to already-retained FULL
-  `NativeDomain.bounds`, keeping visible work areas/outer gaps unchanged. Verify
-  negative/above-primary origins, scale-independent coordinates, rounding at
-  shared edges and arrangement independently of Space order/focused display.
-  Preserve UUID identity, threading and unsupported Space/transfer refusals.
-  [World adoption evidence](macos-full-state-replies.md) is not reopened.
+- macOS: [FULL topology reporting delivered](macos-full-display-topology.md),
+  keeping visible work areas/outer gaps and native refusals unchanged. Offline
+  producer-shaped fixtures cover negative/above-primary origins, shared-edge
+  rounding, UUID homing and missing primary; a scoped single-display smoke
+  passed. Native two-display arrangement validation remains pending with exact
+  steps in that record. [World adoption evidence](macos-full-state-replies.md)
+  is not reopened.
 - Wire cleanup: remove the deprecated adjacency key only with coordinated codec
   and fixture updates; legacy per-domain pairs remain until adapter cutover.
 
@@ -162,5 +163,5 @@ evidence. Preserve and restore the existing desktop/output baseline.
    output arrangement, panels, clients and workspace baseline. Physical shortcut,
    visual and protected-window/game acceptance remain distinct observations.
 
-- Exact next action: KDE native two-output validation; Windows W2 and macOS FULL
-  geometry follow-ups may consume the delivered shared core independently.
+- Exact next action: KDE native two-output validation; Windows W2 and macOS
+  native two-display validation may consume the delivered shared core independently.

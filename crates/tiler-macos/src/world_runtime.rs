@@ -38,8 +38,9 @@
 //! - Empty native contexts never actuate (same as the KDE null): native
 //!   mode with no derived context refuses instead of reporting.
 //!
-//! Geometry (handover 1 proof): native reports carry the RAW visible work
-//! area with [`PHASE1_OUTER_GAP`] riding separately — the world engine
+//! Geometry (handover 1 proof): native reports carry the FULL display
+//! rectangle as core-owned topology `geometry` plus the RAW visible work
+//! area as domain `bounds` with [`PHASE1_OUTER_GAP`] riding separately — the world engine
 //! applies its single inset, converging to exactly the legacy pre-inset
 //! bounds on real displays (pinned by
 //! `native_raw_plus_gap_converges_to_legacy_inset` below; only degenerate

@@ -326,8 +326,8 @@ decisions of 2026-09-24 are under
   modes and per-use targets are core-derived; KDE sends only
   directional intent. Rust workspace 3,182 and KDE 1,870 tests pass, strict
   clippy/typecheck/bundle/descriptor gates pass. Windows W2 resumes with existing
-  FULL reports; macOS must replace visible topology rects with FULL bounds,
-  preserving work areas and native capability gates.
+  FULL reports; macOS now reports FULL topology bounds, preserving work areas
+  and native capability gates ([evidence](changes/archive/macos-full-display-topology.md)).
   User 2026-10-18 order: topology first, then D23 rehome/13f maximize base.
   User direction 2026-10-18: retain FULL monitor rectangles from world
   reports and derive adjacency/targets in core, not adapters. Strict-parity
@@ -347,18 +347,21 @@ decisions of 2026-09-24 are under
   source native-order absence check leaves a successful migration retained).
   [Delivery and live procedure](changes/archive/shared-core-owned-output-topology.md), alongside the
   [D23/13f proposal](changes/shared-core-d23-rehome-and-13f-maximize-base.md).
-- P1 | macOS: report FULL display bounds for core-owned topology | UNBLOCKED
-  2026-10-18: core now derives output adjacency from FULL topology rects in
-  complete world reports
-  ([core/KDE delivery](changes/archive/shared-core-owned-output-topology.md),
-  `f9bd2df1`); adapter adjacency is ignored. The macOS world builder still sends
-  `domain.visible` as topology geometry: report the already-retained FULL
-  `NativeDomain.bounds` instead, keep visible/menu-Dock work areas as domain
-  bounds, send empty adjacency, and preserve display identity/UUID homing,
-  negative/above-primary origins and native Space capability refusals. Offline
-  fixtures: FULL vs visible topology, conversion rounding at shared edges,
-  missing primary. Live: verify display arrangement (not inferred from Space
-  order) on a two-display setup when available.
+- P1 | macOS: report FULL display bounds for core-owned topology | Delivered
+  2026-10-18: world topology uses retained FULL `NativeDomain.bounds`; domain
+  bounds remain visible/menu-Dock work areas and adjacency stays empty. Display
+  identity/UUID homing, negative/above-primary origins and native Space refusals
+  are preserved. Producer-shaped FULL/work-area, shared-edge rounding, shuffled
+  Space order and missing-primary fixtures pass; macOS tests, strict clippy/fmt,
+  signed app build and verification pass. Scoped single-display TextEdit smoke
+  completed with clean shutdown and stable frames consistent with visible-area
+  tiling. Native
+  two-display arrangement validation remains pending: attach a second display,
+  capture FULL/visible/report geometry, tile disposable windows with differing
+  work-area insets, repeat left/above-primary arrangements and supported edge
+  actions, then restore the baseline. Rect-bearing diagnostic capture is still
+  needed for the live FULL/report comparison; do not infer arrangement from
+  Space order. [Evidence and exact steps](changes/archive/macos-full-display-topology.md).
 - P1 | Windows Xbox shortcut conflicts (Win+G, Win+F11) | User 2026-10-16
   approved choices implemented offline: Compatible float `Ctrl+Win+G`,
   fullscreen `Ctrl+Win+F11`, exact Ctrl-arm routing and hold/release coverage;
