@@ -14,34 +14,42 @@
 //! What this unit adds over [`crate::workspace_send_effect`]:
 //!
 //! - [`ManagedSendBackend`]: the injectable seam the dedicated effect owner
-//!   runs. Fresh reads (gates, row, revision, holder, per-edge proof
+//!   runs. Fresh reads (gates, row, holder, per-edge proof
 //!   evidence) plus the release-first drag posts plus the bounded
 //!   post-release readback. Fakes script every leg; a future live backend
 //!   would run fresh create/use/drop AX reads, settles, OS posts, and
 //!   readbacks here — never on the engine, AppKit, or per-app observation
 //!   owners.
-//! - [`ManagedPostPermit`]: the unforgeable per-edge product-post authority.
+//! - [`ManagedPostPermit`]: the single-use per-edge product-post authority.
 //!   Built only by [`authorize_managed_edge`] over [`prove_managed_send`]:
 //!   runtime scope/current membership, ordinary visible non-fullscreen
 //!   state, unchanged lifetime/topology, pinned source homing, fresh focus
 //!   naming the exact target with SLPS/direct-AX/NSWorkspace agreement,
-//!   fresh CG ownership/geometry, and both positional AX and WindowServer
-//!   hits at the grab point. [`crate::synth::OwnedPostTarget`] is fixture
+//!   fresh CG ownership/geometry, the backend-selected fresh grab point,
+//!   and both positional AX and WindowServer hits at that exact point.
+//!   Each permit binds the exact grab point plus the exact resolved holder
+//!   chord for one edge and is consumed by value at the post boundary —
+//!   no `Copy`/`Clone` reuse, no free point/chord arguments after proof.
+//!   Down-edges (`begin_leg`, grab move/down/dragged, chord-down) require
+//!   this permit; release edges (mouse-up/key-up) bypass it and always
+//!   attempt. [`crate::synth::OwnedPostTarget`] is fixture
 //!   ONLY and is never constructed, forged, or bypassed here (see the
 //!   `never_touches_fixture_post_target` test).
 //! - [`managed_hid_mouse_post`] / [`managed_hid_key_post`]: the managed
 //!   guarded boundary. The ONLY product-send callers of the maintained
 //!   [`crate::synth::hid_mouse_post`] / [`crate::synth::hid_key_post`]
 //!   wrappers (themselves safe `objc2` construction, no new `unsafe`).
+//!   Each takes its one-edge permit by value and posts exactly the bound
+//!   point/chord — no free point/chord arguments survive proof.
 //!   Future live posts route through these helpers with a permit (down
 //!   edges) or as an unconditional release attempt (up edges). No raw global
 //!   HID access exists outside this boundary for product sends.
 //! - [`ProvingDragAdapter`]: a [`DragBackend`] that re-proves the applicable
-//!   identity/focus/point immediately before every down-edge
-//!   (`begin_leg`, move, down, dragged, chord-down) and always attempts the
-//!   release edges (`MouseUp`, key-up) regardless of stale gates or a stop
-//!   request. Cancellation ([`SendEffectHandoff::cancel_requested`]) stops
-//!   further down-edges but never skips a held-input release.
+//!   identity/focus/point plus the exact resolved holder chord immediately
+//!   before every down-edge (`begin_leg`, move, down, dragged, chord-down)
+//!   and always attempts the release edges (`MouseUp`, key-up) regardless
+//!   of a stop request. Cancellation ([`SendEffectHandoff::cancel_requested`])
+//!   stops further down-edges but never skips a held-input release.
 //! - [`execute_managed_send`]: one pinned-target effect on the calling
 //!   (effect-owner) thread: gates, single-display rule, per-edge proof, fresh
 //!   holder resolve, one [`run_drag_leg`](crate::space_drag_transfer::run_drag_leg)
@@ -80,9 +88,7 @@ use std::sync::{
 };
 
 use crate::desktop_shortcuts::{ShortcutEntry, resolve_numbered_chord};
-use crate::space_drag_transfer::{
-    DragBackend, DragStep, LegError, LegOk, PostCounts, SwitchChords,
-};
+use crate::space_drag_transfer::{DragBackend, DragStep, LegError, LegOk, PostCounts};
 use crate::workspace_select::SelectionSnapshot;
 use crate::workspace_send::SendGates;
 use crate::workspace_send_effect::{
@@ -94,6 +100,11 @@ use crate::workspace_send_effect::{
 ///
 /// Every method runs on the effect thread only. Fakes script results;
 /// the future live backend would perform fresh reads/posts there.
+/// Down-edge posts consume a single-use [`ManagedPostPermit`] by value and
+/// must actuate exactly its bound point/chord; release edges are
+/// permit-free and unconditional. The live topology revision is fenced only
+/// through [`prove_managed_send`] over fresh evidence — no separate
+/// `revision()` accessor duplicates that fence.
 pub trait ManagedSendBackend: Send {
     /// Fresh session gates sampled on the effect thread (plain booleans).
     fn read_gates(&mut self) -> SendGates;
@@ -101,20 +112,27 @@ pub trait ManagedSendBackend: Send {
     fn snapshot(&mut self) -> Result<SelectionSnapshot, String>;
     /// Fresh native display-row count (product single-display rule).
     fn display_count(&mut self) -> Result<usize, String>;
-    /// Live topology revision backing the snapshot (`None` = unreadable).
-    fn revision(&mut self) -> Option<u64> {
-        None
-    }
     /// Fresh Desktop-N holder read (never a settings write here).
     fn read_holder(&mut self, symbolic_id: u32) -> Result<ShortcutEntry, String>;
     /// Fresh proof evidence for one pinned target (single fresh read set,
     /// never a poll, never cached across edges by the caller — the adapter
-    /// calls this before every down-edge).
+    /// calls this before every down-edge). Carries the backend-selected
+    /// fresh grab point both hit-tests named.
     fn fresh_evidence(&mut self, target: &ManagedSendTarget) -> SendFreshEvidence;
     /// Select this leg's goal before any post (refusing here posts nothing).
-    fn begin_leg(&mut self, goal: u64, chords: SwitchChords) -> Result<(), String>;
-    fn post_mouse(&mut self, step: DragStep) -> Result<(), String>;
-    fn post_key(&mut self, down: bool) -> Result<(), String>;
+    /// Consumes one proof permit binding the exact point/chord.
+    fn begin_leg(&mut self, permit: ManagedPostPermit, goal: u64) -> Result<(), String>;
+    /// One grab down-edge at exactly the permit's bound point. Only
+    /// `MouseMove`/`MouseDown`/`MouseDragged` are accepted; `MouseUp`
+    /// releases through [`ManagedSendBackend::release_mouse`] instead.
+    fn post_mouse(&mut self, permit: ManagedPostPermit, step: DragStep) -> Result<(), String>;
+    /// One chord-down at exactly the permit's bound chord. Key-up releases
+    /// through [`ManagedSendBackend::release_key`] instead.
+    fn post_key_down(&mut self, permit: ManagedPostPermit) -> Result<(), String>;
+    /// Unconditional mouse release: always attempted, never proof-gated.
+    fn release_mouse(&mut self) -> Result<(), String>;
+    /// Unconditional key release: always attempted, never proof-gated.
+    fn release_key(&mut self) -> Result<(), String>;
     /// Grab settle (50 ms live; fakes override to log-only).
     fn settle_grab(&mut self) {
         std::thread::sleep(std::time::Duration::from_millis(
@@ -140,43 +158,70 @@ pub trait ManagedSendBackend: Send {
     fn counts(&self) -> PostCounts;
 }
 
-/// Unforgeable per-edge managed product-post authority.
+/// Single-use per-edge managed product-post authority.
 ///
 /// Constructible only by [`authorize_managed_edge`], which runs the full
-/// [`prove_managed_send`] verdict over fresh evidence. Down-edges
-/// (move/down/dragged/chord-down) require this permit; release edges
-/// (mouse-up/key-up) bypass it and always attempt. Private fields force
+/// [`prove_managed_send`] verdict over fresh evidence and binds the
+/// backend-selected fresh grab point plus the exact resolved holder chord.
+/// Consumed by value at the post boundary: no `Copy`/`Clone`, so one proof
+/// authorizes exactly one edge and can never be replayed. Release edges
+/// never take a permit — they always attempt. Private fields force
 /// construction through proof — a stale focus window, relaunched lifetime,
-/// moved domain, or disagreeing hit-test can never forge a permit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// moved domain, disagreeing hit-test, or missing grab point can never
+/// forge a permit.
+#[derive(Debug, PartialEq)]
 pub struct ManagedPostPermit {
     pid: u32,
     wid: u32,
+    point: (f64, f64),
+    keycode: u32,
+    flags: u64,
 }
 
 impl ManagedPostPermit {
     #[must_use]
-    pub const fn pid(self) -> u32 {
+    pub const fn pid(&self) -> u32 {
         self.pid
     }
     #[must_use]
-    pub const fn wid(self) -> u32 {
+    pub const fn wid(&self) -> u32 {
         self.wid
+    }
+    #[must_use]
+    pub const fn point(&self) -> (f64, f64) {
+        self.point
+    }
+    #[must_use]
+    pub const fn keycode(&self) -> u32 {
+        self.keycode
+    }
+    #[must_use]
+    pub const fn flags(&self) -> u64 {
+        self.flags
     }
 }
 
 /// Prove one actuation edge: the full fresh-proof verdict must name the
-/// pinned target, or the edge refuses without posting (except release edges,
-/// which never call this). Sequential proof is not atomic: call before every
-/// down-edge.
+/// pinned target at the backend-selected grab point, and the resulting
+/// permit binds that exact point plus the caller-supplied exact resolved
+/// holder chord for exactly one edge. Release edges never call this.
+/// Sequential proof is not atomic: call before every down-edge.
 pub fn authorize_managed_edge(
     target: &ManagedSendTarget,
     fresh: &SendFreshEvidence,
+    chord: (u32, u64),
 ) -> Result<ManagedPostPermit, SendProofRefusal> {
     prove_managed_send(target, fresh)?;
+    let point = match fresh.grab_point {
+        Some((x, y)) if x.is_finite() && y.is_finite() => (x, y),
+        _ => return Err(SendProofRefusal::UnknownGrabPoint),
+    };
     Ok(ManagedPostPermit {
         pid: target.pid(),
         wid: target.wid(),
+        point,
+        keycode: chord.0,
+        flags: chord.1,
     })
 }
 
@@ -184,21 +229,20 @@ pub fn authorize_managed_edge(
 ///
 /// The only product-send caller of the maintained
 /// [`crate::synth::hid_mouse_post`] wrapper besides the fixture-owned live
-/// runner (which proves fixture ownership separately). Takes a down-edge
-/// permit; release-edge callers use [`managed_hid_mouse_release`] instead so
+/// runner (which proves fixture ownership separately). Consumes a down-edge
+/// permit and posts exactly its bound point with zero flags; release-edge
+/// callers use [`managed_hid_mouse_release`] instead so
 /// a held button is never stranded by a stale gate. No new `unsafe`.
 #[cfg(target_os = "macos")]
 #[allow(dead_code)]
 pub(crate) fn managed_hid_mouse_post(
-    _permit: ManagedPostPermit,
+    permit: ManagedPostPermit,
     kind: crate::synth::HidMouseKind,
-    point: (f64, f64),
-    flags: u64,
 ) -> Result<u64, String> {
     crate::synth::hid_mouse_post(
         kind,
-        point,
-        flags,
+        permit.point(),
+        0,
         Some(crate::input_match::OWN_SWITCH_USER_DATA),
     )
 }
@@ -218,21 +262,18 @@ pub(crate) fn managed_hid_mouse_release(point: (f64, f64)) -> Result<u64, String
 
 /// Managed guarded HID key boundary (product-send path only).
 ///
-/// Down-edges require a permit; up-edges use [`managed_hid_key_release`].
+/// Consumes a chord-down permit and posts exactly its bound chord as
+/// key-down; up-edges use [`managed_hid_key_release`].
 /// Same maintained [`crate::synth::hid_key_post`] wrapper, same own-switch
 /// tag, no new `unsafe`.
 #[cfg(target_os = "macos")]
 #[allow(dead_code)]
-pub(crate) fn managed_hid_key_post(
-    _permit: ManagedPostPermit,
-    key_code: u16,
-    flags: u64,
-    down: bool,
-) -> Result<u64, String> {
+pub(crate) fn managed_hid_key_post(permit: ManagedPostPermit) -> Result<u64, String> {
     crate::synth::hid_key_post(
-        key_code,
-        flags,
-        down,
+        u16::try_from(permit.keycode())
+            .map_err(|_| "managed chord keycode unpostable".to_owned())?,
+        permit.flags(),
+        true,
         Some(crate::input_match::OWN_SWITCH_USER_DATA),
     )
 }
@@ -254,8 +295,6 @@ pub(crate) fn managed_hid_key_release(key_code: u16, flags: u64) -> Result<u64, 
 pub(crate) fn managed_hid_mouse_post(
     _permit: ManagedPostPermit,
     _kind: crate::synth::HidMouseKind,
-    _point: (f64, f64),
-    _flags: u64,
 ) -> Result<u64, String> {
     Err("managed HID mouse posts are macOS-only".to_owned())
 }
@@ -268,12 +307,7 @@ pub(crate) fn managed_hid_mouse_release(_point: (f64, f64)) -> Result<u64, Strin
 
 #[cfg(not(target_os = "macos"))]
 #[allow(dead_code)]
-pub(crate) fn managed_hid_key_post(
-    _permit: ManagedPostPermit,
-    _key_code: u16,
-    _flags: u64,
-    _down: bool,
-) -> Result<u64, String> {
+pub(crate) fn managed_hid_key_post(_permit: ManagedPostPermit) -> Result<u64, String> {
     Err("managed HID key posts are macOS-only".to_owned())
 }
 
@@ -284,10 +318,18 @@ pub(crate) fn managed_hid_key_release(_key_code: u16, _flags: u64) -> Result<u64
 }
 
 /// [`DragBackend`] plumbing for the managed leg: re-proves the pinned target
+/// at the backend-selected grab point plus the exact resolved holder chord
 /// immediately before every down-edge and always attempts release edges.
 ///
+/// One mouse point throughout a drag: the first `begin_leg` permit pins the
+/// selected grab point for this leg, and every later down-edge must prove
+/// that same point — a shifted fresh point refuses before the next post
+/// instead of silently drifting the held drag. Releases still always run.
+///
 /// Proof source is the backend's [`ManagedSendBackend::fresh_evidence`]
-/// (fresh per edge, never cached). A stop request
+/// (fresh per edge, never cached). Each down-edge authorizes a single-use
+/// [`ManagedPostPermit`] binding that exact point/chord and consumes it by
+/// value at the post boundary. A stop request
 /// ([`SendEffectHandoff::cancel_requested`]) refuses further down-edges but
 /// never skips `MouseUp`/key-up. Key/mouse UP bypass fresh target gates by
 /// construction here.
@@ -295,40 +337,58 @@ struct ProvingWithChords<'a, 'h, B: ManagedSendBackend> {
     inner: &'a mut B,
     target: &'a ManagedSendTarget,
     handoff: &'h SendEffectHandoff,
-    chords: SwitchChords,
+    chord: (u32, u64),
+    pinned_point: Option<(f64, f64)>,
 }
 
 impl<'a, 'h, B: ManagedSendBackend> ProvingWithChords<'a, 'h, B> {
-    fn with_chords(
+    fn with_chord(
         inner: &'a mut B,
         target: &'a ManagedSendTarget,
         handoff: &'h SendEffectHandoff,
-        chords: SwitchChords,
+        chord: (u32, u64),
     ) -> Self {
         Self {
             inner,
             target,
             handoff,
-            chords,
+            chord,
+            pinned_point: None,
         }
+    }
+
+    fn authorize(&mut self, edge: &'static str) -> Result<ManagedPostPermit, String> {
+        let fresh = self.inner.fresh_evidence(self.target);
+        let permit = authorize_managed_edge(self.target, &fresh, self.chord)
+            .map_err(|r| format!("{edge} managed proof refused: {}", r.token()))?;
+        if let Some(pinned) = self.pinned_point
+            && permit.point() != pinned
+        {
+            return Err(format!(
+                "{edge} managed proof refused: refused-send-grab-drift"
+            ));
+        }
+        Ok(permit)
     }
 }
 
 impl<B: ManagedSendBackend> DragBackend for ProvingWithChords<'_, '_, B> {
     fn begin_leg(&mut self, goal: u64) -> Result<(), String> {
+        if goal != self.target.target_sid() {
+            return Err("leg-setup refused: goal SID mismatches the pinned target".to_owned());
+        }
         if self.handoff.cancel_requested() {
             return Err(
                 "leg-setup stopped: managed send cancel requested before further posts".to_owned(),
             );
         }
-        let fresh = self.inner.fresh_evidence(self.target);
-        let _permit = authorize_managed_edge(self.target, &fresh)
-            .map_err(|r| format!("leg-setup managed proof refused: {}", r.token()))?;
-        self.inner.begin_leg(goal, self.chords)
+        let permit = self.authorize("leg-setup")?;
+        self.pinned_point = Some(permit.point());
+        self.inner.begin_leg(permit, goal)
     }
     fn post_mouse(&mut self, step: DragStep) -> Result<(), String> {
         if step == DragStep::MouseUp {
-            return self.inner.post_mouse(step);
+            return self.inner.release_mouse();
         }
         let edge = match step {
             DragStep::MouseMove => "grab-move",
@@ -342,24 +402,20 @@ impl<B: ManagedSendBackend> DragBackend for ProvingWithChords<'_, '_, B> {
                 "{edge} stopped: managed send cancel requested before further posts"
             ));
         }
-        let fresh = self.inner.fresh_evidence(self.target);
-        let _permit = authorize_managed_edge(self.target, &fresh)
-            .map_err(|r| format!("{edge} managed proof refused: {}", r.token()))?;
-        self.inner.post_mouse(step)
+        let permit = self.authorize(edge)?;
+        self.inner.post_mouse(permit, step)
     }
     fn post_key(&mut self, down: bool) -> Result<(), String> {
         if !down {
-            return self.inner.post_key(false);
+            return self.inner.release_key();
         }
         if self.handoff.cancel_requested() {
             return Err(
                 "chord-down stopped: managed send cancel requested before further posts".to_owned(),
             );
         }
-        let fresh = self.inner.fresh_evidence(self.target);
-        let _permit = authorize_managed_edge(self.target, &fresh)
-            .map_err(|r| format!("chord-down managed proof refused: {}", r.token()))?;
-        self.inner.post_key(true)
+        let permit = self.authorize("chord-down")?;
+        self.inner.post_key_down(permit)
     }
     fn settle_grab(&mut self) {
         self.inner.settle_grab();
@@ -418,25 +474,18 @@ pub(crate) fn execute_managed_send<B: ManagedSendBackend>(
         Ok(1) => {}
         Ok(_) | Err(_) => return (SendEffectOutcome::RefusedProven, None),
     }
-    // Admission proof before resolving anything else: stale lifetime,
-    // moved source, focus swap, or disagreeing hits refuse with zero posts.
-    let fresh = backend.fresh_evidence(target);
-    if prove_managed_send(target, &fresh).is_err() {
-        return (SendEffectOutcome::RefusedProven, None);
-    }
+    // No standalone admission proof here: the per-edge adapter below
+    // re-proves the pinned target before every down-edge (including
+    // leg-setup), so a stale lifetime, moved source, focus swap, or
+    // disagreeing hit refuses with zero posts. Holder resolution between
+    // is read-only and posts nothing. The pinned revision is fenced only
+    // by that per-edge `live_revision` proof — no duplicate row-revision
+    // accessor.
     let fresh_row = match backend.snapshot() {
         Ok(row) => row,
         Err(_) => return (SendEffectOutcome::RefusedProven, None),
     };
     if fresh_row.validate().is_err() {
-        return (SendEffectOutcome::RefusedProven, None);
-    }
-    // Revision fence: the pinned revision must still be live. The proof leg
-    // above already fenced `live_revision`; the backend row revision must
-    // agree too when the backend reports one.
-    if let Some(live) = backend.revision()
-        && live != target.revision()
-    {
         return (SendEffectOutcome::RefusedProven, None);
     }
     // SID-pinned ordinal: the position of the pinned SID in the fresh row
@@ -465,9 +514,8 @@ pub(crate) fn execute_managed_send<B: ManagedSendBackend>(
         Ok(pair) => pair,
         Err(_) => return (SendEffectOutcome::RefusedProven, None),
     };
-    let chords = SwitchChords::numbered((keycode, flags), (keycode, flags));
     let goal = target.target_sid();
-    let mut adapter = ProvingWithChords::with_chords(backend, target, handoff, chords);
+    let mut adapter = ProvingWithChords::with_chord(backend, target, handoff, (keycode, flags));
     let mut notes = Vec::new();
     match crate::space_drag_transfer::run_drag_leg(&mut adapter, goal, goal, "send", &mut notes) {
         Ok(leg) => (SendEffectOutcome::Applied, Some(leg)),

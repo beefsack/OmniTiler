@@ -1,5 +1,35 @@
 # macOS managed native workspaces
 
+## Managed posting simplification checkpoint (2026-10-18)
+
+**Product remains select-only. Native backend, runtime wiring and acceptance
+items 1-4 remain incomplete.**
+
+- Simplicity review retained the admitted identity, per-edge fresh proof,
+  serialized effect lane and release-first/no-replay contract. Removed the
+  discarded-permit ceremony, redundant pre-leg proof and separate optional
+  revision accessor; the required per-edge revision proof remains.
+- Each noncopyable permit is now consumed by the backend and HID boundary,
+  carrying its proven grab point and resolved Desktop-N chord. The posting
+  boundary no longer accepts replacement point/chord arguments. The first grab
+  point is pinned for the leg; later point drift refuses before posting and
+  still releases held input.
+- Independent review accepted the unarmed change. Its point-stability finding
+  was corrected with semantic before/after-hold drift tests. Snapshot/ordinal
+  and proof revision must still be coherently joined by native integration;
+  the former optional revision accessor did not establish that property.
+- Final offline gates: **979 macOS tests** (831 library + 148 integration),
+  including exact point/chord routing, dual-hit disagreement, point drift and
+  unconditional release. Strict all-target clippy, workspace format/diff checks,
+  named signed app build and separate verification pass. Unsafe remains **114
+  blocks**, all in unchanged `ffi.rs`; no dependencies were added.
+
+Next: supply fresh runtime facts with coherent topology/ordinal evidence and
+settle nonpanic nonblocking exceptional teardown ownership, then implement the
+native backend/tile and Authentic holder enable/Revert wiring. Do not arm sends
+until those contracts are independently reviewed. Send-stay, trailing lifecycle
+and per-display attribution follow; native acceptance items 1-4 remain pending.
+
 ## Identity and asynchronous-controller prerequisite checkpoint (2026-10-18)
 
 **Native integration is incomplete. Product remains select-only: no send

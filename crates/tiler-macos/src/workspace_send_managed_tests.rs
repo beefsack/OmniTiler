@@ -16,15 +16,15 @@ use std::time::Duration;
 use tiler_core::directional::{OutputId, WorkspaceId};
 
 use crate::desktop_shortcuts::{ShortcutEntry, desktop_digit_keycode, desktop_symbolic_id};
-use crate::space_drag_transfer::{DragStep, PostCounts, SwitchChords};
+use crate::space_drag_transfer::{DragStep, PostCounts};
 use crate::workspace_select::{SelectionSnapshot, SelectionState};
 use crate::workspace_send::{SendGates, bindings, drain_live_claimed};
 use crate::workspace_send_effect::{
     ManagedSendTarget, SendEffectHandoff, SendEffectOutcome, SendFreshEvidence, prove_managed_send,
 };
 use crate::workspace_send_managed::{
-    ManagedSendBackend, ManagedSendThread, authorize_managed_edge, completion_for,
-    execute_managed_send,
+    ManagedPostPermit, ManagedSendBackend, ManagedSendThread, authorize_managed_edge,
+    completion_for, execute_managed_send,
 };
 
 const CG_CTRL: u64 = 0x0004_0000;
@@ -52,6 +52,7 @@ fn fresh_ok() -> SendFreshEvidence {
         focused_window: Some("4242_7".to_owned()),
         focus_agrees: Some(true),
         geometry_ok: Some(true),
+        grab_point: Some((100.0, 200.0)),
         ax_hit: Some("4242_7".to_owned()),
         ws_hit: Some("4242_7".to_owned()),
     }
@@ -81,14 +82,13 @@ fn enabled_entry(desktop: u32) -> ShortcutEntry {
     }
 }
 
-/// Scripted managed backend: canned gates/row/revision/holders plus
+/// Scripted managed backend: canned gates/row/holders plus
 /// per-edge fresh-evidence scripting and fixture-style drag effect with
 /// fault injection. No live touch, no sleeps on the fast path.
 struct FakeManaged {
     gates: SendGates,
     displays: Result<usize, String>,
     snapshot: Result<SelectionSnapshot, String>,
-    revision: Option<u64>,
     holders: HashMap<u32, ShortcutEntry>,
     fail_holder_reads: Vec<u32>,
     evidence_base: SendFreshEvidence,
@@ -100,10 +100,13 @@ struct FakeManaged {
     swap_from_call: Option<usize>,
     swap_focus_to: String,
     evidence_calls: usize,
+    last_grab: Option<(f64, f64)>,
     membership: Vec<u64>,
     current: Option<u64>,
     goal: u64,
-    selected: Option<(u32, u64, Option<i64>)>,
+    selected_chord: Option<(u32, u64)>,
+    mouse_points: Vec<(f64, f64)>,
+    key_chords: Vec<(u32, u64)>,
     key_posts: Vec<(u32, u64, Option<i64>, bool)>,
     counts: PostCounts,
     fail_begin: bool,
@@ -135,7 +138,6 @@ impl FakeManaged {
             gates: open_gates(),
             displays: Ok(1),
             snapshot: Ok(row()),
-            revision: Some(9),
             holders,
             fail_holder_reads: Vec::new(),
             evidence_base: fresh_ok(),
@@ -143,10 +145,13 @@ impl FakeManaged {
             swap_from_call: None,
             swap_focus_to: "4242_9".to_owned(),
             evidence_calls: 0,
+            last_grab: None,
             membership: vec![20],
             current: Some(20),
             goal: 0,
-            selected: None,
+            selected_chord: None,
+            mouse_points: Vec::new(),
+            key_chords: Vec::new(),
             key_posts: Vec::new(),
             counts: PostCounts::default(),
             fail_begin: false,
@@ -162,6 +167,15 @@ impl FakeManaged {
             cancel_on_mouse_down: None,
         }
     }
+
+    fn check_permit(&self, permit: &ManagedPostPermit) {
+        assert_eq!((permit.pid(), permit.wid()), (4242, 7));
+        assert_eq!(
+            Some(permit.point()),
+            self.last_grab,
+            "post uses exactly the backend-selected fresh grab point"
+        );
+    }
 }
 
 impl ManagedSendBackend for FakeManaged {
@@ -173,9 +187,6 @@ impl ManagedSendBackend for FakeManaged {
     }
     fn display_count(&mut self) -> Result<usize, String> {
         self.displays.clone()
-    }
-    fn revision(&mut self) -> Option<u64> {
-        self.revision
     }
     fn read_holder(&mut self, symbolic_id: u32) -> Result<ShortcutEntry, String> {
         if self.fail_holder_reads.contains(&symbolic_id) {
@@ -192,20 +203,23 @@ impl ManagedSendBackend for FakeManaged {
             "4242_7",
             "effect grabs the pinned subject only"
         );
-        if let Some(evidence) = self.evidence_script.pop_front() {
-            return evidence;
-        }
-        if self
+        let evidence = if let Some(evidence) = self.evidence_script.pop_front() {
+            evidence
+        } else if self
             .swap_from_call
             .is_some_and(|from| self.evidence_calls >= from)
         {
             let mut swapped = self.evidence_base.clone();
             swapped.focused_window = Some(self.swap_focus_to.clone());
-            return swapped;
-        }
-        self.evidence_base.clone()
+            swapped
+        } else {
+            self.evidence_base.clone()
+        };
+        self.last_grab = evidence.grab_point;
+        evidence
     }
-    fn begin_leg(&mut self, goal: u64, chords: SwitchChords) -> Result<(), String> {
+    fn begin_leg(&mut self, permit: ManagedPostPermit, goal: u64) -> Result<(), String> {
+        self.check_permit(&permit);
         if let Some((started, release)) = self.block_begin.take() {
             let _ = started.send(());
             // Bounded block: the test releases; a timeout fails closed.
@@ -220,41 +234,63 @@ impl ManagedSendBackend for FakeManaged {
             return Err("injected leg-setup refusal".to_owned());
         }
         self.goal = goal;
-        self.selected = Some(chords.for_goal(goal, goal));
+        self.selected_chord = Some((permit.keycode(), permit.flags()));
+        self.mouse_points.push(permit.point());
         Ok(())
     }
-    fn post_mouse(&mut self, step: DragStep) -> Result<(), String> {
+    fn post_mouse(&mut self, permit: ManagedPostPermit, step: DragStep) -> Result<(), String> {
+        match step {
+            DragStep::MouseMove | DragStep::MouseDown | DragStep::MouseDragged => {}
+            _ => {
+                return Err(format!(
+                    "refusing non-grab step {step:?} on the managed mouse post"
+                ));
+            }
+        }
+        self.check_permit(&permit);
         if self.fail_mouse_at == Some(step) {
             self.fail_mouse_at = None;
             return Err(format!("injected {step:?} refusal"));
         }
-        if step == DragStep::MouseUp && self.fail_mouse_up {
-            return Err("injected mouse-up refusal".to_owned());
-        }
-        match step {
-            DragStep::MouseDown => {
-                self.counts.mouse_down += 1;
-                if let Some(lane) = self.cancel_on_mouse_down.clone() {
-                    lane.cancel();
-                }
+        assert_eq!(
+            Some((permit.keycode(), permit.flags())),
+            self.selected_chord,
+            "every grab edge carries the exact resolved holder chord"
+        );
+        self.mouse_points.push(permit.point());
+        if step == DragStep::MouseDown {
+            self.counts.mouse_down += 1;
+            if let Some(lane) = self.cancel_on_mouse_down.clone() {
+                lane.cancel();
             }
-            DragStep::MouseUp => self.counts.mouse_up += 1,
-            _ => {}
         }
         Ok(())
     }
-    fn post_key(&mut self, down: bool) -> Result<(), String> {
-        if down {
-            if self.fail_chord_down {
-                return Err("injected chord-down refusal".to_owned());
-            }
-            self.counts.key_down += 1;
-            if let Some(selected) = self.selected {
-                self.key_posts
-                    .push((selected.0, selected.1, selected.2, true));
-            }
-            return Ok(());
+    fn post_key_down(&mut self, permit: ManagedPostPermit) -> Result<(), String> {
+        self.check_permit(&permit);
+        if self.fail_chord_down {
+            return Err("injected chord-down refusal".to_owned());
         }
+        assert_eq!(
+            Some((permit.keycode(), permit.flags())),
+            self.selected_chord,
+            "chord-down carries the exact resolved holder chord"
+        );
+        self.counts.key_down += 1;
+        let chord = (permit.keycode(), permit.flags());
+        self.key_chords.push(chord);
+        let tag = Some(crate::input_match::OWN_SWITCH_USER_DATA);
+        self.key_posts.push((chord.0, chord.1, tag, true));
+        Ok(())
+    }
+    fn release_mouse(&mut self) -> Result<(), String> {
+        if self.fail_mouse_up {
+            return Err("injected mouse-up refusal".to_owned());
+        }
+        self.counts.mouse_up += 1;
+        Ok(())
+    }
+    fn release_key(&mut self) -> Result<(), String> {
         if self.fail_key_up_once {
             self.fail_key_up_once = false;
             return Err("injected chord-up refusal".to_owned());
@@ -263,9 +299,9 @@ impl ManagedSendBackend for FakeManaged {
             return Err("injected chord-up recovery refusal".to_owned());
         }
         self.counts.key_up += 1;
-        if let Some(selected) = self.selected {
-            self.key_posts
-                .push((selected.0, selected.1, selected.2, false));
+        if let Some(selected) = self.selected_chord {
+            let tag = Some(crate::input_match::OWN_SWITCH_USER_DATA);
+            self.key_posts.push((selected.0, selected.1, tag, false));
         }
         if !self.no_effect {
             self.membership = vec![self.goal];
@@ -339,11 +375,12 @@ fn execute_inflight(
 #[test]
 fn managed_permit_gates_down_edges_but_never_up() {
     let pinned = target();
-    assert!(authorize_managed_edge(&pinned, &fresh_ok()).is_ok());
+    let chord = (50u32, CG_CTRL);
+    assert!(authorize_managed_edge(&pinned, &fresh_ok(), chord).is_ok());
     // Pure focus swap while the subject stays managed/readable refuses.
     let mut swapped = fresh_ok();
     swapped.focused_window = Some("4242_9".to_owned());
-    let err = authorize_managed_edge(&pinned, &swapped).expect_err("focus swap refuses");
+    let err = authorize_managed_edge(&pinned, &swapped, chord).expect_err("focus swap refuses");
     assert_eq!(
         err,
         crate::workspace_send_effect::SendProofRefusal::FocusMismatch
@@ -351,10 +388,178 @@ fn managed_permit_gates_down_edges_but_never_up() {
     // Unknown legs refuse too (never guessed).
     let mut unknown = fresh_ok();
     unknown.focused_window = None;
-    assert!(authorize_managed_edge(&pinned, &unknown).is_err());
-    // Permit pins the exact subject.
-    let permit = authorize_managed_edge(&pinned, &fresh_ok()).expect("permit");
+    assert!(authorize_managed_edge(&pinned, &unknown, chord).is_err());
+    // Missing grab point refuses: no permit without the exact point proof.
+    let mut no_point = fresh_ok();
+    no_point.grab_point = None;
+    assert!(authorize_managed_edge(&pinned, &no_point, chord).is_err());
+    // Permit pins the exact subject, point, and chord for one edge.
+    let permit = authorize_managed_edge(&pinned, &fresh_ok(), chord).expect("permit");
     assert_eq!((permit.pid(), permit.wid()), (4242, 7));
+    assert_eq!(permit.point(), (100.0, 200.0));
+    assert_eq!((permit.keycode(), permit.flags()), chord);
+}
+
+#[test]
+fn managed_down_edges_route_exact_point_and_chord() {
+    // Producer-shaped happy path: every down-edge posts at the
+    // backend-selected fresh grab point with the exact resolved holder chord.
+    let handoff = SendEffectHandoff::new();
+    let pinned = target();
+    let mut backend = FakeManaged::new();
+    let (outcome, leg) = execute_inflight(&handoff, &pinned, &mut backend);
+    assert_eq!(outcome, SendEffectOutcome::Applied);
+    assert!(leg.is_some());
+    let digit_2 = desktop_digit_keycode(2).unwrap();
+    assert_eq!(backend.selected_chord, Some((digit_2, CG_CTRL)));
+    assert_eq!(backend.key_chords, vec![(digit_2, CG_CTRL)]);
+    assert!(
+        !backend.mouse_points.is_empty()
+            && backend.mouse_points.iter().all(|p| *p == (100.0, 200.0)),
+        "every grab edge uses the fresh backend-selected point: {:?}",
+        backend.mouse_points
+    );
+    let tag = Some(crate::input_match::OWN_SWITCH_USER_DATA);
+    assert_eq!(
+        backend.key_posts,
+        vec![
+            (digit_2, CG_CTRL, tag, true),
+            (digit_2, CG_CTRL, tag, false)
+        ]
+    );
+}
+
+#[test]
+fn managed_hit_disagreement_releases_without_chord() {
+    // WS hit names a foreign window at the chord-down proof: uncertain only
+    // if the chord already fired, proven here with zero key-downs.
+    let handoff = SendEffectHandoff::new();
+    let pinned = target();
+    let mut backend = FakeManaged::new();
+    let mut bad = fresh_ok();
+    bad.ws_hit = Some("4242_9".to_owned());
+    for _ in 0..4 {
+        backend.evidence_script.push_back(fresh_ok());
+    }
+    backend.evidence_script.push_back(bad);
+    let (outcome, _) = execute(&pinned, &mut backend, &handoff);
+    assert_eq!(outcome, SendEffectOutcome::RefusedProven);
+    assert_eq!(backend.counts.key_down, 0, "disagreement posts no chord");
+    assert_eq!(
+        (backend.counts.mouse_down, backend.counts.mouse_up),
+        (1, 1),
+        "disagreement still releases the held button"
+    );
+}
+
+#[test]
+fn managed_grab_point_shift_before_hold_refuses_without_posts() {
+    // Fresh point drifts at the grab-move proof (call 2), after leg-setup
+    // pinned (100, 200): the move refuses before the button is held, so no
+    // wrong-point post and no chord can follow.
+    let handoff = SendEffectHandoff::new();
+    let pinned = target();
+    let mut backend = FakeManaged::new();
+    let mut shifted = fresh_ok();
+    shifted.grab_point = Some((300.0, 400.0));
+    backend.evidence_script.push_back(fresh_ok());
+    backend.evidence_script.push_back(shifted);
+    let (outcome, _) = execute(&pinned, &mut backend, &handoff);
+    assert_eq!(outcome, SendEffectOutcome::RefusedProven);
+    assert_eq!(backend.counts.mouse_down, 0, "drift pre-hold holds nothing");
+    assert_eq!(backend.counts.key_down, 0, "drift pre-hold posts no chord");
+    assert!(
+        backend.mouse_points.iter().all(|p| *p == (100.0, 200.0)),
+        "shifted point never posts: {:?}",
+        backend.mouse_points
+    );
+    assert!(backend.key_chords.is_empty());
+}
+
+#[test]
+fn managed_grab_point_shift_after_hold_releases_without_chord() {
+    // Fresh point drifts at the dragged proof (call 4): move and down already
+    // posted at the pinned point, the dragged edge refuses, the held button
+    // still releases, and no chord posts at either point.
+    let handoff = SendEffectHandoff::new();
+    let pinned = target();
+    let mut backend = FakeManaged::new();
+    let mut shifted = fresh_ok();
+    shifted.grab_point = Some((300.0, 400.0));
+    for _ in 0..3 {
+        backend.evidence_script.push_back(fresh_ok());
+    }
+    backend.evidence_script.push_back(shifted);
+    let (outcome, _) = execute(&pinned, &mut backend, &handoff);
+    assert_eq!(outcome, SendEffectOutcome::RefusedProven);
+    assert_eq!(
+        (backend.counts.mouse_down, backend.counts.mouse_up),
+        (1, 1),
+        "drift mid-hold still releases the held button"
+    );
+    assert_eq!(backend.counts.key_down, 0, "drift mid-hold posts no chord");
+    assert!(
+        backend.mouse_points.iter().all(|p| *p == (100.0, 200.0)),
+        "shifted point never posts: {:?}",
+        backend.mouse_points
+    );
+    assert!(backend.key_chords.is_empty());
+}
+
+#[test]
+fn managed_releases_are_unconditional_despite_stale_proof() {
+    // Release edges never consult proof: even with a poisoned evidence base
+    // the backend releases cleanly with no down-edge posts outstanding.
+    let mut backend = FakeManaged::new();
+    backend.evidence_base.focused_window = Some("4242_9".to_owned());
+    backend.evidence_base.grab_point = None;
+    assert!(backend.release_mouse().is_ok());
+    assert!(backend.release_key().is_ok());
+    assert_eq!((backend.counts.mouse_up, backend.counts.key_up), (1, 1));
+    assert_eq!((backend.counts.mouse_down, backend.counts.key_down), (0, 0));
+}
+
+#[test]
+fn managed_permit_is_single_use_bound_authority() {
+    // No discarded-permit ceremony may return: the permit is single-use
+    // (no Clone/Copy), carries point+chord, posts consume it by value, and
+    // no duplicate revision fence survives beside the fresh proof.
+    let source = include_str!("workspace_send_managed.rs");
+    assert!(
+        !source.contains("let _permit"),
+        "down-edges must consume the permit, never discard it"
+    );
+    assert!(
+        !source.contains("fn revision("),
+        "no duplicate revision accessor beside the fresh proof fence"
+    );
+    assert!(
+        !source.contains("SwitchChords"),
+        "no free chord struct escapes the bound permit"
+    );
+    for forbidden in [
+        "let _permit",
+        "fn revision(",
+        "SwitchChords",
+        "post_guarded_with_tag",
+    ] {
+        assert!(
+            !source.contains(forbidden),
+            "retired free-arg/discard ceremony must stay gone ({forbidden})"
+        );
+    }
+    assert!(
+        source.contains("pub struct ManagedPostPermit")
+            && source.contains("point: (f64, f64)")
+            && source.contains("keycode: u32"),
+        "permit binds the exact point and chord"
+    );
+    assert!(
+        source.contains("post_key_down(&mut self, permit: ManagedPostPermit)")
+            && source.contains("release_mouse(&mut self)")
+            && source.contains("release_key(&mut self)"),
+        "down-edges consume permits; releases stay permit-free"
+    );
 }
 
 #[test]
@@ -493,6 +698,10 @@ fn managed_stale_generation_revision_and_unknown_refuse() {
             (|e: &mut SendFreshEvidence| e.live_revision = None) as fn(&mut SendFreshEvidence),
             "unknown-revision",
         ),
+        (
+            (|e: &mut SendFreshEvidence| e.grab_point = None) as fn(&mut SendFreshEvidence),
+            "unknown-grab-point",
+        ),
     ] {
         let handoff = SendEffectHandoff::new();
         let pinned = target();
@@ -502,15 +711,6 @@ fn managed_stale_generation_revision_and_unknown_refuse() {
         assert_eq!(outcome, SendEffectOutcome::RefusedProven, "{token}");
         assert_eq!(backend.counts.total(), 0, "{token} posts nothing");
     }
-    // Backend row-revision drift refuses too (pinned revision compared live
-    // before actuation).
-    let handoff = SendEffectHandoff::new();
-    let pinned = target();
-    let mut backend = FakeManaged::new();
-    backend.revision = Some(10);
-    let (outcome, _) = execute(&pinned, &mut backend, &handoff);
-    assert_eq!(outcome, SendEffectOutcome::RefusedProven);
-    assert_eq!(backend.counts.total(), 0);
 }
 
 #[test]
@@ -583,12 +783,12 @@ fn managed_holder_display_and_sid_refusals_post_nothing() {
 
 #[test]
 fn managed_mid_leg_focus_swap_stops_before_chord() {
-    // Per-edge re-proof: the first five proofs pass (admission, leg-setup,
-    // move, down, dragged), the chord-down proof names a foreign window.
+    // Per-edge re-proof: leg-setup, move, down and dragged pass, then the
+    // chord-down proof names a foreign window.
     let handoff = SendEffectHandoff::new();
     let pinned = target();
     let mut backend = FakeManaged::new();
-    backend.swap_from_call = Some(6);
+    backend.swap_from_call = Some(5);
     let (outcome, leg) = execute(&pinned, &mut backend, &handoff);
     assert_eq!(outcome, SendEffectOutcome::RefusedProven);
     assert!(leg.is_none());
@@ -608,7 +808,7 @@ fn managed_release_edges_always_attempt_despite_stale_gates() {
     let handoff = SendEffectHandoff::new();
     let pinned = target();
     let mut backend = FakeManaged::new();
-    backend.swap_from_call = Some(5);
+    backend.swap_from_call = Some(4);
     let (outcome, _) = execute(&pinned, &mut backend, &handoff);
     assert_eq!(outcome, SendEffectOutcome::RefusedProven);
     assert_eq!((backend.counts.mouse_down, backend.counts.mouse_up), (1, 1));

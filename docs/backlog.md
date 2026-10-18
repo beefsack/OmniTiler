@@ -3970,10 +3970,16 @@ decisions of 2026-09-24 are under
         clippy/format and signed build/verify; unsafe stays 114. Product remains
         select-only: no send chords armed, no startup settings writes, no new
         live proof. Native API backend/tile wiring remain absent. Exact
-        point/chord-bound permit consumption, fresh runtime-facts access and
+        Fresh runtime-facts access and
         nonpanic nonblocking teardown ownership block native integration;
         send-stay, trailing lifecycle and per-display attribution remain pending.
-        [Checkpoint, contracts and exact native checks](changes/macos-managed-workspaces.md#identity-and-asynchronous-controller-prerequisite-checkpoint-2026-10-18).
+         [Checkpoint, contracts and exact native checks](changes/macos-managed-workspaces.md#identity-and-asynchronous-controller-prerequisite-checkpoint-2026-10-18).
+        **Posting simplification:** exact point/chord permits are consumed at
+        the post boundary, one grab point is pinned across the leg, and redundant
+        proof/revision plumbing is removed. 979 macOS tests, strict clippy/format
+        and signed app build/verify pass; native backend/teardown/topology
+        coherence remain pending. Unsafe stays 114.
+        [Checkpoint](changes/macos-managed-workspaces.md#managed-posting-simplification-checkpoint-2026-10-18).
        **2026-10-18 delivery checkpoint:** starting the helper on the existing
       second Space resolves crowded placement without moving the protected
       terminal or weakening ownership. Tagged arrow and numbered native transfer

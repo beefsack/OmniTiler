@@ -200,7 +200,7 @@ impl ManagedSendTarget {
 /// Fresh evidence for one [`prove_managed_send`] verdict. Every leg is a
 /// single fresh read on the future effect-owner thread (never a poll, never
 /// cached): `None` means unknown/unreadable and always refuses.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SendFreshEvidence {
     /// Subject still homed to a currently-actuated managed domain.
     pub managed_current: Option<bool>,
@@ -223,6 +223,10 @@ pub struct SendFreshEvidence {
     pub focus_agrees: Option<bool>,
     /// Fresh CG ownership/geometry names the pinned target.
     pub geometry_ok: Option<bool>,
+    /// Backend-selected fresh grab point where both hit-tests were taken.
+    /// `None` (or non-finite) refuses: a permit can never bind a point the
+    /// proof did not cover.
+    pub grab_point: Option<(f64, f64)>,
     /// Fresh positional AX hit-test window at the grab point.
     pub ax_hit: Option<String>,
     /// Fresh WindowServer hit-test window at the grab point.
@@ -251,6 +255,7 @@ pub enum SendProofRefusal {
     FocusDisagree,
     UnknownGeometry,
     GeometryMismatch,
+    UnknownGrabPoint,
     UnknownAxHit,
     AxMismatch,
     UnknownWsHit,
@@ -280,6 +285,7 @@ impl SendProofRefusal {
             Self::FocusDisagree => "refused-send-focus-disagree",
             Self::UnknownGeometry => "refused-send-unknown-geometry",
             Self::GeometryMismatch => "refused-send-geometry-mismatch",
+            Self::UnknownGrabPoint => "refused-send-unknown-grab-point",
             Self::UnknownAxHit => "refused-send-unknown-ax-hit",
             Self::AxMismatch => "refused-send-ax-mismatch",
             Self::UnknownWsHit => "refused-send-unknown-ws-hit",
@@ -348,6 +354,10 @@ pub fn prove_managed_send(
         None => return Err(SendProofRefusal::UnknownGeometry),
         Some(false) => return Err(SendProofRefusal::GeometryMismatch),
         Some(true) => {}
+    }
+    match fresh.grab_point {
+        Some((x, y)) if x.is_finite() && y.is_finite() => {}
+        _ => return Err(SendProofRefusal::UnknownGrabPoint),
     }
     match fresh.ax_hit.as_deref() {
         None => return Err(SendProofRefusal::UnknownAxHit),
@@ -598,6 +608,7 @@ mod tests {
             focused_window: Some("4242_7".to_owned()),
             focus_agrees: Some(true),
             geometry_ok: Some(true),
+            grab_point: Some((100.0, 200.0)),
             ax_hit: Some("4242_7".to_owned()),
             ws_hit: Some("4242_7".to_owned()),
         }
@@ -853,6 +864,17 @@ mod tests {
             (
                 (|fresh: &mut SendFreshEvidence| fresh.ws_hit = None) as fn(&mut SendFreshEvidence),
                 SendProofRefusal::UnknownWsHit,
+            ),
+            (
+                (|fresh: &mut SendFreshEvidence| fresh.grab_point = None)
+                    as fn(&mut SendFreshEvidence),
+                SendProofRefusal::UnknownGrabPoint,
+            ),
+            (
+                (|fresh: &mut SendFreshEvidence| {
+                    fresh.grab_point = Some((f64::NAN, 200.0));
+                }) as fn(&mut SendFreshEvidence),
+                SendProofRefusal::UnknownGrabPoint,
             ),
         ] {
             let mut fresh = fresh_ok();
