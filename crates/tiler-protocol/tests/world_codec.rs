@@ -1372,24 +1372,23 @@ fn shared_fixture_actual_bytes_gate() {
             .flat_map(|d| d.windows.iter())
             .any(|w| w.window.0 == "win-game" && w.fullscreen && w.fit_excluded)
     );
-    // Send command with exactly the target binding pinned.
+    // Direction-only send: no endpoint is named (core resolves the strict
+    // target), so no binding pins for the target.
     let send = decode_request(FIXTURE_SEND).expect("decodes");
     match &send.command {
-        Some(WorldCommand::Send {
+        Some(WorldCommand::SendDirectional {
             window,
-            target_workspace,
+            direction,
             follow,
-            ..
         }) => {
             assert_eq!(window.0, "win-a");
-            assert_eq!(target_workspace, "ws-2");
+            assert_eq!(direction, "right");
             assert!(!follow);
         }
-        other => panic!("expected send, got {other:?}"),
+        other => panic!("expected send-directional, got {other:?}"),
     }
     let pinned: Vec<_> = send.bindings.iter().filter(|b| b.pinned).collect();
-    assert_eq!(pinned.len(), 1, "exactly the send target pins");
-    assert_eq!(pinned[0].native_id, "ws-2");
+    assert!(pinned.is_empty(), "direction-only send pins nothing");
     // Drag-drop operation with the Started source and no invented hover.
     let drag = decode_request(FIXTURE_DRAGDROP).expect("decodes");
     match &drag.command {

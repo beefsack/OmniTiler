@@ -821,9 +821,13 @@ impl WorldEngine {
         self.finish_operation_event(report, command_seq, &event)
     }
 
-    /// Direction-only focus (core-owned topology): cross left/right through
-    /// the strict unique-reciprocal pair when resolvable, otherwise local
-    /// single-domain focus. Up/down never cross (KDE policy). No adapter
+    /// Direction-only focus (core-owned topology): strict parity with the
+    /// extracted KDE map. Left/right resolve the strict unique-reciprocal
+    /// target from retained FULL rects and run the cross-output pair,
+    /// returning its result directly including refusal (held/unreadable/
+    /// inset-invalid targets refuse; no silent local fallback, preserving
+    /// target/safety fences). Up/down and missing/ambiguous/partial/
+    /// edgeless topology run the local single-domain focus. No adapter
     /// target or `crossOutput` is read; the core decides.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn focus_directional(
@@ -859,40 +863,33 @@ impl WorldEngine {
             };
         }
         // KDE focus policy: only left/right may cross. Up/down always run
-        // local, so a vertical strict edge never diverts focus.
-        let may_cross = matches!(
+        // local, so a vertical strict edge never diverts focus. When a
+        // strict target exists, run the cross pair and return its result
+        // directly (including refusal): old KDE crossForDirection was true
+        // for strict adjacency irrespective of held/unreadable targets and
+        // the cross operation refused. No silent relabel as local success.
+        let cross_target = matches!(
             direction_parsed,
             Direction::Left | Direction::Right
-        ) && self
-            .core_topology_target(&source_key.output, direction_parsed)
-            .is_some();
-        let cross_command = CoreCommand::Focus {
-            window: window.0.clone(),
-            direction: direction.to_owned(),
-            cross_output_transfer: true,
-            float_subject,
-        };
-        if may_cross {
-            // Cross path first; any cross refusal falls back to local
-            // rather than refusing an action that has a valid
-            // single-domain target (edgeless/ambiguous/partial topology,
-            // or a cross noop). Scope-held falls back too and refuses
-            // again locally with the same kind.
-            let probe = self.directional_pair_for(report, &source_key, direction, held_scopes);
-            if probe.is_some() {
-                match self.operation_directional(
-                    report,
-                    command_seq,
-                    &cross_command,
-                    &window.0,
-                    direction,
-                    by_id,
-                    held_scopes,
-                ) {
-                    CommandApplied::Rejected { .. } => {}
-                    applied => return applied,
-                }
-            }
+        )
+        .then(|| self.core_topology_target(&source_key.output, direction_parsed))
+        .flatten();
+        if cross_target.is_some() {
+            let command = CoreCommand::Focus {
+                window: window.0.clone(),
+                direction: direction.to_owned(),
+                cross_output_transfer: true,
+                float_subject,
+            };
+            return self.operation_directional(
+                report,
+                command_seq,
+                &command,
+                &window.0,
+                direction,
+                by_id,
+                held_scopes,
+            );
         }
         let local_command = CoreCommand::Focus {
             window: window.0.clone(),
@@ -903,9 +900,11 @@ impl WorldEngine {
         self.run_local_operation(report, command_seq, &local_command, by_id, held_scopes)
     }
 
-    /// Direction-only move (core-owned topology): cross in all four
-    /// directions through the strict pair when resolvable, otherwise local
-    /// R1-R3. No adapter target or `crossOutput` is read; the core decides.
+    /// Direction-only move (core-owned topology): strict parity. All four
+    /// directions resolve the strict target and run the cross pair,
+    /// returning its result directly including refusal. Only
+    /// missing/ambiguous/partial/edgeless topology runs local R1-R3.
+    /// No adapter target or `crossOutput` is read; the core decides.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn move_directional(
         &mut self,
@@ -939,31 +938,28 @@ impl WorldEngine {
                 message: MSG_SCOPE_HELD,
             };
         }
-        let may_cross = self
+        // Strict parity: when a strict target exists, run the cross pair
+        // and return its result directly (including refusal). Local R1-R3
+        // runs only with no strict target.
+        if self
             .core_topology_target(&source_key.output, direction_parsed)
-            .is_some();
-        let cross_command = CoreCommand::Move {
-            window: window.0.clone(),
-            direction: direction.to_owned(),
-            cross_output_transfer: true,
-            same_axis_move: same_axis,
-        };
-        if may_cross {
-            let probe = self.directional_pair_for(report, &source_key, direction, held_scopes);
-            if probe.is_some() {
-                match self.operation_directional(
-                    report,
-                    command_seq,
-                    &cross_command,
-                    &window.0,
-                    direction,
-                    by_id,
-                    held_scopes,
-                ) {
-                    CommandApplied::Rejected { .. } => {}
-                    applied => return applied,
-                }
-            }
+            .is_some()
+        {
+            let command = CoreCommand::Move {
+                window: window.0.clone(),
+                direction: direction.to_owned(),
+                cross_output_transfer: true,
+                same_axis_move: same_axis,
+            };
+            return self.operation_directional(
+                report,
+                command_seq,
+                &command,
+                &window.0,
+                direction,
+                by_id,
+                held_scopes,
+            );
         }
         let local_command = CoreCommand::Move {
             window: window.0.clone(),

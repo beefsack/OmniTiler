@@ -1,10 +1,12 @@
 //! Direction-only world intents (core-owned topology): KDE sends
 //! win+direction or source+direction only with empty wire adjacency; the
 //! core resolves the strict unique-reciprocal target from retained FULL
-//! rects. Ordinary two-output, single-output local fallback,
-//! ambiguity/partial fencing, follow/stay sends, source-explicit migrate
-//! with no active window, and topology retention independent of window
-//! inventory.
+//! rects. Strict parity: a strict edge runs the cross pair and returns its
+//! result directly (no local fallback, preserving safety fences); local
+//! R1-R3 runs only with no strict target (single-output, ambiguous,
+//! partial, or focus up/down). Covers follow/stay sends, source-explicit
+//! migrate with no active window, topology retention independent of window
+//! inventory, and GlobalUnique mode.
 
 use std::collections::BTreeMap;
 
@@ -15,8 +17,8 @@ use tiler_core::session::OutputDomain;
 use tiler_core::workspace_scope::WorkspaceMode;
 use tiler_core::world_engine::{WorldEngine, WorldOutcome};
 use tiler_core::world_report::{
-    DomainReport, OutputTopology, TransferKind, WORLD_CONTRACT_VERSION, WorkspaceBinding,
-    WorldCommand, WorldReport,
+    DomainReport, HoldReason, OutputTopology, TransferKind, WORLD_CONTRACT_VERSION,
+    WorkspaceBinding, WorldCommand, WorldReport,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -220,11 +222,9 @@ fn focus_directional_crosses_two_outputs_without_wire_adjacency() {
 }
 
 #[test]
-fn move_directional_crosses_and_single_output_falls_back_local() {
-    // Two outputs, distinct workspaces, two tiles in the source: move
-    // attempts cross, falling back to local. The command must never
-    // refuse on topology (planner-noop/unchanged are legitimate local
-    // outcomes when the focused tile has no neighbor in that direction).
+fn move_directional_strict_cross_and_single_output_local() {
+    // Strict parity: with a strict edge, the cross pair returns directly
+    // (no local fallback). Distinct workspaces, two tiles in the source.
     let mut engine = WorldEngine::new("gen-1").expect("valid");
     accepted(&mut engine, &two_output_report(1, Some(rect(800, 0, 800, 600))));
     let mut cross = two_output_report(2, Some(rect(800, 0, 800, 600)));
@@ -238,18 +238,10 @@ fn move_directional_crosses_and_single_output_falls_back_local() {
             same_axis: tiler_core::directional::SameAxisMove::GroupWithNeighbor,
         },
     );
-    match engine.handle_report(&cross) {
-        WorldOutcome::Accepted(_) => {}
-        WorldOutcome::Rejected { kind, .. } => {
-            assert!(
-                matches!(kind, "planner-noop" | "unchanged"),
-                "cross move must not refuse on topology, got {kind}"
-            );
-        }
-        other => panic!("unexpected outcome {other:?}"),
-    }
-    // Single output: no resolvable target, so the core runs the local
-    // R1-R3 path instead of refusing all operations.
+    // Cross path accepted (Engine resolves via the pair; no topology
+    // refusal and no silent local relabel).
+    accepted(&mut engine, &cross);
+    // Single output: no strict target, so the core runs local R1-R3.
     let mut solo_engine = WorldEngine::new("gen-1").expect("valid");
     accepted(&mut solo_engine, &single_output_report(1));
     let mut local = single_output_report(2);
@@ -263,16 +255,7 @@ fn move_directional_crosses_and_single_output_falls_back_local() {
             same_axis: tiler_core::directional::SameAxisMove::GroupWithNeighbor,
         },
     );
-    match solo_engine.handle_report(&local) {
-        WorldOutcome::Accepted(_) => {}
-        WorldOutcome::Rejected { kind, .. } => {
-            assert!(
-                matches!(kind, "planner-noop" | "unchanged"),
-                "local move must not refuse on topology, got {kind}"
-            );
-        }
-        other => panic!("unexpected outcome {other:?}"),
-    }
+    accepted(&mut solo_engine, &local);
     // Focus right on a single output is local (never a cross refusal).
     // Fresh engine so the local layout still has win-a left of win-a2.
     let mut focus_engine = WorldEngine::new("gen-1").expect("valid");
@@ -576,4 +559,144 @@ fn live_topology_survives_unrelated_window_inventory_gap() {
             .any(|t| t.target_output.0 == "out-b"),
         "topology retention ignores window inventory gaps"
     );
+}
+
+fn unreadable_target_report(seq: u64) -> WorldReport {
+    // Same-workspace strict edge (out-a|out-b share ws1, FULL rects touch
+    // at x=800), source two tiles so a local right would succeed, target
+    // unreadable. Strict parity must refuse with no local rearrangement.
+    let mut report = same_ws_report(seq);
+    report.domains[0] = domain_report(
+        "out-a",
+        "ws1",
+        vec![
+            engine_window("win-a", "out-a", "ws1"),
+            engine_window("win-a2", "out-a", "ws1"),
+        ],
+    );
+    report.domains[1] = DomainReport {
+        domain: OutputDomain {
+            id: OutputId("out-b".to_owned()),
+            workspace: WorkspaceId("ws1".to_owned()),
+            bounds: rect(0, 0, 800, 600),
+            gap: 0,
+            adjacent: BTreeMap::new(),
+        },
+        outer_gap: 0,
+        focused: WindowId(String::new()),
+        windows: Vec::new(),
+        closed: Vec::new(),
+        readable: false,
+        hold: Some(HoldReason::Unreadable),
+    };
+    report.focused_global = "win-a".to_owned();
+    report
+}
+
+#[test]
+fn strict_target_unreadable_refuses_without_local_fallback() {
+    // Focus right: strict edge exists, target unreadable. Must refuse
+    // operation-refused with no local effect (old fallback would have
+    // focused win-a2 locally).
+    let mut engine = WorldEngine::new("gen-1").expect("valid");
+    let report = unreadable_target_report(1);
+    let before = engine.state_revision();
+    let mut cmd = report.clone();
+    with_command(
+        &mut cmd,
+        1,
+        71,
+        WorldCommand::FocusDirectional {
+            window: WindowId("win-a".to_owned()),
+            direction: "right".to_owned(),
+            float_subject: false,
+        },
+    );
+    match engine.handle_report(&cmd) {
+        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "operation-refused"),
+        other => panic!("expected operation refusal, got {other:?}"),
+    }
+    assert_eq!(
+        engine.state_revision(),
+        before,
+        "refusal mutates nothing (no local rearrangement)"
+    );
+    // Move right: same strict edge, same unreadable target. Must refuse
+    // rather than swapping locally.
+    let mut engine = WorldEngine::new("gen-1").expect("valid");
+    let before = engine.state_revision();
+    let mut cmd = unreadable_target_report(1);
+    with_command(
+        &mut cmd,
+        1,
+        72,
+        WorldCommand::MoveDirectional {
+            window: WindowId("win-a".to_owned()),
+            direction: "right".to_owned(),
+            same_axis: tiler_core::directional::SameAxisMove::GroupWithNeighbor,
+        },
+    );
+    match engine.handle_report(&cmd) {
+        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "operation-refused"),
+        other => panic!("expected operation refusal, got {other:?}"),
+    }
+    assert_eq!(
+        engine.state_revision(),
+        before,
+        "refusal mutates nothing (no local swap)"
+    );
+}
+
+#[test]
+fn global_unique_retains_topology_and_fences_directionally() {
+    // GlobalUnique mode: same strict geometry, distinct workspaces.
+    // Retention, directional resolution, and partial fencing are
+    // mode-independent (shared retains identically; see WorldEngine docs).
+    fn global_report(seq: u64, geometry_b: Option<Rect>) -> WorldReport {
+        let mut report = two_output_report(seq, geometry_b);
+        report.workspace_mode = WorkspaceMode::GlobalUnique;
+        // Single window per domain so cross has no local competitor.
+        report.domains[0] = domain_report(
+            "out-a",
+            "wa1",
+            vec![engine_window("win-a", "out-a", "wa1")],
+        );
+        report
+    }
+    let mut engine = WorldEngine::new("gen-1").expect("valid");
+    accepted(&mut engine, &global_report(1, Some(rect(800, 0, 800, 600))));
+    // Focus right crosses in GlobalUnique (strict edge, readable target).
+    let mut cross = global_report(2, Some(rect(800, 0, 800, 600)));
+    with_command(
+        &mut cross,
+        2,
+        81,
+        WorldCommand::FocusDirectional {
+            window: WindowId("win-a".to_owned()),
+            direction: "right".to_owned(),
+            float_subject: false,
+        },
+    );
+    let reply = accepted(&mut engine, &cross);
+    assert!(
+        reply.effects.iter().any(|e| e.target.0 == "win-b"),
+        "GlobalUnique focus crosses, effects={:?}",
+        reply.effects
+    );
+    // Partial geometry fences sends even in GlobalUnique.
+    let mut partial = global_report(3, None);
+    with_command(
+        &mut partial,
+        3,
+        82,
+        WorldCommand::SendDirectional {
+            window: WindowId("win-a".to_owned()),
+            direction: "right".to_owned(),
+            follow: false,
+        },
+    );
+    match engine.handle_report(&partial) {
+        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "send-target-unknown"),
+        other => panic!("expected send fence on partial topology, got {other:?}"),
+    }
 }
