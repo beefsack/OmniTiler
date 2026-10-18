@@ -1076,3 +1076,158 @@ fn explicit_send_resolves_native_ordinal_once_at_admission() {
         }
     ));
 }
+
+/// Semantic contrast for the 277-startup repair: the legacy positional
+/// `SendNumbered{index:1}` self-targets through the stable-logical scoped
+/// ring (`[space-277, space-1]`) and refuses, while the fixed explicit
+/// `Send{target_workspace: space-1}` admission-resolved against the native
+/// row (`[1, 277]`) admits — under identical native context, members,
+/// focus, and report shape. Both second reports validate, so the red is a
+/// semantic `send-target-unknown` refusal, never an API/compile oracle.
+#[test]
+fn legacy_numbered_send_self_targets_under_277_startup() {
+    use crate::world_command_map::send_command;
+    use tiler_core::world_report::TransferKind;
+    let ctx = repro_ctx(277);
+    let output = OutputId(crate::topology::output_key(1));
+    let sid = context_target_sid(&ctx, &output, 1).expect("Desktop-1 binds");
+    assert_eq!(sid, 1, "native Desktop-1 is SID 1 in this context");
+    let members = repro_members(277, 27619, 4393);
+    let (focused, global) = repro_focused(277, 27619, 4393);
+    let (sessions, closed, unreadable) = repro_empty_maps();
+
+    // Legacy positional path: SendNumbered index 1 resolves through the
+    // scoped send ring whose stable-logical order is [277, 1] here, so it
+    // names the source itself and refuses same-space.
+    let mut legacy = WorldEngine::new(REPRO_GENERATION).expect("generation parses");
+    let first = repro_report(
+        &ctx,
+        &members,
+        &sessions,
+        &focused,
+        &closed,
+        &unreadable,
+        &global,
+        1,
+        1,
+        "req-1",
+        None,
+        None,
+    );
+    assert!(validate_report(&first));
+    assert!(matches!(
+        legacy.handle_report(&first),
+        WorldOutcome::Accepted(_)
+    ));
+    let legacy_command = WorldCommand::SendNumbered {
+        window: WindowId("27619_4393".to_owned()),
+        output: output.clone(),
+        index: 1,
+        follow: true,
+    };
+    let legacy_second = repro_report(
+        &ctx,
+        &members,
+        &sessions,
+        &focused,
+        &closed,
+        &unreadable,
+        &global,
+        2,
+        2,
+        "req-2",
+        Some(2),
+        Some(legacy_command),
+    );
+    assert!(
+        validate_report(&legacy_second),
+        "legacy report is well-formed wire input"
+    );
+    assert!(
+        matches!(
+            legacy.handle_report(&legacy_second),
+            WorldOutcome::Rejected {
+                kind: "send-target-unknown",
+                ..
+            }
+        ),
+        "legacy SendNumbered-1 from a 277-started runtime self-targets and refuses"
+    );
+    assert!(
+        legacy.retained_transfers().is_empty(),
+        "refused legacy send retains nothing"
+    );
+
+    // Fixed admission-resolved path: identical context/report shape, but the
+    // command carries the native SID directly and admits with stable
+    // follow + operation identity.
+    let mut fixed = WorldEngine::new(REPRO_GENERATION).expect("generation parses");
+    let first = repro_report(
+        &ctx,
+        &members,
+        &sessions,
+        &focused,
+        &closed,
+        &unreadable,
+        &global,
+        1,
+        1,
+        "req-1",
+        None,
+        None,
+    );
+    assert!(validate_report(&first));
+    assert!(matches!(
+        fixed.handle_report(&first),
+        WorldOutcome::Accepted(_)
+    ));
+    let fixed_command = send_command(
+        &send(1),
+        "27619_4393",
+        output.clone(),
+        &crate::topology::workspace_key(sid),
+    )
+    .expect("send route");
+    let fixed_second = repro_report(
+        &ctx,
+        &members,
+        &sessions,
+        &focused,
+        &closed,
+        &unreadable,
+        &global,
+        2,
+        2,
+        "req-2",
+        Some(2),
+        Some(fixed_command),
+    );
+    assert!(
+        validate_report(&fixed_second),
+        "fixed report is well-formed wire input"
+    );
+    assert!(
+        matches!(
+            fixed.handle_report(&fixed_second),
+            WorldOutcome::Accepted(_)
+        ),
+        "explicit Send to space-1 from a 277-started runtime admits"
+    );
+    let retained = fixed.retained_transfers();
+    assert_eq!(retained.len(), 1, "one retained window transfer");
+    assert_eq!(
+        retained[0].kind,
+        TransferKind::Window(WindowId("27619_4393".to_owned()))
+    );
+    assert_eq!(retained[0].target_output, output);
+    assert_eq!(
+        retained[0].target_workspace,
+        crate::topology::workspace_key(sid)
+    );
+    assert_eq!(retained[0].target_workspace, "space-1");
+    assert!(retained[0].follow, "follow semantics unchanged");
+    assert_eq!(
+        retained[0].operation_id, "op-2",
+        "stable operation identity unchanged"
+    );
+}
