@@ -251,8 +251,9 @@ decisions of 2026-09-24 are under
   the topology gap, not delivered W2. Resume after shared core+KDE delivery,
   with no Windows adjacency code; runtime adoption remains pending and the
   handover retains concurrent native-gate failures requiring reconciliation.
-- P1 | Shared core: own output topology | Proposal ready for cross-stream
-  review, User direction 2026-10-18: retain FULL monitor rectangles from world
+- P1 | Shared core: own output topology | In progress (core/KDE stream).
+  User 2026-10-18 order: topology first, then D23 rehome/13f maximize base.
+  User direction 2026-10-18: retain FULL monitor rectangles from world
   reports and derive adjacency/targets in core, not adapters. KDE stream to
   deliver core+KDE; Windows world adoption resumes afterward without Windows
   adjacency code; macOS adopts shared topology over its delivered world reports.
@@ -1136,7 +1137,9 @@ decisions of 2026-09-24 are under
     measured 2026-10-17: hidden CPU was granularity-limited near-zero, not
     proven zero. Visible timeout attribution and fractional-deadline correction
     delivered 2026-10-18 (0.524/s -> 0.498/s; no demonstrated CPU reduction);
-    native event alternatives researched, choice parked. Chevron response and
+    native event alternatives researched. User 2026-10-18: run the controlled
+    live event-coverage probe before 0.1 and replace the visible-pager 2 s
+    recovery timer then if events prove complete. Chevron response and
     physical input/preview remain pending. Existing
     approved icon-cache refresh explains visible managed completion wakes;
     retain visible-pager 2 s recovery pending a complete native wake source or
