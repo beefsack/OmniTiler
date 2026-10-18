@@ -1,7 +1,8 @@
-# Windows 0.1 gate proposal
+# Windows 0.1 approved gate
 
-- Status: proposal, awaiting user approval; no gate exception or new release
-  classification is approved by this record.
+- Status: approved gate. User approved D1, D2, D3 and D4 exactly as written
+  on 2026-10-19. Native/physical acceptance remains pending; this is not
+  release acceptance.
 - Basis: [shared scope and platform goals](../decisions.md#scope-and-platform-goals)
   (2026-10-18) and the approved
   [57-check inventory](../research/release-0.1-triage.md#proposal-b---pending-live-checks-53-top-level-m39--k12--w2).
@@ -10,10 +11,10 @@
 
 - Map all 53 original checks and N1-N4 to Windows exactly once, preserving
   their original 43 must-pass / 12 known-issue-allowed / 2 Windows-release labels.
-- Propose explicit host equivalents, exclusions and grounded Windows additions;
+- Record approved host equivalents, exclusions and grounded Windows additions;
   distinguish existing evidence from outstanding acceptance.
-- No runtime, functional specification, principles or durable decision changes;
-  no new live testing. This is not release acceptance.
+- No runtime, functional specification or principles changes; the approved gate
+  is promoted to [durable decisions][scope]. No new live testing.
 - Approach: inventory the shared template, inspect current and archived Windows
   records, reconcile platform differences, then verify IDs, counts and links.
   All 57 mappings and extras are reviewed together; physical/native acceptance
@@ -26,13 +27,13 @@
   **X** = not applicable (reason stated). Different implementation alone does
   not justify an exception.
 - Original class: **M** = must-pass, **K** = known-issue-allowed, **W** = the
-  original Windows-release class, not a Windows waiver. Recommend treating both
-  W rows as Windows 0.1 must-pass; this promotion awaits the decision below.
+  original Windows-release class, not a Windows waiver. Both W rows are approved
+  Windows 0.1 must-pass under D2; original table labels remain unchanged.
 - Evidence: **P** = partial Windows native/physical evidence, with remaining
   acceptance pending; **O** = offline implementation/fixtures only for the
   mapped journey, native acceptance pending; **U** = pending, no accepted Windows
   journey located for this check; **X** = excluded, no Windows acceptance needed
-  if approved. No row is claimed fully passed. A related pass does not complete
+  under D1. No row is claimed fully passed. A related pass does not complete
   a larger check or establish evidence for a changed runtime route.
 - Source baseline: repository records reviewed 2026-10-18. In particular,
   [world adoption][world] is still test-only W2a, not runtime cutover or positive
@@ -123,20 +124,20 @@
 | N3 | M | Sleep with fullscreen game | A | Sleep/wake with a real fullscreen game and tiled session; game unimpeded, no stuck holds, correct recovery. | **U**: [backlog][backlog] and [Windows lifecycle plan][winplan] supply pending scope/design, not native evidence. |
 | N4 | M | Scaling with overlays | H | Change Windows DPI/resolution/work area with maximized/fullscreen/fixed-float windows; fresh physical-coordinate conversion and overlay/pager reanchor, no fullscreen geometry writes. | **O**: [pager lifecycle][pagerlife] covers stale-hide/fresh-geometry/DPI fixtures, expressly not physical reconfiguration; [foundation][multi] is not a simulated native DPI transition. Native matrix pending. |
 
-## Windows-specific extras proposed
+## Approved Windows-specific extras
 
 - These eight extras extend or sharpen existing gate categories; they are not
   added to the historical 57 tally. Shared journeys need not be run twice when
-  one retained evidence set establishes both assertions. All are proposed
-  **must-pass**, except the explicitly bounded Authentic collision limitation
-  in WX1, which needs the user decision below.
+  one retained evidence set establishes both assertions. All are approved
+  **must-pass**, with only the explicitly bounded Authentic Win+G/Win+F11
+  exact-chord containment gap in WX1 carried as a listed limitation under D4.
 - No new capability, host mechanism, urgency design or shell-selection policy
   is selected. Unsupported native outcomes remain TBD in the existing linked
-  discriminators; this proposal sets acceptance questions, not invented answers.
+  discriminators; this gate sets acceptance questions, not invented answers.
 - Existing D27 defaults and Windows OS-permitted activation amendment remain
   unchanged ([gaming][gaming]); neither denied-request samples nor default
   policy establish complete urgency mark/clear or real-game activation evidence.
-  This proposal does not move the post-0.1 Activation request setting into 0.1.
+  This gate does not move the post-0.1 Activation request setting into 0.1.
 
 | ID | Extra / related checks | Proposed Windows acceptance and grounding | Current evidence |
 | --- | --- | --- | --- |
@@ -151,6 +152,14 @@
 
 ## User decisions
 
+- User approval 2026-10-19: D1, D2, D3 and D4 are each accepted exactly as
+  written below, including their stated boundaries and consequences. The
+  recommendation text is retained verbatim as the approved decision wording.
+- Effective gate: 45 base must-pass / 7 known-issue-allowed / 5 excluded,
+  plus eight must-pass extras WX1-WX8. N1 owner/thread-loss recovery remains
+  separate in checks 28/30/50 and WX7. Approval does not change mappings,
+  evidence cells or pending native acceptance.
+
 | Decision | Recommendation | Consequence / alternative |
 | --- | --- | --- |
 | D1: Windows host equivalents and exclusions | Accept the A/H/X matrix, with only five full-check exclusions: 5, 35, 38, 40, 53 (all originally K). Retain all 43 M checks and the Windows equivalents of their safety assertions. | H is substitution, not reduced rigor. Check 21 physical shell-popups stays pending, not an exception; check 29 systemd and N1 KWin-package sub-steps are inapplicable only as stated. Reject/adjust individual equivalents explicitly rather than infer blanket host parity. |
@@ -158,7 +167,7 @@
 | D3: Windows companion-failure boundary (N1) | Accept optional visual disable/unavailability and carrier-creation failure as the Windows effect-absent equivalent, with tiling continuing; retain integrated owner/thread-loss recovery separately. | There is no removable KWin-effect package or surviving external Planner on Windows. If this is insufficient, specify a stronger failure-isolation requirement before claiming N1 equivalence; no architecture change is authorized by this proposal. |
 | D4: Windows extras and Authentic collision limit | Add WX1-WX8. Require physical Compatible routing, real-game safety/cost and Xbox-return recovery; carry only the already disclosed Authentic G/F11 exact-chord containment gap as a listed limit. | Requiring reliable containment of original G/F11 instead would reopen the parked blocker. Conflict avoidance is not suppression; no game-safety, recovery, elevation or secure-desktop failure is proposed as a known issue. |
 
-## Dependencies, tentative choices and verification
+## Dependencies, outcome and verification
 
 - Delivery dependencies are unchanged: [world adoption][world] needs positive
   migration/refill authority, source-preserving T2 refusal, atomic cutover and
@@ -166,20 +175,21 @@
   needs its retained-input discriminators. No release pass follows from their
   offline test totals. Windows package/update-channel selection and installed
   acceptance remain in [scope][scope] / [backlog][backlog].
-- Tentative presentation choices only: reuse original IDs/classes; count whole
+- Presentation choices: reuse original IDs/classes; count whole
   checks rather than sub-legs; group overlapping extras to avoid duplicate runs;
   use conservative P/O/U/X evidence labels, never a blanket pass. A/H/X choices,
-  W-to-must-pass treatment, N1 boundary and extras are recommendations for the
-  user, not adopted product decisions.
-- Proposal acceptance: all 57 IDs/classes mapped once, explicit Windows
+  W-to-must-pass treatment, N1 boundary and extras are adopted under D1-D4.
+- Record acceptance: all 57 IDs/classes mapped once, explicit Windows
   equivalents/exclusion reasons, evidence pointers and pending gaps on every
-  row, eight grounded extras, and four decisions with recommendations.
+  row, eight grounded extras, and four decisions approved exactly as written.
 - Verification: documentation-only inventory/count/link and whitespace checks passed;
-  no code or desktop tests performed. No decisions, principles or macOS records
-  changed. This note remains active while the proposal awaits user approval.
-- Next action: user decides D1-D4; then record only the accepted gate changes
-  and schedule the remaining Windows native/physical checks against the runtime
-  route that will ship. Until then, no Windows 0.1 gate completion is claimed.
+  no code or desktop tests performed. Approval update verified links, ASCII
+  additions and `git diff --check`; mappings and evidence cells are unchanged.
+  Durable decisions and backlog now reflect the approved gate; no principles
+  or macOS records changed. This record remains active for pending acceptance.
+- Next action: complete the remaining Windows native/physical checks against
+  the runtime route that will ship, tracked under the P0 0.1 release item.
+  No Windows 0.1 gate completion is claimed.
 
 ## Evidence sources
 

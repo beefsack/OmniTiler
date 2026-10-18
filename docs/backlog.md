@@ -539,6 +539,13 @@ decisions of 2026-09-24 are under
   leaves tiling working (and KWin stable on KDE). Other live checks may ship as
   listed known issues provided none crashes or silently stops tiling; no separate
   dogfood period. Includes these pending pieces:
+  - Windows gate D1-D4 approved exactly as written (User 2026-10-19):
+    [approved gate and pending evidence](changes/windows-0.1-gate-proposal.md).
+    Base 45 must-pass / 7 known-issue-allowed / 5 excluded plus WX1-WX8
+    must-pass; only the Authentic Win+G/Win+F11 exact-chord containment gap
+    is a listed limitation. Native/physical acceptance against the shipping
+    runtime route and delivery dependencies remain pending; gate definition
+    approval is not release acceptance.
   - [OPEN-requirement triage and live-check gate](research/release-0.1-triage.md):
     User 2026-10-10 approved recommendation (a) for 15 units: D02, D04, D05,
     D06, D07, D08, D11, D14, D15, D17, D18 (no setting), D19, D20 (no lower
@@ -572,10 +579,11 @@ decisions of 2026-09-24 are under
   ([candidate lessons](research/non-native-tiler-host-interaction.md#candidate-lessons-for-this-project),
   [cross-cutting findings](research/non-native-tiler-host-interaction.md#cross-cutting-findings),
   [evidence](changes/archive/non-native-tiler-host-interaction.md)).
-- P0 | Windows: propose 0.1 gate exceptions against the shared template |
+- DONE | Windows: propose 0.1 gate exceptions against the shared template |
   [57-check mapping, host exceptions and Windows extras](changes/windows-0.1-gate-proposal.md)
-  proposed against the [shared gate decision](decisions.md#scope-and-platform-goals);
-  awaits user approval. Native/physical acceptance remains pending.
+  approved exactly as written in D1-D4 (User 2026-10-19), under the
+  [shared gate decision](decisions.md#scope-and-platform-goals).
+  Native/physical acceptance remains tracked under the P0 0.1 release item.
 - P0 | macOS: propose 0.1 gate exceptions against the shared template |
   Apply the [shared gate decision](decisions.md#scope-and-platform-goals) for user approval.
 - P1 | Ubuntu 26.04/26.10 acceptance | KWin 6.6 floor selected by user

@@ -400,6 +400,17 @@ platform API behavior.
   propose applicable checks, documented host-difference exceptions and
   platform-specific extras for user approval; exact host parity remains subject
   to that approval. The KDE gate is unchanged.
+- User approval 2026-10-19: Windows 0.1 gate D1-D4 accepted exactly as written
+  in the [approved gate record](changes/windows-0.1-gate-proposal.md#user-decisions).
+  Retain all 43 original M checks and the A/H/X equivalents; exclude only
+  5/35/38/40/53. Promote W checks 3/4 to must-pass; applicable K checks
+  24/26/29/36/37/41/52 remain known-issue-allowed only as listed, with no crash
+  or silent tiling stop: effective base 45 M / 7 K / 5 excluded. N1 covers
+  optional visual disable/unavailability and carrier-creation failure with
+  tiling continuing; owner/thread loss stays in 28/30/50/WX7. Add WX1-WX8
+  as must-pass, with only the Authentic Win+G/Win+F11 exact-chord containment
+  gap as a listed limitation. Native/physical acceptance and delivery
+  dependencies remain pending; this approval is not release acceptance.
 - User decisions 2026-10-10 (0.1 release scope and gate):
   - Release 0.1 is the existing MVP on KDE Plasma only (superseded
     2026-10-17, above). Windows continues
