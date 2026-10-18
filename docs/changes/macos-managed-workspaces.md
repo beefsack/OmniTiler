@@ -6,9 +6,9 @@ Managed workspace implementation has not advanced beyond the select-only fallbac
 The [world-state diagnostic checkpoint](macos-full-state-replies.md#runtime-select-diagnostic-checkpoint-2026-10-18)
 now proves outward tap→engine→drain `Ctrl+2`, current indicator state and retained
 layouts after a standalone return. Runtime `Ctrl+1` return remains unverified.
-Ring appearance and indicator legibility are pending user-assisted checks, with
-exact steps in that record; do not use screenshots or attempt Screen Recording
-permission changes. Temporary Space 277 and three disposable TextEdit documents
+Ring appearance and indicator legibility are pending screenshot-based checks in
+a capture-capable environment, with exact steps in that record. Temporary Space
+277 and three disposable TextEdit documents
 remain for manual cleanup after conservative removal/close refusals. No test-owned
 processes, taps, helpers, overlays or display-sleep children remain.
 

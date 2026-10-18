@@ -269,10 +269,11 @@ chord names refuse. This adds a diagnostic producer, not workspace capabilities.
   Input stops. No test-owned probe, helper, tap, overlay or display-sleep child
   remained. Every live leg checked lock/Secure Input and reaped its own bounded
   display-sleep child by exact PID.
-- Screen capture was unavailable. Do not attempt screenshots, Screen Recording
-  grants or permission workarounds for continuation. Ring appearance and strip
-  legibility require the user-assisted check below; native state is not pixel
-  acceptance.
+- Screen capture was unavailable, so no pixels were inspected. Ring appearance
+  and strip legibility remain pending screenshot-based checks in a capture-capable
+  environment, using the procedure below; native state is not pixel acceptance.
+  Establish capture availability before a new visual leg; do not attempt
+  permission workarounds or count a failed capture as appearance evidence.
 - **Cleanup residue:** temporary Space 277 remains, current Space 1. Exact empty
   removal refused because foreign ControlCenter window 3635 (PID 656, layer 25)
   was attributed to 277. The occupancy guard was not relaxed and that window was
@@ -347,13 +348,17 @@ No broader focus-None policy is selected; its discriminator remains TBD.
    Physically press Ctrl+2 and Ctrl+1, waiting for observed arrival and return.
    Verify current indicator row, retained layouts and runtime select results,
    not merely standalone native selection. No window transfers are included.
-4. **User-assisted, pending:** while the bounded tiler runs, focus each disposable
-   document in turn. Verify exactly one visible ring follows the actually focused
-   frame, with no lingering ring on its predecessor. Read every indicator number;
-   after Ctrl+2 it must highlight 2 and after Ctrl+1 highlight 1. Report crowding
-   or illegibility. At the finite end verify the visible ring disappears; separately
-   inspect `shutdown_clean:true` and native overlay absence. Do not use screenshots
-   or attempt to change Screen Recording permission for these appearance checks.
+4. **Screenshot-based appearance checks, pending:** first establish a working
+   `screencapture` process in a capture-capable environment. While the bounded
+   tiler runs, focus each disposable document in turn through the guarded owned
+   route; pair true-focus/overlay native readbacks with screenshots and inspect
+   them. Verify exactly one visible ring follows the actually focused frame,
+   with no lingering ring on its predecessor. Read every indicator number; after
+   Ctrl+2 it must highlight 2 and after Ctrl+1 highlight 1. Report crowding or
+   illegibility. At the finite end capture and inspect ring absence; separately
+   inspect `shutdown_clean:true` and native overlay absence. Retain screenshots
+   outside the repository alongside their state readbacks. Physical shortcut and
+   visual-jank acceptance remains separate from synthetic/screenshot evidence.
 5. Retain raw after records with the same commands; compare every protected
    record, restore only owned preimages and close only disposable documents.
    Leave no test-owned processes, taps, helpers, overlays or awake children.

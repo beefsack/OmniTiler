@@ -294,8 +294,8 @@ decisions of 2026-09-24 are under
   Border/indicator native state passes. Runtime tap→engine Ctrl+2 now passes;
   Ctrl+1 return remains unverified (expired helper refused before posting).
   Three TextEdit layouts survived the standalone MC AX return exactly. Visual
-  ring appearance and indicator legibility remain user-assisted, with exact
-  steps below; no screenshots or Screen Recording permission changes. Temporary
+  ring appearance and indicator legibility remain pending screenshot-based
+  checks in a capture-capable environment, with exact steps below. Temporary
   Space 277 (unknown ControlCenter occupancy) and three disposable TextEdit
   documents require manual cleanup; no test-owned processes remain. Raw protected
   before/after arrays compare exactly equal. The earlier separate Space probe's
@@ -3866,7 +3866,7 @@ decisions of 2026-09-24 are under
    2. Adopt full world-state core replies (P1 item above) before more workspace
       or overlay work lands in the same runtime files. Outward runtime Ctrl+2
       verified 2026-10-18; return Ctrl+1 and manual cleanup remain. Visual ring/
-      indicator checks are user-assisted, not screenshot-based; see the
+      indicator checks await a working screenshot process; see the
       [remaining procedure](changes/macos-full-state-replies.md#exact-remaining-procedure).
   3. Finish managed native workspaces: post the relative arrow chord with
      Control plus SecondaryFn (possibly NumericPad) and re-test; confirm the
