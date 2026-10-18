@@ -856,7 +856,7 @@ fn explicit_send_resolves_native_ordinal_once_at_admission() {
     assert_eq!(sid, 1, "Desktop-1 is native SID 1");
     let command = send_command(
         &send(1),
-        "27619_4393",
+        "4242_7",
         output.clone(),
         &crate::topology::workspace_key(sid),
     )
@@ -885,8 +885,8 @@ fn explicit_send_resolves_native_ordinal_once_at_admission() {
 
     // The admitted transfer retains under the native target, not ring position 1.
     let mut engine = WorldEngine::new(REPRO_GENERATION).expect("generation parses");
-    let members = repro_members(277, 27619, 4393);
-    let (focused, global) = repro_focused(277, 27619, 4393);
+    let members = repro_members(277, 4242, 7);
+    let (focused, global) = repro_focused(277, 4242, 7);
     let (sessions, closed, unreadable) = repro_empty_maps();
     let first = repro_report(
         &ctx,
@@ -909,7 +909,7 @@ fn explicit_send_resolves_native_ordinal_once_at_admission() {
     ));
     let command = send_command(
         &send(1),
-        "27619_4393",
+        "4242_7",
         output.clone(),
         &crate::topology::workspace_key(sid),
     )
@@ -942,8 +942,8 @@ fn explicit_send_resolves_native_ordinal_once_at_admission() {
     let sid = context_target_sid(&ctx, &output, 2).expect("Desktop-2 binds");
     assert_eq!(sid, 277);
     let mut engine = WorldEngine::new(REPRO_GENERATION).expect("generation parses");
-    let members = repro_members(1, 27619, 4390);
-    let (focused, global) = repro_focused(1, 27619, 4390);
+    let members = repro_members(1, 4242, 8);
+    let (focused, global) = repro_focused(1, 4242, 8);
     let (sessions, closed, unreadable) = repro_empty_maps();
     let first = repro_report(
         &ctx,
@@ -966,7 +966,7 @@ fn explicit_send_resolves_native_ordinal_once_at_admission() {
     ));
     let command = send_command(
         &send(2),
-        "27619_4390",
+        "4242_8",
         output.clone(),
         &crate::topology::workspace_key(sid),
     )
@@ -997,8 +997,8 @@ fn explicit_send_resolves_native_ordinal_once_at_admission() {
     // Same-Space target keeps its honest refusal (no behavior change).
     let ctx = repro_ctx(277);
     let mut engine = WorldEngine::new(REPRO_GENERATION).expect("generation parses");
-    let members = repro_members(277, 27619, 4393);
-    let (focused, global) = repro_focused(277, 27619, 4393);
+    let members = repro_members(277, 4242, 7);
+    let (focused, global) = repro_focused(277, 4242, 7);
     let (sessions, closed, unreadable) = repro_empty_maps();
     let first = repro_report(
         &ctx,
@@ -1020,7 +1020,7 @@ fn explicit_send_resolves_native_ordinal_once_at_admission() {
     ));
     let command = send_command(
         &send(1),
-        "27619_4393",
+        "4242_7",
         output.clone(),
         &crate::topology::workspace_key(277),
     )
@@ -1049,7 +1049,7 @@ fn explicit_send_resolves_native_ordinal_once_at_admission() {
 
     // Unknown native target keeps its honest refusal.
     let command = WorldCommand::Send {
-        window: WindowId("27619_4393".to_owned()),
+        window: WindowId("4242_7".to_owned()),
         target_output: output,
         target_workspace: "space-999".to_owned(),
         follow: true,
@@ -1092,8 +1092,8 @@ fn legacy_numbered_send_self_targets_under_277_startup() {
     let output = OutputId(crate::topology::output_key(1));
     let sid = context_target_sid(&ctx, &output, 1).expect("Desktop-1 binds");
     assert_eq!(sid, 1, "native Desktop-1 is SID 1 in this context");
-    let members = repro_members(277, 27619, 4393);
-    let (focused, global) = repro_focused(277, 27619, 4393);
+    let members = repro_members(277, 4242, 7);
+    let (focused, global) = repro_focused(277, 4242, 7);
     let (sessions, closed, unreadable) = repro_empty_maps();
 
     // Legacy positional path: SendNumbered index 1 resolves through the
@@ -1120,7 +1120,7 @@ fn legacy_numbered_send_self_targets_under_277_startup() {
         WorldOutcome::Accepted(_)
     ));
     let legacy_command = WorldCommand::SendNumbered {
-        window: WindowId("27619_4393".to_owned()),
+        window: WindowId("4242_7".to_owned()),
         output: output.clone(),
         index: 1,
         follow: true,
@@ -1183,7 +1183,7 @@ fn legacy_numbered_send_self_targets_under_277_startup() {
     ));
     let fixed_command = send_command(
         &send(1),
-        "27619_4393",
+        "4242_7",
         output.clone(),
         &crate::topology::workspace_key(sid),
     )
@@ -1217,7 +1217,7 @@ fn legacy_numbered_send_self_targets_under_277_startup() {
     assert_eq!(retained.len(), 1, "one retained window transfer");
     assert_eq!(
         retained[0].kind,
-        TransferKind::Window(WindowId("27619_4393".to_owned()))
+        TransferKind::Window(WindowId("4242_7".to_owned()))
     );
     assert_eq!(retained[0].target_output, output);
     assert_eq!(
