@@ -242,10 +242,10 @@ decisions of 2026-09-24 are under
   dropped the float without an explicit toggle. Add the producer-shaped offline
   replay first, then fix any uncommanded loss of settled float intent.
   [Investigation](changes/kde-triage-live.md#parked-restart-intent-loss-investigation).
-- P1 | Windows: adopt full world-state core replies | parked pending
-  [core-owned output topology](changes/shared-core-owned-output-topology.md),
-  User direction 2026-10-18; no Windows adjacency mapping will be built.
-  Core-produced migration/refill acceptance remains blocked. Replace
+- P1 | Windows: adopt full world-state core replies | shared topology prerequisite
+  delivered offline in [core/KDE](changes/archive/shared-core-owned-output-topology.md).
+  Resume actual W1 migration/refill capture and re-observation with empty
+  adjacency; no Windows adjacency mapping. W2/native acceptance remains pending. Replace
   adapter-triggered trailing policy and per-op application with complete
   observed world reports and host diffs; move scope/history/mapping policy
   into the world state; preserve recovery ledger/window properties/native
@@ -265,15 +265,20 @@ decisions of 2026-09-24 are under
   the topology gap, not delivered W2. Resume after shared core+KDE delivery,
   with no Windows adjacency code; runtime adoption remains pending and the
   handover retains concurrent native-gate failures requiring reconciliation.
-- P1 | Shared core: own output topology | In progress (core/KDE stream).
+- P1 | Shared core: own output topology | Core+KDE delivered offline;
+  native two-output validation pending. FULL world topology is retained in all
+  modes and strict unique-reciprocal targets are core-derived; KDE sends only
+  directional intent. Rust workspace 3,169 and KDE 1,851 tests pass, strict
+  clippy/typecheck/bundle/descriptor gates pass. Windows W2 resumes with existing
+  FULL reports; macOS must replace visible topology rects with FULL bounds,
+  preserving work areas and native capability gates.
   User 2026-10-18 order: topology first, then D23 rehome/13f maximize base.
   User direction 2026-10-18: retain FULL monitor rectangles from world
-  reports and derive adjacency/targets in core, not adapters. KDE stream to
-  deliver core+KDE; Windows world adoption resumes afterward without Windows
-  adjacency code; macOS adopts shared topology over its delivered world reports.
-  Preserve per-use selection rules; split-edge world/legacy alignment needs
-  explicit review.
-  [Proposal](changes/shared-core-owned-output-topology.md), alongside the
+  reports and derive adjacency/targets in core, not adapters. Strict-parity
+  extraction remains tentative. Split-edge world/legacy alignment is parked:
+  recommend largest-edge migration, window-rule R4/output sends, strict KDE focus;
+  named expected-result tests await an explicit decision.
+  [Delivery and live procedure](changes/archive/shared-core-owned-output-topology.md), alongside the
   [D23/13f proposal](changes/shared-core-d23-rehome-and-13f-maximize-base.md).
 - P1 | macOS: adopt full world-state core replies | delivered offline;
   scoped live smoke partially verified. Replaced per-domain reply

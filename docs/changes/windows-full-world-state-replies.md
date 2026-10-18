@@ -4,7 +4,7 @@
 
 - User direction 2026-10-18: **parked pending core-owned output topology;
   core-produced migration/refill acceptance blocked.** Windows will not build
-  its own adjacency mapping. [Shared proposal](shared-core-owned-output-topology.md)
+  its own adjacency mapping. [Shared proposal](archive/shared-core-owned-output-topology.md)
   is ready for cross-stream review; KDE stream is expected to deliver core+KDE.
   W2 prototype preserved on `wip/windows-world-diff`, not accepted or enabled.
   Additive constructor prerequisite and W1 offline capture/ordering fixtures
@@ -248,7 +248,7 @@
     User direction 2026-10-18 supersedes adapter mapping: shared core must
     retain FULL monitor positions and derive targets. Windows supplies its
     existing FULL topology geometry, not KDE heuristics or a Windows map;
-    [proposal](shared-core-owned-output-topology.md).
+    [proposal](archive/shared-core-owned-output-topology.md).
 - W2-W4, runtime/live adoption and physical/two-output acceptance remain pending.
   The backlog item remains unimplemented until cutover and acceptance.
 
@@ -320,7 +320,7 @@
 - User direction 2026-10-18 supersedes the earlier native-to-world mapping
   options: keep adoption parked until core owns monitor topology and derives
   adjacency from reported FULL rectangles. Windows will not implement an
-  adjacency mapping. [Cross-stream proposal](shared-core-owned-output-topology.md)
+  adjacency mapping. [Cross-stream proposal](archive/shared-core-owned-output-topology.md)
   separates current world/legacy selection rules and their explicit review.
   After shared delivery, prove actual migration/refill capture, feedback and
   re-observation with empty adapter adjacency before accepting W2. The working

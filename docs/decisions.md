@@ -2247,7 +2247,7 @@ platform API behavior.
   and updates. Windows full-world adoption stays parked pending this shared
   delivery; Windows will not build its own adjacency mapping. Selection-policy
   alignment is not silently decided by ownership extraction.
-  [Cross-stream proposal and open questions](changes/shared-core-owned-output-topology.md).
+  [Offline delivery and open questions](changes/archive/shared-core-owned-output-topology.md).
 
 - **Tentative macOS complete-world mapping, 2026-10-18:** represent observed
   native Spaces in per-output-local mode, without inventing logical creation
