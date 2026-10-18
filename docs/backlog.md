@@ -187,6 +187,12 @@ decisions of 2026-09-24 are under
   send-follow/observe/send-back offline. Cause remains unclassified; later retries
   after the first refusal are not clean acceptance.
   [Coverage matrix](changes/kde-live-acceptance.md#remaining-coverage-and-next-step).
+- P0 | KDE restart float-intent loss on held first observation | Native
+  restart read one persisted float and one tile override; the first accepted
+  observation held the scope as `unreadable` and the next persistence write
+  dropped the float without an explicit toggle. Add the producer-shaped offline
+  replay first, then fix any uncommanded loss of settled float intent.
+  [Investigation](changes/kde-triage-live.md#parked-restart-intent-loss-investigation).
 - P1 | Windows: adopt full world-state core replies | parked: native-to-world
   migration mapping unresolved; core-produced migration/refill acceptance blocked. Replace
   adapter-triggered trailing policy and per-op application with complete
