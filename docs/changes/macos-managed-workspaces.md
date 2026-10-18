@@ -1,5 +1,35 @@
 # macOS managed native workspaces
 
+## Effect-owner display handoff checkpoint (2026-10-18)
+
+**The offline snapshot defect is repaired; live send-follow acceptance remains
+pending.** This supersedes the acquisition blocker below, not its live outcome.
+
+- `5e523000` removes AppKit display reads from the effect owner. The tentative
+  acquisition choice is a latest-wins plain-data handoff: CoreGraphics bounds
+  cannot reproduce AppKit visible geometry, scale and separate-Spaces inputs
+  without changing the existing topology fingerprint.
+- `5226de28` gates publication on startup and screen-parameter notifications;
+  steady-state topology polling does not overwrite the slot. `202afae6` restores
+  an invalidated/initially absent slot from the next good main-thread snapshot,
+  preventing permanent send refusal after a transient read failure. No new poll
+  or synchronous main-thread wait is introduced. Existing topology polling is
+  unchanged; notification publication uses that loop's already-read snapshot.
+- The effect owner joins published display legs with fresh native Space rows and
+  types under the identical fingerprint. Engine-managed authority, per-edge
+  revision/ordinal checks, AX/CG/focus checks and unconditional release remain.
+  Spawned-thread regression coverage exercises the real native reader; gate and
+  invalidation/recovery tests cover publication behavior.
+- Final macOS tests pass (855 library tests plus integration suites), strict
+  all-target macOS clippy and workspace format pass, signed app build and separate
+  verification pass. Unsafe remains **114 blocks**, all in unchanged `ffi.rs`;
+  no dependencies added. Independent review accepted the owner boundary and found
+  the subsequently corrected invalidation recovery gap.
+
+Next: independently accept the recovery correction, then run the owned-helper
+product-tap roundtrip before TextEdit procedure 1. Physical shortcut feel remains
+user-owned; synthetic transfer cannot establish it.
+
 ## Product-tap refusal checkpoint (2026-10-18)
 
 **Numbered send-follow is armed but not ready for physical send dogfooding.**
@@ -81,7 +111,7 @@ trailing-Space lifecycle and multi-display work parked.
 ### Dogfood checklist
 
 - **Current status:** basic actions and existing-Space selects can be checked;
-  send-follow is blocked by the snapshot defect above. Do not treat its current
+  the offline send snapshot fix awaits live proof. Do not treat the earlier
   refusal as successful acceptance. This section supersedes earlier select-only
   and no-settings-write descriptions for the current executable.
 - The usual user entry is `mise exec -- just dev trace`. It builds/signs before
