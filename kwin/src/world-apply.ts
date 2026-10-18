@@ -1170,6 +1170,13 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
                 sourceOut = first.out;
             }
         }
+        if (sourceOut === t.out) {
+            // Members already homed at the target: observed homing no
+            // longer names the source, and the target must never refill
+            // itself with a remaining row. The refill waits for a reply
+            // that names the source (paired child or correlated result).
+            sourceOut = null;
+        }
         if (t.held || state.isHeldAmbiguous(t.op)) {
             // Late full-membership proof settles an ambiguous parent
             // without member replay (proof before hold); anything less
