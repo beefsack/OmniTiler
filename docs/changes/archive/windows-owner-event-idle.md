@@ -316,6 +316,11 @@ Primary documentation above checked 2026-10-18; AppBar notification details:
   the interval between logged observations, not write-to-wake latency. The
   edited-gap reconcile reported two mismatches; restoration reported zero.
   Wake/adoption is observed, not complete geometric-convergence acceptance.
+  Diagnosis remains limited: this run used DPI-unaware helpers, while owner
+  diagnostics use physical coordinates, and no edited-gap per-window
+  planned/effective/readback entry was retained. Do not mix those units or infer
+  a new product defect from aggregate mismatches. A matched PMv2-helper gap-edit
+  readback is the next discriminator; no geometry policy or source fix selected.
 - Chevron response **not run**: taskbar child discovery returned one entry
   without a class, no verified chevron/overflow target and no clicks. This
   neither establishes physical absence nor closes tray-geometry response.

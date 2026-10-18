@@ -2424,9 +2424,9 @@ decisions of 2026-09-24 are under
     `f794cf9` + delivery commit ([record](changes/archive/windows-keyboard-resize.md)).
     Native gates, retained-Engine geometry, agent-observed exact-owner CLI
     grow/repeat/reversal/edge/overlay refusals and Settings Apply/Revert passed.
-    Physical suppression/rebound adoption and remaining native refusal/minimum
-    journeys user-owned. Both presets keep unknown-owner resize defaults
-    tentatively, pending user review. Historical checklist: Table A accepted
+    Physical suppression/rebound adoption remains user-owned; remaining native
+    refusal/minimum journeys stay pending. Both presets keep unknown-owner
+    resize defaults tentatively, pending user review. Historical checklist: Table A accepted
     2026-10-07 (Windows keyboard trigger via shared Engine pixel path; P1
     adoption entry in this file, [consensus](research/reference-wm-consensus.md);
     KDE match stays B). Catalog text already documents the rows; the trigger
@@ -2437,6 +2437,15 @@ decisions of 2026-09-24 are under
     Review 2026-10-18: injected Win+M remains unsafe because the normal owner
     ignores it and the shell could minimize unrelated windows; no chord sent.
     Physical pairing/interception remains pending, separately from CLI geometry.
+    Native follow-up 2026-10-18: exact-owner resize refused intentional-float
+    and sticky subjects with identical post-toggle pair frames; toggle-back
+    restored tiled intent/topmost. No physical chord or pixel-geometry claim.
+    Separate PMv2 trace run reached the existing portable 360 px width floor
+    and one subsequent `unchanged` request with stable pair/focus. The harness
+    wrongly expected the helper's smaller declared minimum; no product defect
+    or policy change. Larger app-hint/vertical/nested minima remain pending.
+    Final raw settings-byte, successful SPI and actual taskbar-state readbacks
+    matched preimages; owner/helpers stopped and ledger/requests cleared.
 
     #### Item 6 behavior and reference seams
 

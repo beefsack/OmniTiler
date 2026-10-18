@@ -150,9 +150,11 @@
   the later vertical split adds a third without the same-axis overconstraint.
 - Physical Win+Alt/Shift+Alt suppression, alias delivery/hold feel, takeover-off
   release and rebound owner adoption remain user-owned (synthetic injection
-  is rejected). Native floating/sticky/workspace-floating/busy/race refusals,
-  exact nested scope, minimum floor and multi-output/game/elevation journeys
-  remain pending; source review and portable policy are not their native proof.
+  is rejected). Native workspace-floating/busy/race refusals, exact nested
+  scope, larger app-declared minimums and multi-output/game/elevation journeys
+  remain pending; bounded intentional-float/sticky and portable-floor evidence
+  is added below. Source review and portable policy are not native proof of the
+  remaining legs.
 - Tentative preset and test-needed CLI choices above require user review.
   Implementation complete; next acceptance action is the physical item6
   journey in backlog, not another injected-input experiment.
@@ -165,3 +167,79 @@
 - CI [38077899121](https://github.com/beefsack/OmniTiler/actions/runs/38077899121)
   completed success: windows, rust, kwin, shell, native and macos. No failed
   jobs or repairs. Final evidence-record publication is documentation only.
+
+## Scoped native refusal follow-up (2026-10-18)
+
+- Normal owner scoped only to identity-tagged disposable helpers; source
+  `e8b8eb34` plus documentation-only working changes. Owner/helper SHA-256 are
+  the same `366a3619...` / `3825ce9a...` artifacts fully recorded in the
+  [scoped idle follow-up](windows-owner-event-idle.md#scoped-native-follow-up-2026-10-18).
+  No keyboard injection or input-filter change.
+- **Pass, intentional-float refusal:** establish exact helper foreground,
+  toggle float and observe production `float-applied`; capture both frames
+  after that geometry change. Exact-owner `resize --direction right --mode
+  outwards` reaches production `resize-refused-floating` at tick 169, with both
+  native frame readbacks identical to that post-toggle baseline. Toggle-back
+  reports `unfloat-applied` and restores the raised-band preimage.
+- **Pass, sticky refusal:** the equivalent post-sticky baseline and resize
+  request reach `resize-refused-sticky` at tick 274; both frame readbacks stay
+  identical. Toggle-back reports `unfloat-applied` with topmost restoration.
+- These are downstream native refusal checks, not physical chord/modifier,
+  hold/release, Esc or shortcut-suppression acceptance. Helpers were PMv2, but
+  the separate helper inspection process was DPI-unaware: frame comparisons
+  use the same virtualized convention, not a claim of physical-pixel geometry.
+- External evidence `wu-resize-20261018-165251-30608`: `report-phase3.json`,
+  `report-phase4.json`, initial `report.json`, and owner log
+  `run-01dd5ec4eb1ea493.log`. Foreground acquisition failures were parked without
+  injecting input; only the observed refusal legs above are accepted.
+- Helpers were visible before exact tagged close. Final `just stop` completed;
+  owner readiness was false and ledger/stop/workspace/resize requests absent.
+  Successful SPI reads and actual taskbar `ABM_GETSTATE` matched their preimages.
+  Settings comparison in this refusal harness was decoded-text equality, not
+  byte-array equality; it does not establish byte-exact restoration.
+
+### Physical-coordinate portable-floor supplement
+
+- Fresh trace run at `3f2583eb`, same Windows artifacts, scoped to two passive
+  PMv2 helpers. Native outer/DWM visible bounds were read in a verified PMv2
+  thread context, not through the DPI-unaware helper inspection process.
+- Observed 47 applied inward requests: 12/14/16/18/20 px schedule, then capped
+  steps, ending with an 8 px transfer to a 360 px visible width. Request 48
+  returned production `unchanged` with the same physical pair frames and
+  foreground. No mismatch was reported. Only one post-floor unchanged request
+  was observed, not two or physical held-key acceptance.
+- Diagnosis: the harness incorrectly expected the helper's declared 150 px
+  width minimum to be the resize floor. Existing `cosmic_v1.rs` enforces a
+  portable 360 px horizontal / 240 px vertical keyboard child floor;
+  `session/ops/resize.rs` returns `Unchanged` when that clamp cannot transfer
+  more. The observed 360 px stop matches that contract; no Windows defect or
+  policy change is selected. Raw harness `fail` remains intact as an oracle
+  error, not a product-failure claim. Larger app-hint clamping (including the
+  distinct projected `resize-noop` path), vertical/nested minima and the full
+  physical matrix remain pending.
+- Final `mise exec -- just stop` completed. Raw settings bytes were captured
+  with `WriteAllBytes(ReadAllBytes(...))` before launch and matched afterward
+  by byte equality, SHA-256 and length; no settings-edit leg ran. Successful
+  SPI reads and actual taskbar state matched their preimages. Helpers were
+  visible before exact close, exited, owner readiness was false and all four
+  ledger/request files were absent. This fresh run's stronger restoration
+  proof does not retroactively repair earlier text-only comparisons.
+- External evidence `wu-minfloor90-20261018-170547-30608`: `report.json`,
+  `harness-used.ps1`, retained pre-stop `owner-run.log.copy`, completed
+  `owner-run-stopped.log`, raw settings preimage, `verification-used.ps1` and
+  `verify-post-stop.json`. An earlier 40-request sample stopped above the
+  portable floor and establishes no clamp result; its evidence is not used as
+  floor acceptance.
+- Independent source/evidence review accepted these bounded findings. Final
+  locked four-package build/test, all-package formatting, strict all-target
+  clippy and whitespace gates passed at `3f2583eb`: 2,852 passed, 0 failed,
+  1 ignored. External `live-sweep-gates-20261018` retains `final-gates.json` and
+  `*-final.log`; no production or shared-policy changes.
+- Post-integration gates at `871d2bbc` also passed: locked four-package
+  build/test, formatting, strict all-target clippy and whitespace; 2,868 passed,
+  0 failed, 1 ignored. An initial test invocation exceeded the 120 s tool bound
+  without a suite result; the longer-bounded retry completed without source
+  changes. The interrupted run's stall cause is unproved, not classified as a
+  product defect or a passing run. Evidence remains separately retained in
+  `live-sweep-gates-20261018/post-rebase` and `post-rebase-long`. Live observations
+  remain pinned to their earlier recorded artifacts, not a world-route cutover.
