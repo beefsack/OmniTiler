@@ -259,7 +259,13 @@
   first-exit preservation, numeric unfloat discriminator and exhaustion recipe
   oracles. No shared-core semantics, Windows world-runtime adoption, native
   remap policy, readback tolerance or unsafe code changed.
-- Build, locked four-package tests, strict all-target clippy, workspace format
-  and whitespace checks are required again after integration. This follow-up
-  ran no live desktop journey or lifecycle command; the cleanup evidence above
-  belongs to the original native runs.
+- After integration through `a7028a87`, correction `d0326c2b` passed locked
+  four-package build/test and strict all-target clippy: **2,883 passed, 0 failed,
+  1 ignored across 73 suites**. Workspace format and whitespace checks passed;
+  Rust/cargo 1.99.0, native MSVC target.
+- All eight CI jobs passed for `d0326c2b`, run
+  [39113224528](https://github.com/beefsack/OmniTiler/actions/runs/39113224528),
+  including Windows, macOS, Rust workspace, KWin, native effect/settings, shell,
+  licenses and notices.
+- This follow-up ran no live desktop journey or lifecycle command; the cleanup
+  evidence above belongs to the original native runs.

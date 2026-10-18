@@ -243,6 +243,12 @@ decisions of 2026-09-24 are under
   Offline tick-275 isolation proves the unfloat target matched exactly; its
   aggregate mismatch includes neighbor clamp/pending lanes. Native neighbor
   one-pixel cause still needs delayed fresh readback.
+  Guarded local/shared-scope selection correction `d0326c2b` preserves first-exit
+  intent; six actual-route regressions pass. Integrated offline four-package
+  gates: **2,883 passed, 0 failed, 1 ignored**, strict clippy/format clean.
+  All eight CI jobs passed for that correction (run 39113224528).
+  Fresh/retry/send journey design now requires a measured-bounds exhaustion
+  oracle before native helper creation; proxy fixtures are not native proof.
   [Current evidence and exact discriminator](changes/windows-best-effort-admission-live.md).
   User accepted 2026-10-18 (T2): cross-output
   capacity-float transfers refuse until a remap rule is separately approved:
