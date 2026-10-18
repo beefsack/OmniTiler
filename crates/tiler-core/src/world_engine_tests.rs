@@ -3877,7 +3877,7 @@ fn core_topology_incomplete_inventory_fences_and_recovers() {
 }
 
 #[test]
-fn core_topology_ambiguous_and_non_touching_edges_refuse() {
+fn core_topology_split_edge_selects_but_gaps_and_corners_refuse() {
     fn three_output_report(request_seq: u64, rects: [Rect; 3]) -> WorldReport {
         let mut report = topo_two_output(
             request_seq,
@@ -3912,8 +3912,10 @@ fn core_topology_ambiguous_and_non_touching_edges_refuse() {
         ));
         report
     }
-    // Split edge: out-a spans both outputs above, so its upward direction
-    // is multi-touch and migration must refuse rather than pick a side.
+    // Split edge: out-a spans both outputs above. Migration ranks by
+    // largest shared edge, then left/top: the 800-vs-800 tie selects
+    // out-b (left/top), never refusing as ambiguous. Window position
+    // plays no role.
     let mut engine = WorldEngine::new("gen-1").expect("valid");
     accepted_reply(
         &mut engine,
@@ -3935,7 +3937,16 @@ fn core_topology_ambiguous_and_non_touching_edges_refuse() {
         ],
     );
     with_command(&mut split, 2, 41, migrate_a_to_b());
-    expect_migration_refused(&mut engine, &split);
+    let reply = accepted_reply(&mut engine, &split);
+    assert!(
+        reply
+            .transfers
+            .iter()
+            .any(|t| matches!(t.kind, TransferKind::Migration)
+                && t.target_output.0 == "out-b"
+                && t.target_workspace == "wa1"),
+        "split-edge migration tie breaks left/top to out-b"
+    );
     // Gap: out-b sits 100px off the edge, so nothing touches.
     let mut engine = WorldEngine::new("gen-1").expect("valid");
     accepted_reply(
