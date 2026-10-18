@@ -10,7 +10,7 @@ including when an over-armed input fixture supplies a send chord.
 ### Accepted offline scope
 
 - Added a fake-backed numbered send-follow drain with pinned subject and target,
-  single-display/session/focus/membership fences, fresh Desktop-N holder checks,
+  single-display/session/membership fences, fresh Desktop-N holder checks,
   release-first drag execution, arrival/history and honest transfer feedback.
 - Added planner command/claim preparation and an Authentic-only holder-ownership
   helper over existing durable Apply/Revert transactions. These are not connected
@@ -29,7 +29,9 @@ including when an over-armed input fixture supplies a send chord.
   contract; bypassing that proof with raw global HID posts is not an integration.
 - Fresh positional AX and WindowServer point hits must name the pinned subject
   at the drag boundary without blocking the tile main loop on AX work. The
-  AX-owner handoff, freshness fence and effect ownership remain unresolved.
+  AX-owner handoff, freshness fence, live focus revalidation and effect ownership
+  remain unresolved. The fake drain does not prove refusal on a pure focus swap
+  that leaves the pinned subject otherwise managed and readable.
 - Only after those contracts and a native backend exist should Authentic holder
   enable be wired and numbered send-follow rows armed. Owned preimages and
   conditional Revert remain required by the existing approved product decision.
