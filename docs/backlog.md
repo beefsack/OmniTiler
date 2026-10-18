@@ -976,6 +976,12 @@ decisions of 2026-09-24 are under
   and DPI/display/Explorer acceptance remain pending.
   [Research](research/windows-port/safe-win32-wrappers.md),
   [evidence](changes/archive/windows-unsafe-ffi-consolidation.md).
+- P1 | Repository cleanup pass | User 2026-10-18: the repository has grown
+  large and cluttered; schedule a cleanup pass soon. Inventory and remove
+  obsolete harnesses/scripts (e.g. `scripts/custom-tile-acceptance.sh` and its
+  test, whose `[Tiling]` preflight conflicts with the accepted live baseline),
+  superseded routes and fixtures, stale records and dead code, with a
+  reviewed removal list before deleting.
 - P1 | Module size refactoring | User 2026-10-14: split oversized source
   files toward the [file size](principles.md#file-size) soft caps.
   Behavior-preserving moves between feature deliveries, with two verified
