@@ -575,21 +575,34 @@ describe("world split-edge selection through the production entry (real Engine)"
             assert.equal(answered.length, 1, "the core answered the move");
             const reply = JSON.parse(h.replies.get(answered[0]?.index as number) as string) as Record<string, unknown>;
             assert.notEqual(reply["outcome"], "rejected", `real Engine plans the cross, got ${JSON.stringify(reply).slice(0, 160)}`);
-            // The real Engine selects the mover-ranked target in its desired
-            // rows: the mover homes on out-bottom-right/ws-c, the non-left/top
-            // candidate. Native relocation is NOT actuated: a
-            // move-directional cross retains no window transfer, and the
-            // adapter fences membership/output writes without transfer
-            // authority (reported to the Lead as a core/adapter contract
-            // gap). The fenced steady state below is the honest assertion.
+            // The real Engine selects the mover-ranked target and retains
+            // one identity-pinned window transfer (existing send
+            // contract): the adapter relocates output + membership natively
+            // with the foreign frame deferred until arrival proof, then
+            // converges geometry on later rounds. Focus stays on the mover
+            // with no redundant setter.
             const rows = reply["windows"] as Array<Record<string, unknown>>;
             const planned = rows.find((entry) => entry["win"] === "w-move");
             assert.ok(planned !== undefined, "Engine plans the crossing mover");
             assert.equal(planned["out"], "out-bottom-right", "selection resolves the non-left/top target");
             assert.equal(planned["ws"], "ws-c", "selection lands in the target view");
-            assert.equal(h.outputWrites.length, 0, "no output transfer without transfer authority");
-            assert.equal(h.membershipWrites.length, 0, "no membership write without transfer authority");
-            assert.equal(h.mover.output.name, "out-top", "mover stays fenced on the source output");
+            const transfers = reply["transfers"] as Array<Record<string, unknown>>;
+            assert.equal(transfers.length, 1, "exactly one retained transfer");
+            assert.equal(transfers[0]?.["kind"], "window");
+            assert.equal(transfers[0]?.["win"], "w-move");
+            assert.equal(transfers[0]?.["out"], "out-bottom-right");
+            assert.equal(transfers[0]?.["ws"], "ws-c");
+            assert.equal(transfers[0]?.["follow"], true, "move follows the mover to the target view");
+            assert.match(transfers[0]?.["op"] as string, /^op-\d+$/, "stable command identity");
+            appliedMatchesReply(h, reply);
+            assert.equal(h.mover.output.name, "out-bottom-right", "mover natively on the target after arrival");
+            assert.deepEqual(
+                h.mover.desktops.map((desk) => desk.id),
+                ["ws-c"],
+                "membership homed on arrival",
+            );
+            assert.equal(h.outputWrites.length, 1, "exactly one native output relocation");
+            assert.equal(h.membershipWrites.length, 1, "exactly one native membership write");
             const left = winById(h, "w-bl");
             assert.equal(left.output.name, "out-bottom", "unchosen left candidate keeps its output");
             assert.deepEqual(
@@ -598,8 +611,16 @@ describe("world split-edge selection through the production entry (real Engine)"
                 "unchosen left candidate keeps its membership",
             );
             assert.deepEqual({ ...left.frameGeometry }, leftBefore, "unchosen left candidate keeps its geometry");
-            assert.equal(h.workspace["activeWindow"], h.mover, "fenced mover keeps focus");
+            assert.equal(h.workspace["activeWindow"], h.mover, "mover keeps focus across the pinned arrival");
+            assert.equal(h.focused.length, 0, "no redundant focus setter: the mover never lost focus");
             assert.equal(h.commandPayloads("move-directional").length, 1, "no command replay after settlement");
+            // Late duplicate native input never replays the flight.
+            h.fire("windowActivated");
+            h.fire("windowActivated");
+            await h.settle();
+            assert.equal(h.commandPayloads("move-directional").length, 1, "no replay on duplicate signals");
+            assert.equal(h.outputWrites.length, 1, "no second relocation on duplicate signals");
+            assert.equal(h.membershipWrites.length, 1, "no second membership write on duplicate signals");
         } finally {
             await h.stop();
         }
@@ -723,6 +744,13 @@ describe("world split-edge selection through the production entry (real Engine)"
             await h.settle();
             assert.equal(h.commandPayloads("move-directional").length, 1, "move dispatches once after the catchup");
             assert.equal(h.mover.output.name, "out-top", "two-tile move stays local on the same edge");
+            const localMoves = h.commandPayloads("move-directional").filter(({ index }) => h.answered.has(index));
+            assert.equal(localMoves.length, 1, "the core answered the local move");
+            const localReply = JSON.parse(h.replies.get(localMoves[0]?.index as number) as string) as Record<string, unknown>;
+            assert.equal((localReply["transfers"] as Array<unknown>).length, 0, "local R1-R3 move retains no transfer");
+            assert.equal((localReply["effects"] as Array<unknown>).length, 0, "local move focus unchanged");
+            assert.equal(h.outputWrites.length, 0, "local move writes no output transfer");
+            assert.equal(h.membershipWrites.length, 0, "local move writes no membership");
             assert.equal(h.commandPayloads("move-directional").length, 1, "no move replay after settlement");
         } finally {
             await h.stop();
@@ -770,6 +798,82 @@ describe("world split-edge selection through the production entry (real Engine)"
             await h.settle();
             assert.equal(h.commandPayloads("send-directional").length, 1, "no replay on duplicate signals");
             assert.equal(h.focused.length, 0, "still no redundant focus setter");
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("pins the move flight across deferred native arrival with no replay", async () => {
+        // Sole source leaf so the exhausted cross runs: deferred output
+        // proves the pinned R4 flight holds membership without replay,
+        // then arrival settles exactly once with no second actuation.
+        const h = await makeHarness(1100, true);
+        try {
+            await discover(h);
+            h.deferredTransfer = true;
+            h.handle.requestMove("down");
+            h.runTimers();
+            await h.flushAll();
+            assert.equal(h.commandPayloads("move-directional").length, 1, "move dispatched once");
+            assert.equal(h.pendingTransfers.length, 1, "native transfer initiated exactly once");
+            assert.equal(h.mover.output.name, "out-top", "output still lagging");
+            assert.deepEqual(
+                h.mover.desktops.map((desk) => desk.id),
+                ["ws-c"],
+                "membership applies while the output lags",
+            );
+            assert.equal(h.focused.length, 0, "no focus setter before arrival proof");
+            const [pending] = h.pendingTransfers;
+            assert.ok(pending !== undefined);
+            pending.client.output = pending.output;
+            h.outputWrites.push(`${pending.client.internalId}=>${pending.output.name}`);
+            h.deferredTransfer = false;
+            h.pendingTransfers.length = 0;
+            h.fire("windowActivated");
+            await h.settle();
+            assert.equal(h.mover.output.name, "out-bottom-right", "mover natively on the target after arrival");
+            assert.deepEqual(
+                h.mover.desktops.map((desk) => desk.id),
+                ["ws-c"],
+                "membership homed on arrival",
+            );
+            assert.equal(h.workspace["activeWindow"], h.mover, "mover keeps focus across the pinned arrival");
+            assert.equal(h.focused.length, 0, "no redundant focus setter: the mover never lost focus");
+            assert.equal(h.outputWrites.length, 1, "exactly one relocation after deferred arrival");
+            assert.equal(h.membershipWrites.length, 1, "exactly one membership write after deferred arrival");
+            h.fire("windowActivated");
+            h.fire("windowActivated");
+            await h.settle();
+            assert.equal(h.commandPayloads("move-directional").length, 1, "no replay on duplicate signals");
+            assert.equal(h.outputWrites.length, 1, "no second relocation on duplicate signals");
+            assert.equal(h.focused.length, 0, "still no redundant focus setter");
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("settles the arrived move against fresh topology with no rerank", async () => {
+        // After the R4 arrival settles, a refreshed topology report (same
+        // rects, new observation) validates without re-ranking the
+        // relocated mover: no new transfer, no replay, mover stays homed.
+        const h = await makeHarness(1100, true);
+        try {
+            await discover(h);
+            h.handle.requestMove("down");
+            await h.settle();
+            assert.equal(h.mover.output.name, "out-bottom-right", "precondition: mover arrived");
+            assert.equal(h.commandPayloads("move-directional").length, 1, "precondition: one move");
+            h.fire("screensChanged");
+            await h.settle();
+            assert.equal(h.commandPayloads("move-directional").length, 1, "fresh topology never reranks the settled mover");
+            assert.equal(h.mover.output.name, "out-bottom-right", "mover stays homed after topology refresh");
+            assert.deepEqual(
+                h.mover.desktops.map((desk) => desk.id),
+                ["ws-c"],
+                "membership stays homed after topology refresh",
+            );
+            assert.equal(h.outputWrites.length, 1, "no second relocation after topology refresh");
+            assert.equal(h.membershipWrites.length, 1, "no second membership write after topology refresh");
         } finally {
             await h.stop();
         }

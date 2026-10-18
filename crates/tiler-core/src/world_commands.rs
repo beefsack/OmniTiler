@@ -844,6 +844,134 @@ impl WorldEngine {
         self.finish_operation_event(report, command_seq, &event)
     }
 
+    /// Pinned cross-output directional move/focus for a dispatch-selected
+    /// target: the same validated reciprocal pair as
+    /// [`WorldEngine::operation_directional`] but the target output is the
+    /// caller-pinned selection, never a re-rank of the mover frame. Fresh
+    /// topology only validates forward/reverse touch (reverse uniqueness
+    /// not required); the relocated mover frame is never consulted. `None`
+    /// refuses without mutation.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn operation_directional_pinned(
+        &mut self,
+        report: &WorldReport,
+        command_seq: u64,
+        command: &CoreCommand,
+        window: &str,
+        direction: &str,
+        pinned_target: &OutputId,
+        by_id: &BTreeMap<&WindowId, &EngineWindow>,
+        held_scopes: &BTreeSet<DomainKey>,
+    ) -> CommandApplied {
+        let window_id = WindowId(window.to_owned());
+        let Some(source_row) = by_id.get(&window_id) else {
+            return CommandApplied::Rejected {
+                kind: KIND_OPERATION,
+                message: MSG_OPERATION,
+            };
+        };
+        let source_key = DomainKey {
+            output: source_row.output.clone(),
+            workspace: source_row.workspace.clone(),
+        };
+        if held_scopes.contains(&source_key) {
+            return CommandApplied::Rejected {
+                kind: KIND_SCOPE_HELD,
+                message: MSG_SCOPE_HELD,
+            };
+        }
+        let Some(direction_parsed) = parse_direction_token(direction) else {
+            return CommandApplied::Rejected {
+                kind: KIND_OPERATION,
+                message: MSG_OPERATION,
+            };
+        };
+        let Some(source_report) = report
+            .domains
+            .iter()
+            .find(|d| d.readable && d.domain.key() == source_key)
+        else {
+            return CommandApplied::Rejected {
+                kind: KIND_OPERATION,
+                message: MSG_OPERATION,
+            };
+        };
+        let Some(((source_domain, source_key), (target_domain, target_key), target_outer, _)) =
+            self.directional_pair_for_target(
+                report,
+                &source_key,
+                source_report,
+                direction_parsed,
+                pinned_target,
+                held_scopes,
+            )
+        else {
+            return CommandApplied::Rejected {
+                kind: KIND_OPERATION,
+                message: MSG_OPERATION,
+            };
+        };
+        let (Some(owner), Some(correlation)) = (
+            OwnerId::parse(&report.owner),
+            CorrelationId::parse(&report.request_id),
+        ) else {
+            return CommandApplied::Rejected {
+                kind: KIND_SNAPSHOT,
+                message: MSG_SNAPSHOT,
+            };
+        };
+        let accepted = self
+            .engine
+            .session(&source_key)
+            .map(|s| (s.accepted_revision(), s.accepted_fingerprint()));
+        let (revision, fingerprint) = accepted.unwrap_or((0, 0));
+        let Some(target_report) = report
+            .domains
+            .iter()
+            .find(|d| d.readable && d.domain.key() == target_key)
+        else {
+            return CommandApplied::Rejected {
+                kind: KIND_OPERATION,
+                message: MSG_OPERATION,
+            };
+        };
+        let mut combined = self.shielded_windows(&source_key, &source_report.windows, by_id);
+        combined.extend(self.shielded_windows(&target_key, &target_report.windows, by_id));
+        let mut closed = source_report.closed.clone();
+        closed.extend(target_report.closed.clone());
+        let (Some(inset_source), Some(inset_target)) = (
+            crate::world_engine::inset_world_domain(&source_domain, source_report.outer_gap),
+            crate::world_engine::inset_world_domain(&target_domain, target_outer),
+        ) else {
+            return CommandApplied::Rejected {
+                kind: KIND_SCOPE_HELD,
+                message: MSG_SCOPE_HELD,
+            };
+        };
+        let event = CoreEvent {
+            owner,
+            generation: self.core_generation.clone(),
+            correlation,
+            revision,
+            fingerprint,
+            domain: Engine::canonical_component_domain(&inset_source),
+            domain_key: source_key.clone(),
+            outer_gap: source_report.outer_gap,
+            focused_window: source_report.focused.clone(),
+            windows: combined,
+            closed_windows: closed,
+            directional: Some(vec![
+                (inset_source, source_key.clone()),
+                (inset_target, target_key),
+            ]),
+            directional_target_outer_gap: Some(target_outer),
+            target_domain: None,
+            target_windows: Vec::new(),
+            command: command.clone(),
+        };
+        self.finish_operation_event(report, command_seq, &event)
+    }
+
     /// Direction-only focus (core-owned topology): strict parity with the
     /// extracted KDE map. Left/right resolve the strict unique-reciprocal
     /// target from retained FULL rects and run the cross-output pair,
@@ -962,34 +1090,41 @@ impl WorldEngine {
             };
         }
         // Windowed selection: unreadable refuses, no candidate runs local.
-        // The cross route below pins the same dispatch-selected target
-        // through the validated reciprocal pair (no re-ranking of any
-        // relocated mover within this report).
-        match self.window_topology_target(&source_key.output, direction_parsed, &source_row.rect) {
+        // The dispatch-selected target is pinned through the validated
+        // reciprocal pair (no re-ranking of any relocated mover within
+        // this report): fresh topology only validates forward/reverse
+        // touch, never re-ranks the mover frame.
+        let pinned = match self.window_topology_target(
+            &source_key.output,
+            direction_parsed,
+            &source_row.rect,
+        ) {
             Err(_) => {
                 return CommandApplied::Rejected {
                     kind: KIND_OPERATION,
                     message: MSG_OPERATION,
                 };
             }
-            Ok(None) => {}
-            Ok(Some(_)) => {
-                let command = CoreCommand::Move {
-                    window: window.0.clone(),
-                    direction: direction.to_owned(),
-                    cross_output_transfer: true,
-                    same_axis_move: same_axis,
-                };
-                return self.operation_directional(
-                    report,
-                    command_seq,
-                    &command,
-                    &window.0,
-                    direction,
-                    by_id,
-                    held_scopes,
-                );
-            }
+            Ok(None) => None,
+            Ok(Some(target)) => Some(target),
+        };
+        if let Some(target) = pinned {
+            let command = CoreCommand::Move {
+                window: window.0.clone(),
+                direction: direction.to_owned(),
+                cross_output_transfer: true,
+                same_axis_move: same_axis,
+            };
+            return self.operation_directional_pinned(
+                report,
+                command_seq,
+                &command,
+                &window.0,
+                direction,
+                &target,
+                by_id,
+                held_scopes,
+            );
         }
         let local_command = CoreCommand::Move {
             window: window.0.clone(),
@@ -1613,11 +1748,43 @@ impl WorldEngine {
         match reply {
             CoreReply::Tiled(_)
             | CoreReply::Projection(_)
-            | CoreReply::MoveDirectional(_)
             | CoreReply::Resize(_)
             | CoreReply::ActiveGroup(_)
             | CoreReply::NoGroup { .. }
             | CoreReply::DragPreview(_) => {
+                self.note_command(command_seq);
+                CommandApplied::NoEffect
+            }
+            CoreReply::MoveDirectional(plan) => {
+                // Exhausted R4 cross-output moves retain one identity-pinned
+                // window transfer under the stable command identity so the
+                // adapter relocates natively (output + membership, arrival
+                // gate defers foreign geometry, focus stays on the mover).
+                // Local R1-R3 plans (no cross) retain nothing: focus
+                // unchanged, no transfer. Uses the existing send transfer
+                // contract (Window kind, follow to the target view).
+                if let Some(cross) = &plan.cross {
+                    let window = cross.intent_window.clone();
+                    let in_flight = self.retained.iter().any(|r| match &r.target.kind {
+                        TransferKind::Window(w) => w == &window,
+                        TransferKind::View | TransferKind::Migration => false,
+                    });
+                    if !in_flight {
+                        self.retained.push(RetainedTransfer {
+                            target: TransferTarget {
+                                operation_id: format!("op-{command_seq}"),
+                                kind: TransferKind::Window(window),
+                                target_output: cross.target_output.clone(),
+                                target_workspace: cross.target_workspace.0.clone(),
+                                follow: true,
+                                held: false,
+                            },
+                            policy: false,
+                            source_output: cross.source_output.clone(),
+                            source_workspace: cross.source_workspace.0.clone(),
+                        });
+                    }
+                }
                 self.note_command(command_seq);
                 CommandApplied::NoEffect
             }
@@ -1629,9 +1796,65 @@ impl WorldEngine {
                     self.state_revision + 1,
                 ))
             }
-            CoreReply::SendWorkspace(_) | CoreReply::SendOutput(_) => {
-                // Pair-route sends that surface here (same-domain
-                // carry) retain exactly like an explicit send.
+            CoreReply::SendWorkspace(plan) | CoreReply::SendOutput(plan) => {
+                // Pair-route sends that surface here (R4 capacity-float
+                // fallback under a Move command) retain exactly like an
+                // explicit send: one identity-pinned window transfer.
+                let (window, source_output, source_workspace, target_output, target_workspace) =
+                    match &plan.operation {
+                        crate::contract::LifecycleOperation::MoveTiled {
+                            window,
+                            source_output,
+                            source_workspace,
+                            target_output,
+                            target_workspace,
+                            ..
+                        }
+                        | crate::contract::LifecycleOperation::MoveDeferred {
+                            window,
+                            source_output,
+                            source_workspace,
+                            target_output,
+                            target_workspace,
+                        }
+                        | crate::contract::LifecycleOperation::MoveToFloat {
+                            window,
+                            source_output,
+                            source_workspace,
+                            target_output,
+                            target_workspace,
+                            ..
+                        } => (
+                            window.clone(),
+                            source_output.clone(),
+                            source_workspace.clone(),
+                            target_output.clone(),
+                            target_workspace.clone(),
+                        ),
+                        _ => {
+                            self.note_command(command_seq);
+                            return CommandApplied::NoEffect;
+                        }
+                    };
+                let in_flight = self.retained.iter().any(|r| match &r.target.kind {
+                    TransferKind::Window(w) => w == &window,
+                    TransferKind::View | TransferKind::Migration => false,
+                });
+                if !in_flight {
+                    self.retained.push(RetainedTransfer {
+                        target: TransferTarget {
+                            operation_id: format!("op-{command_seq}"),
+                            kind: TransferKind::Window(window),
+                            target_output,
+                            target_workspace: target_workspace.0.clone(),
+                            follow: plan.follow,
+                            held: false,
+                        },
+                        policy: false,
+                        source_output,
+                        source_workspace: source_workspace.0.clone(),
+                    });
+                }
                 self.note_command(command_seq);
                 CommandApplied::NoEffect
             }

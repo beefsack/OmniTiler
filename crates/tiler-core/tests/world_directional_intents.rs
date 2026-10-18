@@ -1537,3 +1537,155 @@ fn reverse_ambiguous_pair_still_crosses_world_move() {
         "reverse-ambiguous pair still crosses"
     );
 }
+
+#[test]
+fn r4_exhausted_move_retains_identity_pinned_transfer_and_settles_on_arrival() {
+    // Exhausted cross-output MoveDirectional retains one identity-pinned
+    // window transfer (stable op id, dispatch source/target, follow to the
+    // target view) using the existing send transfer contract; local
+    // R1-R3 moves retain none with focus unchanged; lag keeps the flight
+    // with no replay; arrival proof settles it; a fresh reverse move
+    // resolves against fresh topology without reranking the relocated
+    // mover frame.
+    let mover = window_rect("win-a", "src", "ws", 860, 1150, 200, 200);
+    let report = three_output_report(
+        1,
+        rect(0, 1080, 1920, 1080),
+        rect(0, 0, 960, 1080),
+        rect(960, 0, 960, 1080),
+        mover,
+    );
+    let mut engine = WorldEngine::new("gen-1").expect("valid");
+    accepted(&mut engine, &report);
+    let mut cmd = report.clone();
+    with_command(
+        &mut cmd,
+        2,
+        112,
+        WorldCommand::MoveDirectional {
+            window: WindowId("win-a".to_owned()),
+            direction: "up".to_owned(),
+            same_axis: tiler_core::directional::SameAxisMove::GroupWithNeighbor,
+        },
+    );
+    let reply = accepted(&mut engine, &cmd);
+    assert_eq!(homing(&reply, "win-a"), Some("u2/ws".to_owned()));
+    let transfer = reply
+        .transfers
+        .iter()
+        .find(|t| matches!(t.kind, TransferKind::Window(_)))
+        .expect("exhausted R4 move retains a window transfer");
+    assert_eq!(transfer.operation_id, "op-112", "stable command identity");
+    assert_eq!(transfer.target_output.0, "u2");
+    assert_eq!(transfer.target_workspace, "ws");
+    assert!(transfer.follow, "move follows the mover to the target view");
+    assert!(
+        reply.effects.is_empty(),
+        "local R4 move carries no focus effect; focus stays on the mover"
+    );
+    // Local R1-R3 move on a gap retains no transfer.
+    let mut gap_engine = WorldEngine::new("gen-1").expect("valid");
+    let mut gap = three_output_report(
+        1,
+        rect(0, 2000, 800, 600),
+        rect(0, 0, 800, 600),
+        rect(3000, 0, 800, 600),
+        window_rect("win-a", "src", "ws", 10, 1150, 100, 100),
+    );
+    gap.domains[0] = domain_report(
+        "src",
+        "ws",
+        vec![
+            window_rect("win-a", "src", "ws", 10, 1150, 100, 100),
+            window_rect("win-a2", "src", "ws", 300, 1150, 100, 100),
+        ],
+    );
+    accepted(&mut gap_engine, &gap);
+    let mut local = gap.clone();
+    with_command(
+        &mut local,
+        3,
+        153,
+        WorldCommand::MoveDirectional {
+            window: WindowId("win-a".to_owned()),
+            direction: "up".to_owned(),
+            same_axis: tiler_core::directional::SameAxisMove::GroupWithNeighbor,
+        },
+    );
+    let local_reply = accepted(&mut gap_engine, &local);
+    assert_eq!(homing(&local_reply, "win-a"), Some("src/ws".to_owned()));
+    assert!(
+        local_reply
+            .transfers
+            .iter()
+            .all(|t| !matches!(t.kind, TransferKind::Window(_))),
+        "local moves retain no window transfer"
+    );
+    assert!(local_reply.effects.is_empty(), "local move focus unchanged");
+    // Actuation lag: the mover still observes at the source; the flight
+    // persists with no replay and the desired homing stays pinned.
+    let mut lag = report.clone();
+    lag.request_seq = 3;
+    lag.request_id = "req-3".to_owned();
+    lag.observation_seq = 3;
+    let lag_reply = accepted(&mut engine, &lag);
+    assert_eq!(homing(&lag_reply, "win-a"), Some("u2/ws".to_owned()));
+    let lag_transfer = lag_reply
+        .transfers
+        .iter()
+        .find(|t| matches!(t.kind, TransferKind::Window(_)))
+        .expect("lag keeps the pinned flight");
+    assert_eq!(
+        lag_transfer.operation_id, "op-112",
+        "no replay: same stable identity"
+    );
+    assert_eq!(lag_transfer.target_output.0, "u2");
+    // Arrival proof: the mover now observes at the target; the flight
+    // settles exactly once with no further transfer.
+    let mut arrival = report.clone();
+    arrival.request_seq = 4;
+    arrival.request_id = "req-4".to_owned();
+    arrival.observation_seq = 4;
+    arrival.domains[0] = domain_report("src", "ws", Vec::new());
+    arrival.domains[2] = domain_report(
+        "u2",
+        "ws",
+        vec![
+            window_rect("win-a", "u2", "ws", 970, 10, 100, 100),
+            window_rect("win-u2", "u2", "ws", 970, 10, 100, 100),
+        ],
+    );
+    arrival.topology[0].native_order = Vec::new();
+    let arrival_reply = accepted(&mut engine, &arrival);
+    assert_eq!(homing(&arrival_reply, "win-a"), Some("u2/ws".to_owned()));
+    assert!(
+        arrival_reply.transfers.is_empty(),
+        "arrival proof settles the flight exactly once"
+    );
+    // Fresh topology after arrival: a reverse move resolves against the
+    // current rects (no stale rerank of the relocated frame).
+    let mut back = arrival.clone();
+    back.request_seq = 5;
+    back.request_id = "req-5".to_owned();
+    back.observation_seq = 5;
+    back.focused_global = "win-a".to_owned();
+    with_command(
+        &mut back,
+        5,
+        113,
+        WorldCommand::MoveDirectional {
+            window: WindowId("win-a".to_owned()),
+            direction: "down".to_owned(),
+            same_axis: tiler_core::directional::SameAxisMove::GroupWithNeighbor,
+        },
+    );
+    let back_reply = accepted(&mut engine, &back);
+    assert_eq!(homing(&back_reply, "win-a"), Some("src/ws".to_owned()));
+    let back_transfer = back_reply
+        .transfers
+        .iter()
+        .find(|t| matches!(t.kind, TransferKind::Window(_)))
+        .expect("reverse move pins a fresh transfer");
+    assert_eq!(back_transfer.operation_id, "op-113");
+    assert_eq!(back_transfer.target_output.0, "src");
+}
