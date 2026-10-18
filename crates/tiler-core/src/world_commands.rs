@@ -401,7 +401,7 @@ impl WorldEngine {
             };
         }
         let Some((direction, direction_token)) =
-            self.core_topology_direction(source_output, target_output)
+            self.reciprocal_direction_for(source_output, target_output)
         else {
             return CommandApplied::Rejected {
                 kind: KIND_MIGRATION,
@@ -699,11 +699,14 @@ impl WorldEngine {
     }
 
     /// Cross-output directional move/focus through the core-derived pair.
-    /// The source is the window's homing domain; the target resolves through
-    /// the retained FULL topology (same workspace preferred, else the target
-    /// output's current view, else the first readable domain there). No
-    /// resolvable target or no readable target refuses without mutation: a
-    /// cross-output request never silently runs as a local move/focus.
+    /// Moves resolve the target through the windowed FULL selector
+    /// (centre/span/left-top with reciprocal existence); focus keeps the
+    /// strict unique-reciprocal map. The source is the window's homing
+    /// domain; the target resolves to the same workspace preferred, else
+    /// the target output's current view, else the first readable domain
+    /// there. No resolvable target or no readable target refuses without
+    /// mutation: a cross-output request never silently runs as a local
+    /// move/focus. Unreadable topology refuses.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn operation_directional(
         &mut self,
@@ -732,8 +735,34 @@ impl WorldEngine {
                 message: MSG_SCOPE_HELD,
             };
         }
-        let Some(((source_domain, source_key), (target_domain, target_key), target_outer, _)) =
+        let is_move = matches!(command, CoreCommand::Move { .. });
+        let pair = if is_move {
+            let Some(direction_parsed) = parse_direction_token(direction) else {
+                return CommandApplied::Rejected {
+                    kind: KIND_OPERATION,
+                    message: MSG_OPERATION,
+                };
+            };
+            match self.directional_pair_for_window(
+                report,
+                &source_key,
+                direction_parsed,
+                &source_row.rect,
+                held_scopes,
+            ) {
+                Ok(pair) => pair,
+                Err(_) => {
+                    return CommandApplied::Rejected {
+                        kind: KIND_OPERATION,
+                        message: MSG_OPERATION,
+                    };
+                }
+            }
+        } else {
             self.directional_pair_for(report, &source_key, direction, held_scopes)
+        };
+        let Some(((source_domain, source_key), (target_domain, target_key), target_outer, _)) =
+            pair
         else {
             return CommandApplied::Rejected {
                 kind: KIND_OPERATION,
@@ -891,11 +920,14 @@ impl WorldEngine {
         self.run_local_operation(report, command_seq, &local_command, by_id, held_scopes)
     }
 
-    /// Direction-only move (core-owned topology): strict parity. All four
-    /// directions resolve the strict target and run the cross pair,
-    /// returning its result directly including refusal. Only
-    /// missing/ambiguous/partial/edgeless topology runs local R1-R3.
-    /// No adapter target or `crossOutput` is read; the core decides.
+    /// Direction-only move (core-owned topology): windowed selection. All
+    /// four directions rank FULL edge-touch candidates by mover-centre
+    /// projection, then span overlap, then left/top, with reciprocal edge
+    /// existence (reverse uniqueness not required). A selected target runs
+    /// the cross pair, returning its result directly including refusal.
+    /// Unreadable topology refuses; no candidate (or missing reverse
+    /// touch) runs local R1-R3. No adapter target or `crossOutput` is
+    /// read; the core decides.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn move_directional(
         &mut self,
@@ -929,28 +961,35 @@ impl WorldEngine {
                 message: MSG_SCOPE_HELD,
             };
         }
-        // Strict parity: when a strict target exists, run the cross pair
-        // and return its result directly (including refusal). Local R1-R3
-        // runs only with no strict target.
-        if self
-            .core_topology_target(&source_key.output, direction_parsed)
-            .is_some()
-        {
-            let command = CoreCommand::Move {
-                window: window.0.clone(),
-                direction: direction.to_owned(),
-                cross_output_transfer: true,
-                same_axis_move: same_axis,
-            };
-            return self.operation_directional(
-                report,
-                command_seq,
-                &command,
-                &window.0,
-                direction,
-                by_id,
-                held_scopes,
-            );
+        // Windowed selection: unreadable refuses, no candidate runs local.
+        // The cross route below pins the same dispatch-selected target
+        // through the validated reciprocal pair (no re-ranking of any
+        // relocated mover within this report).
+        match self.window_topology_target(&source_key.output, direction_parsed, &source_row.rect) {
+            Err(_) => {
+                return CommandApplied::Rejected {
+                    kind: KIND_OPERATION,
+                    message: MSG_OPERATION,
+                };
+            }
+            Ok(None) => {}
+            Ok(Some(_)) => {
+                let command = CoreCommand::Move {
+                    window: window.0.clone(),
+                    direction: direction.to_owned(),
+                    cross_output_transfer: true,
+                    same_axis_move: same_axis,
+                };
+                return self.operation_directional(
+                    report,
+                    command_seq,
+                    &command,
+                    &window.0,
+                    direction,
+                    by_id,
+                    held_scopes,
+                );
+            }
         }
         let local_command = CoreCommand::Move {
             window: window.0.clone(),
@@ -961,10 +1000,11 @@ impl WorldEngine {
         self.run_local_operation(report, command_seq, &local_command, by_id, held_scopes)
     }
 
-    /// Direction-only window send (core-owned topology): resolve the strict
-    /// target output plus its current native view, then run the
-    /// cross-output send path. No adapter endpoint is read. No resolvable
-    /// target or unreadable target view refuses without mutation.
+    /// Direction-only window send (core-owned topology): resolve the
+    /// windowed target output plus its current native view, then run the
+    /// cross-output send path. No adapter endpoint is read. Unreadable
+    /// topology, no candidate, or missing reverse touch refuses without
+    /// mutation.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn send_directional(
         &mut self,
@@ -988,12 +1028,18 @@ impl WorldEngine {
                 message: MSG_SEND_WINDOW,
             };
         };
-        let Some(target_output) = self.core_topology_target(&source_row.output, direction_parsed)
-        else {
-            return CommandApplied::Rejected {
-                kind: KIND_SEND_TARGET,
-                message: MSG_SEND_TARGET,
-            };
+        let target_output = match self.window_topology_target(
+            &source_row.output,
+            direction_parsed,
+            &source_row.rect,
+        ) {
+            Ok(Some(target)) => target,
+            _ => {
+                return CommandApplied::Rejected {
+                    kind: KIND_SEND_TARGET,
+                    message: MSG_SEND_TARGET,
+                };
+            }
         };
         let Some(current) = report
             .topology
@@ -1025,8 +1071,10 @@ impl WorldEngine {
     }
 
     /// Direction-only whole-workspace migration (core-owned topology):
-    /// resolve the strict target from the explicit source output, then run
-    /// the world migration path. The adapter reports source identity only.
+    /// resolve the largest-shared-edge target from the explicit source
+    /// output, then run the world migration path. The adapter reports
+    /// source identity only. Unreadable topology, no candidate, or missing
+    /// reverse touch refuses without mutation; no wrap.
     pub(crate) fn migrate_directional(
         &mut self,
         report: &WorldReport,
@@ -1041,11 +1089,14 @@ impl WorldEngine {
                 message: MSG_DIRECTION,
             };
         };
-        let Some(target_output) = self.core_topology_target(source_output, direction_parsed) else {
-            return CommandApplied::Rejected {
-                kind: KIND_MIGRATION,
-                message: MSG_MIGRATION,
-            };
+        let target_output = match self.migration_topology_target(source_output, direction_parsed) {
+            Ok(Some(target)) => target,
+            _ => {
+                return CommandApplied::Rejected {
+                    kind: KIND_MIGRATION,
+                    message: MSG_MIGRATION,
+                };
+            }
         };
         self.start_migration(
             report,
@@ -1283,11 +1334,11 @@ impl WorldEngine {
 
     /// Directional whole-workspace migration through the world path: the
     /// operation domain supplies the source scope and the retained
-    /// core-owned FULL topology supplies the target output (strict
-    /// unique-reciprocal, never carried adjacency), reusing the same scope
-    /// policy as the explicit migration command. Refuses without mutation
-    /// when the direction has no resolvable target or the scope policy
-    /// refuses.
+    /// core-owned FULL topology supplies the largest-shared-edge target
+    /// (reciprocal existence, never carried adjacency), reusing the same
+    /// scope policy as the explicit migration command. Refuses without
+    /// mutation when the direction has no resolvable target or the scope
+    /// policy refuses.
     pub(crate) fn operation_migration(
         &mut self,
         report: &WorldReport,
@@ -1312,11 +1363,14 @@ impl WorldEngine {
                 message: MSG_OPERATION,
             };
         };
-        let Some(target_output) = self.core_topology_target(&domain_key.output, direction) else {
-            return CommandApplied::Rejected {
-                kind: KIND_OPERATION,
-                message: MSG_OPERATION,
-            };
+        let target_output = match self.migration_topology_target(&domain_key.output, direction) {
+            Ok(Some(target)) => target,
+            _ => {
+                return CommandApplied::Rejected {
+                    kind: KIND_OPERATION,
+                    message: MSG_OPERATION,
+                };
+            }
         };
         self.start_migration(
             report,
@@ -1728,10 +1782,52 @@ impl WorldEngine {
         map.get(&(source.clone(), direction)).cloned()
     }
 
-    /// Strict unique-reciprocal direction from one output to another over
-    /// the retained live FULL topology, with the Engine direction token.
-    /// `None` fences, exactly like [`WorldEngine::core_topology_target`].
-    pub(crate) fn core_topology_direction(
+    /// Reciprocal edge existence between two outputs in one direction over
+    /// the retained live FULL topology: the forward edge-touch candidate
+    /// set contains the target AND the reverse set contains the source.
+    /// Reverse uniqueness is NOT required (valid reverse ambiguity still
+    /// pairs). `false` on any unreadable topology, unknown ids, or missing
+    /// touch either way: callers fence without mutation.
+    pub(crate) fn reciprocal_pair_exists(
+        &self,
+        source: &OutputId,
+        target: &OutputId,
+        direction: Direction,
+    ) -> bool {
+        use crate::output_selection::{OutputEntry, candidates_in_direction};
+        let entries = self.live_topology_entries();
+        let opposite = match direction {
+            Direction::Left => Direction::Right,
+            Direction::Right => Direction::Left,
+            Direction::Up => Direction::Down,
+            Direction::Down => Direction::Up,
+        };
+        let (Some(source_entry), Some(target_entry)) = (
+            entries.iter().find(|e| &e.id == source).cloned(),
+            entries.iter().find(|e| &e.id == target).cloned(),
+        ) else {
+            return false;
+        };
+        let Ok(forward) = candidates_in_direction(&source_entry, direction, &entries) else {
+            return false;
+        };
+        if !forward.iter().any(|c| &c.id == target) {
+            return false;
+        }
+        let back_entry = OutputEntry {
+            id: target_entry.id.clone(),
+            rect: target_entry.rect,
+        };
+        let Ok(reverse) = candidates_in_direction(&back_entry, opposite, &entries) else {
+            return false;
+        };
+        reverse.iter().any(|c| &c.id == source)
+    }
+
+    /// Reciprocal direction from one output to a named other output, with
+    /// the Engine direction token. Forward plus reverse edge-touch must
+    /// both hold; reverse uniqueness is not required. `None` fences.
+    pub(crate) fn reciprocal_direction_for(
         &self,
         source: &OutputId,
         target: &OutputId,
@@ -1742,9 +1838,61 @@ impl WorldEngine {
             (Direction::Up, "up"),
             (Direction::Down, "down"),
         ];
-        ORDER.into_iter().find(|(direction, _)| {
-            self.core_topology_target(source, *direction).as_ref() == Some(target)
-        })
+        ORDER
+            .into_iter()
+            .find(|(direction, _)| self.reciprocal_pair_exists(source, target, *direction))
+    }
+
+    /// Windowed directional target over retained FULL topology
+    /// (2026-10-09: centre projection, then span overlap, then left/top).
+    /// `Err` on any unreadable topology (refuse); `Ok(None)` when no
+    /// candidate touches or the selected target lacks reverse edge-touch
+    /// (caller-side local for moves, refusal for sends). No wrap.
+    pub(crate) fn window_topology_target(
+        &self,
+        source: &OutputId,
+        direction: Direction,
+        window: &crate::geometry::Rect,
+    ) -> Result<Option<OutputId>, crate::output_selection::SelectionError> {
+        use crate::output_selection::select_for_window;
+        let entries = self.live_topology_entries();
+        let Some(source_entry) = entries.iter().find(|e| &e.id == source).cloned() else {
+            return Err(crate::output_selection::SelectionError::UnreadableTopology);
+        };
+        // select_for_window validates every entry (including duplicates
+        // and rect mismatches) and ranks centre/span/left-top.
+        let selected = select_for_window(direction, &source_entry, window, &entries)?;
+        let Some(candidate) = selected else {
+            return Ok(None);
+        };
+        if !self.reciprocal_pair_exists(source, &candidate.id, direction) {
+            return Ok(None);
+        }
+        Ok(Some(candidate.id))
+    }
+
+    /// Migration directional target over retained FULL topology
+    /// (2026-10-09: largest shared edge, then left/top; never window
+    /// position). `Err` on unreadable topology; `Ok(None)` on no
+    /// candidate or missing reverse touch. No wrap.
+    pub(crate) fn migration_topology_target(
+        &self,
+        source: &OutputId,
+        direction: Direction,
+    ) -> Result<Option<OutputId>, crate::output_selection::SelectionError> {
+        use crate::output_selection::select_for_migration;
+        let entries = self.live_topology_entries();
+        let Some(source_entry) = entries.iter().find(|e| &e.id == source).cloned() else {
+            return Err(crate::output_selection::SelectionError::UnreadableTopology);
+        };
+        let selected = select_for_migration(direction, &source_entry, &entries)?;
+        let Some(candidate) = selected else {
+            return Ok(None);
+        };
+        if !self.reciprocal_pair_exists(source, &candidate.id, direction) {
+            return Ok(None);
+        }
+        Ok(Some(candidate.id))
     }
 
     pub(crate) fn directional_pair_for(
@@ -1763,16 +1911,46 @@ impl WorldEngine {
             return None;
         }
         let target_output = self.core_topology_target(&source_key.output, direction)?;
+        self.directional_pair_for_target(
+            report,
+            source_key,
+            source,
+            direction,
+            &target_output,
+            held_scopes,
+        )
+    }
+
+    /// Validated reciprocal pair for an explicitly pinned target output
+    /// (dispatch-selected via the windowed/migration selectors, or a named
+    /// migration endpoint). Verifies the pinned pair still touches
+    /// reciprocally in fresh topology without re-ranking any relocated
+    /// mover: forward and reverse edge-touch must both hold, reverse
+    /// uniqueness is not required. `None` refuses without mutation.
+    pub(crate) fn directional_pair_for_target(
+        &self,
+        report: &WorldReport,
+        source_key: &DomainKey,
+        source: &crate::world_report::DomainReport,
+        direction: Direction,
+        target_output: &OutputId,
+        held_scopes: &BTreeSet<DomainKey>,
+    ) -> Option<DirectionalPair> {
+        if !self.reciprocal_pair_exists(&source_key.output, target_output, direction) {
+            return None;
+        }
         let current = report
             .topology
             .iter()
-            .find(|t| t.output == target_output)
+            .find(|t| t.output == *target_output)
             .map(|t| t.current_native.clone());
         let candidates: Vec<&crate::world_report::DomainReport> = report
             .domains
             .iter()
             .filter(|d| {
-                d.readable && d.domain.id == target_output && !held_scopes.contains(&d.domain.key())
+                d.readable
+                    && d.domain.id == *target_output
+                    && !held_scopes.contains(&d.domain.key())
             })
             .collect();
         // Same workspace preferred (directional counterpart), else the target
@@ -1801,6 +1979,44 @@ impl WorldEngine {
             (target_domain, target.domain.key()),
             target.outer_gap,
             direction,
+        ))
+    }
+
+    /// Windowed directional pair for exhausted moves and directional
+    /// sends: selects via [`WorldEngine::window_topology_target`] (centre,
+    /// span, left/top) then builds the validated reciprocal pair for the
+    /// pinned target without re-ranking. `Err` on unreadable topology
+    /// (refuse); `Ok(None)` on no candidate, missing reverse touch, or no
+    /// readable target domain.
+    pub(crate) fn directional_pair_for_window(
+        &self,
+        report: &WorldReport,
+        source_key: &DomainKey,
+        direction: Direction,
+        window: &crate::geometry::Rect,
+        held_scopes: &BTreeSet<DomainKey>,
+    ) -> Result<Option<DirectionalPair>, crate::output_selection::SelectionError> {
+        let Some(source) = report
+            .domains
+            .iter()
+            .find(|d| d.readable && d.domain.key() == *source_key)
+        else {
+            return Ok(None);
+        };
+        if held_scopes.contains(source_key) {
+            return Ok(None);
+        }
+        let selected = self.window_topology_target(&source_key.output, direction, window)?;
+        let Some(target_output) = selected else {
+            return Ok(None);
+        };
+        Ok(self.directional_pair_for_target(
+            report,
+            source_key,
+            source,
+            direction,
+            &target_output,
+            held_scopes,
         ))
     }
 }
