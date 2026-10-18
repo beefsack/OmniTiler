@@ -628,6 +628,63 @@ fn send_effect_owner_topology_never_touches_main_thread_displays() {
     shutdown_clean(&fixture);
 }
 
+#[test]
+fn send_display_slot_recovers_after_invalidation_without_notification() {
+    // Transient unreadable snapshot clears the slot; the next good snapshot
+    // restores it with no screen notification, or numbered sends would
+    // refuse forever in a static session. The test drives the producer's
+    // own condition (absent slot republishes, populated quiet poll does
+    // not) rather than the setter alone.
+    let fixture = start(scoped_config());
+    fixture
+        .handle
+        .publish_display_inputs(&two_display_snapshot());
+    assert!(
+        fixture.handle.has_display_inputs(),
+        "startup publish fills the slot"
+    );
+    fixture.handle.invalidate_topology();
+    assert!(
+        !fixture.handle.has_display_inputs(),
+        "unreadable snapshot clears the slot"
+    );
+    // Next good snapshot, no notification: the absent slot republishes.
+    if !fixture.handle.has_display_inputs() {
+        fixture
+            .handle
+            .publish_display_inputs(&two_display_snapshot());
+    }
+    assert_eq!(
+        fixture
+            .handle
+            .published_display_inputs()
+            .expect("slot recovered")
+            .displays
+            .len(),
+        2,
+        "cleared slot recovers from the next good snapshot"
+    );
+    // Quiet poll with a populated slot leaves it untouched.
+    fixture
+        .handle
+        .update_topology_with(two_space_snapshot(), &user_space);
+    assert!(
+        fixture.handle.has_display_inputs(),
+        "quiet poll keeps the recovered slot"
+    );
+    assert_eq!(
+        fixture
+            .handle
+            .published_display_inputs()
+            .expect("slot intact")
+            .displays
+            .len(),
+        2,
+        "quiet poll never moves a populated slot"
+    );
+    shutdown_clean(&fixture);
+}
+
 // -- Tests -------------------------------------------------------------------
 
 #[test]

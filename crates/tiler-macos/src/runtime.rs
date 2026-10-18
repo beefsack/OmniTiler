@@ -855,10 +855,10 @@ impl RuntimeHandle {
     }
 
     /// Publish the AppKit display legs for the send effect owner from a
-    /// main-thread snapshot. Call at startup and on screen-parameter
-    /// notification only — never from the steady-state poll path, which
-    /// must not move this slot. Brief lock; cleared by
-    /// [`RuntimeHandle::invalidate_topology`].
+    /// main-thread snapshot. Call at startup, on screen-parameter
+    /// notification, and to recover a cleared slot — never from a quiet
+    /// poll with a populated slot, which must not move it. Brief lock;
+    /// cleared by [`RuntimeHandle::invalidate_topology`].
     pub fn publish_display_inputs(&self, snapshot: &TopologySnapshot) {
         let inputs = PublishedDisplayInputs {
             displays: snapshot.displays.clone(),
@@ -871,6 +871,13 @@ impl RuntimeHandle {
     /// invalidation — both refuse the send). Brief lock clone only.
     pub fn published_display_inputs(&self) -> Option<PublishedDisplayInputs> {
         lock_shared(&self.shared).display_inputs.clone()
+    }
+
+    /// True when the send display slot holds a publication. The tile
+    /// controller checks this per good snapshot to republish after a
+    /// cleared slot without waiting for the next screen notification.
+    pub fn has_display_inputs(&self) -> bool {
+        lock_shared(&self.shared).display_inputs.is_some()
     }
 
     /// Submit one revision-tagged scoped observation. The windows must

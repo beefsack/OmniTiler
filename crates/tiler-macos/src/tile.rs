@@ -1136,6 +1136,15 @@ mod native {
         enabled && dirty && elapsed >= BORDER_FAST_MIN
     }
 
+    /// Display-leg publish gate over explicit inputs (pure, testable): a
+    /// screen-parameter notification always republishes latest-wins; an
+    /// absent slot (failed startup read or transient unreadable snapshot)
+    /// recovers from the next good snapshot with no notification; a quiet
+    /// poll with a populated slot leaves it untouched.
+    fn display_publish_due(display_notified: bool, slot_populated: bool) -> bool {
+        display_notified || !slot_populated
+    }
+
     /// Current visible work areas in CG top-left points for the zoom
     /// heuristic (one entry per display with converted geometry).
     fn visibles_of(
@@ -1888,15 +1897,18 @@ mod native {
             }
 
             // Topology: the 250 ms poll still owns the full snapshot; the
-            // send display legs publish on screen-parameter notification
-            // only (plus startup above), so polling never moves that slot.
+            // send display legs publish on screen-parameter notification,
+            // plus startup above, plus recovery when the slot stands empty
+            // (a transient unreadable read clears it — the next good
+            // snapshot restores it without waiting for a notification), so
+            // a quiet poll with a populated slot never moves it.
             let display_notified = display_flag.take_changed();
             if display_notified {
                 display_events += 1;
             }
             match snapshot_live() {
                 Ok(snapshot) => {
-                    if display_notified {
+                    if display_publish_due(display_notified, handle.has_display_inputs()) {
                         handle.publish_display_inputs(&snapshot);
                     }
                     last_snapshot = Some(snapshot.clone());
@@ -2441,6 +2453,18 @@ mod native {
             assert!(!engine_places(&plan, 9999, 7));
             assert!(!engine_places(&plan, 4242, 77));
             assert!(!engine_places(&[], 4242, 7));
+        }
+
+        #[test]
+        fn display_publish_gate_covers_notify_recover_and_quiet() {
+            // Notification republishes latest-wins even over a full slot.
+            assert!(display_publish_due(true, true));
+            assert!(display_publish_due(true, false));
+            // An emptied slot (failed startup read, transient unreadable
+            // snapshot) recovers on the next good snapshot unnotified.
+            assert!(display_publish_due(false, false));
+            // A quiet poll with a populated slot leaves it untouched.
+            assert!(!display_publish_due(false, true));
         }
 
         #[test]

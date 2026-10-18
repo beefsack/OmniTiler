@@ -49,7 +49,8 @@ pub(crate) struct AppRecord {
 }
 
 /// Latest-wins AppKit display legs for the send effect owner; published
-/// at startup and on screen-parameter notification, cleared on invalidation.
+/// at startup, on screen-parameter notification, and to recover a cleared
+/// slot — never on a quiet populated poll. Cleared on invalidation.
 #[derive(Debug, Clone, Default)]
 pub struct PublishedDisplayInputs {
     pub displays: Vec<crate::topology::DisplayGeometry>,
