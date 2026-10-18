@@ -753,12 +753,17 @@ mod tests {
     }
 
     /// Real-filesystem fixture: a unique run directory with writer plus
-    /// best-effort cleanup. No timers, no randomness beyond the PID plus a
-    /// process-local counter.
+    /// best-effort cleanup. Unix-only: the macOS proof contract is
+    /// POSIX-path shaped (`temp_dir_shape_valid` requires a leading `/`),
+    /// so live-filesystem admission fixtures are only meaningful where the
+    /// platform temp dir is POSIX. No timers, no randomness beyond the PID
+    /// plus a process-local counter.
+    #[cfg(unix)]
     struct TempRun {
         dir: std::path::PathBuf,
     }
 
+    #[cfg(unix)]
     impl TempRun {
         fn create(tag: &str) -> Self {
             static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -786,6 +791,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     impl Drop for TempRun {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.dir);
@@ -823,6 +829,10 @@ mod tests {
         }
     }
 
+    /// Live-filesystem containment: unix-only (see `TempRun`). The portable
+    /// pure-shape and title-token legs are covered by
+    /// `doc_verdict_title_token_or_without_live_path` on every platform.
+    #[cfg(unix)]
     #[test]
     fn canonical_containment_needs_live_strictly_inside_files() {
         let run = TempRun::create("inside");
@@ -897,40 +907,97 @@ mod tests {
         assert!(canonical_doc_inside_run_dir(run.as_str(), alias.to_str().unwrap()).is_ok());
     }
 
+    /// Portable record-shape contract: the macOS proof requires POSIX-shaped
+    /// temp dirs (leading `/`), so Windows-style paths refuse at shape
+    /// validation on every platform - before any filesystem touch. This pins
+    /// why live-filesystem admission fixtures are unix-gated: production
+    /// `temp_dir_shape_valid` is deliberately not widened for them.
     #[test]
-    fn doc_verdict_keeps_title_token_or_over_canonical_path() {
+    fn temp_dir_shape_rejects_windows_paths_on_every_platform() {
+        for dir in [
+            "C:\\Users\\run\\temp",
+            "C:/Users/run/temp",
+            "\\\\server\\share\\run",
+            "relative\\windows\\dir",
+        ] {
+            assert!(!temp_dir_shape_valid(dir), "{dir}");
+        }
+        // POSIX shapes still admit (liveness is proven separately per edge).
+        assert!(temp_dir_shape_valid("/tmp/omnitiler-run-abc123"));
+    }
+
+    /// Portable title-token OR: with non-live paths (missing on every
+    /// platform) the path leg always fails and the title leg alone decides.
+    /// Live canonical admission is covered unix-only by
+    /// `doc_verdict_canonical_path_admits_live_inside_file`.
+    #[test]
+    fn doc_verdict_title_token_or_without_live_path() {
+        let dir = "/tmp/omnitiler-run-abc123";
+        let token = "tok-abc123";
+        // Token title admits with a foreign or missing path (title leg).
+        assert!(
+            disposable_doc_verdict(
+                Some("/elsewhere/doc.rtf"),
+                Some("notes tok-abc123 draft"),
+                dir,
+                token
+            )
+            .is_ok()
+        );
+        assert!(disposable_doc_verdict(None, Some("notes tok-abc123 draft"), dir, token).is_ok());
+        // Foreign or missing path plus tokenless title refuses.
+        assert!(
+            disposable_doc_verdict(Some("/elsewhere/doc.rtf"), Some("notes"), dir, token).is_err()
+        );
+        assert!(
+            disposable_doc_verdict(
+                Some("/tmp/omnitiler-run-abc123/missing.rtf"),
+                None,
+                dir,
+                token
+            )
+            .is_err()
+        );
+        // Unreadable legs refuse, never guessed.
+        assert!(disposable_doc_verdict(None, None, dir, token).is_err());
+        assert!(disposable_doc_verdict(None, Some("notes"), dir, token).is_err());
+        // Malformed record shapes refuse closed even with agreeing legs.
+        assert!(
+            disposable_doc_verdict(Some("/elsewhere/doc.rtf"), None, "relative", token).is_err()
+        );
+        assert!(disposable_doc_verdict(None, Some("notes tok-abc123"), dir, "short").is_err());
+        assert!(disposable_doc_verdict(Some("/elsewhere/doc.rtf"), None, dir, "").is_err());
+    }
+
+    /// Live canonical admission through the verdict: unix-only (see
+    /// `TempRun`). A live inside file admits with a tokenless title, and a
+    /// live prefix-sibling file with a tokenless title refuses.
+    #[cfg(unix)]
+    #[test]
+    fn doc_verdict_canonical_path_admits_live_inside_file() {
         let run = TempRun::create("verdict");
         let token = "tok-abc123";
         let dir = run.as_str().to_owned();
         let doc = run.write("doc.rtf", "body");
         let doc_str = doc.to_str().unwrap().to_owned();
         let file_url = format!("file://localhost{doc_str}");
-        // Live inside file admits with a tokenless title (path leg alone),
-        // plain or file-URL form.
         assert!(disposable_doc_verdict(Some(&doc_str), Some("notes"), &dir, token).is_ok());
         assert!(disposable_doc_verdict(Some(&file_url), None, &dir, token).is_ok());
-        // Token title admits with a foreign path (title leg alone).
-        let outside = TempRun::create("verdict-out");
-        let foreign = outside.write("other.rtf", "o");
-        let foreign_str = foreign.to_str().unwrap().to_owned();
+        let sibling_dir = std::path::PathBuf::from(format!("{dir}-evil"));
+        let _ = std::fs::remove_dir_all(&sibling_dir);
+        std::fs::create_dir_all(&sibling_dir).unwrap();
+        let sibling_doc = sibling_dir.join("doc.rtf");
+        std::fs::write(&sibling_doc, "e").unwrap();
         assert!(
             disposable_doc_verdict(
-                Some(&foreign_str),
-                Some("notes tok-abc123 draft"),
+                Some(sibling_doc.to_str().unwrap()),
+                Some("notes"),
                 &dir,
                 token
             )
-            .is_ok()
+            .is_err()
         );
-        // Foreign path plus tokenless title refuses.
-        assert!(disposable_doc_verdict(Some(&foreign_str), Some("notes"), &dir, token).is_err());
-        // Unreadable legs refuse, never guessed.
-        assert!(disposable_doc_verdict(None, None, &dir, token).is_err());
-        assert!(disposable_doc_verdict(None, Some("notes"), &dir, token).is_err());
-        // Malformed record shapes refuse closed even with agreeing legs.
-        assert!(disposable_doc_verdict(Some(&doc_str), None, "relative", token).is_err());
-        assert!(disposable_doc_verdict(None, Some("notes tok-abc123"), &dir, "short").is_err());
-        assert!(disposable_doc_verdict(Some(&doc_str), None, &dir, "").is_err());
+        let _ = std::fs::remove_dir_all(&sibling_dir);
     }
 
     #[test]
@@ -957,56 +1024,38 @@ mod tests {
         assert!(front_bundle_verdict(None).is_err());
     }
 
+    /// Portable edge ordering: the admitting leg uses a token title (no live
+    /// filesystem on any platform); bundle, oracle, and identity refusals
+    /// keep their post order. Live canonical admission through the edge is
+    /// covered unix-only by `doc_verdict_canonical_path_admits_live_inside_file`.
     #[test]
     fn edge_verdict_orders_bundle_then_oracle_then_identity() {
-        let run = TempRun::create("edge");
+        let dir = "/tmp/omnitiler-run-abc123";
         let token = "tok-abc123";
-        let dir = run.as_str().to_owned();
-        let doc = run.write("doc.rtf", "body");
-        let doc_str = doc.to_str().unwrap().to_owned();
-        let outside = TempRun::create("edge-out");
-        let foreign = outside.write("other.rtf", "o");
-        let foreign_str = foreign.to_str().unwrap().to_owned();
-        assert!(
-            edge_verdict(
-                Some(TEXTEDIT_BUNDLE),
-                true,
-                Some(&doc_str),
-                None,
-                &dir,
-                token
-            )
-            .is_ok()
-        );
+        let good_title = Some("notes tok-abc123 draft");
+        assert!(edge_verdict(Some(TEXTEDIT_BUNDLE), true, None, good_title, dir, token).is_ok());
         // Bundle refuses first even when everything else agrees.
         let err = edge_verdict(
             Some("com.mitchellh.ghostty"),
             true,
-            Some(&doc_str),
             None,
-            &dir,
+            good_title,
+            dir,
             token,
         )
         .unwrap_err();
         assert!(err.contains("Ghostty"), "{err}");
         // Oracle refuses before identity is consulted.
-        let err = edge_verdict(
-            Some(TEXTEDIT_BUNDLE),
-            false,
-            Some(&doc_str),
-            None,
-            &dir,
-            token,
-        )
-        .unwrap_err();
+        let err =
+            edge_verdict(Some(TEXTEDIT_BUNDLE), false, None, good_title, dir, token).unwrap_err();
         assert!(err.contains("oracle"), "{err}");
-        // Identity refuses last (live foreign file plus tokenless title).
+        // Identity refuses last (missing path plus tokenless title).
         let err = edge_verdict(
             Some(TEXTEDIT_BUNDLE),
             true,
-            Some(&foreign_str),
+            Some("/elsewhere/doc.rtf"),
             Some("notes"),
-            &dir,
+            dir,
             token,
         )
         .unwrap_err();
