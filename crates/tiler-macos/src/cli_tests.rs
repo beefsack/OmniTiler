@@ -630,6 +630,102 @@ fn owned_controls_parse_with_exact_identity() {
 }
 
 #[test]
+fn textedit_post_parses_with_record_identity_and_closed_keys() {
+    // Full identity parses and is write-intent (it posts synthetic input).
+    let r = parse_args(&argv(&[
+        "textedit-post",
+        "--record",
+        "/tmp/run-abc123/record.json",
+        "--nonce",
+        "0123456789abcdef",
+        "--key",
+        "a",
+    ]))
+    .unwrap();
+    assert!(
+        r.may_mutate,
+        "textedit-post posts input and must be write-intent"
+    );
+    assert!(matches!(r.command, Command::TextEditPost { .. }));
+    // Every closed key parses.
+    for key in ["a", "return", "space", "escape", "left", "right"] {
+        let r = parse_args(&argv(&[
+            "textedit-post",
+            "--record",
+            "/tmp/run-abc123/record.json",
+            "--nonce",
+            "0123456789abcdef",
+            "--key",
+            key,
+        ]))
+        .unwrap();
+        assert!(matches!(r.command, Command::TextEditPost { .. }), "{key}");
+    }
+    // Tile chords and arbitrary keys never parse as diagnostic keys.
+    for bad in [
+        "focus-h", "move-h", "float-g", "select-1", "send-1", "h", "ctrl-h", "tab", "up", "", "A",
+    ] {
+        assert!(
+            parse_args(&argv(&[
+                "textedit-post",
+                "--record",
+                "/tmp/run-abc123/record.json",
+                "--nonce",
+                "0123456789abcdef",
+                "--key",
+                bad,
+            ]))
+            .is_err(),
+            "{bad}"
+        );
+    }
+    // Missing identity refuses; unknown flags refuse.
+    assert!(
+        parse_args(&argv(&[
+            "textedit-post",
+            "--nonce",
+            "0123456789abcdef",
+            "--key",
+            "a",
+        ]))
+        .is_err()
+    );
+    assert!(
+        parse_args(&argv(&[
+            "textedit-post",
+            "--record",
+            "/tmp/run-abc123/record.json",
+            "--key",
+            "a",
+        ]))
+        .is_err()
+    );
+    assert!(
+        parse_args(&argv(&[
+            "textedit-post",
+            "--record",
+            "/tmp/run-abc123/record.json",
+            "--nonce",
+            "0123456789abcdef",
+        ]))
+        .is_err()
+    );
+    assert!(
+        parse_args(&argv(&[
+            "textedit-post",
+            "--record",
+            "/tmp/run-abc123/record.json",
+            "--nonce",
+            "0123456789abcdef",
+            "--key",
+            "a",
+            "--bogus",
+        ]))
+        .is_err()
+    );
+}
+
+#[test]
 fn probe_spawn_close_window_is_opt_in_ms() {
     let r = parse_args(&argv(&["probe-spawn", "--close-window-ms", "9000"])).unwrap();
     assert!(matches!(

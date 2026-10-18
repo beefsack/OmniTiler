@@ -162,6 +162,11 @@ pub enum Command {
         nonce: String,
         wid: u32,
     },
+    TextEditPost {
+        record: String,
+        nonce: String,
+        key: String,
+    },
     OwnedSpaceJoin {
         pid: u32,
         nonce: String,
@@ -473,6 +478,13 @@ pub fn help_text() -> String {
              \x20 \x20 preimage and verifies the restore with a second read)\n\
               \x20 owned-focus --pid PID --nonce HEX --wid WID\n\
               \x20 \x20 (SLPS focus dispatch to one exact owned window with agreement)\n\
+              \x20 textedit-post --record PATH --nonce HEX --key NAME\n\
+              \x20 \x20 (diagnostic-only disposable TextEdit tap: one benign key\n\
+              \x20 \x20 down/up (a, return, space, escape, left, right) to the\n\
+              \x20 \x20 run-owned disposable document bound by the record file;\n\
+              \x20 \x20 frontmost-TextEdit plus disposable-identity proof before\n\
+              \x20 \x20 EACH edge with unconditional release; never helper or\n\
+              \x20 \x20 product input)\n\
               \x20 owned-space-join --pid PID --nonce HEX\n\
               \x20 \x20 (public AppKit self-action: helper joins its OWN window\n\
               \x20 \x20 to the current Space via MoveToActiveSpace + self-activate\n\
@@ -1560,6 +1572,42 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
         "owned-focus" => {
             let (pid, nonce, wid) = parse_owned_wid(args, "owned-focus")?;
             Command::OwnedFocus { pid, nonce, wid }
+        }
+        "textedit-post" => {
+            // Diagnostic-only disposable TextEdit tap: the run-owned record
+            // file binds (pid, wid, temp dir, token, nonce); the key
+            // vocabulary is closed (never a tile chord, never product input).
+            let mut record: Option<String> = None;
+            let mut nonce: Option<String> = None;
+            let mut key: Option<String> = None;
+            let mut j = 0;
+            while j < args.len() {
+                match args[j].as_str() {
+                    "--record" => {
+                        j += 1;
+                        record = Some(args.get(j).ok_or("--record needs a value")?.clone());
+                    }
+                    "--nonce" => {
+                        j += 1;
+                        nonce = Some(args.get(j).ok_or("--nonce needs a value")?.clone());
+                    }
+                    "--key" => {
+                        j += 1;
+                        key = Some(args.get(j).ok_or("--key needs a value")?.clone());
+                    }
+                    other => return Err(format!("textedit-post: unknown arg '{other}'")),
+                }
+                j += 1;
+            }
+            let key = key.ok_or("textedit-post needs --key")?;
+            if crate::textedit_post::resolve_textedit_key(&key).is_none() {
+                return Err(format!("textedit-post: unknown --key '{key}'"));
+            }
+            Command::TextEditPost {
+                record: record.ok_or("textedit-post needs --record")?,
+                nonce: nonce.ok_or("textedit-post needs --nonce")?,
+                key,
+            }
         }
         "owned-space-join" => {
             // No --wid: the helper acts solely on its own window; a caller

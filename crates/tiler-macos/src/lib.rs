@@ -112,6 +112,7 @@ mod space_switch_probe_tests;
 pub mod spaces;
 pub mod symbolic_hotkeys;
 pub mod synth;
+pub mod textedit_post;
 pub mod tile;
 pub mod topology;
 pub mod watchdog;
