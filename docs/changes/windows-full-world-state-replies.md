@@ -398,7 +398,21 @@
 - Verified four-package locked build/test and strict all-target clippy,
   workspace formatting, unsafe guardrail and whitespace checks pass:
   **2,840 passed, 0 failed, 1 ignored across 71 suites**, including **55 W2
-  fixtures**. CI result will be recorded after publication.
+  fixtures**. CI `39099764587` for `54a1be6b` passed all eight jobs.
+  Follow-up `39100032800` for `7d5f74b5` passed Windows, macOS, KDE, native,
+  shell, licenses and notices on its first attempt; Linux workspace tests
+  failed in unchanged macOS `runtime_freshness` test
+  `saturated_queue_overmarks_but_newest_and_retry_converge` (line 1148:
+  `EngineQueueFull` instead of `Accepted`). No macOS code was changed. The
+  failed-job rerun passed unchanged: attempt 2 is successful with all eight
+  jobs green. The first-attempt macOS queue-test nondeterminism remains a
+  separate residual risk, not a Windows regression or a repaired macOS test.
+- Reconciled the evidence update over concurrent
+  [split-edge selection delivery](archive/world-split-edge-selection.md) through
+  `5a084477`. Repeated four-package locked build/test, strict all-target clippy,
+  formatting and whitespace gates pass: **2,852 passed, 0 failed, 1 ignored
+  across 71 suites**. All 55 W2 fixtures still pass; neither parked diagnostic
+  outcome changed. Selection remains entirely core-owned.
 - Tentative delivery choices: preserve/reconcile the test-only facade instead
   of enabling it; split out W2a diagnostics rather than falsely accept W2;
   retain a passing current-behavior T2 discriminator until shared correction.
@@ -419,6 +433,9 @@
    authority precedence. Do not copy KDE's bypass or edit Windows scope facts.
    Then prove positive member -> target view -> refill -> topology/binding
    confirmation through actual W1 capture, feedback and re-observation.
+   The concurrent split-edge record also parks KDE's global-native-inventory
+   migration-confirmation mismatch; authority and final settlement must both
+   be specified, not hidden by successful member writes alone.
 2. **T2 pre-commit capability gate (shared prerequisite; no change made):**
    `world_sends.rs::execute_output_send` accepts the Engine's capacity-float
    output-send outcome and retains a normal window transfer. Legacy Windows

@@ -291,7 +291,7 @@ decisions of 2026-09-24 are under
   [Investigation](changes/kde-triage-live.md#parked-restart-intent-loss-investigation).
 - P1 | Windows: adopt full world-state core replies | W2a gated offline
   diagnostics delivered 2026-10-18: 55 fixtures reconciled onto current main;
-  native build/test/strict clippy/fmt/whitespace pass (2,840 passed, 1 ignored).
+  native build/test/strict clippy/fmt/whitespace pass (2,852 passed, 1 ignored).
   Real W1 FULL reports with empty adjacency now produce direction-only core
   migration/refill, but target authority holds and no native attempt occurs.
   W2 acceptance remains blocked on shared migration authority and pre-commit
@@ -299,9 +299,9 @@ decisions of 2026-09-24 are under
   No Windows adjacency mapping, shared semantic edits or runtime cutover.
   Shared topology prerequisite delivered offline in
   [core/KDE](changes/archive/shared-core-owned-output-topology.md) (`f9bd2df1`).
-  Pending core alignment of world
-  split-edge selection to the 2026-10-09 per-use rules (shared topology item)
-  changes only multi-candidate edges, not the empty-adjacency contract.
+  [World split-edge alignment](changes/archive/world-split-edge-selection.md)
+  has also landed; integrated native gates and all 55 W2 fixtures pass without
+  changing either migration-authority or capacity-send diagnostic outcomes.
   W2/native acceptance remains pending. Replace
   adapter-triggered trailing policy and per-op application with complete
   observed world reports and host diffs; move scope/history/mapping policy

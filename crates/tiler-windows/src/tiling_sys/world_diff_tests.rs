@@ -3274,7 +3274,7 @@ fn core_follow_failure_no_repeat_and_catchup() {
 fn core_migration_accepted_via_owned_topology_with_empty_adjacency() {
     // Shared core owns output topology: Windows reports FULL monitor
     // rectangles with an empty adjacency map and the core derives the
-    // strict unique-reciprocal edge. A real two-output direction-only
+    // migration edge through its shared ranker. A real two-output direction-only
     // MigrateDirectional command over real inventory, bindings and monitor
     // areas therefore produces a core Migration plus its paired source
     // refill (the parked refusal this fixture replaces predates owned
@@ -3577,7 +3577,7 @@ fn world_route_capacity_float_cross_output_parity_gap_diagnostic() {
     }
     seq.invalidate();
     // Direction-only send: the adapter names the window and direction
-    // only; the core resolves the strict target plus its current view.
+    // only; the core resolves the target plus its current view.
     let send = WorldCommand::SendDirectional {
         window: WindowId("w1".to_owned()),
         direction: "right".to_owned(),
