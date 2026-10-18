@@ -59,6 +59,10 @@ just reload      # rebuild and swap only the recorded worktree Planner
 just dev-off     # unload exact script, stop recorded Planner, re-enable packaged script
 ```
 
+- Build and launch from the same source revision. When reusing Cargo outputs
+  across checkouts, verify source/build provenance and the launched executable;
+  rebuild affected packages if provenance is uncertain. A binary hash difference
+  alone does not prove stale source.
 - `just reload` does not reload the KWin script. After any `kwin/src` change,
   run `just dev-off` then `just dev` (or `just dev-on`); otherwise a live
   check exercises the old script against the new Planner.

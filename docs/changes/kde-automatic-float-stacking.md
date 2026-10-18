@@ -26,6 +26,17 @@
   acceptance, with exact steps recorded; unsupported outcomes remain TBD.
 - Amend D8, REQ-SPC-04h and R-FLT-12 after verification; retain only accepted
   evidence and remaining native/user checks in the outcome.
+- Port regression requirements, not the discarded PlanAdapter implementation:
+  pre-existing above gets zero writes/restoration; pre-existing below gets zero
+  stacking writes through admission, tile and teardown; later below releases
+  owned above without writes; closed/replaced refs receive no cleanup writes.
+  Only the fresh ref may acquire ownership. Explicit unfloat releases owned
+  above once, tiles once with suppression and never writes below.
+- Production-entry tests assert automatic keep-above exactly once, with zero
+  frame, focus or keep-below writes; retained/fullscreen observations add no
+  stacking writes. Mocks mirror KWin above/below exclusivity.
+- Scope lifecycle tests to the selected world-route unload policy. Legacy
+  disable-path restoration is not evidence or a decision for script unload.
 
 ## Current state
 

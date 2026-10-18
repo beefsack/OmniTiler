@@ -13,6 +13,12 @@
 
 ## Current continuation (2026-10-18)
 
+- Disjoint-model T05 continuation is paused, superseded by
+  [aligned per-output workspaces](kde-aligned-output-workspaces.md).
+  The captured replay recommendation below is historical, not the next action.
+- Implementation detail not yet user-reviewed: tolerate only the proven,
+  guarded same-flight desktop echo; one-shot actuation and retry policy remain
+  unchanged. Revalidate migration settlement under aligned native rebinding.
 - Accepted bounded fix: a successful native output send can change desktop
   membership to the destination's captured current while output readback still
   names the source. Complete wire capture and immediate native branch evidence

@@ -1,5 +1,10 @@
 # KDE startup desktop ownership and friendly names
 
+- Superseded: aligned KDE startup adopts the native grid without ownership
+  conversion. Historical evidence below remains valid for that implementation.
+  Exact creation attribution and friendly-name non-identity remain applicable.
+  [Replacement](../kde-aligned-output-workspaces.md).
+
 ## Goal and scope
 
 - Deliver the two 2026-10-18 user decisions: core-owned per-output-local startup

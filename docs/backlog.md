@@ -104,6 +104,7 @@ decisions of 2026-09-24 are under
       Unshipped confirmation prototypes lose target follow or retain a no-op
       feedback storm after member closure. Next: replay exact arrival/refill/
       feedback before another fix; no native whole-migration pass claimed.
+      PAUSED 2026-10-18: superseded by "KDE aligned per-output workspaces".
     [Reproduction](changes/kde-dual-output-live.md#whole-workspace-migration-unbounded-maximum-size-refusal-2026-10-15).
    - DEFECT corrected and reverified | User 2026-10-18: in two-output use some outputs show
      too many workspaces, and workspace switching does not work correctly on
@@ -136,6 +137,10 @@ decisions of 2026-09-24 are under
     rendering and exact-tree R4 still need distinct evidence. Protected frames,
     views, outputs/settings restored; development DOWN; newer external focus/
     pointer changes preserved. Final integrated Rust workspace 3280/3280, KWin 1885/1885.
+  - Re-run the non-sticky multi-desktop membership discriminator against
+    aligned startup adoption: place one client on native desktops A and B,
+    enable once, and compare complete memberships. Additional-membership
+    retention remains TBD; do not reuse the removed conversion oracle.
 - P0 | KDE floating dialog pushed behind other windows | User live 2026-10-16:
   Steam dialogs (game-launch controller prompt; fixed-size startup loading
   dialog, admitted floating) repeatedly drop behind Steam or a terminal on the
@@ -178,6 +183,43 @@ decisions of 2026-09-24 are under
     behavior); verify or port automatic-float focus preservation to the world
     route; then live checks above and the user Steam retest.
     [Record](changes/kde-automatic-float-stacking.md).
+- P0 (after floating dialog defect) | KDE rapid input drops and stalled geometry |
+  Dogfood 2026-10-18 on two outputs: directional focus lags and rapid
+  left-then-right performs only the first; repeated same-output Meta+arrow
+  moves slow down then misbehave; a cross-output R4 arrival first lands
+  short with a bottom gap; after several back-and-forth R4 moves the arrival
+  overlaps on the far side of the target instead of the near side.
+  - Proven: busy focus inputs are refused before dispatch, without replay
+    (`kwin/src/world-float-nav.ts:153-156`, `world-shortcuts.ts:158-164`;
+    busy = pending command or in-flight request, `world-entry.ts:510`).
+    Commands share the 120 ms observation debounce (`world-entry.ts:69-70`).
+  - Likely: per window+target+hints geometry clamp budgets count successful
+    writes and only reset explicitly, so alternating layouts exhaust them and
+    later accepted moves apply nothing (`held=2`)
+    (`kwin/src/world-apply.ts:95-98,556-605`; `world-state.ts:285-296`).
+    Likely explains the far-side overlap; R4 wrap policy is unchanged
+    (`crates/tiler-core/src/session/ops/move.rs:1362-1395`).
+  - Unknown: short arrival height (the summary log lacks frames); one
+    Planner `unchanged` focus refusal with sanitized reason.
+  - Both suspects date to the world-adapter introduction (`76c4185f`).
+  - Next: offline regression alternating two applied frame targets more than
+    three times (expect continued actuation); production-entry regression for
+    left-then-right during debounce and in flight (replay semantics need a
+    user decision); unequal-height occupied-target R4 replay both ways. If
+    unexplained, a live leg capturing timestamps, window tokens, desired and
+    live frames, domain bounds, transfer identities and hold branch/clamp key.
+- P0 (after floating dialog defect) | KDE aligned per-output workspaces |
+  Dogfood 2026-10-18: disjoint backing desktops disagree with KDE's global
+  desktop numbering and strand members outside their output's ring. User
+  decisions 2026-10-18: aligned numbering (logical N = native N on every
+  output) via an internal platform-enabled core option, off by default;
+  per-output trailing empty; holes kept until a native is empty on all
+  outputs; minimum two including trailing; migration and hotplug
+  displacement into the trailing empty; no-merge hotplug kept, with a pivot
+  checkpoint; startup adopts the native grid; `global-unique` removed on KDE.
+  Supersedes the 2026-10-18 startup conversion and, in aligned mode, D4
+  insertion. T05 on the disjoint model is paused.
+  [Record](changes/kde-aligned-output-workspaces.md).
 - P1 (after floating dialog defect) | KDE open-animation tile jump | New
   windows play the open effect at initial placement, then jump into the tile.
   Source investigation 2026-10-16: no animation wait; 120 ms admission
@@ -396,9 +438,9 @@ decisions of 2026-09-24 are under
   delivered offline 2026-10-18 with R-MOV-12/R-WS-27 expected results and real
   Engine KDE world-entry fixtures; retained R4 arrival is identity-pinned.
   [Alignment evidence](changes/archive/world-split-edge-selection.md).
-  NEXT: native split-edge and ordinary two-output acceptance; separately repair
-  KDE migration confirmation against global native workspace inventory (the
-  source native-order absence check leaves a successful migration retained).
+  NEXT: remaining native split-edge and ordinary two-output acceptance.
+  Disjoint-model migration confirmation work is paused; aligned-workspace
+  migration owns replacement settlement and replicated-inventory coverage.
   [Delivery and live procedure](changes/archive/shared-core-owned-output-topology.md), alongside the
   [D23/13f proposal](changes/shared-core-d23-rehome-and-13f-maximize-base.md).
 - P1 | macOS: report FULL display bounds for core-owned topology | Delivered

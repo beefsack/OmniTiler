@@ -1125,6 +1125,11 @@ platform API behavior.
   handling of confirmed partial successes and responsiveness during rapid
   use; it authorizes no ignored errors, retries, queue resets, or
   architecture/uncertain-recovery change.
+- KDE aligned per-output decisions (2026-10-18) supersede the disjoint
+  per-output mapping, startup ownership conversion and aligned-mode D4
+  insertion below. Startup adopts the native grid; minimum workspace count
+  is two in total, including the trailing empty. Shared mode is unchanged.
+  [Selected replacement](changes/kde-aligned-output-workspaces.md).
 - `workspaceMode` (`per-output-local`, `global-unique`, `shared`) runs on a
     session-local project-owned KWin backing-desktop mapping, never the native
     COSMIC workspace-set mapping. Adopted preexisting desktops are managed,
@@ -2409,6 +2414,10 @@ platform API behavior.
   rejected. Retain JavaScript for discrete window add/remove management.
   Group behavior, inactive borders, Steam-specific handling, and complete
   keyboard-layout support remain deferred.
+- Pre-0.1, breaking core changes are acceptable in favor of correctness,
+  performance and reliability. Deliver core and KDE changes together; track
+  Windows/macOS behavioral adoption separately. Compile compatibility is not
+  behavioral adoption.
 
 ## Visuals: Border, Underlay and Grouping
 

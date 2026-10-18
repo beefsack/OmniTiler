@@ -60,6 +60,13 @@
 
 ## Decisions and boundaries
 
+- User accepted the topology implementation choices on 2026-10-18:
+  unavailable incomplete topology, independent monitor completeness,
+  direction-only intents and the empty compatibility adjacency key.
+  Strict-parity extraction was accepted as a delivery step; subsequent
+  split-edge alignment applies the existing per-use selection decision.
+  The table's tentative labels describe the earlier delivery state.
+
 | Decision | State |
 | --- | --- |
 | Core owns FULL topology from complete world reports | User-directed, 2026-10-18; delivered |

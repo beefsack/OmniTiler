@@ -82,22 +82,10 @@ grant authorization beyond [Current Decisions](decisions.md#live-kwinplasma-boun
 - KGlobalAccel collection must enumerate all components and exact action tuples.
   Persisted records after unload do not prove a callback. Never unregister or
   restore anything except exact verified project-owned action records.
-- `scripts/custom-tile-acceptance.sh preflight` is an accepted static,
-  current-session read-only diagnostic. It strictly diagnoses KWin and
-  KGlobalAccel ownership, and fails closed on stale state, collisions, drift,
-  or provenance ambiguity. It performs no lifecycle or mutation; its rollback
-  and journal contract applies only to a later authorized run.
-- `setup_ready` means only that the preflight's read-only setup checks
-  completed without drift. It never authorizes a live journey or manual action;
-  those remain blocked until both `journey_ready` and `authoritative_ready` are
-  true. The carrier setup/restore smoke is a separate operational gate and does
-  not set either readiness value.
-- The development session has been restarted after the `devenv.nix` dependency
-  change, so the committed dependency and preflight are available. After static
-  checks, the next gate is a successful bounded carrier lifecycle setup/restore
-  smoke. It does not establish direct evaluated-memory source proof or Custom
-  Tile runtime acceptance. A Custom Tile journey requires separate
-  authorization and applicable readiness gates; none has occurred.
+- Do not use `scripts/custom-tile-acceptance.sh` for current live testing:
+  its persisted `[Tiling]` preflight conflicts with the accepted baseline.
+  The harness is queued for removal. Historical readiness flags establish
+  neither current journey readiness nor feature acceptance.
 
 ## Custom Tile Safety Findings
 
@@ -123,6 +111,18 @@ grant authorization beyond [Current Decisions](decisions.md#live-kwinplasma-boun
   delivery. Manual journeys require physical input and matching state evidence.
 - The trailing-empty workspace proof is a separate executable procedure at
   [live oscillation verification](live-oscillation-verification.md).
+- Before startup, preserve the actual runtime float-intent store, including
+  absence, plus kwinrc, project configuration, exact shortcut tuples and loaded
+  effects. Record complete protected-window frames, states, memberships,
+  outputs and views. See the store implementation rather than guessing its path.
+- Enable correlated complete request/reply capture before each leg and prove
+  capture with a positive marker. At the first unexpected refusal or baseline
+  mismatch, stop the leg, retain its gating evidence and restore before retrying.
+- Prefer existing desktops. Use disposable kwrite, kcalc or kolourpaint clients;
+  use a genuine fixed-size Qt client when fixed-size behavior is required.
+  Fixture choice grants no additional mutation authorization.
+- Preserve normal desktop retirement/appending as documented lifecycle churn,
+  not a restoration target; see the live-boundary decision.
 
 ## Preserved Residue
 

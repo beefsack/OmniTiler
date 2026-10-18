@@ -41,6 +41,8 @@
 ## Repository Records
 
 - Never record session controls in repository files or commit messages: commit/push permissions, autonomous or supervised modes, agent/model roles and routing, concurrency and approval gates, user availability, or machine-specific resource limits. Record only the work, its evidence, and product decisions.
+- Put reusable findings in point-of-use documentation or relevant code
+  comments; do not create generic learnings files.
 
 ## Dependency Management
 
