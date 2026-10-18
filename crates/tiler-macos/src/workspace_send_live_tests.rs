@@ -759,40 +759,45 @@ fn live_proof_skips_control_text_hits_for_plain_window_point() {
     assert_eq!(points.len(), 5);
     let target = pinned_target();
     let lane = handoff();
-    let mut backend = LiveManagedSendBackend::new({
-        let mut readers = FakeReaders::new();
-        let mut details = HashMap::new();
-        let labels: [(Option<&str>, Option<&str>); 5] = [
-            (Some("AXStaticText"), None),
-            (Some("AXStaticText"), None),
-            (Some("AXMenuButton"), None),
-            (Some("AXWindow"), Some("AXStandardWindow")),
-            (Some("AXWindow"), Some("AXStandardWindow")),
-        ];
-        for (point, (role, subrole)) in points.iter().zip(labels) {
-            details.insert(
-                (point.0.round() as i64, point.1.round() as i64),
-                crate::ffi::AxHitDetail {
-                    owner: (PID, WID),
-                    role: role.map(str::to_owned),
-                    subrole: subrole.map(str::to_owned),
-                },
-            );
-        }
-        readers.ax_details = details;
-        readers.ws_hit = Some(WID);
-        readers
-    });
+    let mut readers = FakeReaders::new();
+    let mut details = HashMap::new();
+    let labels: [(Option<&str>, Option<&str>); 5] = [
+        (Some("AXStaticText"), None),
+        (Some("AXStaticText"), None),
+        (Some("AXMenuButton"), None),
+        (Some("AXWindow"), Some("AXStandardWindow")),
+        (Some("AXWindow"), Some("AXStandardWindow")),
+    ];
+    for (point, (role, subrole)) in points.iter().zip(labels) {
+        details.insert(
+            (point.0.round() as i64, point.1.round() as i64),
+            crate::ffi::AxHitDetail {
+                owner: (PID, WID),
+                role: role.map(str::to_owned),
+                subrole: subrole.map(str::to_owned),
+            },
+        );
+    }
+    readers.ax_details = details;
+    readers.ws_hit = Some(WID);
+    let log = readers.log();
+    let mut backend = LiveManagedSendBackend::new(readers);
     let (outcome, leg) = execute_managed_send(&target, &mut backend, &lane);
     assert_eq!(outcome, SendEffectOutcome::Applied);
     let leg = leg.expect("applied carries the leg readback");
     assert_eq!(leg.membership, vec![TARGET_SID]);
     assert_eq!(leg.current, TARGET_SID);
     // First plain point is the fourth fraction (.65), not the first owner
-    // join (.2). Every mouse post sits there.
+    // join (.2). The production leg pins that point per edge, so every
+    // actual mouse post sits there (not just the later evidence re-read).
     let want = points[3];
     let evidence = backend.fresh_evidence(&target);
     assert_eq!(evidence.grab_point, Some(want));
+    let log = log.lock().expect("post log");
+    assert!(!log.mouse_posts.is_empty(), "applied posts the grab");
+    for (_, point) in &log.mouse_posts {
+        assert_eq!(*point, want);
+    }
     assert!(backend.counts().balanced(), "releases stay balanced");
 }
 
@@ -827,30 +832,32 @@ fn live_proof_refuses_when_no_plain_window_point_exists() {
     ] {
         let target = pinned_target();
         let lane = handoff();
-        let mut backend = LiveManagedSendBackend::new({
-            let mut readers = FakeReaders::new();
-            let mut details = HashMap::new();
-            for (point, (role, subrole)) in points.iter().zip(labels) {
-                let role_owned: Option<String> = role.map(str::to_owned);
-                let subrole_owned: Option<String> = subrole.map(str::to_owned);
-                details.insert(
-                    (point.0.round() as i64, point.1.round() as i64),
-                    crate::ffi::AxHitDetail {
-                        owner: (PID, WID),
-                        role: role_owned,
-                        subrole: subrole_owned,
-                    },
-                );
-            }
-            readers.ax_details = details;
-            readers.ws_hit = Some(WID);
-            readers
-        });
+        let mut readers = FakeReaders::new();
+        let mut details = HashMap::new();
+        for (point, (role, subrole)) in points.iter().zip(labels) {
+            let role_owned: Option<String> = role.map(str::to_owned);
+            let subrole_owned: Option<String> = subrole.map(str::to_owned);
+            details.insert(
+                (point.0.round() as i64, point.1.round() as i64),
+                crate::ffi::AxHitDetail {
+                    owner: (PID, WID),
+                    role: role_owned,
+                    subrole: subrole_owned,
+                },
+            );
+        }
+        readers.ax_details = details;
+        readers.ws_hit = Some(WID);
+        let log = readers.log();
+        let mut backend = LiveManagedSendBackend::new(readers);
         let (outcome, leg) = execute_managed_send(&target, &mut backend, &lane);
         assert_eq!(outcome, SendEffectOutcome::RefusedProven, "{what}");
         assert!(leg.is_none(), "{what}");
         assert_eq!(backend.counts().key_down, 0, "{what}: no chord posted");
         assert_eq!(backend.counts().mouse_down, 0, "{what}: no grab posted");
+        let log = log.lock().expect("post log");
+        assert!(log.mouse_posts.is_empty(), "{what}: no mouse edge posted");
+        assert!(log.key_posts.is_empty(), "{what}: no key edge posted");
         assert!(
             backend.counts().balanced(),
             "{what}: releases stay balanced"
@@ -870,28 +877,30 @@ fn live_proof_still_refuses_plain_offtarget_and_ws_disagreement() {
         ((PID, WID), Some(9), "plain label foreign WindowServer hit"),
     ] {
         let lane = handoff();
-        let mut backend = LiveManagedSendBackend::new({
-            let mut readers = FakeReaders::new();
-            let mut details = HashMap::new();
-            for point in &points {
-                details.insert(
-                    (point.0.round() as i64, point.1.round() as i64),
-                    crate::ffi::AxHitDetail {
-                        owner: ax_owner,
-                        role: Some("AXWindow".to_owned()),
-                        subrole: Some("AXStandardWindow".to_owned()),
-                    },
-                );
-            }
-            readers.ax_details = details;
-            readers.ax_hit = Some(ax_owner);
-            readers.ws_hit = ws_hit;
-            readers
-        });
+        let mut readers = FakeReaders::new();
+        let mut details = HashMap::new();
+        for point in &points {
+            details.insert(
+                (point.0.round() as i64, point.1.round() as i64),
+                crate::ffi::AxHitDetail {
+                    owner: ax_owner,
+                    role: Some("AXWindow".to_owned()),
+                    subrole: Some("AXStandardWindow".to_owned()),
+                },
+            );
+        }
+        readers.ax_details = details;
+        readers.ax_hit = Some(ax_owner);
+        readers.ws_hit = ws_hit;
+        let log = readers.log();
+        let mut backend = LiveManagedSendBackend::new(readers);
         let (outcome, _) = execute_managed_send(&target, &mut backend, &lane);
         assert_eq!(outcome, SendEffectOutcome::RefusedProven, "{what}");
         assert_eq!(backend.counts().key_down, 0, "{what}: no chord posted");
         assert_eq!(backend.counts().mouse_down, 0, "{what}: no grab posted");
+        let log = log.lock().expect("post log");
+        assert!(log.mouse_posts.is_empty(), "{what}: no mouse edge posted");
+        assert!(log.key_posts.is_empty(), "{what}: no key edge posted");
     }
 }
 
