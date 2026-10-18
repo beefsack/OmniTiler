@@ -410,12 +410,21 @@ decisions of 2026-09-24 are under
   `wip/windows-world-diff`; its former native-gate failures no longer reproduce
   on current main. W2a is diagnostic evidence only, not positive migration or
   T2 parity acceptance; W3/W4 hidden/fullscreen/bootstrap/native gates remain.
-- P1 | Core + Windows: world migration target authority | One change across
-  shared core and the Windows adapter, delivered on a two-output Windows host
-  so the theory is validated and tested live during implementation. Unblocks
-  W2 above (proposal 1 in
+- P1 | Core + Windows: world migration authority and T2 crossing refusal |
+  One change across shared core and the Windows adapter, delivered on a
+  two-output Windows host so the theory is validated and tested live during
+  implementation. Unblocks W2 above (proposals 1 and 2 in
   [W2b cross-stream proposals](changes/windows-full-world-state-replies.md#w2b-cross-stream-proposals)).
-  Problem: a whole-workspace migration to an output with no observed target
+  **Caveat (user 2026-10-19): be extremely careful to avoid platform-specific
+  logic in core.** For each blocker, first assess whether a small, simple,
+  sensible alternative without core changes exists (adapter-side or
+  platform-neutral). Only if none exists, design the core change to add
+  minimal conditional logic or burden, expressed as a platform-neutral
+  capability rather than a host check; precedent is the KDE opt-in for
+  output-shared workspaces. Any core change needs explicit user approval
+  before implementation; bring the options, trade-offs and recommendation to
+  the user.
+  (1) Migration authority. Problem: a whole-workspace migration to an output with no observed target
   session publishes the target as `Hold(IncompleteInventory)` with held
   migration rows; the Windows world diff correctly refuses uncontrolled scope,
   so no member arrives and `migration_confirmed` never settles. KDE
@@ -429,8 +438,20 @@ decisions of 2026-09-24 are under
   and re-observation, plus native two-output journeys. Coordinate the shared
   contract and KDE alignment with the core/KDE stream (and the parked KDE
   global-native-inventory migration-confirmation mismatch); macOS follows the
-  shared contract. Parked until the two-output Windows host session; user
-  2026-10-19.
+  shared contract.
+  (2) T2 crossing refusal. User decision T2 (2026-10-18): Windows refuses
+  cross-output capacity-float transfers until a remap rule is approved. Legacy
+  Windows refuses `float-no-remap`, but the world route's
+  `world_sends.rs::execute_output_send` accepts the send and commits the
+  transfer before the adapter sees the reply, so a post-reply refusal would
+  diverge from core state. Assess first whether the adapter can refuse before
+  sending the intent (e.g. output-send of a capacity float) and what remains
+  for whole-workspace migration/R4 paths. If a core change is still needed,
+  the previously proposed option is an additive, default-off world
+  configuration capability (as with T1) refusing unsupported capacity-float
+  crossings before commit for output-send and R4 paths, with no protocol
+  change and no `FloatOrigin` branching; subject to the caveat above.
+  Parked until the two-output Windows host session; user 2026-10-19.
 - P1 | Shared core: own output topology | Core+KDE delivered offline;
   native two-output validation pending. FULL world topology is retained in all
   modes and per-use targets are core-derived; KDE sends only
