@@ -4071,69 +4071,21 @@ decisions of 2026-09-24 are under
       snapshots, inspected ring/indicator screenshots and clean overlay teardown.
       903 macOS tests, strict clippy, format and signed build/verify pass; unsafe
       remains 114. [Outcome](changes/archive/macos-full-state-replies.md#final-outcome-2026-10-18).
-   3. Finish managed native workspaces: tagged Control+Fn arrows and tagged
-      Desktop-N helper roundtrips now pass; integrate numbered product sends
-      using synthetic drag plus Desktop-N, with Authentic enabling Desktop-N;
-      then send-follow and send-stay; trailing empty Space (Meta+0, also the indicator's trailing
-       slot); per-display Space-number attribution; multi-display.
-        **2026-10-18 numbered send-follow implementation:** Ctrl+Shift+1-9 is
-        armed end to end through engine-managed admission, fresh engine facts and
-        native input proof, tagged drag/Desktop-N delivery and asynchronous
-        transfer feedback. Authentic enables holders with owned preimages/Revert;
-        Compatible remains zero-touch. Obsolete fake drain and panicking Drop
-        removed; terminal ownership reaps off-main. Independent pre-arm review,
-        846 library/32 scoped runtime tests, strict clippy/format and signed
-        build/verify pass; unsafe remains 114. Live acceptance procedure 1 is next,
-        followed by stay, trailing and per-display attribution.
-        [Current checkpoint](changes/macos-managed-workspaces.md#numbered-send-follow-implementation-checkpoint-2026-10-18).
-        Automatic Authentic holder enable/Revert and Compatible zero mutation
-        now pass live, with identical protected-window records and clean teardown.
-        **2026-10-19:** outward product send-follow proven live on an owned
-        helper (admission, transfer, membership/current, focus-follow); inverse
-        attribution and TextEdit acceptance pending.
-        Existing owned-helper injection now names send-1..9 without weakening
-        identity checks; a helper product-tap leg is next, TextEdit acceptance
-        remains pending. 999 offline tests pass; off-macOS lint repair included.
-        **2026-10-18 offline prerequisites:** admission-pinned lifetime/source,
-        pure managed-target/focus-swap proof, event-driven single-flight effect
-        controller and fake send/holder coverage pass 973 macOS tests, strict
-        clippy/format and signed build/verify; unsafe stays 114. Product remains
-        select-only: no send chords armed, no startup settings writes, no new
-        live proof. Native API backend/tile wiring remain absent. Exact
-        Fresh runtime-facts access and
-        nonpanic nonblocking teardown ownership block native integration;
-        send-stay, trailing lifecycle and per-display attribution remain pending.
-         [Checkpoint, contracts and exact native checks](changes/macos-managed-workspaces.md#identity-and-asynchronous-controller-prerequisite-checkpoint-2026-10-18).
-        **Posting simplification:** exact point/chord permits are consumed at
-        the post boundary, one grab point is pinned across the leg, and redundant
-        proof/revision plumbing is removed. 979 macOS tests, strict clippy/format
-        and signed app build/verify pass; native backend/teardown/topology
-        coherence remain pending. Unsafe stays 114.
-        Native review rejected cached topology/static-scope substitution for
-        fresh managed facts; no prototype retained. Managed-state publication
-        from engine truth and nonblocking exceptional reaping ownership remain
-        unselected integration contracts.
-        [Checkpoint](changes/macos-managed-workspaces.md#managed-posting-simplification-checkpoint-2026-10-18).
-       **2026-10-18 delivery checkpoint:** starting the helper on the existing
-      second Space resolves crowded placement without moving the protected
-      terminal or weakening ownership. Tagged arrow and numbered native transfer
-      both pass outward/inverse membership readback; raw protected before/after
-      records match, settings/current Space restore and exact helper cleanup pass.
-      Added explicit numbered fixture coverage; 771 library tests plus integration
-      suites, strict clippy, format and signed build/verify pass; unsafe stays 114.
-      No new product actions armed; physical feel and tap coexistence remain pending.
-      [Checkpoint and exact next action](changes/macos-managed-workspaces.md#tagged-native-holder-delivery-checkpoint-2026-10-18).
-     **2026-10-17 fallback:** clear-helper placement now proves AX and
-     WindowServer titlebar identity after self-join, but two posted Ctrl+Right
-     outward attempts reported NoEffect. Only 18 existing-Space selects are
-     armed (user-approved fallback), with per-action empty-Space eligibility,
-     serialized main-thread MC AX effects, run-local previous history and
-      single-display refusal.
-      [Handover and select-only procedure](changes/macos-managed-workspaces.md#select-only-fallback-handover-2026-10-17).
-      **Current cleanup residue:** reused Space 277 still has foreign-chrome
-      membership, so conservative empty removal refuses; three disposable
-      TextEdit documents remain available for testing. No test-owned processes
-      remain. Inspect contents before manual cleanup; no chrome exemption added.
+   3. Finish managed native workspaces. **2026-10-19:** numbered send-follow
+      Ctrl+Shift+1-9 is armed; outward product transfer, membership/current and
+      focus-follow pass on an owned helper. Authentic holder enable/Revert and
+      Compatible zero mutation pass. Anchored inverse remains incomplete:
+      diagnostic readiness predicates abort before inverse posting; no product
+      cause or fix is proven. Next accept helper/runtime ready evidence end to end,
+      then same-runtime send-2/send-1 with fresh liveness and >=30 seconds on both
+      owners before inverse. TextEdit/layout/border/indicator acceptance follows;
+      then send-stay, trailing empty selection/send/indicator slot and per-display
+      numbering. Two-display live checks remain pending. Last source gates:
+      1010 macOS tests, strict clippy/format, signed build/verify; unsafe 114,
+      unchanged in ffi.rs. Current Space 1/settings restored, exact protected
+      records match, no owned processes remain. Existing Space 277 and three
+      disposable TextEdit documents remain; unknown occupancy still blocks
+      removal. [Current checkpoint and dogfood checklist](changes/macos-managed-workspaces.md#product-send-follow-partial-live-checkpoint-2026-10-19).
   4. Drag/drop overlays, re-scoped (user 2026-10-17): no modifier+drag; the
      producer is a passively observed native title-bar drag of a managed
      window, matching Windows' title-bar route, with physical user acceptance.

@@ -2,51 +2,45 @@
 
 ## Product send-follow partial live checkpoint (2026-10-19)
 
-**Outward numbered product send-follow works; roundtrip and TextEdit acceptance
-remain incomplete.** Do not yet treat numbered sends as dogfood-ready.
+**Outward numbered product send-follow works; anchored inverse and TextEdit
+acceptance remain incomplete.** No product cause or fix is established. Do not
+yet treat numbered sends as dogfood-ready.
 
-- At `eb68e240`, owned-helper `send-2` enters the actual product tap, receives
-  engine admission and settles `Applied`: membership changes from `[1]` to
-  `[277]`, current Space becomes 277 and focus follows the exact helper. Native
-  border updates and indicator current=2 agree. No scoped screenshot was retained
-  or inspected, so visual layout/border/indicator acceptance remains pending.
-  This live-proves removal of the original off-main display refusal.
-- A first inverse used a new runtime started on 277. Its scoped ordinal ring is
-  current-first `[277,1]`, so `send-1` resolves the source itself and refuses. The
-  generic `send-target-unknown` text also covers this same-domain case; it does
-  not establish an unobserved target. Numbered positions are session-scoped, not
-  a promise of native Desktop-N numbering after starting on another Space.
-  See `claim_visible_currents`/`rebuild_scoped` in
-  `crates/tiler-core/src/workspace_scope.rs`.
-- A same-runtime, same-helper outward/inverse sequence then reaches inverse
-  admission but refuses at `leg-setup`, with zero native posts and
-  `refused-send-unknown-managed`. `c052ae08` adds reviewed token-only blind-root
-  diagnostics; a subsequent live inverse names `engine-facts`. Topology and
-  membership did not cause that particular blind-root refusal.
-- **Cause remains unproven:** the last run tears down the helper observer 264 ms
-  after inverse admission. Its bounded holder starts before the runtime, but the
-  evidence does not anchor holder age at that query instant. Helper expiration
-  cannot be excluded; earlier claims that the helper survived both proof legs
-  are not accepted. A proven-absent engine reply alone would not distinguish
-  legitimate helper termination from an erroneous retained-state removal.
-- `bbf7eb00` preserves the query outcome instead of flattening it: new
-  `engine-facts-unmanaged` and `engine-facts-noreply` tokens distinguish a retained
-  absent reply from timeout/closed/down transport. Both retain the same
-  UnknownManaged zero-post refusal; no speculative product fix or authority
-  substitute is added. Independent review accepts both diagnostic changes. This
-  final diagnostic has not been live-tested.
-- Final gates at `bbf7eb00`: **1010 macOS tests** (858 library plus 152
-  integration), strict all-target macOS clippy, workspace format/diff checks,
-  named signed app build and separate verification pass. Hosted
-  [CI 39132092872](https://github.com/beefsack/OmniTiler/actions/runs/39132092872)
-  passes all eight jobs. Unsafe remains **114 blocks**, all in unchanged
-  `ffi.rs`; no dependencies added.
-- Every bounded runtime reports Clean teardown. Owned helpers and display-awake
-  children exit; nine holder preimages are restored with no failures and the
-  owned preimage removed. Final topology is `[1,277]`, current 1. Reusable
-  TextEdit documents and preexisting Space 277 remain. Before/final protected
-  records match exactly; expected onscreen changes occur only while 277 is
-  current. The same-runtime run's raw protected-terminal records are:
+- At `7641167b`, outward product `send-2` again receives admission and settles
+  `Applied`: exact helper membership `[1]` -> `[277]`, current 277, focus follows,
+  indicator current=2 and border updates agree. No scoped image was inspected;
+  visual layout/border/indicator acceptance remains pending.
+- Follow-up runs dispatch no inverse: one exceeds the required lifetime margin;
+  another starts on 277 and `send-2` settles `Applied` without moving. Current
+  native send ordinals follow SLS order `[1,277]`, even when current is 277.
+  The previous current-first scoped-ring explanation of an earlier refusal is
+  withdrawn as unproven: that engine mapping is not the current native send
+  ordinal resolver. Same-current `Applied` no-op behavior is observed, not a new
+  product decision.
+- The earlier inverse refusal still names only `engine-facts`, with helper
+  observer teardown 264 ms after admission and no anchored holder age. Expiry
+  remains possible. Reviewed diagnostics `c052ae08`/`bbf7eb00` distinguish
+  `engine-facts-unmanaged` from `engine-facts-noreply`, preserving zero-post
+  refusal. **Neither split token has yet been observed on a live inverse.**
+- **Current blocker is diagnostic readiness, not a proven product failure.**
+  A compressed run falsely aborts on a settings-backup mtime predicate despite
+  runtime startup about two seconds after launch and a full Clean 120-second
+  session. Extending the wait is not justified. Replacing that predicate with
+  streamed holder/runtime-start evidence passes 16 offline assertions and source
+  review, but the next run aborts earlier on the helper session-record mtime
+  predicate. The holder reports `ready:true` and exact-child stop; why the record
+  predicate missed it is unproven. No runtime or input post occurs in that final
+  attempt. The offline fixtures did not establish the full live readiness path.
+- Last macOS source gates remain **1010 tests**, strict all-target clippy,
+  format and signed build/verify. No production code or dependencies change in
+  this follow-up. [CI 39135233669](https://github.com/beefsack/OmniTiler/actions/runs/39135233669)
+  passes at `428d53ac`; the intervening change is KDE/core work, not macOS runtime
+  code. Unsafe remains **114 blocks**, all in unchanged `ffi.rs`.
+- Current Space is restored through the existing guarded select route. Final
+  topology is `[1,277]`, current 1; holders match baseline with no preimage.
+  Owned helpers/runtimes/display-awake children are gone. Preexisting Space 277
+  and disposable TextEdit documents remain. Final raw protected-window records
+  exactly match the baseline below, including onscreen state:
 
   ```json
   [
@@ -60,13 +54,16 @@ remain incomplete.** Do not yet treat numbered sends as dogfood-ready.
   ]
   ```
 
-Next: one same-runtime/helper `send-2` then `send-1` diagnostic, with wall-clock
-holder/runtime starts, fresh exact-identity liveness at each effect leg and at
-least 30 seconds remaining on both bounded owners before the inverse. Attribute
-any `unmanaged` reply against helper lifetime; do not label it a product defect
-without that proof. Complete the roundtrip before TextEdit procedure 1 and scoped
-visual acceptance. Send-stay, trailing lifecycle and per-display work remain
-parked. The display-handoff acquisition choice remains tentative.
+Next: accept actual helper and runtime ready evidence end to end, not file
+mtimes, before another live run. Then one same-runtime/helper
+`send-2` -> `send-1`, with timestamps before both owner launches, fresh identity
+and liveness per leg and at least 30 seconds remaining on both owners immediately
+before the inverse. The LS holder accepts at most 110 seconds; runtime accepts
+120. Attribute any `unmanaged` reply against that lifetime proof. TextEdit
+procedure 1 and scoped visual acceptance follow a proven roundtrip. Send-stay,
+trailing lifecycle and per-display work remain parked; two-display live checks
+remain pending. Display-handoff acquisition remains tentative; no same-current
+send policy is selected here.
 
 ## Effect-owner display handoff checkpoint (2026-10-18)
 
@@ -179,10 +176,11 @@ trailing-Space lifecycle and multi-display work parked.
 ### Dogfood checklist
 
 - **Current status:** basic actions and existing-Space selects can be checked;
-  the snapshot fix passes outward product send-follow, but inverse proof and
-  TextEdit/visual acceptance remain incomplete. Do not treat earlier refusals as
-  successful roundtrip acceptance. This section supersedes earlier select-only
-  and no-settings-write descriptions for the current executable.
+  outward product send-follow passes, but diagnostic readiness blocks the
+  lifetime-anchored inverse. TextEdit/visual acceptance remains pending. No new
+  actions are armed. Earlier refusals and readiness aborts are not successful
+  roundtrip acceptance. This supersedes earlier select-only and no-settings-write
+  descriptions for the current executable.
 - The usual user entry is `mise exec -- just dev trace`. It builds/signs before
   launch, is unbounded and unscoped, and can tile ordinary terminal windows.
   For this disposable TextEdit check, use the scoped, explicit Authentic/Ctrl
