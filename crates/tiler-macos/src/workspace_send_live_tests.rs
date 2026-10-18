@@ -235,6 +235,7 @@ struct FakeReaders {
     grab_base: Option<GrabContext>,
     ax_hit: Option<(u32, u32)>,
     ws_hit: Option<u32>,
+    ax_details: HashMap<(i64, i64), crate::ffi::AxHitDetail>,
     fail_mouse: Option<DragStep>,
     fail_key_down: bool,
     fail_key_up_once: bool,
@@ -286,6 +287,7 @@ impl FakeReaders {
             grab_base: Some(grab_ok()),
             ax_hit: Some((PID, WID)),
             ws_hit: Some(WID),
+            ax_details: HashMap::new(),
             fail_mouse: None,
             fail_key_down: false,
             fail_key_up_once: false,
@@ -412,8 +414,16 @@ impl SendNativeReaders for FakeReaders {
         }
         None
     }
-    fn ax_hit_owner(&mut self, _x: f64, _y: f64) -> Option<(u32, u32)> {
-        self.ax_hit
+    fn ax_hit_detail(&mut self, x: f64, y: f64) -> Option<crate::ffi::AxHitDetail> {
+        let key = (x.round() as i64, y.round() as i64);
+        if let Some(detail) = self.ax_details.get(&key) {
+            return Some(detail.clone());
+        }
+        self.ax_hit.map(|owner| crate::ffi::AxHitDetail {
+            owner,
+            role: Some("AXWindow".to_owned()),
+            subrole: Some("AXStandardWindow".to_owned()),
+        })
     }
     fn ws_hit_wid(&mut self, _x: f64, _y: f64) -> Option<u32> {
         self.ws_hit
@@ -734,6 +744,154 @@ fn live_proof_refuses_dual_hit_disagreement() {
         let (outcome, _) = execute_managed_send(&target, &mut backend, &lane);
         assert_eq!(outcome, SendEffectOutcome::RefusedProven, "{what}");
         assert_eq!(backend.counts().key_down, 0, "{what}: no chord posted");
+    }
+}
+
+#[test]
+fn live_proof_skips_control_text_hits_for_plain_window_point() {
+    // Producer-shaped TextEdit titlebar: the first fractions hit filename
+    // controls that still join the target owner, while the later fractions
+    // hit the plain window. The grab must skip the control/text labels in
+    // order and settle on the first plain `AXWindow`/`AXStandardWindow`
+    // point — never the first joining owner.
+    use crate::space_drag_transfer::candidate_grab_points;
+    let points = candidate_grab_points(frame()).expect("fixture frame admits 5 points");
+    assert_eq!(points.len(), 5);
+    let target = pinned_target();
+    let lane = handoff();
+    let mut backend = LiveManagedSendBackend::new({
+        let mut readers = FakeReaders::new();
+        let mut details = HashMap::new();
+        let labels: [(Option<&str>, Option<&str>); 5] = [
+            (Some("AXStaticText"), None),
+            (Some("AXStaticText"), None),
+            (Some("AXMenuButton"), None),
+            (Some("AXWindow"), Some("AXStandardWindow")),
+            (Some("AXWindow"), Some("AXStandardWindow")),
+        ];
+        for (point, (role, subrole)) in points.iter().zip(labels) {
+            details.insert(
+                (point.0.round() as i64, point.1.round() as i64),
+                crate::ffi::AxHitDetail {
+                    owner: (PID, WID),
+                    role: role.map(str::to_owned),
+                    subrole: subrole.map(str::to_owned),
+                },
+            );
+        }
+        readers.ax_details = details;
+        readers.ws_hit = Some(WID);
+        readers
+    });
+    let (outcome, leg) = execute_managed_send(&target, &mut backend, &lane);
+    assert_eq!(outcome, SendEffectOutcome::Applied);
+    let leg = leg.expect("applied carries the leg readback");
+    assert_eq!(leg.membership, vec![TARGET_SID]);
+    assert_eq!(leg.current, TARGET_SID);
+    // First plain point is the fourth fraction (.65), not the first owner
+    // join (.2). Every mouse post sits there.
+    let want = points[3];
+    let evidence = backend.fresh_evidence(&target);
+    assert_eq!(evidence.grab_point, Some(want));
+    assert!(backend.counts().balanced(), "releases stay balanced");
+}
+
+#[test]
+fn live_proof_refuses_when_no_plain_window_point_exists() {
+    // No plain candidate: every fraction hits a control/text/unknown label
+    // while still joining the target owner. The proof must refuse with zero
+    // actuation — never fall back to the first joining owner.
+    use crate::space_drag_transfer::candidate_grab_points;
+    let points = candidate_grab_points(frame()).expect("fixture frame admits 5 points");
+    for (labels, what) in [
+        (
+            [
+                (Some("AXStaticText"), None),
+                (Some("AXStaticText"), None),
+                (Some("AXMenuButton"), None),
+                (Some("AXStaticText"), None),
+                (Some("AXMenuButton"), None),
+            ],
+            "all control/text",
+        ),
+        (
+            [
+                (None, None),
+                (None, None),
+                (None, None),
+                (None, None),
+                (None, None),
+            ],
+            "all unknown labels",
+        ),
+    ] {
+        let target = pinned_target();
+        let lane = handoff();
+        let mut backend = LiveManagedSendBackend::new({
+            let mut readers = FakeReaders::new();
+            let mut details = HashMap::new();
+            for (point, (role, subrole)) in points.iter().zip(labels) {
+                let role_owned: Option<String> = role.map(str::to_owned);
+                let subrole_owned: Option<String> = subrole.map(str::to_owned);
+                details.insert(
+                    (point.0.round() as i64, point.1.round() as i64),
+                    crate::ffi::AxHitDetail {
+                        owner: (PID, WID),
+                        role: role_owned,
+                        subrole: subrole_owned,
+                    },
+                );
+            }
+            readers.ax_details = details;
+            readers.ws_hit = Some(WID);
+            readers
+        });
+        let (outcome, leg) = execute_managed_send(&target, &mut backend, &lane);
+        assert_eq!(outcome, SendEffectOutcome::RefusedProven, "{what}");
+        assert!(leg.is_none(), "{what}");
+        assert_eq!(backend.counts().key_down, 0, "{what}: no chord posted");
+        assert_eq!(backend.counts().mouse_down, 0, "{what}: no grab posted");
+        assert!(
+            backend.counts().balanced(),
+            "{what}: releases stay balanced"
+        );
+    }
+}
+
+#[test]
+fn live_proof_still_refuses_plain_offtarget_and_ws_disagreement() {
+    // Plain labels do not weaken the existing joins: a foreign AX owner or
+    // a foreign WindowServer hit at the plain point still refuses.
+    use crate::space_drag_transfer::candidate_grab_points;
+    let points = candidate_grab_points(frame()).expect("fixture frame admits 5 points");
+    let target = pinned_target();
+    for (ax_owner, ws_hit, what) in [
+        ((PID, 9), Some(WID), "plain label foreign AX owner"),
+        ((PID, WID), Some(9), "plain label foreign WindowServer hit"),
+    ] {
+        let lane = handoff();
+        let mut backend = LiveManagedSendBackend::new({
+            let mut readers = FakeReaders::new();
+            let mut details = HashMap::new();
+            for point in &points {
+                details.insert(
+                    (point.0.round() as i64, point.1.round() as i64),
+                    crate::ffi::AxHitDetail {
+                        owner: ax_owner,
+                        role: Some("AXWindow".to_owned()),
+                        subrole: Some("AXStandardWindow".to_owned()),
+                    },
+                );
+            }
+            readers.ax_details = details;
+            readers.ax_hit = Some(ax_owner);
+            readers.ws_hit = ws_hit;
+            readers
+        });
+        let (outcome, _) = execute_managed_send(&target, &mut backend, &lane);
+        assert_eq!(outcome, SendEffectOutcome::RefusedProven, "{what}");
+        assert_eq!(backend.counts().key_down, 0, "{what}: no chord posted");
+        assert_eq!(backend.counts().mouse_down, 0, "{what}: no grab posted");
     }
 }
 

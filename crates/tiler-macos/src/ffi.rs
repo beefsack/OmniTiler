@@ -1112,6 +1112,16 @@ mod macos {
     /// bound keeps a pathological chain from stalling the fixture.
     const HIT_PARENT_HOPS: usize = 16;
 
+    /// Same-element hit detail at a screen point: the owning `(pid, wid)`
+    /// plus the exact hit-element `AXRole`/`AXSubrole`. Role reads that
+    /// fail or go missing surface as `None` (unknown, never guessed).
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct AxHitDetail {
+        pub owner: (u32, u32),
+        pub role: Option<String>,
+        pub subrole: Option<String>,
+    }
+
     /// Raw AX element at a screen point (top-left points) via the system-wide
     /// `AXUIElementCopyElementAtPosition` (maintained `objc2` binding, no new
     /// hand declaration). `Err` names the AX status; no element at the point
@@ -1172,6 +1182,43 @@ mod macos {
             {
                 let pid = current.element_pid().map_err(super::ax_error_name)?;
                 return Ok((pid as u32, wid));
+            }
+            match current.parent() {
+                Ok(next) => current = next,
+                Err(code) => {
+                    return Err(format!(
+                        "hit-test has no owning window: {}",
+                        super::ax_error_name(code)
+                    ));
+                }
+            }
+        }
+        Err("hit-test refused: parent chain exhausted without an owning window".to_owned())
+    }
+
+    /// Owning `(pid, wid)` plus the exact hit-element `AXRole`/`AXSubrole`
+    /// at a screen point, all derived from the SAME element-at-position
+    /// read: the role pair is read from the initial element before the
+    /// bounded `AXParent` walk resolves the owner. Role/subrole reads that
+    /// fail or go missing surface as `None` (unknown, never guessed); the
+    /// owner legs keep their existing `Err` refusal. Callers skip
+    /// non-plain roles and keep the established candidate order. No new
+    /// `unsafe`: only the existing safe wrappers above.
+    pub fn ax_hit_test_detail(x: f64, y: f64) -> Result<AxHitDetail, String> {
+        let element = ax_element_at_position(x, y)?;
+        let role = ax_string_attribute(&element, "AXRole").ok().flatten();
+        let subrole = ax_string_attribute(&element, "AXSubrole").ok().flatten();
+        let mut current = element;
+        for _ in 0..HIT_PARENT_HOPS {
+            if let Ok(wid) = ax_window_id_detailed(&current)
+                && wid != 0
+            {
+                let pid = current.element_pid().map_err(super::ax_error_name)?;
+                return Ok(AxHitDetail {
+                    owner: (pid as u32, wid),
+                    role,
+                    subrole,
+                });
             }
             match current.parent() {
                 Ok(next) => current = next,
@@ -8270,18 +8317,19 @@ mod macos {
 #[cfg(target_os = "macos")]
 pub use macos::{
     AX_ATTRIBUTE_UNSUPPORTED, AX_FAILURE, AX_ILLEGAL_ARGUMENT, AX_NO_VALUE, AxElement, AxFrame,
-    BorderCarrier, BorderCarrierFlags, CgBounds, CgWindow, CgWindowBasic, DisplayChangeGuard,
-    DisplayRect, DragMouseHit, DragMouseKind, DragTapSource, GroupUnderlayCarrier, HotkeySpi,
-    KeyCounts, MouseCounts, NsAppIdentity, NsDisplay, Phase1Observer, SLPS_CPS_USER_GENERATED,
-    SLPS_EVENT_LEN, SegmentReadback, SegmentRow, SlpsPsn, SlsBridgedAvailability, SlsDisplayRow,
-    SlsMoveSymbols, TapChordSpec, TapHit, TapPump, TapSource, TapSourceReport, WorkspaceIndicator,
-    activate_app, activation_policy_raw_for_pid, app_hidden_for_pid, ax_app_focus_leg,
-    ax_bool_attribute, ax_children, ax_direct_focused_read, ax_display_id, ax_element_at_position,
-    ax_focused_preimage, ax_focused_preimage_detailed, ax_focused_preimage_evidence,
-    ax_fullscreen_state, ax_get_frame, ax_hit_test_owner, ax_identifier, ax_is_process_trusted,
-    ax_is_size_settable, ax_min_size, ax_observe_bounded, ax_observe_session, ax_perform_action,
-    ax_raise, ax_selected_focus_evidence, ax_set_bool_attribute, ax_set_focused_window,
-    ax_set_frame, ax_set_messaging_timeout, ax_set_position, ax_set_size, ax_string_attribute,
+    AxHitDetail, BorderCarrier, BorderCarrierFlags, CgBounds, CgWindow, CgWindowBasic,
+    DisplayChangeGuard, DisplayRect, DragMouseHit, DragMouseKind, DragTapSource,
+    GroupUnderlayCarrier, HotkeySpi, KeyCounts, MouseCounts, NsAppIdentity, NsDisplay,
+    Phase1Observer, SLPS_CPS_USER_GENERATED, SLPS_EVENT_LEN, SegmentReadback, SegmentRow, SlpsPsn,
+    SlsBridgedAvailability, SlsDisplayRow, SlsMoveSymbols, TapChordSpec, TapHit, TapPump,
+    TapSource, TapSourceReport, WorkspaceIndicator, activate_app, activation_policy_raw_for_pid,
+    app_hidden_for_pid, ax_app_focus_leg, ax_bool_attribute, ax_children, ax_direct_focused_read,
+    ax_display_id, ax_element_at_position, ax_focused_preimage, ax_focused_preimage_detailed,
+    ax_focused_preimage_evidence, ax_fullscreen_state, ax_get_frame, ax_hit_test_detail,
+    ax_hit_test_owner, ax_identifier, ax_is_process_trusted, ax_is_size_settable, ax_min_size,
+    ax_observe_bounded, ax_observe_session, ax_perform_action, ax_raise,
+    ax_selected_focus_evidence, ax_set_bool_attribute, ax_set_focused_window, ax_set_frame,
+    ax_set_messaging_timeout, ax_set_position, ax_set_size, ax_string_attribute,
     ax_system_focus_leg, ax_window_id, ax_window_id_detailed, ax_window_title,
     border_system_accent, bundle_id_for_pid, cg_carrier_above_target, cg_carrier_below_targets,
     cg_display_uuid, cg_post_event_access_known, cg_window_list_all, cg_window_list_basic,
@@ -8340,6 +8388,13 @@ mod stub {
                 && self.w > 0.0
                 && self.h > 0.0
         }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct AxHitDetail {
+        pub owner: (u32, u32),
+        pub role: Option<String>,
+        pub subrole: Option<String>,
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -8596,6 +8651,10 @@ mod stub {
     }
 
     pub fn ax_hit_test_owner(_x: f64, _y: f64) -> Result<(u32, u32), String> {
+        Err("macOS-only".to_owned())
+    }
+
+    pub fn ax_hit_test_detail(_x: f64, _y: f64) -> Result<AxHitDetail, String> {
         Err("macOS-only".to_owned())
     }
 
@@ -9286,33 +9345,34 @@ mod stub {
 
 #[cfg(not(target_os = "macos"))]
 pub use stub::{
-    AxElement, AxFrame, BorderCarrier, BorderCarrierFlags, CgBounds, CgWindow, CgWindowBasic,
-    DisplayChangeGuard, DisplayRect, DragMouseHit, DragMouseKind, DragTapSource,
+    AxElement, AxFrame, AxHitDetail, BorderCarrier, BorderCarrierFlags, CgBounds, CgWindow,
+    CgWindowBasic, DisplayChangeGuard, DisplayRect, DragMouseHit, DragMouseKind, DragTapSource,
     GroupUnderlayCarrier, HotkeySpi, KeyCounts, MouseCounts, NsAppIdentity, NsDisplay,
     Phase1Observer, SLPS_CPS_USER_GENERATED, SLPS_EVENT_LEN, SegmentReadback, SegmentRow, SlpsPsn,
     SlsBridgedAvailability, SlsDisplayRow, SlsMoveSymbols, TapChordSpec, TapHit, TapPump,
     TapSource, TapSourceReport, WorkspaceIndicator, activate_app, activation_policy_raw_for_pid,
     app_hidden_for_pid, ax_app_focus_leg, ax_bool_attribute, ax_children, ax_direct_focused_read,
     ax_display_id, ax_element_at_position, ax_focused_preimage, ax_focused_preimage_detailed,
-    ax_focused_preimage_evidence, ax_fullscreen_state, ax_get_frame, ax_hit_test_owner,
-    ax_identifier, ax_is_process_trusted, ax_is_size_settable, ax_min_size, ax_observe_bounded,
-    ax_observe_session, ax_perform_action, ax_raise, ax_selected_focus_evidence,
-    ax_set_bool_attribute, ax_set_focused_window, ax_set_frame, ax_set_messaging_timeout,
-    ax_set_position, ax_set_size, ax_string_attribute, ax_system_focus_leg, ax_window_id,
-    ax_window_id_detailed, ax_window_title, border_system_accent, bundle_id_for_pid,
-    cg_carrier_above_target, cg_carrier_below_targets, cg_display_uuid, cg_post_event_access_known,
-    cg_window_list_all, cg_window_list_basic, copy_symbolic_hotkeys, frontmost_app, hotkey_read,
-    hotkey_set_enabled, hotkey_spi_available, install_display_change_guard, key_counts_snapshot,
-    launch_date_for_pid, macos_major, mc_launch_toggle, mouse_counts_snapshot,
-    ns_app_identity_for_pid, ns_display_snapshot, ns_image_for_bundle, ns_separate_spaces,
-    own_bundle_id, process_executable_path, process_exists, pump_runloop_once, resolve_hotkey_spi,
-    run_event_tap_bounded, run_owned_probe_window, runloop_present, running_apps,
-    secure_input_known, session_state, slps_available, slps_front_available, slps_front_pid,
-    slps_post_event, slps_psn_for_pid, slps_set_front, sls_bridged_availability,
-    sls_connection_available, sls_display_rows, sls_display_spaces, sls_main_connection_id,
-    sls_move_symbols, sls_move_windows_direct, sls_order_available, sls_order_below,
-    sls_order_below_txn, sls_order_txn_available, sls_space_type, sls_spaces_for_window,
-    sls_spaces_for_windows, sls_window_at_point, terminate_process, warp_cursor_position,
+    ax_focused_preimage_evidence, ax_fullscreen_state, ax_get_frame, ax_hit_test_detail,
+    ax_hit_test_owner, ax_identifier, ax_is_process_trusted, ax_is_size_settable, ax_min_size,
+    ax_observe_bounded, ax_observe_session, ax_perform_action, ax_raise,
+    ax_selected_focus_evidence, ax_set_bool_attribute, ax_set_focused_window, ax_set_frame,
+    ax_set_messaging_timeout, ax_set_position, ax_set_size, ax_string_attribute,
+    ax_system_focus_leg, ax_window_id, ax_window_id_detailed, ax_window_title,
+    border_system_accent, bundle_id_for_pid, cg_carrier_above_target, cg_carrier_below_targets,
+    cg_display_uuid, cg_post_event_access_known, cg_window_list_all, cg_window_list_basic,
+    copy_symbolic_hotkeys, frontmost_app, hotkey_read, hotkey_set_enabled, hotkey_spi_available,
+    install_display_change_guard, key_counts_snapshot, launch_date_for_pid, macos_major,
+    mc_launch_toggle, mouse_counts_snapshot, ns_app_identity_for_pid, ns_display_snapshot,
+    ns_image_for_bundle, ns_separate_spaces, own_bundle_id, process_executable_path,
+    process_exists, pump_runloop_once, resolve_hotkey_spi, run_event_tap_bounded,
+    run_owned_probe_window, runloop_present, running_apps, secure_input_known, session_state,
+    slps_available, slps_front_available, slps_front_pid, slps_post_event, slps_psn_for_pid,
+    slps_set_front, sls_bridged_availability, sls_connection_available, sls_display_rows,
+    sls_display_spaces, sls_main_connection_id, sls_move_symbols, sls_move_windows_direct,
+    sls_order_available, sls_order_below, sls_order_below_txn, sls_order_txn_available,
+    sls_space_type, sls_spaces_for_window, sls_spaces_for_windows, sls_window_at_point,
+    terminate_process, warp_cursor_position,
 };
 
 #[cfg(test)]

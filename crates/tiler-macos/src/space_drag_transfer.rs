@@ -919,6 +919,19 @@ pub fn hit_test_identity(hit: (u32, u32), want: (u32, u32)) -> Result<(), String
     }
 }
 
+/// Pure plain-window hit verdict over plain data (no OS touch): the exact
+/// hit element must be a plain `AXWindow` with `AXStandardWindow` subrole.
+/// Control/text hits (`AXStaticText`, `AXMenuButton`, toolbar items) and
+/// unknown roles refuse by label, never by owner alone: a filename control
+/// that still joins the target owner must not become a drag/send grab.
+/// The live runner reads the label from the SAME element-at-position read
+/// as the owner (see `crate::ffi::ax_hit_test_detail`); this only compares.
+#[must_use]
+pub fn is_plain_window_hit(role: Option<&str>, subrole: Option<&str>) -> bool {
+    matches!(role, Some(crate::classifier::ROLE_WINDOW))
+        && matches!(subrole, Some(crate::classifier::SUBROLE_STANDARD))
+}
+
 /// Input-reaching proof, not rectangle stacking. Both independent native
 /// hit-tests must join the exact target. Transparent compositor backing and
 /// windows behind the target are not input occluders; no owner-name exemption

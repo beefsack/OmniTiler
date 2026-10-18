@@ -108,8 +108,10 @@ pub trait SendNativeReaders: Send {
     fn focus_agrees(&mut self, pid: u32, wid: u32) -> bool;
     /// Fresh CG grab context for exactly `(pid, wid)` (`None` = unknown).
     fn grab_context(&mut self, pid: u32, wid: u32) -> Option<GrabContext>;
-    /// Fresh positional AX hit-test owner at one point (`None` = unknown).
-    fn ax_hit_owner(&mut self, x: f64, y: f64) -> Option<(u32, u32)>;
+    /// Fresh positional AX hit-test detail at one point: the exact owner
+    /// plus the hit-element `AXRole`/`AXSubrole`, all from the same
+    /// element-at-position read (`None` = unknown, never guessed).
+    fn ax_hit_detail(&mut self, x: f64, y: f64) -> Option<crate::ffi::AxHitDetail>;
     /// Fresh WindowServer hit-test window at one point (`None` = unknown).
     fn ws_hit_wid(&mut self, x: f64, y: f64) -> Option<u32>;
     /// One tagged HID mouse post (own-switch provenance, zero flags). Only the
@@ -235,8 +237,8 @@ impl SendNativeReaders for OsSendReaders {
             all,
         })
     }
-    fn ax_hit_owner(&mut self, x: f64, y: f64) -> Option<(u32, u32)> {
-        crate::ffi::ax_hit_test_owner(x, y).ok()
+    fn ax_hit_detail(&mut self, x: f64, y: f64) -> Option<crate::ffi::AxHitDetail> {
+        crate::ffi::ax_hit_test_detail(x, y).ok()
     }
     fn ws_hit_wid(&mut self, x: f64, y: f64) -> Option<u32> {
         crate::ffi::sls_window_at_point(x, y).ok()
@@ -422,7 +424,9 @@ fn assemble_evidence<R: SendNativeReaders>(
         .and_then(|(focus_pid, focus_wid)| focus_wid.map(|w| format!("{focus_pid}_{w}")));
     // Geometry plus grab selection: the CG entry must own the target on
     // the normal layer with a matching frame; the grab point is the first
-    // titlebar candidate where both hit legs join the exact target.
+    // titlebar candidate where the exact hit element is a plain window AND
+    // both hit legs join the exact target. Control/text hits that still
+    // join the owner are skipped in order, never grabbed.
     let mut geometry_ok = None;
     let mut grab_point = None;
     let mut ax_hit = None;
@@ -442,14 +446,28 @@ fn assemble_evidence<R: SendNativeReaders>(
         if let Ok(candidates) = candidate_grab_points(frame) {
             let mut last_detail = String::from("no candidate evaluated");
             for point in candidates {
-                let ax = readers.ax_hit_owner(point.0, point.1);
+                let detail = readers.ax_hit_detail(point.0, point.1);
                 let ws = readers.ws_hit_wid(point.0, point.1);
-                let ax_param = ax.unwrap_or((0, 0));
+                let (ax_owner, role, subrole) = match detail {
+                    Some(hit) => (Some(hit.owner), hit.role, hit.subrole),
+                    None => (None, None, None),
+                };
+                if !crate::space_drag_transfer::is_plain_window_hit(
+                    role.as_deref(),
+                    subrole.as_deref(),
+                ) {
+                    last_detail = format!(
+                        "skipped non-plain AX hit at ({:.0},{:.0}): role {:?} subrole {:?}",
+                        point.0, point.1, role, subrole,
+                    );
+                    continue;
+                }
+                let ax_param = ax_owner.unwrap_or((0, 0));
                 let ws_param = ws.unwrap_or(0);
                 match hit_test_input_grab(point, &gctx.owned, &gctx.all, ax_param, ws_param) {
                     Ok(()) => {
                         grab_point = Some(point);
-                        ax_hit = ax.map(|(p, w)| format!("{p}_{w}"));
+                        ax_hit = ax_owner.map(|(p, w)| format!("{p}_{w}"));
                         ws_hit = ws.map(|w| format!("{pid}_{w}"));
                         break;
                     }
