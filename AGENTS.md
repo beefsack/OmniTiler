@@ -4,6 +4,14 @@
 
 - Resolve behavioral ambiguities with a minimal discriminating action-sequence row in [docs/spec/reference-outcomes.md](docs/spec/reference-outcomes.md); leave unsupported outcomes TBD for later user testing.
 
+## Reference Sources
+
+- Reference WM and KWin sources are cloned as sibling directories of this
+  repository. Search them locally at the pin cited by the docs with
+  `git show <pin>:<path>`, `git grep <pattern> <pin>`, or a worktree instead
+  of web-fetching source files. Web links remain fine as citations in records.
+- Add a missing source clone as a sibling directory with full history.
+
 ## Live KWin/Plasma Testing
 
 - Before any live KWin/Plasma testing, read and follow
