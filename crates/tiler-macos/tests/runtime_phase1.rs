@@ -2929,9 +2929,10 @@ fn borrowed_clone_drop_leaves_engine_and_workers_usable() {
         let factory = move || handle_clone;
         drop(factory);
     }
-    // Quiescence past engine-exit latency: pre-fix the engine is gone by
-    // now; post-fix it must still serve.
-    std::thread::sleep(Duration::from_secs(1));
+    // No sleep: the barrier, submit, and facts query below are the
+    // deterministic oracles. Post-fix the engine never stops, so they
+    // answer at once; pre-fix the drop signals stop synchronously and
+    // the engine exits promptly, so at least one of them fails.
     assert!(
         fixture.handle.is_running(),
         "borrowed clone drop must not stop the engine"
