@@ -46,6 +46,19 @@ Project principles, approved by the user.
   stays as thin as reasonably possible.
 - Pushing code down is ongoing work applied with judgement and within reason;
   it never overrides Simplicity or host-native behavior.
+- The core is platform-agnostic and true to the Tier 1 input tilers. When a
+  platform needs special core behavior to work around a host limitation,
+  first weigh a no-core alternative in the platform layer; compare the
+  complexity and maintainability of both and choose the most sensible middle
+  ground, aligned as closely as possible with these principles and the Tier 1
+  input tilers.
+- Where core support is still needed, it is as small and simple as possible,
+  optional with opt-in from the platform, and built generically: named for
+  the capability or limitation, never the platform, with a comment explaining
+  which host limitation it serves (for example, an output-shared workspace
+  option for KDE virtual desktops spanning all outputs, not a "kde" option).
+- Core changes requested for a specific platform are discussed with and
+  approved by the user before implementation.
 
 ## Resilience
 
