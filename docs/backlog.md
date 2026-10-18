@@ -268,7 +268,7 @@ decisions of 2026-09-24 are under
 - P1 | Shared core: own output topology | Core+KDE delivered offline;
   native two-output validation pending. FULL world topology is retained in all
   modes and strict unique-reciprocal targets are core-derived; KDE sends only
-  directional intent. Rust workspace 3,169 and KDE 1,851 tests pass, strict
+  directional intent. Rust workspace 3,170 and KDE 1,856 tests pass, strict
   clippy/typecheck/bundle/descriptor gates pass. Windows W2 resumes with existing
   FULL reports; macOS must replace visible topology rects with FULL bounds,
   preserving work areas and native capability gates.

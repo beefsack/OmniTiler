@@ -100,10 +100,10 @@
   proves narrow remap refusal and recovery from a subsequent FULL report.
 - Independent diff review found no remaining authority leak. The cross-refusal
   fallback concern was corrected and regression-tested before acceptance.
-- Final offline gates: `cargo test --workspace` **3,169 passed, 0 failed**;
+- Final offline gates: `cargo test --workspace` **3,170 passed, 0 failed**;
   `cargo clippy --workspace --all-targets -- -D warnings`, workspace formatting,
   KDE settings-exporter freshness and planner-eval build passed. KDE test script
-  phases **1,851 passed, 0 failed**; typecheck and `just build-kwin-script` passed.
+  phases **1,856 passed, 0 failed**; typecheck and `just build-kwin-script` passed.
   World producer/codec byte fixtures and `git diff --check` passed.
 - Linux-host portable tests are not native Windows/macOS acceptance. No
   dependencies, unsafe code or Windows/macOS production adapters changed.
