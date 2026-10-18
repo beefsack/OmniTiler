@@ -1257,32 +1257,38 @@ fn process_job(
             // context rides the shared cell (same-thread read); a missing
             // context withholds actuation inside the publication.
             // Correlated receive/reply pair for the requester's query line:
-            // `received` proves the query reached the engine (queue wait
-            // over), while `replied-managed` vs `replied-unmanaged`
-            // proves which retained verdict the engine sent. A requester
-            // `noreply-timeout` with no matching `received` proves queue
-            // blocking ahead of the query; `received` without a timely
-            // reply would prove engine-side stall instead. Ring logs only
-            // (numbers plus fixed tokens); never window content.
-            let (pid, generation) = crate::runtime_types::parse_window_id(&window)
-                .map(|(pid, _)| (pid, 0u64))
-                .unwrap_or((0, 0));
-            emit(shared, pid, generation, 0, "engine-facts", "received", 0);
+            // `received` marks the query dequeued on the engine (queue wait
+            // over), while `replied-managed` vs `replied-unmanaged` marks a
+            // delivered verdict; `reply-dropped` marks the requester went
+            // away before delivery. A requester `noreply-timeout` with no
+            // matching `received` for the same window suggests queue blocking
+            // ahead of the query; `received` without a timely delivered reply
+            // suggests engine-side stall instead. The window id rides
+            // `ref_id` so the exact subject correlates with the requester's
+            // `window=<pid>_<wid>` line. Ring logs only (numbers plus fixed
+            // tokens); never window content.
+            let (pid, wid) = crate::runtime_types::parse_window_id(&window).unwrap_or((0, 0));
+            let wid_ref = u64::from(wid);
+            emit(shared, pid, 0, wid_ref, "engine-facts", "received", 0);
             let ctx = lock_shared(shared).native_context.clone();
             let facts = retained.engine_managed_facts_for(&window, ctx.as_deref());
-            match &facts {
-                Some(facts) => emit(
+            let (generation, verdict) = match &facts {
+                Some(facts) => (facts.generation, "replied-managed"),
+                None => (0, "replied-unmanaged"),
+            };
+            if reply.send(facts).is_ok() {
+                emit(shared, pid, generation, wid_ref, "engine-facts", verdict, 0);
+            } else {
+                emit(
                     shared,
                     pid,
-                    facts.generation,
-                    0,
+                    generation,
+                    wid_ref,
                     "engine-facts",
-                    "replied-managed",
+                    "reply-dropped",
                     0,
-                ),
-                None => emit(shared, pid, 0, 0, "engine-facts", "replied-unmanaged", 0),
+                );
             }
-            let _ = reply.send(facts);
         }
         EngineJob::WorkspaceOccupancyQuery { reply } => {
             // Read-only retained snapshot: per-domain managed membership

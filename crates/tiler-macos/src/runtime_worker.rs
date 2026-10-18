@@ -670,10 +670,12 @@ fn teardown_worker(
 ) -> WorkerExit {
     // Correlated teardown metadata: the stop reason (stop vs frames vs
     // both) rides alongside the existing ring outcome, so a live
-    // `engine-facts-noreply` can be ordered against the observer exit —
-    // teardown-before-query proves re-keying loss, query-before-teardown
-    // proves the query failed while the observer still lived. Fixed
-    // tokens plus IDs only; never window content. Logging only.
+    // `engine-facts-noreply` orders approximately against the observer exit —
+    // teardown-start before the query suggests re-keying loss, while
+    // query-before-teardown-start suggests the query failed while the
+    // observer still lived. This line marks teardown start only; the ring's
+    // `torn-down` vs `teardown-failed` below stays the authoritative outcome.
+    // Fixed tokens plus IDs only; never window content. Logging only.
     eprintln!(
         "{}",
         format_observer_teardown_line(pid, generation, seq, reason)
@@ -701,9 +703,10 @@ fn teardown_worker(
     }
 }
 
-/// One bounded metadata-only observer teardown line: PID, generation,
+/// One bounded metadata-only observer teardown-start line: PID, generation,
 /// sequence, plus the fixed stop reason. Pure (the worker above is the
-/// only emitter).
+/// only emitter). Start marker only — the ring's `torn-down` vs
+/// `teardown-failed` outcome below stays authoritative.
 pub(crate) fn format_observer_teardown_line(
     pid: u32,
     generation: u64,
@@ -711,7 +714,7 @@ pub(crate) fn format_observer_teardown_line(
     reason: &str,
 ) -> String {
     format!(
-        "tiler-macos observer torn-down pid={pid} generation={generation} seq={seq} reason={reason}"
+        "tiler-macos observer tearing-down pid={pid} generation={generation} seq={seq} reason={reason}"
     )
 }
 
@@ -779,16 +782,16 @@ mod tests {
 
     #[test]
     fn observer_teardown_line_names_ids_and_stop_reason() {
-        // Correlated teardown metadata for the inverse `engine-facts-noreply`:
+        // Correlated teardown-start metadata for the inverse `engine-facts-noreply`:
         // PID, generation, sequence, plus the fixed stop reason — so a live
-        // run orders observer exit against the engine-facts query. IDs and
-        // tokens only; never titles, bundles, or paths.
+        // run orders observer exit start against the engine-facts query.
+        // IDs and tokens only; never titles, bundles, or paths.
         for reason in ["stop", "frames-stopped", "stop-and-frames", "loop-exit"] {
             let line = format_observer_teardown_line(4242, 3, 11, reason);
             assert_eq!(
                 line,
                 format!(
-                    "tiler-macos observer torn-down pid=4242 generation=3 seq=11 reason={reason}"
+                    "tiler-macos observer tearing-down pid=4242 generation=3 seq=11 reason={reason}"
                 ),
                 "{reason}",
             );

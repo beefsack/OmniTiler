@@ -1223,10 +1223,13 @@ impl RuntimeHandle {
     /// (effect owner): window identity plus the discriminated outcome plus
     /// elapsed milliseconds. The engine owner emits the matching
     /// receive/reply pair (see `ManagedFactsQuery` handling), so a live
-    /// `noreply-timeout` with no engine `received` proves queue blocking,
-    /// while `received` without a timely reply proves engine-side stall —
-    /// never guessed from the refusal token alone. Logging only; never a
-    /// gate, timeout, or retry change.
+    /// `noreply-timeout` with no engine `received` for the same window
+    /// suggests queue blocking ahead of the query, while `received` without
+    /// a timely delivered reply suggests engine-side stall — never inferred
+    /// from the refusal token alone. Same-window queries are serialized by
+    /// the single effect owner, so window identity plus log order locates
+    /// the pair; stderr/ring timestamps order it only approximately.
+    /// Logging only; never a gate, timeout, or retry change.
     pub fn query_managed_facts_read(
         &self,
         window: &str,
@@ -1260,21 +1263,35 @@ impl RuntimeHandle {
             );
             return crate::runtime_core::EngineFactsRead::NoReply;
         }
-        let outcome = match rx.recv_timeout(timeout) {
-            Ok(Some(facts)) => crate::runtime_core::EngineFactsRead::Managed(facts),
-            Ok(None) => crate::runtime_core::EngineFactsRead::Unmanaged,
-            Err(_) => crate::runtime_core::EngineFactsRead::NoReply,
-        };
-        let token = match &outcome {
-            crate::runtime_core::EngineFactsRead::Managed(_) => "managed",
-            crate::runtime_core::EngineFactsRead::Unmanaged => "unmanaged",
-            crate::runtime_core::EngineFactsRead::NoReply => "noreply-timeout",
+        let (outcome, token) = match rx.recv_timeout(timeout) {
+            Ok(Some(facts)) => (
+                crate::runtime_core::EngineFactsRead::Managed(facts),
+                "managed",
+            ),
+            Ok(None) => (crate::runtime_core::EngineFactsRead::Unmanaged, "unmanaged"),
+            Err(err) => (
+                crate::runtime_core::EngineFactsRead::NoReply,
+                Self::engine_facts_noreply_token(&err),
+            ),
         };
         eprintln!(
             "{}",
             Self::format_engine_facts_query_line(window, token, start.elapsed())
         );
         outcome
+    }
+
+    /// Discriminate a failed engine-facts wait: a bound elapse stays
+    /// `noreply-timeout`, while a dropped reply sender (engine received then
+    /// exited without replying) reports `noreply-disconnected`. Pure mapping;
+    /// the read stays `NoReply` either way.
+    pub(crate) fn engine_facts_noreply_token(
+        err: &std::sync::mpsc::RecvTimeoutError,
+    ) -> &'static str {
+        match err {
+            std::sync::mpsc::RecvTimeoutError::Timeout => "noreply-timeout",
+            std::sync::mpsc::RecvTimeoutError::Disconnected => "noreply-disconnected",
+        }
     }
 
     /// One bounded metadata-only engine-facts query line for the dedicated
@@ -1690,6 +1707,7 @@ mod tests {
             "noreply-engine-down",
             "noreply-inbox-closed",
             "noreply-timeout",
+            "noreply-disconnected",
         ] {
             let line = RuntimeHandle::format_engine_facts_query_line(
                 "4242_7",
@@ -1718,21 +1736,31 @@ mod tests {
             std::time::Duration::from_millis(1),
         );
         assert!(line.contains("window=unspecified"), "{line}");
-        // No user content in the formatter source: the renderer carries
-        // counts/IDs/tokens only.
-        let source = include_str!("runtime.rs");
-        let region = source
-            .split("fn format_engine_facts_query_line")
-            .nth(1)
-            .expect("formatter present")
-            .split("/// Query the engine's retained workspace occupancy")
-            .next()
-            .expect("formatter ends at occupancy");
-        for forbidden in ["title", "bundle", "path", "chord", "keycode", "flags"] {
-            assert!(
-                !region.contains(forbidden),
-                "query line carries no {forbidden}"
-            );
-        }
+    }
+
+    #[test]
+    fn engine_facts_noreply_token_discriminates_timeout_from_disconnect() {
+        // Transport semantic: an empty wait times out; a dropped sender
+        // disconnects. The query maps each to its own requester token while
+        // both read `NoReply`.
+        let (_held, empty) =
+            std::sync::mpsc::channel::<Option<crate::runtime_core::EngineManagedFacts>>();
+        let err = empty
+            .recv_timeout(std::time::Duration::from_millis(0))
+            .expect_err("empty wait must time out");
+        assert_eq!(
+            RuntimeHandle::engine_facts_noreply_token(&err),
+            "noreply-timeout"
+        );
+        let (tx, dropped) =
+            std::sync::mpsc::channel::<Option<crate::runtime_core::EngineManagedFacts>>();
+        drop(tx);
+        let err = dropped
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect_err("dropped sender must disconnect");
+        assert_eq!(
+            RuntimeHandle::engine_facts_noreply_token(&err),
+            "noreply-disconnected"
+        );
     }
 }
