@@ -1,25 +1,24 @@
 // Shared core/KDE output-topology parity (strict unique-reciprocal map).
 // Consumes `test-fixtures/output-topology-parity.json`, the frozen capture
 // of the original KDE world observation adjacency, and requires exact map
-// equality from both the frozen oracle below and the production strict
-// topology resolver. Any approved split-edge policy-alignment delta needs
+// equality from the frozen oracle below only. No production code derives
+// targets: direction-only world commands carry no endpoint and the core
+// owns selection. Any approved split-edge policy-alignment delta needs
 // separately named expected-result tests, never an edit of the shared
 // expectations.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { strictTopologyTarget } from "../src/world-command-context";
-import { createWorldCommandContext } from "../src/world-command-context";
 
 // Frozen test-only oracle of the original production implementation
 // `kwin/src/world-observe.ts::computeAdjacency` as of core-output-topology
 // `7b10c286` (strict unique-reciprocal exact edge-touch, positive overlap,
 // no wrap). Provenance: verbatim copy of the removed production function,
 // retained here only to prove the shared fixture is an exact capture of
-// the original KDE behavior. No production code imports or calls this;
-// production resolution lives in `strictTopologyTarget` (world-command-
-// context) over FULL `topology[].rect`, with wire `adjacent` always empty.
+// the original KDE behavior. No production code derives topology; the core
+// owns selection from FULL `topology[].rect`, with wire `adjacent` always
+// empty.
 function frozenOriginalAdjacency(
     names: ReadonlyArray<string>,
     rects: ReadonlyArray<{ x: number; y: number; w: number; h: number }>,
@@ -135,66 +134,8 @@ describe("output topology parity (frozen KDE oracle vs shared fixture)", () => {
     });
 });
 
-describe("output topology parity (production strict resolver vs shared fixture)", () => {
-    it("production strictTopologyTarget matches the frozen oracle on all 12 cases", () => {
-        const { cases } = loadFixture();
-        assert.equal(cases.length, 12);
-        for (const c of cases) {
-            const topology = c.outputs.map((o) => ({
-                out: o.out,
-                order: [] as string[],
-                current: o.out,
-                complete: true,
-                rect: { x: o.rect[0], y: o.rect[1], w: o.rect[2], h: o.rect[3] },
-                primary: false,
-            }));
-            const names = c.outputs.map((o) => o.out);
-            const rects = c.outputs.map((o) => ({ x: o.rect[0], y: o.rect[1], w: o.rect[2], h: o.rect[3] }));
-            const oracle = frozenOriginalAdjacency(names, rects);
-            for (const out of names) {
-                for (const dir of DIRS) {
-                    const wanted = (oracle[out] as Record<string, string>)[dir] ?? null;
-                    const actual = strictTopologyTarget(topology, out, dir);
-                    assert.equal(actual, wanted, `${c.name}: ${out} ${dir}`);
-                }
-            }
-            // Production adjacentTarget resolves the same target plus the
-            // target's current view.
-            const ctx = createWorldCommandContext({
-                observe: () => null,
-                activeWindowId: () => null,
-                isDirection: (v): v is "left" | "right" | "up" | "down" =>
-                    v === "left" || v === "right" || v === "up" || v === "down",
-                isCreationBound: () => false,
-                activeCommand: () => null,
-            });
-            const obs = {
-                mode: "per-output-local",
-                topology,
-                bindings: [],
-                domains: [],
-                minimized: [],
-                predicate: "both-axes-fixed",
-                complete: true,
-                gesture: false,
-                focusedGlobal: "",
-            } as unknown as Parameters<typeof ctx.adjacentTarget>[0];
-            for (const out of names) {
-                for (const dir of DIRS) {
-                    const target = ctx.adjacentTarget(obs, out, dir);
-                    const wanted = (oracle[out] as Record<string, string>)[dir] ?? null;
-                    if (wanted === null) {
-                        assert.equal(target, null, `${c.name}: ${out} ${dir} refuses`);
-                    } else {
-                        assert.notEqual(target, null, `${c.name}: ${out} ${dir} resolves`);
-                        assert.equal(target?.out, wanted, `${c.name}: ${out} ${dir} target`);
-                    }
-                }
-            }
-        }
-    });
-
-    it("production emits no wire adjacency (core-owned topology only)", () => {
+describe("output topology parity (adapter emits no adjacency)", () => {
+    it("wire domains stay empty (core-owned topology only)", () => {
         // The production observer always emits empty wire-compat adjacent
         // maps; strict resolution reads FULL topology rects instead. This
         // test guards the emission absence without invoking KWin.

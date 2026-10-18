@@ -6,6 +6,8 @@
 // callbacks and native accessors.
 
 import {
+    cmdFocusDirectional,
+    cmdMoveDirectional,
     cmdSelectNumbered,
     cmdSelectPrevious,
     cmdSelectRelative,
@@ -81,13 +83,6 @@ export interface WorldShortcutsEnv {
     submitCatalogMove: (action: string, index: number, follow: boolean) => void;
     submitOutputSend: (direction: string, follow: boolean) => boolean;
     submitMigration: (direction: string) => boolean;
-    // Cross-output scope for one press direction: true only when the
-    // focused window's output has a strict FULL-topology target there
-    // (core-owned; no adapter adjacency map). The core refuses cross-output
-    // requests without a resolvable target, so an unconditional cross flag
-    // would refuse every directional action on a single-output host (and
-    // at any edgeless side).
-    crossForDirection: (direction: string) => boolean;
     submitFloat: (label: string) => boolean;
     setStickyNative: (ref: object, id: string, sticky: boolean) => boolean;
     setMaximizedNative: (ref: object, maximized: boolean) => boolean;
@@ -112,7 +107,7 @@ export function registerWorldShortcuts(env: WorldShortcutsEnv): void {
         submitCatalogMove, submitOutputSend, submitMigration, submitFloat,
         setStickyNative, setMaximizedNative, setFullscreenNative,
         activeOutputName, activeWindowId, activeWindowRef,
-        currentScopeId, getWorkspaceTilingSnapshot, crossForDirection,
+        currentScopeId, getWorkspaceTilingSnapshot,
     } = env;
     const register = env.registerShortcutFn ?? ((() => {
         try {
@@ -156,8 +151,10 @@ export function registerWorldShortcuts(env: WorldShortcutsEnv): void {
         ] as const;
         const submitFocus = (d: string): void => {
             // Float-origin first (legacy parity, native): a floating/sticky
-            // subject focuses natively or falls back with floatSubject true.
-            // Tiled subjects route the Planner command below.
+            // subject focuses natively or falls back direction-only with
+            // floatSubject true. Tiled subjects route the direction-only
+            // Planner command below; the core owns crossing (left/right
+            // cross, up/down stay local) with local fallback.
             const floatOutcome = handleFloatFocus(d);
             if (floatOutcome === "handled") {
                 return;
@@ -167,19 +164,20 @@ export function registerWorldShortcuts(env: WorldShortcutsEnv): void {
                 return;
             }
             const w = focusedWin();
-            // Legacy axis rule: left/right may cross outputs, up/down
-            // stay local single-domain. The crossing half applies only
-            // with a strict FULL-topology target there; otherwise the
-            // command stays local, since the core refuses cross-output
-            // requests without a resolvable target.
-            const cross = (d === "left" || d === "right") && crossForDirection(d);
-            if (!isDirection(d) || w === null || !submitCommand({ op: "operation", command: { op: "focus", win: w, direction: d, crossOutput: cross, floatSubject: false } }, `focus-${d}`)) {
+            if (!isDirection(d) || w === null) {
+                shortcutFailed(`focus-${d}`);
+                return;
+            }
+            const cmd = cmdFocusDirectional(w, d, false);
+            if (cmd === null || !submitCommand(cmd, `focus-${d}`)) {
                 shortcutFailed(`focus-${d}`);
             }
         };
         const submitMove = (d: string): void => {
             // Float-origin moves half-snap natively (no Planner path for
-            // float moves); tiled subjects route the Planner command below.
+            // float moves); tiled subjects route the direction-only Planner
+            // command below; the core owns crossing (all four directions)
+            // with local R1-R3 fallback.
             const floatOutcome = handleFloatMove(d);
             if (floatOutcome === "handled") {
                 return;
@@ -195,7 +193,12 @@ export function registerWorldShortcuts(env: WorldShortcutsEnv): void {
             }
             // Same cross-output scope as focus: crossing applies only with
             // a strict FULL-topology target there, else the move stays local.
-            if (!isDirection(d) || !submitCommand({ op: "operation", command: { op: "move", win: w, direction: d, crossOutput: crossForDirection(d), sameAxis: sameAxis() } }, `move-${d}`)) {
+            if (!isDirection(d)) {
+                shortcutFailed(`move-${d}`);
+                return;
+            }
+            const cmd = cmdMoveDirectional(w, d, sameAxis());
+            if (cmd === null || !submitCommand(cmd, `move-${d}`)) {
                 shortcutFailed(`move-${d}`);
             }
         };

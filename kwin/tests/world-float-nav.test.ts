@@ -213,7 +213,8 @@ describe("world float-origin navigation", () => {
         const after = describePayloads(h).slice(callsBefore);
         for (const payload of after) {
             const command = payload["command"] as Record<string, unknown> | null;
-            assert.ok(command === null || (command["op"] as string) !== "operation" || ((command["command"] as Record<string, unknown>)["op"] as string) !== "focus", "no Planner focus operation for a local float target");
+            assert.ok(command === null || (command["op"] as string) !== "focus-directional", "no Planner focus intent for a local float target");
+            assert.ok(command === null || (command["op"] as string) !== "operation" || ((command["command"] as Record<string, unknown>)["op"] as string) !== "focus", "no legacy focus operation for a local float target");
         }
     });
 
@@ -230,7 +231,7 @@ describe("world float-origin navigation", () => {
         assert.deepEqual(h.world.focused, ["win-g"]);
     });
 
-    it("falls back with floatSubject true on a Left/Right miss with adjacency", () => {
+    it("falls back direction-only with floatSubject true on a Left/Right miss", () => {
         const wsa = desk("ws-a");
         const wsb = desk("ws-b");
         const wins = [stickyWin("win-f", "out-a", wsa, 500)];
@@ -247,15 +248,15 @@ describe("world float-origin navigation", () => {
         const payloads = describePayloads(h);
         const focusOps = payloads
             .map((p) => p["command"] as Record<string, unknown> | null)
-            .filter((c) => c !== null && c["op"] === "operation" && ((c["command"] as Record<string, unknown>)["op"] as string) === "focus");
-        assert.ok(focusOps.length >= 1, "fallback dispatches a focus operation");
-        const inner = focusOps[focusOps.length - 1]?.["command"] as Record<string, unknown>;
+            .filter((c) => c !== null && c["op"] === "focus-directional");
+        assert.ok(focusOps.length >= 1, "fallback dispatches a focus-directional intent");
+        const inner = focusOps[focusOps.length - 1] as Record<string, unknown>;
         assert.equal(inner["floatSubject"], true);
-        assert.equal(inner["crossOutput"], true);
         assert.equal(inner["win"], "win-f");
+        assert.equal(inner["direction"], "right");
     });
 
-    it("retains on an Up miss even with adjacency", () => {
+    it("retains on an Up miss even with a second output", () => {
         const wsa = desk("ws-a");
         const wsb = desk("ws-b");
         const wins = [stickyWin("win-f", "out-a", wsa, 500)];
@@ -273,8 +274,9 @@ describe("world float-origin navigation", () => {
         const after = describePayloads(h).slice(callsBefore);
         for (const payload of after) {
             const command = payload["command"] as Record<string, unknown> | null;
+            assert.ok(command === null || (command["op"] as string) !== "focus-directional", "up miss dispatches no focus-directional intent");
             if (command !== null && command["op"] === "operation") {
-                assert.notEqual(((command["command"] as Record<string, unknown>)["op"] as string), "focus", "up miss dispatches no focus operation");
+                assert.notEqual(((command["command"] as Record<string, unknown>)["op"] as string), "focus", "up miss dispatches no legacy focus operation");
             }
         }
     });
@@ -299,7 +301,7 @@ describe("world float-origin navigation", () => {
         }
     });
 
-    it("routes tiled focus to the Planner without floatSubject", () => {
+    it("routes tiled focus direction-only without floatSubject", () => {
         const ws = desk("ws-a");
         const wins = [tiledWin("win-a", "out-a", ws, 0)];
         const screens = [{ name: "out-a", geometry: { x: 0, y: 0, width: 800, height: 600 } }];
@@ -311,9 +313,9 @@ describe("world float-origin navigation", () => {
         const payloads = describePayloads(h);
         const focusOps = payloads
             .map((p) => p["command"] as Record<string, unknown> | null)
-            .filter((c) => c !== null && c["op"] === "operation" && ((c["command"] as Record<string, unknown>)["op"] as string) === "focus");
+            .filter((c) => c !== null && c["op"] === "focus-directional");
         assert.ok(focusOps.length >= 1);
-        const inner = focusOps[focusOps.length - 1]?.["command"] as Record<string, unknown>;
+        const inner = focusOps[focusOps.length - 1] as Record<string, unknown>;
         assert.equal(inner["floatSubject"], false);
     });
 

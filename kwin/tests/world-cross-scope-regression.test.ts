@@ -1,10 +1,8 @@
-// Regression: directional focus/move must scope cross-output only with a
-// live adjacent output. The adapter sent crossOutput=true unconditionally
-// for left/right (and all moves), and the core refuses cross-output
-// requests without adjacency, so every directional focus/move refused on
-// a single-output host (and at any edgeless side). Single output (and
-// edgeless directions) now route local single-domain commands; outputs
-// with real adjacency keep the cross-output scope.
+// Regression: directional focus/move send direction-only intents; the
+// core owns crossing from retained FULL topology. No adapter cross flag
+// or target derivation exists, so every directional action dispatches on
+// single-output hosts and at edgeless sides (the core runs the local
+// fallback), and two-output intents carry direction only.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { startWorldAdapterEntry } from "../src/world-entry";
@@ -151,22 +149,22 @@ function discover(h: Harness, gen = "gen-1"): void {
     }));
 }
 
-function lastOperation(h: Harness, op: string): Record<string, unknown> | null {
+function lastCommand(h: Harness): Record<string, unknown> | null {
     const found = [...h.calls].reverse().find((c) => {
         if (c.method !== "DescribeWorld") {
             return false;
         }
-        const body = JSON.parse(c.payload) as { command?: { op?: unknown; command?: { op?: unknown } } | null };
-        return body.command?.op === "operation" && (body.command?.command as { op?: unknown } | undefined)?.op === op;
+        const body = JSON.parse(c.payload) as { command?: Record<string, unknown> | null };
+        return body.command !== null && body.command !== undefined;
     });
     if (found === undefined) {
         return null;
     }
-    return (JSON.parse(found.payload) as { command: { command: Record<string, unknown> } }).command.command;
+    return (JSON.parse(found.payload) as { command: Record<string, unknown> }).command;
 }
 
-describe("world directional cross scope", () => {
-    it("scopes single-output focus right as local", () => {
+describe("world directional intent (core-owned crossing)", () => {
+    it("sends focus-directional on a single output (core runs local fallback)", () => {
         const ws = desk("ws-a");
         const h = makeHarness(
             [tiledWin("win-a", "out-a", ws, 0), tiledWin("win-b", "out-a", ws, 210)],
@@ -177,13 +175,14 @@ describe("world directional cross scope", () => {
         discover(h);
         h.handle?.requestFocus("right");
         h.runTimers();
-        const inner = lastOperation(h, "focus");
-        assert.ok(inner !== null, "focus operation dispatched");
-        assert.equal(inner["direction"], "right");
-        assert.equal(inner["crossOutput"], false);
+        const cmd = lastCommand(h);
+        assert.ok(cmd !== null, "focus intent dispatched");
+        assert.equal(cmd["op"], "focus-directional");
+        assert.equal(cmd["direction"], "right");
+        assert.equal(cmd["floatSubject"], false);
     });
 
-    it("scopes single-output move down as local", () => {
+    it("sends move-directional on a single output (core runs local R1-R3)", () => {
         const ws = desk("ws-a");
         const h = makeHarness(
             [tiledWin("win-a", "out-a", ws, 0), tiledWin("win-b", "out-a", ws, 210)],
@@ -194,13 +193,13 @@ describe("world directional cross scope", () => {
         discover(h);
         h.handle?.requestMove("down");
         h.runTimers();
-        const inner = lastOperation(h, "move");
-        assert.ok(inner !== null, "move operation dispatched");
-        assert.equal(inner["direction"], "down");
-        assert.equal(inner["crossOutput"], false);
+        const cmd = lastCommand(h);
+        assert.ok(cmd !== null, "move intent dispatched");
+        assert.equal(cmd["op"], "move-directional");
+        assert.equal(cmd["direction"], "down");
     });
 
-    it("keeps cross-output focus scope toward a live adjacent output", () => {
+    it("sends focus-directional toward a second output (no adapter endpoint)", () => {
         const wsa = desk("ws-a");
         const wsb = desk("ws-b");
         const h = makeHarness(
@@ -215,12 +214,15 @@ describe("world directional cross scope", () => {
         discover(h);
         h.handle?.requestFocus("right");
         h.runTimers();
-        const focus = lastOperation(h, "focus");
-        assert.ok(focus !== null, "focus operation dispatched");
-        assert.equal(focus["crossOutput"], true);
+        const cmd = lastCommand(h);
+        assert.ok(cmd !== null, "focus intent dispatched");
+        assert.equal(cmd["op"], "focus-directional");
+        assert.equal(cmd["direction"], "right");
+        assert.ok(!("out" in (cmd as object)), "no adapter endpoint");
+        assert.ok(!("crossOutput" in (cmd as object)), "no adapter cross flag");
     });
 
-    it("keeps cross-output move scope toward a live adjacent output", () => {
+    it("sends move-directional toward a second output (no adapter endpoint)", () => {
         const wsa = desk("ws-a");
         const wsb = desk("ws-b");
         const h = makeHarness(
@@ -235,12 +237,13 @@ describe("world directional cross scope", () => {
         discover(h);
         h.handle?.requestMove("right");
         h.runTimers();
-        const move = lastOperation(h, "move");
-        assert.ok(move !== null, "move operation dispatched");
-        assert.equal(move["crossOutput"], true);
+        const cmd = lastCommand(h);
+        assert.ok(cmd !== null, "move intent dispatched");
+        assert.equal(cmd["op"], "move-directional");
+        assert.equal(cmd["direction"], "right");
     });
 
-    it("routes the focus-right shortcut with local scope on one output", () => {
+    it("routes the focus-right shortcut as focus-directional", () => {
         const ws = desk("ws-a");
         const h = makeHarness(
             [tiledWin("win-a", "out-a", ws, 0), tiledWin("win-b", "out-a", ws, 210)],
@@ -253,16 +256,16 @@ describe("world directional cross scope", () => {
         assert.ok(cb !== undefined, "directional focus shortcut registered");
         cb();
         h.runTimers();
-        const inner = lastOperation(h, "focus");
-        assert.ok(inner !== null, "shortcut dispatches a focus operation");
-        assert.equal(inner["crossOutput"], false);
+        const cmd = lastCommand(h);
+        assert.ok(cmd !== null, "shortcut dispatches a focus intent");
+        assert.equal(cmd["op"], "focus-directional");
     });
 
-    it("resolves braced ids over array-like lists with local scope on one output", () => {
+    it("resolves braced ids over array-like lists as focus-directional", () => {
         // Production entry shape: fresh array-like lists per read and
         // canonical braced wrapper ids that must normalize to the bare
-        // observation ids. A single output has no adjacency, so the
-        // directional focus stays local instead of failing.
+        // observation ids. A single output dispatches direction-only; the
+        // core runs the local fallback instead of refusing.
         const wsA = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
         const winA = "11111111-1111-1111-1111-111111111111";
         const winB = "22222222-2222-2222-2222-222222222222";
@@ -352,10 +355,10 @@ describe("world directional cross scope", () => {
         discover(h);
         handle?.requestFocus("right");
         h.runTimers();
-        const inner = lastOperation(h, "focus");
-        assert.ok(inner !== null, "focus operation dispatched");
-        assert.equal(inner["win"], winA);
-        assert.equal(inner["direction"], "right");
-        assert.equal(inner["crossOutput"], false);
+        const cmd = lastCommand(h);
+        assert.ok(cmd !== null, "focus intent dispatched");
+        assert.equal(cmd["win"], winA);
+        assert.equal(cmd["direction"], "right");
+        assert.equal(cmd["op"], "focus-directional");
     });
 });

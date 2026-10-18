@@ -274,12 +274,11 @@ export interface ObserveEnv {
 }
 
 // FULL output rectangles for the core-owned topology authority (the
-// membership decision stays in core). The adapter reports every live
-// screen's FULL geometry in `topology[].rect` plus separate per-desktop
-// work-area `bounds`/outer gaps, and always emits an empty wire-compat
-// `adjacent` map that the core ignores. Strict unique-reciprocal
-// resolution for local command scoping lives in world-command-context
-// (`strictTopologyTarget`), never as an emitted map.
+// membership and selection decisions stay in core). The adapter reports
+// every live screen's FULL geometry in `topology[].rect` plus separate
+// per-desktop work-area `bounds`/outer gaps, and always emits an empty
+// wire-compat `adjacent` map that the core ignores. No adapter-side
+// target derivation exists; direction-only commands carry no endpoint.
 function readScreenGeometry(ref: object): { x: number; y: number; w: number; h: number } | null {
     let geometry: unknown = undefined;
     try {

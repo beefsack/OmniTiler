@@ -365,7 +365,6 @@ describe("world shortcut settings", () => {
             submitCatalogMove: (_a: string, _i: number, _f: boolean): void => {},
             submitOutputSend: (_d: string, _f: boolean): boolean => false,
             submitMigration: (_d: string): boolean => false,
-            crossForDirection: (_d: string): boolean => false,
             submitFloat: (_label: string): boolean => false,
             setStickyNative: (): boolean => false,
             setMaximizedNative: (): boolean => false,

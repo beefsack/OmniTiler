@@ -35,12 +35,14 @@ import {
 } from "./world-seq";
 import {
     buildWorldReportJson,
-    cmdMigrateWorkspace,
+    cmdFocusDirectional,
+    cmdMigrateDirectional,
+    cmdMoveDirectional,
     cmdSelectNumbered,
     cmdSelectPrevious,
     cmdSelectRelative,
     cmdSelectTrailing,
-    cmdSend,
+    cmdSendDirectional,
     cmdSendNumbered,
     cmdSendRelative,
     cmdSetWorkspaceTiling,
@@ -413,11 +415,11 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     };
 
     // Observation-derived local command context (workspace refs,
-    // retention, resize signature, cross-output scope, adjacent targets)
-    // lives in world-command-context; lifecycle state stays here.
+    // retention, resize signature) lives in world-command-context; the
+    // core owns all topology selection, so no target derivation lives
+    // here. Lifecycle state stays here.
     const route = createWorldCommandContext({
         observe: () => capture(),
-        activeWindowId,
         isDirection,
         isCreationBound: (nativeId) => state.pendingCreations.some((c) => c.bound === nativeId),
         activeCommand: () => state.observationOnlyCatchup ? null : pendingCommand,
@@ -518,28 +520,26 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     const handleFloatFocus = floatNav.handleFloatFocus;
     const handleFloatMove = floatNav.handleFloatMove;
 
-    // Explicit output send by direction: observation resolves the strict
-    // FULL-topology target plus its current desktop; core owns the
-    // membership decision. Without a resolvable target or a readable
-    // target view, refuse with no writes.
+    // Explicit output send by direction: the adapter names the window and
+    // direction only (no endpoint, no cross flag); the core resolves the
+    // strict target plus its current desktop and owns the membership
+    // decision. No adapter topology check happens here.
     const submitOutputSend = (direction: string, follow: boolean): boolean => {
-        const obs = route.observeForCommand();
-        const out = activeOutputName();
         const w = activeWindowId();
-        if (obs === null || out === null || w === null || !isDirection(direction)) {
+        if (w === null || !isDirection(direction)) {
             return false;
         }
-        const target = route.adjacentTarget(obs, out, direction);
-        if (target === null) {
+        const cmd = cmdSendDirectional(w, direction, follow);
+        if (cmd === null) {
             return false;
         }
-        return submitCommand(cmdSend(w, target.out, target.ws, follow), `send-output-${direction}`);
+        return submitCommand(cmd, `send-output-${direction}`);
     };
 
-    // Whole-workspace migration by direction: observation resolves the
-    // strict FULL-topology target and the source's current workspace; the
-    // scope policy decision stays in core. Without a resolvable target,
-    // refuse with no writes.
+    // Whole-workspace migration by direction: the adapter names the source
+    // output plus its current workspace and the direction only (never the
+    // target, even with no active window); the core resolves the strict
+    // target and owns the scope decision. No adapter topology check.
     const submitMigration = (direction: string): boolean => {
         const obs = route.observeForCommand();
         const out = activeOutputName();
@@ -547,11 +547,10 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             return false;
         }
         const topo = obs.topology.find((t) => t.out === out);
-        const target = route.adjacentTarget(obs, out, direction);
-        if (topo === undefined || topo.current === "" || target === null) {
+        if (topo === undefined || topo.current === "") {
             return false;
         }
-        const cmd = cmdMigrateWorkspace(out, target.out, topo.current);
+        const cmd = cmdMigrateDirectional(out, topo.current, direction);
         if (cmd === null) {
             return false;
         }
@@ -1408,7 +1407,6 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         activeWindowRef,
         currentScopeId,
         getWorkspaceTilingSnapshot,
-        crossForDirection: route.crossForDirection,
         registerShortcutFn: overrides.registerShortcutFn,
         readSameAxisMove: () => settings.readSameAxisLive(),
         readResizeSignature: () => route.resizeSignature(),
@@ -1461,8 +1459,8 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 shortcutFailed("focus");
                 return;
             }
-            const cross = (direction === "left" || direction === "right") && route.crossForDirection(direction);
-            if (!submitCommand({ op: "operation", command: { op: "focus", win: w, direction, crossOutput: cross, floatSubject: false } }, "focus")) {
+            const cmd = cmdFocusDirectional(w, direction, false);
+            if (cmd === null || !submitCommand(cmd, "focus")) {
                 shortcutFailed("focus");
             }
         },
@@ -1480,10 +1478,12 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 return;
             }
             const w = activeWindowId();
-            if (w === null || !submitCommand({
-                op: "operation",
-                command: { op: "move", win: w, direction, crossOutput: route.crossForDirection(direction), sameAxis: settings.readSameAxisLive() },
-            }, "move")) {
+            if (w === null) {
+                shortcutFailed("move");
+                return;
+            }
+            const cmd = cmdMoveDirectional(w, direction, settings.readSameAxisLive());
+            if (cmd === null || !submitCommand(cmd, "move")) {
                 shortcutFailed("move");
             }
         },

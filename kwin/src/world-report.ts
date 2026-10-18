@@ -22,6 +22,10 @@ export type WorldCommand =
     | { op: "send-numbered"; win: string; out: string; index: number; follow: boolean }
     | { op: "set-workspace-tiling"; out: string; ws: string; tiled: boolean }
     | { op: "migrate-workspace"; from: string; to: string; ws: string }
+    | { op: "focus-directional"; win: string; direction: string; floatSubject: boolean }
+    | { op: "move-directional"; win: string; direction: string; sameAxis: string }
+    | { op: "send-directional"; win: string; direction: string; follow: boolean }
+    | { op: "migrate-directional"; from: string; ws: string; direction: string }
     | { op: "operation"; command: Record<string, unknown> };
 
 export interface WorldReplyScope {
@@ -197,6 +201,36 @@ export function cmdMigrateWorkspace(from: string, to: string, ws: string): World
         return null;
     }
     return { op: "migrate-workspace", from, to, ws };
+}
+// Direction-only intents (core-owned topology): the adapter names the
+// direction (plus window or source workspace) only; the core resolves
+// the strict unique-reciprocal target from retained FULL rects.
+export function cmdFocusDirectional(win: string, direction: string, floatSubject: boolean): WorldCommand | null {
+    if (!DIRECTIONS.has(direction)) {
+        return null;
+    }
+    return { op: "focus-directional", win, direction, floatSubject };
+}
+export function cmdMoveDirectional(win: string, direction: string, sameAxis: string): WorldCommand | null {
+    if (!DIRECTIONS.has(direction)) {
+        return null;
+    }
+    if (sameAxis !== "group-with-neighbor" && sameAxis !== "swap-with-neighbor") {
+        return null;
+    }
+    return { op: "move-directional", win, direction, sameAxis };
+}
+export function cmdSendDirectional(win: string, direction: string, follow: boolean): WorldCommand | null {
+    if (!DIRECTIONS.has(direction)) {
+        return null;
+    }
+    return { op: "send-directional", win, direction, follow };
+}
+export function cmdMigrateDirectional(from: string, ws: string, direction: string): WorldCommand | null {
+    if (!DIRECTIONS.has(direction)) {
+        return null;
+    }
+    return { op: "migrate-directional", from, ws, direction };
 }
 export function cmdSwitchView(out: string, ws: string): WorldCommand {
     return { op: "switch-view", out, ws };

@@ -3,18 +3,17 @@
 // the top-left axis rule with exactly one native activeWindow write (no
 // Planner dispatch, no geometry writes), and half-snaps with exactly one
 // native frameGeometry write plus focus retention (no dispatch).
-// Left/Right focus misses with a strict FULL-topology target fall back to
-// the Planner cross-output remembered-tiled target via a full-state
-// operation command with floatSubject true; Up/Down misses and misses
-// without a resolvable target retain with no writes. Planner owns all
-// layout; this module never mirrors workspace policy. Game safety: never
-// auto-focus a fullscreen target; fullscreen/maximized subjects never
-// move.
+// Left/Right focus misses fall back to the core cross-output
+// remembered-tiled target via a direction-only focus command with
+// floatSubject true (the core resolves the strict target; no adapter
+// topology check); Up/Down misses retain with no writes. Planner owns
+// all layout; this module never mirrors workspace policy. Game safety:
+// never auto-focus a fullscreen target; fullscreen/maximized subjects
+// never move.
 
 import type { WorldObservation } from "./world-observe";
 import type { WorldCommand } from "./world-report";
 import { isLiveWindowListed, liveWindowId } from "./world-native";
-import { strictTopologyTarget } from "./world-command-context";
 
 export type FloatDirection = "left" | "right" | "up" | "down";
 
@@ -214,14 +213,17 @@ export function createFloatNav(env: FloatNavEnv): FloatNav {
             log(`omnitiler:world:focus-float-retained direction=${direction} reason=no-target`);
             return "failed";
         }
+        // Source-identity guard only (the subject's output must be observed);
+        // the core resolves the strict cross-output target, so no adapter
+        // neighbor precheck happens here.
         const domain = obs.domains.find((d) => d.id === subject.out && d.ws === subject.ws)
             ?? obs.domains.find((d) => d.id === subject.out);
-        if (domain === undefined || strictTopologyTarget(obs.topology, domain.id, direction) === null) {
+        if (domain === undefined) {
             log(`omnitiler:world:focus-float-retained direction=${direction} reason=no-target`);
             return "failed";
         }
         const ok = env.submitCommand(
-            { op: "operation", command: { op: "focus", win: w, direction, crossOutput: true, floatSubject: true } },
+            { op: "focus-directional", win: w, direction, floatSubject: true },
             `focus-${direction}`,
         );
         return ok ? "handled" : "failed";
