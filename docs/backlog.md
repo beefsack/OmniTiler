@@ -1355,12 +1355,14 @@ decisions of 2026-09-24 are under
     native event alternatives researched. Conditional pre-0.1 event-coverage
     probe completed 2026-10-18: tested burial emitted desktop-parent reorder
     outside current subscriptions, but complete native coverage remains unproven.
-    Retain the visible-pager 2 s timer unchanged; no replacement selected.
+    User 2026-10-19 option A amends 2026-10-18 decision 5: keep the
+    visible-pager 2 s topmost-recovery timer for 0.1; remaining coverage is
+    deferred to the P2 post-0.1 pager event-coverage item below.
     [Probe and limits](changes/archive/windows-pager-event-coverage.md).
     Chevron response and physical input/preview remain pending. Existing
     approved icon-cache refresh explains visible managed completion wakes;
-    retain visible-pager 2 s recovery pending a complete native wake source or
-    an explicit recovery-contract choice. [Idle record](changes/archive/windows-owner-event-idle.md).
+    timer replacement requires proven complete native events.
+    [Idle record](changes/archive/windows-owner-event-idle.md).
     Scoped follow-up 2026-10-18: chevron discovery again found no verified
     target; no click or response result. External gap-file edit/restore woke the
     owner and changed helper geometry; edited gaps reported two mismatches,
@@ -4342,6 +4344,15 @@ decisions of 2026-09-24 are under
   only when a specific open decision depends on a row; neither is P1 work.
   [Residual ledger](changes/archive/reference-source-fill-remaining.md),
   [decision](decisions.md#reference-matrix-and-spec-authority).
+- P2 | Windows pager event coverage | Post-0.1 (user 2026-10-19 option A,
+  amending 2026-10-18 decision 5): retain the visible-pager 2 s
+  topmost-recovery timer for 0.1. Exercise own-window instrumentation,
+  arbitrary visibility loss, Explorer restart, display/DPI changes and
+  broader reorder coverage, including the observed desktop-parent
+  `EVENT_OBJECT_REORDER` (`OBJID_CLIENT`) outside current subscriptions.
+  Prove complete event coverage and self-feedback-safe recovery before
+  replacing the timer; no best-effort substitute.
+  [Probe and limits](changes/archive/windows-pager-event-coverage.md).
 - P2 | Keyboard-layout support | After initial release; US keyboards only
   for MVP. Read-only investigation queued: behavior of `Meta+Shift+1..9` and
   the US shifted-symbol aliases on German, AZERTY, UK and Nordic layouts.

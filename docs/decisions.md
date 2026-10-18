@@ -560,7 +560,10 @@ platform API behavior.
   completed with completeness unproven: the tested topmost burial emitted a
   desktop-parent reorder outside current subscriptions, not OS silence; broader
   visibility/reorder, self-feedback and shell/display coverage remain unproven.
-  Retain the existing timer unchanged; no best-effort substitute selected.
+  User 2026-10-19 (option A) amends decision 5 of 2026-10-18: keep the
+  visible-pager 2 s topmost-recovery timer for 0.1. Defer untested coverage
+  legs until post-0.1; replace the timer only if events prove complete.
+  No best-effort substitute selected.
   [Coverage evidence and limits](changes/archive/windows-pager-event-coverage.md).
 - Input clean stop requires successful hook release and successful finished
   thread join; repeated terminal waits return the cached result. Missing or

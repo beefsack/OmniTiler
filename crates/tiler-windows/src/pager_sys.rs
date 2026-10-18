@@ -64,6 +64,7 @@ pub use crate::ffi::PAGER_WINDOW_CLASS as PAGER_OVERLAY_CLASS;
 pub type PendingClick = Arc<Mutex<Option<SelectScope>>>;
 /// Topmost reassert cadence while safe (never over an unsafe turn): 2s keeps
 /// the strip above later topmost windows without a `SetWindowPos` per pump.
+/// No proven complete native event covers topmost/visibility loss.
 const ZASSERT_INTERVAL: Duration = Duration::from_secs(2);
 /// Creation-failure retry: fixed 5s, forever. A fixed delay (no backoff)
 /// recovers promptly once Explorer returns while never busy-looping pumps.
