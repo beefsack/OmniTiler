@@ -103,6 +103,31 @@
 - Failed T05 teardown restored exact protected frames/modes, membership/views,
   focus/pointer, outputs/shortcuts/effects and float-store absence. Development is
   DOWN; owned clients/scripts are gone; normal desktop lifecycle churn remains.
+- Native repeat at `b38455d5` still fails with the same partial-migration signature
+  on the integrated direction-only/FULL-topology route: first member reaches the
+  destination's old current desktop, second remains, destination never follows,
+  later source refill runs. Core accepts and plans both INT_MAX members; no
+  refusal is emitted. Offline echo coverage is not live acceptance. Park T05:
+  collect bounded per-member branch evidence (captured views, membership-read
+  availability, echo sub-gate and membership-set result) before another fix or
+  acceptance attempt. Exact protected/configuration/runtime restoration verified.
+- T03 independent native subcases at `b38455d5`: **10/10 pass**. Each output had
+  two uniquely bound populated test workspaces; numbered selection, relative
+  previous/next and two previous-history toggles changed the intended view and
+  restored its owned focus, with the other output unchanged. Complete request/
+  reply bodies and native before/after state agree. Ring wrap, presets, shared
+  refusal and physical shortcut delivery remain separate pending legs.
+- T02 explicit output-send follow into a uniquely bound occupied shown target
+  passes left-to-right with native arrival/focus and unchanged views. The inverse
+  refuses `scope-held` without native mutation. Its preceding observation reply
+  held the retained source peer/domain as `unreadable` and source view as
+  `incomplete-inventory`; the command request itself was complete/readable. The
+  arming cause is unrooted. Park inverse/stay: replay that exact observation
+  offline with per-scope hold evidence before retrying. Both stay legs unattempted.
+- Both independent units restored their exact current baseline, including real
+  frames/modes/membership/views/focus/pointer, output configuration, shortcuts,
+  effects and float-store absence; development is DOWN, owned resources absent.
+  Normal desktop lifecycle churn remains. No complete inventory gate is claimed.
 
 ## Approach
 
@@ -125,8 +150,8 @@ Accepted subcases and remaining gaps are qualified below.
 | ID | Inventory | Journey | Outcome / evidence |
 | --- | --- | --- | --- |
 | T01 | D06, #46 | New native windows join the focused output; left/right focus crosses outputs without wrong-domain writes | PASS prior subcases plus corrected opposite-pointer admission in both directions. Final-source inverse repeat has an owned managed focus, both outputs occupied, unchanged opposite pointer and routed newcomer focus/membership. Offline pre-debounce focus-race regressions pass. PENDING: clean physical cross-focus, wrong-domain-write audit and remaining birth/activation timing variants |
-| T02 | D13, #43, #46 | Directional move exhausts local structure then crosses; explicit output send-follow/stay, empty/occupied targets and floating boundaries | PASS prior subcases plus local perpendicular V-to-H restructuring both directions and occupied-target left R4 native-written/followed/arrived. BLOCKED: occupied-right fixture lacks a protected-free shown source; no read-only exact-tree route, floating-workspace action or genuine fixed-size client in this fixture. PENDING: full exact D13 tree proof, physical stay bindings and inverse occupied R4 |
-| T03 | #14 | Per-output workspace switching/history, shared-scope refusal where required, preset-specific arrows and letter bindings | PASS prior sampled callbacks retained. BLOCKED populated history: history/switch callbacks absent from the bounded action fixture. PENDING: both-output ring cases, shared-scope refusal and presets |
+| T02 | D13, #43, #46 | Directional move exhausts local structure then crosses; explicit output send-follow/stay, empty/occupied targets and floating boundaries | PASS prior qualified subcases plus current-world left-to-right explicit follow into a uniquely bound occupied target. Inverse refuses retained `scope-held` after an unreadable source-domain observation; trigger unrooted, stay unattempted. PENDING: full exact D13 tree proof, physical stay bindings, inverse occupied R4 and floating boundaries |
+| T03 | #14 | Per-output workspace switching/history, shared-scope refusal where required, preset-specific arrows and letter bindings | PASS 2026-10-18 ten current-world callback/native-state cases: numbered, adjacent relative previous/next and history toggles on each uniquely bound populated output-local ring; other output unchanged. PENDING: full ring ends/wrap, shared-scope refusal, presets and physical delivery |
 | T04 | #15 | Relative workspace send follow/stay, ring ends, trailing-empty fill and sole-mover source emptying on both outputs | PASS primary-scope next/previous follow, native arrival/state-confirmed, source retirement and other-view independence; stay retained view/membership. Secondary shown current outside its managed ring refused before commit twice. Stay-focus fixture lacked a same-output eligible peer and is not defect evidence. PENDING: complete ring-end/previous/stay matrix on both outputs |
 | T05 | #42 | Whole-workspace migration preserves identity/order/tree/tiling state, occupied target and hidden workspace; overlay and float members | PARTIAL: complete-wire production command accepts INT_MAX members, clearing the old size refusal. FAIL native application: output-send desktop echo was misclassified, stranding the second member; corrected offline with 1862 KWin tests. Fresh native repeat, identity/order/tree/state, hidden/overlay/float matrix remain pending |
 | T06 | #34, #44, N4 | Mixed-scale/origin geometry, gaps, border, underlay and preview; dynamic mode/scale/work-area changes and restoration | PASS prior geometry subcases retained. Latest normal development startup established effect/oracle availability during the run. PENDING: mapped-binary freshness, rendering and dynamic mode/scale changes; load/setter diagnostics do not prove rendering |

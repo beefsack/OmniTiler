@@ -96,9 +96,10 @@ decisions of 2026-09-24 are under
      was corrected by `3c94a819`; exact producer/core migration regressions now
      pass with bounded minimum + INT_MAX maximum; a complete-wire live command
      now accepts them. Native T05 then exposed KWin's output-send desktop echo
-     being misclassified as external input, stranding the second member. Corrected
-     offline for sends/migration; typecheck/build and 1862 KWin tests pass. Fresh
-     migration repeat pending; no native whole-migration pass claimed.
+     being misclassified as external input, stranding the second member. Narrow
+     echo handling passes offline (typecheck/build, 1862 KWin tests) but its native
+     repeat still fails identically. Parked pending per-member echo/membership
+     branch evidence; no native whole-migration pass claimed.
     [Reproduction](changes/kde-dual-output-live.md#whole-workspace-migration-unbounded-maximum-size-refusal-2026-10-15).
   - DEFECT reported | User 2026-10-18: in two-output use some outputs show
      too many workspaces, and workspace switching does not work correctly on
@@ -111,9 +112,13 @@ decisions of 2026-09-24 are under
      live with bound scoped spare and output-local numbered switching. Startup
      duplicate-ring ownership still blocks output sends
      with `cross-domain-mismatch`; no workspace partition policy changed.
-  - Remaining agent-feasible non-drag legs (T02 last legs, T03 history, T05
-    migration, T06 border/underlay on both outputs, exact-tree R4 repeat) were
-    interrupted before results; restart from the inventory.
+  - Current-world native continuation: T03 numbered/adjacent relative/history
+    checks pass 10/10 across both outputs with independence. Ring wrap, presets,
+    shared refusal and physical delivery remain pending. T02 explicit follow
+    passes left-to-right; inverse refuses retained `scope-held` after an
+    `unreadable` source-domain observation (trigger unrooted), so stay was not
+    attempted. Replay the exact observation offline before retry. T05 is parked
+    above; T06 rendering and exact-tree R4 still need their distinct evidence.
 - P0 | KDE floating dialog pushed behind other windows | User live 2026-10-16:
   Steam dialogs (game-launch controller prompt; fixed-size startup loading
   dialog, admitted floating) repeatedly drop behind Steam or a terminal on the
