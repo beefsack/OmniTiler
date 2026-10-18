@@ -237,8 +237,12 @@ decisions of 2026-09-24 are under
   exact settings/taskbar/SPI cleanup passed. Overlap-policy shrink kept 40 positive
   tiles without floats. Remain open: true fresh exhaustion/fallback, shortest-prefix
   and protected-member proof, failed-unfloat retention, capacity sends, geometric
-  overlap/overflow and hidden-repair discrepancy (reveal kept 40 tiles where
-  visible shrink floated 30). One-pixel unfloat readback diagnostic unresolved.
+  overlap/overflow and corrected hidden-repair native confirmation. Offline
+  matched-session replay isolates stale all-tiled select rows undoing the
+  gap-adoption repair (40 re-admitted instead of retaining 30 floats).
+  Offline tick-275 isolation proves the unfloat target matched exactly; its
+  aggregate mismatch includes neighbor clamp/pending lanes. Native neighbor
+  one-pixel cause still needs delayed fresh readback.
   [Current evidence and exact discriminator](changes/windows-best-effort-admission-live.md).
   User accepted 2026-10-18 (T2): cross-output
   capacity-float transfers refuse until a remap rule is separately approved:

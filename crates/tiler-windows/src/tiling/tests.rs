@@ -293,3 +293,96 @@ fn drop_fence_is_source_bounds_only() {
     assert!(!drop_point_in_domain(0, 0, 0, 100, 0, 50));
     assert!(!drop_point_in_domain(0, 0, 100, 0, 50, 0));
 }
+
+#[test]
+fn unfloat_tick275_target_match_with_neighbor_one_pixel_pending() {
+    // Source-bound replay of the tick-275 float/unfloat tick (unfloat of
+    // w40 with a 13-entry plan, 4 writes, 11 readback mismatches): the
+    // unfloat target read back byte-identical while rewritten neighbors
+    // diverged by one native pixel and untouched neighbors stayed on stale
+    // plan frames. The tick-level mismatch count sums the clamp and pending
+    // lanes, so `unfloat-mismatch` does not imply the target mismatched.
+    let target = Rect {
+        x: 64,
+        y: 1051,
+        w: 560,
+        h: 265,
+    };
+    assert_eq!(
+        readback_outcome(true, &target, &target),
+        ReadbackOutcome::Match
+    );
+    // Rewritten neighbors with one-pixel native divergence (clamp lane).
+    let w20 = Rect {
+        x: 64,
+        y: 64,
+        w: 1184,
+        h: 594,
+    };
+    let w20_back = Rect {
+        x: 64,
+        y: 64,
+        w: 1185,
+        h: 594,
+    };
+    assert_eq!(
+        readback_outcome(true, &w20, &w20_back),
+        ReadbackOutcome::Clamp
+    );
+    let w102 = Rect {
+        x: 64,
+        y: 722,
+        w: 560,
+        h: 265,
+    };
+    let w102_back = Rect {
+        x: 64,
+        y: 723,
+        w: 560,
+        h: 265,
+    };
+    assert_eq!(
+        readback_outcome(true, &w102, &w102_back),
+        ReadbackOutcome::Clamp
+    );
+    // Untouched neighbors (no write behind the delta) stay pending, never
+    // clamp -- including a one-pixel delta and a stale-frame delta.
+    let w28 = Rect {
+        x: 1832,
+        y: 1051,
+        w: 118,
+        h: 265,
+    };
+    let w28_back = Rect {
+        x: 1832,
+        y: 1051,
+        w: 152,
+        h: 265,
+    };
+    assert_eq!(
+        readback_outcome(false, &w28, &w28_back),
+        ReadbackOutcome::Pending
+    );
+    // Counterfactual: the same one-pixel delta without a write stays pending.
+    assert_eq!(
+        readback_outcome(false, &w20, &w20_back),
+        ReadbackOutcome::Pending
+    );
+    // Integer conversion reproduces the requested outer. The diagnostic's
+    // observed_outer is pre-write, so it cannot prove post-write outer bounds.
+    let insets = FrameInsets {
+        left: 9,
+        top: 0,
+        right: 9,
+        bottom: 9,
+    };
+    assert_eq!(
+        insets.visible_to_outer(w20),
+        Some(Rect {
+            x: 55,
+            y: 64,
+            w: 1202,
+            h: 603
+        })
+    );
+}

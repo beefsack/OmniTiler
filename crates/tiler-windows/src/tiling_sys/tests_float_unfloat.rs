@@ -927,6 +927,107 @@ fn cleared_float_admits_tiled_through_real_engine() {
 }
 
 #[test]
+fn aggregate_neighbor_mismatch_reports_mismatch_with_target_tiled() {
+    // Pin aggregate settlement independently of the tick-275 numeric
+    // readback fixture: one neighbor mismatch does not undo target tiling.
+    super::clear_pending_seams();
+    let (mut state, output, active, key, sib) = stage_floating_pair();
+    let retained = vec![maximized_retained(&key, "w8")];
+    let mut script = ScriptedClear::passing(101, fresh_restored(&key, &sib));
+    let log_path = state.log_path.clone();
+    let correlation = state.correlation();
+    let loc = float_loc(&output, &active);
+    let fresh = super::unfloat_maximize_clear(
+        &mut state,
+        &mut script,
+        &float_me(),
+        &[BOUNDS],
+        &[],
+        &retained,
+        &key,
+        "w8",
+        &loc,
+        "origin-1",
+        &log_path,
+        1,
+        &correlation,
+    )
+    .expect("scripted clear succeeds");
+    assert!(
+        fresh
+            .observed
+            .iter()
+            .any(|w| w.token == "w8" && w.visible == RESTORED),
+        "admission below runs on the restored frame"
+    );
+    // Only the summary is injected; this does not simulate native readback.
+    super::inject_pending_observe(Vec::new(), Vec::new(), false);
+    super::inject_pending_apply(Some((true, 1)));
+    let origin = snap_origin(&key, "w8");
+    let outcomes = std::cell::RefCell::new(Vec::new());
+    let settle = |outcome: &'static str| {
+        outcomes.borrow_mut().push(outcome.to_owned());
+        serde_json::json!({"event": "float-toggle", "outcome": outcome})
+    };
+    let areas = areas_for(&output);
+    let correlation2 = state.correlation();
+    super::apply_unfloat_to_tiled(
+        &mut state,
+        &float_me(),
+        &[BOUNDS],
+        &areas,
+        &fresh.observed,
+        &fresh.retained,
+        fresh.skipped,
+        &key,
+        "w8",
+        &loc,
+        Some(RESTORED),
+        &origin,
+        &settle,
+        &log_path,
+        2,
+        &correlation2,
+        "float",
+        "unfloated",
+        false,
+    );
+    assert!(
+        engine_tiled(&state, &output, &active, "w8"),
+        "target tiles despite the aggregate mismatch: {:?}",
+        outcomes.borrow()
+    );
+    assert!(
+        engine_tiled(&state, &output, &active, "w7"),
+        "sibling survives"
+    );
+    assert!(
+        !state.floated.contains(&key),
+        "settled unfloat drops float intent"
+    );
+    assert!(
+        state.fixed_tile_overrides.contains(&key),
+        "explicit win records runtime suppress"
+    );
+    let writables = super::pending_apply_writables();
+    assert_eq!(writables.len(), 1, "one geometry pass ran: {writables:?}");
+    assert_eq!(
+        writables[0],
+        ["w7".to_owned(), "w8".to_owned()]
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>(),
+        "verdict scope covers both members, not the target alone"
+    );
+    let outcomes = outcomes.borrow();
+    assert_eq!(
+        outcomes.as_slice(),
+        ["unfloat-mismatch"],
+        "aggregate mismatch reports a whole-plan diagnostic: {outcomes:?}"
+    );
+    super::clear_pending_seams();
+}
+
+#[test]
 fn dispatched_clear_refuses_and_later_press_recovers() {
     // HIGH race: async completion still pending at observe time refuses
     // (still-maximized) with no admission; a later press with an observed

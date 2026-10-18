@@ -389,7 +389,7 @@ fn converge_tail(
                 &mut hint_cx,
             )
         {
-            let windows: Vec<(
+            let mut windows: Vec<(
                 WindowId,
                 Rect,
                 tiler_core::size_hints::WindowSizeHints,
@@ -414,12 +414,12 @@ fn converge_tail(
             {
                 let revision = super::revision_for(state, output, workspace);
                 let outer_gap = state.outer_gap;
-                super::adopt_gaps_for_route(
+                super::adopt_gaps_and_refresh_floats(
                     state,
                     &domain,
                     &domain_key,
                     outer_gap,
-                    &windows,
+                    &mut windows,
                     focused.as_ref(),
                     revision,
                     fp,

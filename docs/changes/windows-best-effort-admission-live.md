@@ -1,6 +1,6 @@
 # Windows best-effort admission native follow-up
 
-- Status: partial native verification; remaining discriminators blocked below.
+- Status: offline diagnosis and selection correction complete; native confirmation pending.
 - Prior evidence: [offline delivery and partial native checks](archive/windows-best-effort-admission.md#scoped-native-follow-up-2026-10-18).
 
 ## Goal and scope
@@ -13,6 +13,11 @@
   remain outside these agent-driven journeys.
 - Fix only reproduced, clear Windows adapter defects with regression coverage;
   leave product ambiguities unresolved rather than inventing behavior.
+- Offline follow-up: replay matched retained-tree/session preimages for visible
+  and hidden gap adoption, isolate the one-pixel unfloat readback, and design
+  genuinely exhausted fresh/retry/same-output-send fixtures. No new native
+  acceptance is implied by these offline checks; shared-policy changes remain
+  separate proposals.
 
 ## Acceptance and approach
 
@@ -27,12 +32,33 @@
 5. Run locked four-package build/test/strict all-target clippy, formatting and
    whitespace gates after any fix; independently review live-affecting changes.
 
+### Offline diagnostic acceptance
+
+- Identify which retained topology, shares, order, hints and gap sequence each
+  replay uses; compare matched visible/hidden inputs before attributing a native
+  difference to visibility. Distinguish a reproduced path from missing native
+  preimage evidence.
+- Reproduce the clean unfloat's exact planned/readback delta through the
+  coordinate and settlement seams; retain strict mismatch detection unless a
+  narrower causal correction is established.
+- Specify fresh, retry and same-output-send checkpoints only after a fixture
+  proves actual destination exhaustion. Keep native feasibility and native
+  acceptance separate from small-domain mathematical fixtures.
+- Keep runtime ownership on the legacy per-domain API; world-diff diagnostics
+  are not a prerequisite or evidence of runtime adoption.
+
 ## Work units and verification
 
 - Foreground and Settings save/reopen proof, with cleanup.
 - Separate exhaustion, admission-order/shrink/retry, hidden repair/restart,
   same-output sends and overlap journeys, with fresh helper lifetimes.
 - Diagnose reproduced failures before selecting any Windows-only correction.
+- Compare direct and staged gap growth against identical producer-shaped
+  admission histories, hints and retained session inputs, not helper count alone.
+- Trace planned versus readback coordinate conversion for the clean unfloat,
+  using the source-bound native numbers as offline regression inputs.
+- Prove the no-space precondition in fixtures before specifying a new native
+  exhaustion/retry/send journey.
 - Review accepted evidence, update the prior outcome table and backlog, and
   archive this note once the runnable scope is resolved.
 
@@ -55,8 +81,8 @@
 | --- | --- | --- |
 | Fresh exhaustion / largest fallback | Not-run to acceptance | Thirty fresh helpers at 64/64 still tiled. Reflow geometry was observed, but ordinary-anchor identity and a fallback wrap were not established; no fresh capacity float was observed. |
 | Ordered shrink | Partial | Forty serially observed tiled admissions; 8/8 -> 32/32 floated exactly the newest 28 identities, then 64/64 the next two. All 30 markers read `ok`, victim frames were retained and survivors reflowed without a focus change. This proves newest-suffix victim sets, not intra-batch eviction order, shortest-prefix minimality or protected-member behavior. |
-| Failed unfloat / successful retry | Not-run to acceptance | Clean foreground-qualified unfloat found a feasible tile, not no-space. Float-to-tile settlement reported `unfloat-mismatch` with a one-pixel planned/readback delta. Earlier center-titlebar clicks hit minimize/maximize buttons and contaminate those attempts; they are excluded. |
-| Hidden repair | Partial, unresolved discrepancy | Forty helpers hidden at 8/8 took zero hidden geometry writes after 64/64 adoption; every hidden frame stayed unchanged. Reveal projected all 40 with zero capacity victims, unlike visible shrink's 30 victims. Actual select hints were 40/40 `[118,30]`, with no timeout or budget omission. No causal defect line is isolated. |
+| Failed unfloat / successful retry | Not-run to acceptance; diagnostic scope isolated offline | Clean foreground-qualified unfloat found a feasible tile, not no-space. Tick 275's target matched exactly; `unfloat-mismatch` aggregates other plan entries. Neighbor native one-pixel deltas remain causally unresolved. Earlier center-titlebar clicks hit minimize/maximize buttons and contaminate those attempts; they are excluded. |
+| Hidden repair | Windows stale-row defect reproduced offline; corrected native confirmation pending | Forty helpers hidden at 8/8 took zero hidden geometry writes after 64/64 adoption; every hidden frame stayed unchanged. Reveal projected all 40 with zero capacity victims, unlike visible shrink's 30 victims. Actual select hints were 40/40 `[118,30]`, with no timeout or budget omission. Offline reveal sequence reproduces repair followed by unintended re-admission from stale all-tiled observations. |
 | Restart persistence | Pass, bounded | Thirty capacity floats retained frames after smaller gaps without automatic tiling; all 40 helpers remained alive across exact owner stop/restore/relaunch. New-owner observations cover all 40, with 30 `float-adopted` ordinary floats, clean marker health and preserved float frames. Tiled survivors changed slots; D5 does not promise tiled-history persistence. |
 | Same-output capacity sends | Not-run to acceptance | Verified-foreground follow and stay requests still projected tiles; no `MoveToFloat` or capacity arrival proof. Default follow and no-search stay do not establish an exhausted destination. |
 | Overlap | Partial | Fresh 40-tile 8/8 roster: policy-only adoption caused zero writes/reflow. Valid 64/64 adoption kept all 40 positive targets with zero capacity floats, unlike the default-policy shrink. Actual overlap/overflow, fresh no-space admission and navigation remain unproven. |
@@ -71,28 +97,152 @@
 - An invalid 96/96 overlap-shrink fixture was rejected during review (maximum
   supported gaps are 64). Its result is excluded. One causal fixture correction
   used fresh helpers at 8/8 and a newly confirmed valid 64/64 adoption.
-- No production change or new product decision was made. Independent review did
-  not establish a clear Windows-only defect. A feasible-tile unfloat settlement
-  reported `unfloat-mismatch`; the one-pixel planned/readback diagnostic in
-  `be-rem-20261018` (`window-diag`, tick 275) still needs causal isolation.
+- The original native follow-up made no production change or new product
+  decision. Its independent evidence review did not establish a clear
+  Windows-only defect; the later offline discriminator below isolates one.
+
+### Offline hidden-repair discriminator
+
+- `gap_repair_replay` uses producer-shaped serial admission with matched session
+  snapshots (tree/shares and links), admission-sequence maps, helper hints and
+  gap settings. For three focus patterns, staged 8/8 -> 32/32 -> 64/64 evicts
+  exactly the newest 28 then two more; direct 8/8 -> 64/64 evicts the identical
+  30-member set and leaves the identical survivor tree. Jump size alone does
+  not explain the native difference.
+- The stale-observation reveal replay first commits the correct 30-victim
+  `UpdateGaps` repair, then reconciles the pre-adoption all-tiled rows. Shared
+  convergence treats those flags as observations and re-admits all 30 into a
+  feasible new tree: 40 tiles, zero remaining capacity victims. This is the
+  protocol sequence used by Windows select, not a hidden-domain exemption in
+  shared D7.
+- `selection.rs` assembles rows before `adopt_gaps_for_route`, then reuses the
+  rows after that call can change float membership. Only the subsequent
+  reconcile reply is registered through `adopt_tick_capacity_floats`, so the
+  intermediate repair can disappear without a capacity-adopted log. This
+  Windows stale-input defect reproduces the retained native symptom without
+  requiring different initial trees or a shared-core semantic change.
+- Exact original hidden native tree/session preimages were not retained in the
+  available journey exports. The offline mechanism is causal and reproducible;
+  attributing every detail of the old native run still requires a later
+  source-bound re-check. A balanced-tree projection remains a separate witness
+  that equal helper counts alone never prove identical repair inputs.
+- Relevant legacy selection, shared-scope selection, gap-route adoption,
+  unfloat and geometry sources were unchanged between native source `4f5e7640`
+  and diagnostic baseline `1ae85779`; the reproduced stale sequence is present
+  in the source used by the retained native run, not introduced by world
+  diagnostic work.
+- Correction: local and shared-scope selection refresh float observations only
+  after successful drifted-gap adoption, preserving still-pending non-sticky
+  first-exit intents. Hints and frames are reused without another native query;
+  diagnostic capacity origin does not select behavior. An unconditional refresh
+  was rejected because it blocked first-exit classification with unchanged gaps.
+- Six actual-route regressions cover newest-30 repair retention, repeat visits
+  with smaller gaps, unchanged-gap and drifted-gap first exits, geometry-skipped
+  selection and the reproduced shared-scope twin. Both original select paths
+  lost the victims before correction; the unconditional intermediate correction
+  failed the unchanged-gap first-exit regression. Corrected selection retains
+  ten tiles and thirty ordinary floats, survivor-only geometry, no false tile
+  overrides and no extra repair focus setter.
+
+### Offline unfloat discriminator
+
+- `be-rem-20261018`, tick 275: 13 planned entries, four geometry writes and 11
+  mismatches. Target `w40` matched `[64,1051,560,265]` exactly. Three rewritten
+  neighbors had native one-pixel deltas; eight untouched entries remained
+  pending against their planned frames, including larger stale-frame deltas.
+- `float_toggle.rs` selects `unfloat-mismatch` from the complete geometry
+  summary; `geometry.rs` counts both clamp and pending lanes. This is an
+  aggregate settlement diagnostic, not evidence that the unfloat target failed.
+  The target's successful admission must not be reclassified as a failed retry.
+- `tiling::tests::unfloat_tick275_target_match_with_neighbor_one_pixel_pending`
+  pins exact target/neighbor numbers and integer inset mapping;
+  `aggregate_neighbor_mismatch_reports_mismatch_with_target_tiled` pins real
+  Engine target admission with an injected aggregate mismatch summary. The
+  latter is a settlement seam, not a simulated native readback.
+- For neighbor `w20`, visible target `[64,64,1184,594]` and insets `[9,0,9,9]`
+  map exactly to requested outer `[55,64,1202,603]`; post visible width was
+  1185. The diagnostic's `observed_outer` width 1203 is from the earlier hint
+  observation, not post-write outer readback (`diag.rs` stages it before writes).
+  Integer conversion reproduces the request, but these mixed observation phases
+  cannot establish post-write outer geometry. Native asynchronous settlement,
+  DWM/DPI rounding and measurement timing remain indistinguishable without
+  paired fresh outer/visible readback after settling. No tolerance or production
+  correction is justified by the retained evidence.
+- Source-bound owner log `run-01dd5ebdab156ff0.log`, SHA-256
+  `474DE9FADC1381CDE7F30CF0CD334039EE87CEACA2AA7F8C478032EF4947134C`;
+  the retained journey's `send-steps.jsonl` identifies that run. Evidence remains
+  external; no new native observation was made.
+
+### Fixture-first exhaustion journey design
+
+- `capacity_recipe_tests` discovers the first capacity-float arrival using real
+  Engine admission and default largest-splittable/float policy, not a guessed
+  helper count or `no-search`. Its scaled positive domain and supported gaps
+  prove fresh no-space, failed explicit retry followed by successful retry after
+  smaller inner gaps, and same-output capacity-send follow/stay contracts.
+  Retry readback summaries are injected. Send membership is manually staged
+  after the real Engine decision, not through the production send-tail, so it
+  models ordering without proving the native arrival fence. Native effects
+  are stubbed or fail closed on fake handles; marker success, native arrival
+  and native focus remain separate acceptance.
+- A representative full-size-domain fixture admits all 40 arrivals at 64/64.
+  This is evidence against repeating that recipe, not a universal capacity
+  count. A local long-edge binary split needs at least `gap + 2` pixels; a
+  narrow leaf can still split on its other long edge. Shrink victims alone do
+  not establish that every D2 candidate is exhausted.
+- Before a future native run, feed its inventoried work area, inset bounds,
+  supported gaps, hints, arrival/focus order and retained topology into the
+  serial admission oracle. Stop at the first proven slotless capacity float;
+  independently probe the intended send destination with the actual mover.
+  If the required roster is impractical, park the native leg rather than
+  expanding counts blindly, substituting shrink victims or changing host
+  topology. The small proxy is not an available native work-area override.
+- Native fresh checkpoint: saved 64/64 with no conflicting CLI gap overrides;
+  serially observe the precomputed roster and retain per-arrival inputs/plans.
+  Require a positive survivor projection, ordinary float membership, no tile
+  geometry for the newcomer, unchanged opening frame, verified marker and
+  safety-qualified newcomer focus. A divergent retained preimage invalidates
+  the precomputed count.
+- Retry checkpoint: foreground-qualify that float, explicitly tile once and
+  require truthful `unfloat-no-space`, unchanged frame/membership/marker and no
+  false tile override. Apply smaller inner gaps through saved Settings (a CLI
+  override would mask this edit), verify no automatic retry, then explicitly
+  tile and verify successful membership and target readback.
+- Send checkpoint: start from a separately oracle-proven destination, send a
+  tiled mover from another workspace on the same output, and require capacity
+  arrival with its verbatim live frame and verified ordinary-float marker.
+  Retain source state until the existing transfer/arrival proof, then check
+  source absence, destination membership and survivor-only geometry. Run
+  follow and stay separately with their distinct view/focus outcomes.
 
 ## Blockers and exact next action
 
 - Fresh, retry and send rosters did not produce the required no-space state;
   shrink victims are not proof that fresh/transfer admission cannot split.
-  Do not repeat those same fixtures or expand window counts without a grounded
-  exhaustion design. Protected-member and full overlap geometry legs remain open.
-- Hidden select and visible shrink have identical loose-gap allocations and
-  fresh hints, but this does not prove identical retained tree/share state.
-  Both call the same Engine gap-update path, which can repair capacity.
-  No missing-hint hypothesis or topology-preserving-helper comment explains the
-  discrepancy. Do not change semantics without isolating the retained input.
-- Next action: capture a retained-tree/session discriminator for visible and
-  hidden gap adoption, with matched admission/topology preimages; compare the
-  UpdateGaps outcomes before choosing any fix. Separately design a genuinely
-  exhausted fresh/send/retry fixture and isolate the clean one-pixel readback.
+  The oracle-first journey above is designed offline; its native roster count
+  and feasibility remain unmeasured. Protected-member and full overlap geometry
+  legs remain open.
+- The Windows stale-row defect is isolated without changing D1-D10. Exact
+  original hidden native preimages remain unavailable, so corrected source-bound
+  hidden/visible settlement still needs native confirmation.
+- Other gap-adoption-before-intent callsites remain an audit risk, not proven
+  equivalent failures. Send/transfer, directional, resize and gesture routes
+  need their own discriminating stale-classification fixtures; this correction
+  is bounded to local and shared-scope workspace selection.
+- The unfloat target is not a reproduced failure. A later native discriminator
+  must collect each rewritten neighbor's paired outer/visible bounds, insets and
+  DPI at fresh pre-write, immediate post-write and delayed settled observations;
+  retain per-entry write status instead of treating the aggregate mismatch as a
+  target verdict. Existing `observed_outer` belongs to the pre-write hint phase.
+- Next action: re-check the corrected build with the matched 40-helper
+  hidden/reveal and visible gap-growth legs, retaining per-leg inputs, plans,
+  ordinary-float markers, frames and cleanup evidence. Separately obtain the
+  settled paired neighbor readback and measured-bounds exhaustion oracle before
+  attempting the remaining no-space native journeys.
 
 ## Final verification
+
+### Original native follow-up
 
 - After upstream integration through `a914195a`, locked four-package build/test
   and strict all-target clippy passed: **2,852 passed, 0 failed, 1 ignored across
@@ -102,3 +252,14 @@
 - Final independent `mise exec -- just stop` reported `stopped clean`.
   Readback confirmed no owner/helper processes, `ready=false`, no ledger,
   settings byte identity with the backup, and taskbar/SPI equality to preimages.
+
+### Offline diagnostic delivery
+
+- Independent review accepted the guarded local/shared-scope selection fix,
+  first-exit preservation, numeric unfloat discriminator and exhaustion recipe
+  oracles. No shared-core semantics, Windows world-runtime adoption, native
+  remap policy, readback tolerance or unsafe code changed.
+- Build, locked four-package tests, strict all-target clippy, workspace format
+  and whitespace checks are required again after integration. This follow-up
+  ran no live desktop journey or lifecycle command; the cleanup evidence above
+  belongs to the original native runs.

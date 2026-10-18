@@ -1457,3 +1457,64 @@ pub(super) fn adopt_gaps_for_route(
             outer_gap,
         )
 }
+
+/// Adopt drifted live gaps for a follow-on Engine event built from
+/// pre-adopt rows, then refresh observation float flags when the adoption
+/// actually committed (drifted gaps plus a successful adopt). A committed
+/// repair can evict tiled rows into Engine exceptions; without the refresh
+/// the follow-on event re-tiles them from stale rows. Refresh reads current
+/// session exceptions only (never diagnostic capacity origin), and spares
+/// still-pending non-sticky first exits exactly as row assembly emits them.
+/// Hints and frames ride through unchanged: no native requery, no
+/// hint-budget cost.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn adopt_gaps_and_refresh_floats(
+    state: &mut TileLoop,
+    domain: &tiler_core::session::OutputDomain,
+    domain_key: &tiler_core::session::DomainKey,
+    outer_gap: i32,
+    windows: &mut [(WindowId, Rect, WindowSizeHints, bool)],
+    focused: Option<&WindowId>,
+    revision: u64,
+    fingerprint: u64,
+    correlation: &CorrelationId,
+) {
+    let drifted = !crate::settings::retained_gaps_match(
+        &state.engine,
+        domain_key,
+        state.inner_gap,
+        outer_gap,
+    );
+    let adopted = adopt_gaps_for_route(
+        state,
+        domain,
+        domain_key,
+        outer_gap,
+        windows,
+        focused,
+        revision,
+        fingerprint,
+        correlation,
+    );
+    if !(drifted && adopted) {
+        return;
+    }
+    let Some(session) = state.engine.session(domain_key) else {
+        return;
+    };
+    for (window, _, _, floating) in windows.iter_mut() {
+        if *floating || !session.is_exception(window) {
+            continue;
+        }
+        let first_exit = state
+            .member_tokens
+            .iter()
+            .find(|(_, token)| *token == &window.0)
+            .is_some_and(|(key, _)| {
+                state.born_first_exit.contains(key) && !state.sticky.contains_key(key)
+            });
+        if !first_exit {
+            *floating = true;
+        }
+    }
+}

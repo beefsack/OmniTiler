@@ -494,7 +494,7 @@ pub(super) fn workspace_do_select(
             &mut hint_cx,
         )
     {
-        let windows: Vec<(WindowId, Rect, WindowSizeHints, bool)> = rows
+        let mut windows: Vec<(WindowId, Rect, WindowSizeHints, bool)> = rows
             .iter()
             .map(|r| (WindowId(r.token.clone()), r.rect, r.hints, r.floating))
             .collect();
@@ -514,16 +514,17 @@ pub(super) fn workspace_do_select(
         let correlation =
             CorrelationId::parse(&ctx.correlation).expect("action correlation is a valid token");
         // Live gap edits adopt here so the select convergence below sees
-        // matching gaps instead of refusing.
+        // matching gaps instead of refusing. Post-commit exception flags
+        // refresh inside the helper; first-exit intent survives.
         {
             let revision = revision_for(state, output, target);
             let outer_gap = state.outer_gap;
-            adopt_gaps_for_route(
+            adopt_gaps_and_refresh_floats(
                 state,
                 &domain,
                 &domain_key,
                 outer_gap,
-                &windows,
+                &mut windows,
                 focused.as_ref(),
                 revision,
                 fp,

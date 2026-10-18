@@ -68,9 +68,9 @@ use self::cross_drag::drag_refusal_kind;
 #[cfg(test)]
 use self::cross_drag::prepare_cross_drag_event;
 use self::cross_drag::{
-    CrossDragSettle, DropDestination, adopt_gaps_for_route, adopt_gaps_on_candidate,
-    assemble_cross_drag_rows, cross_topology_fresh, fresh_cross_areas, resolve_drop_destination,
-    settle_cross_drag_drop, snapshot_cross_drag,
+    CrossDragSettle, DropDestination, adopt_gaps_and_refresh_floats, adopt_gaps_for_route,
+    adopt_gaps_on_candidate, assemble_cross_drag_rows, cross_topology_fresh, fresh_cross_areas,
+    resolve_drop_destination, settle_cross_drag_drop, snapshot_cross_drag,
 };
 use self::diag::{
     WindowDiagSample, diag_identity_broke, diag_identity_rebound, drop_diag_sample,
@@ -1192,6 +1192,17 @@ mod admission_settings_tests;
 #[cfg(test)]
 #[path = "tests_capacity_floats.rs"]
 mod capacity_floats_tests;
+
+#[cfg(test)]
+#[path = "tests_capacity_recipe.rs"]
+mod capacity_recipe_tests;
+
+/// Select-route gap-repair regression (offline, native-free): the real
+/// `workspace_do_select` reveal must keep `UpdateGaps` repair victims
+/// instead of re-tiling them from stale pre-adopt rows.
+#[cfg(test)]
+#[path = "tests_select_repair.rs"]
+mod select_repair_route_tests;
 
 #[cfg(test)]
 #[path = "tests_border_shell.rs"]
