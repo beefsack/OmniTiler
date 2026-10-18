@@ -112,6 +112,19 @@ decisions of 2026-09-24 are under
      live with bound scoped spare and output-local numbered switching. Startup
      duplicate-ring ownership still blocks output sends
      with `cross-domain-mismatch`; no workspace partition policy changed.
+     NEXT | User decision 2026-10-18 (startup conversion, per-output-local):
+     a native desktop shown on several outputs at enable stays owned by the
+     primary; each other output gets its own backing desktop and that output's
+     windows from the shared desktop change membership to it without changing
+     output (preserve floating/fullscreen/maximized state; sticky exempt). A
+     different pre-existing desktop shown on a secondary output at enable
+     belongs to that output. One ring per native; visible-current is not
+     ownership. Resolves the "Shown secondary current outside its managed
+     ring" and "Full-state startup rings" TBD rows.
+     User decision 2026-10-18 (created desktop names): create with the unique
+     logical token for exact-name attribution, then rename the bound desktop
+     to a friendly KDE-style name; prove scripted rename and that it cannot
+     confuse later attribution.
   - Current-world native continuation: T03 numbered/adjacent relative/history
     checks pass 10/10 across both outputs with independence. Ring wrap, presets,
     shared refusal and physical delivery remain pending. T02 explicit follow
