@@ -510,7 +510,9 @@ decisions of 2026-09-24 are under
   [cross-cutting findings](research/non-native-tiler-host-interaction.md#cross-cutting-findings),
   [evidence](changes/archive/non-native-tiler-host-interaction.md)).
 - P0 | Windows: propose 0.1 gate exceptions against the shared template |
-  Apply the [shared gate decision](decisions.md#scope-and-platform-goals) for user approval.
+  [57-check mapping, host exceptions and Windows extras](changes/windows-0.1-gate-proposal.md)
+  proposed against the [shared gate decision](decisions.md#scope-and-platform-goals);
+  awaits user approval. Native/physical acceptance remains pending.
 - P0 | macOS: propose 0.1 gate exceptions against the shared template |
   Apply the [shared gate decision](decisions.md#scope-and-platform-goals) for user approval.
 - P1 | Ubuntu 26.04/26.10 acceptance | KWin 6.6 floor selected by user
