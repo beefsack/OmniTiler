@@ -4105,7 +4105,9 @@ decisions of 2026-09-24 are under
         [Current checkpoint](changes/macos-managed-workspaces.md#numbered-send-follow-implementation-checkpoint-2026-10-18).
         Automatic Authentic holder enable/Revert and Compatible zero mutation
         now pass live, with identical protected-window records and clean teardown.
-        Product transfer remains unproven: the TextEdit run received no chord.
+        **2026-10-19:** outward product send-follow proven live on an owned
+        helper (admission, transfer, membership/current, focus-follow); inverse
+        attribution and TextEdit acceptance pending.
         Existing owned-helper injection now names send-1..9 without weakening
         identity checks; a helper product-tap leg is next, TextEdit acceptance
         remains pending. 999 offline tests pass; off-macOS lint repair included.
