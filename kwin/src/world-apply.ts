@@ -228,6 +228,78 @@ function safeResolve(resolve: () => object | null): object | null {
     }
 }
 
+// Pinned KWin native echo (window.cpp `finishInteractiveOutputChange`,
+// called at the tail of `sendToOutput` and on `outputChanged`): moving a
+// single-desktop window whose workspace is the old output's current onto a
+// new output synchronously re-homes it onto the NEW output's current
+// desktop. Immediately after our own output setter inside the same armed
+// operation, exactly (targetOut, capturedTargetCurrent) is the expected
+// echo of our own call, never external input. Tolerate ONLY that: the
+// source observed workspace must still be the source-output current, the
+// captured target current must name a valid desktop, the fresh views must
+// be unchanged, the same window must still be listed, and
+// safety/lifetime/freshness must still hold. Anything else (third
+// workspaces, refreshed currents, view races, overlay flips, missing
+// views, unknown membership, native throws) fails closed through the
+// existing superseded/hold paths. The caller then sets the requested
+// target workspace on the same flight, never a retry and never a
+// pre-switched destination view.
+function tolerateNativeOutputEcho(
+    env: ApplyEnv,
+    reply: WorldReply,
+    entryObs: string,
+    observed: ObservedWindow,
+    srcViewBefore: string | null,
+    tgtViewBefore: string | null,
+    midHome: { out: string; ws: string },
+    targetOut: string,
+): boolean {
+    if (srcViewBefore === null || tgtViewBefore === null) {
+        return false;
+    }
+    if (midHome.out !== targetOut || midHome.ws !== tgtViewBefore) {
+        return false;
+    }
+    // The echo only fires for a window homed on the source current.
+    if (srcViewBefore !== observed.ws) {
+        return false;
+    }
+    // The captured target current must name a valid desktop.
+    if (safeResolve(() => env.desktopById(tgtViewBefore)) === null) {
+        return false;
+    }
+    // Fresh views must be unchanged: a raced view switch or an unreadable
+    // view fails closed instead of adopting the echo.
+    let srcNow: string | null = null;
+    let tgtNow: string | null = null;
+    try {
+        srcNow = env.readLiveView(observed.out);
+    } catch (error) {
+        void error;
+        srcNow = null;
+    }
+    try {
+        tgtNow = env.readLiveView(targetOut);
+    } catch (error) {
+        void error;
+        tgtNow = null;
+    }
+    if (srcNow !== srcViewBefore || tgtNow !== tgtViewBefore) {
+        return false;
+    }
+    let listed = false;
+    try {
+        listed = env.isStillListed(observed.ref);
+    } catch (error) {
+        void error;
+        listed = false;
+    }
+    if (!listed) {
+        return false;
+    }
+    return betweenStepsOk(env, reply, entryObs, observed);
+}
+
 function liveViewShowsOn(env: ApplyEnv, out: string, wsNativeId: string): boolean {
     try {
         return env.readLiveView(out) === wsNativeId;
@@ -487,6 +559,25 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             result.held += 1;
             continue;
         }
+        // Fresh per-output currents BEFORE the native output call, so the
+        // pinned synchronous echo below is verifiable (see
+        // tolerateNativeOutputEcho). Nulls fail closed at the check.
+        let echoSrcView: string | null = null;
+        let echoTgtView: string | null = null;
+        if (needOutMove) {
+            try {
+                echoSrcView = env.readLiveView(observed.out);
+            } catch (error) {
+                void error;
+                echoSrcView = null;
+            }
+            try {
+                echoTgtView = env.readLiveView(targetOut);
+            } catch (error) {
+                void error;
+                echoTgtView = null;
+            }
+        }
         // Arm possibly-executed BEFORE the first native setter.
         state.armPossiblyExecuted(op, "transfer", `${targetOut}/${targetWs}`);
         let threw = false;
@@ -531,7 +622,12 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             settleFollowView(env, reply, entryObs, transfer, row.win, result);
             continue;
         }
-        if (midHome === null || (midHome.out !== observed.out && midHome.out !== targetOut) || (midHome.ws !== observed.ws && midHome.ws !== targetWs)) {
+        // The exact expected native echo of our own output setter is
+        // tolerated (same flight continues to the desktop set below);
+        // every other third location still proves external input.
+        const echoOk = outAttempted && !threw && outOk && midHome !== null &&
+            tolerateNativeOutputEcho(env, reply, entryObs, observed, echoSrcView, echoTgtView, midHome, targetOut);
+        if (midHome === null || (!echoOk && ((midHome.out !== observed.out && midHome.out !== targetOut) || (midHome.ws !== observed.ws && midHome.ws !== targetWs)))) {
             // Third-location proof arrived between the two setters: external
             // input supersedes; never fight it.
             state.settleAttempt(op, "superseded-external", "");
@@ -1177,11 +1273,33 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
                 armed = true;
                 state.armPossiblyExecuted(t.op, "transfer", `${t.out}/${t.ws}`);
             }
+            // Fresh per-output currents BEFORE the native output call, so
+            // the pinned synchronous echo below is verifiable per member.
+            // Nulls fail closed at the check.
+            let echoSrcView: string | null = null;
+            let echoTgtView: string | null = null;
             if (needOutMove && outRef !== null) {
                 try {
-                    env.sendToOutput(observed.ref, outRef);
+                    echoSrcView = env.readLiveView(observed.out);
                 } catch (error) {
                     void error;
+                    echoSrcView = null;
+                }
+                try {
+                    echoTgtView = env.readLiveView(t.out);
+                } catch (error) {
+                    void error;
+                    echoTgtView = null;
+                }
+            }
+            let threw = false;
+            let outOk = false;
+            if (needOutMove && outRef !== null) {
+                try {
+                    outOk = env.sendToOutput(observed.ref, outRef);
+                } catch (error) {
+                    void error;
+                    threw = true;
                 }
                 if (!betweenStepsOk(env, reply, entryObs, observed)) {
                     result.held += 1;
@@ -1200,8 +1318,14 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
                 state.noteAppliedWindowTarget(id, t.op, t.out, t.ws);
                 continue;
             }
-            if (home === null || (home.out !== observed.out && home.out !== t.out) ||
-                (home.ws !== observed.ws && home.ws !== t.ws)) {
+            // The exact expected native echo of our own output setter is
+            // tolerated (the same flight continues to the desktop set
+            // below); a throw or any other third location still fails
+            // closed for the whole migration.
+            const echoOk = needOutMove && outOk && !threw && home !== null &&
+                tolerateNativeOutputEcho(env, reply, entryObs, observed, echoSrcView, echoTgtView, home, t.out);
+            if (home === null || (!echoOk && ((home.out !== observed.out && home.out !== t.out) ||
+                (home.ws !== observed.ws && home.ws !== t.ws)))) {
                 state.settleAttempt(t.op, "superseded-external", "");
                 superseded = true;
                 break;

@@ -77,6 +77,32 @@
   is unresolved. Recommendation: decide startup ownership, then enforce one ring
   per native and separate visible-current rows from ownership. Do not repair it
   by relying on reply row order.
+- Binding correction reverified with complete wire/native evidence: the next
+  report carries the proven logical/native/output tuple, core consumes the token,
+  and scoped rings reach two bound entries including a spare. Numbered selection
+  changes the intended output's view only. Baseline restoration was exact.
+- T05 now reaches the production migration command with two ordinary source
+  members (bounded minimum, INT_MAX maximum) and an occupied target. Core accepts
+  and plans the whole migration: the original size-hint refusal is cleared live.
+  Native application failed: only the first member changed output, its desktop
+  became the destination's old current, the second stayed behind, and later
+  source refill ran without completed migration. No migration PASS is claimed.
+- Root cause: pinned KWin `finishInteractiveOutputChange` synchronously replaces
+  source-current membership with destination-current membership during
+  `sendClientToScreen`. The adapter misclassified that exact native echo as newer
+  external input. Corrected ordinary sends and migration to continue to the
+  requested desktop within the same armed flight only after unchanged pre/post
+  views, exact listing, safety, freshness and successful native-call proof.
+  Third desktops, view races, unreadable views and overlay flips still stop.
+- Six producer-shaped native-host/apply regressions fail before the correction
+  where appropriate and pass after; independent safety review accepts it after
+  synthetic fixture-identity cleanup. Integrated KWin typecheck/build and
+  **1862/1862** tests pass. Native echo correction still needs a fresh T05 repeat;
+  core-owned topology landed independently in the meantime, so earlier native
+  evidence remains revision-specific. No topology extraction was performed here.
+- Failed T05 teardown restored exact protected frames/modes, membership/views,
+  focus/pointer, outputs/shortcuts/effects and float-store absence. Development is
+  DOWN; owned clients/scripts are gone; normal desktop lifecycle churn remains.
 
 ## Approach
 
@@ -102,7 +128,7 @@ Accepted subcases and remaining gaps are qualified below.
 | T02 | D13, #43, #46 | Directional move exhausts local structure then crosses; explicit output send-follow/stay, empty/occupied targets and floating boundaries | PASS prior subcases plus local perpendicular V-to-H restructuring both directions and occupied-target left R4 native-written/followed/arrived. BLOCKED: occupied-right fixture lacks a protected-free shown source; no read-only exact-tree route, floating-workspace action or genuine fixed-size client in this fixture. PENDING: full exact D13 tree proof, physical stay bindings and inverse occupied R4 |
 | T03 | #14 | Per-output workspace switching/history, shared-scope refusal where required, preset-specific arrows and letter bindings | PASS prior sampled callbacks retained. BLOCKED populated history: history/switch callbacks absent from the bounded action fixture. PENDING: both-output ring cases, shared-scope refusal and presets |
 | T04 | #15 | Relative workspace send follow/stay, ring ends, trailing-empty fill and sole-mover source emptying on both outputs | PASS primary-scope next/previous follow, native arrival/state-confirmed, source retirement and other-view independence; stay retained view/membership. Secondary shown current outside its managed ring refused before commit twice. Stay-focus fixture lacked a same-output eligible peer and is not defect evidence. PENDING: complete ring-end/previous/stay matrix on both outputs |
-| T05 | #42 | Whole-workspace migration preserves identity/order/tree/tiling state, occupied target and hidden workspace; overlay and float members | BLOCKED: migration actions are registered but unbound and absent from the bounded callback fixture. Native per-output capability verified; direct controller effective mode and migration acceptance remain pending. DEFECT 2026-10-15: ordinary clients with an unbounded maximum size refuse migration ([reproduction](#whole-workspace-migration-unbounded-maximum-size-refusal-2026-10-15)) |
+| T05 | #42 | Whole-workspace migration preserves identity/order/tree/tiling state, occupied target and hidden workspace; overlay and float members | PARTIAL: complete-wire production command accepts INT_MAX members, clearing the old size refusal. FAIL native application: output-send desktop echo was misclassified, stranding the second member; corrected offline with 1862 KWin tests. Fresh native repeat, identity/order/tree/state, hidden/overlay/float matrix remain pending |
 | T06 | #34, #44, N4 | Mixed-scale/origin geometry, gaps, border, underlay and preview; dynamic mode/scale/work-area changes and restoration | PASS prior geometry subcases retained. Latest normal development startup established effect/oracle availability during the run. PENDING: mapped-binary freshness, rendering and dynamic mode/scale changes; load/setter diagnostics do not prove rendering |
 | T07 | #1, #34 | Fullscreen/maximize on each output, carry/restore, reserved slot and no unsolicited fullscreen geometry/focus writes | PASS tiled-overlay subcases: five-second fullscreen hold; fullscreen carry left and maximize carry right with arrival/follow; destination peer retained half-slot; native overlay exit restored exact original modes/frames. PENDING: intentional-float overlay, born-state and real-game legs. Earlier synchronous/expando probes remain invalid |
 | T08 | #47 | Pointer drag across outputs to occupied/empty targets; preview/drop agreement, snap-back/cancel and source removal | BLOCKED: earlier crossings prove fallback recovery only. Latest effect-loaded same-output attempt violated pointer-path ownership through acceleration overshoot and is excluded from clean acceptance. Relative synthetic motion/drag now refuses before device allocation; physical preview/drop, hold, re-cross, cancel and removal proof remain pending |
@@ -1086,8 +1112,9 @@ not the production entry, which exclusively uses `DescribeWorld`.
   omission from the wire is not the current world contract.
 - Isolated-source verification executes the new core migration test successfully;
   KWin producer regression and combined 1850-test suite pass, with typecheck/build.
-  Legacy observer/adapter fixtures are not production acceptance. Live T05 stopped
-  before dispatch because workspace binding/mapping prerequisites failed.
+  Legacy observer/adapter fixtures are not production acceptance. A later owned
+  T05 fixture reached the core and passed this size gate; native application then
+  exposed the output-send desktop-echo defect described in the continuation.
 
 - Live T05 probe: an ordinary resizeable client reported a real minimum size
   (176x150) and Qt's unconstrained maximum (2147483647 x 2147483647, INT_MAX,
