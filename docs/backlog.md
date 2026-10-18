@@ -988,7 +988,10 @@ decisions of 2026-09-24 are under
   obsolete harnesses/scripts (e.g. `scripts/custom-tile-acceptance.sh` and its
   test, whose `[Tiling]` preflight conflicts with the accepted live baseline),
   superseded routes and fixtures, stale records and dead code, with a
-  reviewed removal list before deleting.
+  reviewed removal list before deleting. Windows inventory complete: one
+  completed note archived unchanged; no source/scripts proven safe to delete.
+  Active acceptance records and parked implementation/test bases retained;
+  three cleanup groups await user review. [Windows inventory](changes/archive/windows-cleanup-inventory.md).
 - P1 | Module size refactoring | User 2026-10-14: split oversized source
   files toward the [file size](principles.md#file-size) soft caps.
   Behavior-preserving moves between feature deliveries, with two verified
