@@ -1,6 +1,6 @@
 # Windows best-effort admission native follow-up
 
-- Status: selection correction confirmed natively; stable physical gap deltas reproduced, host-vs-adapter mechanism and unfloat classification parked.
+- Status: selection correction confirmed natively; bounded gap-placement deltas classified as a host constraint at 125% scale; compensation policy and unfloat classification parked.
 - Prior evidence: [offline delivery and partial native checks](archive/windows-best-effort-admission.md#scoped-native-follow-up-2026-10-18).
 
 ## Goal and scope
@@ -335,6 +335,68 @@
   each leg. Final real `mise exec -- just stop` output and independent readbacks
   confirm `ready:false`, zero owned processes and no recovery ledger.
 
+### Controlled awareness/direct-write discriminator, 2026-10-18
+
+- Source `8842ae13`; external group `be-dpi-discrim-20261018` retains
+  `steps-discrim-awareness.jsonl`, the harness, helper-only source-copy changes,
+  receipts, three owner logs, preimages and restoration readbacks. The isolated
+  probe adds unaware/system-aware/PMv2 selection before creation without changing
+  production geometry. Owner SHA-256
+  `1C8C40ECECB6F73D2B66B785B40857E19EDC1552686FA958E60FE2D5AD96E1A1`;
+  probe `30057452661E560789B5E55DD7FF526E4C1761C2DA1B4B106D93D57E7B42180`.
+- One output at **125% scale** (`GetScaleFactorForMonitor`), with no display
+  configuration change. Process-awareness queries distinguish all three arms;
+  PMv2 setup is also source-bound. All helpers use identical hidden creation,
+  exact-tag show, window procedure and styles. Minimum-hint policy is identical,
+  but native hint values are not numerically fixed: unaware `[118,30]`, aware
+  `[150,39]`. Targets are far above both minima and no clamp is reported. This
+  limits the claim to unconstrained placement, not minimum-size behavior.
+- Two fresh helpers per arm receive owner gap adoption 8/8 -> 12/12. After exact
+  owner stop/restore and `ready:false`, a PMv2-thread direct `SetWindowPos` replays
+  each same outer request with the owner's `NOACTIVATE|NOZORDER` flags. Native
+  outer and DWM extended-frame readbacks agree with owner observations:
+
+  | Window awareness | Requested outer `[left,top,right,bottom]` | Owner and direct settled outer | Outcome |
+  | --- | --- | --- | --- |
+  | Unaware, left | `[3,12,1283,1377]` | `[3,13,1283,1378]` | y +1 |
+  | Unaware, right | `[1277,12,2557,1377]` | `[1278,13,2558,1378]` | x/y +1 |
+  | System-aware, left/right | `[4,12,1282,1376]` / `[1278,12,2556,1376]` | Exact requests | Match |
+  | PMv2, left/right | Same as system-aware | Exact requests | Match |
+
+- Direct replay's field named `immediate` is actually sampled after a 700 ms
+  sleep (701-715 ms recorded); a second read follows five seconds later. Those
+  samples are identical. Owner paired early reads are separate observations;
+  no synchronous API-return direct read was captured. Direct replay begins at
+  the owner's settled frame, so this proves matching requested-versus-settled
+  results, not every transient path or coordinate representability.
+- Classification **(a), bounded host constraint**: the unaware-window outer
+  offsets survive direct writes without the adapter. Neither system-aware nor
+  PMv2 windows reproduce them here. This is consistent with Windows DPI
+  virtualization/rounding at non-100% scale, not proof of a universal rounding
+  formula or of behavior at other scales. The original unfloat neighbors and
+  every prior nine-survivor delta are not retrospectively classified.
+- Supplemental above-minimum direct rectangles match 12/12 for PMv2 callers;
+  unaware callers instead virtualize coordinates in every target-awareness arm.
+  Fresh helper `move` CLI processes are unaware, regardless of their target's
+  awareness; their writes are not a PMv2 control. Work-area effects contaminate
+  their large-rectangle sizes, so those sizes do not establish a rounding rule.
+- No adapter correction, regression tolerance or compensation was introduced.
+  Preserve truthful mismatch reporting (recommendation). Alternative: investigate
+  awareness-qualified compensation only after proving which physical coordinates
+  are representable; a blanket +1/-1 write is neither obvious nor safe. Any
+  compensation remains a product decision, not an accepted requirement.
+- Preliminary legacy/passive arms did not hold creation visibility constant and
+  are excluded from the controlled matrix. One preliminary admission-batch park
+  retained full recovery. Fixture plumbing corrections did not change product
+  behavior. Independent review checked the three-arm evidence and corrected an
+  initial misreading of direct replay as exact: the unaware outer offsets, not
+  just visible-frame accounting, are real.
+- No clicks, injected input or foreground activation were used. Exact helper
+  identities and unconditional cleanup were retained. Completed legs and the
+  preliminary park restored settings bytes and taskbar/SPI preimages; final
+  `mise exec -- just stop` reported `stopped clean`, with `ready:false`, no owned
+  processes and no recovery ledger. Cleanup does not fill the timing/hint limits.
+
 ## Blockers and exact next action
 
 - Fresh, retry and send rosters did not produce the required no-space state;
@@ -355,12 +417,13 @@
   DPI at fresh pre-write, immediate post-write and delayed settled observations;
   retain per-entry write status instead of treating the aggregate mismatch as a
   target verdict. Existing `observed_outer` belongs to the pre-write hint phase.
-- Parked next fixture A: capture per-PID process awareness and system/monitor
-  scale, then independently vary awareness and creation visibility with fixed
-  minimum hints and rectangles above those minima. Compare direct exact-tag
-  helper outer writes outside the owner with owner writes and paired PMv2
-  outer/DWM observations. This separates host quantization from adapter behavior
-  without assuming a tolerance.
+- Fixture A now separates the bounded unaware-window host placement effect from
+  adapter writes; no Windows-side defect was established. Compensation is parked.
+  If pursued, the exact next fixture uses identical explicit numeric minimum
+  hints in all three awareness arms, writes from a displaced preimage, captures
+  synchronous post-`SetWindowPos` outer/DWM/DPI plus delayed reads, and sweeps
+  adjacent physical coordinates around the two retained requests. Establish
+  representability and native no-op behavior before proposing compensation.
 - Parked next fixture B: four large helpers; explicitly float the verified
   foreground last helper, preserving a large frame instead of relying on shrink
   victims. Verify exposed client identity, then explicitly unfloat once under
@@ -412,3 +475,14 @@
   [39115509470](https://github.com/beefsack/OmniTiler/actions/runs/39115509470).
   The later paired-readback round reused the same Windows artifacts and passed
   the locked four-package build; it made no production-code change.
+
+### Controlled-awareness verification
+
+- At `8842ae13`, locked four-package build/test and strict all-target clippy
+  passed: **2,883 passed, 0 failed, 1 ignored across 73 suites**. Workspace
+  formatting and whitespace checks passed; Rust/cargo 1.99.0, native MSVC.
+  Logs are retained as `gates-*.log` in the controlled discriminator group.
+- No production implementation changed. Independent evidence review accepted
+  the bounded host classification and restoration, with explicit limitations
+  on numeric hints, direct-read timing and generalization. No new native
+  unfloat, exhaustion or multi-output acceptance is claimed.

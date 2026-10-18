@@ -263,11 +263,16 @@ decisions of 2026-09-24 are under
   retained stable one-pixel deltas in nine survivors, not delayed convergence.
   Bounded follow-up at `b274797f` confirms physical outer/DWM deltas with
   independent early/delayed reads; matched two-helper 8/12/8 reproduced two
-  default-helper mismatches while PMv2 helpers matched. Awareness, creation
-  visibility and hint floors remain confounded; host-vs-adapter cause parked,
-  no tolerance/fix. Repaired no-input harness restored every leg; unfloat
+  default-helper mismatches while PMv2 helpers matched. Controlled follow-up at
+  `8842ae13`, 125% scale, holds hidden creation/styles/minimum policy constant:
+  unaware owner outer offsets reproduce under direct PMv2 writes after stop;
+  system-aware and PMv2 arms match. Bounded host constraint, no adapter defect
+  established and no tolerance/fix. Numeric native hints differ but targets are
+  above minima; direct reads are 700 ms/five-second samples, not synchronous.
+  Compensation decision and exact representability fixture parked in the record.
+  Repaired no-input harness restored every leg; unfloat
   parked before intent because shrink floats lacked safe exposed client area.
-  Exact controlled-awareness and large-intentional-float fixtures are in the
+  Exact representability and large-intentional-float fixtures are in the
   current record. All eight CI jobs passed for `b274797f` (39115509470).
   Guarded local/shared-scope selection correction `d0326c2b` preserves first-exit
   intent; six actual-route regressions pass. Integrated offline four-package
