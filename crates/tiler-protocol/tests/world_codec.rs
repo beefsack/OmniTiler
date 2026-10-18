@@ -220,15 +220,36 @@ fn directional_intents_decode_typed_and_refuse_bad_vocab() {
     let cases: Vec<(serde_json::Value, Box<dyn Fn(&WorldCommand)>)> = vec![
         (
             serde_json::json!({"op": "focus-directional", "win": "win-a", "direction": "right", "floatSubject": true}),
-            Box::new(|cmd| assert!(matches!(cmd, WorldCommand::FocusDirectional { float_subject: true, .. }))),
+            Box::new(|cmd| {
+                assert!(matches!(
+                    cmd,
+                    WorldCommand::FocusDirectional {
+                        float_subject: true,
+                        ..
+                    }
+                ))
+            }),
         ),
         (
             serde_json::json!({"op": "move-directional", "win": "win-a", "direction": "left", "sameAxis": "swap-with-neighbor"}),
-            Box::new(|cmd| assert!(matches!(cmd, WorldCommand::MoveDirectional { same_axis: SameAxisMove::SwapWithNeighbor, .. }))),
+            Box::new(|cmd| {
+                assert!(matches!(
+                    cmd,
+                    WorldCommand::MoveDirectional {
+                        same_axis: SameAxisMove::SwapWithNeighbor,
+                        ..
+                    }
+                ))
+            }),
         ),
         (
             serde_json::json!({"op": "send-directional", "win": "win-a", "direction": "down", "follow": false}),
-            Box::new(|cmd| assert!(matches!(cmd, WorldCommand::SendDirectional { follow: false, .. }))),
+            Box::new(|cmd| {
+                assert!(matches!(
+                    cmd,
+                    WorldCommand::SendDirectional { follow: false, .. }
+                ))
+            }),
         ),
         (
             serde_json::json!({"op": "migrate-directional", "from": "out", "ws": "ws", "direction": "up"}),
@@ -255,7 +276,10 @@ fn directional_intents_decode_typed_and_refuse_bad_vocab() {
             serde_json::from_str(&one_window_request()).expect("valid");
         value["cmdSeq"] = serde_json::Value::String("78".to_owned());
         value["command"] = bad;
-        assert!(decode_request(&value.to_string()).is_err(), "bad directional refuses");
+        assert!(
+            decode_request(&value.to_string()).is_err(),
+            "bad directional refuses"
+        );
     }
 }
 

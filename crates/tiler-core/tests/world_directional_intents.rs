@@ -43,7 +43,11 @@ fn engine_window_at(id: &str, out: &str, ws: &str, x: i32, y: i32) -> EngineWind
 }
 
 fn engine_window(id: &str, out: &str, ws: &str) -> EngineWindow {
-    let x = if id.ends_with("2") || id == "win-b" { 400 } else { 10 };
+    let x = if id.ends_with("2") || id == "win-b" {
+        400
+    } else {
+        10
+    };
     engine_window_at(id, out, ws, x, 10)
 }
 
@@ -58,7 +62,12 @@ fn domain_report(out: &str, ws: &str, windows: Vec<EngineWindow>) -> DomainRepor
             adjacent: BTreeMap::new(),
         },
         outer_gap: 0,
-        focused: WindowId(windows.first().map(|w| w.window.0.clone()).unwrap_or_default()),
+        focused: WindowId(
+            windows
+                .first()
+                .map(|w| w.window.0.clone())
+                .unwrap_or_default(),
+        ),
         windows,
         closed: Vec::new(),
         readable: true,
@@ -190,7 +199,10 @@ fn with_command(report: &mut WorldReport, seq: u64, cmd_seq: u64, command: World
     report.command = Some(command);
 }
 
-fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> tiler_core::world_report::WorldReply {
+fn accepted(
+    engine: &mut WorldEngine,
+    report: &WorldReport,
+) -> tiler_core::world_report::WorldReply {
     match engine.handle_report(report) {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
@@ -226,7 +238,10 @@ fn move_directional_strict_cross_and_single_output_local() {
     // Strict parity: with a strict edge, the cross pair returns directly
     // (no local fallback). Distinct workspaces, two tiles in the source.
     let mut engine = WorldEngine::new("gen-1").expect("valid");
-    accepted(&mut engine, &two_output_report(1, Some(rect(800, 0, 800, 600))));
+    accepted(
+        &mut engine,
+        &two_output_report(1, Some(rect(800, 0, 800, 600))),
+    );
     let mut cross = two_output_report(2, Some(rect(800, 0, 800, 600)));
     with_command(
         &mut cross,
@@ -437,7 +452,10 @@ fn ambiguity_fences_send_and_migrate_but_focus_falls_back_local() {
 #[test]
 fn partial_topology_fences_send_but_keeps_local_focus() {
     let mut engine = WorldEngine::new("gen-1").expect("valid");
-    accepted(&mut engine, &two_output_report(1, Some(rect(800, 0, 800, 600))));
+    accepted(
+        &mut engine,
+        &two_output_report(1, Some(rect(800, 0, 800, 600))),
+    );
     // Partial: out-b rect unreadable clears the live map.
     let mut partial = two_output_report(2, None);
     with_command(
@@ -478,7 +496,10 @@ fn partial_topology_fences_send_but_keeps_local_focus() {
 fn send_directional_follow_and_stay_name_current_view() {
     for follow in [true, false] {
         let mut engine = WorldEngine::new("gen-1").expect("valid");
-        accepted(&mut engine, &two_output_report(1, Some(rect(800, 0, 800, 600))));
+        accepted(
+            &mut engine,
+            &two_output_report(1, Some(rect(800, 0, 800, 600))),
+        );
         let mut cmd = two_output_report(2, Some(rect(800, 0, 800, 600)));
         with_command(
             &mut cmd,
@@ -497,7 +518,10 @@ fn send_directional_follow_and_stay_name_current_view() {
             .find(|t| matches!(t.kind, TransferKind::Window(_)))
             .expect("send retains a window transfer");
         assert_eq!(transfer.target_output.0, "out-b");
-        assert_eq!(transfer.target_workspace, "wb1", "target current native view");
+        assert_eq!(
+            transfer.target_workspace, "wb1",
+            "target current native view"
+        );
         assert_eq!(transfer.follow, follow);
     }
 }
@@ -535,7 +559,10 @@ fn migrate_directional_needs_no_active_window_and_reports_source_context() {
 #[test]
 fn live_topology_survives_unrelated_window_inventory_gap() {
     let mut engine = WorldEngine::new("gen-1").expect("valid");
-    accepted(&mut engine, &two_output_report(1, Some(rect(800, 0, 800, 600))));
+    accepted(
+        &mut engine,
+        &two_output_report(1, Some(rect(800, 0, 800, 600))),
+    );
     // Same FULL topology but the report claims incomplete window
     // inventory; monitor completeness alone must retain the map so a
     // direction-only send still resolves.
@@ -553,10 +580,7 @@ fn live_topology_survives_unrelated_window_inventory_gap() {
     );
     let reply = accepted(&mut engine, &gap);
     assert!(
-        reply
-            .transfers
-            .iter()
-            .any(|t| t.target_output.0 == "out-b"),
+        reply.transfers.iter().any(|t| t.target_output.0 == "out-b"),
         "topology retention ignores window inventory gaps"
     );
 }
@@ -656,11 +680,8 @@ fn global_unique_retains_topology_and_fences_directionally() {
         let mut report = two_output_report(seq, geometry_b);
         report.workspace_mode = WorkspaceMode::GlobalUnique;
         // Single window per domain so cross has no local competitor.
-        report.domains[0] = domain_report(
-            "out-a",
-            "wa1",
-            vec![engine_window("win-a", "out-a", "wa1")],
-        );
+        report.domains[0] =
+            domain_report("out-a", "wa1", vec![engine_window("win-a", "out-a", "wa1")]);
         report
     }
     let mut engine = WorldEngine::new("gen-1").expect("valid");

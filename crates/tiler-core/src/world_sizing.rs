@@ -592,9 +592,7 @@ fn command_estimate_owned(command: &WorldCommand) -> usize {
         } => {
             // {"op":"focus-directional","win":S,"direction":S,"floatSubject":B}
             // = 62 fixed.
-            62 + json_string_len(&window.0)
-                + json_string_len(direction)
-                + bool_len(*float_subject)
+            62 + json_string_len(&window.0) + json_string_len(direction) + bool_len(*float_subject)
         }
         WorldCommand::MoveDirectional {
             window,
@@ -614,9 +612,7 @@ fn command_estimate_owned(command: &WorldCommand) -> usize {
         } => {
             // {"op":"send-directional","win":S,"direction":S,"follow":B}
             // = 55 fixed.
-            55 + json_string_len(&window.0)
-                + json_string_len(direction)
-                + bool_len(*follow)
+            55 + json_string_len(&window.0) + json_string_len(direction) + bool_len(*follow)
         }
         WorldCommand::MigrateDirectional {
             source_output,

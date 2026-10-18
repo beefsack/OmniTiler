@@ -1206,19 +1206,13 @@ pub fn valid_command(command: &WorldCommand) -> bool {
                 && source_output != target_output
         }
         WorldCommand::FocusDirectional {
-            window,
-            direction,
-            ..
+            window, direction, ..
         } => is_opaque_id(&window.0) && DIRECTIONS.contains(&direction.as_str()),
         WorldCommand::MoveDirectional {
-            window,
-            direction,
-            ..
+            window, direction, ..
         } => is_opaque_id(&window.0) && DIRECTIONS.contains(&direction.as_str()),
         WorldCommand::SendDirectional {
-            window,
-            direction,
-            ..
+            window, direction, ..
         } => is_opaque_id(&window.0) && DIRECTIONS.contains(&direction.as_str()),
         WorldCommand::MigrateDirectional {
             source_output,

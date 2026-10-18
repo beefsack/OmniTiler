@@ -291,13 +291,7 @@ impl WorldEngine {
                 source_output,
                 workspace,
                 direction,
-            } => self.migrate_directional(
-                report,
-                command_seq,
-                source_output,
-                workspace,
-                direction,
-            ),
+            } => self.migrate_directional(report, command_seq, source_output, workspace, direction),
             WorldCommand::Operation(command) => {
                 self.execute_operation(report, command_seq, command, by_id, held_scopes)
             }
@@ -868,12 +862,9 @@ impl WorldEngine {
         // directly (including refusal): old KDE crossForDirection was true
         // for strict adjacency irrespective of held/unreadable targets and
         // the cross operation refused. No silent relabel as local success.
-        let cross_target = matches!(
-            direction_parsed,
-            Direction::Left | Direction::Right
-        )
-        .then(|| self.core_topology_target(&source_key.output, direction_parsed))
-        .flatten();
+        let cross_target = matches!(direction_parsed, Direction::Left | Direction::Right)
+            .then(|| self.core_topology_target(&source_key.output, direction_parsed))
+            .flatten();
         if cross_target.is_some() {
             let command = CoreCommand::Focus {
                 window: window.0.clone(),
@@ -997,8 +988,7 @@ impl WorldEngine {
                 message: MSG_SEND_WINDOW,
             };
         };
-        let Some(target_output) =
-            self.core_topology_target(&source_row.output, direction_parsed)
+        let Some(target_output) = self.core_topology_target(&source_row.output, direction_parsed)
         else {
             return CommandApplied::Rejected {
                 kind: KIND_SEND_TARGET,
@@ -1051,8 +1041,7 @@ impl WorldEngine {
                 message: MSG_DIRECTION,
             };
         };
-        let Some(target_output) = self.core_topology_target(source_output, direction_parsed)
-        else {
+        let Some(target_output) = self.core_topology_target(source_output, direction_parsed) else {
             return CommandApplied::Rejected {
                 kind: KIND_MIGRATION,
                 message: MSG_MIGRATION,
