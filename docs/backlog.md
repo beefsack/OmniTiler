@@ -3945,13 +3945,16 @@ decisions of 2026-09-24 are under
       using synthetic drag plus Desktop-N, with Authentic enabling Desktop-N;
       then send-follow and send-stay; trailing empty Space (Meta+0, also the indicator's trailing
       slot); per-display Space-number attribution; multi-display.
-       **2026-10-18 offline preparation:** fake-backed numbered send-follow,
-       planner claim/feedback and Authentic ownership helpers pass 940 macOS
-       tests, strict clippy/format and signed build/verify; unsafe stays 114.
-       Product remains select-only: no send chords armed, no startup settings
-       writes, no new live proof. Scoped product-post identity and nonblocking
-       fresh AX proof handoff block native integration; later substeps remain
-       pending. [Contracts and exact native checks](changes/macos-managed-workspaces.md#unarmed-numbered-send-preparation-checkpoint-2026-10-18).
+        **2026-10-18 offline prerequisites:** admission-pinned lifetime/source,
+        pure managed-target/focus-swap proof, event-driven single-flight effect
+        controller and fake send/holder coverage pass 973 macOS tests, strict
+        clippy/format and signed build/verify; unsafe stays 114. Product remains
+        select-only: no send chords armed, no startup settings writes, no new
+        live proof. Native API backend/tile wiring remain absent. Exact
+        point/chord-bound permit consumption, fresh runtime-facts access and
+        nonpanic nonblocking teardown ownership block native integration;
+        send-stay, trailing lifecycle and per-display attribution remain pending.
+        [Checkpoint, contracts and exact native checks](changes/macos-managed-workspaces.md#identity-and-asynchronous-controller-prerequisite-checkpoint-2026-10-18).
        **2026-10-18 delivery checkpoint:** starting the helper on the existing
       second Space resolves crowded placement without moving the protected
       terminal or weakening ownership. Tagged arrow and numbered native transfer

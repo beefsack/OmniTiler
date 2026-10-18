@@ -1,9 +1,64 @@
 # macOS managed native workspaces
 
+## Identity and asynchronous-controller prerequisite checkpoint (2026-10-18)
+
+**Native integration is incomplete. Product remains select-only: no send
+bindings, no automatic Authentic holder writes, and no new live proof.**
+This checkpoint supersedes the unresolved pure focus-swap and admission-lifetime
+questions in the earlier preparation checkpoint, not native acceptance items 1-4.
+
+### Accepted offline scope and evidence
+
+- `e23d03fb` pins the admitted subject's app generation and source domain, adds
+  a pure managed-target proof and single-flight completion lane. `3fa2e92b`
+  requires a known revision and retains inflight ownership on cancellation.
+- `47e59266` adds an injectable release-first send controller and effect owner;
+  it is **not a native API implementation**. `c5beb523` replaces idle polling
+  with event wakeup, adds nonblocking shutdown request/finished-only reap and
+  corrects per-operation count classification for a reused backend.
+- Producer-shaped offline tests prove pure focus-swap, lifetime/revision drift,
+  unknown evidence, unusable holders, busy/stale completion, unconditional
+  release attempts, cancellation and uncertain-effect feedback without replay.
+  The thread factory and all fake actuation run off the submitting thread.
+  No runtime AX proof, native post or tile-to-effect integration is established.
+- Independent review found no blocker for the **unarmed prerequisite**. It
+  identified permit consumption as a prerequisite to native integration; the
+  adapter currently validates then discards the permit before its fake post.
+- Full final gates at `c5beb523`: **973 macOS tests** (825 library + 148
+  integration), strict all-target clippy, workspace format/diff checks, named
+  signed app build and separate verification pass. Unsafe remains **114 blocks**,
+  all in unchanged `ffi.rs`; no dependencies were added. Hosted
+  [CI 39112487727](https://github.com/beefsack/OmniTiler/actions/runs/39112487727)
+  was still in progress: seven jobs passed, native settings tests pending.
+
+### Native integration blockers and next unit
+
+- Consume a one-use permit at the actual posting boundary, binding the exact
+  selected point and switch chord rather than only PID/window ID. Select the
+  grab point on the effect owner from fresh geometry and both hit-tests; never
+  substitute focus, raise a window or reuse a fixture-owned target as authority.
+- Supply current runtime scope, app generation, homing/current-domain and
+  topology facts through a narrow plain-data accessor. Admission pins are not a
+  replacement for this fresh comparison. Unknown snapshot revision must refuse.
+- Settle nonpanic, nonblocking release ownership through exceptional teardown
+  before connecting the effect owner to AppKit. The scaffold's live-owner Drop
+  currently requests cancellation then panics; it is not accepted product
+  recovery. A new reaper/lifetime mechanism is not selected by this checkpoint.
+- Implement the actual native `ManagedSendBackend` and tile submission,
+  completion/history/feedback and teardown wiring. These remain absent; no
+  native implementation claim follows from the injectable controller's tests.
+
+Next: resolve those bounded posting/facts/lifetime integration contracts, then
+implement and independently review the native backend. Only afterward wire
+Authentic enable/Revert and deliberately arm numbered send-follow. Send-stay,
+trailing selection/send/indicator slot and per-display attribution remain
+unimplemented. Execute pending acceptance items 1-4 below only after their
+respective implementations; no native outcome is inferred from offline gates.
+
 ## Managed product-post contract (2026-10-18, tentative)
 
-Implementation and native acceptance remain pending. The earlier unarmed
-preparation checkpoint remains the current executable capability boundary.
+Native implementation and acceptance remain pending. The prerequisite checkpoint
+above does not expand the select-only executable capability boundary.
 
 - **Target identity:** a send targets only the focused managed window admitted
   by the engine, pinned by PID, window ID, app-lifetime generation, source domain,
