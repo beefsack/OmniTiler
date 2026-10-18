@@ -28,11 +28,17 @@ decisions of 2026-09-24 are under
     with baseline acceptance tests that run against core alone.
   - One shared baseline acceptance case set for KDE, Windows and macOS, minus
     agreed, documented platform gaps.
-  - Platform test helpers: establish an initial tiling state; a test window
-    that can be created and changed dynamically without recreation
-    (decorations on/off; windowed, fullscreen, borderless; resizable or
-    fixed; size; minimum size; maximum size if hosts support it), with
-    several open at once.
+  - Platform test helpers: stage an initial tiling state and modify tiling
+    during a test; capture the platform's current window state into a data
+    structure that fits the shared case format; a test window that can be
+    created and changed dynamically without recreation (decorations on/off;
+    windowed, fullscreen, borderless; resizable or fixed; size; minimum size;
+    maximum size if hosts support it), with several open at once.
+  - Ideally the shared cases and assertions are reused unchanged across
+    platforms, with only a thin per-platform connector driving the host.
+    Cases may also assert responsiveness, so they may be time-bound with
+    deadlines (a stated reason for a limit under
+    [Simplicity](principles.md#simplicity)).
 - P0 | KDE Meta+G unfloat does not re-tile until focus changes | Fixed offline
   2026-10-17, pending user re-check. The apply observation retained stale
   floating/fit-excluded flags after accepted unfloat; settle float departures
