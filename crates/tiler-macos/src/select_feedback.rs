@@ -96,7 +96,7 @@ impl RuntimeHandle {
     /// (unsupported send shapes refuse engine-side and never reach here).
     /// The kind is
     /// always transfer (see [`crate::workspace_send::feedback_kind_for`]):
-    /// `Applied` settles the retained `SendNumbered` transfer on
+    /// `Applied` settles the retained explicit-`Send` transfer on
     /// observation confirm; `Refused` settles to observed without
     /// actuation; `PossiblyExecuted` holds without re-actuation. Call with
     /// the `operation_id` of the drained claim (the core ignores ids naming

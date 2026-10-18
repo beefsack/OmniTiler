@@ -1390,7 +1390,8 @@ fn refuse_send_claim(shared: &Arc<Mutex<Shared>>, token: &'static str) {
 }
 
 /// Armed-send lane (numbered send-follow 1..9 product path): admission
-/// planner-owned `SendNumbered` world command, and — when the reply
+/// planner-owned explicit-`Send` world command carrying the
+/// admission-resolved native workspace, and — when the reply
 /// applies, or when a stale-observation refusal proves the command already
 /// executed core-side — one bound pending claim for the main-thread send
 /// drain. Other core refusals drop the claim (never actuated, never
@@ -1399,7 +1400,9 @@ fn refuse_send_claim(shared: &Arc<Mutex<Shared>>, token: &'static str) {
 /// not read native fullscreen (game/fullscreen foregrounds never drag).
 /// The target ordinal binds to its admission-time SID plus the current
 /// topology revision so the drain revalidates instead of interpreting the
-/// ordinal against a different generation. The subject lifetime
+/// ordinal against a different generation; the dispatched command names the
+/// pinned workspace directly and never re-resolves the ordinal core-side.
+/// The subject lifetime
 /// (`send_generation`) and source domain (`send_source`) pin here from
 /// retained engine truth — never re-sampled at dispatch.
 fn handle_send_action(
@@ -1484,12 +1487,12 @@ fn handle_send_action(
         refuse_send_claim(shared, "refused-send-no-view");
         return;
     };
-    let Some(command) = send_command(&claim.action, &window.0, output.clone()) else {
-        refuse_send_claim(shared, "refused-send-unarmed");
-        return;
-    };
     // Bind the admission-time target SID plus the live revision: the drain
-    // refuses a moved ordinal instead of sending to the new occupant.
+    // refuses a moved ordinal instead of sending to the new occupant, and
+    // the dispatched command carries the pinned native workspace directly
+    // (the ordinal resolves exactly once here against the native row —
+    // never re-resolved core-side through the scoped ring, whose
+    // stable-logical order need not match native Desktop order).
     // Admission pins the subject lifetime and source domain from retained
     // engine truth (never re-sampled at dispatch: a PID reuse after
     // relaunch must refuse instead of grabbing the new lifetime's
@@ -1497,6 +1500,12 @@ fn handle_send_action(
     // the wrong domain).
     let Some(target_sid) = crate::workspace_send::context_target_sid(&ctx, &output, index) else {
         refuse_send_claim(shared, "refused-send-no-target");
+        return;
+    };
+    let target_workspace = crate::topology::workspace_key(target_sid);
+    let Some(command) = send_command(&claim.action, &window.0, output.clone(), &target_workspace)
+    else {
+        refuse_send_claim(shared, "refused-send-unarmed");
         return;
     };
     claim.expected_sid = Some(target_sid);

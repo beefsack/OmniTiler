@@ -90,7 +90,7 @@ fn select_commands_cover_exactly_the_armed_subset() {
             "{action:?} never selects"
         );
         assert!(
-            send_command(&action, "4242_7", output.clone()).is_some(),
+            send_command(&action, "4242_7", output.clone(), "space-1").is_some(),
             "{action:?} has the product send route"
         );
     }
@@ -119,7 +119,7 @@ fn select_commands_cover_exactly_the_armed_subset() {
             "{action:?} stays refused"
         );
         assert!(
-            send_command(&action, "4242_7", output.clone()).is_none(),
+            send_command(&action, "4242_7", output.clone(), "space-1").is_none(),
             "{action:?} stays refused"
         );
     }

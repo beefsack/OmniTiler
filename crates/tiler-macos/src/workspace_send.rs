@@ -55,7 +55,7 @@
 //! (never a settings write here). Follow: verified arrival notes the source
 //! in the per-display previous history (so `workspace-previous` keeps
 //! working) and reports `Applied` under the claim's operation identity so
-//! the core settles its retained `SendNumbered` transfer; pre-actuation
+//! the core settles its retained explicit-`Send` transfer; pre-actuation
 //! refusals report `RefusedProven`; ambiguous mid-actuation output
 //! (no-effect, unreadable readback, release residue) holds as
 //! `PossiblyExecuted` without re-actuation (see
@@ -202,7 +202,7 @@ pub fn ensure_holders_for_preset<S: DesktopShortcutStore>(
 
 /// Proven outcome of one send drain for attempt feedback (see
 /// [`classify_send_drain_error`]): `Applied` settles the retained
-/// `SendNumbered` transfer on observation confirm, `Refused` settles to
+/// `Send` transfer on observation confirm, `Refused` settles to
 /// observed without actuation (pre-actuation only), `PossiblyExecuted`
 /// holds without re-actuation (ambiguous mid-actuation output).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

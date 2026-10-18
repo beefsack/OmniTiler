@@ -71,26 +71,30 @@ pub(crate) fn select_command(
 }
 
 /// Map one send-shaped action to its planner-owned world command for the
-/// focused-window subject `window` (numbered send-follow 1..9 product
-/// path): `SendNumbered` retains a window transfer core-side (follow pins
-/// the view intent; the main-thread drain actuates natively and reports
-/// the proven outcome back under the stable operation identity so the core
-/// settles instead of retaining forever). Non-send-shaped actions
-/// (trailing send-0, stays, relative sends, outputs, selects, basics) have
-/// no send route (`None`).
+/// focused-window subject `window`, carrying the admission-resolved native
+/// target workspace (see [`crate::workspace_send::context_target_sid`]).
+/// The ordinal resolves exactly once at admission against the native row —
+/// Desktop-N is the 1-based native position — and the core executes the
+/// pinned SID directly: it never re-resolves the ordinal through the scoped
+/// send ring, whose stable-logical order need not match native Desktop order
+/// (a runtime started on a non-first Space claims that Space at ring
+/// position 1, so a positional re-resolution would self-target). Non-send-shaped
+/// actions (trailing send-0, stays, relative sends, outputs, selects,
+/// basics) have no send route (`None`).
 pub(crate) fn send_command(
     action: &InputSemanticAction,
     window: &str,
     output: OutputId,
+    target_workspace: &str,
 ) -> Option<WorldCommand> {
     match action {
         InputSemanticAction::WorkspaceSend { index, follow }
             if *follow && (1..=9).contains(index) =>
         {
-            Some(WorldCommand::SendNumbered {
+            Some(WorldCommand::Send {
                 window: tiler_core::directional::WindowId(window.to_owned()),
-                output,
-                index: *index,
+                target_output: output,
+                target_workspace: target_workspace.to_owned(),
                 follow: true,
             })
         }
