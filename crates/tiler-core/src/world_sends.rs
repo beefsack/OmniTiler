@@ -62,6 +62,37 @@ impl WorldEngine {
         self.settle_send(command_seq, operation_id, result)
     }
 
+    /// Cross-output window-send path for direction-only sends
+    /// ([`WorldCommand::SendDirectional`]): the target is the strict
+    /// topology neighbor's current view, always a different output. Uses
+    /// `SendToOutput`/`MoveToOutput` (cross-output only) instead of the
+    /// same-output `SendToWorkspace` path above.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn start_output_send(
+        &mut self,
+        report: &WorldReport,
+        command_seq: u64,
+        window: &WindowId,
+        target_output: &OutputId,
+        target_workspace: &str,
+        follow: bool,
+        by_id: &BTreeMap<&WindowId, &EngineWindow>,
+        held_scopes: &BTreeSet<DomainKey>,
+    ) -> CommandApplied {
+        let operation_id = format!("op-{command_seq}");
+        let result = self.execute_output_send(
+            report,
+            &operation_id,
+            window,
+            target_output,
+            target_workspace,
+            follow,
+            by_id,
+            held_scopes,
+        );
+        self.settle_send(command_seq, operation_id, result)
+    }
+
     /// Settle one executed send: retain the transfer under its stable
     /// operation identity on success (consuming the command sequence), or
     /// refuse without mutation. Never retains a view target: sends never
@@ -246,6 +277,154 @@ impl WorldEngine {
             }),
             // Engine refusals are fixed redacted vocabularies: safe
             // to forward without echoing input.
+            CoreReply::Rejected { kind, message } => Err((kind, message)),
+            CoreReply::SnapshotInvalid { message, detail } => Err((detail, message)),
+            CoreReply::Diverged(reason) => Err((reason.as_str(), reason.message())),
+            _ => Err((KIND_SNAPSHOT, MSG_SNAPSHOT)),
+        }
+    }
+
+    /// Cross-output tiled send for direction-only intents: identical to
+    /// [`WorldEngine::execute_send`] except the Engine event carries
+    /// `SendToOutput`/`MoveToOutput` (cross-output only). Same-output
+    /// targets refuse as `CrossDomainMismatch` so the two ops stay
+    /// distinct. Floating workspaces retain membership-only exactly like
+    /// the same-output path.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn execute_output_send(
+        &mut self,
+        report: &WorldReport,
+        operation_id: &str,
+        window: &WindowId,
+        target_output: &OutputId,
+        target_workspace: &str,
+        follow: bool,
+        by_id: &BTreeMap<&WindowId, &EngineWindow>,
+        held_scopes: &BTreeSet<DomainKey>,
+    ) -> Result<RetainedTransfer, (&'static str, &'static str)> {
+        if self.retained.iter().any(|r| match &r.target.kind {
+            TransferKind::Window(w) => w == window,
+            TransferKind::View | TransferKind::Migration => false,
+        }) {
+            return Err((KIND_IN_FLIGHT, MSG_IN_FLIGHT));
+        }
+        let Some(source_row) = by_id.get(window) else {
+            return Err((KIND_SEND_WINDOW, MSG_SEND_WINDOW));
+        };
+        if source_row.sticky
+            || (source_row.fit_excluded
+                && !source_row.floating
+                && !source_row.fullscreen
+                && !source_row.maximized)
+        {
+            return Err((KIND_SEND_REFUSED, MSG_SEND_REFUSED));
+        }
+        let source_key = DomainKey {
+            output: source_row.output.clone(),
+            workspace: source_row.workspace.clone(),
+        };
+        let target_key = DomainKey {
+            output: target_output.clone(),
+            workspace: crate::directional::WorkspaceId(target_workspace.to_owned()),
+        };
+        if target_key == source_key {
+            return Err((KIND_SEND_TARGET, MSG_SEND_TARGET));
+        }
+        if held_scopes.contains(&source_key) || held_scopes.contains(&target_key) {
+            return Err((KIND_SCOPE_HELD, MSG_SCOPE_HELD));
+        }
+        let source_floating = self.floating_scopes.contains(&source_key);
+        let target_floating = self.floating_scopes.contains(&target_key);
+        if source_floating || target_floating {
+            if !report
+                .domains
+                .iter()
+                .any(|d| d.readable && d.domain.key() == target_key)
+            {
+                return Err((KIND_SEND_TARGET, MSG_SEND_TARGET));
+            }
+            if !report.domains.iter().any(|d| d.domain.key() == source_key) {
+                return Err((KIND_SEND_WINDOW, MSG_SEND_WINDOW));
+            }
+            return Ok(RetainedTransfer {
+                target: TransferTarget {
+                    operation_id: operation_id.to_owned(),
+                    kind: TransferKind::Window(window.clone()),
+                    target_output: target_output.clone(),
+                    target_workspace: target_workspace.to_owned(),
+                    follow,
+                    held: false,
+                },
+                policy: false,
+                source_output: source_key.output,
+                source_workspace: source_key.workspace.0,
+            });
+        }
+        let owner = report.owner.clone();
+        let (Some(owner), Some(correlation)) = (
+            OwnerId::parse(&owner),
+            CorrelationId::parse(&report.request_id),
+        ) else {
+            return Err((KIND_SNAPSHOT, MSG_SNAPSHOT));
+        };
+        let Some(source_domain) = report.domains.iter().find(|d| {
+            d.domain.id == source_key.output && d.domain.workspace == source_key.workspace
+        }) else {
+            return Err((KIND_SEND_WINDOW, MSG_SEND_WINDOW));
+        };
+        let Some(target_domain) = report.domains.iter().find(|d| {
+            d.readable
+                && d.domain.id == target_key.output
+                && d.domain.workspace == target_key.workspace
+        }) else {
+            return Err((KIND_SEND_TARGET, MSG_SEND_TARGET));
+        };
+        let (Some(inset_source), Some(inset_target)) = (
+            crate::world_engine::inset_world_domain(&source_domain.domain, source_domain.outer_gap),
+            crate::world_engine::inset_world_domain(&target_domain.domain, target_domain.outer_gap),
+        ) else {
+            return Err((KIND_SCOPE_HELD, MSG_SCOPE_HELD));
+        };
+        let event = CoreEvent {
+            owner,
+            generation: self.core_generation.clone(),
+            correlation,
+            revision: 0,
+            fingerprint: 0,
+            domain: Engine::canonical_component_domain(&inset_source),
+            domain_key: source_key.clone(),
+            outer_gap: source_domain.outer_gap,
+            focused_window: source_domain.focused.clone(),
+            windows: source_domain.windows.clone(),
+            closed_windows: source_domain.closed.clone(),
+            directional: None,
+            directional_target_outer_gap: None,
+            target_domain: Some((
+                Engine::canonical_component_domain(&inset_target),
+                target_key.clone(),
+            )),
+            target_windows: target_domain.windows.clone(),
+            command: CoreCommand::SendToOutput {
+                window: window.0.clone(),
+                target_output: target_output.0.clone(),
+                target_workspace: target_workspace.to_owned(),
+                follow,
+            },
+        };
+        match self.engine.handle(&event) {
+            CoreReply::SendWorkspace(_) | CoreReply::SendOutput(_) => Ok(RetainedTransfer {
+                target: TransferTarget {
+                    operation_id: operation_id.to_owned(),
+                    kind: TransferKind::Window(window.clone()),
+                    target_output: target_output.clone(),
+                    target_workspace: target_workspace.to_owned(),
+                    follow,
+                    held: false,
+                },
+                policy: false,
+                source_output: source_key.output,
+                source_workspace: source_key.workspace.0,
+            }),
             CoreReply::Rejected { kind, message } => Err((kind, message)),
             CoreReply::SnapshotInvalid { message, detail } => Err((detail, message)),
             CoreReply::Diverged(reason) => Err((reason.as_str(), reason.message())),

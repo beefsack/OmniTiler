@@ -853,30 +853,41 @@ impl WorldEngine {
         ) && self
             .core_topology_target(&source_key.output, direction_parsed)
             .is_some();
-        let command = CoreCommand::Focus {
+        let cross_command = CoreCommand::Focus {
             window: window.0.clone(),
             direction: direction.to_owned(),
-            cross_output_transfer: may_cross,
+            cross_output_transfer: true,
             float_subject,
         };
         if may_cross {
-            // Cross path refuses only when the pair cannot form; fall back
-            // to local rather than refusing a focus that has a valid
-            // single-domain target (edgeless/ambiguous/partial topology).
+            // Cross path first; any cross refusal falls back to local
+            // rather than refusing an action that has a valid
+            // single-domain target (edgeless/ambiguous/partial topology,
+            // or a cross noop). Scope-held falls back too and refuses
+            // again locally with the same kind.
             let probe = self.directional_pair_for(report, &source_key, direction, held_scopes);
             if probe.is_some() {
-                return self.operation_directional(
+                match self.operation_directional(
                     report,
                     command_seq,
-                    &command,
+                    &cross_command,
                     &window.0,
                     direction,
                     by_id,
                     held_scopes,
-                );
+                ) {
+                    CommandApplied::Rejected { .. } => {}
+                    applied => return applied,
+                }
             }
         }
-        self.run_local_operation(report, command_seq, &command, by_id, held_scopes)
+        let local_command = CoreCommand::Focus {
+            window: window.0.clone(),
+            direction: direction.to_owned(),
+            cross_output_transfer: false,
+            float_subject,
+        };
+        self.run_local_operation(report, command_seq, &local_command, by_id, held_scopes)
     }
 
     /// Direction-only move (core-owned topology): cross in all four
@@ -917,33 +928,42 @@ impl WorldEngine {
         let may_cross = self
             .core_topology_target(&source_key.output, direction_parsed)
             .is_some();
-        let command = CoreCommand::Move {
+        let cross_command = CoreCommand::Move {
             window: window.0.clone(),
             direction: direction.to_owned(),
-            cross_output_transfer: may_cross,
+            cross_output_transfer: true,
             same_axis_move: same_axis,
         };
         if may_cross {
             let probe = self.directional_pair_for(report, &source_key, direction, held_scopes);
             if probe.is_some() {
-                return self.operation_directional(
+                match self.operation_directional(
                     report,
                     command_seq,
-                    &command,
+                    &cross_command,
                     &window.0,
                     direction,
                     by_id,
                     held_scopes,
-                );
+                ) {
+                    CommandApplied::Rejected { .. } => {}
+                    applied => return applied,
+                }
             }
         }
-        self.run_local_operation(report, command_seq, &command, by_id, held_scopes)
+        let local_command = CoreCommand::Move {
+            window: window.0.clone(),
+            direction: direction.to_owned(),
+            cross_output_transfer: false,
+            same_axis_move: same_axis,
+        };
+        self.run_local_operation(report, command_seq, &local_command, by_id, held_scopes)
     }
 
     /// Direction-only window send (core-owned topology): resolve the strict
-    /// target output plus its current native view, then run the ordinary
-    /// send path. No adapter endpoint is read. No resolvable target or
-    /// unreadable target view refuses without mutation.
+    /// target output plus its current native view, then run the
+    /// cross-output send path. No adapter endpoint is read. No resolvable
+    /// target or unreadable target view refuses without mutation.
     pub(crate) fn send_directional(
         &mut self,
         report: &WorldReport,
@@ -991,7 +1011,7 @@ impl WorldEngine {
                 message: MSG_SEND_TARGET,
             };
         }
-        self.start_send(
+        self.start_output_send(
             report,
             command_seq,
             window,
