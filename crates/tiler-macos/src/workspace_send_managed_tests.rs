@@ -5,9 +5,8 @@
 //!
 //! The dedicated effect thread owns its fake backend (built on that thread
 //! via the spawn factory); the test thread only submits nonblocking and
-//! polls nonblocking. Every send catalogue row stays `implemented: false`,
-//! the engine still refuses every send, and the tile drain still refuses at
-//! `drain_live_claimed` — reaching this path happens only here.
+//! polls nonblocking. Numbered send-follow 1..9 is product-armed;
+//! trailing send-0, stays, relative sends, and outputs stay refused.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, mpsc};
@@ -18,7 +17,7 @@ use tiler_core::directional::{OutputId, WorkspaceId};
 use crate::desktop_shortcuts::{ShortcutEntry, desktop_digit_keycode, desktop_symbolic_id};
 use crate::space_drag_transfer::{DragStep, PostCounts};
 use crate::workspace_select::{SelectionSnapshot, SelectionState};
-use crate::workspace_send::{SendGates, bindings, drain_live_claimed};
+use crate::workspace_send::{SendGates, bindings};
 use crate::workspace_send_effect::{
     ManagedSendTarget, SendEffectHandoff, SendEffectOutcome, SendFreshEvidence, prove_managed_send,
 };
@@ -45,6 +44,7 @@ fn fresh_ok() -> SendFreshEvidence {
     SendFreshEvidence {
         managed_current: Some(true),
         fullscreen: Some(false),
+        minimized: Some(false),
         live_generation: Some(1),
         live_revision: Some(9),
         live_source: Some(source_domain()),
@@ -568,7 +568,12 @@ fn managed_never_touches_fixture_post_target() {
     // never constructed, forged, or bypassed here. This grep-guard fails the
     // build if a future edit reaches for its constructors. Doc mentions of
     // the type name are allowed; construction/bypass call-sites are not.
-    let source = include_str!("workspace_send_managed.rs");
+    // Both send modules are scanned: the live backend lives in
+    // `workspace_send_native`.
+    let source = concat!(
+        include_str!("workspace_send_managed.rs"),
+        include_str!("workspace_send_native.rs")
+    );
     for forbidden in [
         "OwnedPostTarget::",
         "from_held_child",
@@ -1199,28 +1204,39 @@ fn managed_terminal_feedback_settles_transfer_and_stale_drops() {
 }
 
 #[test]
-fn managed_arming_and_holder_wiring_stay_unarmed() {
-    // All send catalogue rows stay unarmed; the product drain still refuses
-    // at the live boundary; no holder ensure is wired into the managed path.
+fn managed_arming_and_holder_wiring_armed_for_numbered_follow() {
+    // Numbered send-follow 1..9 is armed; trailing send-0, stays, relative
+    // sends, and outputs stay unarmed. The async live controller still
+    // refuses a claim without admission pins before any thread spawn or
+    // post; no holder ensure is wired into the managed backend path
+    // (startup owns it).
     for row in crate::workspace_input::workspace_catalogue() {
-        if matches!(
-            row.action,
-            crate::runtime_types::InputSemanticAction::WorkspaceSend { .. }
-        ) {
-            assert!(!row.implemented, "{} stays implemented:false", row.id);
+        match &row.action {
+            crate::runtime_types::InputSemanticAction::WorkspaceSend {
+                index,
+                follow: true,
+            } if (1..=9).contains(index) => {
+                assert!(row.implemented, "{} armed", row.id);
+            }
+            crate::runtime_types::InputSemanticAction::WorkspaceSend { .. } => {
+                assert!(!row.implemented, "{} stays implemented:false", row.id);
+            }
+            _ => {}
         }
     }
-    assert_eq!(bindings().len(), 0, "no send chord armed");
-    let gates = open_gates();
-    let mut history = SelectionState::default();
+    assert_eq!(bindings().len(), 9, "9 numbered send-follow chords armed");
+    let mut controller = crate::workspace_send::LiveSendController::new();
     let claim = crate::runtime_types::ClaimedSelect::tap(
         crate::runtime_types::InputSemanticAction::WorkspaceSend {
             index: 2,
             follow: true,
         },
     );
-    let err = drain_live_claimed(&mut history, claim, &gates).expect_err("live drain refuses");
-    assert!(err.contains("live step"), "{err}");
+    let err = controller
+        .submit(&claim, "display-a", 20, FakeManaged::new)
+        .expect_err("unpinned claim refuses before any spawn");
+    assert!(err.contains("unpinned"), "{err}");
+    assert!(!controller.is_busy());
     let source = include_str!("workspace_send_managed.rs");
     assert!(
         !source.contains("ensure_authentic_holders")

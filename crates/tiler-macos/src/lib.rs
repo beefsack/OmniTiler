@@ -125,9 +125,11 @@ pub mod workspace_select;
 mod workspace_select_tests;
 pub mod workspace_send;
 pub mod workspace_send_effect;
-pub mod workspace_send_managed;
 #[cfg(test)]
+mod workspace_send_live_tests;
+pub mod workspace_send_managed;
 mod workspace_send_managed_tests;
+pub mod workspace_send_native;
 #[cfg(test)]
 mod workspace_send_tests;
 pub(crate) mod world_builder;

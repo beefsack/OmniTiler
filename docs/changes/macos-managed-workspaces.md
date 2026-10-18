@@ -1,5 +1,45 @@
 # macOS managed native workspaces
 
+## Numbered send-follow implementation checkpoint (2026-10-18)
+
+**Numbered send-follow 1-9 is armed; native acceptance procedure 1 is next.**
+This supersedes the select-only implementation boundary below, not its pending
+live acceptance. Send-stay, trailing lifecycle and per-display attribution remain
+pending in that order.
+
+- Ctrl+Shift+1-9 now enters the tap catalogue and engine-managed admission lane.
+  A dedicated effect owner performs fresh engine-facts queries, joined native
+  topology/ordinal reads, AX/CG frame and foreground checks, dual input hit tests,
+  consumed exact point/chord permits, tagged titlebar drag and Desktop-N delivery.
+  Post-release OS membership/current readback settles transfer feedback and
+  previous-workspace history; native observations reconcile the retained world.
+- Current managed authority is a narrow engine control query over RetainedCore,
+  not native membership or static scope. Unknown, excluded, unhomed, relaid-out,
+  stale-generation or revision-disagreeing subjects refuse. Native evidence only
+  supplements the engine facts. No effect proof or settlement runs on the engine
+  or AppKit threads.
+- Authentic startup enables standard Desktop-N holders with durable owned
+  preimages and existing explicit conditional Revert. Compatible startup never
+  touches the holder store. Other send shapes remain unsupported.
+- Deleted the obsolete fake-only SendBackend/OneLeg/drain path and its duplicate
+  tests, unused posting helpers, and panicking effect-owner Drop. Shutdown signals
+  cancellation and hands an unfinished exact owner to a narrow off-main terminal
+  reaper; release attempts bypass target gates and uncertain results never replay.
+- Independent review accepted the native path before arming. Producer-shaped
+  tests include real runtime hotkey admission and transfer feedback, injected
+  native readers, engine removal despite matching native evidence, mid-leg drift,
+  unconditional release, cancellation and terminal ownership. Latest targeted
+  gates: 846 library tests and 32 scoped runtime tests, strict all-target clippy,
+  workspace format, named signed app build and separate verification pass.
+  Unsafe remains **114 blocks**, all in unchanged ffi.rs; no dependencies added.
+- Residual limits: sequential OS checks are not atomic; exact AX/CG frame equality
+  can refuse conservatively; process termination during held input is not proven
+  crash recovery. Physical shortcut feel and two-display behavior are unproven.
+
+Next: execute procedure 1 on disposable TextEdit windows, retain raw protected
+before/after records, inspect and delete scoped visual evidence, restore owned
+settings/current Space, and record exact outcomes before extending the slice.
+
 ## Managed posting simplification checkpoint (2026-10-18)
 
 **Product remains select-only. Native backend, runtime wiring and acceptance

@@ -598,15 +598,18 @@ fn tap_specs_carry_select_category_per_action() {
     assert!(!specs.iter().any(|s| s.select));
     let mut product = tile_catalogue();
     product.extend(crate::workspace_select::bindings());
+    product.extend(crate::workspace_send::bindings());
     let specs = tap_specs_for(ProbeModifier::Ctrl, &product);
-    assert_eq!(specs.len(), 52);
+    assert_eq!(specs.len(), 61);
     assert_eq!(specs.iter().filter(|s| s.select).count(), 18);
     for (spec, binding) in specs.iter().zip(product.iter()) {
         assert_eq!(spec.select, is_armed_select(&binding.action));
         assert_eq!(spec.key_code, binding.key_code);
     }
-    // Full catalogue: only the 18 armed selects flag select (sends, stays,
-    // outputs, and trailing select-0 stay basic-gated, refused downstream).
+    // Full catalogue: only the 18 armed selects flag select (armed
+    // numbered sends ride the basic cache with the focus gate; stays,
+    // outputs, and trailing select-0 stay basic-gated, refused
+    // downstream).
     let specs = tap_specs_for(
         ProbeModifier::Ctrl,
         &crate::workspace_input::workspace_bindings(),
@@ -628,6 +631,7 @@ fn consume_first_triage_refuses_ineligible_without_effects() {
     let basic_specs = tap_specs_for(ProbeModifier::Ctrl, &tile_catalogue());
     let mut product = tile_catalogue();
     product.extend(crate::workspace_select::bindings());
+    product.extend(crate::workspace_send::bindings());
     let product_specs = tap_specs_for(ProbeModifier::Ctrl, &product);
     let (ctrl_flags, _) = cg_flag_bits(ProbeModifier::Ctrl);
     // Ineligible basic down refuses as basic (fullscreen/game,
@@ -686,7 +690,8 @@ fn consume_first_triage_refuses_ineligible_without_effects() {
         triage_consumed_hit(&product_specs, 0x00, ctrl_flags, true, false, Some(false)),
         "forward-unowned"
     );
-    // Unarmed send shape (Ctrl+Shift+digit): no exact spec, forwards.
+    // Armed send shape (Ctrl+Shift+digit): owned on the basic cache
+    // (focus-gated). Ineligible refuses as basic; eligible dispatches.
     assert_eq!(
         triage_consumed_hit(
             &product_specs,
@@ -696,7 +701,18 @@ fn consume_first_triage_refuses_ineligible_without_effects() {
             false,
             Some(false)
         ),
-        "forward-unowned"
+        "consumed-refused-basic"
+    );
+    assert_eq!(
+        triage_consumed_hit(
+            &product_specs,
+            digit2,
+            ctrl_flags | CG_SHIFT_BIT,
+            true,
+            true,
+            Some(false)
+        ),
+        "dispatch"
     );
     // Ups always forward — both categories, any eligibility (hold release;
     // dropping them would wedge the orientation hold).
@@ -723,6 +739,7 @@ fn drain_wiring_never_escapes_refused_hits() {
     let basic_specs = tap_specs_for(ProbeModifier::Ctrl, &tile_catalogue());
     let mut product = tile_catalogue();
     product.extend(crate::workspace_select::bindings());
+    product.extend(crate::workspace_send::bindings());
     let product_specs = tap_specs_for(ProbeModifier::Ctrl, &product);
     let (ctrl_flags, _) = cg_flag_bits(ProbeModifier::Ctrl);
     let digit2 = crate::desktop_shortcuts::desktop_digit_keycode(2).unwrap();

@@ -81,6 +81,20 @@ pub(crate) enum EngineJob {
         ui_generation: u64,
         topology_revision: u64,
     },
+    /// Read-only managed-facts query for the dedicated send-effect owner:
+    /// publish the engine's current [`EngineManagedFacts`](
+    /// crate::runtime_core::EngineManagedFacts) for one runtime window
+    /// identity, or `None` when the engine no longer manages it. Control
+    /// lane (never silently dropped — the owner always gets its reply or
+    /// an engine-dead refusal), strict FIFO with observations, so the reply
+    /// reflects every observation submitted before the query. The owner
+    /// treats a missing/late reply as unknown facts and refuses without
+    /// actuation — native OS reads supplement these facts, never replace
+    /// them.
+    ManagedFactsQuery {
+        window: String,
+        reply: mpsc::Sender<Option<crate::runtime_core::EngineManagedFacts>>,
+    },
     /// Read-only retained occupancy query for the menu-bar indicator:
     /// snapshot the engine's per-domain managed membership (current and
     /// hidden alike) plus the context revision it was homed under, and
@@ -509,10 +523,9 @@ fn store_select_claim(
 ) {
     let mut stored = claim;
     stored.operation_id = operation_id.map(str::to_owned);
-    // One pending slot for both lanes (offline send seam shares the
-    // select slot): send-shaped claims would enqueue under their own token
-    // so the ring distinguishes the lanes — unreachable in product, where
-    // the unsupported guard refuses every send first.
+    // One pending slot for both lanes (the send lane shares the select
+    // slot): send-shaped claims enqueue under their own token so the ring
+    // distinguishes the lanes.
     let token = if crate::workspace_input::is_armed_send(&stored.action) {
         "send-enqueued"
     } else {
@@ -525,14 +538,15 @@ fn store_select_claim(
     emit(shared, 0, 0, 0, "input", token, 0);
 }
 
-/// Pure engine admission verdict for one armed select claim (offline
+/// Pure engine admission verdict for one armed select claim (pure
 /// unit-testable core of the product handoff): unarmed actions refuse
-/// (recognized-but-undispatched trailing/select-0, sends, outputs), then a
-/// missing native context, an in-progress drain, or an already-pending
-/// claim refuses narrowly — concurrent presses serialize/refuse instead of
-/// overlapping, and a sent press is never replayed. Returns the claim to
-/// store on success. Tap chords ride binding-free; indicator clicks ride
-/// their immutable render-time binding through to the drain.
+/// (recognized-but-undispatched trailing/select-0, unsupported sends,
+/// outputs), then a missing native context, an in-progress drain, or an
+/// already-pending claim refuses narrowly — concurrent presses
+/// serialize/refuse instead of overlapping, and a sent press is never
+/// replayed. Returns the claim to store on success. Tap chords ride
+/// binding-free; indicator clicks ride their immutable render-time binding
+/// through to the drain.
 pub(crate) fn admit_select_claim(
     native_present: bool,
     busy: bool,
@@ -555,18 +569,15 @@ pub(crate) fn admit_select_claim(
     Ok(claim)
 }
 
-/// Pure engine admission verdict for one send-shaped claim (offline
-/// unit-testable seam for the future product send handoff, NOT product
-/// behavior: the product engine refuses every send at the
-/// [`workspace_unsupported_outcome`] guard in [`process_job`] before any
-/// lane runs, so this is exercised only by the offline tests and the
-/// retained-but-unreachable send lane below). Send-shaped actions refuse
-/// without native context, while busy, or while a claim pends — concurrent
-/// presses serialize/refuse instead of overlapping, and a sent press is
-/// never replayed. Returns the claim to bind (target SID, revision,
-/// subject) on success. The shape check is [`is_armed_send`] (never the
-/// catalogue `implemented` flags: the catalogue marks every send
-/// unimplemented this milestone).
+/// Pure engine admission verdict for one send-shaped claim (pure
+/// unit-testable core of the product send handoff). Unsupported send
+/// shapes (trailing send-0, stays, relative sends) refuse; armed
+/// send-follow 1..9 refuses without native context, while busy, or while
+/// a claim pends — concurrent presses serialize/refuse instead of
+/// overlapping, and a sent press is never replayed. Returns the claim to
+/// bind (target SID, revision, subject) on success. The shape check is
+/// [`is_armed_send`] (single source with the catalogue `implemented`
+/// flags).
 pub(crate) fn admit_send_claim(
     native_present: bool,
     busy: bool,
@@ -1023,17 +1034,18 @@ fn process_job(
             );
         }
         EngineJob::InputAction { action } => {
-            // Unarmed workspace actions (trailing select-0, every send/stay,
-            // every output) are recognized but undispatched: no trailing
-            // create, no transfer, no output-send route runs from the
-            // product tile (see `workspace_unsupported_reason` for the exact
-            // seam). Counted and logged with a static token, never faked.
+            // Unsupported workspace actions (trailing select-0/send-0,
+            // stays, relative sends, outputs) are recognized but
+            // undispatched: no trailing create, no unsupported transfer,
+            // no output-send route runs from the product tile (see
+            // `workspace_unsupported_reason` for the exact seam). Counted
+            // and logged with a static token, never faked.
             if let Some(outcome) = workspace_unsupported_outcome(&action) {
                 lock_shared(shared).diagnostics.input_refused_unsupported += 1;
                 emit(shared, 0, 0, 0, "input", outcome, 0);
                 return;
             }
-            // Armed select-only actions dispatch with no focused-window
+            // Armed select actions dispatch with no focused-window
             // subject (empty Spaces navigate): one planner-owned world
             // command plus one pending claim for the main-thread tile
             // drain. Tap chords ride binding-free (see
@@ -1050,12 +1062,9 @@ fn process_job(
                 );
                 return;
             }
-            // Send-shaped actions never reach the lane below: the
-            // unsupported guard above refuses every send (offline
-            // preparation — no product send dispatch this milestone), so
-            // this branch is unreachable product code, retained only as the
-            // offline-tested seam for the live step (see
-            // [`admit_send_claim`]).
+            // Armed numbered send-follow 1..9 dispatches through the
+            // managed-send lane (see [`admit_send_claim`],
+            // [`handle_send_action`]).
             if crate::workspace_input::is_armed_send(&action) {
                 handle_send_action(
                     session,
@@ -1242,6 +1251,15 @@ fn process_job(
         } => {
             note_completion(shared, "focus-result", pid, generation, cmd_id, &completion);
         }
+        EngineJob::ManagedFactsQuery { window, reply } => {
+            // Current engine-managed truth for one subject window: the
+            // dedicated effect owner proves against this per edge. The
+            // context rides the shared cell (same-thread read); a missing
+            // context withholds actuation inside the publication.
+            let ctx = lock_shared(shared).native_context.clone();
+            let facts = retained.engine_managed_facts_for(&window, ctx.as_deref());
+            let _ = reply.send(facts);
+        }
         EngineJob::WorkspaceOccupancyQuery { reply } => {
             // Read-only retained snapshot: per-domain managed membership
             // (current and hidden alike) plus the context revision it was
@@ -1371,9 +1389,7 @@ fn refuse_send_claim(shared: &Arc<Mutex<Shared>>, token: &'static str) {
     emit(shared, 0, 0, 0, "input", token, 0);
 }
 
-/// Armed-send lane (offline seam, unreachable in product this milestone:
-/// the unsupported guard refuses every send before this runs; exercised
-/// only by the offline tests and retained for the live step): admission
+/// Armed-send lane (numbered send-follow 1..9 product path): admission
 /// planner-owned `SendNumbered` world command, and — when the reply
 /// applies, or when a stale-observation refusal proves the command already
 /// executed core-side — one bound pending claim for the main-thread send
@@ -1429,27 +1445,39 @@ fn handle_send_action(
         refuse_send_claim(shared, "refused-send-no-topology");
         return;
     };
-    // Managed-current homing: an unmapped subject refuses instead of
-    // planning the skeleton, and a hidden-domain subject never dispatches
-    // (no drag out of an off-current Space).
-    let Some(key) = retained.window_domains.get(&window.0).cloned() else {
-        refuse_send_claim(shared, "refused-send-no-domain");
+    // Managed-current homing from the narrow retained publication: an
+    // unmapped subject refuses instead of planning the skeleton, and a
+    // hidden-domain subject never dispatches (no drag out of an off-current
+    // Space). The fullscreen, minimized-exclusion, and lifetime pins ride
+    // the same publication — never cached topology, static scope, or
+    // dispatch-time re-sampling.
+    let Some((subject_pid, _)) = crate::runtime_types::parse_window_id(&window.0) else {
+        refuse_send_claim(shared, "refused-send-bad-subject");
         return;
     };
-    if !ctx.is_current(&key) {
+    let Some(facts) = retained.engine_managed_facts_for(&window.0, Some(ctx.as_ref())) else {
+        if !retained.apps.contains_key(&subject_pid) {
+            refuse_send_claim(shared, "refused-send-no-lifetime");
+        } else {
+            refuse_send_claim(shared, "refused-send-no-domain");
+        }
+        return;
+    };
+    let key = facts.source.clone();
+    if !facts.source_current {
         refuse_send_claim(shared, "refused-send-hidden-domain");
         return;
     }
     // Fullscreen refusal: a fullscreen subject owns its Space — dragging
-    // it would tear the Space. Read from retained observation truth (the
-    // drain re-proves this fresh before any post).
-    let fullscreen = retained
-        .apps
-        .iter()
-        .flat_map(|(pid, app)| app.windows.iter().map(move |w| (*pid, w)))
-        .any(|(pid, w)| crate::runtime::window_id(pid, w.wid) == window.0 && w.fullscreen);
-    if fullscreen {
+    // it would tear the Space. A classifier-excluded minimized subject has
+    // no input-reaching titlebar. Both read from retained observation
+    // truth (the drain re-proves them fresh before any post).
+    if facts.fullscreen {
         refuse_send_claim(shared, "refused-send-fullscreen");
+        return;
+    }
+    if facts.minimized {
+        refuse_send_claim(shared, "refused-send-minimized");
         return;
     }
     let Some(output) = select_output(retained, &ctx) else {
@@ -1471,18 +1499,10 @@ fn handle_send_action(
         refuse_send_claim(shared, "refused-send-no-target");
         return;
     };
-    let Some((subject_pid, _)) = crate::runtime_types::parse_window_id(&window.0) else {
-        refuse_send_claim(shared, "refused-send-bad-subject");
-        return;
-    };
-    let Some(subject_generation) = retained.apps.get(&subject_pid).map(|app| app.generation) else {
-        refuse_send_claim(shared, "refused-send-no-lifetime");
-        return;
-    };
     claim.expected_sid = Some(target_sid);
     claim.topology_revision = Some(ctx.revision);
     claim.send_subject = Some(window.0.clone());
-    claim.send_generation = Some(subject_generation);
+    claim.send_generation = Some(facts.generation);
     claim.send_source = Some(key.clone());
     match dispatch_report(
         session,

@@ -458,6 +458,56 @@ pub(crate) fn forget_app_members(retained: &mut RetainedCore, pid: u32) {
         .retain(|id, _| !id.starts_with(&prefix));
 }
 
+/// Current engine-managed facts for one runtime window identity
+/// (`"<pid>_<wid>"`): the admission-pinned app-lifetime generation, the
+/// homing source domain plus whether it is currently actuated, the retained
+/// fullscreen flag, the classifier-exclusion minimized lifetime, and the
+/// retained topology revision the homing was derived under. Published from
+/// engine-owned [`RetainedCore`] on the engine thread only — the single
+/// managed-window authority for both admission pins and per-edge fresh
+/// proof. Native OS reads (SLS membership, AX state, focus oracles, hit
+/// tests) supplement these facts on the effect owner but never replace
+/// them: an engine-unknown, removed, excluded, or drifted subject refuses
+/// even when every native leg still matches. `None` when the window is
+/// unknown to retained state (never guessed).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EngineManagedFacts {
+    pub generation: u64,
+    pub source: DomainKey,
+    pub source_current: bool,
+    pub fullscreen: bool,
+    pub minimized: bool,
+    pub revision: u64,
+}
+
+impl RetainedCore {
+    /// Publish the current managed facts for one subject window, joined
+    /// against one native context: generation, homing source, current
+    /// actuation, retained fullscreen, classifier-excluded minimized
+    /// lifetime, and the retained revision. The caller supplies the context
+    /// the engine currently holds (same-thread read); a missing context
+    /// withholds actuation (never guessed current).
+    pub fn engine_managed_facts_for(
+        &self,
+        window: &str,
+        ctx: Option<&NativeContext>,
+    ) -> Option<EngineManagedFacts> {
+        let (pid, wid) = parse_window_id(window)?;
+        let app = self.apps.get(&pid)?;
+        let source = self.window_domains.get(window)?.clone();
+        let fullscreen = app.windows.iter().any(|w| w.wid == wid && w.fullscreen);
+        let minimized = self.minimized.contains_key(window);
+        let source_current = ctx.is_some_and(|c| c.is_current(&source));
+        Some(EngineManagedFacts {
+            generation: app.generation,
+            source,
+            source_current,
+            fullscreen,
+            minimized,
+            revision: self.native_revision,
+        })
+    }
+}
 /// Record one scoped observation's homing: insert this PID's member
 /// mappings and prune this PID's mappings for windows no longer homed
 /// anywhere (authoritative loss for exactly this lifetime — other PIDs are
@@ -1101,5 +1151,87 @@ mod tests {
         forget_app_members(&mut retained, 1001);
         assert!(!retained.window_domains.contains_key("1001_2"));
         assert!(retained.window_domains.contains_key("1002_9"));
+    }
+
+    #[test]
+    fn managed_facts_publish_generation_source_and_fullscreen() {
+        // The narrow managed publication: generation, homing source,
+        // current actuation, retained fullscreen, classifier-excluded
+        // minimized lifetime, and the retained revision — never cached
+        // topology or dispatch-time re-sampling. Unknown windows refuse
+        // (never guessed).
+        let mut retained = RetainedCore {
+            native_revision: 9,
+            ..RetainedCore::default()
+        };
+        let d1 = DomainKey {
+            output: OutputId("macos-display-1".to_owned()),
+            workspace: WorkspaceId("space-11".to_owned()),
+        };
+        let plain = observed(1, 0, 0, 10, 10);
+        let mut full = observed(2, 0, 0, 10, 10);
+        full.fullscreen = true;
+        retained.apps.insert(
+            1001,
+            RetainedApp {
+                generation: 7,
+                seq_last: 1,
+                cmd_counter: 0,
+                windows: vec![plain, full],
+                focused_wid: None,
+            },
+        );
+        let mut members: BTreeMap<DomainKey, Vec<ObservedWindow>> = BTreeMap::new();
+        members.insert(
+            d1.clone(),
+            vec![observed(1, 0, 0, 10, 10), observed(2, 0, 0, 10, 10)],
+        );
+        note_scoped_members(&mut retained, 1001, &members);
+        // Classifier-excluded minimized lifetime for window 1 only.
+        retained.minimized.insert(
+            "1001_1".to_owned(),
+            MinimizedEntry {
+                window: WindowId("1001_1".to_owned()),
+                output: OutputId("macos-display-1".to_owned()),
+                workspace: WorkspaceId("space-11".to_owned()),
+                sticky: false,
+            },
+        );
+        let ctx = native_ctx();
+        let facts = retained
+            .engine_managed_facts_for("1001_1", Some(&ctx))
+            .expect("homed window publishes");
+        assert_eq!(facts.generation, 7);
+        assert_eq!(facts.source, d1);
+        assert!(facts.source_current, "homed current domain actuates");
+        assert!(!facts.fullscreen);
+        assert!(facts.minimized, "classifier exclusion publishes");
+        assert_eq!(facts.revision, 9);
+        let full_facts = retained
+            .engine_managed_facts_for("1001_2", Some(&ctx))
+            .expect("homed window publishes");
+        assert!(full_facts.fullscreen);
+        assert!(!full_facts.minimized);
+        // A missing context withholds actuation without losing identity.
+        let no_ctx = retained
+            .engine_managed_facts_for("1001_1", None)
+            .expect("identity still publishes");
+        assert!(!no_ctx.source_current);
+        // Unhomed, unknown-PID, and unparsable windows publish nothing.
+        assert!(
+            retained
+                .engine_managed_facts_for("1001_9", Some(&ctx))
+                .is_none()
+        );
+        assert!(
+            retained
+                .engine_managed_facts_for("9999_1", Some(&ctx))
+                .is_none()
+        );
+        assert!(
+            retained
+                .engine_managed_facts_for("not-a-window", Some(&ctx))
+                .is_none()
+        );
     }
 }

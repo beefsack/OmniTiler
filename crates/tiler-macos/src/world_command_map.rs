@@ -71,14 +71,13 @@ pub(crate) fn select_command(
 }
 
 /// Map one send-shaped action to its planner-owned world command for the
-/// focused-window subject `window` (OFFLINE SEAM ONLY: no product path calls
-/// this — the engine refuses every send first; fake-proven shape mapping
-/// for the live step): `SendNumbered` retains a window transfer core-side
-/// (follow pins the view intent; the main-thread drain actuates natively
-/// and reports the proven outcome back under the stable operation identity
-/// so the core settles instead of retaining forever). Non-send-shaped
-/// actions (trailing send-0, stays, relative sends, outputs, selects,
-/// basics) have no send route (`None`).
+/// focused-window subject `window` (numbered send-follow 1..9 product
+/// path): `SendNumbered` retains a window transfer core-side (follow pins
+/// the view intent; the main-thread drain actuates natively and reports
+/// the proven outcome back under the stable operation identity so the core
+/// settles instead of retaining forever). Non-send-shaped actions
+/// (trailing send-0, stays, relative sends, outputs, selects, basics) have
+/// no send route (`None`).
 pub(crate) fn send_command(
     action: &InputSemanticAction,
     window: &str,

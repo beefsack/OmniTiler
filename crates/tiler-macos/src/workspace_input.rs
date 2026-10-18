@@ -53,18 +53,21 @@
 //!   friends) are real but outside the repo-established set, so they are
 //!   reported here, never silently disabled under Compatible.
 //!
-//! Execution capability: SELECT-ONLY subset armed. The 18 select rows
-//! (numbered existing-Space `1..9`, the 8 relative-select rows, and the
-//! previous toggle) carry `implemented: true` and dispatch through the
-//! product tile without a focused-window subject (empty Spaces navigate).
-//! Everything else stays `implemented: false` and is honestly refused by
-//! the engine (see [`workspace_unsupported_reason`]): the trailing
-//! `index 0` select-or-create (automatic creation/deletion unresolved —
-//! occupancy unproven, so no trailing append this milestone), all numbered
-//! and relative sends (transfer PARKED), all send-and-stay rows (bindable
-//! but unbound AND unarmed), all output sends (cross-display TBD), and
-//! whole-workspace migration (no approved form). Arming seam for the armed
-//! subset: native single-shot Space switch via the proven
+//! Execution capability: selects plus numbered send-follow 1..9. The 18
+//! select rows (numbered existing-Space `1..9`, the 8 relative-select
+//! rows, and the previous toggle) carry `implemented: true` and dispatch
+//! through the product tile without a focused-window subject (empty Spaces
+//! navigate). The 9 numbered send-follow rows (`workspace-send-1..9`)
+//! carry `implemented: true` and dispatch through the managed-send effect
+//! owner with a focused managed-window subject. Everything else stays
+//! `implemented: false` and is honestly refused by the engine (see
+//! [`workspace_unsupported_reason`]): the trailing `index 0`
+//! select-or-create (automatic creation/deletion unresolved — occupancy
+//! unproven, so no trailing append), the trailing send-0, all relative
+//! sends, all send-and-stay rows (bindable but unbound AND unarmed), all
+//! output sends (cross-display TBD), and whole-workspace migration (no
+//! approved form). Arming seam for the armed subset: native single-shot
+//! Space switch via the proven
 //! [`crate::mc_lifecycle::goto_sid_verified`] MC AX route, reused through
 //! [`crate::workspace_select`] (never duplicated); the engine enqueues one
 //! pending select without blocking and the main-thread tile controller
@@ -72,15 +75,14 @@
 //! history only on verified arrival (stale/drift fails narrow without
 //! replay, concurrent presses serialize/refuse).
 //!
-//! Offline send preparation (not product behavior): the numbered
-//! send-and-follow shape (`WorkspaceSend` 1-9 with `follow: true`) is named
-//! by [`is_armed_send`] and exercised through the offline-tested
-//! [`crate::workspace_send`] seam (fake-backed drain core, admission shape
-//! check, holder-ownership helpers) — but the catalogue marks every send
-//! row `implemented: false`, the engine refuses every send, and the product
-//! tap table carries no send chord. [`is_armed_send`] is never consulted
-//! for dispatch; it only classifies the send shape for the offline seam
-//! and its tests.
+//! Numbered send-follow (`WorkspaceSend` 1-9 with `follow: true`) is named
+//! by [`is_armed_send`] and dispatched through the production
+//! [`crate::workspace_send`] seam (engine admission, dedicated effect
+//! owner over injectable native readers, holder-ownership helpers): the
+//! catalogue marks rows 1..9 `implemented: true`, the engine admits them,
+//! and the product tap table carries their `Ctrl+Shift+digit` chords.
+//! [`is_armed_send`] is consulted for dispatch, tap categorization, and
+//! feedback classification.
 
 use crate::config::ProbeModifier;
 use crate::input_policy::{KEY_DOWN, KEY_H, KEY_J, KEY_K, KEY_L, KEY_LEFT, KEY_RIGHT, KEY_UP};
@@ -103,7 +105,7 @@ pub struct WorkspaceChord {
 /// One workspace catalogue row: the stable binding id, its text, the
 /// semantic action, the default chord (`None` = bindable but unbound by
 /// default: the send-and-stay rows), and the product execution capability
-/// (`implemented`, always false today — see the module docs).
+/// (`implemented` — see the module docs).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceRow {
     pub id: &'static str,
@@ -331,12 +333,10 @@ pub fn workspace_catalogue() -> Vec<WorkspaceRow> {
                 aux: false,
             }),
             unbound_key: None,
-            // Unarmed this milestone: every numbered send stays
-            // `implemented: false` (transfer PARKED) and refuses
-            // engine-side — see the module docs. The offline send seam
-            // (see `crate::workspace_send`) exercises the send shape
-            // through test-only injection, never through this flag.
-            implemented: false,
+            // Armed: numbered send-follow 1..9 dispatches through the
+            // managed-send effect owner; trailing send-0 stays unarmed
+            // (no trailing append) and refuses engine-side.
+            implemented: index != 0,
         });
         rows.push(WorkspaceRow {
             id: stay_id(index).expect("numbered index has a stay id"),
@@ -447,10 +447,12 @@ pub fn workspace_catalogue() -> Vec<WorkspaceRow> {
 /// selects/sends, relative selects/sends, the previous toggle, and the
 /// output sends. Stay rows contribute nothing (bindable, unbound).
 /// Defaulted is not armed: the product tile arms the basic catalogue plus
-/// the implemented select-only subset ([`crate::workspace_select::bindings`],
-/// 18 rows) via [`crate::input_policy::effective_bindings`]; every other
-/// defaulted row (trailing select-0, all sends, all outputs) stays refused
-/// engine-side (see [`workspace_unsupported_reason`]).
+/// the implemented select subset ([`crate::workspace_select::bindings`],
+/// 18 rows) plus the implemented numbered send-follow subset
+/// ([`crate::workspace_send::bindings`], 9 rows) via
+/// [`crate::input_policy::effective_bindings`]; every other defaulted row
+/// (trailing select-0, trailing send-0, stays, relative sends, outputs)
+/// stays refused engine-side (see [`workspace_unsupported_reason`]).
 #[must_use]
 pub fn workspace_bindings() -> Vec<TileBinding> {
     workspace_catalogue()
@@ -501,16 +503,16 @@ pub const fn is_armed_select(action: &InputSemanticAction) -> bool {
     }
 }
 
-/// Send-shape predicate for the OFFLINE send seam only: `WorkspaceSend`
-/// with `index` 1-9 and `follow: true` (the future `Ctrl+Shift+1..9` send
-/// shape under the default Ctrl role). This names the action shape the
-/// offline-tested [`crate::workspace_send`] machinery recognizes — it does
-/// NOT arm anything: every send row is `implemented: false`, the engine
-/// refusal gate ([`workspace_unsupported_reason`] /
-/// [`workspace_unsupported_outcome`]) deliberately does NOT consult this
-/// predicate, and the product tap table carries no send chord. Consumers
-/// are the offline drain core, the discard/kind classifier
-/// ([`crate::workspace_send::feedback_kind_for`]), and the offline tests.
+/// Send-shape predicate for the numbered send-follow product path:
+/// `WorkspaceSend` with `index` 1-9 and `follow: true` (the
+/// `Ctrl+Shift+1..9` send shape under the default Ctrl role). This names
+/// the action shape the production [`crate::workspace_send`] machinery
+/// dispatches, the tap categorizes, and the engine admits: the catalogue
+/// marks rows 1..9 `implemented: true` and
+/// [`workspace_unsupported_reason`] / [`workspace_unsupported_outcome`]
+/// consult this predicate (returning `None` here, dispatching). Consumers
+/// are the send lane, the discard/kind classifier
+/// ([`crate::workspace_send::feedback_kind_for`]), and the tests.
 /// Everything else — the trailing `index 0` send, every send-and-stay
 /// (`follow: false`), every relative send, every output send, every
 /// select, and every basic action — is NOT send-shaped.
@@ -523,13 +525,14 @@ pub const fn is_armed_send(action: &InputSemanticAction) -> bool {
 }
 
 /// Honest engine refusal reason for one semantic action (`None` for the
-/// basic actions, which execute, and for the armed select-only subset,
-/// which dispatches). Every other workspace action is recognized but
-/// undispatched; the reason names the exact missing execution seam
-/// rather than faking support.
+/// basic actions, which execute, for the armed select subset, which
+/// dispatches, and for the armed numbered send-follow 1..9 subset, which
+/// dispatches through the managed-send effect owner). Every other
+/// workspace action is recognized but undispatched; the reason names the
+/// exact missing execution seam rather than faking support.
 #[must_use]
 pub fn workspace_unsupported_reason(action: &InputSemanticAction) -> Option<&'static str> {
-    if is_armed_select(action) {
+    if is_armed_select(action) || is_armed_send(action) {
         return None;
     }
     match action {
@@ -562,13 +565,14 @@ pub fn workspace_unsupported_reason(action: &InputSemanticAction) -> Option<&'st
 }
 
 /// Static log outcome token for one refused workspace action (`None` for
-/// basic actions and for the armed select-only subset, which dispatches).
+/// basic actions, the armed select subset, and the armed numbered
+/// send-follow 1..9 subset, all of which dispatch).
 /// The engine counts under `input_refused_unsupported` and emits this
 /// token; the seam detail rides [`workspace_unsupported_reason`]
 /// (docs/tests, never guessed at runtime).
 #[must_use]
 pub fn workspace_unsupported_outcome(action: &InputSemanticAction) -> Option<&'static str> {
-    if is_armed_select(action) {
+    if is_armed_select(action) || is_armed_send(action) {
         return None;
     }
     match action {

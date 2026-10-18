@@ -36,7 +36,7 @@ fn row_by_id(id: &str) -> WorkspaceRow {
 }
 
 #[test]
-fn catalogue_shape_is_63_rows_45_defaulted_18_implemented() {
+fn catalogue_shape_is_63_rows_45_defaulted_27_implemented() {
     let catalogue = workspace_catalogue();
     assert_eq!(catalogue.len(), 63);
     assert_eq!(workspace_bindings().len(), 45);
@@ -59,10 +59,12 @@ fn catalogue_shape_is_63_rows_45_defaulted_18_implemented() {
         );
         assert!(action_keys.insert(key), "duplicate action+key {}", row.id);
     }
-    // Select-only arming: exactly the 18 select rows report implemented
-    // (numbered existing-Space 1-9, the 8 relative selects, the previous
-    // toggle); everything else stays unimplemented (trailing select-0, all
-    // sends/stays, all outputs — honestly refused, never faked).
+    // Select-plus-send arming: exactly the 18 select rows plus the 9
+    // numbered send-follow rows report implemented (numbered
+    // existing-Space 1-9, the 8 relative selects, the previous toggle,
+    // and workspace-send-1..9); everything else stays unimplemented
+    // (trailing select-0/send-0, all stays, relative sends, all outputs —
+    // honestly refused, never faked).
     let implemented: HashSet<&str> = catalogue
         .iter()
         .filter(|row| row.implemented)
@@ -78,6 +80,15 @@ fn catalogue_shape_is_63_rows_45_defaulted_18_implemented() {
         "workspace-select-7",
         "workspace-select-8",
         "workspace-select-9",
+        "workspace-send-1",
+        "workspace-send-2",
+        "workspace-send-3",
+        "workspace-send-4",
+        "workspace-send-5",
+        "workspace-send-6",
+        "workspace-send-7",
+        "workspace-send-8",
+        "workspace-send-9",
         "workspace-prev-h",
         "workspace-prev-k",
         "workspace-prev-left-arrow",
@@ -90,17 +101,15 @@ fn catalogue_shape_is_63_rows_45_defaulted_18_implemented() {
     ]
     .into_iter()
     .collect();
-    assert_eq!(implemented, expected, "armed select-only subset");
-    for id in ["workspace-send-0", "workspace-send-1", "workspace-send-9"] {
-        assert!(
-            !catalogue
-                .iter()
-                .find(|row| row.id == id)
-                .unwrap_or_else(|| panic!("{id} exists"))
-                .implemented,
-            "{id} stays unarmed (transfer PARKED)"
-        );
-    }
+    assert_eq!(implemented, expected, "armed select-plus-send subset");
+    assert!(
+        !catalogue
+            .iter()
+            .find(|row| row.id == "workspace-send-0")
+            .expect("send-0 exists")
+            .implemented,
+        "workspace-send-0 stays unarmed (no trailing append)"
+    );
     assert!(
         !catalogue
             .iter()
@@ -109,13 +118,13 @@ fn catalogue_shape_is_63_rows_45_defaulted_18_implemented() {
             .implemented,
         "trailing select-0 stays unarmed"
     );
-    // The product subsets expose exactly those 18 selects as bindings;
-    // the offline send seam arms nothing in product.
+    // The product subsets expose the 18 selects plus the 9 numbered
+    // send-follows as bindings.
     assert_eq!(crate::workspace_select::bindings().len(), 18);
     assert_eq!(
         crate::workspace_send::bindings().len(),
-        0,
-        "no send chord armed in product"
+        9,
+        "numbered send-follow 1..9 armed in product"
     );
     // Family counts: 10 select + 10 send + 10 stay + 8 + 8 + 8 relative +
     // 1 previous + 8 output.
@@ -416,8 +425,8 @@ fn trailing_zero_matches_shared_core_semantics() {
 fn numbered_chords_keep_plain_meta_digits() {
     // Numbered rows carry no auxiliary arm: Meta+digit select,
     // Meta+Shift+digit send — under Ctrl exactly the native Desktop-N
-    // default shape (the offline ownership seam covers the same digits;
-    // product arms no send chord).
+    // default shape (the ownership seam covers the same digits; product
+    // arms the 1..9 send chords).
     let select_1 = row_by_id("workspace-select-1").default.expect("bound");
     assert_eq!(
         (select_1.shift, select_1.alt, select_1.aux),
@@ -693,12 +702,11 @@ fn tap_tuning_matches_exact_aux_chords() {
 
 #[test]
 fn unsupported_refusal_names_the_seam_per_family() {
-    // Basic actions execute (no refusal), and the armed select-only subset
+    // Basic actions execute (no refusal), the armed select subset
+    // dispatches (no refusal), and the armed numbered send-follow 1..9
     // dispatches (no refusal); every other workspace family refuses with a
     // distinct static token and a reason naming its exact missing route —
-    // never a fake dispatch. Numbered sends 1-9 refuse too (transfer
-    // PARKED): the send shape is exercised only through the offline seam
-    // with test-only injection, never through product dispatch.
+    // never a fake dispatch.
     for action in [
         InputSemanticAction::FocusStep {
             direction: InputDirection::Left,
@@ -723,12 +731,27 @@ fn unsupported_refusal_names_the_seam_per_family() {
         assert!(is_armed_select(&action), "{action:?}");
         assert!(!is_armed_send(&action), "{action:?}");
     }
-    for index in [0u8, 1, 9] {
+    for index in [1u8, 9] {
         let action = InputSemanticAction::WorkspaceSend {
             index,
             follow: true,
         };
-        let reason = workspace_unsupported_reason(&action).expect("send refuses");
+        assert_eq!(
+            workspace_unsupported_reason(&action),
+            None,
+            "{action:?} dispatches"
+        );
+        assert_eq!(workspace_unsupported_outcome(&action), None, "{action:?}");
+        assert!(!is_armed_select(&action), "{action:?}");
+        assert!(is_armed_send(&action), "{index}");
+    }
+    // Trailing send-0 stays refused.
+    {
+        let action = InputSemanticAction::WorkspaceSend {
+            index: 0,
+            follow: true,
+        };
+        let reason = workspace_unsupported_reason(&action).expect("send-0 refuses");
         assert!(
             reason.contains("never runs from the product tile"),
             "{reason}"
@@ -738,10 +761,7 @@ fn unsupported_refusal_names_the_seam_per_family() {
             Some("refused-workspace-send-unsupported"),
             "{action:?}"
         );
-        assert!(!is_armed_select(&action), "{action:?}");
-        // The offline seam still names the 1-9 follow shape (never
-        // consulted for dispatch); index 0 is not send-shaped.
-        assert_eq!(is_armed_send(&action), index != 0, "{action:?}");
+        assert!(!is_armed_send(&action), "{action:?}");
     }
     // The trailing select-0 stays unarmed: automatic trailing creation is
     // unresolved (occupancy unproven), so it refuses with the switch token.
@@ -781,7 +801,7 @@ fn unsupported_refusal_names_the_seam_per_family() {
     assert!(reason.contains("cross-display"), "{reason}");
     assert_eq!(
         workspace_unsupported_outcome(&InputSemanticAction::WorkspaceSend {
-            index: 1,
+            index: 0,
             follow: true
         }),
         Some("refused-workspace-send-unsupported")
@@ -794,8 +814,8 @@ fn unsupported_refusal_names_the_seam_per_family() {
         Some("refused-workspace-output-unsupported")
     );
     // Sends, stays, and outputs are never armed selects; selects and basic
-    // actions are never send-shaped. The send shape predicate still names
-    // 1-9 follow rows for the offline seam (never consulted for dispatch).
+    // actions are never send-shaped. Only 1-9 follow rows are send-shaped
+    // (dispatched); index 0, stays, relative sends, and outputs refuse.
     for action in [
         InputSemanticAction::WorkspaceSend {
             index: 1,
@@ -860,23 +880,26 @@ fn numbered_index_validates_0_to_9() {
 
 #[test]
 fn product_select_matrix_is_duplicate_free_with_exact_arms() {
-    // Product tap table: 34 basic chords plus the 18 armed selects (52).
-    // Duplicate-free under every usable Meta/preset; Compatible under Ctrl
-    // leaves the 9 numbered selects plus the 4 unshifted arrow basics to
-    // macOS (39 = 30 basic + 9 aux), the numbers still switching natively
-    // via Switch to Desktop N. Alt/Shift Metas collapse arms and refuse
+    // Product tap table: 34 basic chords plus the 18 armed selects plus
+    // the 9 armed numbered send-follows (61). Duplicate-free under every
+    // usable Meta/preset; Compatible under Ctrl leaves the 9 numbered
+    // selects plus the 4 unshifted arrow basics to macOS (48 = 30 basic +
+    // 9 aux selects + 9 sends), the numbers still switching natively via
+    // Switch to Desktop N. Alt/Shift Metas collapse arms and refuse
     // validation rather than arming a colliding tap.
     fn product() -> Vec<TileBinding> {
         let mut out = tile_catalogue();
         out.extend(crate::workspace_select::bindings());
+        out.extend(crate::workspace_send::bindings());
         out
     }
     assert_eq!(tile_catalogue().len(), 34);
     assert_eq!(crate::workspace_select::bindings().len(), 18);
-    assert_eq!(product().len(), 52);
+    assert_eq!(crate::workspace_send::bindings().len(), 9);
+    assert_eq!(product().len(), 61);
     for modifier in [ProbeModifier::Ctrl, ProbeModifier::Meta] {
         let authentic = effective_bindings(InputPreset::Authentic, modifier, &product());
-        assert_eq!(authentic.len(), 52, "{modifier:?}");
+        assert_eq!(authentic.len(), 61, "{modifier:?}");
         let config = crate::runtime_types::RuntimeConfig {
             modifier,
             tile_bindings: Some(authentic),
@@ -885,7 +908,7 @@ fn product_select_matrix_is_duplicate_free_with_exact_arms() {
         assert!(config.validate().is_ok(), "{modifier:?}");
     }
     let compatible = effective_bindings(InputPreset::Compatible, ProbeModifier::Ctrl, &product());
-    assert_eq!(compatible.len(), 39, "30 basic + 9 aux selects");
+    assert_eq!(compatible.len(), 48, "30 basic + 9 aux selects + 9 sends");
     assert!(
         compatible
             .iter()
@@ -906,14 +929,16 @@ fn product_select_matrix_is_duplicate_free_with_exact_arms() {
             .any(|b| matches!(b.action, InputSemanticAction::WorkspacePrevious)),
         "previous toggle stays armed"
     );
-    // No sends, stays, outputs, or trailing select-0 enter the product
-    // table under any preset.
+    // No stays, relative sends, outputs, or trailing select-0/send-0
+    // enter the product table under any preset; numbered send-follow 1..9
+    // does.
     for preset in [InputPreset::Authentic, InputPreset::Compatible] {
         for modifier in [ProbeModifier::Ctrl, ProbeModifier::Meta] {
             let armed = effective_bindings(preset, modifier, &product());
             assert!(
                 armed.iter().all(|b| {
                     is_armed_select(&b.action)
+                        || is_armed_send(&b.action)
                         || matches!(
                             b.action,
                             InputSemanticAction::FocusStep { .. }
@@ -932,7 +957,25 @@ fn product_select_matrix_is_duplicate_free_with_exact_arms() {
                 )),
                 "trailing select-0 never armed: {preset:?}/{modifier:?}"
             );
+            assert!(
+                armed.iter().all(|b| !matches!(
+                    b.action,
+                    InputSemanticAction::WorkspaceSend { index: 0, .. }
+                )),
+                "trailing send-0 never armed: {preset:?}/{modifier:?}"
+            );
         }
+    }
+    // Numbered send-follow 1..9 rides the product table under both presets
+    // (shifted digits are distinct effective chords with no established
+    // holder).
+    for preset in [InputPreset::Authentic, InputPreset::Compatible] {
+        let armed = effective_bindings(preset, ProbeModifier::Ctrl, &product());
+        assert_eq!(
+            armed.iter().filter(|b| is_armed_send(&b.action)).count(),
+            9,
+            "{preset:?}"
+        );
     }
     let config = crate::runtime_types::RuntimeConfig {
         modifier: ProbeModifier::Ctrl,
@@ -941,7 +984,7 @@ fn product_select_matrix_is_duplicate_free_with_exact_arms() {
     };
     assert!(config.validate().is_ok());
     let compatible = effective_bindings(InputPreset::Compatible, ProbeModifier::Meta, &product());
-    assert_eq!(compatible.len(), 52);
+    assert_eq!(compatible.len(), 61);
     for modifier in [ProbeModifier::Alt, ProbeModifier::Shift] {
         for preset in [InputPreset::Authentic, InputPreset::Compatible] {
             let config = crate::runtime_types::RuntimeConfig {

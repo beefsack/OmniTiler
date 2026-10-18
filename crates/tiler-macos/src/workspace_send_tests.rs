@@ -1,17 +1,13 @@
 #![cfg(test)]
-//! Offline numbered send-follow seam tests: send-shape capability,
-//! world mapping, Authentic ownership (apply/resume/revert, Compatible
-//! zero-touch), admission, and the full drain over a scripted backend
-//! (gates, subject, target, stale binding, holder, busy, no-effect, release
-//! residue, history and feedback reconciliation). No live touch on any path:
-//! every holder is a fake entry, every path a temp file, every drag a
-//! scripted backend. OFFLINE PREPARATION: nothing here is product-armed —
-//! the catalogue marks every send row `implemented: false`, the engine
-//! refuses every send, and the product tap table carries no send chord. The
-//! 9 send-follow shapes are built by direct catalogue-shape injection
-//! below (test-only capability), never through product arming.
-
-use std::collections::HashMap;
+//! Numbered send-follow seam tests: send-shape capability, world mapping,
+//! Authentic ownership (apply/resume/revert, Compatible zero-touch),
+//! admission, and feedback reconciliation. No live touch on any path:
+//! every holder is a fake entry, every path a temp file. Numbered
+//! send-follow 1..9 is product-armed (catalogue `implemented: true`,
+//! engine admits, tap table carries the chords); trailing send-0, stays,
+//! relative sends, and outputs stay refused. The production effect path
+//! (engine facts, per-edge proof, tagged posts, terminal reaper) is proven
+//! separately in `workspace_send_live_tests` over scripted native readers.
 
 use tiler_core::directional::OutputId;
 use tiler_core::world_report::{AttemptKind, AttemptOutcome, WorldCommand};
@@ -21,8 +17,6 @@ use crate::desktop_shortcuts::{
 };
 use crate::input_policy::InputPreset;
 use crate::runtime_types::{ClaimedSelect, InputSemanticAction, TileBinding};
-use crate::space_drag_transfer::{DragStep, PostCounts, SwitchChords};
-use crate::workspace_select::{SelectionSnapshot, SelectionState};
 use crate::workspace_send::*;
 
 const CG_CTRL: u64 = 0x0004_0000;
@@ -42,254 +36,23 @@ fn enabled_entry(desktop: u32) -> ShortcutEntry {
     }
 }
 
-fn open_gates() -> SendGates {
-    SendGates {
-        session_unlocked: true,
-        secure_active: false,
-        lock_screen: false,
-    }
-}
-
-fn row() -> SelectionSnapshot {
-    SelectionSnapshot {
-        display: "display-a".to_owned(),
-        spaces: vec![20, 3, 7],
-        current: 20,
-    }
-}
-
-fn claim_for(index: u8) -> ClaimedSelect {
-    // Admission-bound claim: target SID resolved at admission (ordinal
-    // `index` over `row()`), revision pinned, subject pinned with its
-    // admission-time lifetime generation and source domain.
-    let target = row().spaces[usize::from(index) - 1];
-    ClaimedSelect {
-        action: send(index),
-        expected_sid: Some(target),
-        ui_generation: 0,
-        topology_revision: Some(9),
-        send_subject: Some("4242_7".to_owned()),
-        send_generation: Some(1),
-        send_source: Some(test_source_domain()),
-        operation_id: Some("op-3".to_owned()),
-    }
-}
-
-/// Admission-pinned source domain for the `claim_for` fixture subject.
-fn test_source_domain() -> tiler_core::session::DomainKey {
-    tiler_core::session::DomainKey {
-        output: OutputId("macos-display-1".to_owned()),
-        workspace: tiler_core::directional::WorkspaceId("space-20".to_owned()),
-    }
-}
-
-/// Scripted send backend: canned row/subject/holder plus the fixture-style
-/// drag effect with per-boundary fault injection. No live touch, no sleeps.
-struct Fake {
-    row: SelectionSnapshot,
-    displays: usize,
-    revision: Option<u64>,
-    subject: Result<SubjectState, String>,
-    holders: HashMap<u32, ShortcutEntry>,
-    fail_holder_reads: Vec<u32>,
-    membership: Vec<u64>,
-    current: Option<u64>,
-    goal: u64,
-    chords: Option<SwitchChords>,
-    selected: Option<(u32, u64, Option<i64>)>,
-    key_posts: Vec<(u32, u64, Option<i64>, bool)>,
-    counts: PostCounts,
-    fail_setup: bool,
-    fail_mouse_at: Option<DragStep>,
-    fail_chord_down: bool,
-    fail_key_up_once: bool,
-    fail_key_recovery: bool,
-    fail_mouse_up: bool,
-    no_effect: bool,
-    freeze_current: bool,
-    unreadable: bool,
-}
-
-impl Fake {
-    fn new() -> Self {
-        let mut holders = HashMap::new();
-        for desktop in 1..=9u32 {
-            holders.insert(
-                desktop_symbolic_id(desktop).unwrap(),
-                enabled_entry(desktop),
-            );
-        }
-        Self {
-            row: row(),
-            displays: 1,
-            revision: Some(9),
-            subject: Ok(SubjectState {
-                managed_current: true,
-                fullscreen: false,
-            }),
-            holders,
-            fail_holder_reads: Vec::new(),
-            membership: vec![20],
-            current: Some(20),
-            goal: 0,
-            chords: None,
-            selected: None,
-            key_posts: Vec::new(),
-            counts: PostCounts::default(),
-            fail_setup: false,
-            fail_mouse_at: None,
-            fail_chord_down: false,
-            fail_key_up_once: false,
-            fail_key_recovery: false,
-            fail_mouse_up: false,
-            no_effect: false,
-            freeze_current: false,
-            unreadable: false,
-        }
-    }
-}
-
-impl SendBackend for Fake {
-    fn snapshot(&mut self) -> Result<SelectionSnapshot, String> {
-        Ok(self.row.clone())
-    }
-    fn display_count(&mut self) -> Result<usize, String> {
-        Ok(self.displays)
-    }
-    fn revision(&mut self) -> Option<u64> {
-        self.revision
-    }
-    fn subject_state(&mut self, window: &str) -> Result<SubjectState, String> {
-        assert_eq!(window, "4242_7", "drain grabs the pinned subject only");
-        self.subject.clone()
-    }
-    fn read_holder(&mut self, symbolic_id: u32) -> Result<ShortcutEntry, String> {
-        if self.fail_holder_reads.contains(&symbolic_id) {
-            return Err(format!("injected holder read refusal for {symbolic_id}"));
-        }
-        self.holders.get(&symbolic_id).copied().ok_or_else(|| {
-            format!("fake holder {symbolic_id} unresolvable; refusing rather than guessing")
-        })
-    }
-    fn begin_leg(&mut self, goal: u64, chords: SwitchChords) -> Result<(), String> {
-        if self.fail_setup {
-            return Err("injected leg-setup refusal".to_owned());
-        }
-        self.goal = goal;
-        // Same selection seam as the fixture backends: the single-leg
-        // product send posts the target chord on both slots.
-        self.selected = Some(chords.for_goal(goal, goal));
-        self.chords = Some(chords);
-        Ok(())
-    }
-    fn post_mouse(&mut self, step: DragStep) -> Result<(), String> {
-        if self.fail_mouse_at == Some(step) {
-            self.fail_mouse_at = None;
-            return Err(format!("injected {step:?} refusal"));
-        }
-        if step == DragStep::MouseUp && self.fail_mouse_up {
-            return Err("injected mouse-up refusal".to_owned());
-        }
-        match step {
-            DragStep::MouseDown => self.counts.mouse_down += 1,
-            DragStep::MouseUp => self.counts.mouse_up += 1,
-            _ => {}
-        }
-        Ok(())
-    }
-    fn post_key(&mut self, down: bool) -> Result<(), String> {
-        if down {
-            if self.fail_chord_down {
-                return Err("injected chord-down refusal".to_owned());
-            }
-            self.counts.key_down += 1;
-            if let Some(selected) = self.selected {
-                self.key_posts
-                    .push((selected.0, selected.1, selected.2, true));
-            }
-            return Ok(());
-        }
-        if self.fail_key_up_once {
-            self.fail_key_up_once = false;
-            return Err("injected chord-up refusal".to_owned());
-        }
-        if self.fail_key_recovery {
-            return Err("injected chord-up recovery refusal".to_owned());
-        }
-        self.counts.key_up += 1;
-        if let Some(selected) = self.selected {
-            self.key_posts
-                .push((selected.0, selected.1, selected.2, false));
-        }
-        if !self.no_effect {
-            self.membership = vec![self.goal];
-            if !self.freeze_current {
-                self.current = Some(self.goal);
-            }
-        }
-        Ok(())
-    }
-    fn settle_grab(&mut self) {}
-    fn settle_hold(&mut self) {}
-    fn read_membership(&mut self) -> Option<Vec<u64>> {
-        if self.unreadable {
-            return None;
-        }
-        Some(self.membership.clone())
-    }
-    fn read_current(&mut self) -> Option<u64> {
-        if self.unreadable {
-            return None;
-        }
-        self.current
-    }
-    fn effect_deadline_ms(&self) -> u64 {
-        30
-    }
-    fn effect_poll_ms(&self) -> u64 {
-        1
-    }
-    fn counts(&self) -> PostCounts {
-        self.counts
-    }
-}
-
-fn drain(
-    history: &mut SelectionState,
-    backend: &mut Fake,
-    claim: ClaimedSelect,
-) -> Result<SendEffect, String> {
-    drain_claimed_send(history, backend, claim, &open_gates())
-}
-
-/// Test-only send-follow capability injection: the 9 send-follow shapes
-/// built directly from the catalogue rows (ignoring `implemented`, which is
-/// false for every send in product). The offline seam exercises exactly
-/// these shapes; product arms none of them.
+/// Product send-follow capability: the 9 numbered send-follow shapes
+/// 1..9 from the armed product `bindings()` (catalogue
+/// `implemented: true` plus `is_armed_send`).
 fn send_shape_bindings() -> Vec<TileBinding> {
-    crate::workspace_input::workspace_catalogue()
-        .into_iter()
-        .filter(|row| {
-            matches!(
-                row.action,
-                InputSemanticAction::WorkspaceSend { follow: true, .. }
-            ) && row.id != "workspace-send-0"
-        })
-        .filter_map(|row| row.binding())
-        .collect()
+    bindings()
 }
 
 #[test]
-fn send_follow_shape_stays_test_only_unarmed() {
-    // The offline seam covers exactly the 9 send-follow shapes 1-9 with
-    // Ctrl+Shift+digit chords — but the catalogue marks every one
-    // `implemented: false`, the product `bindings()` arms nothing, and the
-    // engine refuses every one: capability lives only in this test-only
-    // injection, never in product arming.
-    let injected = send_shape_bindings();
-    assert_eq!(injected.len(), 9, "offline seam covers 9 send shapes");
+fn send_follow_shape_armed_in_product() {
+    // Product arming: the catalogue marks 1..9 `implemented: true`,
+    // `bindings()` arms their 9 Ctrl+Shift+digit chords, and the engine
+    // admits them (unsupported shapes still refuse — see below).
+    let armed = send_shape_bindings();
+    assert_eq!(armed.len(), 9, "product arms 9 send shapes");
+    assert_eq!(armed.len(), bindings().len());
     let mut seen = Vec::new();
-    for binding in &injected {
+    for binding in &armed {
         let InputSemanticAction::WorkspaceSend { index, follow } = binding.action else {
             panic!("send shape carries a non-send: {:?}", binding.action);
         };
@@ -303,22 +66,25 @@ fn send_follow_shape_stays_test_only_unarmed() {
     }
     seen.sort_unstable();
     assert_eq!(seen, vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
-    // Product reality: catalogue unimplemented, no armed bindings, engine
-    // refusal for every injected shape.
+    // Catalogue reality: 1..9 implemented, send-0 and stays unimplemented.
     for row in crate::workspace_input::workspace_catalogue() {
-        if matches!(row.action, InputSemanticAction::WorkspaceSend { .. }) {
-            assert!(
-                !row.implemented,
-                "{} must stay implemented:false in product",
-                row.id
-            );
+        match &row.action {
+            InputSemanticAction::WorkspaceSend {
+                index,
+                follow: true,
+            } if (1..=9).contains(index) => {
+                assert!(row.implemented, "{} must be implemented:true", row.id);
+            }
+            InputSemanticAction::WorkspaceSend { .. } => {
+                assert!(
+                    !row.implemented,
+                    "{} must stay implemented:false in product",
+                    row.id
+                );
+            }
+            _ => {}
         }
     }
-    assert_eq!(
-        bindings().len(),
-        0,
-        "product arms no send chord this milestone"
-    );
     // Trailing send-0, stays, relative sends, and outputs stay out even
     // though they are defaulted/bound elsewhere.
     for action in [
@@ -350,17 +116,18 @@ fn send_follow_shape_stays_test_only_unarmed() {
     }
     for index in 1..=9u8 {
         let action = send(index);
-        // The seam names the shape (drain/admission/kind classifiers agree)
-        // while the product engine refuses every one of them.
+        // Armed shapes dispatch: the engine admits them (no unsupported
+        // reason/outcome) while the shape classifiers still agree.
         assert!(crate::workspace_input::is_armed_send(&action), "{index}");
         assert!(!crate::workspace_input::is_armed_select(&action), "{index}");
-        assert!(
-            crate::workspace_input::workspace_unsupported_reason(&action).is_some(),
-            "{index} refused by product"
+        assert_eq!(
+            crate::workspace_input::workspace_unsupported_reason(&action),
+            None,
+            "{index} dispatches in product"
         );
         assert_eq!(
             crate::workspace_input::workspace_unsupported_outcome(&action),
-            Some("refused-workspace-send-unsupported"),
+            None,
             "{index}"
         );
     }
@@ -369,15 +136,15 @@ fn send_follow_shape_stays_test_only_unarmed() {
 #[test]
 fn send_chords_match_settings_ctrl_shift_digits() {
     // Ctrl+Shift+digit under Ctrl (settings parity); stay rows stay
-    // bindable unbound (no chord); aux rows stay Ctrl+Cmd. Uses the
-    // test-only injection: product arms no send chord.
+    // bindable unbound (no chord); aux rows stay Ctrl+Cmd. Uses the armed
+    // product bindings.
     use crate::config::ProbeModifier;
     use crate::workspace_input::effective_flags_for;
     const CTRL: u64 = 0x0004_0000;
     const SHIFT: u64 = 0x0002_0000;
-    let injected = send_shape_bindings();
-    assert_eq!(injected.len(), 9);
-    for binding in &injected {
+    let armed = send_shape_bindings();
+    assert_eq!(armed.len(), 9);
+    for binding in &armed {
         assert_eq!(
             effective_flags_for(ProbeModifier::Ctrl, binding),
             CTRL | SHIFT,
@@ -385,9 +152,9 @@ fn send_chords_match_settings_ctrl_shift_digits() {
             binding.action
         );
     }
-    // The tap spec category for the send shape is basic (a future send
-    // would need focus): the `select` flag stays is_armed_select-only.
-    let specs = crate::native_input::tap_specs_for(ProbeModifier::Ctrl, &injected);
+    // The tap spec category for the send shape is basic (a send needs
+    // focus): the `select` flag stays is_armed_select-only.
+    let specs = crate::native_input::tap_specs_for(ProbeModifier::Ctrl, &armed);
     assert_eq!(specs.len(), 9);
     assert!(
         specs.iter().all(|s| !s.select),
@@ -397,8 +164,8 @@ fn send_chords_match_settings_ctrl_shift_digits() {
 
 #[test]
 fn send_command_maps_send_shapes_to_numbered_transfers() {
-    // Offline seam mapping only: no product path dispatches these (the
-    // engine refuses every send first).
+    // Product send mapping: the engine admits 1..9 and retains a
+    // `SendNumbered` transfer core-side.
     use crate::world_command_map::{OP_SEND, select_command, send_command};
     assert_ne!(OP_SEND, crate::world_command_map::OP_SELECT);
     let output = OutputId("macos-display-1".to_owned());
@@ -417,7 +184,7 @@ fn send_command_maps_send_shapes_to_numbered_transfers() {
         // Sends never ride the select route.
         assert_eq!(select_command(&send(index), output.clone()), None);
     }
-    // Unarmed actions have no send route.
+    // Unsupported actions have no send route.
     for action in [
         InputSemanticAction::WorkspaceSend {
             index: 0,
@@ -637,7 +404,7 @@ fn admission_serializes_and_refuses_without_topology() {
     use crate::runtime_thread::admit_send_claim;
     let good = ClaimedSelect::tap(send(2));
     assert!(admit_send_claim(true, false, false, good).is_ok());
-    // Unarmed (trailing, stay, relative, select, basic) refuses.
+    // Unsupported (trailing, stay, relative, select, basic) refuses.
     for action in [
         InputSemanticAction::WorkspaceSend {
             index: 0,
@@ -676,383 +443,6 @@ fn admission_serializes_and_refuses_without_topology() {
 }
 
 #[test]
-fn drain_gates_refuse_before_any_post() {
-    for gates in [
-        SendGates {
-            session_unlocked: false,
-            ..open_gates()
-        },
-        SendGates {
-            secure_active: true,
-            ..open_gates()
-        },
-        SendGates {
-            lock_screen: true,
-            ..open_gates()
-        },
-    ] {
-        let mut history = SelectionState::default();
-        let mut backend = Fake::new();
-        let err = drain_claimed_send(&mut history, &mut backend, claim_for(2), &gates)
-            .expect_err("gated drain refuses");
-        assert!(err.starts_with("send gated:"), "{err}");
-        assert_eq!(
-            classify_send_drain_error(&err),
-            SendDrainOutcome::Refused,
-            "pre-actuation refusal settles proven"
-        );
-        assert_eq!(backend.counts.total(), 0, "zero posts while gated");
-    }
-}
-
-#[test]
-fn drain_refuses_unarmed_subjectless_and_bad_display() {
-    let mut history = SelectionState::default();
-    // Unarmed actions refuse even through the send drain.
-    for action in [
-        InputSemanticAction::WorkspaceSend {
-            index: 0,
-            follow: true,
-        },
-        InputSemanticAction::WorkspaceSend {
-            index: 2,
-            follow: false,
-        },
-        InputSemanticAction::WorkspaceSelect { index: 2 },
-    ] {
-        let mut backend = Fake::new();
-        let err = drain_claimed_send(
-            &mut history,
-            &mut backend,
-            ClaimedSelect {
-                action,
-                expected_sid: None,
-                ui_generation: 0,
-                topology_revision: None,
-                send_subject: Some("4242_7".to_owned()),
-                send_generation: None,
-                send_source: None,
-                operation_id: None,
-            },
-            &open_gates(),
-        )
-        .expect_err("unarmed refuses");
-        assert_eq!(err, "product send refuses unarmed actions", "{err}");
-        assert_eq!(backend.counts.total(), 0);
-    }
-    // No pinned subject refuses (never grab whatever happens to be focused).
-    let mut backend = Fake::new();
-    let mut claim = claim_for(2);
-    claim.send_subject = None;
-    let err = drain(&mut history, &mut backend, claim).expect_err("subjectless refuses");
-    assert!(err.contains("no subject window"), "{err}");
-    assert_eq!(backend.counts.total(), 0);
-    // Zero or multiple displays refuse before any backend touch.
-    for displays in [0, 2] {
-        let mut backend = Fake::new();
-        backend.displays = displays;
-        let err =
-            drain(&mut history, &mut backend, claim_for(2)).expect_err("display count refuses");
-        assert!(err.contains("exactly one native display"), "{err}");
-        assert_eq!(backend.counts.total(), 0);
-    }
-}
-
-#[test]
-fn drain_refuses_unmanaged_and_fullscreen_subjects() {
-    let mut history = SelectionState::default();
-    // Subject left managed membership (closed, hidden, unknown): refuse.
-    for state in [
-        SubjectState {
-            managed_current: false,
-            fullscreen: false,
-        },
-        SubjectState {
-            managed_current: false,
-            fullscreen: true,
-        },
-    ] {
-        let mut backend = Fake::new();
-        backend.subject = Ok(state);
-        let err = drain(&mut history, &mut backend, claim_for(2)).expect_err("unmanaged refuses");
-        assert!(err.contains("managed membership"), "{err}");
-        assert_eq!(backend.counts.total(), 0);
-    }
-    // Fullscreen subject (game overlay owns its Space): never drag.
-    let mut backend = Fake::new();
-    backend.subject = Ok(SubjectState {
-        managed_current: true,
-        fullscreen: true,
-    });
-    let err = drain(&mut history, &mut backend, claim_for(2)).expect_err("fullscreen refuses");
-    assert!(err.contains("fullscreen"), "{err}");
-    assert_eq!(backend.counts.total(), 0);
-    // Unreadable subject refuses without guessing.
-    let mut backend = Fake::new();
-    backend.subject = Err("ax facts stale".to_owned());
-    let err = drain(&mut history, &mut backend, claim_for(2)).expect_err("unreadable refuses");
-    assert!(err.contains("subject unreadable"), "{err}");
-    assert_eq!(backend.counts.total(), 0);
-}
-
-#[test]
-fn drain_refuses_stale_targets_before_any_post() {
-    let mut history = SelectionState::default();
-    // Ordinal past the row with no admission binding: no target.
-    let mut backend = Fake::new();
-    backend.row.spaces = vec![20];
-    let mut unbound = ClaimedSelect::tap(send(2));
-    unbound.send_subject = Some("4242_7".to_owned());
-    let err = drain_claimed_send(&mut history, &mut backend, unbound, &open_gates())
-        .expect_err("past-end refuses");
-    assert!(err.contains("has no Space"), "{err}");
-    assert_eq!(backend.counts.total(), 0);
-    // Reordered row: the ordinal no longer names the admission SID.
-    let mut backend = Fake::new();
-    backend.row.spaces = vec![20, 7, 3];
-    let err = drain(&mut history, &mut backend, claim_for(2)).expect_err("reorder refuses");
-    assert!(err.contains("stale bound send discarded"), "{err}");
-    assert_eq!(classify_send_drain_error(&err), SendDrainOutcome::Refused);
-    assert_eq!(backend.counts.total(), 0);
-    // Vanished ordinal: no longer exists.
-    let mut backend = Fake::new();
-    backend.row.spaces = vec![20];
-    let mut claim = claim_for(2);
-    claim.expected_sid = Some(999);
-    let err = drain(&mut history, &mut backend, claim).expect_err("vanished refuses");
-    assert!(err.contains("stale bound send discarded"), "{err}");
-    assert_eq!(backend.counts.total(), 0);
-    // Revision drift between admission and drain.
-    let mut backend = Fake::new();
-    backend.revision = Some(10);
-    let err = drain(&mut history, &mut backend, claim_for(2)).expect_err("drift refuses");
-    assert!(err.contains("revision moved"), "{err}");
-    assert_eq!(backend.counts.total(), 0);
-}
-
-#[test]
-fn drain_refuses_unusable_holders_before_any_post() {
-    let mut history = SelectionState::default();
-    // Unreadable holder.
-    let mut backend = Fake::new();
-    backend
-        .fail_holder_reads
-        .push(desktop_symbolic_id(2).unwrap());
-    let err = drain(&mut history, &mut backend, claim_for(2)).expect_err("unreadable refuses");
-    assert!(err.contains("holder unreadable"), "{err}");
-    assert_eq!(backend.counts.total(), 0);
-    // Disabled holder: names the manual fix, never writes settings.
-    let mut backend = Fake::new();
-    backend.holders.insert(
-        desktop_symbolic_id(2).unwrap(),
-        ShortcutEntry {
-            enabled: false,
-            keycode: desktop_digit_keycode(2).unwrap(),
-            modifiers: CG_CTRL,
-        },
-    );
-    let err = drain(&mut history, &mut backend, claim_for(2)).expect_err("disabled refuses");
-    assert!(err.contains("product send refuses"), "{err}");
-    assert_eq!(
-        classify_send_drain_error(&err),
-        SendDrainOutcome::Refused,
-        "holder gate is pre-actuation"
-    );
-    assert_eq!(backend.counts.total(), 0);
-    // Customized chord (Shift+digit instead of Ctrl+digit): refused, never
-    // rewritten, never posted as a chord that does nothing.
-    let mut backend = Fake::new();
-    backend.holders.insert(
-        desktop_symbolic_id(2).unwrap(),
-        ShortcutEntry {
-            enabled: true,
-            keycode: desktop_digit_keycode(2).unwrap(),
-            modifiers: CG_CTRL | 0x0002_0000,
-        },
-    );
-    let err = drain(&mut history, &mut backend, claim_for(2)).expect_err("custom refuses");
-    assert!(err.contains("product send refuses"), "{err}");
-    assert_eq!(backend.counts.total(), 0);
-}
-
-#[test]
-fn drain_sends_and_follows_with_exact_readback_and_history() {
-    let mut history = SelectionState::default();
-    let mut backend = Fake::new();
-    let effect = drain(&mut history, &mut backend, claim_for(2)).expect("send follows");
-    assert_eq!(effect.from, 20);
-    assert_eq!(effect.target, 3);
-    assert_eq!(effect.target_desktop, 2);
-    assert_eq!(effect.membership, vec![3]);
-    assert_eq!(effect.current, 3);
-    assert!(!effect.pending_recovered);
-    // Posted exactly the target ordinal's Control-only digit, tagged, both
-    // edges — never an arrow, never untagged.
-    let tag = Some(crate::input_match::OWN_SWITCH_USER_DATA);
-    let digit_2 = desktop_digit_keycode(2).unwrap();
-    assert_eq!(
-        backend.key_posts,
-        vec![
-            (digit_2, CG_CTRL, tag, true),
-            (digit_2, CG_CTRL, tag, false)
-        ]
-    );
-    assert!(backend.counts.balanced());
-    // Verified follow notes the source in previous history: workspace-
-    // previous flips back to it.
-    let mut select_backend = SelectRowBackend {
-        row: SelectionSnapshot {
-            display: "display-a".to_owned(),
-            spaces: vec![20, 3, 7],
-            current: 3,
-        },
-    };
-    let previous = history_previous(&mut history, &mut select_backend);
-    assert_eq!(previous, Some(20), "follow arrival notes the source");
-}
-
-/// Minimal [`crate::workspace_select::SelectionBackend`] over a canned row
-/// for proving the send-noted history through the select previous toggle.
-struct SelectRowBackend {
-    row: SelectionSnapshot,
-}
-
-impl crate::workspace_select::SelectionBackend for SelectRowBackend {
-    fn snapshot(&mut self) -> Result<SelectionSnapshot, String> {
-        Ok(self.row.clone())
-    }
-    fn display_count(&mut self) -> Result<usize, String> {
-        Ok(1)
-    }
-    fn empty(&mut self, _: u64) -> Result<bool, String> {
-        Ok(true)
-    }
-    fn create(&mut self, _: &SelectionSnapshot) -> Result<(), String> {
-        Err("no create in history proof".to_owned())
-    }
-    fn select(&mut self, _: &SelectionSnapshot, sid: u64) -> Result<(), String> {
-        self.row.current = sid;
-        Ok(())
-    }
-}
-
-fn history_previous(history: &mut SelectionState, backend: &mut SelectRowBackend) -> Option<u64> {
-    history
-        .execute(backend, InputSemanticAction::WorkspacePrevious)
-        .ok()
-        .map(|effect| effect.target)
-}
-
-#[test]
-fn drain_no_effect_never_inverts_and_holds() {
-    let mut history = SelectionState::default();
-    let mut backend = Fake::new();
-    backend.no_effect = true;
-    let err = drain(&mut history, &mut backend, claim_for(2)).expect_err("no-effect holds");
-    assert!(err.contains("no effect"), "{err}");
-    assert_eq!(
-        classify_send_drain_error(&err),
-        SendDrainOutcome::PossiblyExecuted,
-        "completed chord without exact readback holds, never replays"
-    );
-    // Balanced release, but no history advance on ambiguous output.
-    assert!(backend.counts.balanced());
-    let mut select_backend = SelectRowBackend {
-        row: SelectionSnapshot {
-            display: "display-a".to_owned(),
-            spaces: vec![20, 3, 7],
-            current: 20,
-        },
-    };
-    assert!(
-        history
-            .execute(&mut select_backend, InputSemanticAction::WorkspacePrevious)
-            .is_err(),
-        "ambiguous output advances no history"
-    );
-}
-
-#[test]
-fn drain_current_mismatch_holds_with_both_readbacks() {
-    let mut history = SelectionState::default();
-    let mut backend = Fake::new();
-    backend.freeze_current = true;
-    let err = drain(&mut history, &mut backend, claim_for(2)).expect_err("mismatch holds");
-    assert!(err.contains("no effect"), "{err}");
-    assert_eq!(
-        classify_send_drain_error(&err),
-        SendDrainOutcome::PossiblyExecuted
-    );
-}
-
-#[test]
-fn drain_release_failures_park_residue_and_hold() {
-    // Chord-up recovery refusal parks the key edge with the mouse released.
-    let mut history = SelectionState::default();
-    let mut backend = Fake::new();
-    backend.fail_key_up_once = true;
-    backend.fail_key_recovery = true;
-    let err = drain(&mut history, &mut backend, claim_for(2)).expect_err("pending parks");
-    assert!(err.contains("residue"), "{err}");
-    assert_eq!(
-        classify_send_drain_error(&err),
-        SendDrainOutcome::PossiblyExecuted
-    );
-    assert_eq!((backend.counts.mouse_down, backend.counts.mouse_up), (1, 1));
-    // Mouse-up refusal parks the release itself.
-    let mut backend = Fake::new();
-    backend.fail_mouse_up = true;
-    let err = drain(&mut history, &mut backend, claim_for(2)).expect_err("release parks");
-    assert!(err.contains("residue"), "{err}");
-    assert_eq!(
-        classify_send_drain_error(&err),
-        SendDrainOutcome::PossiblyExecuted
-    );
-    // ...while a once-only chord-up recovery still completes the follow.
-    let mut backend = Fake::new();
-    backend.fail_key_up_once = true;
-    let effect = drain(&mut history, &mut backend, claim_for(2)).expect("recovery completes");
-    assert!(effect.pending_recovered);
-    assert_eq!((effect.membership, effect.current), (vec![3], 3));
-}
-
-#[test]
-fn drain_setup_and_grab_refusals_are_pre_actuation() {
-    // Leg-setup, grab, and chord-down refusals post no effective chord:
-    // proven refusals, never holds.
-    let mut history = SelectionState::default();
-    let mut backend = Fake::new();
-    backend.fail_setup = true;
-    let err = drain(&mut history, &mut backend, claim_for(2)).expect_err("setup refuses");
-    assert!(err.contains("refused before effect"), "{err}");
-    assert_eq!(classify_send_drain_error(&err), SendDrainOutcome::Refused);
-    assert_eq!(backend.counts.total(), 0);
-    let mut backend = Fake::new();
-    backend.fail_mouse_at = Some(DragStep::MouseDragged);
-    let err = drain(&mut history, &mut backend, claim_for(2)).expect_err("grab refuses");
-    assert!(err.contains("refused before effect"), "{err}");
-    assert_eq!(classify_send_drain_error(&err), SendDrainOutcome::Refused);
-    let mut backend = Fake::new();
-    backend.fail_chord_down = true;
-    let err = drain(&mut history, &mut backend, claim_for(2)).expect_err("chord refuses");
-    assert!(err.contains("refused before effect"), "{err}");
-    assert_eq!(classify_send_drain_error(&err), SendDrainOutcome::Refused);
-    // Unreadable post-release readback is ambiguous (the chord completed):
-    // holds, never a false proven refusal.
-    let mut backend = Fake::new();
-    backend.unreadable = true;
-    let err = drain(&mut history, &mut backend, claim_for(2)).expect_err("unreadable holds");
-    assert!(
-        !err.contains("refused before effect"),
-        "readback refusal must not read as pre-actuation: {err}"
-    );
-    assert_eq!(
-        classify_send_drain_error(&err),
-        SendDrainOutcome::PossiblyExecuted
-    );
-}
-
-#[test]
 fn feedback_kinds_and_outcomes_reconcile_engine_world() {
     // Sends settle transfers; selects settle views (single home for the
     // discard/feedback kind branch).
@@ -1081,13 +471,25 @@ fn feedback_kinds_and_outcomes_reconcile_engine_world() {
         attempt_outcome_for(SendDrainOutcome::PossiblyExecuted),
         AttemptOutcome::PossiblyExecuted
     );
-    // The live-boundary refusal classifies proven (the desktop was never
+    // Pre-actuation refusals classify proven (the desktop was never
     // touched), so the core settles instead of retaining forever.
     assert_eq!(
-        classify_send_drain_error(
-            "product send refuses: live managed-window backend lands in the live step; no post performed"
-        ),
+        classify_send_drain_error("send drag refused before effect at chord-down: injected"),
         SendDrainOutcome::Refused
+    );
+    // Effect-outcome mapping for the async controller settlement.
+    use crate::workspace_send_effect::SendEffectOutcome;
+    assert_eq!(
+        send_drain_outcome_for(SendEffectOutcome::Applied),
+        SendDrainOutcome::Applied
+    );
+    assert_eq!(
+        send_drain_outcome_for(SendEffectOutcome::RefusedProven),
+        SendDrainOutcome::Refused
+    );
+    assert_eq!(
+        send_drain_outcome_for(SendEffectOutcome::PossiblyExecuted),
+        SendDrainOutcome::PossiblyExecuted
     );
     // Unknown strings fail safe toward the hold.
     assert_eq!(
@@ -1101,28 +503,29 @@ fn feedback_kinds_and_outcomes_reconcile_engine_world() {
 }
 
 #[test]
-fn tile_bindings_cover_basic_plus_selects_only() {
-    // Product tap table: 34 basic + 18 armed selects (52); the offline send
-    // seam arms nothing in product (`bindings()` is empty). Duplicate-free
-    // under every usable Meta/preset; Compatible under Ctrl leaves the 9
-    // numbered selects plus the 4 unshifted arrow basics to macOS (39 = 30
-    // basic + 9 aux selects).
+fn tile_bindings_cover_basic_plus_selects_plus_sends() {
+    // Product tap table: 34 basic + 18 armed selects + 9 armed numbered
+    // send-follows (61). Duplicate-free under every usable Meta/preset;
+    // Compatible under Ctrl leaves the 9 numbered selects plus the 4
+    // unshifted arrow basics to macOS (48 = 30 basic + 9 aux selects + 9
+    // sends).
     use crate::config::ProbeModifier;
     use crate::input_policy::{InputPreset, effective_bindings};
     use crate::native_input::tile_catalogue;
     fn product() -> Vec<TileBinding> {
         let mut out = tile_catalogue();
         out.extend(crate::workspace_select::bindings());
+        out.extend(bindings());
         out
     }
     assert_eq!(tile_catalogue().len(), 34);
     assert_eq!(crate::workspace_select::bindings().len(), 18);
-    assert_eq!(bindings().len(), 0, "send seam arms nothing in product");
-    assert_eq!(product().len(), 52);
-    assert_eq!(crate::tile::product_catalogue().len(), 52);
+    assert_eq!(bindings().len(), 9, "product arms 9 numbered send-follows");
+    assert_eq!(product().len(), 61);
+    assert_eq!(crate::tile::product_catalogue().len(), 61);
     for modifier in [ProbeModifier::Ctrl, ProbeModifier::Meta] {
         let authentic = effective_bindings(InputPreset::Authentic, modifier, &product());
-        assert_eq!(authentic.len(), 52, "{modifier:?}");
+        assert_eq!(authentic.len(), 61, "{modifier:?}");
         let config = crate::runtime_types::RuntimeConfig {
             modifier,
             tile_bindings: Some(authentic),
@@ -1131,19 +534,29 @@ fn tile_bindings_cover_basic_plus_selects_only() {
         assert!(config.validate().is_ok(), "{modifier:?}");
     }
     let compatible = effective_bindings(InputPreset::Compatible, ProbeModifier::Ctrl, &product());
-    assert_eq!(compatible.len(), 39, "30 basic + 9 aux selects");
+    assert_eq!(compatible.len(), 48, "30 basic + 9 aux selects + 9 sends");
+    assert_eq!(
+        compatible
+            .iter()
+            .filter(|b| crate::workspace_input::is_armed_send(&b.action))
+            .count(),
+        9,
+        "numbered send-follow enters the product table (shifted digits kept)"
+    );
+    // Unsupported sends (trailing, stays, relative, outputs) never enter.
     assert_eq!(
         compatible
             .iter()
             .filter(|b| matches!(
                 b.action,
-                InputSemanticAction::WorkspaceSend { .. }
+                InputSemanticAction::WorkspaceSend { index: 0, .. }
+                    | InputSemanticAction::WorkspaceSend { follow: false, .. }
                     | InputSemanticAction::WorkspaceSendRelative { .. }
                     | InputSemanticAction::WorkspaceOutput { .. }
             ))
             .count(),
         0,
-        "no send shape enters the product table under any preset"
+        "unsupported send shapes never enter the product table"
     );
     let config = crate::runtime_types::RuntimeConfig {
         modifier: ProbeModifier::Ctrl,
@@ -1151,4 +564,80 @@ fn tile_bindings_cover_basic_plus_selects_only() {
         ..crate::runtime_types::RuntimeConfig::default()
     };
     assert!(config.validate().is_ok());
+}
+
+#[test]
+fn armed_hotkey_admits_and_maps_to_transfer_feedback() {
+    // Producer-shaped pathway (no live touch): the armed product chord for
+    // send-2 carries Ctrl+Shift+digit, the engine admits the tap claim,
+    // the world maps it to a `SendNumbered` transfer, and the feedback
+    // classifiers settle transfers (never views). Unsupported shapes still
+    // refuse admission and engine dispatch.
+    use crate::config::ProbeModifier;
+    use crate::runtime_thread::admit_send_claim;
+    use crate::workspace_input::{effective_flags_for, workspace_unsupported_outcome};
+    use crate::world_command_map::send_command;
+    const CTRL: u64 = 0x0004_0000;
+    const SHIFT: u64 = 0x0002_0000;
+    let binding = bindings()
+        .into_iter()
+        .find(|b| b.action == send(2))
+        .expect("send-2 armed in product");
+    assert_eq!(
+        effective_flags_for(ProbeModifier::Ctrl, &binding),
+        CTRL | SHIFT,
+        "armed send-2 is Ctrl+Shift+digit"
+    );
+    assert_eq!(workspace_unsupported_outcome(&binding.action), None);
+    let claim = ClaimedSelect::tap(binding.action.clone());
+    assert!(admit_send_claim(true, false, false, claim).is_ok());
+    let output = OutputId("macos-display-1".to_owned());
+    let command = send_command(&binding.action, "4242_7", output.clone()).expect("world route");
+    assert_eq!(
+        command,
+        tiler_core::world_report::WorldCommand::SendNumbered {
+            window: tiler_core::directional::WindowId("4242_7".to_owned()),
+            output,
+            index: 2,
+            follow: true,
+        }
+    );
+    assert_eq!(feedback_kind_for(&binding.action), AttemptKind::Transfer);
+    assert_eq!(
+        attempt_outcome_for(SendDrainOutcome::Applied),
+        AttemptOutcome::Applied
+    );
+    for action in [
+        InputSemanticAction::WorkspaceSend {
+            index: 0,
+            follow: true,
+        },
+        InputSemanticAction::WorkspaceSend {
+            index: 2,
+            follow: false,
+        },
+        InputSemanticAction::WorkspaceSendRelative {
+            prev: true,
+            follow: true,
+        },
+        InputSemanticAction::WorkspaceOutput {
+            direction: crate::runtime_types::InputDirection::Left,
+            follow: true,
+        },
+    ] {
+        assert!(
+            workspace_unsupported_outcome(&action).is_some(),
+            "{action:?}"
+        );
+        assert_eq!(
+            admit_send_claim(true, false, false, ClaimedSelect::tap(action.clone())),
+            Err("refused-send-unarmed"),
+            "{action:?}"
+        );
+        assert_eq!(
+            send_command(&action, "4242_7", OutputId("macos-display-1".to_owned())),
+            None,
+            "{action:?}"
+        );
+    }
 }

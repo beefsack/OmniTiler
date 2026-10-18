@@ -151,6 +151,7 @@ pub struct ScopedObservation {
 // [`crate::runtime_shared`] (re-exported here so every existing
 // `crate::runtime::{Shared, ...}` path keeps working); per-app lifetime
 // admission lives in [`crate::runtime_apps`].
+pub use crate::runtime_core::EngineManagedFacts;
 pub use crate::runtime_shared::{MidflightHook, NativeContextCell, PostAcceptHook};
 pub(crate) use crate::runtime_shared::{
     Shared, emit, engine_alive, invalidate_clock, lock_focus, lock_shared,
@@ -572,6 +573,7 @@ fn cleanup_failed_start(
 /// [`RuntimeHandle::flush`], [`RuntimeHandle::shutdown`] and
 /// [`RuntimeHandle::reap`], which wait bounded. Safe to use from the main
 /// thread; never activates the desktop.
+#[derive(Clone)]
 pub struct RuntimeHandle {
     pub(crate) shared: Arc<Mutex<Shared>>,
     pub(crate) inbox: Arc<Inbox>,
@@ -1157,6 +1159,31 @@ impl RuntimeHandle {
             return false;
         }
         rx.recv_timeout(timeout).is_ok()
+    }
+
+    /// Current engine-managed facts for one subject window (control lane,
+    /// never silently dropped; waits at most `timeout` for the owner
+    /// reply). `None` means the engine is gone, the inbox is closed, the
+    /// bound elapsed, or the engine no longer manages the window — every
+    /// one of those refuses without actuation on the effect owner. Never
+    /// blocks input or observation owners (only the caller waits).
+    pub fn query_managed_facts(
+        &self,
+        window: &str,
+        timeout: std::time::Duration,
+    ) -> Option<crate::runtime_core::EngineManagedFacts> {
+        use crate::runtime_shared::engine_alive;
+        if !engine_alive(&self.shared) {
+            return None;
+        }
+        let (tx, rx) = mpsc::channel::<Option<crate::runtime_core::EngineManagedFacts>>();
+        if !self.inbox.send_control(EngineJob::ManagedFactsQuery {
+            window: window.to_owned(),
+            reply: tx,
+        }) {
+            return None;
+        }
+        rx.recv_timeout(timeout).ok().flatten()
     }
 
     /// Query the engine's retained workspace occupancy (control lane, never

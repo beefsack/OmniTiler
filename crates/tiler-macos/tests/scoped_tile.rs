@@ -19,9 +19,9 @@ use tiler_macos::ffi::{DisplayRect, NsDisplay, SlsDisplayRow};
 use tiler_macos::input::cg_flag_bits;
 use tiler_macos::input_match::TapKeyKind;
 use tiler_macos::runtime::{
-    AxCompletion, FocusCommand, FocusEvidence, FocusRoute, ObservedWindow, Runtime, RuntimeConfig,
-    RuntimeHandle, ScopedBackendSnapshot, ScopedObservation, ScopedWindowMeta, ShutdownOutcome,
-    SubmitOutcome, TopologyMode,
+    AxCompletion, EngineManagedFacts, FocusCommand, FocusEvidence, FocusRoute, ObservedWindow,
+    Runtime, RuntimeConfig, RuntimeHandle, ScopedBackendSnapshot, ScopedObservation,
+    ScopedWindowMeta, ShutdownOutcome, SubmitOutcome, TopologyMode,
 };
 use tiler_macos::runtime_backend::{
     AxBackend, AxBackendFactory, InputSource, InputSourceFactory, RawKeyEvent,
@@ -672,6 +672,76 @@ fn engine_omits_without_membership_never_infers_geometry() {
             .map(|f| f.window.as_str())
             .collect::<Vec<_>>(),
         vec!["1001_3"]
+    );
+    shutdown_clean(&fixture);
+}
+
+#[test]
+fn managed_facts_query_serves_current_engine_truth() {
+    // The dedicated effect owner's authority over the control lane (strict
+    // FIFO with observations): current generation, homing source plus
+    // actuation, retained fullscreen, minimized exclusion, and the retained
+    // revision. Unknown windows, unhomed windows, and terminated lifetimes
+    // publish nothing — native OS reads supplement these facts on the
+    // owner, never replace them.
+    let fixture = start(scoped_config());
+    let revision = fixture
+        .handle
+        .update_topology_with(two_space_snapshot(), &user_space);
+    let gen_a = fixture.handle.launch_app(APP_A).expect("launch");
+    // Unknown before any observation: never guessed.
+    assert!(
+        fixture.handle.query_managed_facts("1001_1", WAIT).is_none(),
+        "no facts before observation"
+    );
+    let mut hidden_full = win_at(2, 100, 100, 200, 200);
+    hidden_full.fullscreen = true;
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_A,
+            gen_a,
+            1,
+            vec![
+                (win_at(1, 100, 100, 200, 200), vec![11]),
+                (hidden_full, vec![12]),
+                (win_at(3, 100, 100, 200, 200), vec![99]),
+            ],
+            Some(1),
+            revision
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert!(fixture.handle.flush(FLUSH));
+    // Current-domain member: full facts, actuated.
+    let facts: EngineManagedFacts = fixture
+        .handle
+        .query_managed_facts("1001_1", WAIT)
+        .expect("homed window publishes");
+    assert_eq!(facts.generation, gen_a);
+    assert_eq!(facts.source.workspace.0, "space-11");
+    assert!(facts.source_current, "Space 11 is current");
+    assert!(!facts.fullscreen);
+    assert!(!facts.minimized);
+    assert_eq!(facts.revision, revision);
+    // Hidden-domain member publishes but withholds actuation; retained
+    // fullscreen rides truthfully.
+    let hidden = fixture
+        .handle
+        .query_managed_facts("1001_2", WAIT)
+        .expect("hidden member publishes");
+    assert!(!hidden.source_current, "Space 12 is hidden");
+    assert!(hidden.fullscreen);
+    // Unhomed window: nothing.
+    assert!(
+        fixture.handle.query_managed_facts("1001_3", WAIT).is_none(),
+        "unhomed window publishes nothing"
+    );
+    // Terminate retires the lifetime: nothing publishes afterward.
+    let _ = fixture.handle.terminate_app(APP_A);
+    assert!(fixture.handle.flush(FLUSH));
+    assert!(
+        fixture.handle.query_managed_facts("1001_1", WAIT).is_none(),
+        "terminated lifetime publishes nothing"
     );
     shutdown_clean(&fixture);
 }
@@ -2527,19 +2597,28 @@ fn select_enqueues_without_focus_and_serializes_concurrent_presses() {
 #[test]
 fn unarmed_workspace_rows_refuse_without_dispatch() {
     // Test-only over-arming (the product never arms these): trailing
-    // select-0 and numbered send-1 still refuse engine-side with their
-    // honest tokens and never enqueue — the engine is the backstop. No
-    // planner dispatch runs for either: no send/select claim enqueues, no
-    // world command is forwarded, and no send-accepted/consumed reply
-    // appears.
+    // select-0, trailing send-0, stay-1, relative send, and output send
+    // still refuse engine-side with their honest tokens and never enqueue
+    // — the engine is the backstop. Numbered send-follow 1..9 is armed in
+    // product and dispatches (covered by the send-claim test below). No
+    // planner dispatch runs for the unsupported rows: no claim enqueues,
+    // no world command is forwarded.
+    use tiler_macos::runtime::InputDirection;
     use tiler_macos::runtime::InputSemanticAction as Action;
     let mut bindings = select_product_bindings();
     bindings.extend(
         tiler_macos::workspace_input::workspace_catalogue()
             .into_iter()
-            .filter(|row| row.id == "workspace-select-0" || row.id == "workspace-send-1")
+            .filter(|row| {
+                matches!(
+                    row.id,
+                    "workspace-select-0" | "workspace-send-0" | "send-prev-h" | "send-output-left"
+                )
+            })
             .filter_map(|row| row.binding()),
     );
+    // Product arms numbered send-follow 1..9 (not over-armed here).
+    assert_eq!(tiler_macos::workspace_send::bindings().len(), 9);
     let fixture = start(select_config(bindings.clone()));
     fixture
         .handle
@@ -2557,25 +2636,46 @@ fn unarmed_workspace_rows_refuse_without_dispatch() {
         },
         "trailing select-0 refused",
     );
-    send_select_chord(
-        &fixture,
-        &bindings,
+    for action in [
         Action::WorkspaceSend {
-            index: 1,
+            index: 0,
             follow: true,
         },
+        Action::WorkspaceSendRelative {
+            prev: true,
+            follow: true,
+        },
+        Action::WorkspaceOutput {
+            direction: InputDirection::Left,
+            follow: true,
+        },
+    ] {
+        send_select_chord(&fixture, &bindings, action.clone());
+    }
+    // Stay rows are bindable-unbound (no chord): refuse via direct submit.
+    assert_eq!(
+        fixture.handle.submit_input_action(Action::WorkspaceSend {
+            index: 1,
+            follow: false
+        }),
+        SubmitOutcome::Accepted
     );
     wait_diagnostics(
         &fixture.handle,
         |d| {
-            d.input_refused_unsupported == 2
+            d.input_refused_unsupported == 5
                 && log_has(
                     &fixture.handle,
                     "input",
                     "refused-workspace-send-unsupported",
                 )
+                && log_has(
+                    &fixture.handle,
+                    "input",
+                    "refused-workspace-output-unsupported",
+                )
         },
-        "numbered send refused",
+        "unsupported sends refuse",
     );
     assert!(fixture.handle.flush(FLUSH));
     let diagnostics = fixture.handle.diagnostics();
@@ -2596,7 +2696,84 @@ fn unarmed_workspace_rows_refuse_without_dispatch() {
     assert!(
         !log_has(&fixture.handle, "core-reply", "send-accepted")
             && !log_has(&fixture.handle, "core-reply", "send-consumed"),
-        "no planner send dispatch for unimplemented sends"
+        "no planner send dispatch for unsupported sends"
+    );
+    shutdown_clean(&fixture);
+}
+
+#[test]
+fn numbered_send_hotkey_claim_settles_transfer_end_to_end() {
+    // Producer-shaped pathway with no live touch: the armed Ctrl+Shift+2
+    // hotkey admits engine-side (managed subject, target SID, revision,
+    // lifetime, source, operation identity), claims for the main-thread
+    // drain, and the reported outcome stages transfer feedback for the
+    // next world report — so the core settles the retained transfer. The
+    // dedicated effect owner proves the same pins over injected readers
+    // (see `workspace_send_live_tests`); here the engine half plus the
+    // feedback half run through the real runtime.
+    use tiler_macos::runtime::InputSemanticAction as Action;
+    use tiler_macos::workspace_send::SendDrainOutcome;
+    let mut bindings = select_product_bindings();
+    bindings.extend(tiler_macos::workspace_send::bindings());
+    assert_eq!(bindings.len(), 61, "34 basic + 18 selects + 9 sends");
+    let fixture = start(select_config(bindings.clone()));
+    let revision = fixture
+        .handle
+        .update_topology_with(two_space_snapshot(), &user_space);
+    let gen_a = fixture.handle.launch_app(APP_A).expect("launch");
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_A,
+            gen_a,
+            1,
+            vec![(win_at(1, 100, 100, 200, 200), vec![11])],
+            Some(1),
+            revision
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert!(fixture.handle.flush(FLUSH));
+    send_select_chord(
+        &fixture,
+        &bindings,
+        Action::WorkspaceSend {
+            index: 2,
+            follow: true,
+        },
+    );
+    wait_diagnostics(
+        &fixture.handle,
+        |d| d.input_select_enqueued == 1,
+        "armed send enqueued",
+    );
+    assert!(fixture.handle.flush(FLUSH));
+    assert!(log_has(&fixture.handle, "input", "send-enqueued"));
+    let claimed = fixture.handle.claim_select_for_drain().expect("send claim");
+    assert_eq!(
+        claimed.action,
+        Action::WorkspaceSend {
+            index: 2,
+            follow: true
+        }
+    );
+    assert_eq!(claimed.send_subject.as_deref(), Some("1001_1"));
+    assert_eq!(claimed.send_generation, Some(gen_a));
+    assert_eq!(claimed.topology_revision, Some(revision));
+    assert!(claimed.expected_sid.is_some(), "target SID pinned");
+    assert!(claimed.send_source.is_some(), "source domain pinned");
+    let op = claimed.operation_id.clone().expect("bound operation id");
+    fixture.handle.release_select_after_drain();
+    fixture
+        .handle
+        .report_send_outcome(&op, SendDrainOutcome::Applied);
+    assert!(fixture.handle.flush(FLUSH));
+    assert!(
+        fixture
+            .handle
+            .log_snapshot()
+            .iter()
+            .any(|e| e.kind == "feedback" && e.outcome == "staged"),
+        "send outcome must stage transfer feedback"
     );
     shutdown_clean(&fixture);
 }

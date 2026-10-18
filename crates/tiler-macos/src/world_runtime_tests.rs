@@ -71,11 +71,10 @@ fn select_commands_cover_exactly_the_armed_subset() {
             "{action:?} has a planner route"
         );
     }
-    // Send-shaped actions keep the offline send-seam route mapping (never
-    // the select route) but refuse engine-side: no product planner dispatch
-    // this milestone. Everything else unarmed (trailing select-0, stays,
-    // relative sends, outputs) has no world route: capability-refused
-    // before contact.
+    // Numbered send-follow 1..9 dispatches (never the select route) with
+    // a planner-owned send route; trailing select-0, trailing send-0,
+    // stays, relative sends, and outputs have no dispatch route beyond
+    // their honest refusal.
     for index in 1..=9u8 {
         let action = InputSemanticAction::WorkspaceSend {
             index,
@@ -83,8 +82,8 @@ fn select_commands_cover_exactly_the_armed_subset() {
         };
         assert_eq!(
             workspace_unsupported_outcome(&action),
-            Some("refused-workspace-send-unsupported"),
-            "{action:?} refused, never dispatched"
+            None,
+            "{action:?} dispatches"
         );
         assert!(
             select_command(&action, output.clone()).is_none(),
@@ -92,7 +91,7 @@ fn select_commands_cover_exactly_the_armed_subset() {
         );
         assert!(
             send_command(&action, "4242_7", output.clone()).is_some(),
-            "{action:?} keeps the offline send-seam mapping"
+            "{action:?} has the product send route"
         );
     }
     for action in [

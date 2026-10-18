@@ -4046,7 +4046,17 @@ decisions of 2026-09-24 are under
       Desktop-N helper roundtrips now pass; integrate numbered product sends
       using synthetic drag plus Desktop-N, with Authentic enabling Desktop-N;
       then send-follow and send-stay; trailing empty Space (Meta+0, also the indicator's trailing
-      slot); per-display Space-number attribution; multi-display.
+       slot); per-display Space-number attribution; multi-display.
+        **2026-10-18 numbered send-follow implementation:** Ctrl+Shift+1-9 is
+        armed end to end through engine-managed admission, fresh engine facts and
+        native input proof, tagged drag/Desktop-N delivery and asynchronous
+        transfer feedback. Authentic enables holders with owned preimages/Revert;
+        Compatible remains zero-touch. Obsolete fake drain and panicking Drop
+        removed; terminal ownership reaps off-main. Independent pre-arm review,
+        846 library/32 scoped runtime tests, strict clippy/format and signed
+        build/verify pass; unsafe remains 114. Live acceptance procedure 1 is next,
+        followed by stay, trailing and per-display attribution.
+        [Current checkpoint](changes/macos-managed-workspaces.md#numbered-send-follow-implementation-checkpoint-2026-10-18).
         **2026-10-18 offline prerequisites:** admission-pinned lifetime/source,
         pure managed-target/focus-swap proof, event-driven single-flight effect
         controller and fake send/holder coverage pass 973 macOS tests, strict

@@ -1,25 +1,25 @@
 #![forbid(unsafe_code)]
 
-//! Managed numbered send-follow effect backend plus the dedicated async
-//! effect thread (OFFLINE PREPARATION — not product behavior).
+//! Managed numbered send-follow effect seams plus the dedicated async
+//! effect thread.
 //!
-//! Nothing here arms a send, enables a holder, or posts input in product:
-//! every send catalogue row stays `implemented: false`, the engine refuses
-//! every send at its unsupported guard, the product tap table carries no
-//! send chord, no startup path calls any holder ensure, and the tile drain
-//! still calls [`crate::workspace_send::drain_live_claimed`] (which refuses).
-//! Reaching this path happens only through offline injection in tests until
-//! a deliberate follow-up unit wires it.
+//! Numbered send-follow 1..9 is armed; reaching the live path happens
+//! through engine-admitted product claims (tests inject claims the same
+//! way). Nothing here enables a holder or
+//! posts input: the tile ensures Authentic holders once at startup
+//! (Compatible stays zero-touch), and posts run only on the dedicated
+//! owner through [`LiveManagedSendBackend`](crate::workspace_send_native::LiveManagedSendBackend)
+//! under consumed per-edge proof permits.
 //!
-//! What this unit adds over [`crate::workspace_send_effect`]:
+//! What this module holds over [`crate::workspace_send_effect`]:
 //!
 //! - [`ManagedSendBackend`]: the injectable seam the dedicated effect owner
 //!   runs. Fresh reads (gates, row, holder, per-edge proof
 //!   evidence) plus the release-first drag posts plus the bounded
-//!   post-release readback. Fakes script every leg; a future live backend
-//!   would run fresh create/use/drop AX reads, settles, OS posts, and
-//!   readbacks here — never on the engine, AppKit, or per-app observation
-//!   owners.
+//!   post-release readback. Fakes script every leg; the live backend
+//!   ([`crate::workspace_send_native`]) serves fresh engine facts, native
+//!   reads, and guarded HID posts here — never on the engine, AppKit, or
+//!   per-app observation owners.
 //! - [`ManagedPostPermit`]: the single-use per-edge product-post authority.
 //!   Built only by [`authorize_managed_edge`] over [`prove_managed_send`]:
 //!   runtime scope/current membership, ordinary visible non-fullscreen
@@ -34,17 +34,8 @@
 //!   this permit; release edges (mouse-up/key-up) bypass it and always
 //!   attempt. [`crate::synth::OwnedPostTarget`] is fixture
 //!   ONLY and is never constructed, forged, or bypassed here (see the
-//!   `never_touches_fixture_post_target` test).
-//! - [`managed_hid_mouse_post`] / [`managed_hid_key_post`]: the managed
-//!   guarded boundary. The ONLY product-send callers of the maintained
-//!   [`crate::synth::hid_mouse_post`] / [`crate::synth::hid_key_post`]
-//!   wrappers (themselves safe `objc2` construction, no new `unsafe`).
-//!   Each takes its one-edge permit by value and posts exactly the bound
-//!   point/chord — no free point/chord arguments survive proof.
-//!   Future live posts route through these helpers with a permit (down
-//!   edges) or as an unconditional release attempt (up edges). No raw global
-//!   HID access exists outside this boundary for product sends.
-//! - [`ProvingDragAdapter`]: a [`DragBackend`] that re-proves the applicable
+//!   `managed_never_touches_fixture_post_target` test).
+//! - [`ProvingDragAdapter`](ProvingWithChords): re-proves the applicable
 //!   identity/focus/point plus the exact resolved holder chord immediately
 //!   before every down-edge (`begin_leg`, move, down, dragged, chord-down)
 //!   and always attempts the release edges (`MouseUp`, key-up) regardless
@@ -62,12 +53,12 @@
 //!   exact arrival reports [`SendEffectOutcome::Applied`].
 //! - [`ManagedSendThread`]: the dedicated scoped effect thread. Owns its
 //!   backend (built on the effect thread via the spawn factory, so fresh
-//!   AX create/use/drop never runs on the engine/AppKit/observer owners).
+//!   reads and posts never run on the engine/AppKit/observer owners).
 //!   Submission and stop are event-driven (channel wake, no idle sleep);
 //!   the engine/main threads only submit nonblocking
 //!   ([`ManagedSendThread::submit`]) and poll the shared lane nonblocking
-//!   ([`SendEffectHandoff::poll_completion_for`]); no fresh AX polling or
-//!   waits happen on main. The existing bounded post-release settle poll
+//!   ([`SendEffectHandoff::poll_completion_for`]); no fresh proof polling
+//!   or waits happen on main. The existing bounded post-release settle poll
 //!   stays inside `run_drag_leg` on this thread and is not a proof cache:
 //!   no periodic proof query is added. Cancellation is request-to-stop;
 //!   [`ManagedSendThread::request_shutdown`] signals stop, cancels the lane,
@@ -77,9 +68,11 @@
 //!   while a live owner may still actuate. Never join per-cadence on the
 //!   main loop, never abandon a held input (the release-first executor plus
 //!   unconditional UP attempts guarantee the mouse releases before the
-//!   terminal completion). `Drop` panics when the owner was not reaped: an
-//!   active held-input thread is never silently detached and `Drop` never
-//!   blocks.
+//!   terminal completion). Terminal ownership of an unfinished owner hands
+//!   to [`spawn_terminal_reaper`](crate::workspace_send_native::spawn_terminal_reaper),
+//!   which joins it on a dedicated thread and only then releases the lane:
+//!   no blocking of the engine/AppKit, no panic, no silent detach as
+//!   product policy.
 
 use std::sync::{
     Arc,
@@ -223,98 +216,6 @@ pub fn authorize_managed_edge(
         keycode: chord.0,
         flags: chord.1,
     })
-}
-
-/// Managed guarded HID mouse boundary (product-send path only).
-///
-/// The only product-send caller of the maintained
-/// [`crate::synth::hid_mouse_post`] wrapper besides the fixture-owned live
-/// runner (which proves fixture ownership separately). Consumes a down-edge
-/// permit and posts exactly its bound point with zero flags; release-edge
-/// callers use [`managed_hid_mouse_release`] instead so
-/// a held button is never stranded by a stale gate. No new `unsafe`.
-#[cfg(target_os = "macos")]
-#[allow(dead_code)]
-pub(crate) fn managed_hid_mouse_post(
-    permit: ManagedPostPermit,
-    kind: crate::synth::HidMouseKind,
-) -> Result<u64, String> {
-    crate::synth::hid_mouse_post(
-        kind,
-        permit.point(),
-        0,
-        Some(crate::input_match::OWN_SWITCH_USER_DATA),
-    )
-}
-
-/// Release-side HID mouse post: always attempts `Up` with no permit and no
-/// proof gate (release-first guarantee). Same maintained wrapper underneath.
-#[cfg(target_os = "macos")]
-#[allow(dead_code)]
-pub(crate) fn managed_hid_mouse_release(point: (f64, f64)) -> Result<u64, String> {
-    crate::synth::hid_mouse_post(
-        crate::synth::HidMouseKind::Up,
-        point,
-        0,
-        Some(crate::input_match::OWN_SWITCH_USER_DATA),
-    )
-}
-
-/// Managed guarded HID key boundary (product-send path only).
-///
-/// Consumes a chord-down permit and posts exactly its bound chord as
-/// key-down; up-edges use [`managed_hid_key_release`].
-/// Same maintained [`crate::synth::hid_key_post`] wrapper, same own-switch
-/// tag, no new `unsafe`.
-#[cfg(target_os = "macos")]
-#[allow(dead_code)]
-pub(crate) fn managed_hid_key_post(permit: ManagedPostPermit) -> Result<u64, String> {
-    crate::synth::hid_key_post(
-        u16::try_from(permit.keycode())
-            .map_err(|_| "managed chord keycode unpostable".to_owned())?,
-        permit.flags(),
-        true,
-        Some(crate::input_match::OWN_SWITCH_USER_DATA),
-    )
-}
-
-/// Release-side HID key post: always attempts key-up with no permit.
-#[cfg(target_os = "macos")]
-#[allow(dead_code)]
-pub(crate) fn managed_hid_key_release(key_code: u16, flags: u64) -> Result<u64, String> {
-    crate::synth::hid_key_post(
-        key_code,
-        flags,
-        false,
-        Some(crate::input_match::OWN_SWITCH_USER_DATA),
-    )
-}
-
-#[cfg(not(target_os = "macos"))]
-#[allow(dead_code)]
-pub(crate) fn managed_hid_mouse_post(
-    _permit: ManagedPostPermit,
-    _kind: crate::synth::HidMouseKind,
-) -> Result<u64, String> {
-    Err("managed HID mouse posts are macOS-only".to_owned())
-}
-
-#[cfg(not(target_os = "macos"))]
-#[allow(dead_code)]
-pub(crate) fn managed_hid_mouse_release(_point: (f64, f64)) -> Result<u64, String> {
-    Err("managed HID mouse posts are macOS-only".to_owned())
-}
-
-#[cfg(not(target_os = "macos"))]
-#[allow(dead_code)]
-pub(crate) fn managed_hid_key_post(_permit: ManagedPostPermit) -> Result<u64, String> {
-    Err("managed HID key posts are macOS-only".to_owned())
-}
-
-#[cfg(not(target_os = "macos"))]
-#[allow(dead_code)]
-pub(crate) fn managed_hid_key_release(_key_code: u16, _flags: u64) -> Result<u64, String> {
-    Err("managed HID key posts are macOS-only".to_owned())
 }
 
 /// [`DragBackend`] plumbing for the managed leg: re-proves the pinned target
@@ -578,10 +479,15 @@ pub(crate) fn completion_for(
 /// release-first executor plus unconditional UP attempts guarantee the mouse
 /// releases before the terminal completion).
 ///
-/// Ownership policy: the thread must be reaped with `try_reap` (after
-/// `request_shutdown`) before drop. `Drop` panics on a live owner instead
-/// of silently detaching a possibly held-input thread, and `Drop` never
-/// joins, so it never blocks an AppKit thread.
+/// Ownership policy: shut down explicitly with [`request_shutdown`](
+/// ManagedSendThread::request_shutdown) plus [`try_reap`](
+/// ManagedSendThread::try_reap), or terminally with
+/// [`shutdown_nonblocking`](ManagedSendThread::shutdown_nonblocking) (an
+/// unfinished owner hands to [`spawn_terminal_reaper`], which joins it on
+/// a dedicated thread and only then releases the lane). `Drop` is a
+/// nonblocking, non-panicking backstop only: stop-signal plus wake, reap
+/// when already finished, detach otherwise (a detached owner still
+/// self-completes through its release-first executor).
 pub struct ManagedSendThread {
     handoff: Arc<SendEffectHandoff>,
     stop: Arc<AtomicBool>,
@@ -700,21 +606,57 @@ impl ManagedSendThread {
         let _ = handle.join();
         Some(self.handoff.release())
     }
+
+    /// Nonblocking terminal shutdown consuming the thread: signal stop,
+    /// cancel the lane, and wake the owner; reap and release the lane when
+    /// already finished. Returns `None` when reaped (terminal, nothing to
+    /// retain) or the unfinished owner when still live — the caller must
+    /// hand it to [`spawn_terminal_reaper`](crate::workspace_send_native::spawn_terminal_reaper)
+    /// and must never release its lane or drop it silently. Never blocks,
+    /// never panics, on any thread (engine/AppKit included: no join happens
+    /// here unless the owner already finished).
+    pub fn shutdown_nonblocking(mut self) -> Option<Self> {
+        self.request_shutdown();
+        match self.try_reap() {
+            Some(_) => None,
+            None => Some(self),
+        }
+    }
+    /// Terminal off-thread reap: consume the thread and block the CALLER
+    /// until the owner finishes, then release the lane exactly once. Call
+    /// only on a dedicated terminal reaper thread (see
+    /// [`spawn_terminal_reaper`]) — never on the engine, AppKit/main, or
+    /// any observation owner.
+    pub(crate) fn join_and_release(mut self) {
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+        self.handoff.release();
+    }
 }
 
 impl Drop for ManagedSendThread {
     fn drop(&mut self) {
-        // Best-effort nonblocking stop on every path (never join here, so
-        // Drop never blocks an AppKit thread). A live owner is a caller
-        // bug: panic instead of silently detaching a possibly held-input
-        // thread or releasing its lane from under it.
+        // Nonblocking best-effort backstop (never join, never panic):
+        // signal stop, drop pending/completed lane state, wake the owner.
+        // A finished owner is reaped here (the join cannot block); a live
+        // owner is detached after the stop signal — it still runs its
+        // release-first executor to a terminal completion on its own, and
+        // the lane's `Arc` keeps the handoff alive for it. Product shutdown
+        // never relies on this: unfinished owners hand to
+        // [`spawn_terminal_reaper`], which joins them off-thread and only
+        // then releases the lane.
         self.stop.store(true, Ordering::SeqCst);
         let _ = self.handoff.cancel();
         let _ = self.wake_tx.send(());
-        if self.handle.is_some() && !std::thread::panicking() {
-            panic!(
-                "ManagedSendThread must be reaped with try_reap after request_shutdown; refusing silent detach of a possibly held-input owner"
-            );
+        if self
+            .handle
+            .as_ref()
+            .is_some_and(|handle| handle.is_finished())
+            && let Some(handle) = self.handle.take()
+        {
+            let _ = handle.join();
+            self.handoff.release();
         }
     }
 }

@@ -256,14 +256,17 @@ impl TileRequest {
 }
 
 /// Product chord catalogue: the basic tiling chords plus the armed
-/// select-only workspace subset (18 rows: numbered existing-Space `1..9`,
-/// the 8 relative selects, the previous toggle). Sends, stays, outputs,
-/// and the trailing select-0 never enter the tap table (the engine refuses
-/// them as the backstop even if configured).
+/// select subset (18 rows: numbered existing-Space `1..9`, the 8 relative
+/// selects, the previous toggle) plus the armed numbered send-follow
+/// subset (9 rows: `workspace-send-1..9` as `Ctrl+Shift+digit` under the
+/// default Ctrl role). Stays, relative sends, outputs, and the trailing
+/// select-0/send-0 never enter the tap table (the engine refuses them as
+/// the backstop even if configured).
 #[must_use]
 pub fn product_catalogue() -> Vec<crate::runtime_types::TileBinding> {
     let mut catalogue = crate::native_input::tile_catalogue();
     catalogue.extend(crate::workspace_select::bindings());
+    catalogue.extend(crate::workspace_send::bindings());
     catalogue
 }
 
@@ -1339,6 +1342,43 @@ mod native {
         // still switching Spaces natively via Switch to Desktop N).
         let catalogue = effective_bindings(request.preset, request.modifier, &product_catalogue());
         let active_chords = catalogue.len();
+        // Authentic Desktop-N holder ensure (enable-only with owned durable
+        // preimages; explicit `spaces-desktop-revert` restores; no
+        // automatic revert on shutdown). Runs once at startup, before any
+        // send could dispatch: Desktops 1-9 coverage with preimage
+        // published before the first write, resume-safe, external edits
+        // preserved. A refusal logs and proceeds — the per-drain holder
+        // leg still refuses disabled/unreadable holders before any post.
+        // Compatible performs zero store touch here (no read, no write).
+        if request.preset == InputPreset::Authentic {
+            match crate::desktop_shortcuts::canonical_preimage_path() {
+                Some(path) => {
+                    let mut store = crate::desktop_shortcuts::LiveStore::new();
+                    match crate::workspace_send::ensure_holders_for_preset(
+                        request.preset,
+                        &mut store,
+                        &path,
+                    ) {
+                        Ok(Some(outcome)) => eprintln!(
+                            "tiler-macos desktop holders ensured: {} applied, {} failed, resumed={} path={}",
+                            outcome.results.len(),
+                            outcome.failures.len(),
+                            outcome.resumed,
+                            path.display(),
+                        ),
+                        Ok(None) => {
+                            eprintln!("tiler-macos desktop holders ensure skipped by preset gate")
+                        }
+                        Err(reason) => eprintln!(
+                            "tiler-macos desktop holders ensure refused: {reason} (sends refuse at the holder leg)"
+                        ),
+                    }
+                }
+                None => eprintln!(
+                    "tiler-macos desktop holders ensure skipped: no $HOME (sends refuse at the holder leg)"
+                ),
+            }
+        }
         // Shared per-PID eligibility facts: each per-app AX owner publishes
         // only its own PID from snapshot data it already read; the input
         // owner consults plain snapshots (no AX crosses threads). Built
@@ -1582,6 +1622,12 @@ mod native {
         // per display identifier, advancing only on verified arrivals for
         // the whole run lifetime (never persisted, never guessed).
         let mut select_state = crate::workspace_select::SelectionState::default();
+        // Async live-send controller: the main-thread side of the dedicated
+        // managed-send effect owner (spawned lazily on the first submit, so
+        // runs that never send never spawn it). Submissions and completion
+        // polls below are nonblocking; the effect runs off the engine and
+        // AppKit. Numbered send-follow 1..9 is armed.
+        let mut send_controller = crate::workspace_send::LiveSendController::new();
         // Bounded runs end at the soft deadline (the watchdog above is the
         // hard lifetime); unbounded product runs loop until owner exit or
         // exact-PID stop.
@@ -1920,31 +1966,50 @@ mod native {
                 ax_focus: None,
             });
 
-            // Product workspace drain: one claimed pending select-only action
-            // runs its proven native leg with fresh topology/readback on
-            // this (main) thread — the tap callback and the serial engine
-            // handed off asynchronously and never block. Selects (action
-            // plus, for indicator clicks, the immutable render-time
-            // SID/revision binding) run the proven native switch. Sends never
-            // enqueue in product (the engine refuses every send, and the tap
-            // table carries no send chord): the `is_armed_send` leg below is
-            // unreachable product code, retained only so the offline-tested
-            // send seam typechecks against the same drain shape — the live
-            // send backend lands in the live step (see
-            // [`crate::workspace_send::drain_live_claimed`], which refuses
-            // until then). Both lanes refuse unless exactly one native
+            // Product workspace drain: one claimed pending workspace action
+            // runs its proven native leg with fresh topology/readback —
+            // the tap callback and the serial engine handed off
+            // asynchronously and never block. Selects (action plus, for
+            // indicator clicks, the immutable render-time SID/revision
+            // binding) run the proven native switch. Numbered send-follow
+            // 1..9 (engine-admitted): the `is_armed_send` leg below
+            // submits engine-admitted send claims to the dedicated
+            // managed-send effect owner (fresh proof, tagged HID posts, and
+            // bounded readback all run there — never on the engine or this
+            // AppKit thread) and reconciles their completions nonblocking
+            // on later ticks. Both lanes refuse unless exactly one native
             // display row exists (no first-display guessing), refuse bound
             // claims whose ordinal no longer names their SID or whose
             // revision drifted, recheck session/Secure Input/lock-screen
             // immediately pre-dispatch (the native legs re-gate
             // session/trust at every leg boundary; no atomicity past the
-            // recheck is promised), and run under a bounded budget plus a
-            // bounded reaped caffeinate companion. Verified arrival advances
+            // recheck is promised). Verified arrival advances
             // the per-display previous history; every refusal (gates,
             // unarmed, display count, subject, target, holder, drift, stale
             // binding, no effect) clears without replay and advances
             // nothing. A claim still held at shutdown is dropped, never
             // dispatched.
+            //
+            // Live-send completion poll (nonblocking): reconcile at most
+            // one settled effect per tick before draining new claims. The
+            // effect owner proved arrival post-release; the follow-history
+            // note and the transfer feedback under the claim's operation
+            // identity settle the core's retained transfer here. Focus
+            // follows through the observation loop (the proof held focus on
+            // the subject at every edge; no focus substitution actuation
+            // repairs a send).
+            if let Some(settle) = send_controller.poll() {
+                let outcome = crate::workspace_send::send_drain_outcome_for(settle.outcome);
+                if outcome == crate::workspace_send::SendDrainOutcome::Applied {
+                    select_state.note_arrival(&settle.display, settle.from);
+                }
+                eprintln!(
+                    "tiler-macos send settled target={} outcome={:?} complete=true",
+                    settle.target.target_sid(),
+                    outcome,
+                );
+                handle.report_send_outcome(settle.target.operation_id(), outcome);
+            }
             if let Some(claim) = handle.claim_select_for_drain() {
                 let session_unlocked = matches!(
                     crate::ffi::session_state().lock,
@@ -1963,26 +2028,30 @@ mod native {
                 // replayed.
                 let operation_id = claim.operation_id.clone();
                 if crate::workspace_input::is_armed_send(&claim.action) {
-                    let gates = crate::workspace_send::SendGates {
-                        session_unlocked,
-                        secure_active,
-                        lock_screen,
+                    // Follow-history attribution from this tick's fresh user
+                    // row (single reads, never a poll): the display plus the
+                    // source Space the send follows away from. A row that is
+                    // unreadable here refuses the submit before any post.
+                    let row = last_snapshot.as_ref().and_then(|live| {
+                        crate::workspace_select::user_row_from_rows(&live.rows, 0).ok()
+                    });
+                    let submit = match row {
+                        Some(row) => {
+                            let handle_clone = handle.clone();
+                            send_controller.submit(&claim, &row.display, row.current, move || {
+                                crate::workspace_send_native::LiveManagedSendBackend::new(
+                                    crate::workspace_send_native::OsSendReaders::live(handle_clone),
+                                )
+                            })
+                        }
+                        None => {
+                            Err("product send refuses: fresh row unreadable at submit".to_owned())
+                        }
                     };
-                    let outcome =
-                        crate::workspace_send::drain_live_claimed(&mut select_state, claim, &gates);
                     handle.release_select_after_drain();
-                    match outcome {
-                        Ok((effect, reaped)) => {
-                            eprintln!(
-                                "tiler-macos dev send action={} target={} caffeinate_reaped={} complete=true",
-                                id, effect.target, reaped,
-                            );
-                            if let Some(operation_id) = operation_id.as_deref() {
-                                handle.report_send_outcome(
-                                    operation_id,
-                                    crate::workspace_send::SendDrainOutcome::Applied,
-                                );
-                            }
+                    match submit {
+                        Ok(()) => {
+                            eprintln!("tiler-macos send action={} submitted complete=false", id,);
                         }
                         Err(reason) => {
                             eprintln!(
@@ -1990,9 +2059,12 @@ mod native {
                                 id, reason,
                             );
                             if let Some(operation_id) = operation_id.as_deref() {
+                                // Submit-time refusals never actuated (no
+                                // post performed): proven refusal settles the
+                                // transfer without actuation.
                                 handle.report_send_outcome(
                                     operation_id,
-                                    crate::workspace_send::classify_send_drain_error(&reason),
+                                    crate::workspace_send::SendDrainOutcome::Refused,
                                 );
                             }
                         }
@@ -2173,6 +2245,25 @@ mod native {
         // refused on every gate above.
         indicator.teardown();
         let (indicator_updates, indicator_clicks) = (indicator.updates(), indicator.clicks());
+        // Live-send terminal shutdown (nonblocking): take a terminal
+        // completion poll first, then stop-request, finished-only reap, and
+        // retention of an unfinished exact owner for eventual reap. A
+        // dropped inflight settles honestly (possibly-executed when the
+        // owner may have actuated, proven-refused otherwise) so the core
+        // never retains a transfer the drain abandoned. Runs before the
+        // runtime shutdown so the feedback still enqueues.
+        if let Some(settle) = send_controller.shutdown() {
+            let outcome = crate::workspace_send::send_drain_outcome_for(settle.outcome);
+            if outcome == crate::workspace_send::SendDrainOutcome::Applied {
+                select_state.note_arrival(&settle.display, settle.from);
+            }
+            eprintln!(
+                "tiler-macos send settled at shutdown target={} outcome={:?} complete=true",
+                settle.target.target_sid(),
+                outcome,
+            );
+            handle.report_send_outcome(settle.target.operation_id(), outcome);
+        }
         let report = handle.shutdown(SHUTDOWN_BOUND);
         let diagnostics = handle.diagnostics();
         // The hard lifetime is met on bounded runs: cancel the watchdog

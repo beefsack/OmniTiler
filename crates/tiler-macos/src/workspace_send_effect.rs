@@ -1,13 +1,13 @@
 #![forbid(unsafe_code)]
 
 //! Scoped managed-send identity, fresh proof, and serialized effect handoff
-//! (OFFLINE PREPARATION — not product behavior).
+//! (armed for numbered send-follow 1..9; trailing send-0, stays, relative
+//! sends, and outputs stay refused).
 //!
-//! Nothing here arms a send, enables a holder, or posts input: every send
-//! catalogue row stays `implemented: false`, the engine refuses every send
-//! at its unsupported guard, and the fake-backed drain in
-//! [`crate::workspace_send`] is unchanged. This module is the testable seam
-//! the future native backend will use:
+//! Nothing here arms a send or enables a holder. This module is the proven
+//! seam the live native backend
+//! ([`crate::workspace_send_native::LiveManagedSendBackend`]) runs on the
+//! dedicated effect owner:
 //!
 //! - [`ManagedSendTarget`]: the admission-pinned identity. Private fields
 //!   (PID, WID, app-lifetime generation, source domain, target SID,
@@ -38,12 +38,13 @@
 //!   flagged until its terminal completion or a shutdown
 //!   [`SendEffectHandoff::release`] after the owner thread has exited.
 //!
-//! Future native integration (not this unit): the dedicated owner thread
-//! runs fresh create/use/drop AX reads plus the bounded
-//! [`crate::space_drag_transfer::run_drag_leg`] drag there, calling
-//! [`prove_managed_send`] before each actuation edge. Pending key-up and
-//! mouse-up release edges bypass fresh target gates (release-first
-//! executor guarantee — release never re-proves, it always releases).
+//! Native integration: the dedicated owner thread runs current
+//! engine-managed facts plus fresh create/use/drop AX reads plus the
+//! bounded [`crate::space_drag_transfer::run_drag_leg`] drag there,
+//! calling [`prove_managed_send`] before each actuation edge. Pending
+//! key-up and mouse-up release edges bypass fresh target gates
+//! (release-first executor guarantee — release never re-proves, it always
+//! releases).
 //! Only submission and completion observation run on the main thread, never
 //! AX waits or native settlement. No periodic AX proof query is added by
 //! this lane: one submission proves once per edge on the owner thread.
@@ -54,10 +55,10 @@ use tiler_core::session::DomainKey;
 
 use crate::runtime_types::{ClaimedSelect, parse_window_id};
 
-/// Admission-pinned managed-send target: the only window a future native
-/// send may grab. All fields are private so admission pins them once and
-/// every later reader compares against the same pins — no replacement
-/// focus window, no relaunched lifetime, no moved source domain.
+/// Admission-pinned managed-send target: the only window a live send may
+/// grab. All fields are private so admission pins them once and every
+/// later reader compares against the same pins — no replacement focus
+/// window, no relaunched lifetime, no moved source domain.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManagedSendTarget {
     pid: u32,
@@ -207,6 +208,9 @@ pub struct SendFreshEvidence {
     /// Subject currently reads native fullscreen (a fullscreen app owns
     /// its Space — never dragged).
     pub fullscreen: Option<bool>,
+    /// Subject currently reads AX minimized (a minimized window has no
+    /// input-reaching titlebar — never dragged).
+    pub minimized: Option<bool>,
     /// Fresh lifetime generation for the subject PID.
     pub live_generation: Option<u64>,
     /// Fresh topology revision. Always required: an unknown or
@@ -241,6 +245,8 @@ pub enum SendProofRefusal {
     NotManaged,
     UnknownFullscreen,
     Fullscreen,
+    UnknownMinimized,
+    Minimized,
     UnknownGeneration,
     GenerationMismatch,
     UnknownRevision,
@@ -271,6 +277,8 @@ impl SendProofRefusal {
             Self::NotManaged => "refused-send-not-managed",
             Self::UnknownFullscreen => "refused-send-unknown-fullscreen",
             Self::Fullscreen => "refused-send-fullscreen",
+            Self::UnknownMinimized => "refused-send-unknown-minimized",
+            Self::Minimized => "refused-send-minimized",
             Self::UnknownGeneration => "refused-send-unknown-generation",
             Self::GenerationMismatch => "refused-send-stale-lifetime",
             Self::UnknownRevision => "refused-send-unknown-revision",
@@ -310,6 +318,11 @@ pub fn prove_managed_send(
     match fresh.fullscreen {
         None => return Err(SendProofRefusal::UnknownFullscreen),
         Some(true) => return Err(SendProofRefusal::Fullscreen),
+        Some(false) => {}
+    }
+    match fresh.minimized {
+        None => return Err(SendProofRefusal::UnknownMinimized),
+        Some(true) => return Err(SendProofRefusal::Minimized),
         Some(false) => {}
     }
     match fresh.live_generation {
@@ -601,6 +614,7 @@ mod tests {
         SendFreshEvidence {
             managed_current: Some(true),
             fullscreen: Some(false),
+            minimized: Some(false),
             live_generation: Some(1),
             live_revision: Some(9),
             live_source: Some(source_domain()),
@@ -736,6 +750,16 @@ mod tests {
                 (|fresh: &mut SendFreshEvidence| fresh.fullscreen = None)
                     as fn(&mut SendFreshEvidence),
                 SendProofRefusal::UnknownFullscreen,
+            ),
+            (
+                (|fresh: &mut SendFreshEvidence| fresh.minimized = Some(true))
+                    as fn(&mut SendFreshEvidence),
+                SendProofRefusal::Minimized,
+            ),
+            (
+                (|fresh: &mut SendFreshEvidence| fresh.minimized = None)
+                    as fn(&mut SendFreshEvidence),
+                SendProofRefusal::UnknownMinimized,
             ),
         ] {
             let mut fresh = fresh_ok();

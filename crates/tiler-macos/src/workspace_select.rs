@@ -148,8 +148,9 @@ impl SelectionState {
     /// membership-plus-current readback, never on refusals or ambiguous
     /// output — same rule as the select history advance.
     ///
-    /// Test-gated in this offline unit alongside the send drain core (see
-    /// [`crate::workspace_send::drain_live_claimed`]).
+    /// Shared with the live send settlement: the tile notes arrival from
+    /// the settled effect completion (see
+    /// [`crate::workspace_send::LiveSendController`]).
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn note_arrival(&mut self, display: &str, from: u64) {
         self.previous.insert(display.to_owned(), from);
@@ -263,9 +264,8 @@ impl SelectionState {
 
 /// Select-only product binding subset: exactly the 18 armed rows —
 /// numbered existing-Space selects `1..9`, the 8 relative-select rows, and
-/// the previous toggle. Never adds send chords (the offline send seam in
-/// [`crate::workspace_send::bindings`] currently arms nothing in product);
-/// the trailing `index 0`
+/// the previous toggle. Never adds send chords (the numbered send-follow
+/// subset lives in [`crate::workspace_send::bindings`]); the trailing `index 0`
 /// select-or-create stays unarmed (no automatic trailing creation/deletion
 /// this milestone — occupancy unresolved), so it is excluded here even
 /// though the explicit `spaces-select` batch retains it. Driven by the

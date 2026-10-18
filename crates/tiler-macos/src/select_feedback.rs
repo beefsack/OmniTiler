@@ -89,12 +89,12 @@ impl RuntimeHandle {
         }
     }
 
-    /// Proven outcome of one main-thread send drain, staged as attempt
+    /// Proven outcome of one settled live send, staged as attempt
     /// feedback for the next world report (same data-lane best-effort
-    /// contract as [`RuntimeHandle::report_select_outcome`]). Reachable only
-    /// from the retained-but-unreachable product send-drain leg (no send
-    /// claim ever pends: the engine refuses every send first) and the
-    /// future live step. The kind is
+    /// contract as [`RuntimeHandle::report_select_outcome`]). Called by the
+    /// tile for settled effect completions and submit-time refusals
+    /// (unsupported send shapes refuse engine-side and never reach here).
+    /// The kind is
     /// always transfer (see [`crate::workspace_send::feedback_kind_for`]):
     /// `Applied` settles the retained `SendNumbered` transfer on
     /// observation confirm; `Refused` settles to observed without
