@@ -429,12 +429,13 @@ decisions of 2026-09-24 are under
   Pending physical acceptance: both Ctrl chords route only to tiler actions,
   Ctrl+Win+F11 invokes no Windows function, Ctrl+Win+G does not open Game Bar,
   hold/release/plain-Win behavior, conflict rows and Settings-page navigation.
-- P2 | Windows Win+drag keep-or-drop review | User 2026-10-17: discuss with the
-  Windows owner how large and complex Win+drag (stationary source, moving
-  preview; REQ-DRAG-03/07, R-DRAG-08) is to support going forward, and whether
-  dropping it is more sensible. Modifier+drag is mainly a Linux idiom; native
-  title-bar drag is the norm on Windows and macOS, and macOS will not add a
-  modifier+drag producer. Discussion only; no change until the user decides.
+- P2 | Windows: drop Win+drag | User 2026-10-18 decided to drop Win+drag
+  (stationary source, moving preview; REQ-DRAG-03/07, R-DRAG-08) on Windows:
+  modifier+drag is a Linux idiom, not a tiling idiom, and is not replicated on
+  Windows or macOS. Native title-bar drag remains. Remove the Windows producer,
+  its hook/input-thread surface and tests; amend the spec/requirements and the
+  Windows 0.1 gate proposal legs (checks 17/25/26/47) and record the decision.
+  KDE behavior unchanged.
   [Implementation, evidence, options and recommendation](changes/windows-win-drag-review.md).
 - P1 | Windows launcher geometry fighting | Hint/timeout flap correlates
   with repeated four-window writes. User-approved lifetime-bound declared-hint
