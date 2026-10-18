@@ -492,6 +492,12 @@ terminal separately. These summaries carry no window/native IDs, geometry,
 resource classes, captions or payloads. Admission adds no geometry, focus,
 stacking or keep-above writes to the automatically floating client.
 
+Automatic fixed-float focus preservation (ordinary output; D8 no-touch):
+
+- `omnitiler:plan:focus-skipped correlation=<correlation> kind=reconcile reason=<reason> window=<id> target=<id>`: a reconcile reply carried retained tiled-survivor focus while the observed focused window floats. `floating-active` and `sticky-active` are the pre-existing native reasons; `automatic-active` is a retained automatic fixed-size float matched by exact native reference. A skip runs no setter.
+- `omnitiler:plan:automatic-focus-attempt correlation=<correlation> kind=<reconcile|update-gaps> window=<id> target=<id> reason=planned-focus`: an automatic focus setter run is starting. Emitted only for reconcile/update-gaps setter runs; explicit-op focus setters emit neither line, and protected skips attempt nothing.
+- `omnitiler:plan:automatic-focus-result correlation=<correlation> kind=<reconcile|update-gaps> window=<id> target=<id> reason=planned-focus outcome=<setter-accepted|setter-refused|threw>`: the synchronous setter outcome for the attempt above. `setter-accepted` reports setter acceptance only, never proven native focus. `setter-refused` and `threw` fail the flight `write-failed`.
+
 Intentional-float/fixed-window tile-override owner restart (ordinary output; one startup read and settled
 membership writes, not per-frame snapshots):
 

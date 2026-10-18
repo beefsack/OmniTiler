@@ -111,6 +111,7 @@ const FIXED = { w: 640, h: 480 };
 
 interface ObservedOpts {
     focused?: object;
+    refB?: object;
     floatingB?: boolean;
     stickyB?: boolean;
     fullscreenB?: boolean;
@@ -147,7 +148,7 @@ function makeObserved(refs: { a: object; b: object }, opts: ObservedOpts = {}): 
         entries.push(
             Object.freeze({
                 id: "win-b",
-                ref: refs.b,
+                ref: opts.refB ?? refs.b,
                 rect: rectFor("win-b"),
                 output: domainOutput,
                 workspace: opts.workspaceB ?? domainWorkspace,
@@ -165,7 +166,7 @@ function makeObserved(refs: { a: object; b: object }, opts: ObservedOpts = {}): 
         domainBounds: { x: 0, y: 0, w: 1200, h: 800 },
         domainGap: 0,
         domainOuterGap: 0,
-        focusedId: opts.focused === refs.b ? "win-b" : "win-a",
+        focusedId: opts.focused === undefined || opts.focused === refs.a ? "win-a" : "win-b",
         windows: Object.freeze(entries) as unknown as PlanObserved["windows"],
         activeRef: opts.focused ?? refs.a,
         fingerprint: opts.fingerprint ?? "fp-fixed-1",
@@ -219,6 +220,8 @@ interface Mocks {
     geometryImpl: (target: object, rect: { x: number; y: number; w: number; h: number }) => boolean;
     desktopToggleImpl: (target: object, allDesktops: boolean) => "invoked" | "missing" | "threw";
     desktopIdsImpl: (target: object) => ReadonlyArray<string> | null;
+    activeImpl: () => object | null;
+    setActiveImpl: (target: object) => boolean;
     env: PlanAdapterEnv;
 }
 
@@ -241,6 +244,8 @@ function mockEnv(refs: { a: object; b: object }): Mocks {
         geometryImpl: (_target: object, _rect: { x: number; y: number; w: number; h: number }): boolean => true,
         desktopToggleImpl: (_target: object, _allDesktops: boolean): "invoked" | "missing" | "threw" => "invoked",
         desktopIdsImpl: (_target: object): ReadonlyArray<string> | null => [],
+        activeImpl: (): object | null => refs.a,
+        setActiveImpl: (_target: object): boolean => true,
         env: null as unknown as PlanAdapterEnv,
     } as Mocks;
     const env: PlanAdapterEnv = {
@@ -285,9 +290,9 @@ function mockEnv(refs: { a: object; b: object }): Mocks {
         },
         setActive: (target): boolean => {
             state.activeWrites.push(target);
-            return true;
+            return state.setActiveImpl(target);
         },
-        active: (): object | null => refs.a,
+        active: (): object | null => state.activeImpl(),
         readKeepAbove: (): boolean => false,
         readKeepBelow: (): boolean => false,
         setKeepAbove: (target, above): "invoked" => {
@@ -579,11 +584,7 @@ describe("fixed-size admission through the real Planner", () => {
             assert.deepEqual(mocks.keepAboveWrites, [], "no automatic keep-above write");
             assert.deepEqual(mocks.floatingWrites, [], "autoclassification never calls intentional setters");
             assert.deepEqual(mocks.maximizeClears, [], "no maximize interference");
-            assert.deepEqual(
-                mocks.activeWrites.filter((target) => target === refs.b),
-                [],
-                "no automatic refocus of the fixed client",
-            );
+            assert.deepEqual(mocks.activeWrites, [], "no automatic activation of any window");
             const line = mocks.logs.find((entry) => entry.includes("fixed-size-classification"));
             assert.ok(line !== undefined, "bounded classification diagnostic emitted");
             assert.ok(line.includes("phase=classify"), line);
@@ -1986,6 +1987,392 @@ describe("fixed-size admission through the real Planner", () => {
                 mocks.logs.filter((entry) => entry.includes("fixed-size-classification")).length,
                 classified + 1,
                 "fresh classification emits once",
+            );
+        } finally {
+            await engine.close();
+        }
+    });
+});
+
+describe("automatic fixed-float focus preservation through the real Planner", () => {
+    function replyFocusWindow(reply: Record<string, unknown>): string | undefined {
+        const focus = reply["desired_focus"] as Record<string, unknown> | undefined;
+        const geometry = reply["desired_geometry"] as Array<Record<string, unknown>> | undefined;
+        if (focus === undefined || focus === null || !Array.isArray(geometry)) {
+            return undefined;
+        }
+        const found = geometry.find((entry) => entry["leaf"] === focus["leaf"]);
+        return found === undefined ? undefined : (found["window"] as string);
+    }
+
+    function commandOp(payload: Record<string, unknown>): unknown {
+        return (payload["command"] as Record<string, unknown>)["op"];
+    }
+
+    function automaticAttempt(mocks: Mocks, target: string): boolean {
+        return mocks.logs.some(
+            (line) => line.includes("automatic-focus-attempt") && line.includes(`target=${target}`),
+        );
+    }
+
+    function automaticResult(mocks: Mocks, target: string, outcome: string): boolean {
+        return mocks.logs.some(
+            (line) =>
+                line.includes("automatic-focus-result") &&
+                line.includes(`target=${target}`) &&
+                line.includes(`outcome=${outcome}`),
+        );
+    }
+
+    function focusSkipped(mocks: Mocks, reason: string, target: string): boolean {
+        return mocks.logs.some(
+            (line) =>
+                line.includes("focus-skipped") &&
+                line.includes("kind=reconcile") &&
+                line.includes(`reason=${reason}`) &&
+                line.includes(`target=${target}`),
+        );
+    }
+
+    it("an active automatic float keeps native focus across a survivor-focus reconcile", async () => {
+        const { refs, mocks } = fixedMocks();
+        enableAdapter(mocks);
+        const engine = EngineBridge.start();
+        try {
+            mocks.observeImpl = () => makeObserved(refs, { fingerprint: "fp-ff-focus-1" });
+            dispatchAdded(mocks);
+            assert.equal(await flushPlan(mocks, engine, 0).then((reply) => reply["outcome"]), "planned");
+            // Native focus moves to the admitted automatic float; the next
+            // lifecycle reconcile still carries retained tiled-survivor focus.
+            // The mock active window tracks native focus exactly, so the
+            // re-read guard cannot mask the theft with a stale active value.
+            mocks.activeImpl = (): object | null => refs.b;
+            mocks.observeImpl = () => makeObserved(refs, { focused: refs.b, fingerprint: "fp-ff-focus-2" });
+            const payload = dispatchAdded(mocks);
+            assert.equal(commandOp(payload), "reconcile", "second dispatch is a lifecycle reconcile");
+            assert.equal(wireOf(payload, "win-b")["floating"], true);
+            assert.equal(wireOf(payload, "win-b")["fixed_auto"], true);
+            const reply = await flushPlan(mocks, engine, mocks.dbusCalls.length - 1);
+            assert.equal(reply["outcome"], "planned", `reconcile plans, got ${JSON.stringify(reply)}`);
+            assert.equal(replyFocusWindow(reply), "win-a", "planner retains tiled-survivor focus");
+            assert.deepEqual(mocks.activeWrites, [], "zero activation writes to any window");
+            assert.equal(mocks.activeImpl(), refs.b, "automatic float remains active");
+            assert.deepEqual(
+                mocks.geometries.filter((write) => write.target === refs.b),
+                [],
+                "no geometry write to the float",
+            );
+            assert.deepEqual(mocks.keepAboveWrites, [], "no keep-above write for the automatic float");
+            assert.ok(focusSkipped(mocks, "automatic-active", "win-a"), "effective-floating skip logged");
+            assert.ok(!automaticAttempt(mocks, "win-a"), "protected skip attempts no setter");
+        } finally {
+            await engine.close();
+        }
+    });
+
+    it("hint loss retains automatic focus protection on reconcile", async () => {
+        const { refs, mocks } = fixedMocks();
+        enableAdapter(mocks);
+        const engine = EngineBridge.start();
+        try {
+            mocks.observeImpl = () => makeObserved(refs, { fingerprint: "fp-ff-hint-1" });
+            dispatchAdded(mocks);
+            assert.equal(await flushPlan(mocks, engine, 0).then((reply) => reply["outcome"]), "planned");
+            // Hints are lost but the retained record keeps identity; native
+            // focus sits on the automatic float.
+            mocks.constraintsImpl = (): PlanWindowConstraints | null => null;
+            mocks.activeImpl = (): object | null => refs.b;
+            mocks.observeImpl = () => makeObserved(refs, { focused: refs.b, fingerprint: "fp-ff-hint-2" });
+            const payload = dispatchAdded(mocks);
+            assert.equal(commandOp(payload), "reconcile", "second dispatch is a lifecycle reconcile");
+            assert.equal(wireOf(payload, "win-b")["floating"], true, "hint loss never re-tiles");
+            assert.equal(wireOf(payload, "win-b")["fixed_auto"], true);
+            const reply = await flushPlan(mocks, engine, mocks.dbusCalls.length - 1);
+            assert.equal(reply["outcome"], "planned", `reconcile plans, got ${JSON.stringify(reply)}`);
+            assert.equal(replyFocusWindow(reply), "win-a", "planner retains tiled-survivor focus");
+            assert.deepEqual(mocks.activeWrites, [], "zero activation writes to any window");
+            assert.ok(focusSkipped(mocks, "automatic-active", "win-a"), "retained skip logged");
+            assert.ok(!automaticAttempt(mocks, "win-a"), "protected skip attempts no setter");
+        } finally {
+            await engine.close();
+        }
+    });
+
+    it("a replaced native reference under a reused id classifies fresh and stays protected", async () => {
+        const { refs, mocks } = fixedMocks();
+        const adapter = enableAdapter(mocks);
+        // The replacement carries the same fixed hints on a new reference.
+        const freshRef = {};
+        const fixedFor = new Set<object>([refs.b, freshRef]);
+        mocks.constraintsImpl = (target): PlanWindowConstraints | null => {
+            if (fixedFor.has(target)) {
+                return { resizeable: false, minSize: { ...FIXED }, maxSize: { ...FIXED } };
+            }
+            return { resizeable: true, minSize: null, maxSize: null };
+        };
+        const engine = EngineBridge.start();
+        try {
+            mocks.observeImpl = () => makeObserved(refs, { fingerprint: "fp-ff-ref-1" });
+            dispatchAdded(mocks);
+            assert.equal(await flushPlan(mocks, engine, 0).then((reply) => reply["outcome"]), "planned");
+            assert.equal(adapter.originOfFixedClient("win-b", refs.b), "auto", "setup: original automatic recorded");
+            // The live window is replaced under the reused id and takes
+            // native focus: the stale mark must not linger, the replacement
+            // classifies fresh, and the fresh automatic keeps focus.
+            mocks.activeImpl = (): object | null => freshRef;
+            mocks.observeImpl = () =>
+                makeObserved(refs, { focused: freshRef, refB: freshRef, fingerprint: "fp-ff-ref-2" });
+            const classifiedBefore = mocks.logs.filter((entry) =>
+                entry.includes("fixed-size-classification"),
+            ).length;
+            const payload = dispatchAdded(mocks);
+            assert.equal(commandOp(payload), "reconcile", "second dispatch is a lifecycle reconcile");
+            assert.equal(wireOf(payload, "win-b")["floating"], true, "replacement floats fresh");
+            assert.equal(wireOf(payload, "win-b")["fixed_auto"], true);
+            assert.equal(
+                mocks.logs.filter((entry) => entry.includes("fixed-size-classification")).length,
+                classifiedBefore + 1,
+                "replacement classifies fresh instead of inheriting",
+            );
+            assert.equal(adapter.originOfFixedClient("win-b", refs.b), null, "stale record gone");
+            assert.equal(adapter.originOfFixedClient("win-b", freshRef), "auto", "fresh automatic recorded");
+            const reply = await flushPlan(mocks, engine, mocks.dbusCalls.length - 1);
+            assert.equal(reply["outcome"], "planned", `reconcile plans, got ${JSON.stringify(reply)}`);
+            assert.equal(replyFocusWindow(reply), "win-a", "planner retains tiled-survivor focus");
+            assert.deepEqual(mocks.activeWrites, [], "zero activation writes to any window");
+            assert.ok(focusSkipped(mocks, "automatic-active", "win-a"), "fresh automatic skip logged");
+            assert.ok(!automaticAttempt(mocks, "win-a"), "protected skip attempts no setter");
+        } finally {
+            await engine.close();
+        }
+    });
+
+    it("a resizable replacement under a reused id tiles with the stale automatic evicted", async () => {
+        const { refs, mocks } = fixedMocks();
+        const adapter = enableAdapter(mocks);
+        const engine = EngineBridge.start();
+        try {
+            mocks.observeImpl = () => makeObserved(refs, { fingerprint: "fp-ff-resize-1" });
+            dispatchAdded(mocks);
+            assert.equal(await flushPlan(mocks, engine, 0).then((reply) => reply["outcome"]), "planned");
+            assert.equal(adapter.originOfFixedClient("win-b", refs.b), "auto", "setup: original automatic recorded");
+            // The live window is replaced by a resizable one under the
+            // reused id and takes native focus: the stale automatic must
+            // be evicted, the wire stays plain, and the tiled replacement
+            // keeps its slot with no float protection skip.
+            const freshRef = {};
+            mocks.activeImpl = (): object | null => freshRef;
+            mocks.observeImpl = () =>
+                makeObserved(refs, { focused: freshRef, refB: freshRef, fingerprint: "fp-ff-resize-2" });
+            const payload = dispatchAdded(mocks);
+            assert.equal(commandOp(payload), "reconcile", "second dispatch is a lifecycle reconcile");
+            const row = wireOf(payload, "win-b");
+            assert.ok(!("floating" in row), "resizable replacement never floats");
+            assert.ok(!("fixed_auto" in row), "no automatic origin for the resizable replacement");
+            assert.equal(adapter.originOfFixedClient("win-b", refs.b), null, "stale automatic evicted");
+            const reply = await flushPlan(mocks, engine, mocks.dbusCalls.length - 1);
+            assert.equal(reply["outcome"], "planned", `reconcile plans, got ${JSON.stringify(reply)}`);
+            assert.ok(
+                desiredWindows(reply).some((entry) => entry["window"] === "win-b"),
+                "replacement keeps its tiled slot",
+            );
+            assert.equal(replyFocusWindow(reply), "win-b", "planner retains the tiled replacement");
+            assert.deepEqual(mocks.activeWrites, [], "no activation writes to any window");
+            assert.ok(
+                !mocks.logs.some((line) => line.includes("focus-skipped")),
+                "no float protection skip for the tile",
+            );
+            assert.ok(
+                mocks.logs.some(
+                    (line) => line.includes("kind=reconcile") && line.includes("outcome=planned-applied"),
+                ),
+                "replacement applies normally",
+            );
+        } finally {
+            await engine.close();
+        }
+    });
+
+    it("an explicit tile override is not protected as a float", async () => {
+        const { refs, mocks } = fixedMocks();
+        const adapter = enableAdapter(mocks);
+        const engine = EngineBridge.start();
+        try {
+            mocks.observeImpl = () => makeObserved(refs, { fingerprint: "fp-ff-tile-1" });
+            dispatchAdded(mocks);
+            assert.equal(await flushPlan(mocks, engine, 0).then((reply) => reply["outcome"]), "planned");
+            // Explicit unfloat of the automatic client: it rejoins the tiled
+            // topology with suppression instead of floating.
+            mocks.activeImpl = (): object | null => refs.b;
+            mocks.observeImpl = () => makeObserved(refs, { focused: refs.b, fingerprint: "fp-ff-tile-2" });
+            adapter.requestFloat();
+            runDebounce(mocks);
+            const unfloat = await flushPlan(mocks, engine, mocks.dbusCalls.length - 1);
+            assert.equal(unfloat["outcome"], "planned", `unfloat plans, got ${JSON.stringify(unfloat)}`);
+            assert.ok(
+                desiredWindows(unfloat).some((entry) => entry["window"] === "win-b"),
+                "override rejoins the topology",
+            );
+            // The overridden tile focused: the next reconcile applies
+            // normally with no float protection and no focus skip.
+            mocks.observeImpl = () => makeObserved(refs, { focused: refs.b, fingerprint: "fp-ff-tile-3" });
+            const logsBefore = mocks.logs.length;
+            const payload = dispatchAdded(mocks);
+            const overridden = wireOf(payload, "win-b");
+            assert.ok(!("floating" in overridden), "explicit tile wins, no re-float");
+            assert.equal(overridden["fixed_suppress"], true);
+            assert.ok(!("fixed_auto" in overridden));
+            assert.equal(adapter.originOfFixedClient("win-b", refs.b), "suppress", "override pins suppress, not auto");
+            const reply = await flushPlan(mocks, engine, mocks.dbusCalls.length - 1);
+            assert.equal(reply["outcome"], "planned", `reconcile plans, got ${JSON.stringify(reply)}`);
+            assert.ok(
+                desiredWindows(reply).some((entry) => entry["window"] === "win-b"),
+                "override keeps its tiled slot",
+            );
+            const freshLogs = mocks.logs.slice(logsBefore);
+            assert.ok(!freshLogs.some((line) => line.includes("focus-skipped")), "no focus skip for the tile");
+            assert.ok(
+                freshLogs.some(
+                    (line) => line.includes("kind=reconcile") && line.includes("outcome=planned-applied"),
+                ),
+                "reconcile applies normally",
+            );
+            assert.deepEqual(mocks.activeWrites, [], "no activation writes across the override");
+        } finally {
+            await engine.close();
+        }
+    });
+
+    it("close-survivor refocus actuates the survivor with correlated attempt and acceptance", async () => {
+        const { refs, mocks } = fixedMocks();
+        enableAdapter(mocks);
+        const engine = EngineBridge.start();
+        try {
+            mocks.observeImpl = () => makeObserved(refs, { fingerprint: "fp-ff-close-1" });
+            dispatchAdded(mocks);
+            assert.equal(await flushPlan(mocks, engine, 0).then((reply) => reply["outcome"]), "planned");
+            // The automatic float closes with the tiled survivor already
+            // focused, but KWin reports no live active window: the survivor
+            // refocus must actuate exactly once with correlated
+            // attempt/result evidence and no float protection skip.
+            mocks.activeImpl = (): object | null => null;
+            mocks.observeImpl = () => makeObserved(refs, { omitB: true, fingerprint: "fp-ff-close-2" });
+            const payload = dispatchAdded(mocks);
+            assert.equal(commandOp(payload), "reconcile", "close dispatches a lifecycle reconcile");
+            const reply = await flushPlan(mocks, engine, mocks.dbusCalls.length - 1);
+            assert.equal(reply["outcome"], "planned", `close converges, got ${JSON.stringify(reply)}`);
+            assert.equal(replyFocusWindow(reply), "win-a", "planner keeps the survivor focused");
+            assert.deepEqual(mocks.activeWrites, [refs.a], "survivor actuated exactly once");
+            assert.ok(automaticAttempt(mocks, "win-a"), "setter attempt logged");
+            assert.ok(automaticResult(mocks, "win-a", "setter-accepted"), "setter acceptance logged");
+            assert.ok(
+                !mocks.logs.some((line) => line.includes("focus-skipped")),
+                "no protection skip on the survivor path",
+            );
+        } finally {
+            await engine.close();
+        }
+    });
+
+    it("a stale live active enforces planner focus with correlated attempt and acceptance", async () => {
+        const { refs, mocks } = fixedMocks();
+        enableAdapter(mocks);
+        const engine = EngineBridge.start();
+        try {
+            mocks.observeImpl = () => makeObserved(refs, { fingerprint: "fp-ff-ghost-1" });
+            dispatchAdded(mocks);
+            assert.equal(await flushPlan(mocks, engine, 0).then((reply) => reply["outcome"]), "planned");
+            // KWin reports no live active window while the observation still
+            // focuses the tiled survivor: the adapter enforces planner focus
+            // with correlated attempt/result evidence. Setter acceptance is
+            // reported honestly, never proven native focus.
+            mocks.activeImpl = (): object | null => null;
+            mocks.observeImpl = () =>
+                makeObserved(refs, {
+                    fingerprint: "fp-ff-ghost-2",
+                    rects: { "win-a": { x: 4, y: 0, w: 600, h: 800 } },
+                });
+            const payload = dispatchAdded(mocks);
+            assert.equal(commandOp(payload), "reconcile", "drift dispatches a lifecycle reconcile");
+            const reply = await flushPlan(mocks, engine, mocks.dbusCalls.length - 1);
+            assert.equal(reply["outcome"], "planned", `reconcile plans, got ${JSON.stringify(reply)}`);
+            assert.equal(replyFocusWindow(reply), "win-a", "planner keeps the survivor focused");
+            assert.deepEqual(mocks.activeWrites, [refs.a], "stale active enforced to planner focus");
+            assert.ok(automaticAttempt(mocks, "win-a"), "setter attempt logged");
+            assert.ok(automaticResult(mocks, "win-a", "setter-accepted"), "setter acceptance logged");
+            assert.ok(
+                mocks.logs.some(
+                    (line) => line.includes("kind=reconcile") && line.includes("outcome=planned-applied"),
+                ),
+                "enforced focus still applies",
+            );
+        } finally {
+            await engine.close();
+        }
+    });
+
+    it("a refused automatic setter logs attempt and failure with a write-failed terminal", async () => {
+        const { refs, mocks } = fixedMocks();
+        mocks.setActiveImpl = (_target: object): boolean => false;
+        enableAdapter(mocks);
+        const engine = EngineBridge.start();
+        try {
+            mocks.observeImpl = () => makeObserved(refs, { fingerprint: "fp-ff-deny-1" });
+            dispatchAdded(mocks);
+            assert.equal(await flushPlan(mocks, engine, 0).then((reply) => reply["outcome"]), "planned");
+            mocks.activeImpl = (): object | null => null;
+            mocks.observeImpl = () =>
+                makeObserved(refs, {
+                    fingerprint: "fp-ff-deny-2",
+                    rects: { "win-a": { x: 4, y: 0, w: 600, h: 800 } },
+                });
+            const payload = dispatchAdded(mocks);
+            assert.equal(commandOp(payload), "reconcile", "drift dispatches a lifecycle reconcile");
+            const reply = await flushPlan(mocks, engine, mocks.dbusCalls.length - 1);
+            assert.equal(reply["outcome"], "planned", `reconcile plans, got ${JSON.stringify(reply)}`);
+            assert.deepEqual(mocks.activeWrites, [refs.a], "attempt recorded before the refusal");
+            assert.ok(automaticAttempt(mocks, "win-a"), "setter attempt logged");
+            assert.ok(automaticResult(mocks, "win-a", "setter-refused"), "setter refusal logged");
+            assert.ok(
+                mocks.logs.some(
+                    (line) => line.includes("kind=reconcile") && line.includes("outcome=write-failed"),
+                ),
+                "write-failed terminal logged",
+            );
+        } finally {
+            await engine.close();
+        }
+    });
+
+    it("a throwing automatic setter logs attempt and failure with a write-failed terminal", async () => {
+        const { refs, mocks } = fixedMocks();
+        mocks.setActiveImpl = (_target: object): boolean => {
+            throw new Error("native focus unavailable");
+        };
+        enableAdapter(mocks);
+        const engine = EngineBridge.start();
+        try {
+            mocks.observeImpl = () => makeObserved(refs, { fingerprint: "fp-ff-throw-1" });
+            dispatchAdded(mocks);
+            assert.equal(await flushPlan(mocks, engine, 0).then((reply) => reply["outcome"]), "planned");
+            mocks.activeImpl = (): object | null => null;
+            mocks.observeImpl = () =>
+                makeObserved(refs, {
+                    fingerprint: "fp-ff-throw-2",
+                    rects: { "win-a": { x: 4, y: 0, w: 600, h: 800 } },
+                });
+            const payload = dispatchAdded(mocks);
+            assert.equal(commandOp(payload), "reconcile", "drift dispatches a lifecycle reconcile");
+            const reply = await flushPlan(mocks, engine, mocks.dbusCalls.length - 1);
+            assert.equal(reply["outcome"], "planned", `reconcile plans, got ${JSON.stringify(reply)}`);
+            assert.deepEqual(mocks.activeWrites, [refs.a], "attempt recorded before the throw");
+            assert.ok(automaticAttempt(mocks, "win-a"), "setter attempt logged");
+            assert.ok(automaticResult(mocks, "win-a", "threw"), "setter throw logged");
+            assert.ok(
+                mocks.logs.some(
+                    (line) => line.includes("kind=reconcile") && line.includes("outcome=write-failed"),
+                ),
+                "write-failed terminal logged",
             );
         } finally {
             await engine.close();

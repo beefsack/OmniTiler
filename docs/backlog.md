@@ -76,6 +76,36 @@ decisions of 2026-09-24 are under
   - Remaining agent-feasible non-drag legs (T02 last legs, T03 history, T05
     migration, T06 border/underlay on both outputs, exact-tree R4 repeat) were
     interrupted before results; restart from the inventory.
+- P0 | KDE floating dialog pushed behind other windows | User live 2026-10-16:
+  Steam dialogs (game-launch controller prompt; fixed-size startup loading
+  dialog, admitted floating) repeatedly drop behind Steam or a terminal on the
+  same workspace; Alt+Tab shows them only briefly. Reproduced under
+  `just dev trace`.
+  - DELIVERED 2026-10-17, pending user live retest: reconcile now preserves
+    focused automatic fixed-size floats using exact-reference effective-floating
+    classification, without keep-above writes (D8). Correlated automatic-focus
+    attempt/result diagnostics distinguish setter acceptance from native focus.
+    Regressions reproduced sibling activation before the fix; full KWin suite
+    1574/1574, typecheck and build pass; independent review accepted.
+    [Outcome](changes/archive/kde-fixed-float-focus-preservation.md).
+    Retest Steam loading dialog + Alt+Tab with a terminal on the same workspace
+    under `just dev trace`; native incident attribution remains unconfirmed.
+  - User retest 2026-10-17: improved; reconcile focus skip engaged, no
+    automatic focus attempts. Residual drop-behind unattributed (likely native
+    stacking: automatic floats have no keep-above).
+  - NEXT | User decision 2026-10-17: automatic fixed-size floats stay above
+    tiled windows like Meta+G floats on KDE (COSMIC places both in one
+    floating layer above tiles), still with no geometry or focus writes.
+    Amend D8 and `REQ-SPC-04h`, qualify R-FLT-12; Windows unchanged. Accept
+    only after live checks with a fixed-size windowed game, a focused
+    fullscreen game and a modal dialog; game safety wins on conflict.
+- P1 (after floating dialog defect) | KDE open-animation tile jump | New
+  windows play the open effect at initial placement, then jump into the tile.
+  Source investigation 2026-10-16: no animation wait; 120 ms admission
+  debounce plus planner IPC, and Wayland resize needs a client round trip
+  after map. Tiling itself must not animate; goal is final geometry before
+  opening. Next: user-run single-window timing probe (admission, planner
+  send/reply, requested and actual geometry, screen recording).
 - P1 | Shared settings schema and tabbed Settings | Settings dialog has too
   much on one page. Investigate a core-owned settings definition (tabs,
   fields, types, defaults, validation) that each platform renders natively and

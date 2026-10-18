@@ -11452,8 +11452,20 @@ export class PlanAdapter {
                 let focusSkipped = false;
                 if (flightState.op === "reconcile" && focusWindow !== current.focusedId) {
                     const focusedEntry = current.windows.find((entry) => entry.id === current.focusedId);
-                    if (focusedEntry !== undefined && (focusedEntry.floating === true || focusedEntry.sticky === true)) {
-                        const reason = focusedEntry.floating === true ? "floating-active" : "sticky-active";
+                    // Effective floating covers native floating/sticky plus
+                    // retained automatic floats (exact-ref identity inside):
+                    // the automatically floating subject keeps native focus
+                    // over retained tiled-survivor bookkeeping. Manual and
+                    // sticky reasons keep their existing tokens; automatic
+                    // floats skip as automatic-active. No geometry, stacking,
+                    // or keep-above change here (D8).
+                    if (focusedEntry !== undefined && this.isEffectivelyFloating(current, current.focusedId)) {
+                        const reason =
+                            focusedEntry.floating === true
+                                ? "floating-active"
+                                : focusedEntry.sticky === true
+                                  ? "sticky-active"
+                                  : "automatic-active";
                         this.logToken(`${LOG_PREFIX}:focus-skipped correlation=${flightState.correlation} kind=reconcile reason=${reason} window=${current.focusedId} target=${focusWindow}`);
                         focusSkipped = true;
                     }
@@ -11472,12 +11484,33 @@ export class PlanAdapter {
                     } else {
                         const target = byRef.get(focusWindow);
                         if (target !== undefined && guard.active !== target) {
+                            // Correlated automatic-focus attempt/result for
+                            // reconcile/update-gaps setter runs only: the
+                            // outcome reports synchronous setter acceptance,
+                            // never proven native focus. Explicit-op setters
+                            // stay exactly as before, and protected skips
+                            // above attempt nothing.
+                            const automaticOp =
+                                flightState.op === "reconcile" || flightState.op === "update-gaps";
+                            if (automaticOp) {
+                                this.logToken(
+                                    `${LOG_PREFIX}:automatic-focus-attempt correlation=${flightState.correlation} kind=${flightState.op} window=${current.focusedId} target=${focusWindow} reason=planned-focus`,
+                                );
+                            }
                             let focused = false;
+                            let threw = false;
                             try {
                                 focused = this.env.setActive(target) === true;
                             } catch (error) {
                                 void error;
+                                threw = true;
                                 focused = false;
+                            }
+                            if (automaticOp) {
+                                const outcome = threw ? "threw" : focused ? "setter-accepted" : "setter-refused";
+                                this.logToken(
+                                    `${LOG_PREFIX}:automatic-focus-result correlation=${flightState.correlation} kind=${flightState.op} window=${current.focusedId} target=${focusWindow} reason=planned-focus outcome=${outcome}`,
+                                );
                             }
                             if (!focused) {
                                 this.lifecycleDiag(flightState, "apply", "setters", "write-failed", "write-failed", this.ordinaryRevision(planned, flightState));
