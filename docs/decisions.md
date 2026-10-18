@@ -354,8 +354,9 @@ platform API behavior.
       is established. Native title-bar drag classification is now the core of
       this work; cross-output integration remains parked. The current
       Meta+left implementation stays diagnostic-only behind its hard gate until
-      replaced. Windows' delivered Win+drag is unchanged pending a separate
-      keep-or-drop review. Physical title-bar dragging is the acceptance route.
+      replaced. Windows Win+drag was subsequently dropped by the 2026-10-18
+      decision under Pointer, Drag and Drop. Physical title-bar dragging is
+      the acceptance route.
       [Earlier outcome and discriminators](changes/macos-drag-drop-overlays.md).
     - **User-approved 2026-10-17 — select-only development seam:**
      use the already-proven MC AX route for explicit bounded selection batches
@@ -605,7 +606,8 @@ platform API behavior.
 ## Windows Multi-Output Foundation
 
 - User 2026-10-14 approved as delivered: cross-output keyboard moves and
-  native/Win-drag releases plan on a candidate Engine. Retained Engine state
+  native title-bar releases plan on a candidate Engine (Win+drag removed
+  2026-10-18). Retained Engine state
   and workspace membership publish only after fresh topology, geometry
   readback and arrival verification; empty-destination drops also require
   source reflow verification. Refusal retains original logical membership.
@@ -2587,8 +2589,8 @@ platform API behavior.
   the chord independently works during resize. End/cancel/removal clears the
   move arm; held chord is independent. The trigger is hard-coded with shared
   portable policy in `tiler-core::visual`; KDE adopted A/B offline on
-  2026-10-05, superseding its Meta-held trigger. Win+drag movement itself belongs to parity item 7, which can
-  supply the same move arm later.
+  2026-10-05, superseding its Meta-held trigger. Windows Win+drag was removed
+  2026-10-18; the native move arm and independent chord remain.
 - Use an enabled-by-default filled, premultiplied-alpha, layered click-through
   nonactivating tool window on the active-border carrier. KDE and Windows
   defaults are `#662a82da`; explicit saved colors remain intact. Extension -1
@@ -2674,8 +2676,9 @@ platform API behavior.
     platform's native behavior where one exists. KDE Meta+drag keeps KWin's
     pointer-following frame; Windows title-bar drag stays native. macOS
     follows the same rule when it starts.
-  - User decision 2026-10-07 (R-DRAG-08): a Meta/Win client drag focuses the
-    dragged window at press on both platforms. Windows delivered and
+  - User decision 2026-10-07 (R-DRAG-08; modifier-drag now KDE/Linux-only
+    per 2026-10-18): a Meta client drag focuses the dragged window at press.
+    Historical Windows Win+drag was delivered and
     agent-observed 2026-10-11 ([record](changes/archive/windows-drag-press-focus.md));
     drop-only activation is retired. KDE timing needs a live check.
   - User decision 2026-10-07 (R-DRAG-04): Esc keeps cancelling a drag on both
@@ -2688,35 +2691,29 @@ platform API behavior.
     destination output's tiling at the drop point (no snap-back, no
     source-scoped restore fight).
 - Windows:
-  - Item 7 (delivered; history in
-    [mouse record](changes/archive/windows-mouse-drag.md)): native title-bar
-    drag and the project-driven Win+left stationary producer are both accepted,
-    each its own committed unit. The project-driven gesture keeps the real
-    window at its source allocation while tracking the pointer; release places
-    through the shared Engine. The failed native SC_MOVE/non-client initiation
-    experiments select no product behavior; no native-loop injection or
-    floating-window modifier-move implementation is selected.
+  - User decision 2026-10-18: drop Win+drag and its exclusive mouse hook,
+    input-thread state and Start-mask coupling. Modifier+drag is a Linux idiom,
+    not a tiling idiom, and is not replicated on Windows or macOS. Native
+    title-bar drag with preview/drop remains fully supported; KDE is unchanged.
+    Modifier-drag requirements REQ-DRAG-03/07 and R-DRAG-08 apply to KDE/Linux,
+    not Windows/macOS. Keyboard shortcuts, shared Escape, gaming coexistence,
+    recovery and native cross-output/DPI obligations remain. Historical
+    [mouse delivery](changes/archive/windows-mouse-drag.md) and
+    [press-focus delivery](changes/archive/windows-drag-press-focus.md) do not
+    require retaining the removed producer.
+    [Removal and baseline/native verification](changes/archive/windows-win-drag-review.md).
   - Item 8 target preview: separate owned filled layered surface above
     windows, click-through/nonactivating and absent from taskbar/Alt+Tab; KDE
-    blue `#2A82DA` at alpha64. Native title movement and project Win movement
-    share Engine DragPreview/DragDrop with fresh complete size hints and exact
+    blue `#2A82DA` at alpha64. Native title movement uses Engine
+    DragPreview/DragDrop with fresh complete size hints and exact
     carried 32px/80px group-edge prior. Source token/domain/revision is frozen
     at START; cancellation, invalidation, self/centre/outside refusal, Finish
     and teardown clear the surface. Physical resize/float exclusion journeys
     remain user checks; deterministic policy/frame gates cover their no-preview
     rule. Evidence: `changes/archive/windows-mouse-drag.md`.
-  - An unfocused project-drag mover activates at press through existing
-    identity-gated focus authority; a failed press clears its arm with no
-    geometry/Engine plan. Drop retains fresh focus verification and refusal,
-    skipping the setter when already foreground. Same-output synthetic
-    no-move/Esc/drop agent-observed 2026-10-11, base `9d12c7f` plus delivery
-    commit ([record](changes/archive/windows-drag-press-focus.md)); native gates
-    passed. Physical input/resize feel remain user-owned. Distinct
-    unfocused-subject underlay C remains parked; completed pointer-drag resize
-    of an inactive tiled window keeps focus unchanged.
-    Tentative, pending user review: reuse existing bounded focus settle
-    (up to 500ms per attempted press, callbacks remain prompt; observed 6-10ms),
-    rather than introduce separate press actuation policy.
+  - Native title-bar focus remains host-owned; completed pointer-drag resize
+    of an inactive tiled window keeps focus unchanged. Removed modifier-drag
+    press-focus/Start-mask acceptance is not a native-drag waiver.
 - Drag-restore markers (user decision D, option 2, 2026-09-26): on topology-change signals, a validated complete
   desktop-ID or output-name list proves a marker's workspace/output removed if
   absent; settle `outcome=unavailable plan=none` and drop it. A failed or

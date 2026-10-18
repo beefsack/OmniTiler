@@ -112,9 +112,9 @@ Part of the [outcome matrix index](../reference-outcomes.md). Notation, profiles
 - Given (tree profiles): `H[A,B*]`, both tiled
 
 - Given (columns): `COL[C1[A],C2[B*]]`; VP recorded. Same action:
-  title-bar drag B to A's top edge; repeat with Mod+Left client drag.
+  title-bar drag B to A's top edge; repeat with Mod+Left client drag (KDE/Linux only).
 
-- When: Title-bar drag B to A's top edge; repeat from the same start with Meta/Win+left client drag
+- When: Title-bar drag B to A's top edge; on KDE/Linux only, repeat from the same start with Meta+left client drag (no modifier-drag producer required on Windows/macOS)
 
 - Observe: Same drop topology and mover; no client click or sibling reflow before drop
 
@@ -159,7 +159,7 @@ Part of the [outcome matrix index](../reference-outcomes.md). Notation, profiles
   with fresh recovery after release, proven offline
   ([record](../../changes/kde-dual-output-live.md#cross-output-drag-lifecycle-correction-2026-10-14));
   physical producer parity remains TBD.
-- Then Ours Windows: both producers delivered with three-window synthetic preview/drop agreement and mid-hold sibling stability; exact row TBD `D(D-win-drag)`
+- Then Ours Windows: native title-bar drag uses the shared drop resolver; historical Win+drag three-window synthetic preview/drop agreement and mid-hold sibling stability do not require a modifier producer; exact native row TBD `D(D-win-drag)`
 - Variant hook: V-DRAG-ZONE.
 
 <a id="r-drag-04-backfill-esc-during-a-column-drag-scrolling"></a>
@@ -202,7 +202,7 @@ Part of the [outcome matrix index](../reference-outcomes.md). Notation, profiles
 - Then paneru: pointer drag is the host macOS journey. `S(S-pan-mouse)`;
   queued.
 - Then Ours KDE: cancelled verdict makes no plan and clears preview `D(D-dec-drag)`
-- Then Ours Windows: synthetic title/Win Esc restores all frames without mutation, Win preview hidden before Up; physical edge/exact row TBD `D(D-win-drag)`
+- Then Ours Windows: historical synthetic title/Win Esc restores all frames without mutation, Win preview hidden before Up; current producer is native title-bar only, physical edge/exact row TBD `D(D-win-drag)`
 - Variant hook: V-DRAG-ZONE.
 
 <a id="r-drag-05-backfill-zero-move-pressrelease-scrolling"></a>
@@ -248,7 +248,7 @@ Part of the [outcome matrix index](../reference-outcomes.md). Notation, profiles
   and no preview residue on this zero-move press/release (strip-offset
   pixels outside this Observe). `S(S-pan-mouse)`.
 - Then Ours KDE: no-change verdict makes no plan `D(D-dec-drag)`
-- Then Ours Windows: synthetic title/Win zero-move preserves all frames without mutation or preview residue on a three-window fixture; exact row TBD `D(D-win-drag)`
+- Then Ours Windows: historical synthetic title/Win zero-move preserves all frames without mutation or preview residue on a three-window fixture; current producer is native title-bar only, exact row TBD `D(D-win-drag)`
 - Variant hook: V-DRAG-ZONE.
 
 <a id="r-drag-06-backfill-release-outside-the-work-area-scrolling"></a>
@@ -296,7 +296,7 @@ Part of the [outcome matrix index](../reference-outcomes.md). Notation, profiles
 - Then paneru: pointer drag is the host macOS journey. `S(S-pan-mouse)`;
   queued.
 - Then Ours KDE: unresolved target snaps back `D(D-dec-drag)`
-- Then Ours Windows: title/Win taskbar-outside refusal restores all frames without mutation or preview residue on a three-window fixture; exact row TBD `D(D-win-drag)`
+- Then Ours Windows: historical title/Win taskbar-outside refusal restores all frames without mutation or preview residue on a three-window fixture; current producer is native title-bar only, exact row TBD `D(D-win-drag)`
 - Variant hook: V-DRAG-ZONE.
 
 <a id="r-drag-07-backfill-dragged-frame-vs-retained-allocation-scrolling"></a>
@@ -305,9 +305,9 @@ Part of the [outcome matrix index](../reference-outcomes.md). Notation, profiles
 - Given (tree profiles): `H[A,B*]`, both tiled
 
 - Given (columns): `COL[C1[A],C2[B*]]`; VP recorded. Same action:
-  Mod+Left client drag B to A's edge; pause before release.
+  Mod+Left client drag B to A's edge on KDE/Linux (Windows/macOS: native title-bar drag); pause before release.
 
-- When: Meta/Win+left client drag B to A's edge; pause before release
+- When: Meta+left client drag B to A's edge on KDE/Linux (no modifier-drag producer required on Windows/macOS; there the native title-bar drag applies); pause before release
 
 - Observe: Native frame follows pointer vs retained source allocation with target-slot preview; final placement unchanged
 
@@ -344,7 +344,7 @@ Part of the [outcome matrix index](../reference-outcomes.md). Notation, profiles
   during the hold. Preview lookup/refusal regression evidence:
   [record](../../changes/kde-dual-output-live.md#cross-output-drag-lifecycle-correction-2026-10-14).
   Physical preview rendering and no-jump pause remain TBD.
-- Then Ours Windows: stationary source with visible target-slot preview;
+- Then Ours Windows: native title-bar drag follows the pointer with shared target-slot preview/drop. Historical stationary-source Win+drag evidence:
   fresh three-Notepad synthetic hold/preview/drop agreement agent-observed
   2026-10-11, base `9d12c7f` plus [press-focus delivery](../../changes/archive/windows-drag-press-focus.md).
   Press-focus changes timing only; native title-bar path stays intact.
@@ -357,9 +357,9 @@ Part of the [outcome matrix index](../reference-outcomes.md). Notation, profiles
 - Given (tree profiles): `H[A*,B]`, B unfocused tiled
 
 - Given (columns): `COL[C1[A*],C2[B]]`, B unfocused; VP recorded.
-  Same action: Mod+Left client press on B; move; release at A's edge.
+  Same action: Mod+Left client press on B on KDE/Linux (no modifier-drag on Windows/macOS); move; release at A's edge.
 
-- When: Meta/Win+left client press on B; move; release at A's edge
+- When: Meta+left client press on B on KDE/Linux (no modifier-drag press-focus required on Windows/macOS); move; release at A's edge
 
 - Observe: Native focus changes at press vs drop; dragged group visual without changing retained focus
 
@@ -386,7 +386,7 @@ Part of the [outcome matrix index](../reference-outcomes.md). Notation, profiles
 - Then paneru: FFM focuses B on pointer entry before the press;
   press delivery and drop-side focus TBD. `S(S-pan-mouse)`; queued.
 - Then Ours KDE: exact focus timing TBD
-- Then Ours Windows: press-focus delivered `9bb2b6f` and agent-observed 2026-10-11
+- Then Ours Windows: modifier-press assertion N/A after the 2026-10-18 removal decision. Historical Win+drag press-focus delivered `9bb2b6f` and agent-observed 2026-10-11
   ([delivery record](../../changes/archive/windows-drag-press-focus.md)); offline
   revalidated 2026-10-17 at `5d953e98`, native gates passed (2,448 passed,
   0 failed, 1 ignored), no new live run:

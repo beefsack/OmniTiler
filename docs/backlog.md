@@ -490,14 +490,6 @@ decisions of 2026-09-24 are under
   Pending physical acceptance: both Ctrl chords route only to tiler actions,
   Ctrl+Win+F11 invokes no Windows function, Ctrl+Win+G does not open Game Bar,
   hold/release/plain-Win behavior, conflict rows and Settings-page navigation.
-- P2 | Windows: drop Win+drag | User 2026-10-18 decided to drop Win+drag
-  (stationary source, moving preview; REQ-DRAG-03/07, R-DRAG-08) on Windows:
-  modifier+drag is a Linux idiom, not a tiling idiom, and is not replicated on
-  Windows or macOS. Native title-bar drag remains. Remove the Windows producer,
-  its hook/input-thread surface and tests; amend the spec/requirements and the
-  Windows 0.1 gate proposal legs (checks 17/25/26/47) and record the decision.
-  KDE behavior unchanged.
-  [Implementation, evidence, options and recommendation](changes/windows-win-drag-review.md).
 - P1 | Windows launcher geometry fighting | Hint/timeout flap correlates
   with repeated four-window writes. User-approved lifetime-bound declared-hint
   reuse on timeout (no expiry), rate-limited per-window diagnostics and
@@ -970,7 +962,8 @@ decisions of 2026-09-24 are under
   user-confirmed physically
   ([record](changes/archive/windows-input-thread.md),
   [wake fix](changes/archive/windows-input-owner-wake.md)). Release and
-  trace-off comparison, Win+drag/Esc and preheld-modifier checks pending.
+  trace-off comparison, native drag/Esc and preheld-modifier checks pending;
+  Win+drag-only checks retired by the 2026-10-18 removal decision.
   Stage 2 offline-delivered 2026-10-12 (`8fe0224`, CI green): border,
   underlay and drop preview on a dedicated render thread with latest-wins
   generations, safety epochs and acknowledged hide before drop actuation;
@@ -1259,16 +1252,17 @@ decisions of 2026-09-24 are under
   [record](changes/archive/windows-foreground-acceptance.md)).
   (7) mouse drag move and (8) drop preview delivered same-output
   (`1b9bf7b` title-bar drag, `7dc6aa3` Win+left drag, `b68d490` preview; CI
-  green; [evidence](changes/archive/windows-mouse-drag.md)); selected:
-  title-bar stays native, Win+drag keeps the source frame and moves only the
-  preview. Move-drag press-focus delivered 2026-10-11 (`9bb2b6f`,
-  [handoff item 7](changes/archive/windows-drag-press-focus.md)); drop-only
-  activation is retired; inactive resize keeps focus. Physical feel checks
+  green; [evidence](changes/archive/windows-mouse-drag.md)); current selection
+  (2026-10-18): native title-bar drag and shared preview/drop remain; Win+drag
+  is removed ([removal and verification](changes/archive/windows-win-drag-review.md)).
+  Former modifier-drag press-focus delivered 2026-10-11 (`9bb2b6f`,
+  [handoff item 7](changes/archive/windows-drag-press-focus.md)) is historical;
+  inactive resize keeps focus. Physical native-drag feel checks
   user-owned; underlay C stays parked (needs extra machinery).
   (9) multi-output foundation delivered offline `2c05ee5` + D23 compile fix
   `f2169d6`: local move first, then Win+Shift+direction transfer all four ways
   with follow focus; horizontal Win+direction focus crosses outputs; native
-  title-bar/Win+drag drops join destination layout at the pointer. Transfer
+  title-bar drops join destination layout at the pointer. Transfer
   commits last; failure retains source membership. Explicit output-send
   bindings, non-local modes, dependent items 5, 12, 14, 16, 19, hotplug and
   ordinary-float transfer remain outside this foundation. Pending: user

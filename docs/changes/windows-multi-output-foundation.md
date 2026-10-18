@@ -3,7 +3,7 @@
 ## Goal And Scope
 
 - Enable exhausted directional tiled movement, horizontal directional focus,
-  and native/Win-drag drops into another output's current layout.
+  and native title-bar drops into another output's current layout.
 - Reuse shared Engine topology, local-first movement, R4 landing and pointer
   admission semantics. Use full output rectangles for adjacency and each
   output's work area and DPI-aware geometry for placement.
@@ -25,7 +25,7 @@
   into the selected adjacent output's current workspace and follow focus.
 - Exhausted horizontal focus selects the destination's valid last-focused tile
   without geometry or membership writes; empty/unreadable targets refuse.
-- Native title-bar and Win-drag releases join destination tiling at the pointer
+- Native title-bar releases join destination tiling at the pointer
   drop point and remove source membership; preview remains render-thread owned.
 - Synthetic two-output tests cover occupied/empty destinations, independent
   current views, differing work areas/scales, negative coordinates and other
@@ -51,13 +51,15 @@
 
 1. Complete adapter current-view pair construction and checked cross-output
    actuation; reuse core selectors and retained Engine transactions.
-2. Route native and Win-drag target/preview/release through destination-current
+2. Route native title-bar target/preview/release through destination-current
    layout observation and the same transfer fences.
 3. Review mutation boundaries and regressions, run native offline gates, and
    reconcile dated specification cells and durable decisions.
 
 ## Evidence And Remaining Work
 
+- Windows Win+drag was removed per user decision 2026-10-18; native title-bar
+  preview/drop, transfer fences and physical multi-output obligations remain.
 - Draft triage (2026-10-13): build passed; tests reported 1,734 passed and one
   ignored, with formatting failures and unreviewed transfer publication.
 - All three approach steps are complete offline. Physical two-output

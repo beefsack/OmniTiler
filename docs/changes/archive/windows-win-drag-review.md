@@ -1,15 +1,100 @@
 # Windows Win+drag keep-or-drop review
 
-- Status: discussion proposal, 2026-10-18; **recommend dropping the Windows
-  Win+drag producer, retaining native title-bar drag**. No decision, requirement,
-  priority, runtime behavior or release exception changes here.
-- Goal/acceptance: explain implementation cost, retained/lost capability,
-  evidence limits, gate dependencies and three options for the Windows owner.
-  Scope is offline source/record analysis, not implementation or live testing.
+- Status: complete, archived 2026-10-18. Windows Win+drag and its exclusive
+  interception/state are removed; native title-bar drag remains. KDE unchanged.
+- Goal/acceptance: remove the Windows modifier-drag producer and exclusive
+  mouse-hook, Start-mask, queue and owner state without changing native drag,
+  keyboard shortcuts, shared Escape, gaming or recovery behavior. Existing
+  settings must still load. No shared-core/protocol behavior changes.
+- Approach: remove producer-only code and tests, reconcile platform requirements
+  and Windows gate legs, run locked Windows build/test/fmt/strict clippy and
+  whitespace gates, independently review behavior preservation, then run bounded
+  owned-window native-drag/Win-drag/Start smoke with exact restoration. Physical
+  shortcut acceptance remains distinct from injected-input evidence.
+- Bounded units: Windows implementation and deterministic gates; platform docs;
+  independent diff review; scoped live verification; final outcome/archive.
 - Source baseline: `9fa32420`; counts below include comments, blanks and tests,
   not executable LOC, deletion estimates or engineering-time estimates.
 
-## Current behavior and implementation cost
+## Implementation evidence (2026-10-18)
+
+- Removed the Win+drag classifier, mouse hook/trampoline, mouse input-pump leg,
+  queue/snapshot/owner arm and focus state, exclusive Start masking and tests.
+  No `WH_MOUSE_LL`, `MSLLHOOKSTRUCT` or mouse-hook installation remains in the
+  Windows crate. Keyboard hook and chord Start masking remain.
+- Windows Rust diff: 43 files, 471 lines added and 5,104 removed (net 4,633
+  removed, including tests/comments/blanks); three producer-only files deleted.
+- Follow-up caller audit removed the orphaned `ffi::point_root` wrapper and its
+  exclusive imports; all other remaining input wrappers have shared callers.
+- Retained native START capture and Escape sequence helpers in `windrag.rs`
+  (the existing filename avoids unrelated module churn), native gesture
+  classification and same/cross-output Engine resolver, preview, render hide
+  acknowledgement and drop paths. This removal changes no shared core/protocol
+  or KDE behavior.
+- No persisted Win+drag setting/catalog binding existed; no schema migration
+  or version bump is needed. Settings structs continue ignoring unknown fields.
+- Locked four-package build and tests, formatting, strict all-target clippy,
+  unsafe allowlist and whitespace gates pass. Tests: 2,844 passed, 0 failed,
+  1 ignored versus baseline 2,883/0/1; 39 producer-only tests removed, none added.
+- Independent full-diff review accepted native title-bar preview/drop/Escape,
+  keyboard held/release/chord masking and suspend/recovery preservation; no
+  blocking findings. Focused input-handoff and keyboard tests corroborated it.
+- Native title-bar, gaming, recovery, inactive-resize and DPI gate obligations
+  remain; only modifier-drag-specific legs are retired. No user-facing README
+  or shortcut page promised Windows Win+drag.
+- Removed obsolete Win-drag stages/helpers from `windows-mouse-drag.ps1`
+  (30 added, 951 removed); six native title stages and shared preview/cleanup
+  helpers remain. Its mock contract passes. Focused shortcut/input suites:
+  140 passed, 0 failed.
+- Initial fast and slow/dwell native smoke attempts failed the old preview-log
+  oracle. Initial preflight captured only a settings hash/taskbar visibility,
+  not full restorable preimages; these attempts are not acceptance evidence.
+- Baseline discriminator: clean detached `5950b795` fails the original oracle
+  identically, despite valid `unchanged` rows carrying mover, rect, tick and
+  prior. The renderer contract permits these steady-state resolutions. The
+  corrected oracle accepts them while retaining visible-carrier, mover/tick,
+  prior and preview/drop rectangle equality checks; hidden-preview assertions
+  reject them symmetrically. The corrected baseline completes native drop,
+  preview agreement, topology change and plan/readback checks. No pre-existing
+  native-preview product defect was established.
+- Final source/helper and harness review passes; its one stale hook-count
+  comment finding was corrected. Native stages, shared preview/cancel/recovery
+  checks and keyboard shortcut paths remain; the harness mock passes.
+- The corrected removal build also passes: native `drag-drop-applied`, visible
+  preview-to-Engine and preview-to-drop rect/prior agreement, actual plan/frame
+  match and topology change. Win+client drag leaves frames unchanged with no
+  gesture or preview resolution. Synthetic bare Win opens Start and an
+  owned-window click dismisses it; Start is closed at cleanup.
+- Fixture coverage initially blocked the corrected removal journey. The final
+  run temporarily raises only exact-owned tagged helpers, restores their normal
+  band before owner launch, and verifies foreground/root-at-point before input.
+  Earlier pre-guard fallback clicks hit Terminal without injected keys;
+  Terminal remained running. Those attempts are not acceptance evidence and were not
+  repeated after coverage guards were installed. No unrelated window is moved,
+  restyled, minimized or closed in the accepted journey.
+- Corrected journeys capture settings bytes to a restorable copy, taskbar
+  auto-hide state and raw SPI before effects. Final cleanup verifies exact-owner
+  stop/restore, helpers closed, no actors/overlays and a clean ledger; executes
+  `mise exec -- just stop`, then repeats restore/ledger checks and byte-exact
+  settings restore/readback plus taskbar/SPI preimage comparisons. Earlier
+  skipped/probe-only final-stop attempts are superseded by this exit-zero run.
+- Independent final code/harness and live-evidence reviews accept the result;
+  no remaining removal blocker. Physical shortcut delivery and native feel,
+  gaming and multi-output/DPI acceptance remain user-owned, not inferred from
+  injected input. Pixel blending is not claimed for the moving native source.
+- Scope choice: retain the existing native-helper module name and shared
+  preview/drop/fence interfaces rather than refactor them. A stale future
+  Win+drag comment in shared `visual.rs` is outside this Windows-only change;
+  no shared runtime correction is needed.
+- Outcome: removal complete; the queued removal item is closed. No native
+  preview product defect was established by the baseline discriminator. Next
+  implementation action: none; physical shortcut acceptance remains pending.
+
+## Historical review (before the removal decision)
+
+The remaining sections preserve the pre-decision analysis, not current requirements.
+
+## Historical behavior and implementation cost
 
 - Either Win key + left-button press on an eligible managed tile can start from
   its client area, including an unfocused tile; there is no extra-modifier gate.
@@ -175,25 +260,25 @@
   Only after that decision reconcile the affected requirements/gate legs and
   scope implementation plus retained title-bar regression acceptance.
 
-[mouse]: ../../crates/tiler-windows/src/win_mouse.rs
-[arm]: ../../crates/tiler-windows/src/tiling_sys/windrag.rs
-[origins]: ../../crates/tiler-windows/src/tiling_sys/focus.rs
-[input]: ../../crates/tiler-windows/src/input_pump/native/mod.rs
-[mask]: ../../crates/tiler-windows/src/snapkey/sys/mod.rs
-[ffi]: ../../crates/tiler-windows/src/ffi/llhook.rs
-[native]: ../../crates/tiler-windows/src/tiling_sys/observe.rs
-[settle]: ../../crates/tiler-windows/src/tiling_sys/gesture_tick.rs
-[preview]: ../../crates/tiler-windows/src/tiling_sys/drag_preview.rs
-[settings]: ../../crates/tiler-windows/src/tiling_sys/settings.rs
-[owner-tests]: ../../crates/tiler-windows/src/tiling_sys/tests_windrag.rs
-[mask-tests]: ../../crates/tiler-windows/src/snapkey/tests_windrag_mask.rs
-[kde-entry]: ../../kwin/src/plan-adapter-entry.ts
-[kde-adapter]: ../../kwin/src/plan-adapter.ts
-[reference]: ../spec/reference-outcomes/mouse.md#r-drag-07-dragged-frame-vs-retained-allocation
-[macos]: ../decisions.md#scope-and-platform-goals
-[delivery]: archive/windows-mouse-drag.md
-[press]: archive/windows-drag-press-focus.md
-[threads]: archive/windows-owner-threading-acceptance.md
-[foundation]: windows-multi-output-foundation.md
-[gaming]: windows-gaming-coexistence.md
-[gate]: windows-0.1-gate-proposal.md
+[mouse]: https://github.com/beefsack/OmniTiler/blob/9fa32420/crates/tiler-windows/src/win_mouse.rs
+[arm]: https://github.com/beefsack/OmniTiler/blob/9fa32420/crates/tiler-windows/src/tiling_sys/windrag.rs
+[origins]: https://github.com/beefsack/OmniTiler/blob/9fa32420/crates/tiler-windows/src/tiling_sys/focus.rs
+[input]: https://github.com/beefsack/OmniTiler/blob/9fa32420/crates/tiler-windows/src/input_pump/native/mod.rs
+[mask]: https://github.com/beefsack/OmniTiler/blob/9fa32420/crates/tiler-windows/src/snapkey/sys/mod.rs
+[ffi]: https://github.com/beefsack/OmniTiler/blob/9fa32420/crates/tiler-windows/src/ffi/llhook.rs
+[native]: https://github.com/beefsack/OmniTiler/blob/9fa32420/crates/tiler-windows/src/tiling_sys/observe.rs
+[settle]: https://github.com/beefsack/OmniTiler/blob/9fa32420/crates/tiler-windows/src/tiling_sys/gesture_tick.rs
+[preview]: https://github.com/beefsack/OmniTiler/blob/9fa32420/crates/tiler-windows/src/tiling_sys/drag_preview.rs
+[settings]: https://github.com/beefsack/OmniTiler/blob/9fa32420/crates/tiler-windows/src/tiling_sys/settings.rs
+[owner-tests]: https://github.com/beefsack/OmniTiler/blob/9fa32420/crates/tiler-windows/src/tiling_sys/tests_windrag.rs
+[mask-tests]: https://github.com/beefsack/OmniTiler/blob/9fa32420/crates/tiler-windows/src/snapkey/tests_windrag_mask.rs
+[kde-entry]: ../../../kwin/src/plan-adapter-entry.ts
+[kde-adapter]: ../../../kwin/src/plan-adapter.ts
+[reference]: ../../spec/reference-outcomes/mouse.md#r-drag-07-dragged-frame-vs-retained-allocation
+[macos]: ../../decisions.md#scope-and-platform-goals
+[delivery]: windows-mouse-drag.md
+[press]: windows-drag-press-focus.md
+[threads]: windows-owner-threading-acceptance.md
+[foundation]: ../windows-multi-output-foundation.md
+[gaming]: ../windows-gaming-coexistence.md
+[gate]: ../windows-0.1-gate-proposal.md
