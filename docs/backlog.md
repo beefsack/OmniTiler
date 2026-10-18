@@ -1137,10 +1137,12 @@ decisions of 2026-09-24 are under
     measured 2026-10-17: hidden CPU was granularity-limited near-zero, not
     proven zero. Visible timeout attribution and fractional-deadline correction
     delivered 2026-10-18 (0.524/s -> 0.498/s; no demonstrated CPU reduction);
-    native event alternatives researched. User 2026-10-18: run the controlled
-    live event-coverage probe before 0.1 and replace the visible-pager 2 s
-    recovery timer then if events prove complete. Chevron response and
-    physical input/preview remain pending. Existing
+    native event alternatives researched. Conditional pre-0.1 event-coverage
+    probe completed 2026-10-18: tested burial emitted desktop-parent reorder
+    outside current subscriptions, but complete native coverage remains unproven.
+    Retain the visible-pager 2 s timer unchanged; no replacement selected.
+    [Probe and limits](changes/archive/windows-pager-event-coverage.md).
+    Chevron response and physical input/preview remain pending. Existing
     approved icon-cache refresh explains visible managed completion wakes;
     retain visible-pager 2 s recovery pending a complete native wake source or
     an explicit recovery-contract choice. [Idle record](changes/archive/windows-owner-event-idle.md).

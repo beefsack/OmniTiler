@@ -531,6 +531,13 @@ platform API behavior.
   2 s contract pending coverage evidence or an explicit contract choice. Chevron
   response and physical-input/preview/game acceptance remain pending. See the
   [idle record](changes/archive/windows-owner-event-idle.md).
+- User 2026-10-18 selected a controlled native-event coverage probe before 0.1,
+  replacing visible-pager 2 s recovery only if coverage proved complete. Probe
+  completed with completeness unproven: the tested topmost burial emitted a
+  desktop-parent reorder outside current subscriptions, not OS silence; broader
+  visibility/reorder, self-feedback and shell/display coverage remain unproven.
+  Retain the existing timer unchanged; no best-effort substitute selected.
+  [Coverage evidence and limits](changes/archive/windows-pager-event-coverage.md).
 - Input clean stop requires successful hook release and successful finished
   thread join; repeated terminal waits return the cached result. Missing or
   unclean completion keeps the process reservation. Render stop signals its
