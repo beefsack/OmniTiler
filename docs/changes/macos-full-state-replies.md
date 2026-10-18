@@ -156,6 +156,13 @@ steal focus. The new admission regression failed with that gate disabled.
 - KDE's TypeScript suite was not run because its dependencies are unavailable;
   static review found named-field parsing tolerant of the additive `win` key.
   Native Windows verification remains external. No dependencies were installed.
+- Cross-platform CI found `classify_select_drain_error` unused in non-macOS
+  library builds: its production caller is macOS-only. Gate the helper to
+  macOS or tests, rather than suppressing dead-code warnings. The full
+  CI-equivalent host clippy package set, formatting, select-feedback coverage
+  and close-reflow regressions pass after this correction. Linux/Windows CI
+  remains the actual cross-target check; no cross-target result is inferred
+  from a macOS host build.
 
 ## Live evidence and remaining verification
 

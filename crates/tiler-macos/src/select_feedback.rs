@@ -133,6 +133,11 @@ impl RuntimeHandle {
 /// backend/execute failure is ambiguous mid-actuation output and holds as
 /// possibly-executed (never blindly repeated). Unknown strings fail safe
 /// toward the hold.
+///
+/// macOS-only helper (plus unit tests): the sole production caller lives
+/// in the macOS-gated native tile controller, so other targets exclude
+/// this definition instead of carrying dead code under `-D warnings`.
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn classify_select_drain_error(reason: &str) -> SelectDrainOutcome {
     for prefix in [
         "select gated:",
