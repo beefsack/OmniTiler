@@ -1,5 +1,77 @@
 # macOS managed native workspaces
 
+## Tagged native-holder delivery checkpoint (2026-10-18)
+
+**The transfer discriminator passes; the managed-workspace product remains
+incomplete and no additional product actions are armed.** Tagged Control+Fn
+arrows and tagged Control-only Desktop-N digits each carried an owned helper
+outward and back, with exact post-release membership/current-Space readbacks.
+NumericPad was unnecessary. These runs supersede the delivery uncertainty below,
+not the pending product integration or physical acceptance.
+
+### Placement and fixture
+
+- Title-free CG/AX measurement confirmed the placement refusal: the protected
+  terminal and three disposable TextEdit windows left no clear 480x384 helper
+  rectangle. Existing foreign-window frame commands correctly refused without a
+  spawn record; no ownership gate was weakened and no window was repositioned.
+- Selecting existing ordinary Space 277 through the proven MC AX route left no
+  onscreen layer-0 obstacles. The unchanged helper placement then succeeded.
+  Running from 277 toward 1 exercises Left outward and Right inverse, as derived
+  from SLS order `[1,277]`. Original current Space 1 was restored afterward.
+- Explicit `spaces-drag-transfer --numbered` resolves both SIDs to their Desktop-N
+  ordinals and reads enabled standard native holders before spawning or posting.
+  Disabled, custom, unreadable and unmappable holders refuse. The fixture never
+  enables settings; default mode remains arrows. Both key edges and pending
+  releases retain the selected digit/flags and own-switch tag.
+- Numbered proof used explicit `spaces-desktop-apply --count 2` and Revert.
+  Holders 118/119 changed from disabled to enabled with unchanged Control+1/2
+  chords, then returned to disabled; the owned recovery preimage was removed.
+  This proves session-effective holder delivery, not automatic Authentic startup.
+
+### Accepted native evidence
+
+Raw title-free transfer reports, preflight, CG, scoped AX, topology and settings
+before/after responses were retained separately. `legF-transfer.json` reports the
+arrow roundtrip; `transfer-numbered.json` reports `numbered:true`. Each has:
+outward membership/current `[1]`/1, inverse `[277]`/277, balanced one mouse-down/up
+and key-down/up per leg, exact helper frame, restored topology/pointer, exact
+helper exit/reap/record removal/absence and display-sleep-child reap. Synthetic
+roundtrip readback times were 1125 ms and 1115 ms respectively, not visual latency.
+
+Raw protected-window records selected from the arrow baseline/final CG responses
+(`legD-cg-inspect.json`, `legG-cg-inspect2.json`) and numbered baseline/final
+responses (`cg-before.json`, `cg-after.json`) are identical in all four samples:
+
+```json
+{"bounds":{"h":1139.0,"w":1150.0,"x":0.0,"y":30.0},"layer":0,"onscreen":true,"pid":31863,"wid":3675}
+```
+
+The arrow leg's intermediate samples retain those bounds with `onscreen:false`
+while another Space is current. Final samples were taken after MC closed;
+baseline/final topology is `[1,277]`, current 1. The three TextEdit identities,
+frames and Space memberships match, and no owned helper remains. Space 277 is
+still retained because foreign chrome blocks proven-empty removal; no Space was
+created or removed. No screenshot was taken: helpers exit within the fixture,
+and no stale-region capture or visual-jank claim was made. Natural focus return
+inside the helper fixture remains unproven; final independent scope inspection
+observed the original protected foreground PID.
+
+### Verification and next action
+
+Independent review and its regression-coverage correction pass: shared real/fake
+chord selection, both tagged edges, Control-only digits versus Control+Fn arrows,
+pending release/error paths and pre-post holder refusals. Library tests: 771;
+integration suites, strict all-target macOS clippy, workspace format/diff checks
+and named signed app build/separate verification pass. Unsafe remains **114
+blocks**, all in unchanged `ffi.rs`. Live numbered main executable SHA-256:
+`8563a3137661ef564e8c08f67175924ae8e66d694968d9f59c5c6db83d441e1b`.
+
+Next: integrate numbered product sends with Authentic Desktop-N enable and owned
+Revert, then send-follow/stay, trailing lifecycle and per-display attribution.
+Tap coexistence, ordinary-window product transfer, physical feel, multi-display
+and minimum-release acceptance remain pending. No new product decision is made.
+
 ## Relative-arrow offline checkpoint (2026-10-18)
 
 **Step 3 remains incomplete; no additional product actions are armed.** Relative

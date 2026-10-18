@@ -1055,6 +1055,7 @@ fn spaces_drag_transfer_parses_existing_sids_with_opt_in() {
             temp: Some(66),
             seconds: crate::config::MAX_PROBE_SECONDS,
             allow_untested: true,
+            numbered: false,
         }
     ));
     assert!(parse_args(&argv(&["spaces-drag-transfer", "--original", "1"])).is_err());
@@ -1092,6 +1093,7 @@ fn spaces_drag_transfer_temporary_parses_without_temp() {
             temp: None,
             seconds: crate::config::MAX_PROBE_SECONDS,
             allow_untested: true,
+            numbered: false,
         }
     ));
     // --temp and --temporary are exclusive; bare --original still refuses.
@@ -1107,6 +1109,52 @@ fn spaces_drag_transfer_temporary_parses_without_temp() {
         .is_err()
     );
     assert!(parse_args(&argv(&["spaces-drag-transfer", "--original", "1"])).is_err());
+}
+
+#[test]
+fn spaces_drag_transfer_numbered_defaults_to_arrows() {
+    // Default stays arrows; --numbered opts into the Desktop-N chord
+    // variant explicitly (no settings write on any path; the runner
+    // refuses unusable holders before any input).
+    let r = parse_args(&argv(&[
+        "spaces-drag-transfer",
+        "--original",
+        "277",
+        "--temp",
+        "1",
+        "--numbered",
+        "--allow-untested",
+    ]))
+    .unwrap();
+    assert!(r.may_mutate);
+    assert!(matches!(
+        r.command,
+        Command::SpacesDragTransfer {
+            original: 277,
+            temp: Some(1),
+            numbered: true,
+            ..
+        }
+    ));
+    // --numbered composes with --temporary too.
+    let r = parse_args(&argv(&[
+        "spaces-drag-transfer",
+        "--original",
+        "277",
+        "--temporary",
+        "--numbered",
+        "--allow-untested",
+    ]))
+    .unwrap();
+    assert!(matches!(
+        r.command,
+        Command::SpacesDragTransfer {
+            temp: None,
+            numbered: true,
+            ..
+        }
+    ));
+    assert!(parse_args(&argv(&["spaces-drag-transfer", "--numbered"])).is_err());
 }
 
 #[test]

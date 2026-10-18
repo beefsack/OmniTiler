@@ -802,19 +802,23 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
             temp,
             seconds,
             allow_untested,
+            numbered,
         } => {
             // Bounded owned titlebar-drag transfer: `Some` temp runs over
             // two EXISTING SIDs (independent self-join recovery proven
             // first, then one synthetic drag outward with an exact
             // drag-back inverse; creates/destroys no Space); `None`
             // (--temporary) creates exactly one temp on the original's
-            // display first and removes only it afterwards. Performs no
+            // display first and removes only it afterwards. `--numbered`
+            // posts the configured Desktop-N chords for the SLS ordinals
+            // (default: relative arrows). Performs no
             // SLS move, writes no preferences, never targets Ghostty.
             tiler_macos::space_drag_live::run_spaces_drag_transfer(
                 original,
                 temp,
                 seconds,
                 allow_untested,
+                numbered,
             )
         }
         Command::DragDiagChord {

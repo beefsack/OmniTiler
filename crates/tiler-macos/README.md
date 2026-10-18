@@ -330,7 +330,7 @@ mise exec -- just launch -- mc-members --space SID
 mise exec -- just launch -- spaces-bindings
 mise exec -- just launch -- --timeout 120 -- spaces-owned-recovery --original SID --temp SID --allow-untested [--probe-direct]
 mise exec -- just launch -- --timeout 120 -- spaces-switch-probe --original SID --temp SID --allow-untested
-mise exec -- just launch -- --timeout 120 -- spaces-drag-transfer --original SID (--temp SID | --temporary) --allow-untested
+mise exec -- just launch --timeout 120 -- spaces-drag-transfer --original SID (--temp SID | --temporary) [--numbered] --allow-untested
 mise exec -- just launch -- --timeout 120 -- mc-recover --temp SID --original SID --allow-untested
 mise exec -- just launch -- --timeout 120 -- mc-restore-frontmost --pid PID --wid WID --space SID --allow-untested
 ```
@@ -376,7 +376,11 @@ diagnostic over two SIDs (independent public self-join recovery proven
 first, then one synthetic HID titlebar-drag plus a tagged native
 Ctrl+arrow chord outward with an exact drag-back inverse; `--temporary`
 creates exactly one temp on the original's display and removes ONLY that
-SID afterwards, while a named `--temp` is never created or destroyed; no
+SID afterwards, while a named `--temp` is never created or destroyed;
+`--numbered` posts the configured Desktop-N chords for the SLS ordinals
+instead (enabled standard Ctrl+digit holders only, refused before any
+input, never a settings write — enable them first through the explicit
+`spaces-desktop-apply` route); no
 SLS move, no preference writes, no product bindings enabled; live
 synthetic transfer is NOT established -- the single live run refused
 pre-post on above-normal chrome with the original restored and the helper

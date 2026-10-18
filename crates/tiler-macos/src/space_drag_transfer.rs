@@ -5,9 +5,13 @@
 //! Approved route (user manual check 2026-10-16): hold a title-bar drag on
 //! an owned helper window, post the native relative Space-switch chord
 //! (enabled `Ctrl+Left`/`Ctrl+Right`), release. Membership readback proves
-//! the transfer; a drag-back leg is the exact inverse. Numbered Desktop-N
-//! chords stay out: their bindings are unresolved (no symbolic IDs), so
-//! this unit is arrows-only by refusal, never a guess.
+//! the transfer; a drag-back leg is the exact inverse. The default arrows
+//! route posts the relative `Ctrl+Left`/`Ctrl+Right` chords selected from
+//! SLS adjacency. The explicit `--numbered` fixture variant instead posts
+//! the configured Desktop-N chords for the original/temp Space ordinals in
+//! the display's SLS order (enabled standard `Ctrl+digit` holders only,
+//! resolved before any input through [`crate::desktop_shortcuts`]); custom
+//! bindings stay refused, never rewritten.
 //!
 //! Silica parity (local checkout `Silica/SIWindow.m moveToSpaceWithEvent:`):
 //! move-to-titlebar -> left-down -> left-dragged (grab) -> 50 ms grab settle ->
@@ -393,6 +397,70 @@ pub struct LegOk {
     pub current: u64,
     pub pending_recovered: bool,
     pub counts: PostCounts,
+}
+
+/// Per-leg synthetic switch chords for one drag roundtrip: the outward leg
+/// posts the temp goal's chord, the return leg the original goal's. Both
+/// edges of both legs carry the own-switch provenance tag
+/// ([`crate::input_match::OWN_SWITCH_USER_DATA`]) so the tap passes our own
+/// switch chords while still consuming the user's. Arrow routes post
+/// Control+SecondaryFn ([`crate::symbolic_hotkeys::CG_ARROW_FLAGS`]);
+/// numbered Desktop-N routes post Control-only digits. Pure; the live
+/// backend selects per leg through [`SwitchChords::for_goal`], and the fake
+/// backend records the same triple in tests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SwitchChords {
+    pub outward_key: u32,
+    pub outward_flags: u64,
+    pub return_key: u32,
+    pub return_flags: u64,
+}
+
+impl SwitchChords {
+    /// Relative-arrow chords (default fixture route): both legs post
+    /// Control+SecondaryFn.
+    #[must_use]
+    pub const fn arrows(outward_key: u32, return_key: u32) -> Self {
+        Self {
+            outward_key,
+            outward_flags: crate::symbolic_hotkeys::CG_ARROW_FLAGS,
+            return_key,
+            return_flags: crate::symbolic_hotkeys::CG_ARROW_FLAGS,
+        }
+    }
+
+    /// Numbered Desktop-N chords: per-leg Control-only digit keycode+flags
+    /// (already resolved and validated through [`crate::desktop_shortcuts`]).
+    #[must_use]
+    pub const fn numbered(outward: (u32, u64), return_leg: (u32, u64)) -> Self {
+        Self {
+            outward_key: outward.0,
+            outward_flags: outward.1,
+            return_key: return_leg.0,
+            return_flags: return_leg.1,
+        }
+    }
+
+    /// Posted triple for one leg goal: keycode, flags, and the own-switch
+    /// tag. The temp goal selects the outward chord; any other goal selects
+    /// the return chord (the executor only ever posts the two roundtrip
+    /// goals).
+    #[must_use]
+    pub const fn for_goal(self, goal: u64, temp: u64) -> (u32, u64, Option<i64>) {
+        if goal == temp {
+            (
+                self.outward_key,
+                self.outward_flags,
+                Some(crate::input_match::OWN_SWITCH_USER_DATA),
+            )
+        } else {
+            (
+                self.return_key,
+                self.return_flags,
+                Some(crate::input_match::OWN_SWITCH_USER_DATA),
+            )
+        }
+    }
 }
 
 /// Drag post backend: the executor calls these in Silica order and reads

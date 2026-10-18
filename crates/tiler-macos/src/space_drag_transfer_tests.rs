@@ -4,6 +4,7 @@
 //! the shared roundtrip over a scripted backend with per-boundary fault
 //! injection. Pure data only -- no live dispatch, no windows touched.
 
+use crate::desktop_shortcuts::{desktop_digit_keycode, numbered_desktop_for_sid};
 use crate::ffi::{AxFrame, CgBounds, CgWindow, CgWindowBasic};
 use crate::mc_probe::GhosttyWindow;
 use crate::space_drag_transfer::*;
@@ -26,6 +27,14 @@ struct FakeDragBackend {
     no_effect: bool,
     freeze_current: bool,
     unreadable: bool,
+    /// Optional per-leg chord selection (the same [`SwitchChords`] the live
+    /// backend holds): `begin_leg` selects through `for_goal`, and every
+    /// successful key post records its (keycode, flags, tag, down) triple,
+    /// so tests prove the exact posted digits+flags+tag per leg.
+    chords: Option<SwitchChords>,
+    temp: u64,
+    selected: Option<(u32, u64, Option<i64>)>,
+    key_posts: Vec<(u32, u64, Option<i64>, bool)>,
 }
 
 impl FakeDragBackend {
@@ -45,6 +54,23 @@ impl FakeDragBackend {
             no_effect: false,
             freeze_current: false,
             unreadable: false,
+            chords: None,
+            temp: 0,
+            selected: None,
+            key_posts: Vec::new(),
+        }
+    }
+
+    fn with_chords(mut self, temp: u64, chords: SwitchChords) -> Self {
+        self.temp = temp;
+        self.chords = Some(chords);
+        self
+    }
+
+    fn record_key_post(&mut self, down: bool) {
+        if let Some(selected) = self.selected {
+            self.key_posts
+                .push((selected.0, selected.1, selected.2, down));
         }
     }
 }
@@ -56,6 +82,9 @@ impl DragBackend for FakeDragBackend {
             return Err("injected leg-setup refusal".to_owned());
         }
         self.goal = goal;
+        // Same selection seam as the live backend: the temp goal posts
+        // outward, any other goal posts the return chord.
+        self.selected = self.chords.map(|c| c.for_goal(goal, self.temp));
         Ok(())
     }
 
@@ -84,6 +113,7 @@ impl DragBackend for FakeDragBackend {
                 return Err("injected chord-down refusal".to_owned());
             }
             self.counts.key_down += 1;
+            self.record_key_post(true);
             return Ok(());
         }
         if self.fail_key_up_once {
@@ -94,6 +124,9 @@ impl DragBackend for FakeDragBackend {
             return Err("injected chord-up recovery refusal".to_owned());
         }
         self.counts.key_up += 1;
+        // Only successful posts record: a refused up edge never reached
+        // the server, so the retry (not the refusal) carries the triple.
+        self.record_key_post(false);
         if !self.no_effect {
             self.membership = vec![self.goal];
             if !self.freeze_current {
@@ -551,6 +584,145 @@ fn shared_roundtrip_completes_outward_and_inverse() {
     assert!(!report.unresolved);
     assert!(report.posts_total > 0);
     assert_eq!(backend.membership, vec![1]);
+}
+
+#[test]
+fn switch_chords_select_temp_goal_outward_else_return_and_always_tag() {
+    use crate::symbolic_hotkeys::{CG_ARROW_FLAGS, KEY_LEFT_ARROW, KEY_RIGHT_ARROW};
+    let tag = Some(crate::input_match::OWN_SWITCH_USER_DATA);
+    // Arrows: temp goal posts outward, any other goal posts return.
+    let arrows = SwitchChords::arrows(KEY_RIGHT_ARROW, KEY_LEFT_ARROW);
+    assert_eq!(
+        arrows.for_goal(66, 66),
+        (KEY_RIGHT_ARROW, CG_ARROW_FLAGS, tag)
+    );
+    assert_eq!(
+        arrows.for_goal(1, 66),
+        (KEY_LEFT_ARROW, CG_ARROW_FLAGS, tag)
+    );
+    // Numbered: Control-only digits with the same tag on both legs.
+    let ctrl = crate::input_match::SWITCH_CTRL_BIT;
+    let digits = SwitchChords::numbered((0x12, ctrl), (0x13, ctrl));
+    assert_eq!(digits.for_goal(1, 1), (0x12, ctrl, tag));
+    assert_eq!(digits.for_goal(277, 1), (0x13, ctrl, tag));
+}
+
+/// Corrected live shape: SLS `[1, 277]` with original 277 at ordinal 2
+/// (Desktop 2) and temp 1 at ordinal 1 (Desktop 1). Returns the roundtrip
+/// chords plus the two ANSI digit keycodes.
+fn numbered_chords_1_277() -> (SwitchChords, u32, u32) {
+    let order = [1u64, 277];
+    assert_eq!(numbered_desktop_for_sid(&order, 277), Some(2));
+    assert_eq!(numbered_desktop_for_sid(&order, 1), Some(1));
+    let digit_1 = desktop_digit_keycode(1).unwrap();
+    let digit_2 = desktop_digit_keycode(2).unwrap();
+    assert_eq!((digit_1, digit_2), (0x12, 0x13));
+    let chords = SwitchChords::numbered(
+        (digit_1, crate::input_match::SWITCH_CTRL_BIT),
+        (digit_2, crate::input_match::SWITCH_CTRL_BIT),
+    );
+    (chords, digit_1, digit_2)
+}
+
+#[test]
+fn numbered_roundtrip_posts_ctrl1_outward_then_ctrl2_inverse_tagged_ctrl_only() {
+    let (chords, digit_1, digit_2) = numbered_chords_1_277();
+    let tag = Some(crate::input_match::OWN_SWITCH_USER_DATA);
+    let ctrl = crate::input_match::SWITCH_CTRL_BIT;
+    let mut backend = FakeDragBackend::new(vec![277], Some(277)).with_chords(1, chords);
+    let mut notes = Vec::new();
+    let report = run_drag_roundtrip(&mut backend, 277, 1, &mut notes);
+    assert_eq!(report.outcome, "drag-transfer-complete");
+    assert_eq!(report.outward.membership, Some(vec![1]));
+    assert_eq!(report.outward.current, Some(1));
+    let inverse = report.inverse.expect("inverse runs after exact outward");
+    assert_eq!(inverse.membership, Some(vec![277]));
+    assert_eq!(inverse.current, Some(277));
+    // Outward posts the temp ordinal's chord (Ctrl+1), the inverse the
+    // original ordinal's (Ctrl+2): Control-only digits, tagged, both edges.
+    assert_eq!(
+        backend.key_posts,
+        vec![
+            (digit_1, ctrl, tag, true),
+            (digit_1, ctrl, tag, false),
+            (digit_2, ctrl, tag, true),
+            (digit_2, ctrl, tag, false),
+        ]
+    );
+    assert!(report.releases_balanced);
+    assert!(!report.unresolved);
+}
+
+#[test]
+fn arrow_legs_stay_ctrl_fn_tagged() {
+    use crate::symbolic_hotkeys::{KEY_LEFT_ARROW, KEY_RIGHT_ARROW};
+    let arrows = SwitchChords::arrows(KEY_RIGHT_ARROW, KEY_LEFT_ARROW);
+    let tag = Some(crate::input_match::OWN_SWITCH_USER_DATA);
+    let mut backend = FakeDragBackend::new(vec![1], Some(1)).with_chords(66, arrows);
+    let mut notes = Vec::new();
+    let report = run_drag_roundtrip(&mut backend, 1, 66, &mut notes);
+    assert_eq!(report.outcome, "drag-transfer-complete");
+    // Arrows alone carry SecondaryFn; digits never do (see the numbered
+    // test above pinning Control-only).
+    let fn_flags = crate::input_match::SWITCH_ARROW_FLAGS;
+    assert_eq!(fn_flags, 0x0084_0000);
+    assert_eq!(
+        backend.key_posts,
+        vec![
+            (KEY_RIGHT_ARROW, fn_flags, tag, true),
+            (KEY_RIGHT_ARROW, fn_flags, tag, false),
+            (KEY_LEFT_ARROW, fn_flags, tag, true),
+            (KEY_LEFT_ARROW, fn_flags, tag, false),
+        ]
+    );
+}
+
+#[test]
+fn pending_key_recovery_preserves_digit_flags_tag() {
+    let (chords, digit_1, _) = numbered_chords_1_277();
+    let tag = Some(crate::input_match::OWN_SWITCH_USER_DATA);
+    let ctrl = crate::input_match::SWITCH_CTRL_BIT;
+    let mut backend = FakeDragBackend::new(vec![277], Some(277)).with_chords(1, chords);
+    backend.fail_key_up_once = true;
+    let mut notes = Vec::new();
+    let leg = run_drag_leg(&mut backend, 1, 1, "drag-o-t", &mut notes).unwrap();
+    assert!(leg.pending_recovered);
+    // The once-only retry posts the identical pending-leg triple: the
+    // refused up never reached the server, so only down + retry record.
+    assert_eq!(
+        backend.key_posts,
+        vec![(digit_1, ctrl, tag, true), (digit_1, ctrl, tag, false),]
+    );
+    assert_eq!(backend.counts.key_down, 1, "key-down never re-sent");
+    assert_eq!(backend.counts.key_up, 1, "pending release posted once");
+    assert!(backend.counts().balanced());
+}
+
+#[test]
+fn unresolved_key_parks_digit_with_mouse_released() {
+    let (chords, digit_1, _) = numbered_chords_1_277();
+    let tag = Some(crate::input_match::OWN_SWITCH_USER_DATA);
+    let ctrl = crate::input_match::SWITCH_CTRL_BIT;
+    let mut backend = FakeDragBackend::new(vec![277], Some(277)).with_chords(1, chords);
+    backend.fail_key_up_once = true;
+    backend.fail_key_recovery = true;
+    let mut notes = Vec::new();
+    let err = run_drag_leg(&mut backend, 1, 1, "drag-o-t", &mut notes).unwrap_err();
+    assert!(matches!(
+        err,
+        LegError::UnresolvedPending {
+            pending: DragPending::KeyDownWithoutUp,
+            mouse_released: true,
+            ..
+        }
+    ));
+    // Exactly one posted edge (the digit down); no up ever posted, and no
+    // arrow leakage into the pending leg.
+    assert_eq!(backend.key_posts, vec![(digit_1, ctrl, tag, true)]);
+    assert_eq!(backend.counts.key_down, 1);
+    assert_eq!(backend.counts.key_up, 0);
+    // The mouse still released exactly once: only the key edge is pending.
+    assert_eq!((backend.counts.mouse_down, backend.counts.mouse_up), (1, 1));
 }
 
 #[test]

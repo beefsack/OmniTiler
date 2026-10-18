@@ -5,6 +5,13 @@
 //! the shared executor in [`crate::space_drag_transfer`]; this module owns
 //! the native posts, per-leg freshness, lifecycle, and reporting.
 //!
+//! Two switch-chord routes (explicit per invocation, never mixed):
+//! relative arrows (default: tagged `Ctrl+Left`/`Ctrl+Right` with
+//! SecondaryFn, selected from SLS adjacency) and `--numbered` (tagged
+//! Control-only Desktop-N digits for the original/temp SLS ordinals,
+//! resolved from the configured holders before any input — enabled
+//! standard chords only, never a settings write).
+//!
 //! Native routes (all owned-helper only): HID mouse posts (Silica parity:
 //! HID tap, zero flags, own-switch tag) and HID key-chord posts (tagged, so
 //! the tap passes our own switch chords while consuming the user's).
@@ -58,7 +65,7 @@ mod live_impl {
     }
 
     /// Live backend over the exact held Child. `begin_leg` is fallible
-    /// per-leg setup run before any post: arrow selection, fresh owned AX
+    /// per-leg setup run before any post: chord selection, fresh owned AX
     /// frame, grab point, CG join, and the order-free hit-test. Chord steps
     /// post tagged HID keys; mouse steps post tagged HID mouse events.
     pub(crate) struct LiveDragBackend<'a> {
@@ -70,9 +77,11 @@ mod live_impl {
         pub helper_path: String,
         pub display: usize,
         pub temp: u64,
-        pub outward_key: u32,
-        pub return_key: u32,
+        /// Per-leg switch chords (arrows or numbered digits): selected in
+        /// `begin_leg`; `post_key` never hardcodes a route's flags.
+        pub chords: crate::space_drag_transfer::SwitchChords,
         pub keycode: u32,
+        pub flags: u64,
         pub point: (f64, f64),
         pub last_point: (f64, f64),
         counts: PostCounts,
@@ -176,11 +185,12 @@ mod live_impl {
             self.budget
                 .spend_main("drag-leg")
                 .map_err(|e| format!("budget exhausted before leg: {e}"))?;
-            self.keycode = if goal == self.temp {
-                self.outward_key
-            } else {
-                self.return_key
-            };
+            // Per-leg chord through the shared pure selection (the same
+            // `for_goal` the fake backend records in tests): the temp goal
+            // posts outward, any other goal posts the return chord.
+            let (keycode, flags, _) = self.chords.for_goal(goal, self.temp);
+            self.keycode = keycode;
+            self.flags = flags;
             self.refresh_grab("leg-setup")
         }
 
@@ -228,7 +238,7 @@ mod live_impl {
             crate::synth::post_guarded_with_tag(
                 &target,
                 key,
-                crate::symbolic_hotkeys::CG_ARROW_FLAGS,
+                self.flags,
                 down,
                 crate::synth::GuardedPostRoute::Hid,
                 Some(crate::input_match::OWN_SWITCH_USER_DATA),
@@ -416,6 +426,27 @@ mod live_impl {
         )
     }
 
+    /// Resolve both `--numbered` holders from one display's SLS order over
+    /// the live session store, preserving the gate-vs-system split in
+    /// [`McError`]. No settings write on any path — enable the default
+    /// chords through the explicit `spaces-desktop-apply` route instead. No
+    /// live touch beyond the holder reads; callers run this before any
+    /// synthetic post.
+    fn resolve_numbered_chords(
+        spaces_in_order: &[u64],
+        original: u64,
+        temp: u64,
+    ) -> Result<crate::desktop_shortcuts::NumberedChordPair, McError> {
+        let mut store = crate::desktop_shortcuts::LiveStore::new();
+        crate::desktop_shortcuts::resolve_numbered_pair(&mut store, spaces_in_order, original, temp)
+            .map_err(|e| match e {
+                crate::desktop_shortcuts::NumberedResolveError::Gate(why) => McError::Blocked(why),
+                crate::desktop_shortcuts::NumberedResolveError::Unreadable(why) => {
+                    McError::System(why)
+                }
+            })
+    }
+
     /// Bounded drag-transfer command on one display. `Some(temp)` runs over
     /// two EXISTING user SIDs (creates/destroys no Space). `None`
     /// (`--temporary`) first requires the exact single-Space baseline
@@ -428,12 +459,14 @@ mod live_impl {
     /// before any synthetic post when unavailable), then runs the shared
     /// executor outward plus drag-back. Performs no SLS move, writes no
     /// preferences, and never targets Ghostty (snapshot-only baseline plus
-    /// hit-test refusal).
+    /// hit-test refusal). `numbered` posts the configured Desktop-N chords
+    /// for the SLS ordinals (default `false` posts the relative arrows).
     pub fn run_spaces_drag_transfer(
         original: u64,
         temp: Option<u64>,
         seconds: u64,
         allow_untested: bool,
+        numbered: bool,
     ) -> Result<String, (i32, String)> {
         use crate::space_drag_transfer::{validate_drag_args, validate_drag_args_temporary};
         use crate::symbolic_hotkeys::{KEY_LEFT_ARROW, KEY_RIGHT_ARROW};
@@ -565,59 +598,98 @@ mod live_impl {
         // internally created SID while it may still exist; cleared once its
         // removal is proven). Never broadens removal.
         let mut temp_resident = created_temp;
-        // Read-only bindings: the single-chord transfer needs both enabled
-        // arrows corroborated (no settings write to enable them).
-        let bindings = match crate::symbolic_hotkeys::read_bindings() {
-            Ok(b) => b,
-            Err(e) => fail_gate!("bindings", McError::System(e), temp_resident),
-        };
-        notes.push(format!(
-            "bindings ctrl_left={} ctrl_right={} over {} entries",
-            bindings.corroboration.ctrl_left_enabled,
-            bindings.corroboration.ctrl_right_enabled,
-            bindings.corroboration.entries_seen
-        ));
-        if !bindings.corroboration.both_enabled() {
-            fail_gate!(
-                "bindings",
-                McError::Blocked(
-                    "arrow legs ineligible: Ctrl+Left/Right not both corroborated enabled (no settings write); refusing"
-                        .to_owned()
-                ),
-                temp_resident
-            );
-        }
-        // One chord moves exactly one Space: require SLS-order adjacency
-        // (no multi-chord loop here), selecting each leg's arrow from it.
-        // The internally created temp appends at the row end, so it is
-        // adjacent by construction; a named temp must already be adjacent.
-        // Reads the post-create surface (see above), never the stale
-        // pre-create baseline.
-        let (out_key, back_key) = match crate::space_switch_edges::gesture_sign(
-            &live_topology.displays[display].spaces,
-            original,
-            temp,
-        ) {
-            Some(s) if s > 0.0 => (KEY_RIGHT_ARROW, KEY_LEFT_ARROW),
-            Some(_) => (KEY_LEFT_ARROW, KEY_RIGHT_ARROW),
-            None => {
+        // Switch-chord selection (explicit per invocation, never mixed).
+        // Arrows (default): both enabled arrows corroborated (no settings
+        // write to enable them), then one chord moves exactly one Space, so
+        // SLS-order adjacency selects each leg's arrow. Numbered: the
+        // configured Desktop-N chords for the SLS ordinals (no adjacency
+        // needed — a digit jumps directly; no settings write either).
+        // Both read the post-create surface (see above), never the stale
+        // pre-create baseline, and both refuse before any synthetic post.
+        let chords = if numbered {
+            let pair = match resolve_numbered_chords(
+                &live_topology.displays[display].spaces,
+                original,
+                temp,
+            ) {
+                Ok(c) => c,
+                Err(e) => fail_gate!("numbered-chords", e, temp_resident),
+            };
+            // Discriminator evidence: the exact SLS order plus the selected
+            // Desktop-N chords ride the report, so a no-effect leg
+            // distinguishes a wrong-chord setup from an ineffective chord
+            // without a rerun.
+            notes.push(format!(
+                "numbered selection: SLS order {:?} on display {display}, original ordinal {} (Desktop-{} holder id {} keycode {:#x}) temp ordinal {} (Desktop-{} holder id {} keycode {:#x}), both Control-only {:#x} tagged",
+                live_topology.displays[display].spaces,
+                pair.return_desktop,
+                pair.return_desktop,
+                pair.return_symbolic,
+                pair.return_key,
+                pair.outward_desktop,
+                pair.outward_desktop,
+                pair.outward_symbolic,
+                pair.outward_key,
+                crate::input_match::SWITCH_CTRL_BIT,
+            ));
+            crate::space_drag_transfer::SwitchChords::numbered(
+                (pair.outward_key, pair.outward_flags),
+                (pair.return_key, pair.return_flags),
+            )
+        } else {
+            // Read-only bindings: the single-chord transfer needs both enabled
+            // arrows corroborated (no settings write to enable them).
+            let bindings = match crate::symbolic_hotkeys::read_bindings() {
+                Ok(b) => b,
+                Err(e) => fail_gate!("bindings", McError::System(e), temp_resident),
+            };
+            notes.push(format!(
+                "bindings ctrl_left={} ctrl_right={} over {} entries",
+                bindings.corroboration.ctrl_left_enabled,
+                bindings.corroboration.ctrl_right_enabled,
+                bindings.corroboration.entries_seen
+            ));
+            if !bindings.corroboration.both_enabled() {
                 fail_gate!(
-                    "adjacency",
+                    "bindings",
                     McError::Blocked(
-                        "O and T are not adjacent in SLS order; single-chord transfer refused"
+                        "arrow legs ineligible: Ctrl+Left/Right not both corroborated enabled (no settings write); refusing"
                             .to_owned()
                     ),
                     temp_resident
                 );
             }
+            // One chord moves exactly one Space: require SLS-order adjacency
+            // (no multi-chord loop here), selecting each leg's arrow from it.
+            // The internally created temp appends at the row end, so it is
+            // adjacent by construction; a named temp must already be adjacent.
+            let (out_key, back_key) = match crate::space_switch_edges::gesture_sign(
+                &live_topology.displays[display].spaces,
+                original,
+                temp,
+            ) {
+                Some(s) if s > 0.0 => (KEY_RIGHT_ARROW, KEY_LEFT_ARROW),
+                Some(_) => (KEY_LEFT_ARROW, KEY_RIGHT_ARROW),
+                None => {
+                    fail_gate!(
+                        "adjacency",
+                        McError::Blocked(
+                            "O and T are not adjacent in SLS order; single-chord transfer refused"
+                                .to_owned()
+                        ),
+                        temp_resident
+                    );
+                }
+            };
+            // Discriminator evidence: the exact SLS order plus the selected
+            // keycodes ride the report, so a no-effect leg distinguishes a
+            // wrong-arrow setup from an ineffective chord without a rerun.
+            notes.push(format!(
+                "arrow selection: SLS order {:?} on display {display}, outward keycode {out_key} return keycode {back_key}",
+                live_topology.displays[display].spaces
+            ));
+            crate::space_drag_transfer::SwitchChords::arrows(out_key, back_key)
         };
-        // Discriminator evidence: the exact SLS order plus the selected
-        // keycodes ride the report, so a no-effect leg distinguishes a
-        // wrong-arrow setup from an ineffective chord without a rerun.
-        notes.push(format!(
-            "arrow selection: SLS order {:?} on display {display}, outward keycode {out_key} return keycode {back_key}",
-            live_topology.displays[display].spaces
-        ));
 
         // Owned-helper spawn placement (fixture correction): the helper's
         // legacy spawn origin sits under the protected terminal on this
@@ -1128,9 +1200,11 @@ mod live_impl {
                 helper_path: helper_path.clone(),
                 display,
                 temp,
-                outward_key: out_key,
-                return_key: back_key,
-                keycode: out_key,
+                chords,
+                // `begin_leg` reselects before every post; the initial pair
+                // is the outward triple (the roundtrip posts outward first).
+                keycode: chords.outward_key,
+                flags: chords.outward_flags,
                 point: (0.0, 0.0),
                 last_point: (0.0, 0.0),
                 counts: PostCounts::default(),
@@ -1175,6 +1249,7 @@ mod live_impl {
                     "action": "spaces-drag-transfer",
                     "original": original,
                     "temp": temp,
+                    "numbered": numbered,
                     "display": display,
                     "pid": pid,
                     "wid": wid,
@@ -1626,6 +1701,7 @@ mod live_impl {
             "outcome": outcome,
             "original": original,
             "temp": temp,
+            "numbered": numbered,
             "temp_created_internally": created_temp.is_some(),
             "display": display,
             "pid": pid,
@@ -1677,7 +1753,9 @@ pub fn run_spaces_drag_transfer(
     temp: Option<u64>,
     seconds: u64,
     allow_untested: bool,
+    numbered: bool,
 ) -> Result<String, (i32, String)> {
+    let _ = numbered;
     match temp {
         Some(t) => {
             crate::space_drag_transfer::validate_drag_args(original, t, seconds, allow_untested)

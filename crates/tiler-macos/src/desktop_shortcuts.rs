@@ -412,6 +412,131 @@ pub fn transfer_usable(desktop: u32, observed: ShortcutEntry) -> bool {
     })
 }
 
+/// 1-based Desktop-N ordinal for one SID in a display's SLS order (the
+/// position the drag-transfer `--numbered` fixture posts for): `None` when
+/// the SID is unmapped on that row. Ordinals past 10 have holders but no
+/// default digit chord, so callers additionally refuse them through
+/// [`desktop_digit_keycode`] (unmappable, never guessed). No live touch.
+#[must_use]
+pub fn numbered_desktop_for_sid(spaces_in_order: &[u64], sid: u64) -> Option<u32> {
+    spaces_in_order
+        .iter()
+        .position(|s| *s == sid)
+        .and_then(|index| u32::try_from(index + 1).ok())
+}
+
+/// Pure numbered-fixture chord resolution over one observed holder: enabled,
+/// representable, AND exactly the desktop's default standard chord
+/// (Control-only digit). A disabled holder, an unrepresentable keycode, a
+/// customized binding, or a desktop without a default digit chord all refuse
+/// (telling the user to configure the default "Switch to Desktop N" chord
+/// manually — never a settings write). Returns the posted keycode plus the
+/// Control-only down/up flags; both posted edges carry
+/// [`crate::input_match::OWN_SWITCH_USER_DATA`] (the tap passes tagged
+/// Control-only digits exactly like the arrow legs). No live touch; the
+/// live runner reads through [`DesktopShortcutStore`].
+pub fn resolve_numbered_chord(desktop: u32, entry: ShortcutEntry) -> Result<(u32, u64), String> {
+    let keycode = desktop_digit_keycode(desktop).ok_or_else(|| {
+        format!("desktop {desktop} has no default digit chord; refusing rather than guessing")
+    })?;
+    if !entry.enabled {
+        return Err(format!(
+            "Switch to Desktop {desktop} is disabled or unbound; enable it manually in System Settings > Keyboard > Keyboard Shortcuts > Mission Control (this fixture never writes settings)"
+        ));
+    }
+    if entry.keycode > 255 {
+        return Err(format!(
+            "Switch to Desktop {desktop} chord keycode {} out of range 0..=255; refusing rather than guessing",
+            entry.keycode
+        ));
+    }
+    if !transfer_usable(desktop, entry) {
+        return Err(format!(
+            "Switch to Desktop {desktop} chord {entry:?} is not the default Ctrl+digit shape; refusing a customized binding rather than posting a chord that does nothing (restore the default chord manually; this fixture never writes settings)"
+        ));
+    }
+    Ok((keycode, CG_EVENT_CTRL_BIT))
+}
+
+/// Resolved `--numbered` fixture chords over one display's SLS order, plus
+/// the ordinal evidence for reports: the outward leg posts the temp
+/// ordinal's Desktop-N chord, the return leg the original ordinal's.
+/// Store-generic so tests inject failures; the live runner maps
+/// [`NumberedResolveError`] to its own error type. Refuses before any chord
+/// is returned (callers post nothing on `Err`): unmapped SIDs and
+/// holder-less ordinals first (an unmapped SID touches no store at all),
+/// then unreadable holders, then disabled/custom/unmappable holders. Never
+/// writes settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NumberedChordPair {
+    pub outward_key: u32,
+    pub outward_flags: u64,
+    pub return_key: u32,
+    pub return_flags: u64,
+    pub outward_desktop: u32,
+    pub return_desktop: u32,
+    pub outward_symbolic: u32,
+    pub return_symbolic: u32,
+}
+
+/// Why numbered-chord resolution refused: a pre-post gate (`Gate`:
+/// unmapped/unmappable ordinal, disabled or customized holder) or an
+/// unreadable holder (`Unreadable`, e.g. missing SPI). Both refuse before
+/// any synthetic post; the live runner preserves the split in its own
+/// error type (gate vs system).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NumberedResolveError {
+    Gate(String),
+    Unreadable(String),
+}
+
+/// Resolve both `--numbered` holders from one display's SLS order over any
+/// [`DesktopShortcutStore`] (live or injected fake). No live touch beyond
+/// the holder reads.
+pub fn resolve_numbered_pair<S: DesktopShortcutStore>(
+    store: &mut S,
+    spaces_in_order: &[u64],
+    original: u64,
+    temp: u64,
+) -> Result<NumberedChordPair, NumberedResolveError> {
+    use NumberedResolveError::{Gate, Unreadable};
+    let ordinal_of = |sid: u64, role: &str| {
+        numbered_desktop_for_sid(spaces_in_order, sid).ok_or_else(|| {
+            Gate(format!(
+                "numbered: {role} Space {sid} not in SLS order {spaces_in_order:?} on the display; refusing (never guessed)"
+            ))
+        })
+    };
+    let original_desktop = ordinal_of(original, "original")?;
+    let temp_desktop = ordinal_of(temp, "temp")?;
+    let mut read_holder = |desktop: u32, role: &str| {
+        let symbolic = desktop_symbolic_id(desktop).ok_or_else(|| {
+            Gate(format!(
+                "numbered: {role} ordinal {desktop} has no Switch-to-Desktop holder id (past Desktop 16); refusing rather than guessing"
+            ))
+        })?;
+        let entry = store.read(symbolic).map_err(|e| {
+            Unreadable(format!(
+                "numbered: {role} Desktop-{desktop} holder id {symbolic} unreadable: {e}"
+            ))
+        })?;
+        let (keycode, flags) = resolve_numbered_chord(desktop, entry).map_err(Gate)?;
+        Ok((symbolic, keycode, flags))
+    };
+    let (return_symbolic, return_key, return_flags) = read_holder(original_desktop, "original")?;
+    let (outward_symbolic, outward_key, outward_flags) = read_holder(temp_desktop, "temp")?;
+    Ok(NumberedChordPair {
+        outward_key,
+        outward_flags,
+        return_key,
+        return_flags,
+        outward_desktop: temp_desktop,
+        return_desktop: original_desktop,
+        outward_symbolic,
+        return_symbolic,
+    })
+}
+
 /// Recovery backup file name under the per-user application-support
 /// directory (see [`canonical_preimage_path_for`]).
 pub const RECOVERY_FILE_NAME: &str = "desktop-shortcuts-preimage.json";

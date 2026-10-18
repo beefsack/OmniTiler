@@ -608,6 +608,169 @@ fn ctrl_domain_pins_the_synthetic_switch_shape() {
 }
 
 #[test]
+fn numbered_ordinals_come_from_sls_position() {
+    // 1-based SLS position; unmapped SIDs refuse (never guessed).
+    assert_eq!(numbered_desktop_for_sid(&[277, 1], 277), Some(1));
+    assert_eq!(numbered_desktop_for_sid(&[277, 1], 1), Some(2));
+    // Corrected live shape: SLS [1, 277] puts original 277 at ordinal 2
+    // (Desktop 2) and temp 1 at ordinal 1 (Desktop 1).
+    assert_eq!(numbered_desktop_for_sid(&[1, 277], 277), Some(2));
+    assert_eq!(numbered_desktop_for_sid(&[1, 277], 1), Some(1));
+    assert_eq!(numbered_desktop_for_sid(&[1, 277], 999), None);
+    assert_eq!(numbered_desktop_for_sid(&[7], 7), Some(1));
+    assert_eq!(numbered_desktop_for_sid(&[7], 8), None);
+    assert_eq!(numbered_desktop_for_sid(&[], 7), None);
+    // Ordinals past 10 resolve here but stay unmappable downstream (no
+    // default digit chord): the live gate refuses through resolve below.
+    assert_eq!(
+        numbered_desktop_for_sid(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], 11),
+        Some(11)
+    );
+}
+
+#[test]
+fn numbered_chord_needs_enabled_standard_holder() {
+    // Standard enabled holder: Control-only digit post shape.
+    assert_eq!(
+        resolve_numbered_chord(2, enabled(KEY_2)),
+        Ok((KEY_2, CG_CTRL))
+    );
+    assert_eq!(
+        resolve_numbered_chord(2, enabled(KEY_2)).unwrap().1,
+        crate::input_match::SWITCH_CTRL_BIT,
+        "digits post Control-only (arrows alone carry SecondaryFn)"
+    );
+    // Disabled holder refuses (never a settings write to enable it).
+    assert!(resolve_numbered_chord(2, disabled(KEY_2)).is_err());
+    // Customized binding refuses even when enabled (never post a chord
+    // the holder does not own).
+    assert!(
+        resolve_numbered_chord(
+            2,
+            ShortcutEntry {
+                enabled: true,
+                keycode: KEY_2,
+                modifiers: CG_CTRL | 0x0002_0000,
+            }
+        )
+        .is_err()
+    );
+    assert!(
+        resolve_numbered_chord(
+            2,
+            ShortcutEntry {
+                enabled: true,
+                keycode: KEY_3,
+                modifiers: CG_CTRL,
+            }
+        )
+        .is_err()
+    );
+    // Unrepresentable keycode refuses rather than wrapping at the post.
+    assert!(
+        resolve_numbered_chord(
+            2,
+            ShortcutEntry {
+                enabled: true,
+                keycode: 256,
+                modifiers: CG_CTRL,
+            }
+        )
+        .is_err()
+    );
+    // Desktops without a default digit chord are unmappable (never
+    // guessed), even for an enabled standard-looking holder.
+    assert!(resolve_numbered_chord(0, enabled(KEY_2)).is_err());
+    assert!(resolve_numbered_chord(11, enabled(KEY_2)).is_err());
+    assert!(resolve_numbered_chord(16, enabled(KEY_2)).is_err());
+}
+
+#[test]
+fn numbered_pair_resolves_1_277_outward_ctrl1_inverse_ctrl2() {
+    // Corrected live shape: SLS [1, 277] with original 277 at ordinal 2
+    // (Desktop 2, holder 119) and temp 1 at ordinal 1 (Desktop 1,
+    // holder 118). Outward posts the temp chord (Ctrl+1), the inverse the
+    // original chord (Ctrl+2).
+    let mut store = FakeStore::new()
+        .with_entry(119, enabled(KEY_2))
+        .with_entry(118, enabled(KEY_1));
+    let pair = resolve_numbered_pair(&mut store, &[1, 277], 277, 1).unwrap();
+    assert_eq!(pair.outward_desktop, 1);
+    assert_eq!(pair.return_desktop, 2);
+    assert_eq!(pair.outward_symbolic, 118);
+    assert_eq!(pair.return_symbolic, 119);
+    assert_eq!(pair.outward_key, KEY_1);
+    assert_eq!(pair.return_key, KEY_2);
+    assert_eq!(pair.outward_flags, CG_CTRL);
+    assert_eq!(pair.return_flags, CG_CTRL);
+    assert_eq!(store.writes, 0, "resolution never writes settings");
+}
+
+#[test]
+fn numbered_pair_refuses_before_any_post_with_injected_store() {
+    // Unmapped temp SID: refuses before touching the store at all.
+    let mut store = FakeStore::new()
+        .with_entry(119, enabled(KEY_2))
+        .with_entry(118, enabled(KEY_1));
+    let err = resolve_numbered_pair(&mut store, &[1, 277], 277, 999).unwrap_err();
+    assert!(matches!(err, NumberedResolveError::Gate(_)), "{err:?}");
+    assert_eq!(store.reads, 0, "unmapped SID touches no holder");
+    assert_eq!(store.writes, 0);
+    // Unreadable original holder (injected read failure): refuses as a
+    // system error with zero writes (the live runner preserves the split).
+    let mut store = FakeStore::new()
+        .with_entry(119, enabled(KEY_2))
+        .with_entry(118, enabled(KEY_1));
+    store.fail_reads.insert(119);
+    let err = resolve_numbered_pair(&mut store, &[1, 277], 277, 1).unwrap_err();
+    assert!(
+        matches!(err, NumberedResolveError::Unreadable(_)),
+        "{err:?}"
+    );
+    assert_eq!(store.writes, 0);
+    // Disabled temp holder: gate refusal, zero writes.
+    let mut store = FakeStore::new()
+        .with_entry(119, enabled(KEY_2))
+        .with_entry(118, disabled(KEY_1));
+    let err = resolve_numbered_pair(&mut store, &[1, 277], 277, 1).unwrap_err();
+    assert!(matches!(err, NumberedResolveError::Gate(_)), "{err:?}");
+    assert_eq!(store.writes, 0);
+    // Customized temp holder (Ctrl+Shift+1): gate refusal, never rewritten.
+    let mut store = FakeStore::new().with_entry(119, enabled(KEY_2)).with_entry(
+        118,
+        ShortcutEntry {
+            enabled: true,
+            keycode: KEY_1,
+            modifiers: CG_CTRL | 0x0002_0000,
+        },
+    );
+    let err = resolve_numbered_pair(&mut store, &[1, 277], 277, 1).unwrap_err();
+    assert!(matches!(err, NumberedResolveError::Gate(_)), "{err:?}");
+    assert_eq!(store.writes, 0);
+    assert_eq!(store.get(118).unwrap().modifiers, CG_CTRL | 0x0002_0000);
+    // Unmappable ordinal 11 (holder exists, no default digit chord): gate
+    // refusal even for an enabled standard-looking holder.
+    let order: Vec<u64> = (1..=11).collect();
+    let mut store = FakeStore::new().with_entry(118, enabled(KEY_1)).with_entry(
+        128,
+        ShortcutEntry {
+            enabled: true,
+            keycode: KEY_1,
+            modifiers: CG_CTRL,
+        },
+    );
+    let err = resolve_numbered_pair(&mut store, &order, 1, 11).unwrap_err();
+    assert!(matches!(err, NumberedResolveError::Gate(_)), "{err:?}");
+    assert_eq!(store.writes, 0);
+    // Ordinal past Desktop 16: no holder id at all, gate refusal.
+    let order: Vec<u64> = (1..=17).collect();
+    let mut store = FakeStore::new().with_entry(118, enabled(KEY_1));
+    let err = resolve_numbered_pair(&mut store, &order, 1, 17).unwrap_err();
+    assert!(matches!(err, NumberedResolveError::Gate(_)), "{err:?}");
+    assert_eq!(store.writes, 0);
+}
+
+#[test]
 fn transfer_mismatch_warns_without_rewriting_chords() {
     let path = test_path("mismatch");
     clean(&path);

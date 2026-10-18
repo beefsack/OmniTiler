@@ -3946,19 +3946,20 @@ decisions of 2026-09-24 are under
       snapshots, inspected ring/indicator screenshots and clean overlay teardown.
       903 macOS tests, strict clippy, format and signed build/verify pass; unsafe
       remains 114. [Outcome](changes/archive/macos-full-state-replies.md#final-outcome-2026-10-18).
-  3. Finish managed native workspaces: post the relative arrow chord with
-     Control plus SecondaryFn (possibly NumericPad) and re-test; confirm the
-     tagged chord still triggers the holder; numbered sends use the proven
-     synthetic drag plus Desktop-N route, with Authentic enabling Desktop-N;
+   3. Finish managed native workspaces: tagged Control+Fn arrows and tagged
+      Desktop-N helper roundtrips now pass; integrate numbered product sends
+      using synthetic drag plus Desktop-N, with Authentic enabling Desktop-N;
      then send-follow and send-stay; trailing empty Space (Meta+0, also the indicator's trailing
      slot); per-display Space-number attribution; multi-display.
-     **2026-10-18 offline checkpoint:** relative posts now include SecondaryFn
-     on both edges and release paths; tagged tap bypass tests pass. 909 macOS
-     tests, strict clippy, format and signed build/verify pass; unsafe stays 114.
-     Live fixture refused before helper spawn/posts because placement was crowded;
-     raw final protected-window evidence was not retained. Tagged holder delivery
-     remains unproven; no new actions armed.
-     [Checkpoint and exact next action](changes/macos-managed-workspaces.md#relative-arrow-offline-checkpoint-2026-10-18).
+      **2026-10-18 delivery checkpoint:** starting the helper on the existing
+      second Space resolves crowded placement without moving the protected
+      terminal or weakening ownership. Tagged arrow and numbered native transfer
+      both pass outward/inverse membership readback; raw protected before/after
+      records match, settings/current Space restore and exact helper cleanup pass.
+      Added explicit numbered fixture coverage; 771 library tests plus integration
+      suites, strict clippy, format and signed build/verify pass; unsafe stays 114.
+      No new product actions armed; physical feel and tap coexistence remain pending.
+      [Checkpoint and exact next action](changes/macos-managed-workspaces.md#tagged-native-holder-delivery-checkpoint-2026-10-18).
      **2026-10-17 fallback:** clear-helper placement now proves AX and
      WindowServer titlebar identity after self-join, but two posted Ctrl+Right
      outward attempts reported NoEffect. Only 18 existing-Space selects are

@@ -193,6 +193,11 @@ pub enum Command {
         temp: Option<u64>,
         seconds: u64,
         allow_untested: bool,
+        /// Explicit numbered-chord variant: post the configured Desktop-N
+        /// chords for the original/temp SLS ordinals instead of the
+        /// default relative arrows (refuses unusable holders before any
+        /// input; never writes settings).
+        numbered: bool,
     },
     DragDiagChord {
         countdown: u64,
@@ -514,7 +519,7 @@ pub fn help_text() -> String {
              \x20 spaces-select [--display N] --action ID [--action ID ...]\n\
              \x20 \x20 (select-only batch, e.g. workspace-select-0, workspace-select-1, workspace-previous; changes persist, history lasts this invocation; the product tile arms the 18 existing-Space selects as hotkeys, trailing select-0 stays explicit-only)\n\
              \x20 spaces-grab-diagnose (bounded owned helper, unfiltered CG/AX/input hit snapshots before/after MC; zero synthetic posts)\n\
-             \x20 spaces-drag-transfer --original SID (--temp SID | --temporary) [--seconds N] --allow-untested\n\
+             \x20 spaces-drag-transfer --original SID (--temp SID | --temporary) [--seconds N] --allow-untested [--numbered]\n\
             \x20 \x20 (bounded owned titlebar-drag transfer, default 120s,\n\
             \x20 \x20 minimum 60s: one owned helper, independent public\n\
             \x20 \x20 self-join recovery proven first, then a synthetic\n\
@@ -523,7 +528,7 @@ pub fn help_text() -> String {
             \x20 \x20 preexisting SIDs (creates/destroys no Space),\n\
             \x20 \x20 --temporary creates exactly one temp on the original's\n\
             \x20 \x20 display (baseline must read exactly [original]) and\n\
-            \x20 \x20 removes only it afterwards; performs no SLS move,\n\
+            \x20 \x20 removes only it afterwards; --numbered posts the configured Desktop-N chords for the SLS ordinals (refuses unusable holders before any input, never writes settings); performs no SLS move,\n\
             \x20 \x20 writes no preferences; explicit\n\
             \x20 \x20 opt-in per invocation)\n\
            \x20 drag-diag-chord [--countdown N] [--untagged] --allow-untested\n\
@@ -1718,12 +1723,14 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
             // one internally created temp (--temporary: the baseline must
             // read exactly [original] on the display; ONLY the created
             // temp is removed afterwards). --temp and --temporary are
-            // mutually exclusive.
+            // mutually exclusive. --numbered posts the configured
+            // Desktop-N chords for the SLS ordinals (default: arrows).
             let mut original: Option<u64> = None;
             let mut temp: Option<u64> = None;
             let mut temporary = false;
             let mut seconds = crate::config::MAX_PROBE_SECONDS;
             let mut allow_untested = false;
+            let mut numbered = false;
             let mut j = 0;
             while j < args.len() {
                 match args[j].as_str() {
@@ -1752,6 +1759,9 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                     "--allow-untested" => {
                         allow_untested = true;
                     }
+                    "--numbered" => {
+                        numbered = true;
+                    }
                     other => return Err(format!("spaces-drag-transfer: unknown arg '{other}'")),
                 }
                 j += 1;
@@ -1767,6 +1777,7 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                 temp,
                 seconds,
                 allow_untested,
+                numbered,
             }
         }
         "drag-diag-chord" => {
