@@ -11,7 +11,10 @@
 //! exact `(pid, wid)` plus the test-run-created temp directory plus the
 //! per-run random token plus a nonce); the helper spawn record is never
 //! consulted, helper ownership is unchanged, and no previously unarmed
-//! product action is armed (the chord set is exactly the owned-post set).
+//! product action is armed (the chord set is exactly the owned-post set
+//! plus one diagnostic-only `escape` for dismissing a document-title
+//! popover on the same run-owned document: fixed keycode 53, flags 0,
+//! untagged session tap, identical per-edge proof and release gates).
 //!
 //! Before EACH key edge the live boundary re-proves, in order: session gates
 //! (SLPS available, AX trusted, no Secure Input, unlocked session, post
@@ -50,6 +53,40 @@ use crate::config::ProbeModifier;
 
 /// Exact bundle required frontmost before each edge.
 pub const TEXTEDIT_BUNDLE: &str = "com.apple.TextEdit";
+
+/// Diagnostic-only Escape chord for dismissing a document-title popover on
+/// the same run-owned disposable document. Fixed keycode 53, fixed flags 0
+/// (no Ctrl/Shift/Alt role), untagged session tap through the identical
+/// safe posting boundary as every catalogue chord. This is NOT added to the
+/// owned-helper catalogue ([`crate::owned_control::resolve_chord`] still
+/// refuses `escape`): the only admission point is
+/// [`resolve_textedit_chord`] below, used solely by the `textedit-post`
+/// diagnostic route and its CLI parser.
+pub(crate) const ESCAPE_CHORD_NAME: &str = "escape";
+/// Fixed Escape keycode (kVK_Escape).
+pub(crate) const ESCAPE_KEY_CODE: u32 = 53;
+/// Fixed Escape action label in the metadata-only report.
+pub(crate) const ESCAPE_ACTION: &str = "escape";
+
+/// Resolve a `textedit-post` chord name: exactly the owned-post vocabulary
+/// plus the single diagnostic-only [`ESCAPE_CHORD_NAME`] (fixed keycode 53,
+/// no Shift/Alt arms, action [`ESCAPE_ACTION`]). No generic raw-key API:
+/// every other name falls through to
+/// [`crate::owned_control::resolve_chord`], so unarmed names (select-0,
+/// send-0, focus-up/down, arbitrary keys) still refuse at the same
+/// authority the helper path uses. Pure; unit-tested.
+#[must_use]
+pub(crate) fn resolve_textedit_chord(name: &str) -> Option<crate::owned_control::SemanticChord> {
+    if name == ESCAPE_CHORD_NAME {
+        return Some(crate::owned_control::SemanticChord {
+            key_code: ESCAPE_KEY_CODE,
+            shift: false,
+            alt: false,
+            action: ESCAPE_ACTION,
+        });
+    }
+    crate::owned_control::resolve_chord(name)
+}
 
 /// Per-run token bounds: long enough to be unguessable per run, short enough
 /// to stay a title fragment.
@@ -476,7 +513,13 @@ fn prove_edge(record: &TextEditRecord, edge: &str) -> Result<(), String> {
 
 /// Resolve the chord flags exactly like the helper owned-post path: the Ctrl
 /// role plus the chord Shift/Alt arms. Shared vocabulary, shared flags.
+/// The diagnostic-only Escape chord is the single exception: fixed flags 0
+/// (no Ctrl role, no arms), so a popover dismiss can never carry a sticky
+/// modifier into the bypass release (which already posts cleared).
 fn chord_flags(modifier: ProbeModifier, chord: crate::owned_control::SemanticChord) -> u64 {
+    if chord.action == ESCAPE_ACTION && chord.key_code == ESCAPE_KEY_CODE {
+        return 0;
+    }
     let (mut want_flags, _) = crate::input::cg_flag_bits(modifier);
     if chord.shift {
         want_flags |= crate::native_input::CG_SHIFT_BIT;
@@ -528,7 +571,7 @@ pub fn run_textedit_post(
         eprintln!("textedit-post refused at {stage}: {error}");
         err_json(stage, error)
     };
-    let chord = crate::owned_control::resolve_chord(chord_name)
+    let chord = resolve_textedit_chord(chord_name)
         .ok_or_else(|| (2, format!("unknown --chord '{chord_name}' (see help)")))?;
     if nonce.is_empty() {
         return Err((2, "textedit-post needs a nonempty --nonce".to_owned()));
@@ -687,7 +730,9 @@ mod tests {
         }
         // Nothing previously unarmed is armed here: trailing select-0/send-0,
         // the excluded Up/Down arms, and unknown names refuse at the same
-        // authority the helper path uses.
+        // authority the helper path uses. `escape` stays unarmed in the
+        // owned-helper catalogue (diagnostic-only admission lives in
+        // `resolve_textedit_chord`, never in the product tap transport).
         for name in [
             "select-0",
             "send-0",
@@ -705,6 +750,115 @@ mod tests {
                 "{name}"
             );
         }
+        // The diagnostic route admits exactly that owned set plus the single
+        // diagnostic-only `escape` (same-record popover dismiss): no other
+        // name is admitted.
+        for name in crate::owned_control::chord_names() {
+            assert!(resolve_textedit_chord(name).is_some(), "{name}");
+        }
+        let escape = resolve_textedit_chord("escape").unwrap();
+        assert_eq!(escape.key_code, ESCAPE_KEY_CODE);
+        assert_eq!(escape.key_code, 53);
+        assert!(!escape.shift && !escape.alt);
+        assert_eq!(escape.action, ESCAPE_ACTION);
+        for name in [
+            "select-0",
+            "send-0",
+            "focus-up",
+            "focus-down",
+            "move-up",
+            "workspace-select-1",
+            "a",
+            "space",
+            "",
+            "Escape",
+            "ESCAPE",
+            "esc",
+        ] {
+            assert!(resolve_textedit_chord(name).is_none(), "{name}");
+        }
+    }
+
+    #[test]
+    fn escape_chord_posts_fixed_keycode53_flags0_untagged() {
+        // Fixed Escape shape: keycode 53, flags 0 under every modifier role
+        // (no Ctrl/Shift/Alt can ride along), so the popover dismiss posts
+        // untagged exactly like any catalogue chord and the gateless bypass
+        // release (cleared flags) cannot stick a modifier.
+        let escape = resolve_textedit_chord("escape").unwrap();
+        assert_eq!(
+            (escape.key_code, escape.shift, escape.alt),
+            (53, false, false)
+        );
+        assert_eq!(chord_flags(ProbeModifier::Ctrl, escape), 0);
+        assert_eq!(chord_flags(crate::config::ProbeModifier::Meta, escape), 0);
+        // Catalogue chords still compose the Ctrl role plus arms (unchanged).
+        let send = resolve_textedit_chord("send-2").unwrap();
+        assert_ne!(chord_flags(ProbeModifier::Ctrl, send), 0);
+        // The owned-helper catalogue is unchanged: no Escape arm there.
+        assert!(crate::owned_control::resolve_chord("escape").is_none());
+        assert_eq!(crate::owned_control::chord_names().len(), 44);
+    }
+
+    #[test]
+    fn escape_routes_to_record_proof_and_refuses_without_it() {
+        // Narrow routing: `escape` is a known chord (usage code is never 2
+        // for it), so with no record file it reaches the record stage
+        // (code 1, stage record) through the same per-edge gates as any
+        // catalogue chord - proof refusal behaviour is unchanged.
+        let err = super::run_textedit_post(
+            "/nonexistent-omnitiler-run/record.json",
+            "0123456789abcdef0123456789abcdef",
+            "escape",
+            ProbeModifier::Ctrl,
+        )
+        .unwrap_err();
+        assert_eq!(err.0, 1, "unexpected: {}", err.1);
+        assert!(
+            err.1.contains("\"stage\":\"record\""),
+            "unexpected: {}",
+            err.1
+        );
+        // Empty nonce still fails closed with usage code 2 before any read.
+        let err = super::run_textedit_post(
+            "/nonexistent-omnitiler-run/record.json",
+            "",
+            "escape",
+            ProbeModifier::Ctrl,
+        )
+        .unwrap_err();
+        assert_eq!(err.0, 2, "unexpected: {}", err.1);
+        // Unknown names still fail closed with usage code 2.
+        let err = super::run_textedit_post(
+            "/nonexistent-omnitiler-run/record.json",
+            "0123456789abcdef0123456789abcdef",
+            "esc",
+            ProbeModifier::Ctrl,
+        )
+        .unwrap_err();
+        assert_eq!(err.0, 2, "unexpected: {}", err.1);
+    }
+
+    #[test]
+    fn escape_guard_release_posts_cleared_keyup_for_keycode53() {
+        // Same unconditional cleared-modifier release seam as every chord:
+        // an armed Escape guard bypass-releases exactly one key-up with
+        // flags cleared to zero (keycode 53 preserved).
+        use std::cell::RefCell;
+        let log: RefCell<Vec<(u16, u64, bool)>> = RefCell::new(Vec::new());
+        let mut guard = EdgeGuard::new(4242, ESCAPE_KEY_CODE as u16);
+        guard.note_down_posted();
+        assert!(guard.is_pending());
+        let out = guard.release_with(|code, flags, down| {
+            log.borrow_mut().push((code, flags, down));
+            Ok(7u64)
+        });
+        assert_eq!(out, Some(7));
+        assert_eq!(*log.borrow(), vec![(53, 0, false)]);
+        assert!(!guard.is_pending());
+        // Second release is a no-op (idempotent, exactly one up ever).
+        assert_eq!(guard.release_with(|_, _, _| Ok(9u64)), None);
+        assert_eq!(log.borrow().len(), 1);
     }
 
     #[test]

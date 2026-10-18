@@ -649,7 +649,7 @@ fn textedit_post_parses_with_record_identity_and_owned_chords() {
     assert!(matches!(r.command, Command::TextEditPost { .. }));
     // The product tap test transport parses: send-1..9 and select-1..9.
     for chord in [
-        "send-1", "send-2", "select-1", "select-2", "focus-h", "float-g",
+        "send-1", "send-2", "select-1", "select-2", "focus-h", "float-g", "escape",
     ] {
         let r = parse_args(&argv(&[
             "textedit-post",
@@ -662,8 +662,11 @@ fn textedit_post_parses_with_record_identity_and_owned_chords() {
         ]))
         .unwrap();
         assert!(matches!(r.command, Command::TextEditPost { .. }), "{chord}");
+        assert!(r.may_mutate, "{chord} is write-intent");
     }
-    // Unarmed and unknown chords never parse (no new arm is introduced).
+    // Unarmed and unknown chords never parse (no new arm is introduced:
+    // `escape` is the single diagnostic-only exception above; everything
+    // else still refuses).
     for bad in [
         "select-0",
         "send-0",
@@ -672,6 +675,8 @@ fn textedit_post_parses_with_record_identity_and_owned_chords() {
         "ctrl-h",
         "a",
         "space",
+        "esc",
+        "Escape",
         "",
     ] {
         assert!(

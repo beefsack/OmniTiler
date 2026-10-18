@@ -480,7 +480,9 @@ pub fn help_text() -> String {
               \x20 \x20 (SLPS focus dispatch to one exact owned window with agreement)\n\
               \x20 textedit-post --record PATH --nonce HEX --chord NAME\n\
               \x20 \x20 (diagnostic-only disposable TextEdit tap: one tile-catalogue\n\
-              \x20 \x20 chord down/up (the exact owned-post vocabulary, so the product\n\
+              \x20 \x20 chord down/up (the exact owned-post vocabulary plus one\n\
+              \x20 \x20 diagnostic-only `escape` - fixed keycode 53 flags 0 for a\n\
+              \x20 \x20 same-record document-title popover dismiss - so the product\n\
               \x20 \x20 tap test transport - send-2 then send-1 and the selects - can\n\
               \x20 \x20 run with TextEdit foreground) to the run-owned disposable\n\
               \x20 \x20 document bound by the record file; frontmost-TextEdit plus\n\
@@ -1577,7 +1579,9 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
         "textedit-post" => {
             // Diagnostic-only disposable TextEdit tap: the run-owned record
             // file binds (pid, wid, temp dir, token, nonce); the chord
-            // vocabulary is exactly the owned-post set (never a new arm).
+            // vocabulary is exactly the owned-post set plus one
+            // diagnostic-only `escape` (fixed keycode 53 flags 0, same-record
+            // popover dismiss; never a new product arm).
             let mut record: Option<String> = None;
             let mut nonce: Option<String> = None;
             let mut chord: Option<String> = None;
@@ -1601,7 +1605,7 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                 j += 1;
             }
             let chord = chord.ok_or("textedit-post needs --chord")?;
-            if crate::owned_control::resolve_chord(&chord).is_none() {
+            if crate::textedit_post::resolve_textedit_chord(&chord).is_none() {
                 return Err(format!("textedit-post: unknown --chord '{chord}'"));
             }
             Command::TextEditPost {
