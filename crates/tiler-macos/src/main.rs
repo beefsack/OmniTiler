@@ -709,6 +709,13 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
             // cleared-modifier release.
             tiler_macos::textedit_post::run_textedit_post(&record, &nonce, &chord, request.modifier)
         }
+        Command::TextEditGrabInspect { record, nonce } => {
+            // Read-only grab-point inspection for the run-owned disposable
+            // TextEdit document: same record/nonce gates plus fresh frame
+            // proof, then AX role/subrole + AX/WS hit owners at the five
+            // standard titlebar candidates. No posts on any path.
+            tiler_macos::textedit_post::run_textedit_grab_inspect(&record, &nonce)
+        }
         Command::OwnedDragPost {
             pid,
             nonce,

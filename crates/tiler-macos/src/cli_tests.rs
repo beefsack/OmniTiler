@@ -740,6 +740,63 @@ fn textedit_post_parses_with_record_identity_and_owned_chords() {
 }
 
 #[test]
+fn textedit_grab_inspect_parses_record_identity_and_never_mutates() {
+    // Same record/nonce identity as the posting route but read-only: no
+    // chord vocabulary, no posts on any path.
+    let r = parse_args(&argv(&[
+        "textedit-grab-inspect",
+        "--record",
+        "/tmp/run-abc123/record.json",
+        "--nonce",
+        "0123456789abcdef",
+    ]))
+    .unwrap();
+    assert!(!r.may_mutate, "textedit-grab-inspect is read-only");
+    assert!(matches!(r.command, Command::TextEditGrabInspect { .. }));
+    // Missing identity refuses; unknown flags refuse; chord flags refuse
+    // (no chord vocabulary on this route).
+    assert!(
+        parse_args(&argv(&[
+            "textedit-grab-inspect",
+            "--nonce",
+            "0123456789abcdef",
+        ]))
+        .is_err()
+    );
+    assert!(
+        parse_args(&argv(&[
+            "textedit-grab-inspect",
+            "--record",
+            "/tmp/run-abc123/record.json",
+        ]))
+        .is_err()
+    );
+    assert!(
+        parse_args(&argv(&[
+            "textedit-grab-inspect",
+            "--record",
+            "/tmp/run-abc123/record.json",
+            "--nonce",
+            "0123456789abcdef",
+            "--chord",
+            "send-2",
+        ]))
+        .is_err()
+    );
+    assert!(
+        parse_args(&argv(&[
+            "textedit-grab-inspect",
+            "--record",
+            "/tmp/run-abc123/record.json",
+            "--nonce",
+            "0123456789abcdef",
+            "--bogus",
+        ]))
+        .is_err()
+    );
+}
+
+#[test]
 fn probe_spawn_close_window_is_opt_in_ms() {
     let r = parse_args(&argv(&["probe-spawn", "--close-window-ms", "9000"])).unwrap();
     assert!(matches!(

@@ -167,6 +167,10 @@ pub enum Command {
         nonce: String,
         chord: String,
     },
+    TextEditGrabInspect {
+        record: String,
+        nonce: String,
+    },
     OwnedSpaceJoin {
         pid: u32,
         nonce: String,
@@ -488,6 +492,12 @@ pub fn help_text() -> String {
               \x20 \x20 document bound by the record file; frontmost-TextEdit plus\n\
               \x20 \x20 disposable-identity proof before EACH edge with unconditional\n\
               \x20 \x20 cleared-modifier release; never helper input)\n\
+              \x20 textedit-grab-inspect --record PATH --nonce HEX\n\
+              \x20 \x20 (read-only grab-point inspection for the same run-owned\n\
+              \x20 \x20 disposable TextEdit document: same record/nonce gates plus\n\
+              \x20 \x20 fresh frame proof, then AX role/subrole + AX/WS hit owners\n\
+              \x20 \x20 at the five standard titlebar candidates; IDs only, no\n\
+              \x20 \x20 posts/writes/moves on any path)\n\
               \x20 owned-space-join --pid PID --nonce HEX\n\
               \x20 \x20 (public AppKit self-action: helper joins its OWN window\n\
               \x20 \x20 to the current Space via MoveToActiveSpace + self-activate\n\
@@ -1614,6 +1624,32 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                 chord,
             }
         }
+        "textedit-grab-inspect" => {
+            // Read-only grab-point inspection for the run-owned disposable
+            // TextEdit document: same record/nonce gates as `textedit-post`
+            // but no chord vocabulary and no posts on any path.
+            let mut record: Option<String> = None;
+            let mut nonce: Option<String> = None;
+            let mut j = 0;
+            while j < args.len() {
+                match args[j].as_str() {
+                    "--record" => {
+                        j += 1;
+                        record = Some(args.get(j).ok_or("--record needs a value")?.clone());
+                    }
+                    "--nonce" => {
+                        j += 1;
+                        nonce = Some(args.get(j).ok_or("--nonce needs a value")?.clone());
+                    }
+                    other => return Err(format!("textedit-grab-inspect: unknown arg '{other}'")),
+                }
+                j += 1;
+            }
+            Command::TextEditGrabInspect {
+                record: record.ok_or("textedit-grab-inspect needs --record")?,
+                nonce: nonce.ok_or("textedit-grab-inspect needs --nonce")?,
+            }
+        }
         "owned-space-join" => {
             // No --wid: the helper acts solely on its own window; a caller
             // WID would be foreign-window selection and is refused by shape.
@@ -2535,6 +2571,7 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
             | Command::SpacesDiagnose { .. }
             | Command::SpacesBindings
             | Command::SpacesDesktopStatus
+            | Command::TextEditGrabInspect { .. }
             | Command::CgOwnedWindows { .. }
             | Command::CgInspect
             | Command::OwnedFrame { .. }

@@ -701,6 +701,173 @@ pub fn run_textedit_post(
     }
 }
 
+/// Pure AX string-leg verdict over plain data (no OS touch): maps the
+/// read outcome to the reported `(value, status)` pair. `Ok` carries
+/// `kAXErrorSuccess` with the (possibly absent) value; `Err` carries the
+/// named AX status with no value. Unit-tested.
+#[must_use]
+pub(crate) fn string_leg_verdict(read: Result<Option<String>, i32>) -> (Option<String>, String) {
+    match read {
+        Ok(value) => (value, "kAXErrorSuccess".to_owned()),
+        Err(code) => (None, crate::ffi::ax_error_name(code)),
+    }
+}
+
+/// One candidate-point inspect record: metadata only (IDs, roles, hit
+/// owners). Never titles, content, or paths.
+#[derive(Debug, Clone, Serialize)]
+pub struct GrabPointInspect {
+    pub x: f64,
+    pub y: f64,
+    pub ax_role: Option<String>,
+    pub ax_role_status: String,
+    pub ax_subrole: Option<String>,
+    pub ax_subrole_status: String,
+    pub ax_owner: Option<(u32, u32)>,
+    pub ax_owner_error: Option<String>,
+    pub ws_wid: Option<u32>,
+    pub ws_error: Option<String>,
+}
+
+/// Metadata-only grab-inspect report for the run-owned disposable TextEdit
+/// document: IDs, the proven frame, and one record per standard candidate
+/// point. `synthetic`/`mutates` are always false (no events, no writes).
+#[derive(Debug, Clone, Serialize)]
+pub struct TextEditGrabInspectReport {
+    pub outcome: String,
+    pub pid: u32,
+    pub wid: u32,
+    pub frame: crate::ffi::AxFrame,
+    pub points: Vec<GrabPointInspect>,
+    pub synthetic: bool,
+    pub mutates: bool,
+}
+
+/// Fresh exact AX frame for the record-bound window (read-only): the same
+/// join as the disposable legs (application element, window list, exact
+/// `wid`) plus the frame read. Every leg refuses with its cause; nothing is
+/// guessed. No titles, content, or paths travel here.
+fn read_record_frame(pid: u32, wid: u32) -> Result<crate::ffi::AxFrame, String> {
+    let pid_i32 = i32::try_from(pid)
+        .map_err(|_| format!("frame: refusing textedit inspect: pid {pid} out of range"))?;
+    let app = crate::ffi::AxElement::application(pid_i32)
+        .ok_or_else(|| "frame: AX application element unavailable".to_owned())?;
+    let _ = crate::ffi::ax_set_messaging_timeout(&app, 2.0);
+    let windows = app.windows().map_err(|code| {
+        format!(
+            "frame: AX window list unreadable ({})",
+            crate::ffi::ax_error_name(code)
+        )
+    })?;
+    let window = windows
+        .iter()
+        .find(|w| crate::ffi::ax_window_id(w) == Some(wid))
+        .ok_or_else(|| {
+            format!("frame: record wid {wid} not among live AX windows; refusing stale target")
+        })?;
+    let _ = crate::ffi::ax_set_messaging_timeout(window, 2.0);
+    crate::ffi::ax_get_frame(window).map_err(|code| {
+        format!(
+            "frame: AX frame unreadable ({})",
+            crate::ffi::ax_error_name(code)
+        )
+    })
+}
+
+/// Read-only grab-point inspection of the run-owned disposable TextEdit
+/// document bound by the record file. Reuses the exact record/nonce plus
+/// per-edge proof gates of the posting route ([`prove_edge`], unweakened) and
+/// then reads the fresh frame plus, at each of the five standard
+/// titlebar candidates, the exact hit-element `AXRole`/`AXSubrole`
+/// (via [`crate::space_grab_diagnose`]'s `ax_element_at_position` plus
+/// `ax_string_attribute` pattern), the AX hit owner, and the WindowServer
+/// hit. Posts no events, writes nothing, moves nothing: `may_mutate` is
+/// false. Refusals name the stage (`record`, `inspect`, `frame`, `grab`).
+/// Sequential live reads are honest TOCTOU (proof, frame, and per-point
+/// hits are sequential, not one transaction).
+pub fn run_textedit_grab_inspect(record_path: &str, nonce: &str) -> Result<String, (i32, String)> {
+    let err_json = |stage: &str, error: String| -> (i32, String) {
+        (
+            1,
+            serde_json::json!({"stage": stage, "error": error}).to_string(),
+        )
+    };
+    let refuse = |stage: &str, error: String| -> (i32, String) {
+        eprintln!("textedit-grab-inspect refused at {stage}: {error}");
+        err_json(stage, error)
+    };
+    if nonce.is_empty() {
+        return Err((
+            2,
+            "textedit-grab-inspect needs a nonempty --nonce".to_owned(),
+        ));
+    }
+    if record_path.is_empty() {
+        return Err((
+            2,
+            "textedit-grab-inspect needs a nonempty --record".to_owned(),
+        ));
+    }
+    let record = load_record(record_path).map_err(|e| refuse("record", e))?;
+    verify_record(&record, nonce).map_err(|e| refuse("record", e))?;
+    if !record.temp_dir.starts_with('/') || !std::path::Path::new(&record.temp_dir).is_dir() {
+        return Err(refuse(
+            "record",
+            "refusing textedit inspect: record temp dir not a live directory".to_owned(),
+        ));
+    }
+    prove_edge(&record, "inspect").map_err(|e| refuse("inspect", e))?;
+    let frame = read_record_frame(record.pid, record.wid).map_err(|e| refuse("frame", e))?;
+    let candidates =
+        crate::space_drag_transfer::candidate_grab_points(frame).map_err(|e| refuse("grab", e))?;
+    let points = candidates
+        .into_iter()
+        .map(|(x, y)| {
+            let element = crate::ffi::ax_element_at_position(x, y);
+            let (ax_role, ax_role_status, ax_subrole, ax_subrole_status) = match &element {
+                Ok(el) => {
+                    let (role, role_status) =
+                        string_leg_verdict(crate::ffi::ax_string_attribute(el, "AXRole"));
+                    let (subrole, subrole_status) =
+                        string_leg_verdict(crate::ffi::ax_string_attribute(el, "AXSubrole"));
+                    (role, role_status, subrole, subrole_status)
+                }
+                Err(error) => (None, error.clone(), None, error.clone()),
+            };
+            let (ax_owner, ax_owner_error) = match crate::ffi::ax_hit_test_owner(x, y) {
+                Ok(owner) => (Some(owner), None),
+                Err(error) => (None, Some(error)),
+            };
+            let (ws_wid, ws_error) = match crate::ffi::sls_window_at_point(x, y) {
+                Ok(wid) => (Some(wid), None),
+                Err(error) => (None, Some(error)),
+            };
+            GrabPointInspect {
+                x,
+                y,
+                ax_role,
+                ax_role_status,
+                ax_subrole,
+                ax_subrole_status,
+                ax_owner,
+                ax_owner_error,
+                ws_wid,
+                ws_error,
+            }
+        })
+        .collect::<Vec<_>>();
+    let report = TextEditGrabInspectReport {
+        outcome: "textedit-grab-inspect-complete".to_owned(),
+        pid: record.pid,
+        wid: record.wid,
+        frame,
+        points,
+        synthetic: false,
+        mutates: false,
+    };
+    serde_json::to_string(&report).map_err(|e| (1, e.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1417,5 +1584,98 @@ mod tests {
                 "product path must not reach the diagnostic route"
             );
         }
+    }
+
+    #[test]
+    fn string_leg_verdict_maps_statuses_without_guessing() {
+        // `Ok` (present or absent value) always reports success; `Err`
+        // carries the named AX status with no value.
+        assert_eq!(
+            string_leg_verdict(Ok(Some("AXButton".to_owned()))),
+            (Some("AXButton".to_owned()), "kAXErrorSuccess".to_owned())
+        );
+        assert_eq!(
+            string_leg_verdict(Ok(None)),
+            (None, "kAXErrorSuccess".to_owned())
+        );
+        assert_eq!(
+            string_leg_verdict(Err(crate::ffi::AX_NOT_IMPLEMENTED)),
+            (None, "kAXErrorNotImplemented".to_owned())
+        );
+        assert_eq!(
+            string_leg_verdict(Err(-25212)),
+            (None, "kAXErrorNoValue".to_owned())
+        );
+    }
+
+    #[test]
+    fn grab_inspect_report_schema_is_metadata_only() {
+        // The JSON schema carries IDs, frame, and per-point hit metadata
+        // only: no titles, content, or paths.
+        let report = TextEditGrabInspectReport {
+            outcome: "textedit-grab-inspect-complete".to_owned(),
+            pid: 27619,
+            wid: 4393,
+            frame: crate::ffi::AxFrame {
+                x: 1124.0,
+                y: 603.0,
+                w: 550.0,
+                h: 558.0,
+            },
+            points: vec![GrabPointInspect {
+                x: 1234.0,
+                y: 611.0,
+                ax_role: Some("AXButton".to_owned()),
+                ax_role_status: "kAXErrorSuccess".to_owned(),
+                ax_subrole: None,
+                ax_subrole_status: "kAXErrorSuccess".to_owned(),
+                ax_owner: Some((27619, 4393)),
+                ax_owner_error: None,
+                ws_wid: Some(4393),
+                ws_error: None,
+            }],
+            synthetic: false,
+            mutates: false,
+        };
+        let value = serde_json::to_value(&report).expect("report serializes");
+        assert_eq!(value["outcome"], "textedit-grab-inspect-complete");
+        assert_eq!(value["pid"], 27619);
+        assert_eq!(value["wid"], 4393);
+        assert_eq!(value["frame"]["w"], 550.0);
+        assert_eq!(value["points"][0]["ax_role"], "AXButton");
+        assert_eq!(
+            value["points"][0]["ax_owner"],
+            serde_json::json!([27619, 4393])
+        );
+        assert_eq!(value["points"][0]["ws_wid"], 4393);
+        assert_eq!(value["synthetic"], false);
+        assert_eq!(value["mutates"], false);
+        let flat = serde_json::to_string(&value).expect("report flattens");
+        for leaked in ["title", "path", "temp_dir", "token", "document"] {
+            assert!(!flat.contains(leaked), "schema leaks {leaked}");
+        }
+    }
+
+    #[test]
+    fn grab_inspect_refuses_before_any_live_touch() {
+        // Missing/empty inputs refuse with usage code 2; a missing record
+        // refuses at the record stage (code 1) - all before any live read.
+        let err = super::run_textedit_grab_inspect("/nonexistent-omnitiler-run/record.json", "")
+            .unwrap_err();
+        assert_eq!(err.0, 2, "unexpected: {}", err.1);
+        let err =
+            super::run_textedit_grab_inspect("", "0123456789abcdef0123456789abcdef").unwrap_err();
+        assert_eq!(err.0, 2, "unexpected: {}", err.1);
+        let err = super::run_textedit_grab_inspect(
+            "/nonexistent-omnitiler-run/record.json",
+            "0123456789abcdef0123456789abcdef",
+        )
+        .unwrap_err();
+        assert_eq!(err.0, 1, "unexpected: {}", err.1);
+        assert!(
+            err.1.contains("\"stage\":\"record\""),
+            "unexpected: {}",
+            err.1
+        );
     }
 }
