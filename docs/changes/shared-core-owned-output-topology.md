@@ -1,7 +1,7 @@
 # Shared-core proposal: core-owned output topology
 
-- Status: proposal ready for cross-stream review, 2026-10-18. Documentation
-  only; implementation and native acceptance remain pending.
+- Status: implementation in progress, 2026-10-18; offline core/KDE acceptance
+  and native acceptance remain pending.
 - User direction 2026-10-18: core owns monitor positions in its world state
   and derives output adjacency. Adapters supply positions in complete world
   reports, which already provide initialization and subsequent updates. This
@@ -155,6 +155,15 @@
   acceptance remains pending, so this proposal stays active rather than archived.
 
 ## 5. Open questions and recommendations
+
+- Delivery decision (tentative): extract the existing KDE unique-reciprocal
+  world policy strictly, including ambiguous-edge refusal. Ordinary two-output
+  behavior stays unchanged. Per-use split-edge alignment is not implemented;
+  its recommendation and discriminator remain pending an explicit decision.
+- Implementation order: shared derivation and retained world topology with
+  regression tests; KDE parity fixtures and producer removal; independent diff
+  review and complete offline verification. Windows/macOS runtime adoption
+  remains with their respective follow-up work.
 
 | Question | Recommendation |
 | --- | --- |
