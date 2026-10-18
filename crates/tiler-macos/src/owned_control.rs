@@ -52,18 +52,24 @@ pub struct SemanticChord {
 /// arms, Alt+Shift shrink arms, the `G` float toggle, the `O`
 /// orientation toggle, plus the armed numbered workspace selects
 /// `select-1..9` (existing-Space selects only; trailing `select-0` stays
-/// unarmed and is refused here) — nothing else (Up/Down arrows are excluded:
-/// no user-owned overview restore path exists). Pure; unit-tested.
+/// unarmed and is refused here) and the armed numbered workspace sends
+/// `send-1..9` (product `Ctrl+Shift+digit` send-follow test transport;
+/// trailing `send-0` stays unarmed and is refused here) — nothing else
+/// (Up/Down arrows are excluded: no user-owned overview restore path
+/// exists). Pure; unit-tested.
 ///
-/// Select chords carry no Shift/Alt arms and post untagged through the
+/// Select and send chords carry no Alt arm and post untagged through the
 /// session stream like any tile-catalogue chord: the tap consumes them
-/// exactly like the user's `Ctrl+digit` chords and forwards to the engine.
-/// They MUST NOT carry the own-switch provenance tag
-/// (`OWN_SWITCH_USER_DATA`): tagged `Ctrl+digit`/`Ctrl+arrows` shapes are the
-/// native drag-transfer switch chords and the tap passes them untouched
-/// (`Keep`, never matched/suppressed/forwarded, invisible in counters) so
-/// the tiler never self-triggers. Tagging a select chord would bypass the
-/// engine and cannot prove runtime tap→engine→drain selection.
+/// exactly like the user's `Ctrl+digit` / `Ctrl+Shift+digit` chords and
+/// forwards to the engine. They MUST NOT carry the own-switch provenance
+/// tag (`OWN_SWITCH_USER_DATA`): tagged `Ctrl+digit`/`Ctrl+arrows` shapes
+/// are the native drag-transfer switch chords and the tap passes them
+/// untouched (`Keep`, never matched/suppressed/forwarded, invisible in
+/// counters) so the tiler never self-triggers. Tagging a select chord
+/// would bypass the engine and cannot prove runtime tap→engine→drain
+/// selection; send chords stay untagged for the same product parity (the
+/// tagged `Ctrl+Shift+digit` shape is not the own-switch shape, but only
+/// the untagged session post matches what the user presses).
 pub fn resolve_chord(name: &str) -> Option<SemanticChord> {
     let (key_code, shift, alt, action) = match name {
         "focus-h" => (0x04, false, false, "focus"),
@@ -146,6 +152,60 @@ pub fn resolve_chord(name: &str) -> Option<SemanticChord> {
             false,
             "select",
         ),
+        "send-1" => (
+            crate::desktop_shortcuts::desktop_digit_keycode(1)?,
+            true,
+            false,
+            "send",
+        ),
+        "send-2" => (
+            crate::desktop_shortcuts::desktop_digit_keycode(2)?,
+            true,
+            false,
+            "send",
+        ),
+        "send-3" => (
+            crate::desktop_shortcuts::desktop_digit_keycode(3)?,
+            true,
+            false,
+            "send",
+        ),
+        "send-4" => (
+            crate::desktop_shortcuts::desktop_digit_keycode(4)?,
+            true,
+            false,
+            "send",
+        ),
+        "send-5" => (
+            crate::desktop_shortcuts::desktop_digit_keycode(5)?,
+            true,
+            false,
+            "send",
+        ),
+        "send-6" => (
+            crate::desktop_shortcuts::desktop_digit_keycode(6)?,
+            true,
+            false,
+            "send",
+        ),
+        "send-7" => (
+            crate::desktop_shortcuts::desktop_digit_keycode(7)?,
+            true,
+            false,
+            "send",
+        ),
+        "send-8" => (
+            crate::desktop_shortcuts::desktop_digit_keycode(8)?,
+            true,
+            false,
+            "send",
+        ),
+        "send-9" => (
+            crate::desktop_shortcuts::desktop_digit_keycode(9)?,
+            true,
+            false,
+            "send",
+        ),
         _ => return None,
     };
     Some(SemanticChord {
@@ -195,6 +255,15 @@ pub fn chord_names() -> &'static [&'static str] {
         "select-7",
         "select-8",
         "select-9",
+        "send-1",
+        "send-2",
+        "send-3",
+        "send-4",
+        "send-5",
+        "send-6",
+        "send-7",
+        "send-8",
+        "send-9",
     ]
 }
 
@@ -564,9 +633,10 @@ mod tests {
 
     #[test]
     fn chords_cover_focus_move_float_without_arrows_up_down() {
-        assert_eq!(chord_names().len(), 35);
+        assert_eq!(chord_names().len(), 44);
         // Letters on focus/move/grow/shrink arms plus Left/Right on each
-        // arm plus G plus O, plus the nine armed numbered selects.
+        // arm plus G plus O, plus the nine armed numbered selects plus the
+        // nine armed numbered sends.
         for name in [
             "focus-h",
             "focus-j",
@@ -603,11 +673,20 @@ mod tests {
             "select-7",
             "select-8",
             "select-9",
+            "send-1",
+            "send-2",
+            "send-3",
+            "send-4",
+            "send-5",
+            "send-6",
+            "send-7",
+            "send-8",
+            "send-9",
         ] {
             assert!(resolve_chord(name).is_some(), "{name}");
         }
         // Up/Down arrows are excluded (no overview restore path); trailing
-        // select-0 stays unarmed; unknown names refuse.
+        // select-0/send-0 stay unarmed; unknown names refuse.
         for name in [
             "",
             "auto",
@@ -620,7 +699,12 @@ mod tests {
             "ctrl-h",
             "select-0",
             "select-10",
+            "send-0",
+            "send-10",
+            "send-",
+            "send-h",
             "workspace-select-1",
+            "workspace-send-1",
         ] {
             assert!(resolve_chord(name).is_none(), "{name}");
         }
@@ -671,6 +755,212 @@ mod tests {
             assert!(!chord.alt, "{name}");
             assert_eq!(chord.action, "select", "{name}");
         }
+        // Numbered sends carry the same native Desktop-N digit keycodes
+        // with the Shift arm (product Ctrl+Shift+digit send-follow) and
+        // report the send action; trailing send-0 stays unarmed.
+        for index in 1..=9u32 {
+            let name = match index {
+                1 => "send-1",
+                2 => "send-2",
+                3 => "send-3",
+                4 => "send-4",
+                5 => "send-5",
+                6 => "send-6",
+                7 => "send-7",
+                8 => "send-8",
+                _ => "send-9",
+            };
+            let chord = resolve_chord(name).unwrap();
+            assert_eq!(
+                chord.key_code,
+                crate::desktop_shortcuts::desktop_digit_keycode(index).unwrap(),
+                "{name}"
+            );
+            assert!(chord.shift, "{name}");
+            assert!(!chord.alt, "{name}");
+            assert_eq!(chord.action, "send", "{name}");
+        }
+    }
+
+    #[test]
+    fn send_chords_carry_product_ctrl_shift_digit_flags() {
+        // Producer-shaped: each send-1..9 chord plus the Ctrl role builds
+        // exactly the product Ctrl+Shift+digit flags over the native
+        // Desktop-N digit keycode (parity with workspace_send's armed
+        // 1..9 bindings, which carry shift and no alt/aux).
+        use crate::config::ProbeModifier;
+        use crate::workspace_input::effective_flags_for;
+        const CTRL: u64 = 0x0004_0000;
+        const SHIFT: u64 = 0x0002_0000;
+        for index in 1..=9u32 {
+            let name = match index {
+                1 => "send-1",
+                2 => "send-2",
+                3 => "send-3",
+                4 => "send-4",
+                5 => "send-5",
+                6 => "send-6",
+                7 => "send-7",
+                8 => "send-8",
+                _ => "send-9",
+            };
+            let chord = resolve_chord(name).unwrap();
+            assert_eq!(chord.action, "send", "{name}");
+            let (mut want, _) = crate::input::cg_flag_bits(ProbeModifier::Ctrl);
+            if chord.shift {
+                want |= crate::native_input::CG_SHIFT_BIT;
+            }
+            if chord.alt {
+                want |= crate::native_input::CG_ALT_BIT;
+            }
+            assert_eq!(want, CTRL | SHIFT, "{name}");
+            // Same flags through the shared workspace effective-flags home
+            // over the equivalent product TileBinding.
+            let binding = crate::runtime_types::TileBinding {
+                key_code: chord.key_code,
+                shift: chord.shift,
+                alt: chord.alt,
+                aux: false,
+                action: crate::runtime_types::InputSemanticAction::WorkspaceSend {
+                    index: index as u8,
+                    follow: true,
+                },
+            };
+            assert_eq!(
+                effective_flags_for(ProbeModifier::Ctrl, &binding),
+                CTRL | SHIFT,
+                "{name}"
+            );
+            // Keycode parity with the armed product send binding.
+            let armed = crate::workspace_send::bindings()
+                .into_iter()
+                .find(|b| {
+                    b.action
+                        == crate::runtime_types::InputSemanticAction::WorkspaceSend {
+                            index: index as u8,
+                            follow: true,
+                        }
+                })
+                .expect("product arms send 1..9");
+            assert_eq!(armed.key_code, chord.key_code, "{name}");
+            assert!(armed.shift && !armed.alt && !armed.aux, "{name}");
+        }
+    }
+
+    #[test]
+    fn send_chords_stay_untagged_product_consumed_never_own_switch_bypass() {
+        // Test transport must be the untagged session post the tap
+        // consumes like the user's chord: the owned-post boundary posts
+        // via post_guarded (None tag, Session route), and the untagged
+        // Ctrl+Shift+digit shape is never the own-switch bypass shape.
+        use crate::input_match::{
+            OWN_SWITCH_USER_DATA, SWITCH_CTRL_BIT, TapKeyKind, TapTuning,
+            decide_tap_event_with_provenance, is_own_switch_chord,
+        };
+        const SHIFT: u64 = 0x0002_0000;
+        // Provenance tag space still has exactly two members (absent for
+        // tile/send posts, own-switch for native switch chords).
+        assert!(crate::synth::validate_provenance_tag(None).is_ok());
+        assert!(crate::synth::validate_provenance_tag(Some(OWN_SWITCH_USER_DATA)).is_ok());
+        assert!(crate::synth::validate_provenance_tag(Some(0)).is_err());
+        for index in 1..=9u32 {
+            let code = crate::desktop_shortcuts::desktop_digit_keycode(index).unwrap() as i64;
+            // Neither untagged nor tagged Ctrl+Shift+digit is the
+            // own-switch shape (exact Ctrl-only digits/arrows pass; the
+            // Shift arm excludes it even when tagged).
+            for tag in [0, OWN_SWITCH_USER_DATA] {
+                for kind in [TapKeyKind::KeyDown, TapKeyKind::KeyUp] {
+                    assert!(
+                        !is_own_switch_chord(tag, kind, SWITCH_CTRL_BIT | SHIFT, code),
+                        "index={index} tag={tag} kind={kind:?}"
+                    );
+                }
+            }
+            assert!(
+                !is_own_switch_chord(0, TapKeyKind::KeyDown, SWITCH_CTRL_BIT | SHIFT, code),
+                "untagged send never bypasses"
+            );
+            // Untagged send shape consumes through the product tap tuning
+            // (exact Ctrl+Shift+digit match arms suppression and forwards
+            // to the engine); it is not a Keep bypass.
+            let tuning = TapTuning {
+                want_flags: SWITCH_CTRL_BIT | SHIFT,
+                flags_mask: crate::input_match::SWITCH_FLAGS_MASK,
+                want_code: code,
+            };
+            let mut pending = false;
+            let decision = decide_tap_event_with_provenance(
+                TapKeyKind::KeyDown,
+                SWITCH_CTRL_BIT | SHIFT,
+                code,
+                0,
+                tuning,
+                true,
+                &mut pending,
+            );
+            assert!(
+                decision.matched && decision.suppress && pending,
+                "index={index}"
+            );
+        }
+        // The owned-post boundary stays untagged: the session post entry
+        // without a tag, never the tagged switch-chord entry. Scope to
+        // the production section so this test's own literals cannot
+        // self-match.
+        let source = include_str!("owned_control.rs");
+        let production = source.split("#[cfg(test)]").next().unwrap_or(source);
+        assert!(
+            production.contains("post_guarded("),
+            "untagged session post stays"
+        );
+        assert!(
+            !production.contains("post_guarded_with_tag"),
+            "no tagged bypass on the owned-post path"
+        );
+    }
+
+    #[test]
+    fn send_extension_keeps_spawn_record_ownership_proof() {
+        // Safety contract unchanged: per-edge spawn-record proof (pid/nonce
+        // plus expected helper plus live bundle-or-exe plus CG join, no
+        // caller-typed WID) plus the fresh oracle before EACH post. No
+        // held-child shortcut, no raw HID entry, no arbitrary PID path.
+        // Scope to the production section so this test's own literals
+        // cannot self-match.
+        let source = include_str!("owned_control.rs");
+        let production = source.split("#[cfg(test)]").next().unwrap_or(source);
+        assert!(
+            production.contains("OwnedPostTarget::from_spawn_record"),
+            "spawn-record proof stays"
+        );
+        assert!(
+            !production.contains("from_held_child"),
+            "no held-child shortcut on the nonce path"
+        );
+        assert!(
+            !production.contains("hid_key_post") && !production.contains("hid_mouse_post"),
+            "no raw HID backdoor on the owned-post path"
+        );
+        // Per-edge shape preserved: two fresh proofs plus two fresh oracle
+        // reads around the down/up session posts.
+        assert_eq!(
+            production.matches("from_spawn_record").count(),
+            2,
+            "down edge plus up edge each re-prove"
+        );
+        assert!(
+            production.contains("oracle-down") && production.contains("oracle-up"),
+            "per-edge oracle stays"
+        );
+        // Unrecorded PID/nonce still refuses before any live touch (the
+        // exact constructor the helper path uses).
+        assert!(
+            crate::synth::OwnedPostTarget::from_spawn_record(
+                4242,
+                "0123456789abcdef0123456789abcdef"
+            )
+            .is_err()
+        );
     }
 
     #[test]

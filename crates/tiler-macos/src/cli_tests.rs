@@ -476,7 +476,15 @@ fn owned_controls_parse_with_exact_identity() {
         .is_err()
     );
     // Only semantic chords parse; arbitrary keys refuse.
-    for bad in ["ctrl-h", "select-0", "select-10", "workspace-select-1"] {
+    for bad in [
+        "ctrl-h",
+        "select-0",
+        "select-10",
+        "workspace-select-1",
+        "send-0",
+        "send-10",
+        "workspace-send-1",
+    ] {
         assert!(
             parse_args(&argv(&[
                 "owned-post",
@@ -500,6 +508,18 @@ fn owned_controls_parse_with_exact_identity() {
         "0123456789abcdef",
         "--chord",
         "select-2",
+    ]))
+    .unwrap();
+    assert!(matches!(r.command, Command::OwnedPost { .. }));
+    // Armed numbered sends parse (Ctrl+Shift+digit test transport).
+    let r = parse_args(&argv(&[
+        "owned-post",
+        "--pid",
+        "9",
+        "--nonce",
+        "0123456789abcdef",
+        "--chord",
+        "send-2",
     ]))
     .unwrap();
     assert!(matches!(r.command, Command::OwnedPost { .. }));

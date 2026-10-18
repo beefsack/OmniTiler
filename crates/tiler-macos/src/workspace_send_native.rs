@@ -262,7 +262,10 @@ impl SendNativeReaders for OsSendReaders {
 /// fixture-owned [`crate::synth::OwnedPostTarget`] proof (fixture-only).
 /// Every leg is `None` when unreadable. No new `unsafe`.
 fn read_ax_subject_state(pid: u32, wid: u32) -> AxSubjectState {
+    #[cfg(target_os = "macos")]
     let mut state = AxSubjectState::default();
+    #[cfg(not(target_os = "macos"))]
+    let state = AxSubjectState::default();
     #[cfg(target_os = "macos")]
     {
         use crate::ffi::{AxElement, ax_bool_attribute, ax_fullscreen_state, ax_get_frame};

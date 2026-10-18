@@ -1,5 +1,42 @@
 # macOS managed native workspaces
 
+## Holder ownership live checkpoint (2026-10-18)
+
+**Automatic holder ownership passes; product transfer remains unproven.**
+
+- At fb87897a, signed LaunchServices preflight reports AX trusted, unlocked
+  session and inactive Secure Input. A bounded TextEdit-only Authentic run
+  completes cleanly with 61 active chords and enables Desktops 1-9 without chord
+  changes. Baseline has no enabled Desktop-N holders or preimage; explicit Revert
+  restores all nine disabled preimages, with no failures or external edits, and
+  removes the backup. A subsequent Compatible run completes cleanly with 48
+  chords and byte-identical holder status. No input chord was delivered.
+- Three disposable TextEdit windows retain their exact AX/CG frames and Space 1
+  membership. Topology remains [1,277], current 1. No Space is created or removed;
+  the preexisting extra Space is retained. Exact title-free protected-window
+  records before Authentic, after Authentic, after Revert and finally all match:
+
+  ```json
+  {"bounds":{"h":1139.0,"w":1150.0,"x":0.0,"y":30.0},"layer":0,"onscreen":true,"pid":31863,"wid":3675}
+  ```
+
+- Both bounded runtime owners exit cleanly and the display-awake child is reaped.
+  No screenshots are taken: no transfer occurs and visual acceptance is pending.
+  Main executable SHA-256:
+  `2856f34441ae05ca3e7af204a82e317a9c36c5cffdfb77ebec575b8140f09fc1`.
+- Post-rebase offline gates pass 996 macOS tests (846 library + 150 integration),
+  strict macOS clippy/format and signed build/verify. Hosted CI exposes an
+  off-macOS unused-mut binding in the new AX reader; the cfg-specific binding
+  repair preserves behavior. Its diagnostic transport adds only send-1..9 names
+  to existing owned-helper posts, preserving nonce/CG/focus checks and untagged
+  session delivery. No ordinary-application ownership bypass is added. Updated
+  offline tests pass 999 (849 library + 150 integration).
+
+Next: exercise the actual product tap send using an owned helper with the existing
+spawn-record proof; keep TextEdit procedure 1 pending until actual input delivery
+to its exact disposable identity is available. Helper results cannot establish
+TextEdit or physical shortcut acceptance.
+
 ## Numbered send-follow implementation checkpoint (2026-10-18)
 
 **Numbered send-follow 1-9 is armed; native acceptance procedure 1 is next.**

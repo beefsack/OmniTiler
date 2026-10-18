@@ -4057,6 +4057,12 @@ decisions of 2026-09-24 are under
         build/verify pass; unsafe remains 114. Live acceptance procedure 1 is next,
         followed by stay, trailing and per-display attribution.
         [Current checkpoint](changes/macos-managed-workspaces.md#numbered-send-follow-implementation-checkpoint-2026-10-18).
+        Automatic Authentic holder enable/Revert and Compatible zero mutation
+        now pass live, with identical protected-window records and clean teardown.
+        Product transfer remains unproven: the TextEdit run received no chord.
+        Existing owned-helper injection now names send-1..9 without weakening
+        identity checks; a helper product-tap leg is next, TextEdit acceptance
+        remains pending. 999 offline tests pass; off-macOS lint repair included.
         **2026-10-18 offline prerequisites:** admission-pinned lifetime/source,
         pure managed-target/focus-swap proof, event-driven single-flight effect
         controller and fake send/holder coverage pass 973 macOS tests, strict
