@@ -142,14 +142,15 @@ decisions of 2026-09-24 are under
   [Delivery and exact script-restart re-check](changes/archive/best-effort-admission.md#residual-risks-and-exact-live-re-check).
   Windows/macOS consumption remains separate below. B6 declared-minimum overlap
   is unchanged; review its UX during dogfooding.
-- P1 | Windows best-effort admission adoption | Delivered offline on the existing
+- P1 | Windows best-effort admission live re-check | Delivered offline on the existing
   legacy API; no dependency on parked world adoption or shared semantic change.
   Ordinary float markers preserve capacity floats across restart; shrink repair,
   overlap, retry and catalog controls are covered by producer-shaped fixtures and
   independent safety review. Native four-package gates: **2,750 passed, 0 failed,
-  1 ignored**. Pending scoped live checks and host limitations (cross-output float
+  1 ignored**; all eight CI jobs pass (`6c4bcefd`, run 39083833668).
+  Pending scoped live checks and host limitations (cross-output float
   transfers safely refuse without an established remap):
-  [record](changes/windows-best-effort-admission.md).
+  [record](changes/archive/windows-best-effort-admission.md).
 - P1 | macOS: adopt best-effort admission | Consume the shared D1-D10 policy
   with full-world adoption below; retain/echo ordinary float classification
   through AX observations and restart persistence, no capacity-specific behavior.

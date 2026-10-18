@@ -1,13 +1,15 @@
 # Windows best-effort admission adoption
 
+- Status: delivered offline, 2026-10-18; native acceptance remains pending below.
+
 ## Goal and scope
 
-- Adopt the selected [D1-D10 capacity behavior](archive/best-effort-admission.md) in
+- Adopt the selected [D1-D10 capacity behavior](best-effort-admission.md) in
   the Windows legacy-domain runtime, matching KDE policy with native safety.
 - Dependency audit: the existing Engine path supports partial seed rosters,
   capacity exceptions, newest-first repair, overlap and `MoveToFloat` replies.
   Session diagnostics expose committed capacity identities. The parked
-  [world-state migration](windows-full-world-state-replies.md) is not required.
+  [world-state migration](../windows-full-world-state-replies.md) is not required.
 - Windows-only adapter changes; no shared semantics, KDE/macOS changes,
   dependencies, new polling or recovery ownership. Preserve games, overlays,
   lifetime fencing, D16/D23 and the recovery ledger.
@@ -66,7 +68,10 @@
   The narrow fixture correction scripts the native RID and retains the same
   medium-integrity predicate, with an explicit high-integrity no-write negative.
   Production gates and all original assertions are unchanged. The four-package
-  gates above pass again after this correction; hosted confirmation is pending.
+  gates above pass again after this correction. Implementation `18b69b61` and
+  fixture correction `6c4bcefd` are published; [CI 39083833668](https://github.com/beefsack/OmniTiler/actions/runs/39083833668)
+  passes all eight jobs, including native Windows/macOS, Rust/KWin, shell,
+  native effect/settings, licenses and notices.
 
 ## Host differences and bounded limitations
 
@@ -87,7 +92,7 @@
 
 ## Pending live checks
 
-- Before execution, follow [Windows preflight/recovery](../live-windows-testing.md):
+- Before execution, follow [Windows preflight/recovery](../../live-windows-testing.md):
   exact source/artifact/owner identities, owned-helper-only scope, baseline
   settings/desktop/window preimages, proven stop/restore paths. Do not scope in
   terminals or unrelated apps. Verify foreground identity before every injected
