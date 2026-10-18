@@ -88,7 +88,7 @@
 | Slice | Bounded change | Acceptance before landing |
 | --- | --- | --- |
 | W1: observation and ordering fixtures | Add complete world capture from topology, managed workspace inventory/bindings, active/hidden/minimized lifetimes, explicit closes, constraints, holds and native flags. Add tested in-process generation/bootstrap, observation/request/command counters, dirty-until-ack and feedback retention. Keep existing actuation active; exercise the new boundary offline only. | Real-shaped Windows fixtures cover unreadable inventories, hidden/iconic omission versus close, generation reset, stale replies, command consumption and observation-only catch-up. Inactive scaffolding cannot mutate the desktop. |
-| W2a: gated host-diff diagnostics, delivered | Reconcile the parked host-diff/feedback facade onto current main; retain offline-only ownership. Cover geometry/property authority, creation/binding recovery, occupied removal, transfer ambiguity, at-most-once effects and actual FULL-topology directional migration ingress. | 54 fixtures and native gates pass; review accepts the diagnostic boundary only. Actual migration remains held; a passing diagnostic reproduces the T2 gap instead of claiming refusal parity. The running legacy owner is unchanged. |
+| W2a: gated host-diff diagnostics, delivered | Reconcile the parked host-diff/feedback facade onto current main; retain offline-only ownership. Cover geometry/property authority, creation/binding recovery, occupied removal, transfer ambiguity, at-most-once effects and actual FULL-topology directional migration ingress. | 55 fixtures and native gates pass; review accepts the diagnostic boundary only. Actual migration remains held; a passing diagnostic reproduces the T2 gap instead of claiming refusal parity. The running legacy owner is unchanged. |
 | W2b: full host-diff acceptance, pending | Resolve shared migration write authority and pre-commit T2 capability gating without adapter policy duplication. | Real W1 capture/core-produced migration/member/target-view/refill/feedback/arrival roundtrip; Windows capacity-float output-send and R4 refusal preserve source Engine and membership. No held-scope override or functional use of diagnostic float origin. |
 | W3: atomic runtime cutover | Replace the active Engine path with the in-process world boundary for all observation, local/cross-output operations, selection, tiling toggles, history, scope mapping, trailing lifecycle, sends and migration together. Preserve native registry/recovery ownership; mark possibly executed before dispatch and prove membership/view read-back. Reconcile D23/13f additions already delivered by their shared change. | Existing Windows regressions plus world fixtures pass in local/global-unique/shared modes. Cover admission, fixed/float/overlay sends, follow/stay, startup/history/swaps, trailing creation/removal, partial transfer/refusal and shared migration refusal. No competing active legacy Engine or adapter trailing-policy fallback. Independent safety review and bounded owned-window smoke pass before landing. |
 | W4: legacy cutoff and completion | Remove unreachable per-operation application/session policy queries and transitional scaffolding; retain renderer-only presentation, native safety and useful regression fixtures. | No active direct session query remains where a full reply replaces it. Full native gates/CI and any smoke affected by cleanup pass; remaining physical/two-output acceptance is explicitly distinguished. |
@@ -390,9 +390,14 @@
   Review corrected stale applied-view proof retention and confirmed that both
   proposed shortcuts below would violate the existing contract. No production
   owner, core/protocol/KDE/macOS code, dependency or unsafe change; no live test.
+- A subsequent stale-envelope regression reproduced fence loss: pruning before
+  freshness validation let a wrong-generation reply retire an ambiguous view's
+  spent phase. The narrowly causal correction moves pruning after validation;
+  the regression now proves rejection preserves tracking and later fresh
+  replies cannot replay the view. Follow-up independent review accepted it.
 - Verified four-package locked build/test and strict all-target clippy,
   workspace formatting, unsafe guardrail and whitespace checks pass:
-  **2,839 passed, 0 failed, 1 ignored across 71 suites**, including **54 W2
+  **2,840 passed, 0 failed, 1 ignored across 71 suites**, including **55 W2
   fixtures**. CI result will be recorded after publication.
 - Tentative delivery choices: preserve/reconcile the test-only facade instead
   of enabling it; split out W2a diagnostics rather than falsely accept W2;

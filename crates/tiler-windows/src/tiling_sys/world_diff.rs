@@ -1075,7 +1075,6 @@ pub(super) fn apply_world_reply(
 ) -> (ApplyStats, Vec<AttemptFeedback>) {
     let mut stats = ApplyStats::default();
     let mut out_feedback: Vec<AttemptFeedback> = Vec::new();
-    state.prune(reply, fresh);
     let entry_obs = state.gate.current_obs;
 
     if !state.gate.fresh_reply(reply) {
@@ -1083,6 +1082,7 @@ pub(super) fn apply_world_reply(
         stats.stopped_mid_apply = true;
         return (stats, out_feedback);
     }
+    state.prune(reply, fresh);
 
     // Logical ids without a native binding: dependent membership, view, and
     // migration targets naming one hold until the binding arrives.

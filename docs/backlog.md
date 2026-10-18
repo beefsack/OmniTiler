@@ -273,8 +273,8 @@ decisions of 2026-09-24 are under
   replay first, then fix any uncommanded loss of settled float intent.
   [Investigation](changes/kde-triage-live.md#parked-restart-intent-loss-investigation).
 - P1 | Windows: adopt full world-state core replies | W2a gated offline
-  diagnostics delivered 2026-10-18: 54 fixtures reconciled onto current main;
-  native build/test/strict clippy/fmt/whitespace pass (2,839 passed, 1 ignored).
+  diagnostics delivered 2026-10-18: 55 fixtures reconciled onto current main;
+  native build/test/strict clippy/fmt/whitespace pass (2,840 passed, 1 ignored).
   Real W1 FULL reports with empty adjacency now produce direction-only core
   migration/refill, but target authority holds and no native attempt occurs.
   W2 acceptance remains blocked on shared migration authority and pre-commit

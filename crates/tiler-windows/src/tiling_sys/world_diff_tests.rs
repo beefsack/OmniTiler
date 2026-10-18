@@ -3800,3 +3800,53 @@ fn windows_profile_disables_maximized_focus_fence() {
     }
     assert_eq!(native_fingerprint(&state), before);
 }
+
+#[test]
+fn stale_reply_must_not_retire_ambiguous_view_fence() {
+    // Regression: envelope freshness must gate generation-scoped tracking.
+    // A stale/wrong-generation reply omitting an ambiguous view op must not
+    // retire its spent fence; the later fresh retained op must not dispatch
+    // again.
+    let rig = two_window_rig();
+    let (mut diff, fresh, native) = converted(&rig);
+    let mut probe = ProbeNative::wrapping(native);
+    probe.inner.views.insert("o1".to_owned(), rig.ws.clone());
+    probe.inner.throw_view.insert("o1/ws-target".to_owned());
+    let op = "op-view-stale-prune";
+    let mut reply = reply_shell(7, 1, &[("o1", &rig.ws), ("o1", "ws-target")]);
+    reply.transfers.push(view_transfer(op, "o1", "ws-target"));
+    let (_, first) = super::world_diff::apply_world_reply(&mut diff, &reply, &fresh, &mut probe);
+    assert!(
+        first
+            .iter()
+            .any(|f| f.operation_id == op && f.outcome == AttemptOutcome::PossiblyExecuted),
+        "throwing view did not settle possibly-executed, first={first:?}"
+    );
+    assert_eq!(probe.switches, 1);
+    assert!(diff.effects.is_view_spent(op));
+
+    // Stale wrong-generation reply omitting the op: rejected, no fence loss.
+    let mut stale = reply_shell(7, 1, &[("o1", &rig.ws), ("o1", "ws-target")]);
+    stale.core_generation = "gen-stale".to_owned();
+    assert!(stale.transfers.is_empty());
+    let (stale_stats, stale_feedback) =
+        super::world_diff::apply_world_reply(&mut diff, &stale, &fresh, &mut probe);
+    assert!(stale_stats.stopped_mid_apply, "stale reply not rejected");
+    assert!(stale_feedback.is_empty());
+    assert_eq!(probe.switches, 1, "stale reply dispatched");
+    assert!(
+        diff.effects.is_view_spent(op),
+        "stale reply retired the ambiguous view fence"
+    );
+
+    // Later fresh retained op must not dispatch again.
+    let (_, second) = super::world_diff::apply_world_reply(&mut diff, &reply, &fresh, &mut probe);
+    assert_eq!(
+        probe.switches, 1,
+        "stale-pruned fence re-dispatched the ambiguous view"
+    );
+    assert!(
+        second.is_empty() || second.iter().all(|f| f.operation_id != op),
+        "ambiguous view repeated feedback, second={second:?}"
+    );
+}
