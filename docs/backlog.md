@@ -410,6 +410,27 @@ decisions of 2026-09-24 are under
   `wip/windows-world-diff`; its former native-gate failures no longer reproduce
   on current main. W2a is diagnostic evidence only, not positive migration or
   T2 parity acceptance; W3/W4 hidden/fullscreen/bootstrap/native gates remain.
+- P1 | Core + Windows: world migration target authority | One change across
+  shared core and the Windows adapter, delivered on a two-output Windows host
+  so the theory is validated and tested live during implementation. Unblocks
+  W2 above (proposal 1 in
+  [W2b cross-stream proposals](changes/windows-full-world-state-replies.md#w2b-cross-stream-proposals)).
+  Problem: a whole-workspace migration to an output with no observed target
+  session publishes the target as `Hold(IncompleteInventory)` with held
+  migration rows; the Windows world diff correctly refuses uncontrolled scope,
+  so no member arrives and `migration_confirmed` never settles. KDE
+  `world-apply.ts` currently bypasses the scope gate via
+  `command_result.members`. First validate the gap on two real outputs, then
+  resolve the contract: recommended narrowly actionable migration authority for
+  that migration only, retaining all other holds (alternative: explicit
+  transfer-authority precedence), with an explicitly specified final settlement
+  and the KDE bypass aligned to it. Prove member -> target view -> source refill
+  -> topology/binding confirmation through actual Windows W1 capture, feedback
+  and re-observation, plus native two-output journeys. Coordinate the shared
+  contract and KDE alignment with the core/KDE stream (and the parked KDE
+  global-native-inventory migration-confirmation mismatch); macOS follows the
+  shared contract. Parked until the two-output Windows host session; user
+  2026-10-19.
 - P1 | Shared core: own output topology | Core+KDE delivered offline;
   native two-output validation pending. FULL world topology is retained in all
   modes and per-use targets are core-derived; KDE sends only
