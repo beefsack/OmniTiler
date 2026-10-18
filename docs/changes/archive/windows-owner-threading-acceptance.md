@@ -155,3 +155,20 @@
   tagged lifetime proof and honest `id_proven:false` reporting are unchanged.
 - Exact next action: physical single-output visual/input checks; retain the
   deferred multi-output/DPI/gaming legs explicitly.
+
+## Optional visuals disabled, native follow-up (2026-10-18)
+
+- Bounded N1 sub-leg passed: normal owner scoped only to two identity-tagged
+  disposable helpers, with `--no-active-border --no-group-underlay`, continued
+  tiling and workspace hide/reveal. Native helper readbacks showed adjacent
+  tiles; owner logs confirmed two applied startup frames with zero mismatches.
+  Border, underlay and idle preview inspection each reported `present:false`.
+- This disables optional border/underlay, not every visual: the pager remained
+  enabled and no drag-preview producer was exercised. Native carrier-creation
+  refusal/unavailability and integrated failure recovery remain pending; no
+  killed-owner-continues-tiling or complete N1 pass is claimed.
+- Source/artifact identity, observed shutdown and the first harness's limited
+  restoration evidence are in the
+  [scoped follow-up](windows-owner-event-idle.md#scoped-native-follow-up-2026-10-18).
+  External evidence `wu-sweep-20261018-164250-30608`, `report.json` and owner log
+  `run-01dd5ec4460b8c23.log`; no production change or new failure boundary.

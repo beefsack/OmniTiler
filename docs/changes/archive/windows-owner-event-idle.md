@@ -214,7 +214,8 @@ CPU milliseconds per minute, release scoped runs, non-game idle only:
 - Chevron response needs a verified safe target or user-run observation.
   Physical workspace/Win+arrow focus/move, drag-preview and game comparison
   remain pending and user-owned. No game-cost or physical-responsiveness claim
-  follows from this matrix. External settings live-edit remains unexercised.
+  follows from this matrix. External settings live-edit was not exercised by
+  this matrix; a later bounded gap-edit follow-up is recorded below.
 
 ## Retained deadlines and reasons
 
@@ -295,7 +296,41 @@ Primary documentation above checked 2026-10-18; AppBar notification details:
   attribution and fractional-deadline correction are delivered; chevron
   response remains open, alongside physical
   workspace/Win+arrow focus/move, drag-preview and game comparison. External
-  settings live-edit behavior was not exercised; notification/last-good
-  contracts have offline coverage.
+  settings live-edit was not exercised by the idle matrix; the later scoped
+  follow-up below samples gap adoption, not the full notification/last-good
+  matrix.
 - Retain the approved visible-pager 2 s reassert for now. Options for a later slice are proving a complete native z-order wake source or choosing a changed recovery/staleness contract; do not silently delete the period or add a replacement global poll.
 - Production settings and ledger directories differ. A same-directory seam intentionally retains content notifications for settings fidelity and can still wake on colocated log writes; no performance claim covers that configuration.
+
+## Scoped native follow-up (2026-10-18)
+
+- Source `1ae85779` with documentation-only working changes; normal scoped
+  owner, two identity-tagged disposable helpers, one output, ordinary integrity,
+  trace off and no keyboard injection. Owner SHA-256
+  `366a3619a0b9dcdedfd4960453a03da3e0ea55b2a0d8e75302275fa7bd37086a`;
+  helper `3825ce9afe3bbee10db22d9e09e24623a609a98812b81a34a648a40b2e6fdbb9`.
+- External settings gap edit 8 -> 12 -> 8 reached `settings-applied` with
+  `lanes:["gaps"]` both ways, and the helper frame changed after the first edit.
+  Each in-place write was followed by
+  `settings-degraded:malformed`, followed 9 ms later by applied. This measures
+  the interval between logged observations, not write-to-wake latency. The
+  edited-gap reconcile reported two mismatches; restoration reported zero.
+  Wake/adoption is observed, not complete geometric-convergence acceptance.
+- Chevron response **not run**: taskbar child discovery returned one entry
+  without a class, no verified chevron/overflow target and no clicks. This
+  neither establishes physical absence nor closes tray-geometry response.
+- Workspace select-away/return logged successful two-window hide/reveal and
+  focus on return (26/37 ms total actions); this supplements already accepted
+  healthy switching, not physical-input or deadline-expiry evidence.
+- Non-hooking stop/restore and bounded owned-helper hide/restore succeeded.
+  Final `mise exec -- just stop` reported clean; input/render shutdown reported
+  clean, helpers exited and ledger/stop/workspace requests were absent.
+  Restoration evidence is limited: settings were compared as decoded text,
+  SPI values matched but getter success flags were discarded, and taskbar
+  comparison covered window metadata rather than `ABM_GETSTATE`. Do not claim
+  an independent byte-exact/settings/SPI/taskbar-state restoration proof from
+  this run. No taskbar-setting mutation was attempted.
+- External evidence `wu-sweep-20261018-164250-30608`: `report.json`,
+  `settings.pre.json`, `final-verify.json`, inspected harness and owner log
+  `run-01dd5ec4460b8c23.log`. Chevron, physical responsiveness and games remain
+  pending; the visible-pager 2 s timer is unchanged.

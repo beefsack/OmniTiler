@@ -1235,6 +1235,11 @@ decisions of 2026-09-24 are under
     approved icon-cache refresh explains visible managed completion wakes;
     retain visible-pager 2 s recovery pending a complete native wake source or
     an explicit recovery-contract choice. [Idle record](changes/archive/windows-owner-event-idle.md).
+    Scoped follow-up 2026-10-18: chevron discovery again found no verified
+    target; no click or response result. External gap-file edit/restore woke the
+    owner and changed helper geometry; edited gaps reported two mismatches,
+    so correct-convergence acceptance stays open. First-run baseline/readback
+    limits are explicit in the record; no independent exact-restoration claim.
     Game cost remains unmeasured; idle improvement, suspension and nominal
     wake frequency are not game acceptance evidence.
     Apply the M04 bar: aim for zero; demonstrate any unavoidable residual
@@ -4416,6 +4421,15 @@ recorded separately from unexercised legs. Reference-WM checks test other compos
 
 ### Windows session
 
+- Scoped native follow-up 2026-10-18: optional border/underlay-off tiling and
+  workspace hide/reveal passed a bounded helper leg; this upgrades N1 to partial,
+  not complete visual-failure acceptance
+  ([evidence](changes/archive/windows-owner-threading-acceptance.md#optional-visuals-disabled-native-follow-up-2026-10-18)).
+  External gap-file wake/adoption is partial; chevron response not run without
+  a verified target. Tray workspace toggle and same-axis movement lacked a
+  verified native trigger; two side-by-side helpers are not nested visual proof.
+  [Observations and restoration limits](changes/archive/windows-owner-event-idle.md#scoped-native-follow-up-2026-10-18).
+  No physical shortcut, full launcher, game or multi-output pass is inferred.
 - Second agent-live sweep 2026-10-17: pager trailing-empty admission/send/close
   rendering passed; selected D16/D23 legs passed after the Windows-local
   [floating fullscreen frame fix](changes/archive/windows-floating-fullscreen-frame-restore.md).

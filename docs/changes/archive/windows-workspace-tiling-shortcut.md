@@ -50,3 +50,12 @@
   lifecycle, not Win+Y or checkbox synchronization. Saved settings remained
   byte-identical; Apply/Revert/preset adoption and physical keyboard paths remain
   pending.
+
+## Scoped follow-up (2026-10-18)
+
+- Native tray-toggle leg not run: the scoped sweep did not establish a verified
+  tray-icon/menu-item target, and the normal exact-owner CLI has no workspace-
+  tiling toggle. No speculative click, injected Win+Y or new test-control path.
+- Existing checkbox/state-sync and physical Win+Y/preset/rebind acceptance stay
+  pending. External evidence `wu-sweep-20261018-164250-30608`, `report.json`
+  (`check20-tray-toggle`); unrelated workspace select success is not toggle proof.

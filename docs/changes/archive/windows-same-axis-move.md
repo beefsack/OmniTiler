@@ -78,3 +78,12 @@
   triage work (one mechanical adjacent-row spec conflict, no source conflict).
   CI [38060844283](https://github.com/beefsack/OmniTiler/actions/runs/38060844283)
   completed success: windows, rust, kwin, shell, native and macos. No CI repair.
+
+## Scoped follow-up (2026-10-18)
+
+- Native move-topology leg not run: the normal owner ignores injected keys and
+  its exact-owner CLI has no move verb. No input-filter bypass or duplicate
+  Settings-only journey was used as a substitute for actual movement.
+- Both-policy native movement, traveling shares/focus and physical triggers
+  remain pending. External evidence `wu-sweep-20261018-164250-30608`,
+  `report.json` (`check16-same-axis`); retained offline evidence is unchanged.

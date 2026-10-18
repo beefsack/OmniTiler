@@ -50,7 +50,7 @@
 
 | Evidence status | Partial native/physical (P) | Offline only (O) | Pending/unverified (U) | N/A (X) | Complete gate passes |
 | --- | --- | --- | --- | --- | --- |
-| Original 57 checks | 30 | 17 | 5 | 5 | 0 |
+| Original 57 checks | 31 | 16 | 5 | 5 | 0 |
 | Eight extras | 4 | 1 | 3 | 0 | 0 |
 
 - All 52 applicable base checks and all eight extras retain pending acceptance;
@@ -118,8 +118,8 @@
 
 | ID | Class | Shared check | Map | Windows assertion / host equivalent | Evidence and exact remaining acceptance |
 | --- | --- | --- | --- | --- | --- |
-| N1 | M | Missing/disabled/removed effect | H | Windows has in-process render-owned carriers, not a separately installed KWin effect package. Disable visuals and exercise carrier creation/refusal/unavailability while keeping tiling operational; no stale overlays or silent stop. Package-remove/disable-KWin-effect actions are N/A, not the failure-tolerance assertion. Owner/input/render process failure is separately checks 28/30/50 and WX7. | **O**: [threading][threads] covers renderer creation refusal, hide/teardown fault seams offline. Full visual-unavailable native journey and the accepted failure boundary pending; do not claim a killed integrated owner continues tiling. |
-| N2 | M | External host configuration | H | External Windows Snap/work-area settings and tiler-file edits replace KWin configuration edits. Reconfigure truthfully; distinguish saved-file Revert from owned session Snap restoration; no unintended writes. | **P**: [dialogs][dialogs] proves a preview-time external file change is preserved/refused; [admission follow-up][admissionlive] proves bounded restore. Full outside-Settings host-change/reconcile/ownership roundtrip pending. |
+| N1 | M | Missing/disabled/removed effect | H | Windows has in-process render-owned carriers, not a separately installed KWin effect package. Disable visuals and exercise carrier creation/refusal/unavailability while keeping tiling operational; no stale overlays or silent stop. Package-remove/disable-KWin-effect actions are N/A, not the failure-tolerance assertion. Owner/input/render process failure is separately checks 28/30/50 and WX7. | **P**: [threading][threads] adds 2026-10-18 native optional-border/underlay-off tiling and hide/reveal; pager remained enabled, preview producer unexercised. Renderer creation refusal and hide/teardown faults remain offline-only. Full visual-unavailable native journey and the accepted failure boundary pending; do not claim a killed integrated owner continues tiling. |
+| N2 | M | External host configuration | H | External Windows Snap/work-area settings and tiler-file edits replace KWin configuration edits. Reconfigure truthfully; distinguish saved-file Revert from owned session Snap restoration; no unintended writes. | **P**: [dialogs][dialogs] proves a preview-time external file change is preserved/refused; [admission follow-up][admissionlive] proves bounded restore. [2026-10-18 gap-file follow-up](archive/windows-owner-event-idle.md#scoped-native-follow-up-2026-10-18) observes wake/adoption and frame delta, not correct edited-gap convergence (two mismatches) or independent exact restoration. Full outside-Settings host-change/reconcile/ownership roundtrip pending. |
 | N3 | M | Sleep with fullscreen game | A | Sleep/wake with a real fullscreen game and tiled session; game unimpeded, no stuck holds, correct recovery. | **U**: [backlog][backlog] and [Windows lifecycle plan][winplan] supply pending scope/design, not native evidence. |
 | N4 | M | Scaling with overlays | H | Change Windows DPI/resolution/work area with maximized/fullscreen/fixed-float windows; fresh physical-coordinate conversion and overlay/pager reanchor, no fullscreen geometry writes. | **O**: [pager lifecycle][pagerlife] covers stale-hide/fresh-geometry/DPI fixtures, expressly not physical reconfiguration; [foundation][multi] is not a simulated native DPI transition. Native matrix pending. |
 
