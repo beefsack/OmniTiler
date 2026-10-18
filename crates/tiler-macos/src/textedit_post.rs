@@ -1,15 +1,17 @@
 #![forbid(unsafe_code)]
 
-//! Diagnostic-only disposable TextEdit key tap (fixtures only, never product).
+//! Diagnostic-only disposable TextEdit chord tap (fixtures only, never product).
 //!
 //! Narrow sibling of [`crate::owned_control::run_owned_post`]: posts ONE
-//! benign key down/up (closed vocabulary in [`resolve_textedit_key`], disjoint
-//! from the tile chord catalogue) through the session stream to a run-owned
-//! disposable TextEdit document. The disposable identity is bound by a
-//! run-owned record ([`TextEditRecord`]: exact `(pid, wid)` plus the
-//! test-run-created temp directory plus the per-run random token plus a
-//! nonce); the helper spawn record is never consulted and helper ownership is
-//! unchanged.
+//! tile-catalogue chord down/up (the exact [`crate::owned_control`] chord
+//! vocabulary, so the product tap test transport - send-2 then send-1 and
+//! the selects - can run with TextEdit foreground) through the shared
+//! session-stream primitive to a run-owned disposable TextEdit document. The
+//! disposable identity is bound by a run-owned record ([`TextEditRecord`]:
+//! exact `(pid, wid)` plus the test-run-created temp directory plus the
+//! per-run random token plus a nonce); the helper spawn record is never
+//! consulted, helper ownership is unchanged, and no previously unarmed
+//! product action is armed (the chord set is exactly the owned-post set).
 //!
 //! Before EACH key edge the live boundary re-proves, in order: session gates
 //! (SLPS available, AX trusted, no Secure Input, unlocked session, post
@@ -22,18 +24,21 @@
 //! before the window server is touched, and every refusal is logged to
 //! stderr as metadata (stages and IDs only).
 //!
-//! Unconditional release: once the down edge has posted, EVERY exit path
-//! posts the key-up through [`raw_session_key_post`] WITHOUT target gates
-//! (a drifted target must never strand a held key). The orchestration is
-//! [`orchestrate_edges`], unit-tested over injected closures.
+//! Unconditional cleared-modifier release: once the down edge has posted, an
+//! [`EdgeGuard`] owns the pending key. Every return path after a posted down
+//! releases explicitly through the guard (gateless key-up with cleared flags,
+//! so no modifier can stick), and unwinding through the guard releases via
+//! `Drop`. The guard mechanics are unit-tested over injected post functions;
+//! the armed-`Drop` body itself is live-only and reviewed, not unit-driven.
 //!
 //! Diagnostic route only: reachable solely through the `textedit-post` CLI
-//! command. No product path references this module (regression-tested), and
-//! the posted keys never arm product chords (vocabulary disjointness test).
-//! Outputs are metadata-only JSON (IDs, stages, latencies — never titles,
+//! command. No product path references this module (regression-tested).
+//! Outputs are metadata-only JSON (IDs, stages, latencies - never titles,
 //! content, or paths).
 
 use serde::{Deserialize, Serialize};
+
+use crate::config::ProbeModifier;
 
 /// Exact bundle required frontmost before each edge.
 pub const TEXTEDIT_BUNDLE: &str = "com.apple.TextEdit";
@@ -42,32 +47,6 @@ pub const TEXTEDIT_BUNDLE: &str = "com.apple.TextEdit";
 /// to stay a title fragment.
 pub const MIN_TOKEN_LEN: usize = 8;
 pub const MAX_TOKEN_LEN: usize = 64;
-
-/// No modifiers are ever posted on this route (flags are always zero); the
-/// release posts the same key up with the same flags.
-pub const TEXTEDIT_FLAGS: u64 = 0;
-
-/// Resolve a diagnostic key name to its macOS virtual key code. Closed set of
-/// benign text/cancel/navigation keys only — nothing else. Pure;
-/// unit-tested. Disjoint from [`crate::owned_control::chord_names`] by
-/// construction (bare names, no `focus-`/`move-`/`select-`/`send-` arms).
-pub fn resolve_textedit_key(name: &str) -> Option<u16> {
-    match name {
-        "a" => Some(0x00),
-        "return" => Some(0x24),
-        "space" => Some(0x31),
-        "escape" => Some(0x35),
-        "left" => Some(0x7B),
-        "right" => Some(0x7C),
-        _ => None,
-    }
-}
-
-/// All diagnostic key names (for help text and the parser test).
-#[must_use]
-pub fn textedit_key_names() -> &'static [&'static str] {
-    &["a", "return", "space", "escape", "left", "right"]
-}
 
 /// Run-owned disposable-document record: exact `(pid, wid)` plus the
 /// test-run-created temp directory plus the per-run token plus the run nonce.
@@ -183,7 +162,7 @@ pub(crate) fn front_bundle_verdict(bundle: Option<&str>) -> Result<(), String> {
 }
 
 /// Pure per-edge verdict over plain data (no OS touch): frontmost bundle,
-/// then oracle agreement, then disposable identity — in post order, so the
+/// then oracle agreement, then disposable identity - in post order, so the
 /// first failure names the refusing leg before any post. Unit-tested; the
 /// live boundary performs the reads and passes the outcomes here just before
 /// each post.
@@ -253,67 +232,82 @@ fn load_record(path: &str) -> Result<TextEditRecord, String> {
         .map_err(|e| format!("refusing textedit post: record malformed ({e})"))
 }
 
-/// Dispatch latencies for one down/up pair (dispatch cost, never delivery).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct EdgePairLatency {
-    pub down_us: u64,
-    pub up_us: u64,
-    /// `Some` when the unconditional bypass release posted (up proof or up
-    /// post failed after a posted down); `None` on the clean path and when
-    /// nothing was held. A failed release attempt is also `None` (the caller
-    /// reports `released_bypass: false` and logs loudly).
-    pub release_us: Option<u64>,
+/// Pending-key release guard: owns a posted down edge until its up is proven
+/// posted. The bypass release posts key-up with cleared flags and no target
+/// gates (a drifted target must never strand a held key or a held modifier).
+/// Every return path after a posted down releases explicitly through
+/// [`EdgeGuard::release_now`]; unwinding through the guard releases via
+/// `Drop`. Releases are idempotent: exactly one up is ever posted per guard.
+pub(crate) struct EdgeGuard {
+    pid: u32,
+    key_code: u16,
+    down_posted: bool,
+    released: bool,
 }
 
-/// Pure edge orchestration with the unconditional-release contract: once
-/// `post_down` has succeeded, EVERY exit path runs `release_bypass` (which by
-/// contract posts the key-up with no target gates) before returning the
-/// error. Nothing held means no release (proof or post-down failure returns
-/// with `None`). Unit-tested over injected closures; the live boundary passes
-/// live proofs/posts here.
-pub(crate) fn orchestrate_edges(
-    prove_down: impl Fn() -> Result<(), String>,
-    post_down: impl Fn() -> Result<u64, String>,
-    prove_up: impl Fn() -> Result<(), String>,
-    post_up: impl Fn() -> Result<u64, String>,
-    release_bypass: impl Fn() -> Result<u64, String>,
-) -> Result<EdgePairLatency, (String, Option<u64>)> {
-    prove_down().map_err(|e| (e, None))?;
-    let down_us = post_down().map_err(|e| (e, None))?;
-    // A key is held from here: every exit releases first.
-    match prove_up() {
-        Err(e) => Err((e, release_bypass().ok())),
-        Ok(()) => match post_up() {
-            Ok(up_us) => Ok(EdgePairLatency {
-                down_us,
-                up_us,
-                release_us: None,
-            }),
-            Err(e) => Err((e, release_bypass().ok())),
-        },
+impl EdgeGuard {
+    pub(crate) fn new(pid: u32, key_code: u16) -> Self {
+        Self {
+            pid,
+            key_code,
+            down_posted: false,
+            released: false,
+        }
+    }
+
+    /// Arm after the down edge posted. Before this call the guard is inert
+    /// (nothing held, release is a no-op).
+    pub(crate) fn note_down_posted(&mut self) {
+        self.down_posted = true;
+    }
+
+    /// Disarm after the gated up edge posted (nothing held anymore).
+    pub(crate) fn note_released(&mut self) {
+        self.released = true;
+    }
+
+    /// True only while a key is held and unreleased (a release is owed).
+    #[must_use]
+    pub(crate) fn is_pending(&self) -> bool {
+        self.down_posted && !self.released
+    }
+
+    /// Gateless cleared-modifier release through an injected post function
+    /// (unit seam): key-up with flags cleared to zero, no target gates.
+    /// No-op (`None`) unless a release is owed; idempotent. Unit-tested.
+    pub(crate) fn release_with(
+        &mut self,
+        post: impl Fn(u16, u64, bool) -> Result<u64, String>,
+    ) -> Option<u64> {
+        if !self.is_pending() {
+            return None;
+        }
+        self.released = true;
+        post(self.key_code, 0, false).ok()
+    }
+
+    /// Live gateless release through the shared session-stream primitive.
+    pub(crate) fn release_now(&mut self) -> Option<u64> {
+        let (pid, code) = (self.pid, self.key_code);
+        self.release_with(move |key_code, flags, down| {
+            debug_assert_eq!(key_code, code);
+            crate::synth::raw_post_key_event_to_session(pid, key_code, flags, down, None)
+                .map(|posted| posted.post_latency_us)
+        })
     }
 }
 
-/// Raw session-stream key post (no gates): session taps observe it exactly
-/// like the tile-catalogue posts. Used for BOTH gated edges (after the
-/// per-edge proof) and the unconditional bypass release (no proof). Safe
-/// `objc2` bindings only; macOS-only (the off-macOS stub refuses).
-fn raw_session_key_post(key_code: u16, flags: u64, down: bool) -> Result<u64, String> {
-    #[cfg(target_os = "macos")]
-    {
-        use objc2_core_graphics::{CGEvent, CGEventFlags, CGEventTapLocation};
-        use std::time::Instant;
-        let event = CGEvent::new_keyboard_event(None, key_code, down)
-            .ok_or_else(|| "CGEventCreateKeyboardEvent returned null".to_owned())?;
-        CGEvent::set_flags(Some(&event), CGEventFlags(flags));
-        let start = Instant::now();
-        CGEvent::post(CGEventTapLocation::SessionEventTap, Some(&event));
-        Ok(start.elapsed().as_micros().min(u128::from(u64::MAX)) as u64)
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = (key_code, flags, down);
-        Err("synthetic key posts are macOS-only".to_owned())
+impl Drop for EdgeGuard {
+    fn drop(&mut self) {
+        // Unwind/cancellation backstop: if a panic unwinds past the explicit
+        // release paths while a key is held, still let it up gateless.
+        if self.is_pending() {
+            eprintln!(
+                "textedit-post unwind release: posting key up gateless (pid={} wid-held)",
+                self.pid
+            );
+            let _ = self.release_now();
+        }
     }
 }
 
@@ -435,13 +429,28 @@ fn prove_edge(record: &TextEditRecord, edge: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Resolve the chord flags exactly like the helper owned-post path: the Ctrl
+/// role plus the chord Shift/Alt arms. Shared vocabulary, shared flags.
+fn chord_flags(modifier: ProbeModifier, chord: crate::owned_control::SemanticChord) -> u64 {
+    let (mut want_flags, _) = crate::input::cg_flag_bits(modifier);
+    if chord.shift {
+        want_flags |= crate::native_input::CG_SHIFT_BIT;
+    }
+    if chord.alt {
+        want_flags |= crate::native_input::CG_ALT_BIT;
+    }
+    want_flags
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct TextEditPostReport {
     outcome: String,
     pid: u32,
     wid: u32,
-    key: String,
-    key_code: u16,
+    chord: String,
+    action: String,
+    key_code: u32,
+    flags: u64,
     down_post_us: u64,
     up_post_us: u64,
     released_bypass: bool,
@@ -449,16 +458,18 @@ struct TextEditPostReport {
     note: String,
 }
 
-/// Post ONE diagnostic key down/up to the run-owned disposable TextEdit
+/// Post ONE tile-catalogue chord down/up to the run-owned disposable TextEdit
 /// document bound by the record file. Exit codes: 2 usage/validation, 1
 /// gate/proof/post failure with evidence. Every refusal is logged to stderr
-/// as metadata (stages and IDs only — never titles, content, or paths).
-/// Once the down edge has posted, the up proof or up post failing still
-/// releases the key through the gateless bypass before returning.
+/// as metadata (stages and IDs only - never titles, content, or paths).
+/// Once the down edge has posted, every return path releases through the
+/// guard (gateless cleared-modifier key-up); unwinding through the guard
+/// releases via `Drop`.
 pub fn run_textedit_post(
     record_path: &str,
     nonce: &str,
-    key_name: &str,
+    chord_name: &str,
+    modifier: ProbeModifier,
 ) -> Result<String, (i32, String)> {
     let err_json = |stage: &str, error: String| -> (i32, String) {
         (
@@ -470,8 +481,8 @@ pub fn run_textedit_post(
         eprintln!("textedit-post refused at {stage}: {error}");
         err_json(stage, error)
     };
-    let key_code = resolve_textedit_key(key_name)
-        .ok_or_else(|| (2, format!("unknown --key '{key_name}' (see help)")))?;
+    let chord = crate::owned_control::resolve_chord(chord_name)
+        .ok_or_else(|| (2, format!("unknown --chord '{chord_name}' (see help)")))?;
     if nonce.is_empty() {
         return Err((2, "textedit-post needs a nonempty --nonce".to_owned()));
     }
@@ -485,64 +496,66 @@ pub fn run_textedit_post(
     }
     let pid = record.pid;
     let wid = record.wid;
-    let outcome = orchestrate_edges(
-        || prove_edge(&record, "edge-down"),
-        || {
-            raw_session_key_post(key_code, TEXTEDIT_FLAGS, true)
-                .map_err(|e| format!("post-down: {e}"))
-        },
-        || prove_edge(&record, "edge-up"),
-        || {
-            raw_session_key_post(key_code, TEXTEDIT_FLAGS, false)
-                .map_err(|e| format!("post-up: {e}"))
-        },
-        || {
-            // Unconditional bypass release: no target gates by contract (a
-            // drifted target must never strand a held key). Logged loudly.
-            eprintln!(
-                "textedit-post bypass release: posting key up with no target gates (pid={pid} wid={wid})"
-            );
-            raw_session_key_post(key_code, TEXTEDIT_FLAGS, false)
-        },
-    );
-    match outcome {
-        Ok(latency) => {
+    let want_flags = chord_flags(modifier, chord);
+    let key_code = chord.key_code as u16;
+    let mut guard = EdgeGuard::new(pid, key_code);
+    // Down edge: fresh proof, then the post arms the guard.
+    if let Err(error) = prove_edge(&record, "edge-down") {
+        let stage = "oracle-down";
+        return Err((
+            1,
+            serde_json::json!({"stage": stage, "error": error, "released_bypass": false})
+                .to_string(),
+        ));
+    }
+    let down_post_us =
+        crate::synth::raw_post_key_event_to_session(pid, key_code, want_flags, true, None)
+            .map(|posted| posted.post_latency_us)
+            .map_err(|e| refuse("post-down", format!("post-down: {e}")))?;
+    guard.note_down_posted();
+    // Up edge: fresh proof, then the gated up disarms the guard. Any failure
+    // from here releases explicitly first; unwind releases via Drop.
+    if let Err(error) = prove_edge(&record, "edge-up") {
+        let release_us = guard.release_now();
+        let released_bypass = release_us.is_some();
+        eprintln!(
+            "textedit-post up proof failed after posted down; bypass release posted={released_bypass} (pid={pid} wid={wid})"
+        );
+        return Err((
+            1,
+            serde_json::json!({"stage": "oracle-up", "error": error, "released_bypass": released_bypass})
+                .to_string(),
+        ));
+    }
+    match crate::synth::raw_post_key_event_to_session(pid, key_code, want_flags, false, None) {
+        Ok(posted) => {
+            guard.note_released();
             let report = TextEditPostReport {
                 outcome: "posted".to_owned(),
                 pid,
                 wid,
-                key: key_name.to_owned(),
-                key_code,
-                down_post_us: latency.down_us,
-                up_post_us: latency.up_us,
+                chord: chord_name.to_owned(),
+                action: chord.action.to_owned(),
+                key_code: chord.key_code,
+                flags: want_flags,
+                down_post_us,
+                up_post_us: posted.post_latency_us,
                 released_bypass: false,
                 synthetic: true,
-                note: "diagnostic-only synthetic CG session-stream tap (never physical hardware, never helper/product input); delivery is proven harness-side by the disposable document delta, never this dispatch receipt"
+                note: "diagnostic-only synthetic CG session-stream tap of a tile-catalogue chord to the run-owned disposable TextEdit document (never physical hardware, never helper input); delivery is proven harness-side by the tap counters plus the disposable document delta, never this dispatch receipt"
                     .to_owned(),
             };
             serde_json::to_string(&report).map_err(|e| (1, e.to_string()))
         }
-        Err((error, release_us)) => {
+        Err(e) => {
+            let release_us = guard.release_now();
             let released_bypass = release_us.is_some();
-            if error.contains("edge-up") || error.contains("post-up") {
-                eprintln!(
-                    "textedit-post up leg failed after posted down; bypass release posted={released_bypass} (pid={pid} wid={wid})"
-                );
-            }
-            let stage = if error.starts_with("edge-down") {
-                "oracle-down"
-            } else if error.starts_with("edge-up") {
-                "oracle-up"
-            } else if error.starts_with("post-down") {
-                "post-down"
-            } else if error.starts_with("post-up") {
-                "post-up"
-            } else {
-                "edge-down"
-            };
+            eprintln!(
+                "textedit-post up post failed after posted down; bypass release posted={released_bypass} (pid={pid} wid={wid})"
+            );
             Err((
                 1,
-                serde_json::json!({"stage": stage, "error": error, "released_bypass": released_bypass})
+                serde_json::json!({"stage": "post-up", "error": format!("post-up: {e}"), "released_bypass": released_bypass})
                     .to_string(),
             ))
         }
@@ -554,32 +567,68 @@ mod tests {
     use super::*;
 
     #[test]
-    fn key_vocabulary_is_closed_and_disjoint_from_tile_chords() {
-        assert_eq!(textedit_key_names().len(), 6);
-        assert_eq!(resolve_textedit_key("a"), Some(0x00));
-        assert_eq!(resolve_textedit_key("return"), Some(0x24));
-        assert_eq!(resolve_textedit_key("space"), Some(0x31));
-        assert_eq!(resolve_textedit_key("escape"), Some(0x35));
-        assert_eq!(resolve_textedit_key("left"), Some(0x7B));
-        assert_eq!(resolve_textedit_key("right"), Some(0x7C));
-        for name in [
-            "", "h", "ctrl-h", "focus-h", "move-h", "float-g", "select-1", "send-1", "A", "SPACE",
-            "click", "up", "down", "drag", "tab",
-        ] {
-            assert!(resolve_textedit_key(name).is_none(), "{name}");
+    fn chord_interface_reuses_exactly_the_owned_post_vocabulary() {
+        // The diagnostic route drives the product tap test transport
+        // (send-2 then send-1 and the selects), so it resolves through the
+        // single owned-control chord authority - at minimum send-1..9 and
+        // select-1..9, in practice the whole bounded owned-post set.
+        for name in crate::owned_control::chord_names() {
+            assert!(
+                crate::owned_control::resolve_chord(name).is_some(),
+                "{name}"
+            );
         }
-        // Disjoint both ways: diagnostic keys never arm product chords, and
-        // no tile chord parses as a diagnostic key (the diagnostic route can
-        // never drive product bindings).
-        for name in textedit_key_names() {
+        for name in ["send-1", "send-2", "select-1", "select-2"] {
+            let chord = crate::owned_control::resolve_chord(name).unwrap();
+            assert_eq!(
+                chord.action,
+                if name.starts_with("send") {
+                    "send"
+                } else {
+                    "select"
+                }
+            );
+        }
+        // Nothing previously unarmed is armed here: trailing select-0/send-0,
+        // the excluded Up/Down arms, and unknown names refuse at the same
+        // authority the helper path uses.
+        for name in [
+            "select-0",
+            "send-0",
+            "focus-up",
+            "focus-down",
+            "move-up",
+            "workspace-select-1",
+            "a",
+            "space",
+            "escape",
+            "",
+        ] {
             assert!(
                 crate::owned_control::resolve_chord(name).is_none(),
                 "{name}"
             );
         }
-        for name in crate::owned_control::chord_names() {
-            assert!(resolve_textedit_key(name).is_none(), "{name}");
-        }
+    }
+
+    #[test]
+    fn chord_flags_match_the_helper_owned_post_composition() {
+        // Same composition as run_owned_post: Ctrl role plus chord arms, so a
+        // send chord posts exactly the product Ctrl+Shift+digit flags.
+        use crate::native_input::{CG_ALT_BIT, CG_SHIFT_BIT};
+        const CTRL: u64 = 0x0004_0000;
+        let send = crate::owned_control::resolve_chord("send-2").unwrap();
+        assert!(send.shift && !send.alt);
+        assert_eq!(chord_flags(ProbeModifier::Ctrl, send), CTRL | CG_SHIFT_BIT);
+        let select = crate::owned_control::resolve_chord("select-2").unwrap();
+        assert!(!select.shift && !select.alt);
+        let (base, _) = crate::input::cg_flag_bits(ProbeModifier::Ctrl);
+        assert_eq!(chord_flags(ProbeModifier::Ctrl, select), base);
+        let shrink = crate::owned_control::resolve_chord("shrink-h").unwrap();
+        assert_eq!(
+            chord_flags(ProbeModifier::Ctrl, shrink),
+            base | CG_SHIFT_BIT | CG_ALT_BIT
+        );
     }
 
     #[test]
@@ -829,135 +878,60 @@ mod tests {
     }
 
     #[test]
-    fn orchestration_releases_only_when_a_key_is_held() {
+    fn guard_releases_only_while_a_key_is_held() {
         use std::cell::RefCell;
-        // Clean path: no release posted.
-        let log: RefCell<Vec<&str>> = RefCell::new(Vec::new());
-        let out = orchestrate_edges(
-            || Ok(()),
-            || {
-                log.borrow_mut().push("down");
-                Ok(3)
-            },
-            || Ok(()),
-            || {
-                log.borrow_mut().push("up");
-                Ok(5)
-            },
-            || {
-                log.borrow_mut().push("release");
-                Ok(7)
-            },
-        );
-        assert_eq!(
-            out,
-            Ok(EdgePairLatency {
-                down_us: 3,
-                up_us: 5,
-                release_us: None
-            })
-        );
-        assert_eq!(*log.borrow(), vec!["down", "up"]);
-
-        // Down proof fails: nothing held, no release.
-        let log: RefCell<Vec<&str>> = RefCell::new(Vec::new());
-        let out = orchestrate_edges(
-            || Err("edge-down: oracle disagrees".to_owned()),
-            || {
-                log.borrow_mut().push("down");
-                Ok(3)
-            },
-            || Ok(()),
-            || {
-                log.borrow_mut().push("up");
-                Ok(5)
-            },
-            || {
-                log.borrow_mut().push("release");
-                Ok(7)
-            },
-        );
-        assert_eq!(out, Err(("edge-down: oracle disagrees".to_owned(), None)));
+        let log: RefCell<Vec<(u16, u64, bool)>> = RefCell::new(Vec::new());
+        let fake = |code: u16, flags: u64, down: bool| {
+            log.borrow_mut().push((code, flags, down));
+            Ok(11u64)
+        };
+        // Fresh guard is inert: release is a no-op and posts nothing.
+        let mut guard = EdgeGuard::new(4242, 0x12);
+        assert!(!guard.is_pending());
+        assert_eq!(guard.release_with(fake), None);
         assert!(log.borrow().is_empty());
+        // Armed guard releases exactly once with cleared flags, then is inert.
+        guard.note_down_posted();
+        assert!(guard.is_pending());
+        assert_eq!(guard.release_with(fake), Some(11));
+        assert!(!guard.is_pending());
+        assert_eq!(*log.borrow(), vec![(0x12, 0, false)]);
+        assert_eq!(guard.release_with(fake), None);
+        assert_eq!(log.borrow().len(), 1);
+        // Gated up disarms: the later drop posts nothing.
+        let mut guard = EdgeGuard::new(4242, 0x12);
+        guard.note_down_posted();
+        guard.note_released();
+        assert!(!guard.is_pending());
+        assert_eq!(guard.release_with(fake), None);
+        assert!(log.borrow().len() == 1);
+    }
 
-        // Down post fails: nothing held, no release.
-        let log: RefCell<Vec<&str>> = RefCell::new(Vec::new());
-        let out = orchestrate_edges(
-            || Ok(()),
-            || {
-                log.borrow_mut().push("down");
-                Err("post-down: boom".to_owned())
-            },
-            || Ok(()),
-            || {
-                log.borrow_mut().push("up");
-                Ok(5)
-            },
-            || {
-                log.borrow_mut().push("release");
-                Ok(7)
-            },
-        );
-        assert_eq!(out, Err(("post-down: boom".to_owned(), None)));
-        assert_eq!(*log.borrow(), vec!["down"]);
+    #[test]
+    fn guard_bypass_clears_modifiers_even_for_shifted_chords() {
+        // A send chord posts with Ctrl+Shift held; its bypass release still
+        // posts key-up with flags cleared to zero so no modifier can stick.
+        use std::cell::RefCell;
+        let log: RefCell<Vec<(u16, u64, bool)>> = RefCell::new(Vec::new());
+        let mut guard = EdgeGuard::new(4242, 0x12);
+        guard.note_down_posted();
+        let out = guard.release_with(|code, flags, down| {
+            log.borrow_mut().push((code, flags, down));
+            Ok(9u64)
+        });
+        assert_eq!(out, Some(9));
+        assert_eq!(*log.borrow(), vec![(0x12, 0, false)]);
+    }
 
-        // Up proof drifts after a posted down: bypass release posts.
-        let log: RefCell<Vec<&str>> = RefCell::new(Vec::new());
-        let out = orchestrate_edges(
-            || Ok(()),
-            || {
-                log.borrow_mut().push("down");
-                Ok(3)
-            },
-            || Err("edge-up: frontmost pid 9999 != record pid 4242; target drifted".to_owned()),
-            || {
-                log.borrow_mut().push("up");
-                Ok(5)
-            },
-            || {
-                log.borrow_mut().push("release");
-                Ok(9)
-            },
-        );
-        assert_eq!(
-            out,
-            Err((
-                "edge-up: frontmost pid 9999 != record pid 4242; target drifted".to_owned(),
-                Some(9)
-            ))
-        );
-        assert_eq!(*log.borrow(), vec!["down", "release"]);
-
-        // Up post fails after a posted down: bypass release posts.
-        let log: RefCell<Vec<&str>> = RefCell::new(Vec::new());
-        let out = orchestrate_edges(
-            || Ok(()),
-            || {
-                log.borrow_mut().push("down");
-                Ok(3)
-            },
-            || Ok(()),
-            || {
-                log.borrow_mut().push("up");
-                Err("post-up: boom".to_owned())
-            },
-            || {
-                log.borrow_mut().push("release");
-                Ok(9)
-            },
-        );
-        assert_eq!(out, Err(("post-up: boom".to_owned(), Some(9))));
-        assert_eq!(*log.borrow(), vec!["down", "up", "release"]);
-
-        // Failed release attempt is honest: no release latency claimed.
-        let out = orchestrate_edges(
-            || Ok(()),
-            || Ok(3),
-            || Err("edge-up: oracle disagrees".to_owned()),
-            || Ok(5),
-            || Err("macOS-only".to_owned()),
-        );
-        assert_eq!(out, Err(("edge-up: oracle disagrees".to_owned(), None)));
+    #[test]
+    fn disarmed_guard_drops_without_posting() {
+        // The Drop backstop only fires while pending: a disarmed guard drops
+        // with no live touch on any platform (the armed-Drop body is
+        // live-only and reviewed, not unit-driven).
+        let mut guard = EdgeGuard::new(4242, 0x12);
+        guard.note_down_posted();
+        guard.note_released();
+        drop(guard);
     }
 
     #[test]
@@ -967,7 +941,8 @@ mod tests {
         let err = super::run_textedit_post(
             "/nonexistent-omnitiler-run/record.json",
             "0123456789abcdef0123456789abcdef",
-            "a",
+            "send-2",
+            ProbeModifier::Ctrl,
         )
         .unwrap_err();
         assert_eq!(err.0, 1);
@@ -979,32 +954,41 @@ mod tests {
     }
 
     #[test]
-    fn run_validates_key_and_nonce_before_record() {
-        // Unknown keys and empty nonces fail closed with usage code 2 and
+    fn run_validates_chord_and_nonce_before_record() {
+        // Unarmed chords and empty nonces fail closed with usage code 2 and
         // never reach the record read.
         let err = super::run_textedit_post(
             "/nonexistent-omnitiler-run/record.json",
             "0123456789abcdef0123456789abcdef",
-            "focus-h",
+            "select-0",
+            ProbeModifier::Ctrl,
         )
         .unwrap_err();
         assert_eq!(err.0, 2, "unexpected: {}", err.1);
-        let err = super::run_textedit_post("/nonexistent-omnitiler-run/record.json", "", "a")
-            .unwrap_err();
+        let err = super::run_textedit_post(
+            "/nonexistent-omnitiler-run/record.json",
+            "",
+            "send-2",
+            ProbeModifier::Ctrl,
+        )
+        .unwrap_err();
         assert_eq!(err.0, 2, "unexpected: {}", err.1);
     }
 
     #[test]
-    fn helper_ownership_path_stays_textedit_free() {
-        // The helper owned-post path never consults disposable TextEdit
-        // proof: no relaxation, no shared constructor, no shared record.
+    fn helper_ownership_path_stays_disposable_proof_free() {
+        // The helper owned-post path never consults disposable-document
+        // proof: no shared constructor, no shared record, no relaxed gate.
         // Scope to the production sections so these literals cannot
         // self-match.
         for file in [include_str!("owned_control.rs"), include_str!("synth.rs")] {
             let production = file.split("#[cfg(test)]").next().unwrap_or(file);
             assert!(
-                !production.contains("textedit") && !production.contains("TextEdit-record"),
-                "helper path must stay TextEdit-free"
+                !production.contains("textedit")
+                    && !production.contains("TextEdit-record")
+                    && !production.contains("TextEditRecord")
+                    && !production.contains("EdgeGuard"),
+                "helper path must stay disposable-proof free"
             );
         }
         // The diagnostic route reaches no product path: only the CLI

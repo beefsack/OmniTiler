@@ -699,11 +699,15 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
             // SLPS focus dispatch to one exact owned window with agreement.
             tiler_macos::owned_control::run_owned_focus(pid, &nonce, wid, request.modifier)
         }
-        Command::TextEditPost { record, nonce, key } => {
-            // Diagnostic-only disposable TextEdit tap (never helper or
-            // product input): run-owned record proof per edge with
-            // unconditional release.
-            tiler_macos::textedit_post::run_textedit_post(&record, &nonce, &key)
+        Command::TextEditPost {
+            record,
+            nonce,
+            chord,
+        } => {
+            // Diagnostic-only disposable TextEdit chord tap (never helper
+            // input): run-owned record proof per edge with unconditional
+            // cleared-modifier release.
+            tiler_macos::textedit_post::run_textedit_post(&record, &nonce, &chord, request.modifier)
         }
         Command::OwnedDragPost {
             pid,

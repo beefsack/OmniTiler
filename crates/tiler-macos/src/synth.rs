@@ -566,11 +566,15 @@ pub(crate) fn post_guarded_with_tag(
     }
 }
 
-/// Raw session-stream post (crate-private): session taps observe it, and
-/// the frontmost app receives it unless a tap suppresses. Only
-/// [`post_guarded`] calls this, after owned proof plus the fresh oracle
-/// plus bundle refusal.
-fn raw_post_key_event_to_session(
+/// Raw session-stream post (crate-visible shared primitive): session taps
+/// observe it, and the frontmost app receives it unless a tap suppresses.
+/// [`post_guarded`] calls this after owned proof plus the fresh oracle plus
+/// bundle refusal; the disposable-document diagnostic route calls it only
+/// after its own per-edge proof (and gateless for its bypass release, which
+/// posts key-up with cleared flags so no modifier can stick). No other
+/// caller: reaching the window server always requires a per-edge proof at
+/// the call site.
+pub(crate) fn raw_post_key_event_to_session(
     pid: u32,
     key_code: u16,
     flags: u64,

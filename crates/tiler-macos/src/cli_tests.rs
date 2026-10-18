@@ -630,7 +630,7 @@ fn owned_controls_parse_with_exact_identity() {
 }
 
 #[test]
-fn textedit_post_parses_with_record_identity_and_closed_keys() {
+fn textedit_post_parses_with_record_identity_and_owned_chords() {
     // Full identity parses and is write-intent (it posts synthetic input).
     let r = parse_args(&argv(&[
         "textedit-post",
@@ -638,8 +638,8 @@ fn textedit_post_parses_with_record_identity_and_closed_keys() {
         "/tmp/run-abc123/record.json",
         "--nonce",
         "0123456789abcdef",
-        "--key",
-        "a",
+        "--chord",
+        "send-2",
     ]))
     .unwrap();
     assert!(
@@ -647,23 +647,32 @@ fn textedit_post_parses_with_record_identity_and_closed_keys() {
         "textedit-post posts input and must be write-intent"
     );
     assert!(matches!(r.command, Command::TextEditPost { .. }));
-    // Every closed key parses.
-    for key in ["a", "return", "space", "escape", "left", "right"] {
+    // The product tap test transport parses: send-1..9 and select-1..9.
+    for chord in [
+        "send-1", "send-2", "select-1", "select-2", "focus-h", "float-g",
+    ] {
         let r = parse_args(&argv(&[
             "textedit-post",
             "--record",
             "/tmp/run-abc123/record.json",
             "--nonce",
             "0123456789abcdef",
-            "--key",
-            key,
+            "--chord",
+            chord,
         ]))
         .unwrap();
-        assert!(matches!(r.command, Command::TextEditPost { .. }), "{key}");
+        assert!(matches!(r.command, Command::TextEditPost { .. }), "{chord}");
     }
-    // Tile chords and arbitrary keys never parse as diagnostic keys.
+    // Unarmed and unknown chords never parse (no new arm is introduced).
     for bad in [
-        "focus-h", "move-h", "float-g", "select-1", "send-1", "h", "ctrl-h", "tab", "up", "", "A",
+        "select-0",
+        "send-0",
+        "focus-up",
+        "workspace-select-1",
+        "ctrl-h",
+        "a",
+        "space",
+        "",
     ] {
         assert!(
             parse_args(&argv(&[
@@ -672,7 +681,7 @@ fn textedit_post_parses_with_record_identity_and_closed_keys() {
                 "/tmp/run-abc123/record.json",
                 "--nonce",
                 "0123456789abcdef",
-                "--key",
+                "--chord",
                 bad,
             ]))
             .is_err(),
@@ -685,8 +694,8 @@ fn textedit_post_parses_with_record_identity_and_closed_keys() {
             "textedit-post",
             "--nonce",
             "0123456789abcdef",
-            "--key",
-            "a",
+            "--chord",
+            "send-2",
         ]))
         .is_err()
     );
@@ -695,18 +704,8 @@ fn textedit_post_parses_with_record_identity_and_closed_keys() {
             "textedit-post",
             "--record",
             "/tmp/run-abc123/record.json",
-            "--key",
-            "a",
-        ]))
-        .is_err()
-    );
-    assert!(
-        parse_args(&argv(&[
-            "textedit-post",
-            "--record",
-            "/tmp/run-abc123/record.json",
-            "--nonce",
-            "0123456789abcdef",
+            "--chord",
+            "send-2",
         ]))
         .is_err()
     );
@@ -717,8 +716,18 @@ fn textedit_post_parses_with_record_identity_and_closed_keys() {
             "/tmp/run-abc123/record.json",
             "--nonce",
             "0123456789abcdef",
-            "--key",
-            "a",
+        ]))
+        .is_err()
+    );
+    assert!(
+        parse_args(&argv(&[
+            "textedit-post",
+            "--record",
+            "/tmp/run-abc123/record.json",
+            "--nonce",
+            "0123456789abcdef",
+            "--chord",
+            "send-2",
             "--bogus",
         ]))
         .is_err()
