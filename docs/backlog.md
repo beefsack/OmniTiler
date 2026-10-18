@@ -251,6 +251,14 @@ decisions of 2026-09-24 are under
   final settings/taskbar/SPI/process cleanup passed with no recovery ledger
   (a ledger lock file remains). A related gap fixture
   retained stable one-pixel deltas in nine survivors, not delayed convergence.
+  Bounded follow-up at `b274797f` confirms physical outer/DWM deltas with
+  independent early/delayed reads; matched two-helper 8/12/8 reproduced two
+  default-helper mismatches while PMv2 helpers matched. Awareness, creation
+  visibility and hint floors remain confounded; host-vs-adapter cause parked,
+  no tolerance/fix. Repaired no-input harness restored every leg; unfloat
+  parked before intent because shrink floats lacked safe exposed client area.
+  Exact controlled-awareness and large-intentional-float fixtures are in the
+  current record. All eight CI jobs passed for `b274797f` (39115509470).
   Guarded local/shared-scope selection correction `d0326c2b` preserves first-exit
   intent; six actual-route regressions pass. Integrated offline four-package
   gates: **2,883 passed, 0 failed, 1 ignored**, strict clippy/format clean.
@@ -1253,10 +1261,12 @@ decisions of 2026-09-24 are under
     Scoped follow-up 2026-10-18: chevron discovery again found no verified
     target; no click or response result. External gap-file edit/restore woke the
     owner and changed helper geometry; edited gaps reported two mismatches,
-    so correct-convergence acceptance stays open. A six-helper PMv2 8/8 -> 64/64
-    follow-up at `79442633` had zero live mismatches, while default helpers retained
-    one-pixel deltas; it does not match or explain the original two-helper
-    8/8 -> 12/12 -> 8/8 sequence. Per-entry matched discrimination remains open
+    so correct-convergence acceptance stays open. Matched two-helper
+    8/8 -> 12/12 -> 8/8 at `b274797f` reproduced two stable default-helper
+    physical position deltas, while PMv2 helpers matched exactly. Independent
+    paired outer/DWM readbacks exclude a stale-observer-only artifact;
+    awareness/creation visibility/hints remain confounded. Host-vs-adapter
+    mechanism parked with an exact controlled fixture; no tolerance/fix
     ([evidence](changes/windows-best-effort-admission-live.md#native-gap-discriminators-2026-10-18)).
     First-run baseline/readback
     limits are explicit in the record; no independent exact-restoration claim.

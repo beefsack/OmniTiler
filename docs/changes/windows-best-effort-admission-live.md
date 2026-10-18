@@ -1,6 +1,6 @@
 # Windows best-effort admission native follow-up
 
-- Status: selection correction confirmed natively; unfloat and original external-edit mismatch discrimination remain open.
+- Status: selection correction confirmed natively; stable physical gap deltas reproduced, host-vs-adapter mechanism and unfloat classification parked.
 - Prior evidence: [offline delivery and partial native checks](archive/windows-best-effort-admission.md#scoped-native-follow-up-2026-10-18).
 
 ## Goal and scope
@@ -276,6 +276,65 @@
   not command evidence; the separately executed stop result supplies that proof.
   Final cleanliness does not supply missing per-abort restoration observations.
 
+### Bounded paired-readback follow-up, 2026-10-18
+
+- Source `b274797f`; externally retained group `be-gap-round2-20261018`
+  contains preflight/build evidence, helper receipts, owner logs, per-entry
+  action-scoped diagnostics and early/delayed paired outer/DWM/DPI readbacks.
+  Locked four-package build passed; owner/helper hashes match the prior native
+  discriminator artifacts. No production code or tolerance changed.
+- Harness repair removed caption clicks and all injected input. Foreground
+  activation requires exact owned-helper identity, never attaches to a foreign
+  foreground, and verifies the result. Exposure requires target root HWND/PID
+  and `HTCLIENT`; relocation considers all other helpers. Serial admission
+  gates bind each token, diagnostic entries are flattened and action-scoped,
+  and every leg has unconditional settings/owner/helper recovery with readback.
+  The earlier disappearing helper remains unexplained; expiry was excluded,
+  but a caption-button close was only a hypothesis, not a proven cause.
+- A logging-only fixture fault (`$ev` shadowing `$Ev`) aborted the first paired
+  leg. Its recovery closed all twelve helpers and restored settings/taskbar/SPI
+  before a narrowly repaired fixture completed. This was not a product failure.
+  A final evidence-filename case collision was corrected without another live
+  run; existing cleanup content was retained as `cleanup-final-round2.json`.
+- Twelve default helpers, 8/8 -> 64/64 -> 8/8: nine survivor entries again had
+  persistent deltas at 64/64. Owner post-write/readback entries and independent
+  PMv2-thread outer/DWM reads agree; early and delayed bounds were bit-identical
+  (early samples 9-47 ms after the relevant effect across completed fixtures).
+  This establishes physical requested-vs-actual differences, not a stale
+  `observed_outer` or observer-only artifact, and no drift between samples.
+  Immediate sub-sample behavior is not established.
+- Separate effects must not be conflated: large tiles have one-pixel position
+  or width deltas, while seven minimum-floor axes at 64/64 grew from requested
+  visible 118/30 to 152/40. Across both gap phases, all ten floor axes clamped;
+  those larger clamps are host-minimum/DPI candidates, not proof of the cause
+  of the one-pixel deltas. Planned-visible to requested-outer integer inset
+  conversion was exact. No native constraint or adapter conversion correction
+  has yet been causally established.
+- Matched two-helper external 8/8 -> 12/12 -> 8/8 edits: same topology and planned
+  geometry, default arm DPI 96/insets `[9,0,9,9]` had two stable position
+  mismatches at 12/12 (one y+1, one x+1/y+1), returning to exact split readbacks
+  at 8/8. Passive PMv2 arm DPI 120/insets `[8,0,8,8]` matched all readbacks at
+  both settings. Both retain per-entry early/delayed bounds. This reproduces
+  the earlier sweep's two-mismatch pattern and narrows the confound, but does
+  not retrospectively identify its unretained per-window entries.
+- Source review confirms default helpers use legacy-unaware visible-at-create
+  windows, while passive helpers establish PMv2 awareness before creation and
+  are shown afterward. Their native hint floors also differ. Thus awareness,
+  creation visibility and hints are not independent variables in these arms.
+  Host DPI quantization is a plausible hypothesis, not a verdict that the
+  adapter is correct or defective. Classification: **physical gap deltas
+  confirmed; host-vs-adapter mechanism parked**. No tolerance added.
+- Unfloat setup parked before foreground activation or tiler intent: both
+  capacity floats had only 152x40 visible frames and no sufficiently large free
+  relocation region under the other-helper cover. No move, click or injected
+  key occurred. This setup cannot classify rewritten unfloat neighbors and
+  will not be repeated. Optional exhaustion journeys were not attempted.
+- Independent review verified the physical deltas, matched sequence and all
+  five legs' recovery, including the logging abort. Every helper closed/exited
+  without anomalies; settings bytes and taskbar/SPI matched preimages after
+  each leg. Final real `mise exec -- just stop` output and independent readbacks
+  confirm `ready:false`, zero owned processes and no recovery ledger.
+
 ## Blockers and exact next action
 
 - Fresh, retry and send rosters did not produce the required no-space state;
@@ -296,12 +355,18 @@
   DPI at fresh pre-write, immediate post-write and delayed settled observations;
   retain per-entry write status instead of treating the aggregate mismatch as a
   target verdict. Existing `observed_outer` belongs to the pre-write hint phase.
-- Next action: design a large, exposed-float unfloat fixture with a verified
-  non-caption-button hit target before any input, retaining fresh/immediate/
-  delayed paired bounds and write status. Run the original two-helper external
-  8/8 -> 12/12 -> 8/8 sequence with matched PMv2/default fixtures and live
-  per-entry diagnostics. Resolve the setup/safety failure before another native
-  unfloat attempt; retain the measured-bounds oracle prerequisite for exhaustion.
+- Parked next fixture A: capture per-PID process awareness and system/monitor
+  scale, then independently vary awareness and creation visibility with fixed
+  minimum hints and rectangles above those minima. Compare direct exact-tag
+  helper outer writes outside the owner with owner writes and paired PMv2
+  outer/DWM observations. This separates host quantization from adapter behavior
+  without assuming a tolerance.
+- Parked next fixture B: four large helpers; explicitly float the verified
+  foreground last helper, preserving a large frame instead of relying on shrink
+  victims. Verify exposed client identity, then explicitly unfloat once under
+  the no-injection foreground rule with each rewritten neighbor's pre/early/
+  delayed bounds and write disposition. Four helpers are not an exhaustion
+  claim. No further native attempt is part of this completed bounded round.
 
 ## Final verification
 
@@ -343,3 +408,7 @@
   restoration, rejected unfloat acceptance and teardown-based convergence, and
   retained the unmatched external-edit discriminator as partial. No production
   code, unsafe code, regression tolerance or shared policy changed.
+- All eight CI jobs passed for evidence commit `b274797f`, run
+  [39115509470](https://github.com/beefsack/OmniTiler/actions/runs/39115509470).
+  The later paired-readback round reused the same Windows artifacts and passed
+  the locked four-package build; it made no production-code change.
