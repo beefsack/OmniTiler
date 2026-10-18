@@ -35,13 +35,16 @@ static DIAG_INTERRUPTED: std::sync::LazyLock<Arc<AtomicBool>> =
 /// RAII signal arm: registers SIGINT/SIGTERM delivery into the latch on
 /// creation, unregisters on drop, on every exit path (including unwind).
 /// Registration failure refuses BEFORE any post (the runner maps it to a
-/// refused report with zero events).
-struct InterruptArmed {
+/// refused report with zero events). Shared with the disposable-document
+/// diagnostic route, which arms it around its synchronous down/up pair and
+/// checks [`diag_interrupted`] at explicit sequence points (no polling loop;
+/// no hold window exists to poll in, only the prove/post steps).
+pub(crate) struct InterruptArmed {
     ids: Option<(signal_hook::SigId, signal_hook::SigId)>,
 }
 
 impl InterruptArmed {
-    fn arm() -> Result<Self, String> {
+    pub(crate) fn arm() -> Result<Self, String> {
         DIAG_INTERRUPTED.store(false, Ordering::SeqCst);
         let sigint =
             signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&DIAG_INTERRUPTED))
@@ -69,6 +72,14 @@ impl Drop for InterruptArmed {
             let _ = signal_hook::low_level::unregister(sigterm);
         }
     }
+}
+
+/// Latch read for diagnostic routes sharing the interrupt arm: true once
+/// SIGINT/SIGTERM arrived while armed. Callers check it at explicit sequence
+/// points and release first; the latch alone never releases (a signal
+/// handler cannot post - only async-signal-safe flag work runs there).
+pub(crate) fn diag_interrupted() -> bool {
+    DIAG_INTERRUPTED.load(Ordering::SeqCst)
 }
 
 /// Portable live backend over the shared HID construction site

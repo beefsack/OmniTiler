@@ -18,18 +18,26 @@
 //! access), frontmost app exactly `com.apple.TextEdit` at the record PID
 //! (Ghostty and every non-TextEdit bundle refuses before any post), the
 //! selected-oracle agreement on exactly `(pid, wid)`, the focused/main AX
-//! window at exactly `wid` whose document admits disposable proof (file path
-//! inside the record temp directory OR title containing the record token),
-//! and the CG owner join. Anything mismatched, stale, or unreadable refuses
-//! before the window server is touched, and every refusal is logged to
-//! stderr as metadata (stages and IDs only).
+//! window at exactly `wid` whose document admits canonical disposable proof
+//! (the live document file canonicalizes strictly inside the live run
+//! directory - both resolved per edge, so traversal and symlink escapes
+//! refuse - OR the title contains the record token), and the CG owner join.
+//! Anything mismatched, stale, or unreadable refuses before the window
+//! server is touched, and every refusal is logged to stderr as metadata
+//! (stages and IDs only).
 //!
 //! Unconditional cleared-modifier release: once the down edge has posted, an
 //! [`EdgeGuard`] owns the pending key. Every return path after a posted down
 //! releases explicitly through the guard (gateless key-up with cleared flags,
 //! so no modifier can stick), and unwinding through the guard releases via
-//! `Drop`. The guard mechanics are unit-tested over injected post functions;
-//! the armed-`Drop` body itself is live-only and reviewed, not unit-driven.
+//! `Drop`. Handled SIGINT/SIGTERM reuse the shared diagnostic interrupt arm:
+//! the arm latches delivery and the route checks the latch at explicit
+//! sequence points around the posts (no polling loop - the synchronous pair
+//! has no hold window - and no timer), releasing first on a latched
+//! interrupt. SIGKILL, abort, and power loss cannot release: disclosed
+//! residual, same as every existing posting route. The guard mechanics are
+//! unit-tested over injected post functions; the armed-`Drop` body and the
+//! live signal delivery itself are live-only and reviewed, not unit-driven.
 //!
 //! Diagnostic route only: reachable solely through the `textedit-post` CLI
 //! command. No product path references this module (regression-tested).
@@ -84,42 +92,72 @@ pub fn temp_dir_shape_valid(dir: &str) -> bool {
     dir.starts_with('/') && dir.trim_end_matches('/').len() > 1
 }
 
-/// Pure containment: `path` names a file strictly inside `dir` (trailing
-/// slashes tolerated on the dir). The `dir + "/"` boundary refuses
-/// prefix-sibling escapes (`/tmp/run1-evil/...` is not inside `/tmp/run1`).
-/// Never guesses: empty inputs refuse.
-#[must_use]
-pub(crate) fn path_inside_dir(dir: &str, path: &str) -> bool {
-    if dir.is_empty() || path.is_empty() || path.contains('\0') {
-        return false;
+/// Parse an AXDocument value to a plain absolute path. Accepts plain absolute
+/// paths, `file:///abs/...`, and `file://localhost/abs/...`. Rejects foreign
+/// hosts, hostless non-absolute forms, and percent-encoded forms (nothing is
+/// decoded: encoded input refuses conservatively and the title-token leg
+/// still gets its chance). Pure; unit-tested.
+pub(crate) fn parse_doc_path(raw: &str) -> Result<String, String> {
+    if raw.is_empty() || raw.contains('\0') {
+        return Err("refusing textedit post: document path empty".to_owned());
     }
-    let trimmed = dir.trim_end_matches('/');
-    if trimmed.is_empty() || !trimmed.starts_with('/') {
-        return false;
+    let path = if let Some(after_scheme) = raw.strip_prefix("file://") {
+        if let Some(after_host) = after_scheme.strip_prefix("localhost/") {
+            if after_host.is_empty() {
+                return Err("refusing textedit post: document URL has no path".to_owned());
+            }
+            format!("/{after_host}")
+        } else if after_scheme.starts_with('/') {
+            after_scheme.to_owned()
+        } else {
+            return Err("refusing textedit post: document URL has a foreign host".to_owned());
+        }
+    } else if raw.starts_with('/') {
+        raw.to_owned()
+    } else {
+        return Err("refusing textedit post: document path not absolute".to_owned());
+    };
+    if path.contains('%') {
+        return Err(
+            "refusing textedit post: rejecting percent-encoded document path without decoding"
+                .to_owned(),
+        );
     }
-    let path_bytes = path.as_bytes();
-    let dir_bytes = trimmed.as_bytes();
-    path_bytes.len() > dir_bytes.len() + 1
-        && path_bytes.starts_with(dir_bytes)
-        && path_bytes[dir_bytes.len()] == b'/'
+    Ok(path)
 }
 
-/// Strip a `file://` URL scheme to a plain path for the containment check.
-/// Handles `file:///abs/...` and `file://localhost/abs/...`; any other input
-/// passes through unchanged (the containment check then refuses unless it
-/// literally matches). Pure; unit-tested.
-#[must_use]
-pub(crate) fn strip_file_url(raw: &str) -> &str {
-    let without_host = raw.strip_prefix("file://localhost").unwrap_or(raw);
-    without_host.strip_prefix("file://").unwrap_or(without_host)
+/// Canonical containment of the live document in the live run directory:
+/// BOTH sides must canonicalize (existing, symlink-resolved) and the
+/// document must sit strictly inside the run directory component-wise. This
+/// refuses `..` traversal, symlink escapes in either leg, prefix siblings
+/// (`/tmp/run1-evil/...` shares no component prefix with `/tmp/run1`), and
+/// missing files - never by byte prefix on a raw string. Filesystem reads
+/// only, no posts. The caller falls through to the title-token leg on `Err`.
+pub(crate) fn canonical_doc_inside_run_dir(run_dir: &str, doc: &str) -> Result<(), String> {
+    let run_canon = std::fs::canonicalize(run_dir)
+        .map_err(|_| "refusing textedit post: run temp dir not live".to_owned())?;
+    if !run_canon.is_dir() {
+        return Err("refusing textedit post: run temp dir not a directory".to_owned());
+    }
+    let doc_canon = std::fs::canonicalize(doc)
+        .map_err(|_| "refusing textedit post: document not live".to_owned())?;
+    // `Path::starts_with` compares whole components, and equality is refused:
+    // the document must be strictly inside, never the directory itself.
+    if doc_canon == run_canon || !doc_canon.starts_with(&run_canon) {
+        return Err("refusing textedit post: document outside run temp dir".to_owned());
+    }
+    Ok(())
 }
 
-/// Pure disposable-document verdict over plain data (no OS touch): admits
-/// exactly when the document file path is inside the record temp directory
-/// OR the window title contains the record token. Unreadable legs (`None`)
-/// refuse, never guessed; a missing/empty token or malformed temp dir
-/// refuses closed. Unit-tested; the live boundary performs the reads and
-/// passes the outcomes here just before its post.
+/// Disposable-document verdict over plain inputs plus live canonical reads
+/// (no posts): admits exactly when the document file canonicalizes strictly
+/// inside the live run directory OR the window title contains the record
+/// token. A failed path leg (unparseable URL, non-live file, outside the run
+/// directory) falls through to the title leg - the OR contract - and
+/// unreadable legs refuse, never guessed. A malformed temp dir or token
+/// refuses closed. Live filesystem reads only; unit-tested against real
+/// temporary directories; the live boundary passes the AX reads here just
+/// before its post.
 pub(crate) fn disposable_doc_verdict(
     file_path: Option<&str>,
     title: Option<&str>,
@@ -132,18 +170,18 @@ pub(crate) fn disposable_doc_verdict(
     if !token_valid(token) {
         return Err("refusing textedit post: record token malformed".to_owned());
     }
-    if let Some(raw) = file_path {
-        let path = strip_file_url(raw);
-        if path_inside_dir(temp_dir, path) {
-            return Ok(());
-        }
+    if let Some(raw) = file_path
+        && let Ok(path) = parse_doc_path(raw)
+        && canonical_doc_inside_run_dir(temp_dir, &path).is_ok()
+    {
+        return Ok(());
     }
     if let Some(title) = title
         && title.contains(token)
     {
         return Ok(());
     }
-    Err("refusing textedit post: disposable identity mismatch (path outside run temp dir and title lacks run token)".to_owned())
+    Err("refusing textedit post: disposable identity mismatch (document leg refused and title lacks run token)".to_owned())
 }
 
 /// Pure frontmost-bundle verdict over plain data (no OS touch): admits
@@ -321,6 +359,13 @@ fn session_gates() -> Result<(), String> {
     if crate::ffi::ax_is_process_trusted() != Some(true) {
         return Err("ax-trust: AX trust not observed true; stop".to_owned());
     }
+    // Unknown Secure Input proceeds here exactly like every existing posting
+    // gate (`input::secure_input()` maps `None` to `Unknown` and the tap path
+    // proceeds on `Inactive | Unknown`; `run_owned_post`, `input-session`,
+    // and the tile path all refuse only on `Some(true)`): the symbol always
+    // resolves live on macOS, and off-macOS every post refuses as macOS-only
+    // downstream, so `None` is unreachable on a live posting path. Named
+    // explicitly so unknown is never silently read as inactive.
     if crate::ffi::secure_input_known() == Some(true) {
         return Err("secure-input: Secure Input active; refusing post".to_owned());
     }
@@ -464,7 +509,9 @@ struct TextEditPostReport {
 /// as metadata (stages and IDs only - never titles, content, or paths).
 /// Once the down edge has posted, every return path releases through the
 /// guard (gateless cleared-modifier key-up); unwinding through the guard
-/// releases via `Drop`.
+/// releases via `Drop`. Handled SIGINT/SIGTERM latch the shared diagnostic
+/// interrupt arm (armed below before any post) and are checked at explicit
+/// sequence points, releasing first; SIGKILL/abort stay undischargeable.
 pub fn run_textedit_post(
     record_path: &str,
     nonce: &str,
@@ -498,8 +545,23 @@ pub fn run_textedit_post(
     let wid = record.wid;
     let want_flags = chord_flags(modifier, chord);
     let key_code = chord.key_code as u16;
+    // Handled-termination arm: SIGINT/SIGTERM latch the shared diagnostic
+    // flag from here until return (unregistered on drop, including unwind).
+    // Registration failure refuses BEFORE any post. The latch is consulted at
+    // explicit sequence points below - never a poll loop - and a latched
+    // interrupt releases first like any up-leg failure.
+    let _interrupt =
+        crate::space_drag_diag_live::InterruptArmed::arm().map_err(|e| refuse("interrupt", e))?;
+    let interrupted = || {
+        if crate::space_drag_diag_live::diag_interrupted() {
+            Err("interrupted: SIGINT/SIGTERM latched; refusing post".to_owned())
+        } else {
+            Ok(())
+        }
+    };
     let mut guard = EdgeGuard::new(pid, key_code);
-    // Down edge: fresh proof, then the post arms the guard.
+    // Down edge: fresh proof, then the post arms the guard. A latched
+    // interrupt before the post refuses with nothing held.
     if let Err(error) = prove_edge(&record, "edge-down") {
         let stage = "oracle-down";
         return Err((
@@ -508,13 +570,35 @@ pub fn run_textedit_post(
                 .to_string(),
         ));
     }
+    if let Err(error) = interrupted() {
+        return Err((
+            1,
+            serde_json::json!({"stage": "interrupted", "error": error, "released_bypass": false})
+                .to_string(),
+        ));
+    }
     let down_post_us =
         crate::synth::raw_post_key_event_to_session(pid, key_code, want_flags, true, None)
             .map(|posted| posted.post_latency_us)
             .map_err(|e| refuse("post-down", format!("post-down: {e}")))?;
     guard.note_down_posted();
+    // A latched interrupt with a key held releases immediately instead of
+    // proving the up edge.
+    if let Err(error) = interrupted() {
+        let release_us = guard.release_now();
+        let released_bypass = release_us.is_some();
+        eprintln!(
+            "textedit-post interrupted after posted down; bypass release posted={released_bypass} (pid={pid} wid={wid})"
+        );
+        return Err((
+            1,
+            serde_json::json!({"stage": "interrupted", "error": error, "released_bypass": released_bypass})
+                .to_string(),
+        ));
+    }
     // Up edge: fresh proof, then the gated up disarms the guard. Any failure
-    // from here releases explicitly first; unwind releases via Drop.
+    // from here releases explicitly first; unwind releases via Drop. A
+    // latched interrupt at either check releases like any up-leg failure.
     if let Err(error) = prove_edge(&record, "edge-up") {
         let release_us = guard.release_now();
         let released_bypass = release_us.is_some();
@@ -524,6 +608,18 @@ pub fn run_textedit_post(
         return Err((
             1,
             serde_json::json!({"stage": "oracle-up", "error": error, "released_bypass": released_bypass})
+                .to_string(),
+        ));
+    }
+    if let Err(error) = interrupted() {
+        let release_us = guard.release_now();
+        let released_bypass = release_us.is_some();
+        eprintln!(
+            "textedit-post interrupted after posted down; bypass release posted={released_bypass} (pid={pid} wid={wid})"
+        );
+        return Err((
+            1,
+            serde_json::json!({"stage": "interrupted", "error": error, "released_bypass": released_bypass})
                 .to_string(),
         ));
     }
@@ -656,94 +752,185 @@ mod tests {
         assert!(!temp_dir_shape_valid("/tmp/\0evil"));
     }
 
-    #[test]
-    fn path_containment_refuses_prefix_siblings() {
-        assert!(path_inside_dir("/tmp/run1", "/tmp/run1/doc.rtf"));
-        assert!(path_inside_dir("/tmp/run1/", "/tmp/run1/sub/doc.rtf"));
-        // Prefix sibling, not a child: the boundary slash refuses it.
-        assert!(!path_inside_dir("/tmp/run1", "/tmp/run1-evil/doc.rtf"));
-        assert!(!path_inside_dir("/tmp/run1", "/tmp/run1"));
-        assert!(!path_inside_dir("/tmp/run1", "/tmp/run"));
-        assert!(!path_inside_dir("/tmp/run1", ""));
-        assert!(!path_inside_dir("", "/tmp/run1/doc.rtf"));
-        assert!(!path_inside_dir("/", "/doc.rtf"));
-        assert!(!path_inside_dir("/tmp/run1", "/tmp/run1/\0evil"));
+    /// Real-filesystem fixture: a unique run directory with writer plus
+    /// best-effort cleanup. No timers, no randomness beyond the PID plus a
+    /// process-local counter.
+    struct TempRun {
+        dir: std::path::PathBuf,
+    }
+
+    impl TempRun {
+        fn create(tag: &str) -> Self {
+            static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let dir = std::env::temp_dir().join(format!(
+                "omnitiler-textedit-proof-{}-{tag}-{n}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            Self { dir }
+        }
+
+        fn write(&self, rel: &str, body: &str) -> std::path::PathBuf {
+            let path = self.dir.join(rel);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(&path, body).unwrap();
+            path
+        }
+
+        fn as_str(&self) -> &str {
+            self.dir.to_str().unwrap()
+        }
+    }
+
+    impl Drop for TempRun {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
     }
 
     #[test]
-    fn file_url_strips_only_file_scheme() {
+    fn doc_url_parsing_accepts_only_local_absolute_unencoded() {
         assert_eq!(
-            strip_file_url("file:///tmp/run1/doc.rtf"),
+            parse_doc_path("/tmp/run1/doc.rtf").unwrap(),
             "/tmp/run1/doc.rtf"
         );
         assert_eq!(
-            strip_file_url("file://localhost/tmp/run1/doc.rtf"),
+            parse_doc_path("file:///tmp/run1/doc.rtf").unwrap(),
             "/tmp/run1/doc.rtf"
         );
-        assert_eq!(strip_file_url("/tmp/run1/doc.rtf"), "/tmp/run1/doc.rtf");
-        assert_eq!(strip_file_url(""), "");
+        assert_eq!(
+            parse_doc_path("file://localhost/tmp/run1/doc.rtf").unwrap(),
+            "/tmp/run1/doc.rtf"
+        );
+        // Foreign hosts, hostless non-absolute forms, encoded forms, and
+        // empty/NUL inputs all refuse (the title leg still gets its chance).
+        for raw in [
+            "",
+            "relative/doc.rtf",
+            "file://evilhost/tmp/doc.rtf",
+            "file://localhost",
+            "file://localhost/",
+            "FILE:///tmp/doc.rtf",
+            "/tmp/run%20space/doc.rtf",
+            "file:///tmp/run%2F/doc.rtf",
+            "/tmp/\0evil",
+        ] {
+            assert!(parse_doc_path(raw).is_err(), "{raw}");
+        }
     }
 
     #[test]
-    fn doc_verdict_admits_path_inside_or_title_token() {
-        let dir = "/tmp/omnitiler-run-abc123";
-        let token = "tok-abc123";
-        // Either leg alone admits.
-        assert!(
-            disposable_doc_verdict(Some("/tmp/omnitiler-run-abc123/doc.rtf"), None, dir, token)
-                .is_ok()
+    fn canonical_containment_needs_live_strictly_inside_files() {
+        let run = TempRun::create("inside");
+        let doc = run.write("doc.rtf", "body");
+        let dir = run.as_str().to_owned();
+        let doc_str = doc.to_str().unwrap().to_owned();
+        // Live file strictly inside the live run dir admits.
+        assert!(canonical_doc_inside_run_dir(&dir, &doc_str).is_ok());
+        // A nested file admits too.
+        let nested = run.write("sub/nested.rtf", "n");
+        assert!(canonical_doc_inside_run_dir(&dir, nested.to_str().unwrap()).is_ok());
+        // The run directory itself is not strictly inside itself.
+        assert!(canonical_doc_inside_run_dir(&dir, &dir).is_err());
+        // Missing document refuses (non-live leg, never guessed).
+        assert!(canonical_doc_inside_run_dir(&dir, &format!("{dir}/missing.rtf")).is_err());
+        // Missing run dir refuses; a regular file as the run dir refuses.
+        assert!(canonical_doc_inside_run_dir("/nonexistent-omnitiler-run-xyz", &doc_str).is_err());
+        assert!(canonical_doc_inside_run_dir(&doc_str, &doc_str).is_err());
+        // `..` traversal to a live outside file refuses after normalization
+        // (a byte prefix would have admitted this exact string).
+        let outside = TempRun::create("outside");
+        let secret = outside.write("secret.rtf", "s");
+        let outside_name = outside
+            .dir
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        run.write("sub/keep", "k");
+        let traversal = format!("{dir}/sub/../../{outside_name}/secret.rtf");
+        assert_eq!(
+            std::fs::canonicalize(&traversal).unwrap(),
+            std::fs::canonicalize(&secret).unwrap()
         );
+        assert!(canonical_doc_inside_run_dir(&dir, &traversal).is_err());
+        // Prefix sibling with a live file refuses component-wise.
+        let sibling_dir = std::path::PathBuf::from(format!("{dir}-evil"));
+        let _ = std::fs::remove_dir_all(&sibling_dir);
+        std::fs::create_dir_all(&sibling_dir).unwrap();
+        let sibling_doc = sibling_dir.join("doc.rtf");
+        std::fs::write(&sibling_doc, "e").unwrap();
+        assert!(canonical_doc_inside_run_dir(&dir, sibling_doc.to_str().unwrap()).is_err());
+        let _ = std::fs::remove_dir_all(&sibling_dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn canonical_containment_refuses_symlink_escape() {
+        let run = TempRun::create("linkrun");
+        let outside = TempRun::create("linkout");
+        let secret = outside.write("secret.rtf", "s");
+        // The link path byte-sits inside the run dir, but its target lives
+        // outside: canonical comparison refuses.
+        let escape = run.dir.join("escape.rtf");
+        std::os::unix::fs::symlink(&secret, &escape).unwrap();
+        assert!(canonical_doc_inside_run_dir(run.as_str(), escape.to_str().unwrap()).is_err());
+        // The same escape refuses through the verdict with a tokenless title.
         assert!(
             disposable_doc_verdict(
-                Some("file:///tmp/omnitiler-run-abc123/doc.rtf"),
-                Some("other"),
-                dir,
-                token
-            )
-            .is_ok()
-        );
-        assert!(disposable_doc_verdict(None, Some("notes tok-abc123 draft"), dir, token).is_ok());
-        assert!(
-            disposable_doc_verdict(
-                Some("/elsewhere/doc.rtf"),
-                Some("notes tok-abc123 draft"),
-                dir,
-                token
-            )
-            .is_ok()
-        );
-        // Neither leg admits: foreign path plus tokenless title.
-        assert!(
-            disposable_doc_verdict(Some("/elsewhere/doc.rtf"), Some("notes"), dir, token).is_err()
-        );
-        // Unreadable legs refuse, never guessed.
-        assert!(disposable_doc_verdict(None, None, dir, token).is_err());
-        assert!(disposable_doc_verdict(None, Some("notes"), dir, token).is_err());
-        // Prefix-sibling path plus tokenless title refuses.
-        assert!(
-            disposable_doc_verdict(
-                Some("/tmp/omnitiler-run-abc123-evil/doc.rtf"),
+                Some(escape.to_str().unwrap()),
                 Some("notes"),
-                dir,
-                token
+                run.as_str(),
+                "tok-abc123",
             )
             .is_err()
         );
-        // Malformed record shapes refuse closed even with agreeing legs.
+        // A link staying inside still admits.
+        let inner = run.write("inner.rtf", "i");
+        let alias = run.dir.join("alias.rtf");
+        std::os::unix::fs::symlink(&inner, &alias).unwrap();
+        assert!(canonical_doc_inside_run_dir(run.as_str(), alias.to_str().unwrap()).is_ok());
+    }
+
+    #[test]
+    fn doc_verdict_keeps_title_token_or_over_canonical_path() {
+        let run = TempRun::create("verdict");
+        let token = "tok-abc123";
+        let dir = run.as_str().to_owned();
+        let doc = run.write("doc.rtf", "body");
+        let doc_str = doc.to_str().unwrap().to_owned();
+        let file_url = format!("file://localhost{doc_str}");
+        // Live inside file admits with a tokenless title (path leg alone),
+        // plain or file-URL form.
+        assert!(disposable_doc_verdict(Some(&doc_str), Some("notes"), &dir, token).is_ok());
+        assert!(disposable_doc_verdict(Some(&file_url), None, &dir, token).is_ok());
+        // Token title admits with a foreign path (title leg alone).
+        let outside = TempRun::create("verdict-out");
+        let foreign = outside.write("other.rtf", "o");
+        let foreign_str = foreign.to_str().unwrap().to_owned();
         assert!(
             disposable_doc_verdict(
-                Some("/tmp/omnitiler-run-abc123/doc.rtf"),
-                None,
-                "relative",
+                Some(&foreign_str),
+                Some("notes tok-abc123 draft"),
+                &dir,
                 token
             )
-            .is_err()
+            .is_ok()
         );
-        assert!(disposable_doc_verdict(None, Some("notes tok-abc123"), dir, "short").is_err());
-        assert!(
-            disposable_doc_verdict(Some("/tmp/omnitiler-run-abc123/doc.rtf"), None, dir, "")
-                .is_err()
-        );
+        // Foreign path plus tokenless title refuses.
+        assert!(disposable_doc_verdict(Some(&foreign_str), Some("notes"), &dir, token).is_err());
+        // Unreadable legs refuse, never guessed.
+        assert!(disposable_doc_verdict(None, None, &dir, token).is_err());
+        assert!(disposable_doc_verdict(None, Some("notes"), &dir, token).is_err());
+        // Malformed record shapes refuse closed even with agreeing legs.
+        assert!(disposable_doc_verdict(Some(&doc_str), None, "relative", token).is_err());
+        assert!(disposable_doc_verdict(None, Some("notes tok-abc123"), &dir, "short").is_err());
+        assert!(disposable_doc_verdict(Some(&doc_str), None, &dir, "").is_err());
     }
 
     #[test]
@@ -772,32 +959,54 @@ mod tests {
 
     #[test]
     fn edge_verdict_orders_bundle_then_oracle_then_identity() {
-        let dir = "/tmp/omnitiler-run-abc123";
+        let run = TempRun::create("edge");
         let token = "tok-abc123";
-        let good_path = Some("/tmp/omnitiler-run-abc123/doc.rtf");
-        assert!(edge_verdict(Some(TEXTEDIT_BUNDLE), true, good_path, None, dir, token).is_ok());
+        let dir = run.as_str().to_owned();
+        let doc = run.write("doc.rtf", "body");
+        let doc_str = doc.to_str().unwrap().to_owned();
+        let outside = TempRun::create("edge-out");
+        let foreign = outside.write("other.rtf", "o");
+        let foreign_str = foreign.to_str().unwrap().to_owned();
+        assert!(
+            edge_verdict(
+                Some(TEXTEDIT_BUNDLE),
+                true,
+                Some(&doc_str),
+                None,
+                &dir,
+                token
+            )
+            .is_ok()
+        );
         // Bundle refuses first even when everything else agrees.
         let err = edge_verdict(
             Some("com.mitchellh.ghostty"),
             true,
-            good_path,
+            Some(&doc_str),
             None,
-            dir,
+            &dir,
             token,
         )
         .unwrap_err();
         assert!(err.contains("Ghostty"), "{err}");
         // Oracle refuses before identity is consulted.
-        let err =
-            edge_verdict(Some(TEXTEDIT_BUNDLE), false, good_path, None, dir, token).unwrap_err();
+        let err = edge_verdict(
+            Some(TEXTEDIT_BUNDLE),
+            false,
+            Some(&doc_str),
+            None,
+            &dir,
+            token,
+        )
+        .unwrap_err();
         assert!(err.contains("oracle"), "{err}");
-        // Identity refuses last.
+        // Identity refuses last (live foreign file plus tokenless title).
         let err = edge_verdict(
             Some(TEXTEDIT_BUNDLE),
             true,
-            Some("/elsewhere/doc.rtf"),
+            Some(&foreign_str),
             Some("notes"),
-            dir,
+            &dir,
             token,
         )
         .unwrap_err();
