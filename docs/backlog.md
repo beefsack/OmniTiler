@@ -263,8 +263,12 @@ decisions of 2026-09-24 are under
   dropped the float without an explicit toggle. Add the producer-shaped offline
   replay first, then fix any uncommanded loss of settled float intent.
   [Investigation](changes/kde-triage-live.md#parked-restart-intent-loss-investigation).
-- P1 | Windows: adopt full world-state core replies | shared topology prerequisite
-  delivered offline in [core/KDE](changes/archive/shared-core-owned-output-topology.md).
+- P1 | Windows: adopt full world-state core replies | UNBLOCKED 2026-10-18:
+  shared topology prerequisite delivered offline in
+  [core/KDE](changes/archive/shared-core-owned-output-topology.md) (`f9bd2df1`);
+  the topology parking below no longer applies. Pending core alignment of world
+  split-edge selection to the 2026-10-09 per-use rules (shared topology item)
+  changes only multi-candidate edges, not the empty-adjacency contract.
   Resume actual W1 migration/refill capture and re-observation with empty
   adjacency; no Windows adjacency mapping. W2/native acceptance remains pending. Replace
   adapter-triggered trailing policy and per-op application with complete
@@ -283,9 +287,9 @@ decisions of 2026-09-24 are under
   constructor prerequisite delivered in `0869f08c` and replacement W1 capture/
   sequencing in `c73e4cc7` (CI green). W2 test-only prototype preserved on
   `wip/windows-world-diff` with 50 passing fixtures; acceptance rejected for
-  the topology gap, not delivered W2. Resume after shared core+KDE delivery,
-  with no Windows adjacency code; runtime adoption remains pending and the
-  handover retains concurrent native-gate failures requiring reconciliation.
+  the topology gap, not delivered W2. Resume now with no Windows adjacency
+  code; runtime adoption remains pending and the handover retains concurrent
+  native-gate failures requiring reconciliation.
 - P1 | Shared core: own output topology | Core+KDE delivered offline;
   native two-output validation pending. FULL world topology is retained in all
   modes and strict unique-reciprocal targets are core-derived; KDE sends only
@@ -296,11 +300,31 @@ decisions of 2026-09-24 are under
   User 2026-10-18 order: topology first, then D23 rehome/13f maximize base.
   User direction 2026-10-18: retain FULL monitor rectangles from world
   reports and derive adjacency/targets in core, not adapters. Strict-parity
-  extraction remains tentative. Split-edge world/legacy alignment is parked:
-  recommend largest-edge migration, window-rule R4/output sends, strict KDE focus;
-  named expected-result tests await an explicit decision.
+  extraction remains tentative (user accepted the tentative choices 2026-10-18).
+  Split-edge alignment is already decided (User 2026-10-09,
+  [selection record](changes/archive/position-based-output-selection.md),
+  Tier 1 basis R-MOV-12/R-WS-27 in
+  [consensus](research/reference-wm-consensus.md)): exhausted moves and
+  explicit sends use window-centre projection, then window-span overlap, then
+  left/top; whole-workspace migration uses largest shared edge, then left/top;
+  focus keeps unique-reciprocal horizontal. The world route's strict map
+  refuses split edges where Tier 1 tilers select. NEXT: align world
+  move/send/migration in core to those rules with the R-MOV-12 discriminator
+  rows as expected results; KDE needs no adapter selection.
   [Delivery and live procedure](changes/archive/shared-core-owned-output-topology.md), alongside the
   [D23/13f proposal](changes/shared-core-d23-rehome-and-13f-maximize-base.md).
+- P1 | macOS: report FULL display bounds for core-owned topology | UNBLOCKED
+  2026-10-18: core now derives output adjacency from FULL topology rects in
+  complete world reports
+  ([core/KDE delivery](changes/archive/shared-core-owned-output-topology.md),
+  `f9bd2df1`); adapter adjacency is ignored. The macOS world builder still sends
+  `domain.visible` as topology geometry: report the already-retained FULL
+  `NativeDomain.bounds` instead, keep visible/menu-Dock work areas as domain
+  bounds, send empty adjacency, and preserve display identity/UUID homing,
+  negative/above-primary origins and native Space capability refusals. Offline
+  fixtures: FULL vs visible topology, conversion rounding at shared edges,
+  missing primary. Live: verify display arrangement (not inferred from Space
+  order) on a two-display setup when available.
 - P1 | macOS: adopt full world-state core replies | delivered offline;
   scoped live smoke partially verified. Replaced per-domain reply
   concatenation/cursors with world revision and input watermark, preserving
