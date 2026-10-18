@@ -35,9 +35,9 @@
 - Window/migration rankers and reciprocal pair validation are implemented;
   Rust workspace tests and strict clippy passed after selector changes.
 - Production world-entry fixtures exposed a pre-existing R4 integration gap:
-  successful cross-output moves do not retain a transfer for native actuation.
-  Acceptance requires closing that gap and proving pinned arrival, not merely
-  asserting selected geometry in a reply.
+  successful cross-output moves previously retained no transfer for native
+  actuation. The gap is closed with pinned arrival regressions, not merely
+  assertions about selected geometry in a reply.
 - A migration fixture also exposed target self-refill after native arrival;
   a narrow source-versus-target guard prevents that extra view switch.
 - Migration confirmation appears not to settle against KDE's global native
@@ -62,7 +62,7 @@
   directional operation path was unified instead of duplicating pair handling.
 - Rust workspace: 3,182 passed, zero failures. Strict workspace/all-target
   clippy, formatting, settings-exporter descriptor freshness, protocol examples
-  and portable-core gate passed. KDE: 1,864 passed, zero failures; typecheck and
+  and portable-core gate passed. KDE: 1,870 passed, zero failures; typecheck and
   script packaging passed. World codec/producer byte fixtures pass on both sides.
 - Dedicated coverage: 22 world directional-intent regressions and eight KDE
   real-Engine production-entry legs, including native actuation, deferred
@@ -71,6 +71,9 @@
   the test bundle trace-free; the exact string define restored the intended
   test build and all KDE tests passed. No product change was used to fix it.
 - No live tests were performed. Native Windows/macOS acceptance is not claimed.
+- Rebased cleanly over the concurrent KDE native output-echo correction and
+  Windows world-reply fixes. Repeated all acceptance gates on the integrated
+  tree with the results above; both changes are preserved.
 
 ## Parked limitation and native acceptance
 
