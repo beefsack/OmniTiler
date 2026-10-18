@@ -3992,6 +3992,10 @@ decisions of 2026-09-24 are under
         proof/revision plumbing is removed. 979 macOS tests, strict clippy/format
         and signed app build/verify pass; native backend/teardown/topology
         coherence remain pending. Unsafe stays 114.
+        Native review rejected cached topology/static-scope substitution for
+        fresh managed facts; no prototype retained. Managed-state publication
+        from engine truth and nonblocking exceptional reaping ownership remain
+        unselected integration contracts.
         [Checkpoint](changes/macos-managed-workspaces.md#managed-posting-simplification-checkpoint-2026-10-18).
        **2026-10-18 delivery checkpoint:** starting the helper on the existing
       second Space resolves crowded placement without moving the protected

@@ -23,9 +23,25 @@ items 1-4 remain incomplete.**
   unconditional release. Strict all-target clippy, workspace format/diff checks,
   named signed app build and separate verification pass. Unsafe remains **114
   blocks**, all in unchanged `ffi.rs`; no dependencies were added.
+- Native integration review rejected a prototype that treated cached topology
+  plus scoped native membership as fresh managed-window authority. No native
+  prototype or optional row-revision bypass is retained. Passing fake adapter
+  tests did not establish its production evidence readers.
+- Current managed window classification, generation and homing live in
+  engine-owned `RetainedCore`; no existing plain-data accessor exports the
+  window-level facts to the effect owner. `NativeContextCell` supplies topology,
+  not that authority. Select a narrow publication/access contract rather than
+  substituting admission pins, static scope or native membership alone. Native
+  arrival readback must query the OS, not repeatedly read a cached context.
+- Exceptional teardown ownership remains a separate integration decision:
+  designate who retains and reaps the effect owner off engine/AppKit threads,
+  including the terminal policy if it does not finish. A blocking shutdown loop
+  or signal-only live-owner detach does not resolve that contract. The existing
+  panicking scaffold Drop is unchanged and remains unacceptable for product use.
 
-Next: supply fresh runtime facts with coherent topology/ordinal evidence and
-settle nonpanic nonblocking exceptional teardown ownership, then implement the
+Next: select the managed-state publication and nonblocking teardown ownership
+contracts, supply fresh runtime facts with coherent topology/ordinal evidence,
+then implement the
 native backend/tile and Authentic holder enable/Revert wiring. Do not arm sends
 until those contracts are independently reviewed. Send-stay, trailing lifecycle
 and per-display attribution follow; native acceptance items 1-4 remain pending.
