@@ -113,3 +113,12 @@
   maximize evidence stands; this sweep adds no physical-toggle acceptance.
 - Scoped probe teardown left settings/SPI unchanged, ledger clean and no tiler
   residue. No input-filter bypass or shortcut policy change was introduced.
+
+## Scoped follow-up review (2026-10-18)
+
+- Win+M input leg not run: the normal owner rejects injected input, leaving the
+  shell minimize-all chord capable of disturbing unrelated windows. No injected
+  Win+M, input-filter bypass or duplicate native-maximize journey was attempted.
+- Existing native maximize/send/restore evidence is retained. Physical Win+M
+  interception, pairing and ordinary-app dogfood acceptance remain user-owned;
+  helper or system-command results cannot establish those input assertions.

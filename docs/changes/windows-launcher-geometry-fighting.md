@@ -227,3 +227,13 @@ four-launcher physical acceptance pending. Reported and corrected 2026-10-16.
   launcher convergence, physical resize or genuine changed-hint acceptance.
 - Settings/SPI unchanged, scoped owner stopped and disposable fixture closed.
   Keep the four-launcher/control plan pending and this record active.
+
+## Scoped follow-up review (2026-10-18)
+
+- Full launcher/control journey not run. The live guide reserves ordinary-app
+  acceptance for user-run dogfooding; the standard owned helper cannot stand in
+  for Steam, Battle.net, Epic Games Launcher, Xbox or genuine Paint hint changes.
+  No new launcher availability, convergence or physical-resize result is claimed.
+- The earlier timeout-reuse supplement does not complete this acceptance. Next:
+  user runs steps 1-6 above with the full disposable launcher/control fixture;
+  retain correlated native observations and restoration readbacks.

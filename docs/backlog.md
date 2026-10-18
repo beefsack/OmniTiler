@@ -432,6 +432,9 @@ decisions of 2026-09-24 are under
   Agent-live 2026-10-17: exact launcher journey skipped (complete approved app
   set unavailable); ordinary Paint timeout reused declared hints with unchanged
   targets, supplementary only. Full launcher acceptance remains pending.
+  Review 2026-10-18: full ordinary-app journey remains user-run under the live
+  guide; disposable helpers cannot substitute for launcher convergence or genuine
+  Paint hint changes. No new launcher or physical-resize acceptance.
 - P3 | Windows visibility diagnostics | Delivered offline: bounded normal-level
   per-window hide/reveal outcomes and reasons, native visibility/cloak samples,
   exception lanes/refusal causes and monotonic timing. Omitted/coalesced history
@@ -1088,6 +1091,10 @@ decisions of 2026-09-24 are under
   with 62-74 ms reveal phases (prior three-window samples: 493/737/1293 ms
   actions, 406/656/761 ms reveals; application mix differs).
   [Batch visibility acceptance](changes/archive/windows-workspace-reveal-latency.md).
+  Review 2026-10-18: tentative per-phase 2,000 ms expiry remains offline-only;
+  the owned helper has no delayed-visibility control. Native uncertain/partial
+  recovery needs a bounded fixture design and independent recovery proof, not
+  another healthy timing sample; no new fault injector selected.
   Follow-up 2026-10-12 edge-resize lag: pixel/checksum-identical border raster
   optimization passes native offline gates; user dev/trace-on reports much
   better but still laggy. LL hooks share the rendering/owner thread; unchanged
@@ -2447,6 +2454,9 @@ decisions of 2026-09-24 are under
     Second agent-live sweep 2026-10-17: physical chords remain blocked by the
     deliberate injected-input fence; harmless scoped probe changed no frames
     or dispatches. No shortcut acceptance inferred; Win+M was not sent.
+    Review 2026-10-18: injected Win+M remains unsafe because the normal owner
+    ignores it and the shell could minimize unrelated windows; no chord sent.
+    Physical pairing/interception remains pending, separately from CLI geometry.
 
     #### Item 6 behavior and reference seams
 

@@ -132,3 +132,23 @@ The supplied dogfooding trace contains six successful workspace actions: one sen
 - Reconcile-only minimum-hint queries report timeouts at ticks 3, 39, and 48 and failed queries at ticks 110 and 114 during vanished-window reconciliation. No action-correlated minimum-hint query reports timeout/failure; no user window-close cause is inferred.
 - Routine render queue maximum is 7.592 ms; retained input summaries include an approximately 1.06 s heartbeat gap and approximately 48 ms snap queue age. These summary values are not workspace-action durations; command queue waits remain 1-2 ms.
 - Acceptance closes the reported slow sequential-reveal regression. It does not claim exhaustive live testing of hung hosts, induced recovery failures, or every application mix.
+
+## Deadline follow-up review (2026-10-18)
+
+- Native 2,000 ms expiry/partial-recovery leg not run. The current standard
+  owned helper exposes no delayed-visibility or stalled-message-loop control;
+  no new fault injector or process-suspension experiment was introduced.
+- Source still uses one non-resetting 2,000 ms budget per hide/reveal batch,
+  starting before posts, with a final observed-state snapshot. The full locked
+  four-package test run passes (2,852 passed, 0 failed, 1 ignored), including
+  missing-confirmation/shared-deadline and partial-recovery regressions. These
+  are offline evidence, not an observed native timeout or a hard wall-time bound
+  on the whole workspace action.
+  Source `1ae85779`, documentation-only working changes; retained external
+  evidence `live-sweep-gates-20261018` contains build/test/clippy logs and
+  `gates.json` (formatting and whitespace checks also passed).
+- Keep the existing tentative deadline unchanged. Healthy switch durations and
+  the accepted physical latency improvement do not close induced-expiry,
+  uncertain-claim or rollback acceptance. A bounded delayed-response fixture
+  design and independently proven owned-window recovery are prerequisites to a
+  future expiry leg; no new fault-injection mechanism is delivered or selected.
