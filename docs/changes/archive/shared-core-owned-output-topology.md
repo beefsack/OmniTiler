@@ -127,7 +127,7 @@
   negative/above-primary origins, scale-independent coordinates, rounding at
   shared edges and arrangement independently of Space order/focused display.
   Preserve UUID identity, threading and unsupported Space/transfer refusals.
-  [World adoption evidence](../macos-full-state-replies.md) is not reopened.
+  [World adoption evidence](macos-full-state-replies.md) is not reopened.
 - Wire cleanup: remove the deprecated adjacency key only with coordinated codec
   and fixture updates; legacy per-domain pairs remain until adapter cutover.
 

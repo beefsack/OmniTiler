@@ -2,17 +2,21 @@
 
 ## Current prerequisite checkpoint (2026-10-18)
 
-Managed workspace implementation has not advanced beyond the select-only fallback.
-The [world-state diagnostic checkpoint](macos-full-state-replies.md#runtime-select-diagnostic-checkpoint-2026-10-18)
-now proves outward tap→engine→drain `Ctrl+2`, current indicator state and retained
-layouts after a standalone return. Runtime `Ctrl+1` return remains unverified.
-Ring appearance and indicator legibility are pending screenshot-based checks in
-a capture-capable environment, with exact steps in that record. Temporary Space
-277 and three disposable TextEdit documents
-remain for manual cleanup after conservative removal/close refusals. No test-owned
-processes, taps, helpers, overlays or display-sleep children remain.
+Managed workspace implementation has not advanced beyond the select-only fallback,
+but its [world-state prerequisite is complete](archive/macos-full-state-replies.md#final-outcome-2026-10-18):
+runtime tap→engine→drain `Ctrl+2` and `Ctrl+1`, inspected ring/indicator screenshots
+and clean overlay teardown pass. A live-discovered empty hidden AX snapshot bug
+was corrected and reverified: each TextEdit identity now retains its exact slot
+through native round trips, not merely the same set of frames. Scoped screenshots
+work; the [reusable process](../live-macos-testing.md#scoped-screenshots) requires
+fresh target identity/liveness/frame before every crop, inspection then deletion.
 
-Next after that cleanup and the remaining native runtime check: relative chord
+Reused Space 277 remains because foreign chrome prevents proven-empty removal;
+three disposable TextEdit documents remain available for testing. No test-owned
+processes, taps, helpers, overlays or display-sleep children remain. Inspect the
+Space's contents before manual cleanup; do not relax unknown-occupancy guards.
+
+Next: relative chord
 Control+Fn/tag delivery, numbered sends and Authentic Desktop-N enable, follow/stay,
 trailing lifecycle, then per-display attribution and multi-display coverage. The
 successful untagged runtime input is not evidence for tagged native holder delivery.

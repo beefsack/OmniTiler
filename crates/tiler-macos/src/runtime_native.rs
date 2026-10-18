@@ -10,9 +10,11 @@
 //! are retired with the legacy path. No threads are spawned here: the
 //! engine owner calls in; owners never block on AX.
 
+use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
 use tiler_core::directional::WindowId;
+use tiler_core::session::DomainKey;
 
 use crate::focus_route::global_focus_agrees;
 use crate::runtime::{
@@ -166,7 +168,7 @@ pub(crate) fn handle_scoped_observation(
     // only exactly-homed retained-domain windows reach the engine
     // (current members actuate, hidden members reconcile silently).
     // Omission is counted evidence, never destruction.
-    let (members, omitted) = partition_scoped_members(&snapshot.windows, &snapshot.meta, &ctx);
+    let (mut members, omitted) = partition_scoped_members(&snapshot.windows, &snapshot.meta, &ctx);
     if omitted > 0 {
         emit(
             shared,
@@ -219,6 +221,58 @@ pub(crate) fn handle_scoped_observation(
                 );
             }
         }
+    }
+    // Blind-hidden preservation: live AX reads return no windows for apps
+    // whose windows all sit on hidden Spaces (successful empty snapshots),
+    // so such a snapshot says nothing about still-known hidden domains and
+    // must not read as mass removal (the core would converge by retiring
+    // the retained tree, scrambling per-window slots on return). Preserve
+    // this PID's retained rows homed to still-known non-current domains.
+    // Observed windows always re-home below, so a natively moved window
+    // still follows its observed membership; retired Spaces still drop via
+    // the live-context fence; current domains stay authoritative-loss, so a
+    // genuinely emptied current Space still converges to empty. A
+    // relaunched lifetime preserves nothing. A close-while-hidden is
+    // observationally identical to this blindness, so hidden-close stays
+    // deliberately non-authoritative: it converges on the next observation
+    // covering the domain (when the Space becomes current again), never by
+    // immediate pruning of an uncovered domain.
+    let mut preserved: Vec<(DomainKey, ObservedWindow)> = Vec::new();
+    {
+        let same_lifetime = retained
+            .apps
+            .get(&pid)
+            .is_some_and(|app| app.generation == generation);
+        if same_lifetime && let Some(app) = retained.apps.get(&pid) {
+            let observed_ids: BTreeSet<String> = snapshot
+                .windows
+                .iter()
+                .map(|w| window_id(pid, w.wid))
+                .collect();
+            for w in &app.windows {
+                let id = window_id(pid, w.wid);
+                if observed_ids.contains(&id) {
+                    continue;
+                }
+                let Some(key) = retained.window_domains.get(&id) else {
+                    continue;
+                };
+                if ctx.is_current(key) {
+                    continue;
+                }
+                let known = ctx
+                    .domains
+                    .iter()
+                    .any(|d| d.output == key.output && d.workspace == key.workspace);
+                if !known {
+                    continue;
+                }
+                preserved.push((key.clone(), *w));
+            }
+        }
+    }
+    for (key, w) in preserved {
+        members.entry(key).or_default().push(w);
     }
     let entry = retained.apps.entry(pid).or_insert(RetainedApp {
         generation,

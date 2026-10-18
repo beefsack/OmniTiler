@@ -1,5 +1,116 @@
 # macOS full world-state replies
 
+## Final outcome (2026-10-18)
+
+**Complete for the world-state migration.** Runtime select round-trip, identity-
+specific retained layouts, active-ring appearance, indicator legibility/current
+state and clean teardown now have scoped native/screenshot evidence. Managed
+native transfer, trailing lifecycle and multi-display attribution remain separate
+work; physical shortcut delivery and visual-jank acceptance are not inferred.
+
+### Hidden-Space convergence correction
+
+Live round-trip testing exposed a real migration defect: AX can successfully
+report zero windows for an app whose windows all occupy hidden Spaces. Treating
+that snapshot as authoritative absence destroyed retained homing and the core
+tree; reverse AX enumeration then reassigned window identities to different slots
+on return. The native frame *set* matched while individual windows moved.
+
+`runtime_native.rs` now preserves missing rows only for the same application
+lifetime, exactly homed to still-known non-current domains. Freshly observed
+windows always re-home; current-domain losses and retired-Space losses remain
+authoritative. Hidden-close and AX blindness are observationally indistinguishable
+at this boundary, so hidden closes converge on the next covering observation.
+Shared policy, native focus authority, capabilities and display bounds are
+unchanged. No new product decision is needed to preserve the existing contract.
+
+Two producer-shaped regressions prove exact per-ID geometry, hidden occupancy and
+zero hidden frame emissions, plus current-loss and retired-domain fences. Causal
+flush/counter/queue oracles replace arbitrary settle sleeps; the return assertion
+requires the exact nonempty window key set and rejects every wrong intermediate
+frame. Negative controls fail both the blind-occupancy and final-identity checks;
+current/known-gate mutations fail their corresponding boundary checks.
+
+Final gates: **903 macOS tests**, strict all-target crate clippy, formatting,
+signed app build and separate verification pass. Independent correction and live-
+evidence reviews accept the result. Unsafe remains **114 blocks**, all in unchanged
+`ffi.rs`. `scoped_tile.rs` is 3,341 lines, above its approximate 3,000-line guideline;
+future test organization should avoid further growth here. Minimized metadata can
+still be temporarily absent during an uncovered hidden interval; retained homing
+now lets a covering minimized observation restore it before planning. Symmetric
+hidden minimized-metadata preservation remains a nonblocking follow-up.
+
+### Final native and screenshot evidence
+
+Tested source: `b38455d5` plus the two-file retained-layout correction. Signed
+probe/helper identifiers and designated requirement remain those recorded below.
+Post-run executable hashes were recovered from the unchanged signed artifacts
+whose modification time matched the pre-launch build:
+
+- Probe: `043356f14621a683fb1ea590764b80484bda42484d3e9236cff3c9736b4d2751`.
+- Helper: `71564a776023e1e26b6e70149fdf193e5ddf159660f20759fc256170413447d3`.
+
+The accepted finite run reported tap matched/suppressed/deliveries **4/4/4**, select
+enqueued/refused **2/0**, both `workspace-select-2` and `workspace-select-1`
+`changed=true complete=true`, indicator updates 6 and `shutdown_clean:true` with
+zero retained threads. Both posted pairs used freshly agreeing owned-helper
+focus oracles. Runtime input was untagged; the native own-switch tag deliberately
+bypasses the engine and is tested separately by managed-workspace work.
+
+Native arrival/readback showed Space 1 → 277 → 1, including the successful empty
+AX snapshot that triggered the original bug. TextEdit PID 32942 windows 3684,
+3685 and 3686 retained these exact AX/CG frames and membership `[1]` before/after:
+`3684=(1124,38,1108,557)`, `3685=(1124,603,550,558)`,
+`3686=(1682,603,550,558)`. Source helper expiry changed foreground inheritance
+on return; no automatic foreign focus or new focus-restoration policy was added.
+
+Tightly cropped screenshots showed real owned-window UI, exactly one accent ring
+on each of two distinct owned focused targets, no stale ring, legible current
+indicator rows 1 → 2 → 1, and ring absence after shutdown. The return indicator
+appearance also passed in a separate bounded post-return run. Native final CG
+readback contained no tiler/helper overlay windows. Images were inspected and
+deleted; title-free JSON/logs were retained outside the repository. The reusable
+capture process is in the [live-testing guide](../../live-macos-testing.md#scoped-screenshots).
+
+**Capture-scope deviation:** after a helper expired, one stale-rectangle crop
+included terminal content. It was viewed once and immediately deleted, with no
+content retained or committed. Capture scope must be freshly revalidated before
+every image, not inferred from a former target's rectangle. No protected keys,
+mouse events, frame writes or Space transfers occurred.
+
+Every leg observed unlocked/inactive-Secure-Input state. All test-owned tilers,
+helpers, taps, overlays and bounded display-sleep children exited; exact-PID final
+checks confirmed absence. No settings changed or new Spaces were created. Space
+277 remains because foreign chrome prevents proven-empty removal; the three
+reused disposable TextEdit documents remain available for subsequent tests.
+Inspect contents before manual cleanup; no new foreign-chrome exemption was made.
+Two holder-wrapper timeouts were not counted as success: app JSON, bounded helper
+completion and final process absence were the oracles.
+
+### Final protected-window records
+
+Fresh identities were acquired for this run. The full WID-sorted CG arrays below
+compare exactly equal; separate membership readbacks put main window 3675 on
+`[1]` before/after. Topology remained `[1,277]`, current 1 at both boundaries.
+
+```json
+{"before":[
+ {"pid":31863,"wid":3671,"layer":0,"onscreen":false,"bounds":{"x":0.0,"y":0.0,"w":2240.0,"h":30.0}},
+ {"pid":31863,"wid":3672,"layer":0,"onscreen":false,"bounds":{"x":0.0,"y":0.0,"w":2240.0,"h":30.0}},
+ {"pid":31863,"wid":3673,"layer":0,"onscreen":false,"bounds":{"x":0.0,"y":0.0,"w":2240.0,"h":30.0}},
+ {"pid":31863,"wid":3674,"layer":0,"onscreen":false,"bounds":{"x":0.0,"y":0.0,"w":2240.0,"h":30.0}},
+ {"pid":31863,"wid":3675,"layer":0,"onscreen":true,"bounds":{"x":0.0,"y":30.0,"w":1150.0,"h":1139.0}},
+ {"pid":31863,"wid":3676,"layer":0,"onscreen":false,"bounds":{"x":0.0,"y":760.0,"w":500.0,"h":500.0}}
+],"after":[
+ {"pid":31863,"wid":3671,"layer":0,"onscreen":false,"bounds":{"x":0.0,"y":0.0,"w":2240.0,"h":30.0}},
+ {"pid":31863,"wid":3672,"layer":0,"onscreen":false,"bounds":{"x":0.0,"y":0.0,"w":2240.0,"h":30.0}},
+ {"pid":31863,"wid":3673,"layer":0,"onscreen":false,"bounds":{"x":0.0,"y":0.0,"w":2240.0,"h":30.0}},
+ {"pid":31863,"wid":3674,"layer":0,"onscreen":false,"bounds":{"x":0.0,"y":0.0,"w":2240.0,"h":30.0}},
+ {"pid":31863,"wid":3675,"layer":0,"onscreen":true,"bounds":{"x":0.0,"y":30.0,"w":1150.0,"h":1139.0}},
+ {"pid":31863,"wid":3676,"layer":0,"onscreen":false,"bounds":{"x":0.0,"y":760.0,"w":500.0,"h":500.0}}
+]}
+```
+
 ## Goal and scope
 
 Replace the macOS runtime's per-domain reply concatenation and cursors with the
@@ -328,10 +439,10 @@ the main protected surface stayed onscreen. No stronger membership claim is made
 ]}
 ```
 
-### Exact remaining procedure
+### Repeat-check procedure (historical pending checks completed above)
 
-Keep this note active and the backlog item pending until runtime select and
-visual checks pass under [the live-testing guide](../live-macos-testing.md).
+Runtime select and visual checks passed under the
+[live-testing guide](../../live-macos-testing.md); retain this procedure for repeats.
 No broader focus-None policy is selected; its discriminator remains TBD.
 
 1. Establish a stable desktop, unlocked session and inactive Secure Input before
@@ -348,7 +459,7 @@ No broader focus-None policy is selected; its discriminator remains TBD.
    Physically press Ctrl+2 and Ctrl+1, waiting for observed arrival and return.
    Verify current indicator row, retained layouts and runtime select results,
    not merely standalone native selection. No window transfers are included.
-4. **Screenshot-based appearance checks, pending:** first establish a working
+4. **Screenshot-based appearance checks:** first establish a working
    `screencapture` process in a capture-capable environment. While the bounded
    tiler runs, focus each disposable document in turn through the guarded owned
    route; pair true-focus/overlay native readbacks with screenshots and inspect
@@ -356,8 +467,8 @@ No broader focus-None policy is selected; its discriminator remains TBD.
    with no lingering ring on its predecessor. Read every indicator number; after
    Ctrl+2 it must highlight 2 and after Ctrl+1 highlight 1. Report crowding or
    illegibility. At the finite end capture and inspect ring absence; separately
-   inspect `shutdown_clean:true` and native overlay absence. Retain screenshots
-   outside the repository alongside their state readbacks. Physical shortcut and
+   inspect `shutdown_clean:true` and native overlay absence. Inspect screenshots
+   outside the repository and delete them afterwards; retain state readbacks. Physical shortcut and
    visual-jank acceptance remains separate from synthetic/screenshot evidence.
 5. Retain raw after records with the same commands; compare every protected
    record, restore only owned preimages and close only disposable documents.

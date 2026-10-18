@@ -30,6 +30,7 @@ use tiler_macos::topology;
 
 const APP_A: u32 = 1001;
 const APP_B: u32 = 1002;
+const APP_C: u32 = 1003;
 const FLUSH: Duration = Duration::from_secs(5);
 const WAIT: Duration = Duration::from_secs(5);
 
@@ -2677,6 +2678,470 @@ fn arrival_on_empty_space_retains_hidden_layout_without_writes() {
     assert_eq!(
         resumed.3, first.3,
         "hidden session survives the empty arrival"
+    );
+    shutdown_clean(&fixture);
+}
+
+#[test]
+fn hidden_space_roundtrip_preserves_per_window_slots_across_blind_interval() {
+    // Producer-shaped native full-world Space roundtrip (live 2026-10-18
+    // leg r4): three app-A windows plus one helper tile on Space 11 with
+    // the helper focused; outward arrival on the empty Space 12 blinds
+    // live AX for the hidden apps (successful but EMPTY snapshots — live
+    // published/applied count=0 with zero observation failures); a new
+    // helper admitted on 12 while it is current; return to 11 with AX
+    // re-listing the Space-11 windows in reverse enumeration order. The
+    // retained per-Space layout must resume per window identity — the
+    // live 3684<->3686 slot rotation with 3685 fixed is the fresh-reseed
+    // fingerprint and must not recur.
+    //
+    // Oracles are causal, never settle-sleeps: the settled oracle is the
+    // core's exact desired plan (`last_desired_geometry`, written
+    // synchronously on the engine thread, so one flush fences it); the
+    // hidden legs are pinned by the retained-occupancy control query
+    // (strict FIFO with observations) plus the cumulative `frames_emitted`
+    // counter (zero hidden dispatches); the return leg collects every
+    // applied record under the file's usual WAIT deadline and forbids any
+    // intermediate reassignment.
+    let fixture = start(scoped_config());
+    let revision = fixture
+        .handle
+        .update_topology_with(two_space_snapshot(), &user_space);
+    let gen_a = fixture.handle.launch_app(APP_A).expect("launch A");
+    let gen_b = fixture.handle.launch_app(APP_B).expect("launch B");
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_A,
+            gen_a,
+            10,
+            vec![(win(1), vec![11]), (win(2), vec![11]), (win(3), vec![11])],
+            None,
+            revision
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_B,
+            gen_b,
+            10,
+            vec![(win(1), vec![11])],
+            Some(1),
+            revision
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert!(fixture.handle.flush(FLUSH));
+    // Settled oracle: the core's exact desired plan, fenced by the flush
+    // above (the plan is written synchronously on the engine thread, so no
+    // quiescence wait is needed to read it).
+    let mut settled: BTreeMap<String, (i32, i32, i32, i32)> = BTreeMap::new();
+    for row in fixture.handle.last_desired_geometry() {
+        settled.insert(row.window.clone(), (row.x, row.y, row.w, row.h));
+    }
+    assert_eq!(
+        settled.keys().cloned().collect::<Vec<_>>(),
+        vec!["1001_1", "1001_2", "1001_3", "1002_1"],
+        "settled plan must tile exactly the four admitted windows"
+    );
+    let at = |window: &str, wid: u32| {
+        let rect = settled[window];
+        (win_at(wid, rect.0, rect.1, rect.2, rect.3), vec![11])
+    };
+    // Converged readback: live AX re-reads the tiled frames, so the
+    // return-leg snapshots below carry settled geometry exactly like a
+    // live readback (observed rectangles never steer the core plan, but
+    // the shape matches production, where AX reports real frames).
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_A,
+            gen_a,
+            11,
+            vec![at("1001_1", 1), at("1001_2", 2), at("1001_3", 3)],
+            None,
+            revision
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_B,
+            gen_b,
+            11,
+            vec![at("1002_1", 1)],
+            Some(1),
+            revision
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert!(fixture.handle.flush(FLUSH));
+    // No drain needed here: pre-return leftovers all carry settled rects,
+    // and the return collector below attributes records by per-app command
+    // id, so stragglers can neither false-fail nor satisfy convergence.
+    // Outward arrival on the empty 12: blind (empty-member) snapshots for
+    // the hidden apps, twice, mirroring the live repeated empties.
+    let mut arrived = two_space_snapshot();
+    arrived.rows[0].current = Some(12);
+    arrived.revision =
+        topology::fingerprint_snapshot(&arrived.displays, &arrived.rows, arrived.separate_spaces);
+    let revision = fixture.handle.update_topology_with(arrived, &user_space);
+    let emitted_before = fixture.handle.diagnostics().frames_emitted;
+    for seq in [12, 13] {
+        assert_eq!(
+            fixture.handle.submit_scoped_observation(scoped_obs(
+                APP_A,
+                gen_a,
+                seq,
+                vec![],
+                None,
+                revision
+            )),
+            SubmitOutcome::Accepted
+        );
+        assert_eq!(
+            fixture.handle.submit_scoped_observation(scoped_obs(
+                APP_B,
+                gen_b,
+                seq,
+                vec![],
+                None,
+                revision
+            )),
+            SubmitOutcome::Accepted
+        );
+        assert!(fixture.handle.flush(FLUSH));
+    }
+    // Hidden legs dispatch nothing: non-current rows are filtered before
+    // emission, so the cumulative counter must not advance.
+    assert_eq!(
+        fixture.handle.diagnostics().frames_emitted,
+        emitted_before,
+        "hidden snapshots must dispatch no frames"
+    );
+    // Retained membership must survive the blind interval: the occupancy
+    // control query is strict FIFO with observations, so it reflects every
+    // blind submit above.
+    let occupied = fixture
+        .handle
+        .query_workspace_occupancy(WAIT)
+        .expect("occupancy query must answer");
+    let hidden = occupied
+        .domains
+        .iter()
+        .find(|d| !d.current && d.members.contains(&(1001, 1)))
+        .expect("Space-11 homing must survive the blind interval")
+        .members
+        .clone();
+    assert_eq!(
+        hidden,
+        vec![(1001, 1), (1001, 2), (1001, 3), (1002, 1)],
+        "blind snapshots must preserve every hidden member"
+    );
+    // Independent domain: a new helper admitted on the current 12 tiles
+    // there without touching the hidden Space-11 layout.
+    let gen_c = fixture.handle.launch_app(APP_C).expect("launch C");
+    let emitted_before = fixture.handle.diagnostics().frames_emitted;
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_C,
+            gen_c,
+            10,
+            vec![(win(1), vec![12])],
+            None,
+            revision
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert!(fixture.handle.flush(FLUSH));
+    let c_first = wait_applied(&fixture, "1003_1");
+    assert!(
+        within(c_first.3, work_areas()[0]),
+        "new helper must tile on the current Space, got {:?}",
+        c_first.3
+    );
+    // Exactly one frame dispatched this leg — the helper's own — so no
+    // hidden Space-11 row actuated.
+    assert_eq!(
+        fixture.handle.diagnostics().frames_emitted,
+        emitted_before + 1,
+        "admission on 12 must dispatch only the new helper frame"
+    );
+    // Retained occupancy still homes every hidden Space-11 member.
+    let occupied = fixture
+        .handle
+        .query_workspace_occupancy(WAIT)
+        .expect("occupancy query must answer");
+    let hidden = occupied
+        .domains
+        .iter()
+        .find(|d| !d.current && d.members.contains(&(1001, 1)))
+        .expect("Space-11 homing must survive the 12 admission")
+        .members
+        .clone();
+    assert_eq!(
+        hidden,
+        vec![(1001, 1), (1001, 2), (1001, 3), (1002, 1)],
+        "admission on 12 must preserve every hidden member"
+    );
+    // Return trip to 11: AX re-lists the Space-11 windows in reverse
+    // enumeration order (the live re-listing order hypothesis behind the
+    // outer-swap fingerprint); the helper on 12 goes blind in turn.
+    // True focus is unchanged throughout: no focus commands are sent.
+    //
+    // Record attribution: per-app command ids rise monotonically at
+    // dispatch, so the best-effort drain below snapshots the pre-return
+    // high-water mark per app; only records above their app's mark count
+    // as return-leg evidence. Older settled-rect stragglers can neither
+    // false-fail nor satisfy convergence. (Completeness of this drain is
+    // not load-bearing: any straggler it misses still carries a settled
+    // rect, and convergence requires post-mark evidence per window.)
+    let mut watermarks: BTreeMap<u32, u64> = BTreeMap::new();
+    while let Ok(record) = fixture.applied_rx.try_recv() {
+        watermarks
+            .entry(record.0)
+            .and_modify(|mark| *mark = (*mark).max(record.1))
+            .or_insert(record.1);
+    }
+    let mut back = two_space_snapshot();
+    back.rows[0].current = Some(11);
+    back.revision =
+        topology::fingerprint_snapshot(&back.displays, &back.rows, back.separate_spaces);
+    let revision = fixture.handle.update_topology_with(back, &user_space);
+    let emitted_before = fixture.handle.diagnostics().frames_emitted;
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_A,
+            gen_a,
+            14,
+            vec![at("1001_3", 3), at("1001_2", 2), at("1001_1", 1)],
+            None,
+            revision
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert!(fixture.handle.flush(FLUSH));
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_B,
+            gen_b,
+            14,
+            vec![at("1002_1", 1)],
+            Some(1),
+            revision
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert!(fixture.handle.flush(FLUSH));
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_C,
+            gen_c,
+            11,
+            vec![],
+            None,
+            revision
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert!(fixture.handle.flush(FLUSH));
+    // The return leg must dispatch (guards vacuity-by-straggler: without
+    // fresh dispatches the collector below could converge on pre-return
+    // records alone).
+    let emitted_after = fixture.handle.diagnostics().frames_emitted;
+    assert!(
+        emitted_after > emitted_before,
+        "return observations must dispatch the resumed layout"
+    );
+    // Collect every applied record until each settled window has
+    // post-watermark evidence (WAIT-deadline recv loop, the same idiom as
+    // `wait_applied_to` — except nothing is skipped: convergence counts
+    // any post-mark record per window, and every record is retained, so a
+    // permuted frame fails the identity check below instead of being
+    // silently passed over while waiting for the right rect).
+    let deadline = std::time::Instant::now() + WAIT;
+    let mut returned: Vec<AppliedRecord> = Vec::new();
+    let mut converged: BTreeSet<String> = BTreeSet::new();
+    while converged.len() < settled.len() {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "return trip never actuated the settled windows (converged {converged:?}, collected {returned:?}, settled {settled:?})"
+        );
+        match fixture.applied_rx.recv_timeout(remaining) {
+            Ok(record) => {
+                let fresh = record.1 > watermarks.get(&record.0).copied().unwrap_or(0);
+                if fresh {
+                    converged.insert(record.2.clone());
+                }
+                returned.push(record);
+            }
+            Err(_) => panic!(
+                "return trip never actuated the settled windows (converged {converged:?}, collected {returned:?}, settled {settled:?})"
+            ),
+        }
+    }
+    // Best-effort tail drain: records already delivered behind the
+    // convergence point are evidence too.
+    while let Ok(record) = fixture.applied_rx.try_recv() {
+        returned.push(record);
+    }
+    // Non-vacuity: exactly the four settled windows wrote — no more, no
+    // fewer (convergence above already implies coverage; this forbids
+    // strays such as a helper rewrite).
+    let wrote: BTreeSet<String> = returned.iter().map(|record| record.2.clone()).collect();
+    assert_eq!(
+        wrote,
+        settled.keys().cloned().collect::<BTreeSet<_>>(),
+        "return trip must write exactly the settled windows (collected {returned:?})"
+    );
+    // Identity stability: every return-leg frame carries its settled
+    // rect — any slot reassignment, intermediate or final, fails here.
+    // (Offline the worker cannot redundant-skip — its last-scoped
+    // readback only converges via backend reads, which direct submits
+    // bypass — so same-rect rewrites still arrive; live they are
+    // suppressed once AX reads the frames back. The invariant under test
+    // is identity stability, which same-rect rewrites preserve.)
+    let mut mismatched: Vec<String> = Vec::new();
+    for record in &returned {
+        let expected = &settled[&record.2];
+        if &record.3 != expected {
+            mismatched.push(format!(
+                "{w}: wrote {rect:?}, settled {expected:?}",
+                w = record.2,
+                rect = record.3
+            ));
+        }
+    }
+    assert!(
+        mismatched.is_empty(),
+        "return trip must never reassign window->slot identities: {mismatched:?} (settled {settled:?})"
+    );
+    shutdown_clean(&fixture);
+}
+
+#[test]
+fn blind_hidden_observation_keeps_current_loss_authoritative_and_drops_retired_homing() {
+    // Fences around blind-hidden preservation (see
+    // `handle_scoped_observation`): an empty snapshot of a CURRENT domain
+    // stays authoritative loss, and homing to a retired Space is dropped
+    // instead of preserved. Oracles are causal throughout:
+    // engine-flush-fenced submits plus the strict-FIFO occupancy control
+    // query; no applied frames and no sleeps anywhere in this test.
+    let fixture = start(scoped_config());
+    let revision = fixture
+        .handle
+        .update_topology_with(two_space_snapshot(), &user_space);
+    let gen_a = fixture.handle.launch_app(APP_A).expect("launch A");
+    let occupied = || {
+        fixture
+            .handle
+            .query_workspace_occupancy(WAIT)
+            .expect("occupancy query must answer")
+    };
+    let lists = |report: &tiler_macos::runtime::WorkspaceOccupancyReport, member: (u32, u32)| {
+        report.domains.iter().any(|d| d.members.contains(&member))
+    };
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_A,
+            gen_a,
+            10,
+            vec![(win(1), vec![11])],
+            None,
+            revision
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert!(fixture.handle.flush(FLUSH));
+    assert!(lists(&occupied(), (1001, 1)), "setup must home the window");
+    // Current-empty stays authoritative: the emptied current Space
+    // converges to empty.
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_A,
+            gen_a,
+            11,
+            vec![],
+            None,
+            revision
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert!(fixture.handle.flush(FLUSH));
+    assert!(
+        !lists(&occupied(), (1001, 1)),
+        "emptied current Space must converge to empty"
+    );
+    // Hide the window on 12, then blind it: preservation holds while the
+    // domain is still known.
+    let mut out = two_space_snapshot();
+    out.rows[0].current = Some(12);
+    out.revision = topology::fingerprint_snapshot(&out.displays, &out.rows, out.separate_spaces);
+    let revision = fixture.handle.update_topology_with(out, &user_space);
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_A,
+            gen_a,
+            12,
+            vec![(win(1), vec![12])],
+            None,
+            revision
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert!(fixture.handle.flush(FLUSH));
+    assert!(
+        lists(&occupied(), (1001, 1)),
+        "re-admission on 12 must home the window"
+    );
+    let mut back = two_space_snapshot();
+    back.rows[0].current = Some(11);
+    back.revision =
+        topology::fingerprint_snapshot(&back.displays, &back.rows, back.separate_spaces);
+    let revision = fixture.handle.update_topology_with(back, &user_space);
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_A,
+            gen_a,
+            13,
+            vec![],
+            None,
+            revision
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert!(fixture.handle.flush(FLUSH));
+    let domain = occupied()
+        .domains
+        .into_iter()
+        .find(|d| d.members.contains(&(1001, 1)))
+        .expect("hidden homing must survive while the Space is known");
+    assert!(
+        !domain.current,
+        "the surviving homing must be the hidden domain"
+    );
+    // Retire 12: preservation must not resurrect homing to a dead Space.
+    let mut retired = two_space_snapshot();
+    retired.rows[0].spaces = vec![11];
+    retired.rows[0].current = Some(11);
+    retired.revision =
+        topology::fingerprint_snapshot(&retired.displays, &retired.rows, retired.separate_spaces);
+    let revision = fixture.handle.update_topology_with(retired, &user_space);
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_A,
+            gen_a,
+            14,
+            vec![],
+            None,
+            revision
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert!(fixture.handle.flush(FLUSH));
+    assert!(
+        !lists(&occupied(), (1001, 1)),
+        "retired Space homing must drop"
     );
     shutdown_clean(&fixture);
 }

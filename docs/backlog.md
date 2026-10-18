@@ -359,32 +359,6 @@ decisions of 2026-09-24 are under
   fixtures: FULL vs visible topology, conversion rounding at shared edges,
   missing primary. Live: verify display arrangement (not inferred from Space
   order) on a two-display setup when available.
-- P1 | macOS: adopt full world-state core replies | delivered offline;
-  scoped live smoke partially verified. Replaced per-domain reply
-  concatenation/cursors with world revision and input watermark, preserving
-  AppKit/engine/AX thread ownership, per-app generations, latest-wins frame
-  slots, observed-focus authority and native Space capability refusals.
-  Adapt `runtime_core.rs`, `runtime_native.rs`, `runtime_thread.rs`; include
-  full lifetime/completeness/hold facts and per-property feedback. Represent
-  observed Spaces without inventing Windows/KDE logical creation or ordinary
-  window-transfer capability. Native Space operations remain capability-gated
-  until separately established. The legacy domain API remains compiling,
-  not behaviorally migrated. Queue-coherence/emission fences forbid stale
-  setters under newer submitted input; admission-only replies preserve native
-  focus. Bundle build/verify, 901 macOS tests, core/protocol, host-side Windows,
-  strict clippy and formatting pass. Unsafe unchanged (114, all in `ffi.rs`).
-  Owned admission, directional focus/move, float and close reflow pass live;
-  the three-app close exposed and verified a minimal shared MRU-fallback repair.
-  Border/indicator native state passes. Runtime tap→engine Ctrl+2 now passes;
-  Ctrl+1 return remains unverified (expired helper refused before posting).
-  Three TextEdit layouts survived the standalone MC AX return exactly. Visual
-  ring appearance and indicator legibility remain pending screenshot-based
-  checks in a capture-capable environment, with exact steps below. Temporary
-  Space 277 (unknown ControlCenter occupancy) and three disposable TextEdit
-  documents require manual cleanup; no test-owned processes remain. Raw protected
-  before/after arrays compare exactly equal. The earlier separate Space probe's
-  transient protected-frame observation is not runtime-select evidence.
-  [Evidence and exact remaining procedure](changes/macos-full-state-replies.md#exact-remaining-procedure).
 - P1 | Windows Xbox shortcut conflicts (Win+G, Win+F11) | User 2026-10-16
   approved choices implemented offline: Compatible float `Ctrl+Win+G`,
   fullscreen `Ctrl+Win+F11`, exact Ctrl-arm routing and hold/release coverage;
@@ -3959,11 +3933,11 @@ decisions of 2026-09-24 are under
      Synthetic Ctrl+Right failed even alone, because Mission Control's arrow
      holders require Control plus Fn and the executor sets only Control.
      Transfer is unparked.
-   2. Adopt full world-state core replies (P1 item above) before more workspace
-      or overlay work lands in the same runtime files. Outward runtime Ctrl+2
-      verified 2026-10-18; return Ctrl+1 and manual cleanup remain. Visual ring/
-      indicator checks await a working screenshot process; see the
-      [remaining procedure](changes/macos-full-state-replies.md#exact-remaining-procedure).
+   2. **Done 2026-10-18:** full world-state core replies, including native runtime
+      Ctrl+2/Ctrl+1, per-window retained-layout correction across blind hidden AX
+      snapshots, inspected ring/indicator screenshots and clean overlay teardown.
+      903 macOS tests, strict clippy, format and signed build/verify pass; unsafe
+      remains 114. [Outcome](changes/archive/macos-full-state-replies.md#final-outcome-2026-10-18).
   3. Finish managed native workspaces: post the relative arrow chord with
      Control plus SecondaryFn (possibly NumericPad) and re-test; confirm the
      tagged chord still triggers the holder; numbered sends use the proven
@@ -3975,8 +3949,12 @@ decisions of 2026-09-24 are under
      outward attempts reported NoEffect. Only 18 existing-Space selects are
      armed (user-approved fallback), with per-action empty-Space eligibility,
      serialized main-thread MC AX effects, run-local previous history and
-     single-display refusal.
-     [Handover and select-only procedure](changes/macos-managed-workspaces.md#select-only-fallback-handover-2026-10-17).
+      single-display refusal.
+      [Handover and select-only procedure](changes/macos-managed-workspaces.md#select-only-fallback-handover-2026-10-17).
+      **Current cleanup residue:** reused Space 277 still has foreign-chrome
+      membership, so conservative empty removal refuses; three disposable
+      TextEdit documents remain available for testing. No test-owned processes
+      remain. Inspect contents before manual cleanup; no chrome exemption added.
   4. Drag/drop overlays, re-scoped (user 2026-10-17): no modifier+drag; the
      producer is a passively observed native title-bar drag of a managed
      window, matching Windows' title-bar route, with physical user acceptance.

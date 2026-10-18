@@ -2264,12 +2264,14 @@ platform API behavior.
   preserve the existing overlay contract. Submitted invalidation is not proof
   of incorporated observations: revalidate the watermark, topology and queued
   incorporable truth immediately before effects/setters, with observation-only
-  catch-up and no command replay. Offline delivery is verified; live acceptance
-  is partial (outward runtime select verified; return and screenshot-based visual
-  checks remain pending). Shared MRU
+  catch-up and no command replay. Offline delivery and scoped live runtime
+  select/return, per-window retained layouts and screenshot-based visual checks
+  are verified. Successful empty AX reads covering only hidden domains are not
+  close evidence: retain same-lifetime, still-homed rows until a covering current
+  observation, fresh observed rehoming or domain retirement. Shared MRU
   fallback includes later admitted/restored leaves without reordering retained
   history; strict focus binding and observed-focus authority stay unchanged.
-  [Evidence](changes/macos-full-state-replies.md).
+  [Evidence](changes/archive/macos-full-state-replies.md).
 
 - Core extraction (user 2026-09-30): portable core completed through K1
   (visual policy in `tiler-core::visual`) under KDE first, with KWin fixtures
