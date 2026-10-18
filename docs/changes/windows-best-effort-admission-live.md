@@ -1,6 +1,6 @@
 # Windows best-effort admission native follow-up
 
-- Status: offline diagnosis and selection correction complete; native confirmation pending.
+- Status: selection correction confirmed natively; unfloat and original external-edit mismatch discrimination remain open.
 - Prior evidence: [offline delivery and partial native checks](archive/windows-best-effort-admission.md#scoped-native-follow-up-2026-10-18).
 
 ## Goal and scope
@@ -82,7 +82,7 @@
 | Fresh exhaustion / largest fallback | Not-run to acceptance | Thirty fresh helpers at 64/64 still tiled. Reflow geometry was observed, but ordinary-anchor identity and a fallback wrap were not established; no fresh capacity float was observed. |
 | Ordered shrink | Partial | Forty serially observed tiled admissions; 8/8 -> 32/32 floated exactly the newest 28 identities, then 64/64 the next two. All 30 markers read `ok`, victim frames were retained and survivors reflowed without a focus change. This proves newest-suffix victim sets, not intra-batch eviction order, shortest-prefix minimality or protected-member behavior. |
 | Failed unfloat / successful retry | Not-run to acceptance; diagnostic scope isolated offline | Clean foreground-qualified unfloat found a feasible tile, not no-space. Tick 275's target matched exactly; `unfloat-mismatch` aggregates other plan entries. Neighbor native one-pixel deltas remain causally unresolved. Earlier center-titlebar clicks hit minimize/maximize buttons and contaminate those attempts; they are excluded. |
-| Hidden repair | Windows stale-row defect reproduced offline; corrected native confirmation pending | Forty helpers hidden at 8/8 took zero hidden geometry writes after 64/64 adoption; every hidden frame stayed unchanged. Reveal projected all 40 with zero capacity victims, unlike visible shrink's 30 victims. Actual select hints were 40/40 `[118,30]`, with no timeout or budget omission. Offline reveal sequence reproduces repair followed by unintended re-admission from stale all-tiled observations. |
+| Hidden repair | Corrected native parity pass, bounded | Source `79442633`: matched serial 40-helper 8/8 -> 64/64 legs retained the same newest-30 victim set and identical ten-survivor plans after reveal. Hidden geometry writes were zero; victim frames were preserved and all 30 ordinary-float marker outcomes were successful in each leg. Full tree/session preimage identity and focus parity are not claimed. Earlier all-40 re-admission is retained as pre-fix evidence below. |
 | Restart persistence | Pass, bounded | Thirty capacity floats retained frames after smaller gaps without automatic tiling; all 40 helpers remained alive across exact owner stop/restore/relaunch. New-owner observations cover all 40, with 30 `float-adopted` ordinary floats, clean marker health and preserved float frames. Tiled survivors changed slots; D5 does not promise tiled-history persistence. |
 | Same-output capacity sends | Not-run to acceptance | Verified-foreground follow and stay requests still projected tiles; no `MoveToFloat` or capacity arrival proof. Default follow and no-search stay do not establish an exhausted destination. |
 | Overlap | Partial | Fresh 40-tile 8/8 roster: policy-only adoption caused zero writes/reflow. Valid 64/64 adoption kept all 40 positive targets with zero capacity floats, unlike the default-policy shrink. Actual overlap/overflow, fresh no-space admission and navigation remain unproven. |
@@ -215,6 +215,67 @@
   source absence, destination membership and survivor-only geometry. Run
   follow and stay separately with their distinct view/focus outcomes.
 
+### Native gap discriminators, 2026-10-18
+
+- Source `79442633`; externally retained group
+  `be-discrim-20261018` contains helper receipts, launch identities, settings
+  inputs, owner logs, plans, hint diagnostics and paired native bounds. Owner
+  SHA-256 `1C8C40ECECB6F73D2B66B785B40857E19EDC1552686FA958E60FE2D5AD96E1A1`;
+  helper `273A59679268A3BEB916CE8BD8DDCD7D130177B8ED75D0CE9F063910046A4C4E`.
+  Retained payload hashes match the gated debug artifacts; revision, payload
+  bytes and per-leg identities were retained separately.
+- Visible/hidden repair: `steps-visible.jsonl`, `steps-hidden.jsonl` and matching
+  `owner-*.log` retain 40 serial admissions each, 40/40 hints `[118,30]`, pre-gap
+  plans, geometry and marker outcomes. Both legs evicted admission ordinals
+  11-40 (one-based), retained ordinals 1-10, preserved all 30 victim frames and
+  recorded 30/30 successful ordinary-float marker outcomes. Final ten-survivor
+  plan rectangles match exactly. This confirms `d0326c2b`'s bounded native
+  outcome; it does not prove intra-batch eviction order or full tree identity.
+  Pre-gap leaf rectangles differed between fresh runs; no full tree/session
+  snapshots or per-arrival foreground readbacks were retained.
+- Hidden gap adoption caused zero new geometry writes and left all 40 hidden
+  frames unchanged. Thirty capacity floats were registered after reveal, rather
+  than being re-admitted from stale rows. Both legs still had nine geometry
+  readback mismatches with ten survivor tiles; membership parity is not exact
+  geometry acceptance. Zero-mismatch ticks after helper closure are teardown,
+  not settlement proof. A duplicate hidden-leg start record precedes the
+  completed leg; it is not a second successful run.
+- Unfloat discriminator: four setup attempts in `steps-unfloat-aborted*.jsonl`
+  produced no unfloat target verdict. Foreground qualification failed; a click
+  fallback focused an overlapping helper rather than its intended float, and
+  another owned helper disappeared before cleanup, well before its configured
+  lifetime. The cause of that disappearance is unproven. These attempts are
+  excluded, not repeated as acceptance. Each retained stop/restore results but
+  lacks per-leg settings-byte restoration evidence; final restoration is
+  independently checked below.
+- Related gap-rewrite fixture: `steps-paired.jsonl` and `owner-paired.log` retain
+  fresh/pre-edit, post-edit and delayed paired outer/visible/inset/DPI reads for
+  twelve default helpers. Ten survivors were rewritten and two floats retained
+  their frames. Post-edit and delayed outer bounds were identical, but nine of
+  ten survivor readbacks still differed from targets by one pixel. Live
+  `readback-detail`/`window-diag` entries retain those deltas and dispositions.
+  This rules out delayed drift in this gap fixture, not in the unfloat journey;
+  the original tick-275 cause remains open. No tolerance or production change.
+- External-edit discriminator: six passive PMv2 helpers at 8/8 -> 64/64 had
+  `applied:6, mismatched:0, windows:6` at adoption, with delayed paired bounds.
+  Default helpers reported different DPI/inset values and persistent one-pixel
+  deltas; PMv2-thread observation was used for both. The PMv2 fixture did not
+  reproduce the prior sweep's two mismatches, but differs from its two-helper
+  8/8 -> 12/12 -> 8/8 sequence and has no immediate PMv2 snapshot. It therefore
+  does not explain those original mismatches or close N2. A matched sequence
+  with per-entry planned/effective/post-write readbacks remains required.
+- Evidence review corrected two invalid interpretations: counting
+  `unfloat-mismatch` events in gap-only journeys is vacuous, and zero-mismatch
+  ticks with zero remaining windows cannot establish convergence. Use live
+  `tick.mismatched`, `readback-detail`, paired native bounds and per-entry
+  `window-diag` instead. No fresh/retry/send exhaustion journey was attempted.
+- Final recovery: independent `mise exec -- just stop` returned `stopped clean`.
+  `cleanup-final.json` retains settings byte equality to the original backup,
+  taskbar/SPI equality, `ready:false`, no owned processes and no recovery ledger.
+  A ledger lock file remains. The JSON's stop string is a literal,
+  not command evidence; the separately executed stop result supplies that proof.
+  Final cleanliness does not supply missing per-abort restoration observations.
+
 ## Blockers and exact next action
 
 - Fresh, retry and send rosters did not produce the required no-space state;
@@ -222,9 +283,10 @@
   The oracle-first journey above is designed offline; its native roster count
   and feasibility remain unmeasured. Protected-member and full overlap geometry
   legs remain open.
-- The Windows stale-row defect is isolated without changing D1-D10. Exact
-  original hidden native preimages remain unavailable, so corrected source-bound
-  hidden/visible settlement still needs native confirmation.
+- The Windows stale-row correction now has bounded source-bound hidden/visible
+  victim-set and plan parity without changing D1-D10. Exact original hidden
+  native preimages and full retained-tree identity remain unavailable; native
+  one-pixel geometry mismatches remain distinct from repaired membership.
 - Other gap-adoption-before-intent callsites remain an audit risk, not proven
   equivalent failures. Send/transfer, directional, resize and gesture routes
   need their own discriminating stale-classification fixtures; this correction
@@ -234,11 +296,12 @@
   DPI at fresh pre-write, immediate post-write and delayed settled observations;
   retain per-entry write status instead of treating the aggregate mismatch as a
   target verdict. Existing `observed_outer` belongs to the pre-write hint phase.
-- Next action: re-check the corrected build with the matched 40-helper
-  hidden/reveal and visible gap-growth legs, retaining per-leg inputs, plans,
-  ordinary-float markers, frames and cleanup evidence. Separately obtain the
-  settled paired neighbor readback and measured-bounds exhaustion oracle before
-  attempting the remaining no-space native journeys.
+- Next action: design a large, exposed-float unfloat fixture with a verified
+  non-caption-button hit target before any input, retaining fresh/immediate/
+  delayed paired bounds and write status. Run the original two-helper external
+  8/8 -> 12/12 -> 8/8 sequence with matched PMv2/default fixtures and live
+  per-entry diagnostics. Resolve the setup/safety failure before another native
+  unfloat attempt; retain the measured-bounds oracle prerequisite for exhaustion.
 
 ## Final verification
 
@@ -269,3 +332,14 @@
   licenses and notices.
 - This follow-up ran no live desktop journey or lifecycle command; the cleanup
   evidence above belongs to the original native runs.
+
+### Native discriminator verification
+
+- At `79442633`, locked four-package build/test and strict all-target clippy
+  passed: **2,883 passed, 0 failed, 1 ignored across 73 suites**. Workspace
+  formatting and whitespace checks passed. Outputs are retained as
+  `gates-{build,test,clippy,fmt}.log` in `be-discrim-20261018`.
+- Independent review accepted bounded hidden/visible repair parity and final
+  restoration, rejected unfloat acceptance and teardown-based convergence, and
+  retained the unmatched external-edit discriminator as partial. No production
+  code, unsafe code, regression tolerance or shared policy changed.

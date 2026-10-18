@@ -237,12 +237,20 @@ decisions of 2026-09-24 are under
   exact settings/taskbar/SPI cleanup passed. Overlap-policy shrink kept 40 positive
   tiles without floats. Remain open: true fresh exhaustion/fallback, shortest-prefix
   and protected-member proof, failed-unfloat retention, capacity sends, geometric
-  overlap/overflow and corrected hidden-repair native confirmation. Offline
+  overlap/overflow. Corrected hidden repair passed a bounded source-bound
+  40-helper visible/hidden 8/8 -> 64/64 re-check at `79442633`: identical newest-30
+  victim sets, marker outcomes, preserved victim frames and ten-survivor plans;
+  hidden geometry writes stayed zero. Full tree identity/focus parity unproved.
+  Offline
   matched-session replay isolates stale all-tiled select rows undoing the
   gap-adoption repair (40 re-admitted instead of retaining 30 floats).
   Offline tick-275 isolation proves the unfloat target matched exactly; its
   aggregate mismatch includes neighbor clamp/pending lanes. Native neighbor
-  one-pixel cause still needs delayed fresh readback.
+  one-pixel cause still needs delayed fresh unfloat readback. Four native unfloat
+  setups were excluded after foreground failures and a wrong-helper click;
+  final settings/taskbar/SPI/process cleanup passed with no recovery ledger
+  (a ledger lock file remains). A related gap fixture
+  retained stable one-pixel deltas in nine survivors, not delayed convergence.
   Guarded local/shared-scope selection correction `d0326c2b` preserves first-exit
   intent; six actual-route regressions pass. Integrated offline four-package
   gates: **2,883 passed, 0 failed, 1 ignored**, strict clippy/format clean.
@@ -1245,7 +1253,12 @@ decisions of 2026-09-24 are under
     Scoped follow-up 2026-10-18: chevron discovery again found no verified
     target; no click or response result. External gap-file edit/restore woke the
     owner and changed helper geometry; edited gaps reported two mismatches,
-    so correct-convergence acceptance stays open. First-run baseline/readback
+    so correct-convergence acceptance stays open. A six-helper PMv2 8/8 -> 64/64
+    follow-up at `79442633` had zero live mismatches, while default helpers retained
+    one-pixel deltas; it does not match or explain the original two-helper
+    8/8 -> 12/12 -> 8/8 sequence. Per-entry matched discrimination remains open
+    ([evidence](changes/windows-best-effort-admission-live.md#native-gap-discriminators-2026-10-18)).
+    First-run baseline/readback
     limits are explicit in the record; no independent exact-restoration claim.
     Game cost remains unmeasured; idle improvement, suspension and nominal
     wake frequency are not game acceptance evidence.
