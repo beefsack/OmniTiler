@@ -747,7 +747,7 @@ impl WorldEngine {
         // the mover homed at the source, so without this the engine would
         // see a plausible second move; the fence refuses before any
         // convergence or commit, and the retained flight still settles on
-        // arrival proof. Sethled arrivals drop the flight before commands
+        // arrival proof. Settled arrivals drop the flight before commands
         // run, so settled retries proceed.
         if matches!(command, CoreCommand::Move { .. })
             && self.retained.iter().any(|r| match &r.target.kind {

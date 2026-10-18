@@ -306,8 +306,8 @@ decisions of 2026-09-24 are under
   T2 parity acceptance; W3/W4 hidden/fullscreen/bootstrap/native gates remain.
 - P1 | Shared core: own output topology | Core+KDE delivered offline;
   native two-output validation pending. FULL world topology is retained in all
-  modes and strict unique-reciprocal targets are core-derived; KDE sends only
-  directional intent. Rust workspace 3,170 and KDE 1,856 tests pass, strict
+  modes and per-use targets are core-derived; KDE sends only
+  directional intent. Rust workspace 3,182 and KDE 1,864 tests pass, strict
   clippy/typecheck/bundle/descriptor gates pass. Windows W2 resumes with existing
   FULL reports; macOS must replace visible topology rects with FULL bounds,
   preserving work areas and native capability gates.
@@ -321,10 +321,13 @@ decisions of 2026-09-24 are under
   [consensus](research/reference-wm-consensus.md)): exhausted moves and
   explicit sends use window-centre projection, then window-span overlap, then
   left/top; whole-workspace migration uses largest shared edge, then left/top;
-  focus keeps unique-reciprocal horizontal. The world route's strict map
-  refuses split edges where Tier 1 tilers select. NEXT: align world
-  move/send/migration in core to those rules with the R-MOV-12 discriminator
-  rows as expected results; KDE needs no adapter selection.
+  focus keeps unique-reciprocal horizontal. World move/send/migration alignment
+  delivered offline 2026-10-18 with R-MOV-12/R-WS-27 expected results and real
+  Engine KDE world-entry fixtures; retained R4 arrival is identity-pinned.
+  [Alignment evidence](changes/archive/world-split-edge-selection.md).
+  NEXT: native split-edge and ordinary two-output acceptance; separately repair
+  KDE migration confirmation against global native workspace inventory (the
+  source native-order absence check leaves a successful migration retained).
   [Delivery and live procedure](changes/archive/shared-core-owned-output-topology.md), alongside the
   [D23/13f proposal](changes/shared-core-d23-rehome-and-13f-maximize-base.md).
 - P1 | macOS: report FULL display bounds for core-owned topology | UNBLOCKED

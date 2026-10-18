@@ -640,6 +640,9 @@ observation or new reference vote.
   two-candidate observer tests, mirrored shared selector tests and real-Engine
   non-left/top R4 crossing. Pinned dispatch target survives mover relocation;
   delayed arrival follows once; removal refuses and reconciles.
+  World route aligned offline 2026-10-18: core-owned FULL topology applies the
+  same ranker; retained R4 transfers pin native arrival and fence newer moves.
+  [World-route evidence](../../changes/archive/world-split-edge-selection.md).
   Landing into an occupied target follows the selected 2026-10-14 whole-target
   R4 wrap nearest source; empty takes the mover alone.
   [Record](../../changes/archive/position-based-output-selection.md).
@@ -658,7 +661,7 @@ All rows move sole A up after local exhaustion; full topology is readable.
 Intervals below are shared FULL edges on the x axis. These are offline Ours
 KDE/core sub-legs, not reference votes; reference/native outcomes remain TBD.
 
-| Given | When | Ours KDE/core offline outcome (2026-10-09) |
+| Given | When | Ours KDE/core offline outcome (2026-10-09; world route 2026-10-18) |
 | --- | --- | --- |
 | Original U1/U2 edges [0,960), [960,1920); A x=860, width=200, centre=960 | Move up once | U2: half-open containment puts the seam in the right edge |
 | Source x-span [0,1600); upper edges [0,400), [1200,1600); A x=300, width=1100, centre=850 | Move up once | U2: centre in gap; window overlap 200 beats 100 |
@@ -666,6 +669,8 @@ KDE/core sub-legs, not reference votes; reference/native outcomes remain TBD.
 
 Evidence: `position_based_output_selection.rs`, `plan-directional.test.ts`;
 odd extents retain exact half-pixel centres, Left/Right mirror onto y.
+World-route expected results: `world_directional_intents.rs` R-MOV-12 tests;
+production entry and retained replay: `world-split-edge-engine-fixture.test.ts`.
 
 ### R-MOV-13: panel work-area gap with touching full output rectangles
 

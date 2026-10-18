@@ -2133,6 +2133,11 @@ baseline above is unchanged. Record:
   refuses, no candidate no-op, no wrap.
   Implemented offline 2026-10-09: shared selector and KDE largest-edge/equal-edge
   regressions, real-Engine multi-candidate migration. Native journey TBD.
+  World route aligned offline 2026-10-18 with the same largest-edge ranker,
+  R-WS-27 expected-result regression and real-Engine KDE world-entry fixture.
+  Migration confirmation against KDE's global native inventory remains a
+  separate known limitation; split-edge native acceptance remains TBD.
+  [World-route record](../../changes/archive/world-split-edge-selection.md).
   [Record](../../changes/archive/position-based-output-selection.md).
 - Then Ours Windows: U1 selected by shared largest-edge then left/top ranking,
   regardless of B's centre. Selector and pinned migration path delivered offline

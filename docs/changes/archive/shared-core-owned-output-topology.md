@@ -11,6 +11,13 @@
 
 ## Delivered contract
 
+- Outcome addendum 2026-10-18: [world split-edge alignment](world-split-edge-selection.md)
+  now applies the existing 2026-10-09 per-use rules. Move/send use the window
+  ranker, migration uses largest shared edge, focus alone keeps strict
+  unique-reciprocal horizontal selection. The strict-for-all descriptions and
+  parked split-edge status below describe the initial ownership extraction,
+  not the final world-route policy. No new product decision was required.
+
 - `OutputTopology.geometry` / wire `rect` means FULL native output geometry in
   one coherent adapter coordinate space. Domain `bounds` is still the separate
   work area; outer-gap handling is unchanged. Never infer FULL geometry from
@@ -61,7 +68,7 @@
 | Distinguish monitor completeness from unrelated window-inventory completeness | Tentative implementation choice; migration/displacement still retain their own inventory safety gates |
 | Add direction-only world intent commands rather than duplicate geometry policy in KDE | Tentative implementation choice; old operation and legacy per-domain contracts remain available |
 | Retain an empty wire adjacency key during ignore-then-remove | Tentative compatibility choice; never a competing authority |
-| World migration -> largest edge; R4/output send -> window-position rule | Parked explicit user decision, not implemented |
+| World migration -> largest edge; R4/output send -> window-position rule | Existing 2026-10-09 decision; subsequently delivered offline in the alignment addendum |
 
 - Recommendation for the parked split-edge decision: align migration with
   `select_for_migration`, R4/directional output sends with `select_for_window`,

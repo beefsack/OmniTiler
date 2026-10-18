@@ -170,9 +170,9 @@ Variant of [R-OUT-01](reference-outcomes/multi-output.md#r-out-01-move-left-onto
 
 ### Core-owned topology split-edge discriminator
 
-| Variant | Minimal action sequence | Verified source distinction / proposal | Reference / native |
+| Variant | Minimal action sequence | Ours offline outcome | Reference / native |
 | --- | --- | --- | --- |
-| Migration versus window-position versus unique focus | Use FULL rects S=(0,0,1000,1000), B=(1000,0,1000,700), C=(1000,700,1000,300). Put sole tiled A on S with centre y=850. From fresh identical state, migrate workspace right; separately exhaust move-right, send-to-output-right and focus-right | Existing shared migration selector chooses B (longer edge); window selector chooses C (centre projection); delivered core-owned strict world derivation omits S's right edge, so no crossing occurs (local focus/move remains available). [Delivery and parked expected-result tests](../changes/archive/shared-core-owned-output-topology.md#decisions-and-boundaries) recommend explicit review of world per-use alignment, not one universal map. Windows legacy focus uses the window selector, unlike KDE focus | Exact reference/native three-output results TBD. Split-edge policy alignment remains unapproved; strict extraction is tentative and ordinary two-output native parity remains pending |
+| Migration versus window-position versus unique focus | Use FULL rects S=(0,0,1000,1000), B=(1000,0,1000,700), C=(1000,700,1000,300). Put sole tiled A on S with centre y=850. From fresh identical state, migrate workspace right; separately exhaust move-right, send-to-output-right and focus-right | World route applies the existing 2026-10-09 decision: migration selects B (longer edge), exhausted move/send select C (centre projection), focus keeps strict unique-reciprocal horizontal policy and does not cross. Expected-result Rust regressions and real-Engine KDE world-entry move/send/migration/focus fixtures pass. [Outcome](../changes/archive/world-split-edge-selection.md). Windows legacy focus remains distinct | Exact reference/native three-output results TBD; ordinary two-output native acceptance remains separate |
 
 ### Windows world-adoption authority discriminators
 

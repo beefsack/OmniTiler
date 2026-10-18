@@ -77,7 +77,6 @@ class WorldBridge {
             spawn("cargo", ["run", "--offline", "-q", "-p", "tiler-protocol", "--example", "world_eval"], {
                 cwd: repoRoot(),
                 stdio: ["pipe", "pipe", "pipe"],
-                env: { ...process.env, CARGO_BUILD_JOBS: "3" },
             }),
         );
     }

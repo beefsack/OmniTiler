@@ -1461,6 +1461,12 @@ platform API behavior.
       retains per-desktop work areas. Largest-edge migration subsequently
       delivered offline with item 14
       ([record](changes/archive/windows-workspace-output-migration.md)).
+    - Status 2026-10-18: the core-owned world route now applies the existing
+      2026-10-09 rules: window-centre/span selection for exhausted moves and
+      directional sends, largest shared edge for migration, strict
+      unique-reciprocal horizontal focus unchanged. This is implementation
+      alignment, not a new decision. [Offline evidence](changes/archive/world-split-edge-selection.md);
+      native split-edge acceptance remains pending.
     - Windows held output-send repeats (User 2026-10-14 approved as delivered):
       repeats dispatch while the original Win/Ctrl/Alt and Shift polarity
       remain live. Follow
