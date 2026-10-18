@@ -51,7 +51,32 @@
   lifecycle review accepts the final correction. No core scope-policy change.
 - Tentative implementation choice: newly created native desktops carry their
   logical token as name for void-API attribution. Existing names are not changed;
-  workspace identity remains native-ID based. Live re-verification is pending.
+  workspace identity remains native-ID based.
+- Complete-wire native repeat proves the required-argument creation succeeds
+  once, with direct effective-mode evidence (`per-output-local`). It exposed a
+  second implementation defect: the locally proven logical-to-native binding
+  never reached the next report, so core retained its unbound token and adopted
+  the new desktop elsewhere. Native name was not a logical binding. A trailing
+  selection retained an unresolved view transfer; an output send to the duplicate
+  current refused `cross-domain-mismatch`. T05 was not attempted in that run.
+- Binding feedback is corrected offline: publish the locally proven binding over
+  missing/generic fallback rows until a real core mapping acknowledges it; then
+  retire the pending proof so later core migration remains authoritative. Four
+  production-entry regressions cover immediate/delayed proof, fallback echoes,
+  acknowledgement, subsequent migration and independent output tokens. The
+  original missing-binding regression failed before the fix. Independent review
+  accepts the handoff; combined KWin typecheck/build and **1850/1850** tests pass.
+- This repeat restored exact baseline frames/modes, membership/views/focus,
+  pointer, outputs, shortcuts, float-store absence and unloaded effects; development
+  is DOWN. Normal empty-desktop retirement was retained. Startup also cleared a
+  pre-existing maximized client under born-maximized admission; its exact mode and
+  frame were restored. No new maximized-policy acceptance is claimed.
+- Remaining single-homing fault: current-view publication emits a foreign-homed
+  native in another scope; binding feedback appends it there without removing the
+  retained old membership. Which output owns an initially shared native current
+  is unresolved. Recommendation: decide startup ownership, then enforce one ring
+  per native and separate visible-current rows from ownership. Do not repair it
+  by relying on reply row order.
 
 ## Approach
 
@@ -1048,9 +1073,21 @@ Accepted subcases and remaining gaps are qualified below.
 
 ## Whole-workspace migration unbounded maximum-size refusal (2026-10-15)
 
-Status: DEFECT open. Failing (RED) regressions were written but not committed
-and no fix exists; the regressions are specified below so any checkout can
-recreate them. Confirmed still failing against `main` on 2026-10-16.
+Status: current production world route fixed by `3c94a819`, confirmed offline
+2026-10-18 with the exact T05 size shape; native repeat remains pending. The
+historical legacy-route RED regressions below still describe the retired route,
+not the production entry, which exclusively uses `DescribeWorld`.
+
+- Current producer regression preserves min 176x150 and raw INT_MAX maxima in the
+  world report without automatic-floating classification. A real `WorldEngine`
+  regression accepts that report and produces a migration transfer; advisory
+  size-hint use filters the maximum sentinel to absent. Bounded fixed-size pins
+  and malformed-negative hint controls remain covered. The earlier proposed
+  omission from the wire is not the current world contract.
+- Isolated-source verification executes the new core migration test successfully;
+  KWin producer regression and combined 1850-test suite pass, with typecheck/build.
+  Legacy observer/adapter fixtures are not production acceptance. Live T05 stopped
+  before dispatch because workspace binding/mapping prerequisites failed.
 
 - Live T05 probe: an ordinary resizeable client reported a real minimum size
   (176x150) and Qt's unconstrained maximum (2147483647 x 2147483647, INT_MAX,

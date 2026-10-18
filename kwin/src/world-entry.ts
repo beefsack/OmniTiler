@@ -317,7 +317,22 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         gestureActive,
         knownClosed: () => closeTracker.snapshotClosed(),
         logicalBindingOf: (nativeId) => {
+            // Locally-created but not yet core-acknowledged bindings publish
+            // here so core pending consumes them: a bound pending creation
+            // overrides only an absent entry or a generic native->native
+            // fallback echo (logical === native). A real core mapping stays
+            // authoritative and the pending row is pruned on accept.
+            const pending = state.pendingCreations.find((c) => c.bound === nativeId);
             const base = logicalOfNative.get(nativeId);
+            if (
+                pending !== undefined && pending.logical !== "" && pending.out !== "" &&
+                (base === undefined || base.logical === nativeId)
+            ) {
+                return {
+                    logical: pending.logical, out: pending.out,
+                    pin: route.pinRetained(nativeId), disp: false, managed: true,
+                };
+            }
             if (base === undefined) {
                 return null;
             }
@@ -923,6 +938,14 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                                 logical: ws.logical !== "" ? ws.logical : ws.bind,
                                 out: ws.out,
                             });
+                            // Handoff: a real (non-fallback) core mapping
+                            // consumes the matching pending creation so the
+                            // stale pending out never overrides a later
+                            // legitimate migration. Generic fallback echoes
+                            // never consume the pending logical.
+                            if (ws.logical !== "" && ws.logical !== ws.bind) {
+                                state.acknowledgeCreationBinding(ws.bind, ws.logical);
+                            }
                         }
                     }
                     // Ack the closes that rode the accepted dispatch BEFORE the

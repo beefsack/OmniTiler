@@ -264,6 +264,20 @@ export class WorldAdapterState {
         return bound;
     }
 
+    // Core-authoritative handoff for locally-created bindings: once the
+    // core acknowledges a real (non-fallback) binding for a native id or a
+    // logical token, the adapter-owned pending creation is consumed so a
+    // later legitimate migration/rehoming stays core-owned. Targeted to the
+    // acknowledged native/logical pair only; never a map-wide clear.
+    acknowledgeCreationBinding(native: string, logical: string): void {
+        if (native === "" || logical === "") {
+            return;
+        }
+        this.pendingCreations = this.pendingCreations.filter(
+            (c) => c.bound !== native && c.logical !== logical,
+        );
+    }
+
     clampKey(win: string, target: string, constraints: string): string {
         return `${win}|${target}|${constraints}`;
     }

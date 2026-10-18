@@ -68,19 +68,24 @@ decisions of 2026-09-24 are under
     a held cross-seam endpoint missed by 150 logical pixels; later controller-DOWN
     fixture results are excluded from product acceptance. Synthetic journeys
     parked; original pointer/focus and protected placement restored exactly.
-  - DEFECT open | Whole-workspace migration (T05) refuses `scope-invalid` when
-    an ordinary client reports Qt's unbounded maximum size (INT_MAX): the
-    observer passes it through and the migrate validator caps sizes at 16384.
-    Two RED regressions are specified for recreation; fix, then repeat live T05.
+  - DEFECT fixed on production route, native repeat pending | Whole-workspace
+    migration (T05) previously refused `scope-invalid` when
+     an ordinary client reports Qt's unbounded maximum size (INT_MAX): the
+     retired migrate validator capped sizes at 16384. Current world validation
+     was corrected by `3c94a819`; exact producer/core migration regressions now
+     pass with bounded minimum + INT_MAX maximum. Repeat live T05 after fixing
+     workspace binding/mapping prerequisites; no native migration pass claimed.
     [Reproduction](changes/kde-dual-output-live.md#whole-workspace-migration-unbounded-maximum-size-refusal-2026-10-15).
   - DEFECT reported | User 2026-10-18: in two-output use some outputs show
      too many workspaces, and workspace switching does not work correctly on
      some outputs. Switching refusal reproduced diagnostically: secondary
      ordinal 3 rejects `selection-unknown`, primary switches. Full-state native
-     desktop creation used the wrong KWin void API; fixed offline with named
-     enumeration proof, typecheck/build and 1845 KWin tests passing. Complete-wire
-     live repeat pending. Startup duplicate-ring ownership remains a separate
-     unresolved discriminator; no workspace partition policy changed.
+     desktop creation used the wrong KWin void API; corrected and reverified
+     with complete wire/native evidence. That repeat exposed missing local
+     creation-binding feedback; fixed offline with four producer regressions,
+     combined typecheck/build and 1850 KWin tests passing. Binding-fix native
+     repeat pending. Startup duplicate-ring ownership still blocks output sends
+     with `cross-domain-mismatch`; no workspace partition policy changed.
   - Remaining agent-feasible non-drag legs (T02 last legs, T03 history, T05
     migration, T06 border/underlay on both outputs, exact-tree R4 repeat) were
     interrupted before results; restart from the inventory.

@@ -553,3 +553,101 @@ describe("world rejection log vocabulary", () => {
         assert.ok(!logs.some((l) => l.includes("secret")), "no content echoes into the log");
     });
 });
+
+describe("world T05 unbounded-maximum producer shape", () => {
+    it("carries a real minimum with Qt INT_MAX maximum as an ordinary tiled client", () => {
+        // Live T05 probe shape on the production DescribeWorld route: an
+        // ordinary resizeable client reports a real minimum (176x150) with
+        // Qt's unconstrained maximum (2147483647 x 2147483647, INT_MAX,
+        // meaning "no maximum"). The world report carries the raw
+        // QSize bytes verbatim; the core sanitizes the sentinel to absent
+        // at every use site, never refuses the report, and never
+        // classifies the client as an automatic float.
+        const ws1 = { id: "ws-1" };
+        const ws2 = { id: "ws-2" };
+        const wins: Array<Record<string, unknown>> = [
+            {
+                internalId: "win-t05", normalWindow: true,
+                frameGeometry: { x: 0, y: 0, width: 200, height: 200 },
+                output: { name: "out-1" }, desktops: [ws1],
+                minimized: false, fullscreen: false, maximized: false, sticky: false,
+                minSize: { width: 176, height: 150 },
+                maxSize: { width: 2147483647, height: 2147483647 },
+            },
+            {
+                internalId: "win-fixed", normalWindow: true,
+                frameGeometry: { x: 210, y: 0, width: 400, height: 300 },
+                output: { name: "out-1" }, desktops: [ws1],
+                minimized: false, fullscreen: false, maximized: false, sticky: false,
+                minSize: { width: 400, height: 300 }, maxSize: { width: 400, height: 300 },
+            },
+            {
+                internalId: "win-neg", normalWindow: true,
+                frameGeometry: { x: 420, y: 0, width: 200, height: 200 },
+                output: { name: "out-1" }, desktops: [ws1],
+                minimized: false, fullscreen: false, maximized: false, sticky: false,
+                minSize: { width: -5, height: 100 }, maxSize: null,
+            },
+            {
+                internalId: "win-t", normalWindow: true,
+                frameGeometry: { x: 0, y: 0, width: 200, height: 200 },
+                output: { name: "out-1" }, desktops: [ws2],
+                minimized: false, fullscreen: false, maximized: false, sticky: false,
+                minSize: null, maxSize: null,
+            },
+        ];
+        const surface = {
+            windowList: () => wins,
+            screens: [
+                { name: "out-1", geometry: { x: 0, y: 0, width: 1920, height: 1080 } },
+            ],
+            desktops: [ws1, ws2],
+            activeScreen: { name: "out-1" },
+            activeWindow: wins[0] as unknown,
+            clientArea: () => ({ x: 0, y: 0, width: 800, height: 600 }),
+            currentDesktopForScreen: () => ws1,
+            setCurrentDesktopForScreen: () => undefined,
+            sendClientToScreen: () => undefined,
+            createDesktop: () => null as unknown as object,
+            removeDesktop: () => undefined,
+        };
+        const flow = startFlow(surface);
+        try {
+            replyCall(flow, "DiscoverWorld")(seedSizeHintBinds("disc-1", "0", "0"));
+            const payload = lastPayload(flow, "DescribeWorld");
+            const body = JSON.parse(payload) as Record<string, unknown>;
+            const rows = (body["domains"] as Array<Record<string, unknown>>)
+                .flatMap((d) => d["windows"] as Array<Record<string, unknown>>);
+            const rowOf = (id: string): Record<string, unknown> => {
+                const row = rows.find((w) => w["win"] === id);
+                assert.ok(row !== undefined, `expected row ${id}`);
+                return row as Record<string, unknown>;
+            };
+            const t05 = rowOf("win-t05");
+            // Raw Qt bytes ride verbatim; the unbounded max never promotes
+            // an ordinary client to an automatic float.
+            assert.deepEqual(
+                t05["hints"],
+                { minW: 176, minH: 150, maxW: 2147483647, maxH: 2147483647 },
+            );
+            assert.equal(t05["fixedAuto"], false);
+            assert.equal(t05["floating"], false);
+            // In-bound finite pairs stay exact and still pin fixed-size.
+            const fixed = rowOf("win-fixed");
+            assert.deepEqual(
+                fixed["hints"],
+                { minW: 400, minH: 300, maxW: 400, maxH: 300 },
+            );
+            assert.equal(fixed["fixedAuto"], true);
+            // Negative extents stay malformed-absent, never a bound.
+            const neg = rowOf("win-neg");
+            assert.deepEqual(
+                neg["hints"],
+                { minW: null, minH: null, maxW: null, maxH: null },
+            );
+            assert.equal(neg["fixedAuto"], false);
+        } finally {
+            flow.handle.stop();
+        }
+    });
+});

@@ -3309,3 +3309,170 @@ fn native_gesture_defers_capacity_repair_until_clear() {
         "bounds/gap settle after repair"
     );
 }
+
+#[test]
+fn migration_accepts_qt_unbounded_maximum_with_real_minimum() {
+    // Live T05 producer shape on the production DescribeWorld route: an
+    // ordinary resizeable client reports a real minimum (176x150) with
+    // Qt's unconstrained maximum (i32::MAX x i32::MAX, "no maximum").
+    // Hints are advisory-only: the sentinel sanitizes to absent at every
+    // use site, never fails the report, and never classifies the client
+    // as an automatic float. Bounded fixed-size pins and malformed
+    // (negative) hints keep their exact semantics beside it.
+    use crate::size_hints::{WindowSizeHints, is_fixed_size};
+    let t05 = WindowSizeHints {
+        min_w: Some(176),
+        min_h: Some(150),
+        max_w: Some(i32::MAX),
+        max_h: Some(i32::MAX),
+    };
+    assert_eq!(t05.meaningful_min_w(), Some(176));
+    assert_eq!(t05.meaningful_min_h(), Some(150));
+    assert_eq!(
+        t05.meaningful_max_w(),
+        None,
+        "unbounded sentinel sanitizes to absent"
+    );
+    assert_eq!(
+        t05.meaningful_max_h(),
+        None,
+        "unbounded sentinel sanitizes to absent"
+    );
+    assert!(!is_fixed_size(t05), "unbounded max never pins fixed-size");
+    assert!(
+        is_fixed_size(WindowSizeHints {
+            min_w: Some(400),
+            min_h: Some(300),
+            max_w: Some(400),
+            max_h: Some(300),
+        }),
+        "bounded equal pins stay fixed"
+    );
+    assert!(
+        !is_fixed_size(WindowSizeHints {
+            min_w: Some(-5),
+            min_h: Some(100),
+            max_w: None,
+            max_h: None,
+        }),
+        "negative hints never count"
+    );
+    fn t05_report(request_seq: u64, observation_seq: u64, hints: WindowSizeHints) -> WorldReport {
+        let mut mover = win("win-t05", "out-a", "wa1", 0);
+        mover.hints = hints;
+        let mut report = WorldReport {
+            contract_version: WORLD_CONTRACT_VERSION,
+            owner: "owner-a".to_owned(),
+            adapter_incarnation: "adapter-1".to_owned(),
+            core_generation: "gen-1".to_owned(),
+            observation_seq,
+            request_seq,
+            request_id: format!("req-{request_seq}"),
+            command_seq: None,
+            command: None,
+            workspace_mode: WorkspaceMode::PerOutputLocal,
+            topology: vec![
+                OutputTopology {
+                    output: OutputId("out-a".to_owned()),
+                    native_order: vec!["wa1".to_owned()],
+                    current_native: "wa1".to_owned(),
+                    complete: true,
+                    geometry: None,
+                    primary: false,
+                },
+                OutputTopology {
+                    output: OutputId("out-b".to_owned()),
+                    native_order: vec!["wb1".to_owned()],
+                    current_native: "wb1".to_owned(),
+                    complete: true,
+                    geometry: None,
+                    primary: false,
+                },
+            ],
+            bindings: vec![
+                WorkspaceBinding {
+                    logical_id: "la".to_owned(),
+                    native_id: "wa1".to_owned(),
+                    output: OutputId("out-a".to_owned()),
+                    pinned: false,
+                    displaced: false,
+                    managed: true,
+                },
+                WorkspaceBinding {
+                    logical_id: "lb".to_owned(),
+                    native_id: "wb1".to_owned(),
+                    output: OutputId("out-b".to_owned()),
+                    pinned: false,
+                    displaced: false,
+                    managed: true,
+                },
+            ],
+            domains: vec![
+                domain_report(
+                    "out-a",
+                    "wa1",
+                    "win-t05",
+                    vec![mover, win("win-plain", "out-a", "wa1", 150)],
+                ),
+                domain_report(
+                    "out-b",
+                    "wb1",
+                    "win-t",
+                    vec![win("win-t", "out-b", "wb1", 0)],
+                ),
+            ],
+            minimized: Vec::new(),
+            fixed_size_predicate: crate::size_hints::FixedSizePredicate::BothAxes,
+            migration_source_refill: crate::output_selection::MigrationSourceRefill::LastRemaining,
+            anchor_fallback: crate::admission::AnchorFallback::default(),
+            no_space_result: crate::admission::NoSpaceResult::default(),
+            default_tiled: true,
+            focused_global: String::new(),
+            inventory_complete: true,
+            gesture_barrier: false,
+            feedback: Vec::new(),
+        };
+        for domain in &mut report.domains {
+            if domain.domain.id.0 == "out-a" {
+                domain.domain.bounds = rect(0, 0, 800, 600);
+            }
+        }
+        report
+    }
+    let mut engine = WorldEngine::new("gen-1").expect("valid");
+    let seed = t05_report(1, 1, t05);
+    assert!(crate::world_report::validate_report(&seed));
+    assert_eq!(crate::world_report::validate_report_reason(&seed), None);
+    accepted_reply(&mut engine, &seed);
+    let mut migrate = t05_report(2, 2, t05);
+    for domain in &mut migrate.domains {
+        if domain.domain.id.0 == "out-a" {
+            domain.domain.adjacent.insert(
+                crate::directional::Direction::Right,
+                OutputId("out-b".to_owned()),
+            );
+        } else if domain.domain.id.0 == "out-b" {
+            domain.domain.adjacent.insert(
+                crate::directional::Direction::Left,
+                OutputId("out-a".to_owned()),
+            );
+        }
+    }
+    with_command(
+        &mut migrate,
+        2,
+        61,
+        WorldCommand::MigrateWorkspace {
+            source_output: OutputId("out-a".to_owned()),
+            target_output: OutputId("out-b".to_owned()),
+            workspace: "wa1".to_owned(),
+        },
+    );
+    assert!(crate::world_report::validate_report(&migrate));
+    let reply = accepted_reply(&mut engine, &migrate);
+    assert_eq!(reply.transfers.len(), 1);
+    assert!(matches!(
+        reply.transfers.as_slice(),
+        [t] if matches!(t.kind, TransferKind::Migration)
+    ));
+}
