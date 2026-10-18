@@ -124,6 +124,7 @@ pub mod workspace_select;
 #[cfg(test)]
 mod workspace_select_tests;
 pub mod workspace_send;
+pub mod workspace_send_effect;
 #[cfg(test)]
 mod workspace_send_tests;
 pub(crate) mod world_builder;

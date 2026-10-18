@@ -1,5 +1,47 @@
 # macOS managed native workspaces
 
+## Managed product-post contract (2026-10-18, tentative)
+
+Implementation and native acceptance remain pending. The earlier unarmed
+preparation checkpoint remains the current executable capability boundary.
+
+- **Target identity:** a send targets only the focused managed window admitted
+  by the engine, pinned by PID, window ID, app-lifetime generation, source domain,
+  target SID, topology revision and operation identity. Never substitute the
+  subsequently focused window. Admission-time generation must survive the
+  handoff; sampling a replacement app generation at dispatch is not proof.
+- **Pre-post proof:** require current scoped managed membership, ordinary visible
+  nonfullscreen state, unchanged lifetime/topology, fresh CG ownership/geometry,
+  the selected SLPS/direct-AX/NSWorkspace focus agreement and both positional AX
+  and WindowServer hits naming that exact target at the grab point. Repeat the
+  applicable fresh proof immediately before each actuation edge. Unknown,
+  unreadable, stale or disagreeing evidence refuses; sequential proof is not an
+  atomic OS transaction. No raise, focus substitution or raw-post bypass repairs
+  a failed proof.
+- **Nonblocking handoff:** retain the serialized claim lane and run fresh
+  create/use/drop AX proof plus the bounded native send on a dedicated effect
+  thread, not the engine, AppKit or per-app observation threads. Main-thread
+  submission and completion observation never wait for AX or native settlement.
+  Fence requests/completions by the same operation and lifetime/revision; reject
+  stale results without replay. Keep cancellation and exact thread ownership
+  explicit through shutdown. No extra periodic AX proof query is introduced.
+- **Release and result:** pending key-up/mouse-up bypass fresh target gates.
+  Release precedes effect readback and any switch-back. Applied requires exact
+  subject membership and target current-SID readback; pre-actuation refusal is
+  proven refusal, while uncertain posts, release residue or unreadable arrival
+  remain possibly executed and never replay. Existing bounded post-release
+  settlement is not a fresh-proof polling loop.
+
+Rationale: managed scope is product authority, unlike a fixture's held child;
+generation and focus checks prevent delayed commands from grabbing a replacement
+or newly focused window. A serialized effect thread reuses the existing guarded
+drag sequence without stalling AppKit or the AX owners' observation cadence.
+These are tentative technical contracts, not new native-transfer evidence.
+
+Next: implement the identity/focus refusal and asynchronous effect handoff with
+producer-shaped tests, then connect the native backend and Authentic ownership.
+Acceptance procedures 1-4 below remain pending in their stated order.
+
 ## Unarmed numbered-send preparation checkpoint (2026-10-18)
 
 **Step 2 remains incomplete. No product send is armed, no startup holder enable

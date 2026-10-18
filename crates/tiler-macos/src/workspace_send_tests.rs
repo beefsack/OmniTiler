@@ -60,7 +60,8 @@ fn row() -> SelectionSnapshot {
 
 fn claim_for(index: u8) -> ClaimedSelect {
     // Admission-bound claim: target SID resolved at admission (ordinal
-    // `index` over `row()`), revision pinned, subject pinned.
+    // `index` over `row()`), revision pinned, subject pinned with its
+    // admission-time lifetime generation and source domain.
     let target = row().spaces[usize::from(index) - 1];
     ClaimedSelect {
         action: send(index),
@@ -68,7 +69,17 @@ fn claim_for(index: u8) -> ClaimedSelect {
         ui_generation: 0,
         topology_revision: Some(9),
         send_subject: Some("4242_7".to_owned()),
+        send_generation: Some(1),
+        send_source: Some(test_source_domain()),
         operation_id: Some("op-3".to_owned()),
+    }
+}
+
+/// Admission-pinned source domain for the `claim_for` fixture subject.
+fn test_source_domain() -> tiler_core::session::DomainKey {
+    tiler_core::session::DomainKey {
+        output: OutputId("macos-display-1".to_owned()),
+        workspace: tiler_core::directional::WorkspaceId("space-20".to_owned()),
     }
 }
 
@@ -719,6 +730,8 @@ fn drain_refuses_unarmed_subjectless_and_bad_display() {
                 ui_generation: 0,
                 topology_revision: None,
                 send_subject: Some("4242_7".to_owned()),
+                send_generation: None,
+                send_source: None,
                 operation_id: None,
             },
             &open_gates(),

@@ -613,10 +613,12 @@ pub enum InputSemanticAction {
 /// `ui_generation` 0 — the select drain maps the ordinal fresh, exactly as
 /// before); menu-bar segment clicks carry the full render-time binding, and
 /// the drain refuses any claim whose ordinal no longer names the expected
-/// SID or whose revision drifted. Send-shaped claims (offline seam only —
+/// SID or whose revision drifted. Send-shaped claims (offline seam only --
 /// product never enqueues them) carry a binding bound at admission: the
 /// engine resolves the target SID plus the current topology revision at
-/// admission time and pins the focused-window subject (`send_subject`), so
+/// admission time and pins the focused-window subject (`send_subject`)
+/// with its app-lifetime generation (`send_generation`, never re-sampled
+/// at dispatch) and source domain (`send_source`), so
 /// the send drain revalidates the ordinal against the same generation and
 /// never grabs a different window. An ordinal is therefore never interpreted
 /// against a different generation or topology than the claim rendered.
@@ -631,6 +633,16 @@ pub struct ClaimedSelect {
     /// Always `None` for selects (no subject) and for unbound tap claims
     /// before engine admission binds them.
     pub send_subject: Option<String>,
+    /// Admission-pinned app-lifetime generation for the subject PID
+    /// (from retained observation truth at admission, never re-sampled at
+    /// dispatch: a PID reuse after relaunch must refuse instead of grabbing
+    /// the new lifetime's window). Always `None` for selects.
+    pub send_generation: Option<u64>,
+    /// Admission-pinned source domain homing the subject (`window_domains`
+    /// at admission). Fresh proof requires the subject still homed to this
+    /// exact domain and the domain still current — never a moved or hidden
+    /// domain. Always `None` for selects.
+    pub send_source: Option<DomainKey>,
     /// Stable world-command operation identity (`op-<command_seq>`) minted
     /// at engine dispatch: the main-thread drain reports its native outcome
     /// under this id so the core settles the planner-owned view target
@@ -651,6 +663,8 @@ impl ClaimedSelect {
             ui_generation: 0,
             topology_revision: None,
             send_subject: None,
+            send_generation: None,
+            send_source: None,
             operation_id: None,
         }
     }
@@ -670,6 +684,8 @@ impl ClaimedSelect {
             ui_generation,
             topology_revision: Some(topology_revision),
             send_subject: None,
+            send_generation: None,
+            send_source: None,
             operation_id: None,
         }
     }

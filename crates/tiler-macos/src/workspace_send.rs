@@ -37,11 +37,15 @@
 //! tile controller drains.
 //!
 //! Subject: the focused managed window pinned at engine admission
-//! ([`crate::runtime_types::ClaimedSelect::send_subject`]) — observed focus,
+//! ([`crate::runtime_types::ClaimedSelect::send_subject`] with its
+//! admission-time lifetime generation and source domain) — observed focus,
 //! homed to a currently-actuated domain, never fullscreen (game/fullscreen
 //! foregrounds never drag). The drain re-proves subject state fresh through
 //! [`SendBackend::subject_state`] and refuses drift instead of grabbing a
-//! different window. Target: the ordinal resolves fresh against the drain's
+//! different window; the scoped identity/proof/handoff seam in
+//! [`crate::workspace_send_effect`] pins the generation at admission and
+//! refuses pure focus swaps plus stale lifetimes for the future native
+//! backend. Target: the ordinal resolves fresh against the drain's
 //! user row ([`send_target_sid`]) and must still name the admission-time SID
 //! ([`crate::runtime_types::ClaimedSelect::expected_sid`]) under the same
 //! topology revision — a reorder between admission and drain refuses instead

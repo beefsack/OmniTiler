@@ -1383,7 +1383,9 @@ fn refuse_send_claim(shared: &Arc<Mutex<Shared>>, token: &'static str) {
 /// not read native fullscreen (game/fullscreen foregrounds never drag).
 /// The target ordinal binds to its admission-time SID plus the current
 /// topology revision so the drain revalidates instead of interpreting the
-/// ordinal against a different generation.
+/// ordinal against a different generation. The subject lifetime
+/// (`send_generation`) and source domain (`send_source`) pin here from
+/// retained engine truth — never re-sampled at dispatch.
 fn handle_send_action(
     session: &mut WorldSession,
     retained: &mut RetainedCore,
@@ -1460,13 +1462,28 @@ fn handle_send_action(
     };
     // Bind the admission-time target SID plus the live revision: the drain
     // refuses a moved ordinal instead of sending to the new occupant.
+    // Admission pins the subject lifetime and source domain from retained
+    // engine truth (never re-sampled at dispatch: a PID reuse after
+    // relaunch must refuse instead of grabbing the new lifetime's
+    // window, and a moved subject must refuse instead of dragging from
+    // the wrong domain).
     let Some(target_sid) = crate::workspace_send::context_target_sid(&ctx, &output, index) else {
         refuse_send_claim(shared, "refused-send-no-target");
+        return;
+    };
+    let Some((subject_pid, _)) = crate::runtime_types::parse_window_id(&window.0) else {
+        refuse_send_claim(shared, "refused-send-bad-subject");
+        return;
+    };
+    let Some(subject_generation) = retained.apps.get(&subject_pid).map(|app| app.generation) else {
+        refuse_send_claim(shared, "refused-send-no-lifetime");
         return;
     };
     claim.expected_sid = Some(target_sid);
     claim.topology_revision = Some(ctx.revision);
     claim.send_subject = Some(window.0.clone());
+    claim.send_generation = Some(subject_generation);
+    claim.send_source = Some(key.clone());
     match dispatch_report(
         session,
         retained,
