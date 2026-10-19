@@ -136,6 +136,9 @@ to ordinary application windows are in scope.
   normal product owner could manage the helper. No helper/controller/observer
   was launched, and no window, setting or product owner was changed. There is
   no native cloak, restoration, crash, taskbar or shell-selection evidence yet.
+- Live smoke, independent recovery, shell-selection and crash observations are
+  pending user-run evidence under the procedure below; offline gates do not
+  replace them.
 - Review found stale delayed-restoration identity checks and an unsuitable
   console stop mechanism. These were corrected before live execution with
   original-identity rechecks, retained process handles, file-based stop,

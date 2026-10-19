@@ -581,6 +581,7 @@ decisions of 2026-09-24 are under
   helper, user-run per the live guide (cloak/uncloak, taskbar and Alt+Tab
   listing, selection, stop/crash restoration on the current build). Report
   feasibility and a scoped design before any product change or 0.1 change.
+  Tooling and exact user-run steps: [active spike](changes/windows-cloak-spike.md).
   [Research](research/windows-port/alt-tab-hidden-workspaces.md),
   [decision](decisions.md#workspaces).
 - P1 | 0.1 triage decisions - batch 1 verification (KDE/shared) | User
