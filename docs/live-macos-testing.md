@@ -164,6 +164,18 @@ experiment.
   assignments, functions or subshell syntax; inline literal values instead.
 - Agent live legs keep the display awake with a bounded `caffeinate -d` child,
   reaped afterwards; check the session lock state before each leg and stop on lock.
+- Agents never run the unscoped `just dev` (it manages ordinary apps on each
+  display's current Space, which can include the controlling terminal); use the
+  scoped `just tile --scope ...` route. Stop only
+  processes the leg started, by exact PID; never `pkill -f` or `killall` by name.
+  Leave pre-existing processes (including another `caffeinate`) untouched.
+- Screen capture needs the Screen Recording permission (and window access
+  without the picker) for the terminal hosting the agent, and the grant only
+  takes effect after that terminal restarts. Restarting it ends the agent
+  session, so ask the user to grant and restart at a planned pause.
+- Synthetic product chords for TextEdit legs use the diagnostic disposable-
+  document route (documents in a run-owned temporary directory, refused when
+  any other app is frontmost); the helper-ownership route remains for helpers.
 - Launch physical probes through the signed bundle. Use the launcher's `--stream`
   option for real-time press instructions and a wrapper timeout longer than the
   probe budget. Ctrl+C stops this launch wrapper, not the LaunchServices child;

@@ -4045,12 +4045,18 @@ decisions of 2026-09-24 are under
      system shortcut for the default bindings (test-only slice of the shortcut
      conflict model, user 2026-10-17); indicator icons (deferred) and the
      indicator on multiple displays; `just launch` exits nonzero on successful
-     probes; Mission Control Ctrl+Up/Down chords; macOS 15 floor; P2
+     probes; `just dev` (`scripts/macos-dev.sh`) leaks its `tail -F` log
+     followers after the run ends (orphans found 2026-10-19), so reap them on
+     every exit path; split oversized macOS production files toward the
+     [file size](principles.md#file-size) cap (several hotspots, including
+     `runtime.rs`); Mission Control Ctrl+Up/Down chords; macOS 15 floor; P2
      classification discriminators.
   10. Distribution: DMG and Homebrew, signing and notarisation (paid Apple
       account), update channel, App Store.
-  **Pending physical acceptance (dogfooding):** select-only workspaces
-  ([procedure](changes/macos-managed-workspaces.md#select-only-fallback-handover-2026-10-17));
+  **Pending physical acceptance (dogfooding):** workspace selects, send-follow,
+  send-stay and trailing Space, plus the user-approved 2026-10-19 decisions
+  ([dogfood checklist](changes/macos-managed-workspaces.md#trailing-workspace-armed-checkpoint-2026-10-19));
+  Mission Control transition feel;
   consume-first ([§5](changes/archive/macos-dogfood-hardening.md#5-consume-first-parity-2026-10-17));
   active border appearance ([§6](changes/archive/macos-dogfood-hardening.md#6-active-border-appearance-check-pending-2026-10-17));
   workspace indicator click and Space-switch updates
@@ -4286,6 +4292,10 @@ decisions of 2026-09-24 are under
   (layer-shell gap surfaces first, KWin input filter fallback; needs a Rust
   split-boundary request).
   [native boundary](decisions.md#engine-architecture-and-convergence)
+- P2 | Commit metadata leak | Commit `c4b181f` carries a machine host name in
+  its author email ([Local-System Information](../AGENTS.md#local-system-information)).
+  Fixing it rewrites published history and needs a force-push: explicit user
+  approval, at a time when no other agent is pushing.
 - P3 | Stale branches | Twelve stale branches need explicit user
   authorization before deletion.
   [branches](https://github.com/beefsack/OmniTiler/branches)
