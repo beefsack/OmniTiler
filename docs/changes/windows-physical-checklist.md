@@ -91,6 +91,12 @@
 
 ## Two-monitor PC
 
+Bounded native evidence 2026-10-20: focused-output workspace CLI routing and
+secondary pager carrier geometry/visibility/message-driven selection pass
+([record](windows-dual-output-live.md)). Physical shortcut/mouse delivery,
+occupied-pager switching, Explorer restart and display changes remain pending;
+no complete W2M row is inferred from these narrower checks.
+
 | ID | Action | Pass criterion | Gate IDs | Source |
 | --- | --- | --- | --- | --- |
 | W2M-01 | Place tiles on both outputs with different currents; Win+Shift+Right/Left to exhaustion and cross, reverse; repeat into empty dest; Win+Right/Left last-focused select and reverse; run one wide source against two outputs on the requested edge with centre-projection, span-overlap and left/top legs | Cross arrives on adjacent output with follow focus, fits work area, leaves source; empty dest switches nothing; vertical focus stays local; correct candidate each discrimination leg; note where a third output is required | 2-M (partial), 43-M (partial), WX3-M (partial) | [foundation](windows-multi-output-foundation.md#remaining-physical-check) |
@@ -105,7 +111,7 @@
 | W2M-10 | Recover from exact-owner loss with both output-local workspaces; refresh identities/topology and restore hidden claims | Tiling restored on both outputs without false-clean stop | 50-M (partial), WX7-M (partial) | [record](archive/windows-managed-workspaces.md) |
 | W2M-11 | Sleep/wake with both output-local workspaces; refresh identities/topology and restore hidden claims | Tiling restored on both outputs, game leg stays in WLC-03 | 50-M (partial), WX4-M (partial) | [backlog](../backlog.md#pending-live-checks) |
 | W2M-12 | BLOCKED T2 capacity-float crossing refusal on two outputs (paired with P1 \| Core + Windows: world migration authority and T2 crossing refusal) | BLOCKED on pre-commit refusal contract; when unblocked: refusal preserves source Engine and membership, no remap guessed | 43-M (blocked), WX8-M (blocked) | [world route](windows-full-world-state-replies.md#w2b-cross-stream-proposals) |
-| W2M-13 | Inspect secondary taskbar tray anchors and per-output pager after actual Explorer restart, mixed-DPI changes and physical selection | Current secondary anchors safely refuse with truthful tray fallback, never guessed placement; per-output supported pager acceptance remains pending, not waived by refusal | WX2-M (partial), WX3-M (partial) | [pager lifecycle](archive/windows-taskbar-pager-lifecycle.md), [gate](windows-0.1-gate-proposal.md#approved-windows-specific-extras) |
+| W2M-13 | Inspect secondary taskbar tray anchors and per-output pager after actual Explorer restart, mixed-DPI changes and physical selection | Exact tray/clock anchors or the recognized no-notification-area hierarchy serve each output; unreadable/unsupported hierarchies safely refuse with tray fallback. Native carrier/message-selection evidence passes; restart/display-change/physical-input acceptance remains pending | WX2-M (partial), WX3-M (partial) | [live fixes](windows-dual-output-live.md), [pager lifecycle](archive/windows-taskbar-pager-lifecycle.md), [gate](windows-0.1-gate-proposal.md#approved-windows-specific-extras) |
 
 ## Blocker note
 

@@ -31,9 +31,11 @@
 //!   applications while hidden.
 //! - Only a horizontal bottom-docked taskbar is served; top/left/right
 //!   taskbars refuse with a reason instead of guessing an anchor.
-//! - Secondary taskbars (`Shell_SecondaryTrayWnd`) refuse with
-//!   `secondary-tray-unproven`: their clock area has no stable child to
-//!   anchor against, so tray exclusion cannot be proven.
+//! - Secondary taskbars (`Shell_SecondaryTrayWnd`) serve only with a proven
+//!   edge: an exact tray/clock child edge, or the bar's own right edge once
+//!   native discovery proves no right-side shell region exists there.
+//!   Unproven topologies refuse with `secondary-tray-unproven`, never a
+//!   guessed anchor.
 //! - `NoRoom` is a geometry-invalid bound, not app-icon crowding: cells are a
 //!   fixed physical width per workspace, so ordinary taskbar crowding (many
 //!   app icons, many windows per workspace) never changes the layout. When
@@ -137,11 +139,170 @@ pub struct TaskbarFacts {
 }
 
 /// Primary taskbars prove tray exclusion through `TrayNotifyWnd`;
-/// secondaries cannot and always refuse.
+/// secondaries prove it through [`resolve_secondary_anchor`] and refuse
+/// otherwise.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskbarKind {
     Primary,
     Secondary,
+}
+
+/// Captured facts for one enumerated secondary-taskbar descendant window.
+/// Gathering only (native side builds these); the anchor decision lives in
+/// [`resolve_secondary_anchor`]. `None` class/rect means that read failed:
+/// a window that disappears between enumeration and readback is unknown,
+/// never empty, so any unreadable fact refuses.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecondaryChildFact {
+    pub class: Option<String>,
+    pub rect: Option<Rect>,
+    pub visible: bool,
+}
+
+/// Decided secondary anchor: an exact tray/clock child left edge, the bar's
+/// own right edge once the census proves the recognized no-tray hierarchy,
+/// or unproven (refuse, never guess).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecondaryAnchor {
+    TrayChild(i32),
+    BarRight(i32),
+    Unproven,
+}
+
+/// Observed secondary descendant classes for the narrowly recognized
+/// no-notification-area hierarchy (native-captured, Win11): exact tray/clock
+/// children win first; otherwise only left app-button hosts, a left launcher
+/// clear of the edge, an exactly bar-sized composition bridge, and a
+/// zero-area input site are recognized. Visible anything-else refuses.
+const SECONDARY_TRAY_CLASS: &str = "TrayNotifyWnd";
+const SECONDARY_CLOCK_CLASS: &str = "ClockButton";
+const SECONDARY_APP_HOST_A: &str = "WorkerW";
+const SECONDARY_APP_HOST_B: &str = "MSTaskListWClass";
+const SECONDARY_LAUNCHER_CLASS: &str = "Start";
+const SECONDARY_BRIDGE_CLASS: &str = "Windows.UI.Composition.DesktopWindowContentBridge";
+const SECONDARY_INPUT_CLASS: &str = "Windows.UI.Input.InputSite.WindowClass";
+
+/// Resolve one secondary bar's tray edge from its flat descendant census
+/// (pure; native only gathers [`SecondaryChildFact`]s). The census is
+/// already complete including nested descendants: the native enumeration
+/// contract covers every descendant, so no hierarchy is reconstructed here.
+/// Decision, narrowly:
+/// - empty census refuses: disappearance is unknown, never empty;
+/// - any unreadable class/rect refuses, even hidden (a fact that cannot be
+///   read cannot prove anything, and disappearance must never read as
+///   absence);
+/// - an exact `TrayNotifyWnd`/`ClockButton` edge wins first: the minimum left
+///   edge among all readable nondegenerate exact regions (enumeration order
+///   never decides), regardless of visibility or siblings. A degenerate
+///   exact node (zero-width placeholder) refuses outright instead of falling
+///   back to bar-right: its tray edge is unproven and bar-right could cover
+///   it;
+/// - else the bar's own right edge, but only for the recognized hierarchy:
+///   every visible child must be a known class in a known shape
+///   (left-anchored app-button host, left launcher clear of the edge, an
+///   exactly bar-sized composition bridge, or a zero-area input site), and
+///   at least one visible left app-button host must actually be present: an
+///   empty or all-hidden census proves nothing and refuses.
+///
+/// Anything else (unknown visible class, bridge impostor, right-touching
+/// content, missing positive evidence) refuses. This deliberately covers
+/// only the observed hierarchy; it is not universal shell compatibility and
+/// says nothing about HWND-less composition pixels: only HWND-descendant
+/// facts decide here.
+#[must_use]
+pub fn resolve_secondary_anchor(bar: Rect, children: &[SecondaryChildFact]) -> SecondaryAnchor {
+    if children.is_empty() {
+        return SecondaryAnchor::Unproven;
+    }
+    // Readability first: any unreadable class/rect refuses, even hidden. A
+    // fact that cannot be read cannot prove anything, and a window that
+    // disappears between enumeration and readback is unknown, never absent.
+    // No later exact edge rescues unknown facts.
+    for child in children {
+        if child.class.is_none() || child.rect.is_none() {
+            return SecondaryAnchor::Unproven;
+        }
+    }
+    // Exact tray/clock edges win next, like the primary path: the minimum
+    // left edge among all readable nondegenerate exact regions, so
+    // enumeration order never decides (a first-enumerated clock must not
+    // cover tray region left of it). A degenerate exact node refuses
+    // outright instead of falling back to bar-right: a zero-width
+    // placeholder proves no edge and bar-right could cover it.
+    let mut exact: Option<i32> = None;
+    for child in children {
+        // Safe: the pass above refused every unreadable fact.
+        let class = child.class.as_deref().unwrap_or_default();
+        let rect = child.rect.unwrap_or(Rect {
+            x: 0,
+            y: 0,
+            w: 0,
+            h: 0,
+        });
+        if class == SECONDARY_TRAY_CLASS || class == SECONDARY_CLOCK_CLASS {
+            if rect.w <= 0 || rect.h <= 0 {
+                return SecondaryAnchor::Unproven;
+            }
+            exact = Some(exact.map_or(rect.x, |min: i32| min.min(rect.x)));
+        }
+    }
+    if let Some(left) = exact {
+        return SecondaryAnchor::TrayChild(left);
+    }
+    // Bar-right fallback for the recognized hierarchy only. Every fact is
+    // readable here (the pass above refused otherwise); hidden children hold
+    // no pixels and are ignored beyond that.
+    let bar_right = bar.x.saturating_add(bar.w);
+    let bar_centre = bar.x.saturating_add(bar.w / 2);
+    let mut positive = false;
+    for child in children {
+        // Safe: the first pass refused every unreadable fact.
+        let class = child.class.as_deref().unwrap_or_default();
+        let rect = child.rect.unwrap_or(Rect {
+            x: 0,
+            y: 0,
+            w: 0,
+            h: 0,
+        });
+        if !child.visible {
+            continue;
+        }
+        let degenerate = rect.w <= 0 || rect.h <= 0;
+        let right = rect.x.saturating_add(rect.w);
+        if class == SECONDARY_APP_HOST_A || class == SECONDARY_APP_HOST_B {
+            // Left app-button host: must start left of centre, stay clear of
+            // the right edge, and hold real pixels to count as positive
+            // topology evidence.
+            if degenerate || rect.x >= bar_centre || right >= bar_right {
+                return SecondaryAnchor::Unproven;
+            }
+            positive = true;
+        } else if class == SECONDARY_LAUNCHER_CLASS {
+            // Left launcher: must stay clear of the right edge.
+            if right >= bar_right {
+                return SecondaryAnchor::Unproven;
+            }
+        } else if class == SECONDARY_BRIDGE_CLASS {
+            // Composition host: exempt only with exact 2-D bar bounds. This
+            // says nothing about pixels composited without HWNDs; only that
+            // no HWND descendant claims the right edge (nested descendants
+            // arrive as their own flat census entries and face these rules).
+            if rect != bar {
+                return SecondaryAnchor::Unproven;
+            }
+        } else if class == SECONDARY_INPUT_CLASS {
+            // Zero-area input site only; any real pixels refuse.
+            if !degenerate {
+                return SecondaryAnchor::Unproven;
+            }
+        } else {
+            return SecondaryAnchor::Unproven;
+        }
+    }
+    if !positive {
+        return SecondaryAnchor::Unproven;
+    }
+    SecondaryAnchor::BarRight(bar_right)
 }
 
 /// Why one output got no strip (bounded log vocabulary, no HWNDs).
@@ -227,7 +388,7 @@ pub fn strip_for_taskbar(
     if !taskbar.visible {
         return Err(PagerRefusal::TaskbarHidden);
     }
-    if taskbar.kind == TaskbarKind::Secondary {
+    if taskbar.kind == TaskbarKind::Secondary && taskbar.tray_left.is_none() {
         return Err(PagerRefusal::SecondaryTrayUnproven);
     }
     let bar = taskbar.rect;
@@ -737,13 +898,18 @@ mod tests {
             strip_for_taskbar(full(), &bar, 2),
             Err(PagerRefusal::TaskbarHidden)
         );
-        // Secondary tray area is unproven.
+        // Unproven secondary tray area refuses narrowly (native discovery
+        // could not prove an exact child edge or an empty right edge).
         let mut bar = bottom_bar();
         bar.kind = TaskbarKind::Secondary;
+        bar.tray_left = None;
         assert_eq!(
             strip_for_taskbar(full(), &bar, 2),
             Err(PagerRefusal::SecondaryTrayUnproven)
         );
+        // A proven secondary edge serves exactly like the primary path.
+        bar.tray_left = Some(1700);
+        assert!(strip_for_taskbar(full(), &bar, 2).is_ok());
         // Vertical taskbar is not served.
         let mut bar = bottom_bar();
         bar.rect = Rect {
@@ -794,10 +960,12 @@ mod tests {
         bar.visible = true;
         let strip = strip_for_taskbar(full(), &bar, 2).expect("re-anchors");
         assert_eq!(right(strip), 1700 - PAGER_TRAY_GAP);
-        // Non-bottom and secondary refusals survive alongside the new one.
+        // Non-bottom and unproven-secondary refusals survive alongside the
+        // new one.
         let mut side = bottom_bar();
         side.autohide = true;
         side.kind = TaskbarKind::Secondary;
+        side.tray_left = None;
         assert_eq!(
             strip_for_taskbar(full(), &side, 2),
             Err(PagerRefusal::TaskbarAutohide)
@@ -889,6 +1057,642 @@ mod tests {
             PagerRefusal::TaskbarAutohide
         );
         assert_eq!(bar.tray_left, Some(1700), "tray proof retained");
+    }
+
+    fn secondary_full() -> Rect {
+        // Captured native topology (Win11, two-display host): DISPLAY2 at
+        // (2560,355) 1920x1080 with a bottom-docked 48px secondary bar.
+        Rect {
+            x: 2560,
+            y: 355,
+            w: 1920,
+            h: 1080,
+        }
+    }
+
+    fn secondary_bar_right_anchored() -> TaskbarFacts {
+        // Native child set on this build: full-span composition bridge,
+        // zero-area input site, hidden Start, left-anchored WorkerW /
+        // MSTaskListWClass app-button hosts ending ~1513px left of the bar
+        // edge; no TrayNotifyWnd/ClockButton anywhere. Discovery proves the
+        // empty right edge and anchors to the bar's own right side.
+        TaskbarFacts {
+            rect: Rect {
+                x: 2560,
+                y: 1387,
+                w: 1920,
+                h: 48,
+            },
+            tray_left: Some(4480),
+            kind: TaskbarKind::Secondary,
+            visible: true,
+            autohide: false,
+            dpi: PAGER_BASE_DPI,
+        }
+    }
+
+    #[test]
+    fn secondary_proven_right_edge_anchors() {
+        let bar = secondary_bar_right_anchored();
+        let strip = strip_for_taskbar(secondary_full(), &bar, 2).expect("serves");
+        assert_eq!(strip.w, 2 * dpi_cell_w(PAGER_BASE_DPI));
+        assert_eq!(right(strip), 4480 - PAGER_TRAY_GAP);
+        assert!(strip.y >= 1387 && bottom(strip) <= 1435);
+        // The app-button span (native 2615..2967) sits far left of the
+        // right-anchored strip: ordinary counts never touch it.
+        assert!(strip.x > 2967);
+    }
+
+    #[test]
+    fn secondary_tray_child_anchors_exact() {
+        // A build hosting a real secondary tray proves its exact child edge
+        // (same anchor shape as the primary path).
+        let mut bar = secondary_bar_right_anchored();
+        bar.tray_left = Some(4300);
+        let strip = strip_for_taskbar(secondary_full(), &bar, 3).expect("serves");
+        assert_eq!(right(strip), 4300 - PAGER_TRAY_GAP);
+        assert_eq!(strip.w, 3 * dpi_cell_w(PAGER_BASE_DPI));
+    }
+
+    #[test]
+    fn secondary_fences_match_primary() {
+        // Hidden, auto-hide, non-bottom and unknown-edge secondaries refuse
+        // with the same honest reasons as the primary path.
+        let mut bar = secondary_bar_right_anchored();
+        bar.visible = false;
+        assert_eq!(
+            strip_for_taskbar(secondary_full(), &bar, 2),
+            Err(PagerRefusal::TaskbarHidden)
+        );
+        bar.visible = true;
+        bar.autohide = true;
+        assert_eq!(
+            strip_for_taskbar(secondary_full(), &bar, 2),
+            Err(PagerRefusal::TaskbarAutohide)
+        );
+        bar.autohide = false;
+        bar.rect = Rect {
+            x: 2560,
+            y: 355,
+            w: 48,
+            h: 1080,
+        };
+        assert_eq!(
+            strip_for_taskbar(secondary_full(), &bar, 2),
+            Err(PagerRefusal::NotBottomDocked)
+        );
+        // Over-wide strips refuse instead of covering the app buttons.
+        let bar = secondary_bar_right_anchored();
+        assert_eq!(
+            strip_for_taskbar(secondary_full(), &bar, 27),
+            Err(PagerRefusal::NoRoom)
+        );
+        // An edge outside its own bar refuses instead of parking over it.
+        let mut outside = secondary_bar_right_anchored();
+        outside.tray_left = Some(4481);
+        assert_eq!(
+            strip_for_taskbar(secondary_full(), &outside, 2),
+            Err(PagerRefusal::TrayOutsideBar)
+        );
+    }
+
+    #[test]
+    fn secondary_frames_one_strip_per_output() {
+        use std::collections::BTreeMap;
+        let mut spaces = crate::workspace::ManagedWorkspaces::new();
+        spaces.ensure_output("mon-b");
+        let pager = build_output_pager(
+            &spaces,
+            &HashMap::new(),
+            &BTreeMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &[],
+            "mon-b",
+            secondary_full(),
+            &secondary_bar_right_anchored(),
+        )
+        .expect("secondary frames");
+        assert_eq!(pager.output, "mon-b");
+        assert_eq!(right(pager.strip), 4480 - PAGER_TRAY_GAP);
+        // The unproven topology still refuses at frame level, never guessed.
+        let mut unproven = secondary_bar_right_anchored();
+        unproven.tray_left = None;
+        assert_eq!(
+            build_output_pager(
+                &spaces,
+                &HashMap::new(),
+                &BTreeMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+                &[],
+                "mon-b",
+                secondary_full(),
+                &unproven,
+            )
+            .expect_err("unproven never frames"),
+            PagerRefusal::SecondaryTrayUnproven
+        );
+    }
+
+    fn sec_fact(class: &str, rect: Rect, visible: bool) -> SecondaryChildFact {
+        SecondaryChildFact {
+            class: Some(class.to_owned()),
+            rect: Some(rect),
+            visible,
+        }
+    }
+
+    fn sec_bar_rect() -> Rect {
+        Rect {
+            x: 2560,
+            y: 1387,
+            w: 1920,
+            h: 48,
+        }
+    }
+
+    fn captured_secondary_census() -> Vec<SecondaryChildFact> {
+        // Native flat descendant census (Win11 build 26300, secondary bar
+        // 2560,1387 1920x48): the composition bridge spans exactly the bar,
+        // its zero-area input site nests inside it (flat entries both: the
+        // contract enumerates every descendant), Start is hidden at the
+        // left, and visible WorkerW/MSTaskListWClass hosts sit left at
+        // 2615..2967. No tray/clock descendant anywhere.
+        vec![
+            sec_fact(
+                "Windows.UI.Composition.DesktopWindowContentBridge",
+                sec_bar_rect(),
+                true,
+            ),
+            sec_fact(
+                "Windows.UI.Input.InputSite.WindowClass",
+                Rect {
+                    x: 2560,
+                    y: 1387,
+                    w: 0,
+                    h: 0,
+                },
+                true,
+            ),
+            sec_fact(
+                "Start",
+                Rect {
+                    x: 2560,
+                    y: 1387,
+                    w: 55,
+                    h: 48,
+                },
+                false,
+            ),
+            sec_fact(
+                "WorkerW",
+                Rect {
+                    x: 2615,
+                    y: 1387,
+                    w: 352,
+                    h: 48,
+                },
+                true,
+            ),
+            sec_fact(
+                "MSTaskListWClass",
+                Rect {
+                    x: 2615,
+                    y: 1387,
+                    w: 352,
+                    h: 48,
+                },
+                true,
+            ),
+        ]
+    }
+
+    #[test]
+    fn secondary_anchor_accepts_captured_hierarchy() {
+        assert_eq!(
+            resolve_secondary_anchor(sec_bar_rect(), &captured_secondary_census()),
+            SecondaryAnchor::BarRight(4480)
+        );
+    }
+
+    #[test]
+    fn secondary_anchor_wires_into_strip_geometry() {
+        // The pure decision (not an injected edge) drives the strip: the
+        // captured census resolves to the bar-right anchor and frames.
+        let anchor = resolve_secondary_anchor(sec_bar_rect(), &captured_secondary_census());
+        let tray_left = match anchor {
+            SecondaryAnchor::TrayChild(left) | SecondaryAnchor::BarRight(left) => Some(left),
+            SecondaryAnchor::Unproven => None,
+        };
+        let facts = TaskbarFacts {
+            rect: sec_bar_rect(),
+            tray_left,
+            kind: TaskbarKind::Secondary,
+            visible: true,
+            autohide: false,
+            dpi: PAGER_BASE_DPI,
+        };
+        let strip = strip_for_taskbar(secondary_full(), &facts, 2).expect("serves");
+        assert_eq!(right(strip), 4480 - PAGER_TRAY_GAP);
+    }
+
+    #[test]
+    fn secondary_anchor_prefers_exact_tray_and_clock_children() {
+        let mut census = captured_secondary_census();
+        census.push(sec_fact(
+            "TrayNotifyWnd",
+            Rect {
+                x: 4300,
+                y: 1387,
+                w: 180,
+                h: 48,
+            },
+            true,
+        ));
+        assert_eq!(
+            resolve_secondary_anchor(sec_bar_rect(), &census),
+            SecondaryAnchor::TrayChild(4300)
+        );
+        // A hidden tray still anchors exactly (primary-symmetric): hiding the
+        // region never moves pixels over it.
+        let mut hidden = captured_secondary_census();
+        hidden.push(sec_fact(
+            "TrayNotifyWnd",
+            Rect {
+                x: 4300,
+                y: 1387,
+                w: 180,
+                h: 48,
+            },
+            false,
+        ));
+        assert_eq!(
+            resolve_secondary_anchor(sec_bar_rect(), &hidden),
+            SecondaryAnchor::TrayChild(4300)
+        );
+        let mut clock = captured_secondary_census();
+        clock.push(sec_fact(
+            "ClockButton",
+            Rect {
+                x: 4350,
+                y: 1387,
+                w: 130,
+                h: 48,
+            },
+            true,
+        ));
+        assert_eq!(
+            resolve_secondary_anchor(sec_bar_rect(), &clock),
+            SecondaryAnchor::TrayChild(4350)
+        );
+    }
+
+    #[test]
+    fn secondary_anchor_exact_edge_prefers_minimum_x_regardless_of_order() {
+        // If ClockButton enumerates before an encompassing TrayNotifyWnd,
+        // anchoring to the clock alone could cover tray region left of it:
+        // the minimum left edge wins in either enumeration order.
+        let tray = sec_fact(
+            "TrayNotifyWnd",
+            Rect {
+                x: 4300,
+                y: 1387,
+                w: 180,
+                h: 48,
+            },
+            true,
+        );
+        let clock = sec_fact(
+            "ClockButton",
+            Rect {
+                x: 4350,
+                y: 1387,
+                w: 130,
+                h: 48,
+            },
+            true,
+        );
+        let mut clock_first = captured_secondary_census();
+        clock_first.push(clock.clone());
+        clock_first.push(tray.clone());
+        assert_eq!(
+            resolve_secondary_anchor(sec_bar_rect(), &clock_first),
+            SecondaryAnchor::TrayChild(4300)
+        );
+        let mut tray_first = captured_secondary_census();
+        tray_first.push(tray);
+        tray_first.push(clock);
+        assert_eq!(
+            resolve_secondary_anchor(sec_bar_rect(), &tray_first),
+            SecondaryAnchor::TrayChild(4300)
+        );
+        // Minimum wins even when the clock sits left of the tray.
+        let mut swapped = captured_secondary_census();
+        swapped.push(sec_fact(
+            "TrayNotifyWnd",
+            Rect {
+                x: 4350,
+                y: 1387,
+                w: 130,
+                h: 48,
+            },
+            true,
+        ));
+        swapped.push(sec_fact(
+            "ClockButton",
+            Rect {
+                x: 4300,
+                y: 1387,
+                w: 180,
+                h: 48,
+            },
+            true,
+        ));
+        assert_eq!(
+            resolve_secondary_anchor(sec_bar_rect(), &swapped),
+            SecondaryAnchor::TrayChild(4300)
+        );
+    }
+
+    #[test]
+    fn secondary_anchor_refuses_degenerate_exact_node() {
+        // A zero-width tray placeholder proves no edge: refuse outright
+        // instead of falling back to bar-right.
+        let mut census = captured_secondary_census();
+        census.push(sec_fact(
+            "TrayNotifyWnd",
+            Rect {
+                x: 4300,
+                y: 1387,
+                w: 0,
+                h: 48,
+            },
+            true,
+        ));
+        assert_eq!(
+            resolve_secondary_anchor(sec_bar_rect(), &census),
+            SecondaryAnchor::Unproven
+        );
+        // A degenerate exact node poisons even a valid exact sibling: the
+        // census disagrees about the tray region, so no edge is proven.
+        let mut census = captured_secondary_census();
+        census.push(sec_fact(
+            "ClockButton",
+            Rect {
+                x: 4350,
+                y: 1387,
+                w: 130,
+                h: 0,
+            },
+            true,
+        ));
+        census.push(sec_fact(
+            "TrayNotifyWnd",
+            Rect {
+                x: 4300,
+                y: 1387,
+                w: 180,
+                h: 48,
+            },
+            true,
+        ));
+        assert_eq!(
+            resolve_secondary_anchor(sec_bar_rect(), &census),
+            SecondaryAnchor::Unproven
+        );
+    }
+
+    #[test]
+    fn secondary_anchor_refuses_empty_and_unreadable() {
+        assert_eq!(
+            resolve_secondary_anchor(sec_bar_rect(), &[]),
+            SecondaryAnchor::Unproven
+        );
+        // Unreadable class on a visible child.
+        let mut census = captured_secondary_census();
+        census[3].class = None;
+        assert_eq!(
+            resolve_secondary_anchor(sec_bar_rect(), &census),
+            SecondaryAnchor::Unproven
+        );
+        // Unreadable rect on a visible child (disappeared mid-read).
+        let mut census = captured_secondary_census();
+        census[3].rect = None;
+        assert_eq!(
+            resolve_secondary_anchor(sec_bar_rect(), &census),
+            SecondaryAnchor::Unproven
+        );
+        // Strictest legs: unreadable facts refuse even when hidden.
+        let mut census = captured_secondary_census();
+        census[2].rect = None;
+        assert_eq!(
+            resolve_secondary_anchor(sec_bar_rect(), &census),
+            SecondaryAnchor::Unproven
+        );
+        let mut census = captured_secondary_census();
+        census[2].class = None;
+        assert_eq!(
+            resolve_secondary_anchor(sec_bar_rect(), &census),
+            SecondaryAnchor::Unproven
+        );
+        // Unknown facts are never rescued by an exact edge elsewhere.
+        let mut census = captured_secondary_census();
+        census[0].rect = None;
+        census.push(sec_fact(
+            "TrayNotifyWnd",
+            Rect {
+                x: 4300,
+                y: 1387,
+                w: 180,
+                h: 48,
+            },
+            true,
+        ));
+        assert_eq!(
+            resolve_secondary_anchor(sec_bar_rect(), &census),
+            SecondaryAnchor::Unproven
+        );
+    }
+
+    #[test]
+    fn secondary_anchor_refuses_vacuous_censuses() {
+        // Known classes but nothing visible: no positive evidence.
+        let census = vec![
+            sec_fact(
+                "Windows.UI.Composition.DesktopWindowContentBridge",
+                sec_bar_rect(),
+                false,
+            ),
+            sec_fact(
+                "Start",
+                Rect {
+                    x: 2560,
+                    y: 1387,
+                    w: 55,
+                    h: 48,
+                },
+                false,
+            ),
+        ];
+        assert_eq!(
+            resolve_secondary_anchor(sec_bar_rect(), &census),
+            SecondaryAnchor::Unproven
+        );
+        // Bridge and input alone, however visible, prove no app buttons.
+        let census = vec![
+            sec_fact(
+                "Windows.UI.Composition.DesktopWindowContentBridge",
+                sec_bar_rect(),
+                true,
+            ),
+            sec_fact(
+                "Windows.UI.Input.InputSite.WindowClass",
+                Rect {
+                    x: 2560,
+                    y: 1387,
+                    w: 0,
+                    h: 0,
+                },
+                true,
+            ),
+        ];
+        assert_eq!(
+            resolve_secondary_anchor(sec_bar_rect(), &census),
+            SecondaryAnchor::Unproven
+        );
+        // App-button hosts hidden: vacuous again.
+        let mut census = captured_secondary_census();
+        census[3].visible = false;
+        census[4].visible = false;
+        assert_eq!(
+            resolve_secondary_anchor(sec_bar_rect(), &census),
+            SecondaryAnchor::Unproven
+        );
+    }
+
+    #[test]
+    fn secondary_anchor_refuses_unknown_and_right_side_content() {
+        // Unknown visible class, even parked far left.
+        let mut census = captured_secondary_census();
+        census.push(sec_fact(
+            "Shell_Flyout",
+            Rect {
+                x: 3000,
+                y: 1387,
+                w: 100,
+                h: 48,
+            },
+            true,
+        ));
+        assert_eq!(
+            resolve_secondary_anchor(sec_bar_rect(), &census),
+            SecondaryAnchor::Unproven
+        );
+        // Nested-descendant shape: the flat census already contains depth-2
+        // windows as plain entries, so a partially overlapping unknown under
+        // the bridge still refuses by class.
+        let mut census = captured_secondary_census();
+        census.push(sec_fact(
+            "XamlClockIsland",
+            Rect {
+                x: 4000,
+                y: 1400,
+                w: 200,
+                h: 20,
+            },
+            true,
+        ));
+        assert_eq!(
+            resolve_secondary_anchor(sec_bar_rect(), &census),
+            SecondaryAnchor::Unproven
+        );
+        // Known left host stretched onto the right edge.
+        let mut census = captured_secondary_census();
+        census[3].rect = Some(Rect {
+            x: 2615,
+            y: 1387,
+            w: 1865,
+            h: 48,
+        });
+        assert_eq!(
+            resolve_secondary_anchor(sec_bar_rect(), &census),
+            SecondaryAnchor::Unproven
+        );
+        // Right-touching unknown content.
+        let mut census = captured_secondary_census();
+        census.push(sec_fact(
+            "TrayClockWClass",
+            Rect {
+                x: 4400,
+                y: 1387,
+                w: 80,
+                h: 48,
+            },
+            true,
+        ));
+        assert_eq!(
+            resolve_secondary_anchor(sec_bar_rect(), &census),
+            SecondaryAnchor::Unproven
+        );
+    }
+
+    #[test]
+    fn secondary_anchor_refuses_bridge_impostors_and_pixel_input() {
+        // Bridge one pixel short of the bar: not the exempt host.
+        let mut census = captured_secondary_census();
+        census[0].rect = Some(Rect {
+            x: 2560,
+            y: 1387,
+            w: 1920,
+            h: 47,
+        });
+        assert_eq!(
+            resolve_secondary_anchor(sec_bar_rect(), &census),
+            SecondaryAnchor::Unproven
+        );
+        // Bridge shifted right: the edge still touches, the bounds differ.
+        let mut census = captured_secondary_census();
+        census[0].rect = Some(Rect {
+            x: 2561,
+            y: 1387,
+            w: 1919,
+            h: 48,
+        });
+        assert_eq!(
+            resolve_secondary_anchor(sec_bar_rect(), &census),
+            SecondaryAnchor::Unproven
+        );
+        // Input site with real pixels is not the known zero-area child.
+        let mut census = captured_secondary_census();
+        census[1].rect = Some(Rect {
+            x: 4400,
+            y: 1387,
+            w: 80,
+            h: 48,
+        });
+        assert_eq!(
+            resolve_secondary_anchor(sec_bar_rect(), &census),
+            SecondaryAnchor::Unproven
+        );
+        // Visible launcher reaching the edge.
+        let mut census = captured_secondary_census();
+        census.push(sec_fact(
+            "Start",
+            Rect {
+                x: 2560,
+                y: 1387,
+                w: 1920,
+                h: 48,
+            },
+            true,
+        ));
+        assert_eq!(
+            resolve_secondary_anchor(sec_bar_rect(), &census),
+            SecondaryAnchor::Unproven
+        );
     }
 
     #[test]

@@ -52,13 +52,14 @@ use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::Shell::{ABM_GETSTATE, ABS_AUTOHIDE, APPBARDATA, SHAppBarMessage};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow,
-    EnumWindows, FindWindowExW, FindWindowW, GW_HWNDNEXT, GW_HWNDPREV, GWL_EXSTYLE, GWLP_USERDATA,
-    GetClassNameW, GetClientRect, GetWindow, GetWindowLongPtrW, GetWindowLongW, GetWindowRect,
-    HWND_TOPMOST, IDC_ARROW, IsWindow, IsWindowVisible, LoadCursorW, MA_NOACTIVATE, RegisterClassW,
-    RegisterWindowMessageW, SW_HIDE, SW_SHOWNA, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-    SWP_SHOWWINDOW, SetWindowLongPtrW, SetWindowPos, ShowWindow, WM_CREATE, WM_DESTROY,
-    WM_DISPLAYCHANGE, WM_DPICHANGED, WM_LBUTTONDOWN, WM_MOUSEACTIVATE, WM_PAINT, WM_SETTINGCHANGE,
-    WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_VISIBLE,
+    EnumChildWindows, EnumWindows, FindWindowExW, FindWindowW, GW_HWNDNEXT, GW_HWNDPREV,
+    GWL_EXSTYLE, GWLP_USERDATA, GetClassNameW, GetClientRect, GetWindow, GetWindowLongPtrW,
+    GetWindowLongW, GetWindowRect, HWND_TOPMOST, IDC_ARROW, IsWindow, IsWindowVisible, LoadCursorW,
+    MA_NOACTIVATE, RegisterClassW, RegisterWindowMessageW, SW_HIDE, SW_SHOWNA, SWP_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SetWindowLongPtrW, SetWindowPos, ShowWindow, WM_CREATE,
+    WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_LBUTTONDOWN, WM_MOUSEACTIVATE, WM_PAINT,
+    WM_SETTINGCHANGE, WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    WS_VISIBLE,
 };
 
 use crate::pager_icons::IconImage;
@@ -991,8 +992,10 @@ unsafe extern "system" fn secondary_enum(hwnd: HWND, state: LPARAM) -> i32 {
 
 /// Enumerate secondary taskbars (`Shell_SecondaryTrayWnd`). Heavier than the
 /// primary read, so the host calls this only on the slow revalidate cadence.
-/// Every entry refuses layout: the tray edge is unprovable there, so this
-/// only feeds refusal logging, never positions.
+/// Each entry carries a proven tray edge from the pure
+/// [`crate::pager::resolve_secondary_anchor`] decision over the gathered
+/// descendant facts; `None` refuses layout, so this never positions from a
+/// guess.
 pub fn discover_secondary_taskbars() -> Vec<TaskbarProbe> {
     let mut secondaries: Vec<HWND> = Vec::new();
     unsafe {
@@ -1001,19 +1004,102 @@ pub fn discover_secondary_taskbars() -> Vec<TaskbarProbe> {
             &mut secondaries as *mut Vec<HWND> as LPARAM,
         );
     }
+    let autohide_state = query_appbar_state();
     let mut bars = Vec::new();
     for hwnd in secondaries {
         if let Some(bar) = window_rect_of(hwnd) {
+            let facts = secondary_child_facts(hwnd);
+            let tray_left = match crate::pager::resolve_secondary_anchor(bar, &facts) {
+                crate::pager::SecondaryAnchor::TrayChild(left)
+                | crate::pager::SecondaryAnchor::BarRight(left) => Some(left),
+                crate::pager::SecondaryAnchor::Unproven => None,
+            };
             bars.push(TaskbarProbe {
+                tray_left,
                 bar: Some(bar),
-                tray_left: None,
                 visible: unsafe { IsWindowVisible(hwnd) } != 0,
-                autohide_state: 0,
-                dpi: 0,
+                autohide_state,
+                dpi: unsafe { GetDpiForWindow(hwnd) },
             });
         }
     }
     bars
+}
+
+unsafe extern "system" fn descendant_enum(hwnd: HWND, state: LPARAM) -> i32 {
+    let out = unsafe { &mut *(state as *mut Vec<HWND>) };
+    out.push(hwnd);
+    1
+}
+
+/// Flat descendant census: one `EnumChildWindows` call already enumerates
+/// every descendant, not just direct children
+/// ([contract](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-enumchildwindows):
+/// "If a child window has created child windows of its own,
+/// EnumChildWindows enumerates those windows as well"), so no hierarchy is
+/// reconstructed here. The BOOL return value is explicitly unused by that
+/// same contract ("The return value is not used"), so it is ignored: an
+/// empty census refuses downstream as unknown, never as proven-empty.
+fn collect_descendants(parent: HWND) -> Vec<HWND> {
+    let mut descendants: Vec<HWND> = Vec::new();
+    unsafe {
+        EnumChildWindows(
+            parent,
+            Some(descendant_enum),
+            &mut descendants as *mut Vec<HWND> as LPARAM,
+        );
+    }
+    descendants
+}
+
+/// Class name for one enumerated window: `None` when the read fails (the
+/// window disappeared or the name is unreadable). A 256-wide buffer holds
+/// every observed shell class whole; a longer name truncates and simply
+/// matches no known class, which refuses downstream.
+fn window_class_of(hwnd: HWND) -> Option<String> {
+    let mut name = [0u16; 256];
+    let len = unsafe { GetClassNameW(hwnd, name.as_mut_ptr(), name.len() as i32) };
+    if len <= 0 || len as usize > name.len() {
+        return None;
+    }
+    Some(String::from_utf16_lossy(&name[..len as usize]))
+}
+
+/// Raw window rect for fact gathering: `None` only when the read itself
+/// fails or the sizes are corrupt (negative sizes are corruption and refuse;
+/// zero-area is kept, not corrupt). Degenerate (zero-area) rects are kept as
+/// `Some`: the pure policy exempts exactly the known zero-area input site,
+/// while `window_rect_of` (geometry path) still filters them.
+fn raw_window_rect(hwnd: HWND) -> Option<Rect> {
+    let mut raw: RECT = unsafe { std::mem::zeroed() };
+    if hwnd.is_null() || unsafe { GetWindowRect(hwnd, &mut raw) } == 0 {
+        return None;
+    }
+    let w = raw.right.saturating_sub(raw.left);
+    let h = raw.bottom.saturating_sub(raw.top);
+    if w < 0 || h < 0 || w > RECT_LIMIT_PX || h > RECT_LIMIT_PX {
+        return None;
+    }
+    Some(Rect {
+        x: raw.left,
+        y: raw.top,
+        w,
+        h,
+    })
+}
+
+/// Gather-only descendant facts for the pure anchor decision: class, rect
+/// (degenerate kept), and visibility per enumerated window. No policy lives
+/// here; unreadable facts refuse in [`crate::pager::resolve_secondary_anchor`].
+fn secondary_child_facts(bar_hwnd: HWND) -> Vec<crate::pager::SecondaryChildFact> {
+    collect_descendants(bar_hwnd)
+        .into_iter()
+        .map(|hwnd| crate::pager::SecondaryChildFact {
+            class: window_class_of(hwnd),
+            rect: raw_window_rect(hwnd),
+            visible: unsafe { IsWindowVisible(hwnd) } != 0,
+        })
+        .collect()
 }
 
 /// Stateless `ABS_AUTOHIDE` test for one `ABM_GETSTATE` result: only a

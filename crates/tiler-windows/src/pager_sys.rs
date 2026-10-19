@@ -27,8 +27,9 @@
 //! change-gated frame sync.
 //!
 //! Tray exclusion is structural: strips are refused unless they end 2px left
-//! of the proven `TrayNotifyWnd` edge (see [`crate::pager`]); secondary
-//! taskbars always refuse because their clock area cannot be proven.
+//! of the proven tray edge (primary `TrayNotifyWnd`, secondary an exact
+//! tray/clock child edge or the bar's own right edge once its child set
+//! proves no right-side shell region exists; see [`crate::pager`]).
 //! Fullscreen/game safety is fail-closed: the host hides every strip on any
 //! suspend veto, elevated foreground, or unreadable fact, and z-order is
 //! reasserted only while the host reports safe.
@@ -124,8 +125,11 @@ pub fn read_primary_taskbar() -> Option<TaskbarFacts> {
 
 /// Enumerate secondary taskbars (`Shell_SecondaryTrayWnd`). Heavier than the
 /// primary read, so the host calls this only on the slow revalidate cadence.
-/// Every entry refuses layout (`secondary-tray-unproven`): the tray edge is
-/// unprovable there, so this only feeds refusal logging, never positions.
+/// Each entry carries its proven tray edge (an exact tray/clock child edge,
+/// or the bar's own right edge once the child set proves no right-side shell
+/// region exists); `None` refuses layout, never positions. DPI and the
+/// auto-hide switch are read live like the primary path (same global switch,
+/// per-bar DPI with the same 96 fallback).
 #[must_use]
 pub fn discover_secondaries() -> Vec<TaskbarFacts> {
     crate::ffi::discover_secondary_taskbars()
@@ -133,11 +137,15 @@ pub fn discover_secondaries() -> Vec<TaskbarFacts> {
         .filter_map(|probe| {
             Some(TaskbarFacts {
                 rect: probe.bar?,
-                tray_left: None,
+                tray_left: probe.tray_left,
                 kind: TaskbarKind::Secondary,
                 visible: probe.visible,
-                autohide: false,
-                dpi: crate::pager::PAGER_BASE_DPI,
+                autohide: autohide_from_state(probe.autohide_state),
+                dpi: if probe.dpi == 0 {
+                    crate::pager::PAGER_BASE_DPI
+                } else {
+                    probe.dpi
+                },
             })
         })
         .collect()

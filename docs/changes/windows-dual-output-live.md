@@ -16,7 +16,9 @@ and W2M-12 remain blocked on their existing world-route contracts.
 - Route workspace commands by genuine focus, and ordinary fresh admission
   by the focused output before newcomer activation (approved R-OUT-05).
   Preserve cold-start per-output placement.
-- Support secondary pager strips only with proven taskbar exclusion geometry.
+- Support secondary pager strips with exact tray/clock exclusion geometry or
+  the narrowly recognized no-notification-area hierarchy described below;
+  refuse unreadable and unknown layouts.
 - Add targeted offline regressions, run native locked four-package build/test,
   format and strict clippy gates, and distinguish agent-driven observations
   from pending physical keyboard/display checks.
@@ -45,10 +47,31 @@ and W2M-12 remain blocked on their existing world-route contracts.
   transitions before selecting another admission correction.
 - Reported transfer trace shows size scaling near the monitor DPI ratio and
   subsequent reverse scaling. Exact arrival verification correctly refused
-  the mismatched frame. Root native settlement is still under investigation;
-  an unaware-caller placement probe is not evidence for the PMv2 product path.
-- Secondary taskbars are enumerated but deliberately refused with
-  `secondary-tray-unproven`; per-output pager support remains undelivered.
+  the mismatched frame. A separate PMv2 owned-window probe confirmed that a
+  DPI transition changes frame insets: the first physical placement missed
+  slightly; one identical placement with fresh insets matched exactly.
+  This does not explain the much larger Firefox scaling or prove product-path
+  correction. No transfer fence or geometry tolerance was changed.
+- Secondary pager root cause: discovery enumerated secondary taskbars but
+  supplied no tray edge, and layout refused every secondary. Discovery now
+  gathers child facts, live DPI and auto-hide state. A pure Windows resolver
+  prefers the leftmost valid exact tray/clock edge, otherwise recognizes the
+  bounded no-notification-area hierarchy. Any unreadable fact, degenerate
+  exact anchor, unknown visible child, unrecognized full-span carrier,
+  right-side content or missing positive app-host evidence refuses.
+- Secondary pager independent review caught unreadable/vacuous-census
+  acceptance and overly broad full-span exemptions; these were corrected
+  with pure producer-shaped regressions. Exact-anchor enumeration order is
+  also covered: a clock cannot mask a farther-left tray boundary.
+- Final-tree native pager smoke (2026-10-20): two visible, topmost carriers
+  above the taskbars, correctly DPI-sized with the required two-physical-pixel
+  gap. Alternating secondary-2, primary-2, secondary-1 message-driven picks
+  selected three distinct output-scoped workspace identities successfully.
+  The smoke used empty workspaces: it does not prove occupied-window hide or
+  physical mouse delivery. Retained artifact/source-diff identity, raw owner
+  log, geometry, stdout and restoration readbacks were inspected. The driver's
+  PMv2 bar/carrier geometry is authoritative; separate wrapper monitor
+  snapshots were DPI-virtualized and are not physical-coordinate evidence.
 - Live sessions ended with verified graceful stop, independent restoration,
   byte-identical settings, unchanged relevant SPI/taskbar state, absent ledger
   and no owned window residue. Detailed evidence remains external.
@@ -56,6 +79,9 @@ and W2M-12 remain blocked on their existing world-route contracts.
   native MSVC: locked four-package build/tests, workspace format, strict
   all-target clippy and whitespace passed: 2,836 passed, zero failed, one
   ignored (core 1,042; protocol 27; FFI 40; Windows 1,727).
+- Final pager gates (2026-10-20), same native route/toolchain: locked
+  four-package build/tests, format, strict all-target clippy and whitespace
+  pass: 2,849 passed, zero failed, one ignored; independent review accepted.
 
 ## Remaining units
 
@@ -63,7 +89,8 @@ and W2M-12 remain blocked on their existing world-route contracts.
    focus sampling before another admission implementation.
 2. Diagnose PMv2 cross-DPI placement with owned disposable windows; preserve
    exact arrival fences and add a regression for any demonstrated correction.
-3. Prove secondary taskbar exclusion and implement per-output pager strips.
+3. Complete secondary pager physical selection, occupied-workspace,
+   Explorer-restart and display-change acceptance (W2M-13 remains partial).
 4. Run full native gates and bounded checklist legs; park physical-only,
    fixture-dependent and explicitly blocked rows without inferred passes.
 
@@ -72,6 +99,13 @@ and W2M-12 remain blocked on their existing world-route contracts.
 - Tentative (user review pending): workspace-command fallback is foreground,
   pointer, last-switch cache, stable output order, consistent with the tray's
   existing focused-output resolver. New-window admission never uses pointer.
+- Tentative (user review pending): secondary bars without a notification area
+  may anchor at bar-right minus the existing gap only for the observed narrow
+  HWND hierarchy: readable descendants, positive visible left app-button
+  host, exact full-bar composition bridge and only zero-area input sites or
+  recognized left launcher content. Unknown visible hierarchies refuse.
+  HWND-less composited pixels are not observable through this census; this
+  is bounded shell-topology support, not a universal visual exclusion proof.
 - Parked admission prototypes used an HWND-only freshness hint; a successor
   must retain the existing full identity/tag fences and avoid treating an
   enumerated-but-memberless hidden window as genuine established focus.

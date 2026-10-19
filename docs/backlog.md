@@ -23,8 +23,10 @@ decisions of 2026-09-24 are under
   within each output works); (2) no workspace pager on the secondary output;
   (3) workspace switching with the secondary output focused changes the
   primary; (4) new windows open on the secondary output while the primary is
-  focused. Workspace-command routing fixed and verified through the native
-  CLI on both outputs; admission correction remains parked after incomplete
+  focused. Workspace-command routing and secondary pager support fixed with
+  native two-output CLI/carrier/message-selection evidence; physical input,
+  shell/display-change acceptance remain pending. Admission correction is
+  parked after incomplete
   two-direction acceptance ([record](changes/windows-dual-output-live.md)).
   Diagnose and fix the remaining defects, then work through the
   [two-monitor checklist](changes/windows-physical-checklist.md#two-monitor-pc).
