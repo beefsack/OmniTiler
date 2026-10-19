@@ -13,7 +13,7 @@ use crate::kde_adapter::{
     KDE_SCHEMA_ONLY_KEY, KDE_SCHEMA_ONLY_LABEL, KDE_TABS, NATIVE_ONLY_KCFG_DEFAULT,
     NATIVE_ONLY_KCFG_KEY, NATIVE_ONLY_KCFG_LABEL, NATIVE_ONLY_SCHEMA_CHOICES,
     NATIVE_ONLY_SCHEMA_DEFAULT, NATIVE_ONLY_SCHEMA_KEY, NATIVE_ONLY_SCHEMA_LABEL,
-    TILING_TAB_UI_SOURCE, kde_catalog_def, kde_field, kde_option_text,
+    TILING_TAB_UI_SOURCE, kde_catalog_def, kde_exposed_options, kde_field, kde_option_text,
 };
 use tiler_core::settings_catalog::{self, FieldDef, FieldType, SettingValue};
 
@@ -217,7 +217,7 @@ fn emit_schema_entry(key: &str) -> String {
     match def.field_type {
         FieldType::Enum => {
             let mut choices = String::new();
-            for option in def.options {
+            for option in kde_exposed_options(field.field_id) {
                 choices.push_str(&format!(
                     "                <choice name=\"{}\" value=\"{}\"/>\n",
                     option.token, option.token
@@ -361,7 +361,7 @@ pub fn emit_descriptors_header() -> String {
         out.push_str(&format!(
             "inline constexpr KdeEnumOptionDescriptor {array}[] = {{\n"
         ));
-        for option in def.options {
+        for option in kde_exposed_options(field.field_id) {
             let (label, tip) = kde_option_text(field.field_id, option);
             out.push_str(&format!(
                 "    {{\"{}\", kli18n(\"{}\"), kli18n(\"{}\")}},\n",
@@ -380,7 +380,7 @@ pub fn emit_descriptors_header() -> String {
         let (options, count) = match def.field_type {
             FieldType::Enum => (
                 format!("kOptionsFor{}", cpp_identifier(field.key)),
-                def.options.len().to_string(),
+                kde_exposed_options(field.field_id).len().to_string(),
             ),
             _ => ("nullptr".to_owned(), "0".to_owned()),
         };

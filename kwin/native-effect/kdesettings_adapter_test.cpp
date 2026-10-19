@@ -559,7 +559,7 @@ void crossTabDraftApplyDefaultsCancelAndExactKeys()
     CHECK(scriptGroup().readEntry(QStringLiteral("innerGap"), -1) == 8);
     CHECK(scriptGroup().readEntry(QStringLiteral("shortcutProfile"), QString()) == QStringLiteral("hyprland"));
     // Cancel (load) discards an unapplied draft without persisting.
-    mode->setCurrentIndex(mode->findData(QStringLiteral("global-unique")));
+    mode->setCurrentIndex(mode->findData(QStringLiteral("shared")));
     inner->setValue(20);
     CHECK(module.needsSave());
     module.load();

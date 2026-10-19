@@ -161,7 +161,6 @@ QString otherWorkspaceMode(const QString &current)
 {
     const QStringList candidates = {
         QStringLiteral("per-output-local"),
-        QStringLiteral("global-unique"),
         QStringLiteral("shared"),
     };
     for (const QString &candidate : candidates) {
@@ -1190,6 +1189,11 @@ void startupOnlySaveDisablesSendWithRestartMessage()
     if (!mode) {
         return;
     }
+    // Aligned KDE offers per-output-local and shared only: no global-unique.
+    CHECK(mode->count() == 2);
+    CHECK(mode->findData(QStringLiteral("global-unique")) < 0);
+    CHECK(mode->findData(QStringLiteral("per-output-local")) >= 0);
+    CHECK(mode->findData(QStringLiteral("shared")) >= 0);
     const QString modeTarget = otherWorkspaceMode(storedWorkspaceMode());
     const int modeIndex = mode->findData(modeTarget);
     CHECK(modeIndex >= 0);

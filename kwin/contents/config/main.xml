@@ -12,7 +12,6 @@
             <default>per-output-local</default>
             <choices>
                 <choice name="per-output-local" value="per-output-local"/>
-                <choice name="global-unique" value="global-unique"/>
                 <choice name="shared" value="shared"/>
             </choices>
         </entry>

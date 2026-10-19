@@ -124,12 +124,6 @@ pub const KDE_ENUM_OVERRIDES: &[KdeEnumOverride] = &[
     },
     KdeEnumOverride {
         field_id: settings_catalog::FIELD_WORKSPACE_MODE,
-        token: "global-unique",
-        label: "Global, unique",
-        tip: "Requires KWin 6.7 or later; KWin 6.6 uses shared",
-    },
-    KdeEnumOverride {
-        field_id: settings_catalog::FIELD_WORKSPACE_MODE,
         token: "shared",
         label: "Shared",
         tip: "",
@@ -152,6 +146,32 @@ pub fn kde_option_text(field_id: &str, option: &EnumOption) -> (&'static str, &'
         Some(entry) => (entry.label, entry.tip),
         None => (option.label, option.tip),
     }
+}
+
+/// KDE-withheld catalog tokens: valid in the shared catalog (and on other
+/// platforms) but offered by no KDE surface. KDE cannot present globally
+/// unique numbers because desktop positions and names are global; a
+/// persisted `global-unique` value falls back to `per-output-local` on the
+/// world route with a logged reason (Tentative, user review pending).
+pub const KDE_WITHHELD_OPTIONS: &[(&str, &str)] =
+    &[(settings_catalog::FIELD_WORKSPACE_MODE, "global-unique")];
+
+/// Catalog enum options actually offered on KDE: catalog order minus the
+/// withheld tokens above. Emitters must use this (never raw
+/// `def.options`) so schema, UI and descriptors agree.
+#[must_use]
+pub fn kde_exposed_options(field_id: &str) -> Vec<&'static EnumOption> {
+    let Some(def) = settings_catalog::find_field(field_id) else {
+        return Vec::new();
+    };
+    def.options
+        .iter()
+        .filter(|option| {
+            !KDE_WITHHELD_OPTIONS.iter().any(|(held_field, held_token)| {
+                *held_field == field_id && *held_token == option.token
+            })
+        })
+        .collect()
 }
 
 /// Every KDE-exposed portable field in native UI row order (16 entries:
@@ -706,10 +726,8 @@ mod tests {
         for entry in KDE_ENUM_OVERRIDES {
             assert_eq!(entry.field_id, settings_catalog::FIELD_WORKSPACE_MODE);
         }
-        assert_eq!(KDE_ENUM_OVERRIDES.len(), 3);
-        let def =
-            settings_catalog::find_field(settings_catalog::FIELD_WORKSPACE_MODE).expect("mode def");
-        for option in def.options {
+        assert_eq!(KDE_ENUM_OVERRIDES.len(), 2);
+        for option in kde_exposed_options(settings_catalog::FIELD_WORKSPACE_MODE) {
             let override_entry =
                 kde_enum_override(settings_catalog::FIELD_WORKSPACE_MODE, option.token)
                     .expect("override per token");
@@ -740,6 +758,34 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn withheld_options_stay_catalog_valid_but_unoffered() {
+        // `global-unique` remains a valid catalog token (other platforms,
+        // legacy callers) but no KDE surface offers it.
+        for (field_id, token) in KDE_WITHHELD_OPTIONS {
+            let def = settings_catalog::find_field(field_id).expect("catalog def");
+            assert!(
+                def.options.iter().any(|option| option.token == *token),
+                "withheld {field_id}.{token} must exist in the catalog"
+            );
+            assert!(
+                !kde_exposed_options(field_id)
+                    .iter()
+                    .any(|option| option.token == *token),
+                "withheld {field_id}.{token} must not be offered"
+            );
+        }
+        let exposed: Vec<&str> = kde_exposed_options(settings_catalog::FIELD_WORKSPACE_MODE)
+            .iter()
+            .map(|option| option.token)
+            .collect();
+        assert_eq!(exposed, vec!["per-output-local", "shared"]);
+        // The catalog default is never withheld.
+        let def =
+            settings_catalog::find_field(settings_catalog::FIELD_WORKSPACE_MODE).expect("mode def");
+        assert!(exposed.contains(&crate::emit::rendered_default(def).as_str()));
     }
 
     #[test]

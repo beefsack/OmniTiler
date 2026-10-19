@@ -66,7 +66,6 @@ inline constexpr KdeTabDescriptor kKdeTabs[] = {
 
 inline constexpr KdeEnumOptionDescriptor kOptionsForWorkspaceMode[] = {
     {"per-output-local", kli18n("Per output, local"), kli18n("Requires KWin 6.7 or later; KWin 6.6 uses shared")},
-    {"global-unique", kli18n("Global, unique"), kli18n("Requires KWin 6.7 or later; KWin 6.6 uses shared")},
     {"shared", kli18n("Shared"), kli18n("")},
 };
 
@@ -102,7 +101,7 @@ inline constexpr KdeEnumOptionDescriptor kOptionsForMigrationSourceRefill[] = {
 };
 
 inline constexpr KdeFieldDescriptor kKdeFields[] = {
-    {"workspace.mode", "Script-omnitiler-kwin", "workspaceMode", "workspaceModeCombo", kli18n("The multi-output workspace model"), kli18n("The multi-output workspace model (requires session restart; per-output needs KWin 6.7+, 6.6 uses shared):"), "Enum", "per-output-local", "", "", kOptionsForWorkspaceMode, 3, "tiling-workspaces"},
+    {"workspace.mode", "Script-omnitiler-kwin", "workspaceMode", "workspaceModeCombo", kli18n("The multi-output workspace model"), kli18n("The multi-output workspace model (requires session restart; per-output needs KWin 6.7+, 6.6 uses shared):"), "Enum", "per-output-local", "", "", kOptionsForWorkspaceMode, 2, "tiling-workspaces"},
     {"move.same-axis", "Script-omnitiler-kwin", "sameAxisMove", "sameAxisMoveCombo", kli18n("The same-axis move behavior"), kli18n("Same-axis move behavior:"), "Enum", "group-with-neighbor", "", "", kOptionsForSameAxisMove, 2, "tiling-workspaces"},
     {"admission.fixed-size", "Script-omnitiler-kwin", "fixedSizePredicate", "fixedSizePredicateCombo", kli18n("The fixed-size admission predicate"), kli18n("Fixed-size admission predicate:"), "Enum", "both-axes-fixed", "", "", kOptionsForFixedSizePredicate, 2, "tiling-workspaces"},
     {"admission.born-maximized", "Script-omnitiler-kwin", "bornMaximized", "bornMaximizedCombo", kli18n("The born-maximized admission behavior"), kli18n("Born-maximized admission behavior:"), "Enum", "tile-on-launch", "", "", kOptionsForBornMaximized, 2, "tiling-workspaces"},
