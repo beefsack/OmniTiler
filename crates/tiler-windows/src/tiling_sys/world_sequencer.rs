@@ -87,6 +87,7 @@ const fn windows_engine_config() -> WorldEngineConfig {
     WorldEngineConfig {
         fixed_send_admission: true,
         maximized_focus_fence: false,
+        aligned_per_output_workspaces: false,
     }
 }
 

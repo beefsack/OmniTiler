@@ -1023,6 +1023,7 @@ mod tests {
             WorldEngineConfig {
                 fixed_send_admission: true,
                 maximized_focus_fence: false,
+                aligned_per_output_workspaces: false,
             },
         )
         .expect("valid generation")

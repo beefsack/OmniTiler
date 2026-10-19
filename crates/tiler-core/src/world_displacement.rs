@@ -340,6 +340,9 @@ impl WorldEngine {
                 policy: true,
                 source_output: source.output,
                 source_workspace: source.workspace.0,
+                members: Vec::new(),
+                migration_refill: None,
+                migration_initial_empty: false,
             });
         }
         // Prune retained output facts to live outputs plus displaced

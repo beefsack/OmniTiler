@@ -104,6 +104,9 @@ impl WorldEngine {
             policy: false,
             source_output: output.clone(),
             source_workspace: String::new(),
+            members: Vec::new(),
+            migration_refill: None,
+            migration_initial_empty: false,
         });
     }
 
@@ -155,6 +158,9 @@ impl WorldEngine {
             policy: false,
             source_output: output.clone(),
             source_workspace: String::new(),
+            members: Vec::new(),
+            migration_refill: None,
+            migration_initial_empty: false,
         });
         CommandApplied::NoEffect
     }

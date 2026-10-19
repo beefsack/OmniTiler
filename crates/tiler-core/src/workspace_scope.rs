@@ -361,6 +361,71 @@ pub enum TrailingSelection {
     Create,
 }
 
+/// Aligned per-output-local ring: the full live native order in native
+/// position on every output. The platform opt-in selects this instead of
+/// the disjoint partitioned mapping; selection over it creates nothing.
+#[must_use]
+pub fn aligned_ring_ids(live_order: &[String]) -> Vec<String> {
+    live_order.to_vec()
+}
+
+/// Aligned trailing index: the first empty cell after the output's last
+/// occupied cell. `occupied` is the per-output occupied native set. `None`
+/// means every cell through the end is occupied (creation path); an empty
+/// ring is also `None`.
+#[must_use]
+pub fn aligned_trailing_index(ring: &[String], occupied: &BTreeSet<String>) -> Option<usize> {
+    if ring.is_empty() {
+        return None;
+    }
+    match ring.iter().rposition(|id| occupied.contains(id.as_str())) {
+        Some(last) => ((last + 1)..ring.len()).find(|i| !occupied.contains(ring[*i].as_str())),
+        None => ring.iter().position(|id| !occupied.contains(id.as_str())),
+    }
+}
+
+/// Aligned trailing selection: reuse the per-output trailing empty, else
+/// report creation. Never creates.
+#[must_use]
+pub fn resolve_aligned_trailing(ring: &[String], occupied: &BTreeSet<String>) -> TrailingSelection {
+    if let Some(index) = aligned_trailing_index(ring, occupied) {
+        return TrailingSelection::Reuse(ring[index].clone());
+    }
+    TrailingSelection::Create
+}
+
+/// Aligned global removal set over native ids: a native is eligible only
+/// when empty on every output, not any output's trailing empty, not shown
+/// anywhere, and not in the global retained set (pinned/displaced bindings,
+/// core-displaced units, outstanding flight targets, unmanaged bindings).
+/// The global live-count floor (`MIN_WORKSPACES`, trailing included) holds:
+/// while removal would drop below the floor the earliest native-position
+/// candidates are spared first. Pure and deterministic.
+#[must_use]
+pub fn aligned_removal_set(
+    live_order: &[String],
+    occupied_any: &BTreeSet<String>,
+    trailing_any: &BTreeSet<String>,
+    visible_any: &BTreeSet<String>,
+    retained_any: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    let mut eligible: Vec<&str> = live_order
+        .iter()
+        .map(String::as_str)
+        .filter(|id| {
+            !occupied_any.contains(*id)
+                && !trailing_any.contains(*id)
+                && !visible_any.contains(*id)
+                && !retained_any.contains(*id)
+        })
+        .collect();
+    while live_order.len().saturating_sub(eligible.len()) < workspace::MIN_WORKSPACES
+        && !eligible.is_empty()
+    {
+        eligible.remove(0);
+    }
+    eligible.into_iter().map(str::to_owned).collect()
+}
 /// Resolve the trailing path: reuse the literal last scoped id when it is
 /// unoccupied, else report creation. Idempotent while already on the
 /// trailing empty (returns `Reuse` of that same id).
@@ -543,6 +608,59 @@ impl ScopeHistory {
     pub fn discard_output(&mut self, output: &str) {
         self.previous.remove(output);
         self.baseline.remove(output);
+    }
+
+    /// Outputs with any retained history entry (previous or baseline).
+    #[must_use]
+    pub fn history_outputs(&self) -> Vec<String> {
+        let mut outputs: BTreeSet<String> = BTreeSet::new();
+        outputs.extend(self.previous.keys().cloned());
+        outputs.extend(self.baseline.keys().cloned());
+        outputs.into_iter().collect()
+    }
+
+    /// Aligned-only rebind invalidation (D9/1.3/1.5): the source cell's
+    /// native keeps its id but mints a fresh logical, and the destination
+    /// trailing placeholder is replaced by the moved logical. Native-keyed
+    /// entries naming either replaced cell would silently reinterpret the
+    /// same native as the new logical, so forget previous/baseline entries
+    /// that name exactly those cells. Unrelated entries stay; shared history
+    /// is untouched.
+    pub fn invalidate_aligned_rebind(
+        &mut self,
+        source_output: &str,
+        source_native: &str,
+        target_output: &str,
+        dest_native: &str,
+    ) {
+        if self
+            .previous
+            .get(source_output)
+            .is_some_and(|id| id == source_native)
+        {
+            self.previous.remove(source_output);
+        }
+        if self
+            .baseline
+            .get(source_output)
+            .is_some_and(|id| id == source_native)
+        {
+            self.baseline.remove(source_output);
+        }
+        if self
+            .previous
+            .get(target_output)
+            .is_some_and(|id| id == dest_native)
+        {
+            self.previous.remove(target_output);
+        }
+        if self
+            .baseline
+            .get(target_output)
+            .is_some_and(|id| id == dest_native)
+        {
+            self.baseline.remove(target_output);
+        }
     }
 
     /// Record one successfully observed shared change over the full shared

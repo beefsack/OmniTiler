@@ -11,10 +11,11 @@ use crate::boundary::{CoreReply, ProjectionKind, project_retained_tiled_geometry
 use crate::directional::{OutputId, WindowId, WorkspaceId};
 use crate::seed::EngineWindow;
 use crate::session::{DomainKey, RefusalKind};
-use crate::workspace::plan_trailing;
+use crate::workspace::{MIN_WORKSPACES, plan_trailing};
 use crate::workspace_scope::{
-    LiveView, ScopedTopology, WorkspaceMode, claim_visible_currents, rebuild_global_mapping,
-    rebuild_local_mapping, rebuild_shared_order, scoped_ring_ids, scoped_trailing_facts,
+    LiveView, ScopedTopology, WorkspaceMode, aligned_removal_set, aligned_ring_ids,
+    aligned_trailing_index, claim_visible_currents, rebuild_global_mapping, rebuild_local_mapping,
+    rebuild_shared_order, scoped_ring_ids, scoped_trailing_facts,
 };
 use crate::world_engine::{RetainedTransfer, WorldEngine};
 use crate::world_report::{
@@ -135,6 +136,37 @@ impl WorldEngine {
                     continue;
                 }
                 redirect.insert(window.0.clone(), (key, retained.policy));
+            } else if matches!(&retained.target.kind, TransferKind::Migration) {
+                // Whole-workspace members ride the target homing (one homing)
+                // while the flight is outstanding, so delayed/partial
+                // observations and sessionless floating carries never vanish:
+                // the Engine target session (or the membership-only row when
+                // no sweep row exists yet) carries them. Closed and
+                // externally-moved members already dropped from `members`,
+                // so they never redirect/fight. Minimized members skip the
+                // trailing lane below and ride the minimized homing instead.
+                // The target native is live, so verification rides the live
+                // inventory like policy placements (the homing may not be
+                // reported yet).
+                let key = DomainKey {
+                    output: retained.target.target_output.clone(),
+                    workspace: WorkspaceId(retained.target.target_workspace.clone()),
+                };
+                if held_scopes.contains(&key) {
+                    continue;
+                }
+                let readable = report
+                    .domains
+                    .iter()
+                    .any(|d| d.readable && d.domain.key() == key);
+                if !readable && !live_ws.contains(key.workspace.0.as_str()) {
+                    continue;
+                }
+                for member in &retained.members {
+                    redirect
+                        .entry(member.0.clone())
+                        .or_insert((key.clone(), false));
+                }
             }
         }
         // Fullscreen overlays on tiled links: the native overlay owns
@@ -878,11 +910,11 @@ impl WorldEngine {
     /// every accepted report through the shared mapping helpers, trailing
     /// lifecycle runs per scope through the shared facts, and rows carry
     /// scope, order, and tiling mode. Rings come from the mapping (shared
-    /// lifecycle runs per scope through the shared facts, and rows carry
-    /// scope, order, and tiling mode. Rings come from the mapping (shared
-    /// order for shared mode); facts exclude sticky all-desktop occupancy
-    /// via homed-domain counting (a sticky row occupies only its homed
-    /// domain, never every backing workspace).
+    /// order for shared mode); sticky all-desktop rows never occupy any
+    /// backing cell for spare purposes, and their homed natives are
+    /// retained against removal while the world-apply removal gate
+    /// (occupant/visible/pin/min-count re-enumeration) may still hold
+    /// them, so core never desires a removal that never executes.
     pub(crate) fn plan_workspaces(&mut self, report: &WorldReport) -> Vec<WorkspaceDesire> {
         // Occupancy by native workspace id from homed live rows.
         let occupied = homed_occupancy(report);
@@ -900,6 +932,9 @@ impl WorldEngine {
         }
         self.pending_creations
             .retain(|pending| !bound_logical.contains(&pending.logical_id));
+        if self.is_aligned(report) {
+            return self.aligned_workspace_rows(report);
+        }
         let mut rows = Vec::new();
         // Native workspace -> logical id for bound rows.
         let logical_of: BTreeMap<&str, &str> = report
@@ -960,6 +995,12 @@ impl WorldEngine {
                     retained_ids.extend(entry.workspaces.iter().cloned());
                 }
             }
+            // Sticky-homed cells are retained here too: empty for spare
+            // purposes, but the world-apply occupant gate may still hold
+            // their homed cell, so core retains instead of desiring a
+            // removal that never executes (preserves the
+            // pre-occupancy-exclusion keep behavior).
+            retained_ids.extend(sticky_homed_natives_for_output(report, &topology.output));
             let facts = scoped_trailing_facts(&ring, &visible, &occupied, &retained_ids);
             let plan = plan_trailing(&facts);
             let removed: BTreeSet<usize> = plan.remove.into_iter().collect();
@@ -1063,6 +1104,227 @@ impl WorldEngine {
         rows
     }
 
+    /// Aligned per-output-local workspace rows: every output owns the full
+    /// live native ring in native position with per-(output, native)
+    /// logical identity. Each output's trailing empty is the first empty
+    /// cell after its own last occupied cell; removal eligibility is global
+    /// (empty on every output, no output's trailing, not shown anywhere,
+    /// not pinned/displaced/unmanaged/in-flight, global floor of two
+    /// including trailing). Incomplete reports hold every row with no
+    /// removal or creation. Startup adopts the grid: no conversion rows,
+    /// no member moves here. Logical ids are core-minted `al-<n>` per
+    /// (output, native), stable across rebinding; reported bindings are
+    /// read only for protection flags, never for identity (replicated
+    /// aligned bindings must not collapse through a generic
+    /// native->logical map). Whole-workspace migration rebinds the moved
+    /// logical onto the destination trailing native (see
+    /// `finish_aligned_migration`); the emptied source cell mints fresh
+    /// here and rows keep both identities stable while the flight is
+    /// outstanding.
+    pub(crate) fn aligned_workspace_rows(&mut self, report: &WorldReport) -> Vec<WorkspaceDesire> {
+        let live_order = live_native_order(report);
+        let global_complete = report_complete_for_mapping(report);
+        // Per-output occupancy plus the global union.
+        let mut occupied_by_output: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        for topology in &report.topology {
+            occupied_by_output.insert(
+                topology.output.0.clone(),
+                homed_occupancy_for_output(report, &topology.output),
+            );
+        }
+        let occupied_any = homed_occupancy(report);
+        let visible_any: BTreeSet<String> = report
+            .topology
+            .iter()
+            .map(|topology| topology.current_native.clone())
+            .collect();
+        // Global retained set: pinned/displaced/unmanaged bindings anywhere,
+        // core-displaced units anywhere, outstanding flight targets, plus
+        // sticky-homed natives anywhere. Sticky anchors never occupy for
+        // spare purposes; retention keeps core from desiring removal of a
+        // homed cell while the world-apply occupant gate
+        // (world-apply.ts: occupant/visible/pin/min-count re-enumeration)
+        // may still hold it. Ordinary close/unhome releases the hold and
+        // normal lifecycle resumes.
+        let mut retained_any: BTreeSet<String> = BTreeSet::new();
+        for binding in &report.bindings {
+            if binding.pinned || binding.displaced || !binding.managed {
+                retained_any.insert(binding.native_id.clone());
+            }
+        }
+        for entry in self.displaced.values() {
+            retained_any.extend(entry.workspaces.iter().cloned());
+        }
+        for retained in &self.retained {
+            retained_any.insert(retained.target.target_workspace.clone());
+            // An outstanding whole-workspace migration keeps its source
+            // native too: the emptied cell's fresh replacement must not be
+            // removed from under the flight before arrival.
+            if matches!(retained.target.kind, TransferKind::Migration) {
+                retained_any.insert(retained.source_workspace.clone());
+            }
+        }
+        retained_any.extend(sticky_homed_natives(report));
+        // Per-output trailing natives first (unioned for the global pass).
+        let mut trailing_any: BTreeSet<String> = BTreeSet::new();
+        let mut trailing_by_output: BTreeMap<String, Option<String>> = BTreeMap::new();
+        for topology in &report.topology {
+            let ring = aligned_ring_ids(&live_order);
+            let occupied = occupied_by_output
+                .get(&topology.output.0)
+                .cloned()
+                .unwrap_or_default();
+            let trailing = aligned_trailing_index(&ring, &occupied).map(|i| ring[i].clone());
+            if let Some(native) = trailing.clone() {
+                trailing_any.insert(native);
+            }
+            trailing_by_output.insert(topology.output.0.clone(), trailing);
+        }
+        let removal: BTreeSet<String> = if global_complete {
+            aligned_removal_set(
+                &live_order,
+                &occupied_any,
+                &trailing_any,
+                &visible_any,
+                &retained_any,
+            )
+        } else {
+            BTreeSet::new()
+        };
+        // Mint stable per-(output, native) logical ids for every live cell.
+        for topology in &report.topology {
+            for native in &live_order {
+                let key = (topology.output.0.clone(), native.clone());
+                if !self.aligned_logical.contains_key(&key) {
+                    if self.creation_counter == u64::MAX {
+                        continue;
+                    }
+                    let next = self.creation_counter.saturating_add(1);
+                    self.creation_counter = next;
+                    self.aligned_logical.insert(key, format!("al-{next}"));
+                }
+            }
+        }
+        // Prune logicals for gone outputs/natives (hotplug return placement
+        // is a follow-up step; this unit keeps only live cells).
+        {
+            let live_outputs: BTreeSet<&str> = report
+                .topology
+                .iter()
+                .map(|topology| topology.output.0.as_str())
+                .collect();
+            let live_natives: BTreeSet<&str> = live_order.iter().map(String::as_str).collect();
+            self.aligned_logical.retain(|(output, native), _| {
+                live_outputs.contains(output.as_str()) && live_natives.contains(native.as_str())
+            });
+        }
+        let mut rows = Vec::new();
+        // Creation is global (one native desktop is empty on every
+        // output at once), so at most one output mints per report: the
+        // global floor forces a need even where a trailing empty
+        // exists, and outputs already awaiting their own trailing
+        // binding keep precedence so their intent never stalls.
+        // Incomplete reports hold with no creation; exact per-output
+        // token attribution stays.
+        let below_floor = live_order.len() < MIN_WORKSPACES;
+        let owner: Option<String> = {
+            let needy = |output: &str| -> bool {
+                let readable = global_complete
+                    && report.topology.iter().any(|t| {
+                        t.output.0 == output
+                            && t.complete
+                            && report
+                                .domains
+                                .iter()
+                                .filter(|d| d.domain.id == t.output)
+                                .all(|d| d.readable)
+                    });
+                readable
+                    && (below_floor
+                        || trailing_by_output
+                            .get(output)
+                            .is_none_or(|trailing| trailing.is_none()))
+            };
+            let intent_on = |output: &str| {
+                self.pending_migrations
+                    .iter()
+                    .any(|p| p.target_output.0 == output)
+                    || self.pending_sends.iter().any(|p| p.output.0 == output)
+            };
+            report
+                .topology
+                .iter()
+                .map(|t| t.output.0.clone())
+                .find(|output| needy(output) && intent_on(output))
+                .or_else(|| {
+                    report
+                        .topology
+                        .iter()
+                        .map(|t| t.output.0.clone())
+                        .find(|output| needy(output))
+                })
+        };
+        for topology in &report.topology {
+            let readable_complete = global_complete
+                && topology.complete
+                && report
+                    .domains
+                    .iter()
+                    .filter(|d| d.domain.id == topology.output)
+                    .all(|d| d.readable);
+            let held = !readable_complete;
+            for (index, native) in live_order.iter().enumerate() {
+                let key = (topology.output.0.clone(), native.clone());
+                let Some(logical) = self.aligned_logical.get(&key).cloned() else {
+                    continue;
+                };
+                rows.push(WorkspaceDesire {
+                    id: logical.clone(),
+                    output: topology.output.clone(),
+                    native_binding: Some(native.clone()),
+                    logical_id: Some(logical),
+                    scope: workspace_scope_key(report.workspace_mode, &topology.output),
+                    order: index,
+                    tiling_mode: self.workspace_tiling_mode(&topology.output, native),
+                    existence: held || !removal.contains(native),
+                    hold: held.then_some(HoldReason::IncompleteInventory),
+                });
+            }
+            // Per-output trailing need plus the global floor: no empty
+            // cell after the last occupied one, or fewer live natives
+            // than the minimum, means this output wants one creation.
+            // Only the elected owner mints and rides the unbound row.
+            let needs_trailing = trailing_by_output
+                .get(&topology.output.0)
+                .is_none_or(|trailing| trailing.is_none());
+            let needy = needs_trailing || below_floor;
+            let is_owner = owner.as_deref() == Some(topology.output.0.as_str());
+            if needy && readable_complete && is_owner {
+                if let Some(logical) = self.pending_token(&topology.output) {
+                    rows.push(WorkspaceDesire {
+                        id: logical.clone(),
+                        output: topology.output.clone(),
+                        native_binding: None,
+                        logical_id: Some(logical),
+                        scope: workspace_scope_key(report.workspace_mode, &topology.output),
+                        order: rows.len(),
+                        tiling_mode: seed_tiling_mode(report),
+                        existence: true,
+                        hold: None,
+                    });
+                }
+            } else if readable_complete && !needy {
+                // A non-owner that still wants a creation mints nothing
+                // this report (one global creation suffices); no prune
+                // either, so an outstanding intent token is never erased.
+                // Only an output with no need at all drops its tokens.
+                self.pending_creations
+                    .retain(|pending| pending.output != topology.output);
+            }
+        }
+        rows
+    }
+
     /// Shared-mode workspace rows (D2): one ring across all outputs, the
     /// same trailing lifecycle, scope `shared`.
     pub(crate) fn shared_workspace_rows(
@@ -1079,12 +1341,16 @@ impl WorldEngine {
             .iter()
             .map(|topology| topology.current_native.clone())
             .collect();
-        let retained_ids: BTreeSet<String> = report
+        let mut retained_ids: BTreeSet<String> = report
             .bindings
             .iter()
             .filter(|binding| binding.pinned || binding.displaced)
             .map(|binding| binding.native_id.clone())
             .collect();
+        // Sticky-homed cells are retained here too (see the disjoint note
+        // above): empty for spare purposes, but the world-apply occupant
+        // gate may still hold their homed cell.
+        retained_ids.extend(sticky_homed_natives(report));
         let facts = scoped_trailing_facts(
             &self.shared_order.clone(),
             &visible,
@@ -1147,6 +1413,74 @@ impl WorldEngine {
             .iter()
             .map(|topology| topology.output.0.clone())
             .collect();
+        if self.is_aligned(report) {
+            // Aligned adoption: every output owns the full native-position
+            // grid. No partitioning, no binding seeds, no conversion moves.
+            // Fail-closed like the disjoint path: partial evidence freezes
+            // the retained mapping.
+            if report_complete_for_mapping(report) {
+                for output in &outputs {
+                    self.mapping.insert(output.clone(), live_order.clone());
+                }
+                let live_outputs: BTreeSet<&str> = outputs.iter().map(String::as_str).collect();
+                self.mapping
+                    .retain(|output, _| live_outputs.contains(output.as_str()));
+                self.shared_order = rebuild_shared_order(&live_order);
+                self.startup_conversion.clear();
+                self.startup_pending = false;
+            }
+            // Hotplug displacement/return for aligned mode is a follow-up
+            // step: rings and rows read the adopted grid immediately.
+            // Verified view observations over the full rings below. While a
+            // migration flight is outstanding, a stale source view still
+            // naming the vacated native must not re-prime or re-record
+            // history against the fresh replacement: skip observation for
+            // that output while its current equals the vacated native.
+            // Unrelated source views observe normally; the target arrival
+            // observes normally.
+            let mut live_views: BTreeMap<String, LiveView> = BTreeMap::new();
+            for topology in &report.topology {
+                let scope = scoped_ring_ids(
+                    report.workspace_mode,
+                    &self.mapping,
+                    &self.shared_order,
+                    &topology.output.0,
+                    &live_order,
+                );
+                live_views.insert(
+                    topology.output.0.clone(),
+                    LiveView {
+                        current: topology.current_native.clone(),
+                        scope,
+                    },
+                );
+            }
+            let vacated: Vec<(String, String)> = self
+                .retained
+                .iter()
+                .filter(|r| matches!(&r.target.kind, TransferKind::Migration))
+                .map(|r| (r.source_output.0.clone(), r.source_workspace.clone()))
+                .collect();
+            for (output, view) in &live_views {
+                if vacated
+                    .iter()
+                    .any(|(o, n)| o == output && n == &view.current)
+                {
+                    continue;
+                }
+                self.history.observe(output, &view.current, &view.scope);
+            }
+            let live_keys: BTreeSet<&str> = live_views.keys().map(String::as_str).collect();
+            for key in self
+                .history
+                .history_outputs()
+                .into_iter()
+                .filter(|key| !live_keys.contains(key.as_str()))
+            {
+                self.history.discard_output(&key);
+            }
+            return;
+        }
         // Wired active-screen primary, else deterministic first order
         // (mirrors the hotplug nearest-survivor primary in
         // converge_displacement).
@@ -1303,6 +1637,15 @@ impl WorldEngine {
     /// mint only while [`WorldEngine::startup_pending`] holds.
     pub(crate) fn converge_startup_conversion(&mut self, report: &WorldReport) {
         if report.workspace_mode != WorkspaceMode::PerOutputLocal {
+            return;
+        }
+        // Aligned mode adopts the grid without conversion or moves; the
+        // disjoint conversion below stays for the default model only.
+        if self.aligned_per_output {
+            self.startup_conversion.clear();
+            if report_complete_for_mapping(report) {
+                self.startup_pending = false;
+            }
             return;
         }
         // Same fail-closed bar as mapping ownership above: partial
@@ -1469,6 +1812,9 @@ impl WorldEngine {
                 policy: true,
                 source_output: source.output,
                 source_workspace: source.workspace.0,
+                members: Vec::new(),
+                migration_refill: None,
+                migration_initial_empty: false,
             });
         }
         for (index, (output, workspace)) in fresh_views.into_iter().enumerate() {
@@ -1499,13 +1845,21 @@ impl WorldEngine {
                 let native_view: &str = pending_view
                     .as_deref()
                     .unwrap_or(topology.current_native.as_str());
-                let logical_view = report
-                    .bindings
-                    .iter()
-                    .find(|binding| {
-                        binding.output == topology.output && binding.native_id == native_view
-                    })
-                    .map(|binding| binding.logical_id.clone());
+                // Aligned mode projects identity per (output, native) from
+                // core-retained logicals, never the replicated bindings.
+                let logical_view = if self.is_aligned(report) {
+                    self.aligned_logical
+                        .get(&(topology.output.0.clone(), native_view.to_owned()))
+                        .cloned()
+                } else {
+                    report
+                        .bindings
+                        .iter()
+                        .find(|binding| {
+                            binding.output == topology.output && binding.native_id == native_view
+                        })
+                        .map(|binding| binding.logical_id.clone())
+                };
                 let unreadable = !topology.complete
                     || report
                         .domains
@@ -1578,21 +1932,94 @@ fn seed_tiling_mode(report: &WorldReport) -> TilingMode {
 }
 
 /// Occupancy by native workspace id from homed live rows plus explicit
-/// minimized lifetimes. Sticky all-desktop rows occupy only their homed
-/// domain, never every backing workspace. Minimized entries occupy their
-/// homed workspace even though they are absent from domain membership
-/// (floats and sticky exceptions ride domain membership above).
+/// minimized lifetimes. Sticky all-desktop rows never occupy any backing
+/// cell: showing an empty cell (including the trailing empty) with only a
+/// sticky anchor keeps the spare, so selecting/showing empties creates
+/// nothing and the ring end is retained until a real arrival/admission.
+/// Minimized entries occupy their homed workspace even though they are
+/// absent from domain membership (floats and sticky exceptions ride domain
+/// membership above, sticky excluded here too).
 pub(crate) fn homed_occupancy(report: &WorldReport) -> BTreeSet<String> {
     let mut occupied = BTreeSet::new();
     for domain in &report.domains {
-        if domain.readable && !domain.windows.is_empty() {
+        if domain.readable && domain.windows.iter().any(|window| !window.sticky) {
             occupied.insert(domain.domain.workspace.0.clone());
         }
     }
     for entry in &report.minimized {
-        occupied.insert(entry.workspace.0.clone());
+        if !entry.sticky {
+            occupied.insert(entry.workspace.0.clone());
+        }
     }
     occupied
+}
+
+/// Occupancy for one output in the aligned model: natives with a homed
+/// non-sticky live row on `output` plus non-sticky minimized lifetimes
+/// homed there. Sticky rows never occupy any backing cell, only real
+/// arrivals/admissions extend the spare.
+pub(crate) fn homed_occupancy_for_output(
+    report: &WorldReport,
+    output: &OutputId,
+) -> BTreeSet<String> {
+    let mut occupied = BTreeSet::new();
+    for domain in &report.domains {
+        if domain.readable
+            && domain.domain.id == *output
+            && domain.windows.iter().any(|window| !window.sticky)
+        {
+            occupied.insert(domain.domain.workspace.0.clone());
+        }
+    }
+    for entry in &report.minimized {
+        if entry.output == *output && !entry.sticky {
+            occupied.insert(entry.workspace.0.clone());
+        }
+    }
+    occupied
+}
+
+/// Natives homing a sticky live row (readable) plus sticky minimized
+/// lifetimes: empty for spare purposes (see [`homed_occupancy`]), yet retained
+/// against removal. World apply also protects referenced window rows, even
+/// when an all-desktop native has no explicit desktop memberships. Ordinary
+/// close/unhome releases the hold and normal lifecycle resumes.
+pub(crate) fn sticky_homed_natives(report: &WorldReport) -> BTreeSet<String> {
+    let mut retained = BTreeSet::new();
+    for domain in &report.domains {
+        if domain.readable && domain.windows.iter().any(|window| window.sticky) {
+            retained.insert(domain.domain.workspace.0.clone());
+        }
+    }
+    for entry in &report.minimized {
+        if entry.sticky {
+            retained.insert(entry.workspace.0.clone());
+        }
+    }
+    retained
+}
+
+/// Output-scoped sticky-homed natives for one output (see
+/// [`sticky_homed_natives`]).
+pub(crate) fn sticky_homed_natives_for_output(
+    report: &WorldReport,
+    output: &OutputId,
+) -> BTreeSet<String> {
+    let mut retained = BTreeSet::new();
+    for domain in &report.domains {
+        if domain.readable
+            && domain.domain.id == *output
+            && domain.windows.iter().any(|window| window.sticky)
+        {
+            retained.insert(domain.domain.workspace.0.clone());
+        }
+    }
+    for entry in &report.minimized {
+        if entry.output == *output && entry.sticky {
+            retained.insert(entry.workspace.0.clone());
+        }
+    }
+    retained
 }
 
 /// Whether a retained migration is confirmed: the target scope lists the

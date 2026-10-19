@@ -146,6 +146,24 @@ pub(crate) struct RetainedTransfer {
     pub(crate) policy: bool,
     pub(crate) source_output: OutputId,
     pub(crate) source_workspace: String,
+    /// Outstanding whole-workspace migration members (aligned mode only):
+    /// the relocated member set awaiting arrival at the target homing.
+    /// Empty for every other transfer kind and for disjoint-model
+    /// migrations (those settle through the scoped topology instead).
+    /// Surviving members only: arrived plus still-outstanding. Explicitly
+    /// closed and externally-moved members drop (never fought); absent
+    /// without a close stays outstanding (never inferred closed).
+    pub(crate) members: Vec<WindowId>,
+    /// Expected D5 refill native for an aligned Migration, stored at commit
+    /// so settlement survives early refill-child settlement. `None` when no
+    /// refill was selected or for non-migration transfers.
+    pub(crate) migration_refill: Option<String>,
+    /// True when an aligned Migration committed with zero members
+    /// (originally empty). Distinguishes empty migrations (must still verify
+    /// target follow plus source refill) from migrations whose members all
+    /// externally superseded/closed (settle to observed without fighting
+    /// newer input).
+    pub(crate) migration_initial_empty: bool,
 }
 
 /// Retained explicit float-placement target: one outstanding authorized
@@ -189,6 +207,22 @@ pub(crate) struct PendingSend {
     pub(crate) output: OutputId,
     pub(crate) window: WindowId,
     pub(crate) follow: bool,
+    pub(crate) source_output: OutputId,
+    pub(crate) source_workspace: String,
+}
+
+/// Pending whole-workspace migration against an unbound destination
+/// (aligned mode only): the destination trailing-create path minted
+/// `logical_id` for the target output and the migration commits once the
+/// binding names the native id. Stable operation identity, no view target,
+/// never the token as a native id. Drained in report order once bound;
+/// dropped when the source native leaves the live set or the target
+/// output disconnects.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PendingMigration {
+    pub(crate) operation_id: String,
+    pub(crate) logical_id: String,
+    pub(crate) target_output: OutputId,
     pub(crate) source_output: OutputId,
     pub(crate) source_workspace: String,
 }
@@ -256,7 +290,9 @@ pub struct WorldEngine {
     /// conversion of its non-sticky windows, then the entry clears (view
     /// moved on, output disconnected, or conversion fired). Entries are
     /// only ever created while [`WorldEngine::startup_pending`] holds, so
-    /// post-startup explicit views are never converted.
+    /// post-startup explicit views are never converted. Unused in aligned
+    /// mode (startup adopts the grid without conversion); retained for the
+    /// default disjoint model.
     pub(crate) startup_conversion: BTreeMap<OutputId, String>,
     /// True until the startup conversion pass runs on a complete report.
     /// Survives incomplete startup reports so delayed readback still
@@ -295,6 +331,9 @@ pub struct WorldEngine {
     pub(crate) floating_scopes: BTreeSet<DomainKey>,
     /// Pending numbered-send intents against unbound logical workspaces.
     pub(crate) pending_sends: Vec<PendingSend>,
+    /// Pending whole-workspace migrations against unbound destinations
+    /// (aligned trailing-create path).
+    pub(crate) pending_migrations: Vec<PendingMigration>,
     /// Per-scope sweep failure classification for the report currently
     /// being staged: [`WorldEngine::classify_sweep_hold`] reasons for scope
     /// keys in the staged held set. Cleared at the start of every accepted
@@ -305,6 +344,19 @@ pub struct WorldEngine {
     /// converge may re-store the slot during the unshielded sweep, so the
     /// forget runs after, never before).
     pending_forget: Vec<(DomainKey, WindowId)>,
+    /// Aligned per-output-local platform opt-in (see
+    /// [`WorldEngineConfig::aligned_per_output_workspaces`]). Retained at
+    /// construction; incarnation resets keep it.
+    pub(crate) aligned_per_output: bool,
+    /// Aligned logical identity per (output, native): the stable logical
+    /// workspace id for one output's cell on one native desktop. Minted on
+    /// first observation, retained while the output and native stay live,
+    /// never derived from the reported bindings (replicated aligned
+    /// bindings must not collapse through a generic native->logical map).
+    /// Whole-workspace migration rebinds a logical unit onto the
+    /// destination trailing native without changing this id and mints a
+    /// fresh identity for the emptied source cell.
+    pub(crate) aligned_logical: BTreeMap<(String, String), String>,
     /// Correlated per-command outcome staged by the command path below and
     /// consumed once by [`WorldEngine::publish`] for the reply being built.
     /// `None` for observation-only replies and for operations whose result
@@ -331,15 +383,21 @@ pub struct WorldEngineConfig {
     /// G-06 maximized directional focus fence (REQ-MAX-08). On by default
     /// (Linux route); the Windows carrier disables it.
     pub maximized_focus_fence: bool,
+    /// Aligned per-output-local workspaces: every output owns the full
+    /// native-position ring and logical identity is per (output, native).
+    /// Off by default (disjoint per-output sets); the KDE carrier enables
+    /// it. Not a user setting.
+    pub aligned_per_output_workspaces: bool,
 }
 
 impl Default for WorldEngineConfig {
     /// Exactly the historical [`WorldEngine::new`] semantics: automatic
-    /// fixed-float sends off, maximized focus fence on.
+    /// fixed-float sends off, maximized focus fence on, disjoint mapping.
     fn default() -> Self {
         Self {
             fixed_send_admission: false,
             maximized_focus_fence: true,
+            aligned_per_output_workspaces: false,
         }
     }
 }
@@ -396,11 +454,23 @@ impl WorldEngine {
             tiling: BTreeMap::new(),
             floating_scopes: BTreeSet::new(),
             pending_sends: Vec::new(),
+            pending_migrations: Vec::new(),
             hold_reasons: BTreeMap::new(),
             pending_forget: Vec::new(),
             command_result: None,
             admission_focus_spent: BTreeSet::new(),
+            aligned_per_output: config.aligned_per_output_workspaces,
+            aligned_logical: BTreeMap::new(),
         })
+    }
+
+    /// True when the aligned per-output-local model applies to this report:
+    /// platform opt-in on plus `per-output-local` mode. All other modes and
+    /// the default disjoint model are unchanged.
+    #[must_use]
+    pub(crate) fn is_aligned(&self, report: &WorldReport) -> bool {
+        self.aligned_per_output
+            && report.workspace_mode == crate::workspace_scope::WorkspaceMode::PerOutputLocal
     }
 
     /// Bootstrap reply for discovery: generation/capabilities with
@@ -446,6 +516,7 @@ impl WorldEngine {
         self.retained_floats.clear();
         self.pending_creations.clear();
         self.pending_sends.clear();
+        self.pending_migrations.clear();
         self.tiling.clear();
         self.floating_scopes.clear();
         self.last_views.clear();
@@ -455,6 +526,7 @@ impl WorldEngine {
         self.displaced.clear();
         self.startup_conversion.clear();
         self.startup_pending = true;
+        self.aligned_logical.clear();
         self.output_facts.clear();
         self.live_topology.clear();
         self.command_result = None;
@@ -947,13 +1019,18 @@ impl WorldEngine {
         // the binding resolved the logical token to a native id, so the
         // engine send runs against the observed target domain. Unbound
         // intents persist without any view switch or token-as-native write.
-        self.drain_pending_sends(report, &by_id, &held_scopes);
+        // Committed intents contribute their deferred one-shot focus here.
+        let mut effects = admission_effects;
+        effects.extend(self.drain_pending_sends(report, &by_id, &held_scopes));
+        // Pending aligned migrations against newly bound trailing
+        // workspaces commit now under the same token-never-native rule.
+        self.drain_pending_migrations(report, &by_id, &held_scopes);
         // Command path: consumed sequences reconcile only, never re-execute.
         // A consumed command never re-executes, so its result never
         // re-emits either: consumed replies carry no result.
         self.command_result = None;
         if consumed {
-            let reply = self.publish(report, true, admission_effects, None, &held_scopes);
+            let reply = self.publish(report, true, effects, None, &held_scopes);
             return self.finish(report, digest, reply);
         }
         if let Some(command) = report.command.as_ref() {
@@ -970,9 +1047,9 @@ impl WorldEngine {
                         &was_floating,
                     );
                     let result = self.command_result.take();
-                    // Admission intent first: an explicit command focuses
-                    // after it, so user intent wins when both coincide.
-                    let mut effects = admission_effects;
+                    // Admission intent first, then deferred pending focus:
+                    // an explicit command focuses after both, so user
+                    // intent wins when they coincide.
                     effects.push(effect);
                     let reply = self.publish(report, false, effects, result, &held_scopes);
                     return self.finish(report, digest, reply);
@@ -987,8 +1064,7 @@ impl WorldEngine {
                         &was_floating,
                     );
                     let result = self.command_result.take();
-                    let reply =
-                        self.publish(report, false, admission_effects, result, &held_scopes);
+                    let reply = self.publish(report, false, effects, result, &held_scopes);
                     return self.finish(report, digest, reply);
                 }
                 CommandApplied::Rejected { kind, message } => {
@@ -996,7 +1072,7 @@ impl WorldEngine {
                 }
             }
         }
-        let reply = self.publish(report, false, admission_effects, None, &held_scopes);
+        let reply = self.publish(report, false, effects, None, &held_scopes);
         self.finish(report, digest, reply)
     }
 
@@ -1125,6 +1201,10 @@ impl WorldEngine {
                     }
                 }
                 TransferKind::Migration => {
+                    if self.is_aligned(report) {
+                        self.settle_aligned_migration(report, retained, &mut keep);
+                        continue;
+                    }
                     if migration_confirmed(report, &retained.source_output, &retained.target) {
                         // Topology shows the workspace under the target
                         // scope and no longer under the source.
@@ -1141,6 +1221,173 @@ impl WorldEngine {
         }
         self.retained = keep;
         self.settle_floats(report);
+    }
+
+    /// Settle one outstanding aligned whole-workspace migration against
+    /// member homing plus both view proofs (D6, no premature settlement):
+    /// every surviving member is at the target key, externally superseded,
+    /// or explicitly closed; the target output shows the destination
+    /// native; and the source output shows the stored D5 refill (when one
+    /// was selected). The shared native grid cannot confirm through the
+    /// scoped topology (every output lists every native), so each member
+    /// proves its own arrival: homed at the target key settles it into the
+    /// surviving set, an explicit close drops it in either direction, and a
+    /// homing at neither source nor target drops it as newer external input
+    /// (never fought). Members still homed at the source (delayed arrival)
+    /// or absent everywhere without a close (partial/unreadable arrival)
+    /// stay outstanding with arrived members preserved, and so does a
+    /// migration whose members arrived but either view is still old: the
+    /// transfer is never settled prematurely and never re-actuated. The
+    /// expected refill rides the parent (never the retained refill child),
+    /// so refill-child settlement before the parent never loses the proof.
+    /// An originally-empty migration still verifies target follow plus the
+    /// explicit source refill; a non-empty migration whose members all
+    /// externally superseded/closed settles to observed without yanking
+    /// either view after newer input won. A view that moved externally
+    /// (current differs from both the expectation and the last view)
+    /// settles the parent instead of fighting newer native input, and a
+    /// settled parent never reactivates. Proven refusal or external
+    /// supersession feedback settles the whole transfer to observed;
+    /// possibly-executed holds it without re-actuation.
+    fn settle_aligned_migration(
+        &self,
+        report: &WorldReport,
+        retained: RetainedTransfer,
+        keep: &mut Vec<RetainedTransfer>,
+    ) {
+        let feedback = report
+            .feedback
+            .iter()
+            .find(|f| f.operation_id == retained.target.operation_id);
+        if matches!(
+            feedback.map(|f| f.outcome),
+            Some(AttemptOutcome::RefusedProven | AttemptOutcome::SupersededExternal)
+        ) {
+            return;
+        }
+        // Paired refill-child presence (child pushed before the parent, so a
+        // held child is already in `keep`; a settled child is gone). Computed
+        // before the `hold` closure borrows `keep`.
+        let refill_child_op = format!("{}-refill", retained.target.operation_id);
+        let refill_child_held = keep.iter().any(|r| {
+            matches!(&r.target.kind, TransferKind::View) && r.target.operation_id == refill_child_op
+        });
+        let mut hold = |mut held: RetainedTransfer| {
+            if matches!(
+                feedback.map(|f| f.outcome),
+                Some(AttemptOutcome::PossiblyExecuted)
+            ) {
+                held.target.held = true;
+            }
+            keep.push(held);
+        };
+        // Fresh-report bar: partial inventory, an incomplete topology on
+        // either output, or an unreadable domain at either key holds the
+        // transfer with identities preserved, never settles from a gap.
+        if !report.inventory_complete
+            || report
+                .topology
+                .iter()
+                .filter(|t| {
+                    t.output == retained.target.target_output || t.output == retained.source_output
+                })
+                .any(|t| !t.complete)
+        {
+            hold(retained);
+            return;
+        }
+        let source_key = DomainKey {
+            output: retained.source_output.clone(),
+            workspace: crate::directional::WorkspaceId(retained.source_workspace.clone()),
+        };
+        let target_key = DomainKey {
+            output: retained.target.target_output.clone(),
+            workspace: crate::directional::WorkspaceId(retained.target.target_workspace.clone()),
+        };
+        if report
+            .domains
+            .iter()
+            .any(|d| (d.domain.key() == source_key || d.domain.key() == target_key) && !d.readable)
+        {
+            hold(retained);
+            return;
+        }
+        let mut outstanding = Vec::new();
+        let mut surviving = Vec::new();
+        for member in &retained.members {
+            if observed_closed(report, member) {
+                continue;
+            }
+            match observed_homing(report, member) {
+                Some(key) if key == target_key => {
+                    surviving.push(member.clone());
+                }
+                Some(key) if key == source_key => {
+                    outstanding.push(member.clone());
+                    surviving.push(member.clone());
+                }
+                Some(_) => {}
+                None => {
+                    outstanding.push(member.clone());
+                    surviving.push(member.clone());
+                }
+            }
+        }
+        surviving.sort();
+        // Deterministic outstanding order for stable retained state.
+        outstanding.sort();
+        if !outstanding.is_empty() {
+            let mut held = retained;
+            held.members = surviving;
+            hold(held);
+            return;
+        }
+        // No outstanding members: all surviving arrived, all settled
+        // externally/closed, or originally empty. A non-empty migration with
+        // no survivors settled every member through newer input or close:
+        // settle to observed without fighting either view.
+        if surviving.is_empty() && !retained.migration_initial_empty {
+            return;
+        }
+        // Both views (D6): the adapter actuates the destination follow and
+        // the stored source refill; settlement waits for each read-back
+        // proof. Empty migrations verify both views exactly like arrived
+        // ones. The expected refill rides the parent, so refill-child
+        // settlement before the parent never loses the proof: when the child
+        // is gone (settled) but the source does not show the refill, the
+        // source moved externally and the parent settles instead of holding
+        // forever waiting for a refill that will never be re-actuated (no
+        // reactivation, never fighting newer input). When the child is still
+        // held (true lag, views never proven), the parent holds and waits.
+        // A target view that moved externally (current differs from both the
+        // expectation and the last view) settles instead of fighting.
+        if let Some(refill) = retained.migration_refill.as_deref() {
+            let source_current = current_view(report, &retained.source_output);
+            if !refill_child_held && source_current != Some(refill) {
+                return;
+            }
+        }
+        let target_current = current_view(report, &retained.target.target_output);
+        if target_current != Some(retained.target.target_workspace.as_str()) {
+            let last = self
+                .last_views
+                .get(&retained.target.target_output)
+                .map(String::as_str);
+            if target_current != last {
+                return;
+            }
+            let mut held = retained;
+            held.members = surviving;
+            hold(held);
+            return;
+        }
+        if let Some(refill) = retained.migration_refill.as_deref()
+            && current_view(report, &retained.source_output) != Some(refill)
+        {
+            let mut held = retained;
+            held.members = surviving;
+            hold(held);
+        }
     }
 
     /// Settle outstanding explicit float-placement targets against the raw
@@ -1275,9 +1522,18 @@ impl WorldEngine {
         let transferred: BTreeSet<&str> = self
             .retained
             .iter()
-            .filter_map(|retained| match &retained.target.kind {
-                TransferKind::Window(window) => Some(window.0.as_str()),
-                TransferKind::View | TransferKind::Migration => None,
+            .flat_map(|retained| match &retained.target.kind {
+                TransferKind::Window(window) => vec![window.0.as_str()],
+                // Outstanding whole-workspace migration members (aligned
+                // mode) settle through the transfer, never a focus steal:
+                // disjoint migrations retain no members, so this arm is
+                // empty there.
+                TransferKind::Migration => retained
+                    .members
+                    .iter()
+                    .map(|window| window.0.as_str())
+                    .collect(),
+                TransferKind::View => Vec::new(),
             })
             .collect();
         let mut newcomer: Option<(WindowId, DomainKey)> = None;
@@ -1629,13 +1885,17 @@ impl WorldEngine {
     /// closed, never view-switching, never the token as a native id);
     /// explicit closes and external moves settle them. Deterministic engine
     /// refusals settle; only unobservable targets (unbound, unreadable, or
-    /// held) keep pending.
+    /// held) keep pending. Committed sends propagate the engine focus
+    /// result exactly like the immediate path (stay: source MRU survivor,
+    /// follow: mover, emptied source: nothing), minted once under the
+    /// original stable operation identity.
     pub(crate) fn drain_pending_sends(
         &mut self,
         report: &WorldReport,
         by_id: &BTreeMap<&WindowId, &EngineWindow>,
         held_scopes: &BTreeSet<DomainKey>,
-    ) {
+    ) -> Vec<OneShotEffect> {
+        let mut effects = Vec::new();
         let pending = std::mem::take(&mut self.pending_sends);
         for intent in pending {
             let Some(native) = report
@@ -1689,7 +1949,11 @@ impl WorldEngine {
                 continue;
             }
             let window = intent.window.clone();
-            if let Ok(retained) = self.execute_send(
+            // Pending trailing commits retain the transfer exactly like the
+            // command path and propagate the one-shot engine focus result
+            // under the original stable identity, emitted once here (the
+            // pend itself carried no effect), preserving at-most-once.
+            if let Ok((retained, focus)) = self.execute_send(
                 report,
                 &intent.operation_id,
                 &window,
@@ -1699,7 +1963,113 @@ impl WorldEngine {
                 by_id,
                 held_scopes,
             ) {
+                if let Some(target) = focus
+                    && let Some(seq) = intent
+                        .operation_id
+                        .strip_prefix("op-")
+                        .and_then(|s| s.parse::<u64>().ok())
+                {
+                    effects.push(OneShotEffect::explicit_focus(
+                        seq,
+                        target,
+                        self.state_revision + 1,
+                    ));
+                }
                 self.retained.push(retained);
+            }
+        }
+        effects
+    }
+
+    /// Commit pending aligned migrations whose destination token just bound
+    /// to a native id. Unbound intents persist across the gap (never
+    /// inferred dropped, never the token as a native id); the commit runs
+    /// the same cross-native path as the command, retaining the migration
+    /// transfer only (no staged result: the command reply already
+    /// consumed). Intents whose source is unreadable, held, or no longer
+    /// live persist; an Engine-level refusal keeps the intent for a later
+    /// report rather than dropping the move silently.
+    pub(crate) fn drain_pending_migrations(
+        &mut self,
+        report: &WorldReport,
+        by_id: &BTreeMap<&WindowId, &EngineWindow>,
+        held_scopes: &BTreeSet<DomainKey>,
+    ) {
+        if self.pending_migrations.is_empty() || !self.is_aligned(report) {
+            return;
+        }
+        let pending = std::mem::take(&mut self.pending_migrations);
+        for intent in pending {
+            let Some(native) = report
+                .bindings
+                .iter()
+                .find(|binding| {
+                    binding.logical_id == intent.logical_id
+                        && binding.output == intent.target_output
+                })
+                .map(|binding| binding.native_id.clone())
+            else {
+                self.pending_migrations.push(intent);
+                continue;
+            };
+            let live: BTreeSet<&str> = report
+                .topology
+                .iter()
+                .flat_map(|topology| topology.native_order.iter().map(String::as_str))
+                .collect();
+            let source_key = DomainKey {
+                output: intent.source_output.clone(),
+                workspace: WorkspaceId(intent.source_workspace.clone()),
+            };
+            if !live.contains(native.as_str())
+                || held_scopes.contains(&source_key)
+                || !report
+                    .domains
+                    .iter()
+                    .any(|d| d.readable && d.domain.key() == source_key)
+                || !report
+                    .topology
+                    .iter()
+                    .any(|topology| topology.output == intent.target_output)
+            {
+                self.pending_migrations.push(intent);
+                continue;
+            }
+            let target_key = DomainKey {
+                output: intent.target_output.clone(),
+                workspace: WorkspaceId(native.clone()),
+            };
+            // Target reservation mirrors the command path: an outstanding
+            // transfer already owns this cell until arrival, so the drain
+            // waits instead of double-booking it.
+            if self.retained.iter().any(|r| {
+                r.target.target_output == intent.target_output
+                    && r.target.target_workspace == native
+            }) {
+                self.pending_migrations.push(intent);
+                continue;
+            }
+            if report
+                .domains
+                .iter()
+                .any(|d| d.domain.key() == target_key && (!d.readable || !d.windows.is_empty()))
+                || report.minimized.iter().any(|entry| {
+                    entry.output == intent.target_output && entry.workspace.0 == native
+                })
+            {
+                self.pending_migrations.push(intent);
+                continue;
+            }
+            if !self.commit_aligned_migration(
+                report,
+                &intent.operation_id,
+                &source_key,
+                &intent.target_output,
+                &native,
+                false,
+                by_id,
+            ) {
+                self.pending_migrations.push(intent);
             }
         }
     }
@@ -1707,6 +2077,12 @@ impl WorldEngine {
     /// Observation presented to convergence for one domain: outstanding
     /// transfer windows are stripped from their source and presented at
     /// their target so committed retained topology survives actuation lag.
+    /// Whole-workspace migration members shield per member: delayed members
+    /// still observed at the source strip there and inject at the target so
+    /// the relocated tree/order/shares survive; arrived members already at
+    /// the target stay (never duplicated); explicitly closed and externally
+    /// moved members never inject (newer input wins, never fought). Absent
+    /// members without a close carry no geometry and never infer closure.
     /// Windows with an outstanding explicit float-placement target are
     /// presented as floating so convergence retains the committed
     /// exception (and its exact geometry) instead of re-admitting them
@@ -1721,13 +2097,26 @@ impl WorldEngine {
         let mut out: Vec<EngineWindow> = windows
             .iter()
             .filter(|window| {
-                !self.retained.iter().any(|r| match &r.target.kind {
+                if self.retained.iter().any(|r| match &r.target.kind {
                     TransferKind::Window(w) => {
                         w.0 == window.window.0
                             && r.source_output == key.output
                             && r.source_workspace == key.workspace.0
                     }
                     TransferKind::View | TransferKind::Migration => false,
+                }) {
+                    return false;
+                }
+                // Migration source shielding: strip surviving members still
+                // listed at the source so delayed/partial observations never
+                // rebuild the emptied source cell. Closed/externally-moved
+                // members already dropped from `members`, and arrived members
+                // are already absent here.
+                !self.retained.iter().any(|r| {
+                    matches!(&r.target.kind, TransferKind::Migration)
+                        && r.source_output == key.output
+                        && r.source_workspace == key.workspace.0
+                        && r.members.iter().any(|m| m.0 == window.window.0)
                 })
             })
             .cloned()
@@ -1752,6 +2141,38 @@ impl WorldEngine {
                 injected.output = key.output.clone();
                 injected.workspace = key.workspace.clone();
                 out.push(injected);
+            }
+        }
+        for retained in &self.retained {
+            if !matches!(&retained.target.kind, TransferKind::Migration) {
+                continue;
+            }
+            if retained.target.target_output != key.output
+                || retained.target.target_workspace != key.workspace.0
+            {
+                continue;
+            }
+            let source_key = DomainKey {
+                output: retained.source_output.clone(),
+                workspace: crate::directional::WorkspaceId(retained.source_workspace.clone()),
+            };
+            for member in &retained.members {
+                if out.iter().any(|entry| entry.window == *member) {
+                    continue;
+                }
+                let Some(observed) = by_id.get(member) else {
+                    continue;
+                };
+                let observed_key = DomainKey {
+                    output: observed.output.clone(),
+                    workspace: observed.workspace.clone(),
+                };
+                if observed_key == source_key {
+                    let mut injected = (*observed).clone();
+                    injected.output = key.output.clone();
+                    injected.workspace = key.workspace.clone();
+                    out.push(injected);
+                }
             }
         }
         out

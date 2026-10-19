@@ -206,6 +206,7 @@ impl super::super::Session {
         let base_revision = session_observation.observation.revision;
         // Source removal with recursive collapse.
         let source_tree = self.trees.get(&source_key).cloned().flatten();
+        let source_before = describe_send_topology(source_tree.as_ref());
         if !source_tree
             .as_ref()
             .is_some_and(|tree| collect_leaves(tree).contains(&link.leaf))
@@ -431,6 +432,9 @@ impl super::super::Session {
             }
         }
         let mut desired_trees = self.trees.clone();
+        let target_before = describe_send_topology(target_tree.as_ref());
+        let source_after = describe_send_topology(new_source.as_ref());
+        let target_after = describe_send_topology(Some(&new_target));
         desired_trees.insert(source_key.clone(), new_source);
         desired_trees.insert(target_key.clone(), Some(new_target));
         let mut desired_windows = self.windows.clone();
@@ -566,6 +570,10 @@ impl super::super::Session {
             axis,
             projected,
             target_leaves,
+            source_before,
+            target_before,
+            source_after,
+            target_after,
         });
         Ok(SessionPlan {
             dispatch,
@@ -850,6 +858,18 @@ impl super::super::Session {
             axis: self.policy().admission_axis_for_rect(&target_domain.bounds),
             projected: target_domain.bounds,
             target_leaves,
+            source_before: describe_send_topology(
+                self.trees.get(source_key).and_then(|tree| tree.as_ref()),
+            ),
+            target_before: describe_send_topology(
+                self.trees.get(target_key).and_then(|tree| tree.as_ref()),
+            ),
+            source_after: describe_send_topology(
+                desired_trees.get(source_key).and_then(|tree| tree.as_ref()),
+            ),
+            target_after: describe_send_topology(
+                desired_trees.get(target_key).and_then(|tree| tree.as_ref()),
+            ),
         });
         Ok(SessionPlan {
             dispatch,
@@ -1089,6 +1109,22 @@ impl super::super::Session {
             axis: self.policy().admission_axis_for_rect(&target_bounds),
             projected: target_bounds,
             target_leaves,
+            source_before: describe_send_topology(
+                self.trees.get(&source_key).and_then(|tree| tree.as_ref()),
+            ),
+            target_before: describe_send_topology(
+                self.trees.get(&target_key).and_then(|tree| tree.as_ref()),
+            ),
+            source_after: describe_send_topology(
+                desired_trees
+                    .get(&source_key)
+                    .and_then(|tree| tree.as_ref()),
+            ),
+            target_after: describe_send_topology(
+                desired_trees
+                    .get(&target_key)
+                    .and_then(|tree| tree.as_ref()),
+            ),
         });
         Ok(SessionPlan {
             dispatch,

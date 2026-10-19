@@ -2876,6 +2876,7 @@ fn outer_gap_float_overlay_and_exhaustion_hold() {
 const WINDOWS_CONFIG: WorldEngineConfig = WorldEngineConfig {
     fixed_send_admission: true,
     maximized_focus_fence: false,
+    aligned_per_output_workspaces: false,
 };
 
 #[test]
@@ -2893,6 +2894,7 @@ fn default_config_matches_new_exactly() {
         WorldEngineConfig {
             fixed_send_admission: false,
             maximized_focus_fence: true,
+            aligned_per_output_workspaces: false,
         }
     );
     for engine in [&historical, &configured] {

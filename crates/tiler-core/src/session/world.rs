@@ -258,16 +258,16 @@ impl super::Session {
     }
 
     /// Portable output relocation for one retained domain: move the domain
-    /// key from `source` to `target` (same workspace, different output)
-    /// preserving topology, shares, focus, exceptions, float geometry, and
-    /// accepted revision. Updates domain bounds/gap plus every window link
-    /// and exception homed on the source. Atomic: any validation failure
-    /// leaves revision, gap, tree/shares, windows, exceptions, and focus
-    /// exactly as before (`false`, no mutation). Refuses on workspace
-    /// mismatch, same output, unknown source, existing target,
+    /// key from `source` to `target` (different output, same or different
+    /// workspace) preserving topology, shares, focus, exceptions, float
+    /// geometry, and accepted revision. Updates domain identity/bounds/gap
+    /// plus every window link and exception homed on the source. Atomic:
+    /// any validation failure leaves revision, gap, tree/shares, windows,
+    /// exceptions, and focus exactly as before (`false`, no mutation).
+    /// Refuses on same output, unknown source, existing target,
     /// pending/drag/divergence residue, or invalid bounds/gap. Exception
     /// classes (`flags`, `floating_geometry`) are never altered, only the
-    /// homing output id.
+    /// homing output/workspace.
     pub fn relocate_domain(
         &mut self,
         source: &DomainKey,
@@ -276,9 +276,6 @@ impl super::Session {
         gap: i32,
     ) -> bool {
         if source == target {
-            return false;
-        }
-        if source.workspace != target.workspace {
             return false;
         }
         if source.output == target.output {
@@ -326,22 +323,26 @@ impl super::Session {
         };
         // Update domain identity/bounds/gap in place, preserving order.
         self.domains[source_index].id = target.output.clone();
+        self.domains[source_index].workspace = target.workspace.clone();
         self.domains[source_index].bounds = bounds;
         self.domains[source_index].gap = gap;
         self.trees.insert(target.clone(), tree);
         for link in self.windows.values_mut() {
             if link.output == source.output && link.workspace == source.workspace {
                 link.output = target.output.clone();
+                link.workspace = target.workspace.clone();
             }
         }
         for record in self.exceptions.values_mut() {
             if record.output == source.output && record.workspace == source.workspace {
                 record.output = target.output.clone();
+                record.workspace = target.workspace.clone();
             }
         }
         for slot in self.minimized_slots.values_mut() {
             if slot.output == source.output && slot.workspace == source.workspace {
                 slot.output = target.output.clone();
+                slot.workspace = target.workspace.clone();
             }
         }
         if self.focused_domain.as_ref() == Some(source) {

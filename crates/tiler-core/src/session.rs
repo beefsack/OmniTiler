@@ -672,9 +672,17 @@ struct DragState {
 /// Trace-only send-to-workspace placement diagnostic: which anchor branch
 /// the `map_to_tree` (`direction=None`) resolution selected plus its opaque
 /// leaf, the admission axis, that projected rectangle, and the target leaf
-/// count. Set on successful `propose_move_to_workspace` only; the Engine
-/// copies it into its own per-op report. Opaque tokens only, never native
-/// window or platform identifiers.
+/// count. Set on successful send transfers and on cross-output directional
+/// moves (anchor branch `directional`, no anchor leaf); the Engine copies it
+/// into its own per-op report. Opaque tokens only, never native window or
+/// platform identifiers.
+///
+/// The four ordered tree descriptions carry the authoritative before/after
+/// structure for the source and target domains (`L` per leaf, `H[s,..]` /
+/// `V[s,..]` groups with nested shares in child order, `-` when a domain
+/// holds no tree, capped like the startup-trace topology). They let a live
+/// journal distinguish a whole-target wrap (`H[H[L,L],L]`) from flat or
+/// nested-remembered-leaf insertions without a wire change.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SendPlacementTrace {
     pub anchor_kind: &'static str,
@@ -682,6 +690,59 @@ pub struct SendPlacementTrace {
     pub axis: Axis,
     pub projected: Rect,
     pub target_leaves: usize,
+    pub source_before: String,
+    pub target_before: String,
+    pub source_after: String,
+    pub target_after: String,
+}
+
+/// Trace-only ordered tree description for placement diagnostics: `L` per
+/// leaf, `H[s,..]` / `V[s,..]` per group with nested shares in child
+/// order, `-` when the domain holds no tree, capped like the startup-trace
+/// topology. Same shape convention as the Engine startup trace so live
+/// journals stay comparable; opaque structure only, never window or
+/// platform identifiers. Shared by the send and directional-move paths.
+pub(crate) fn describe_send_topology(tree: Option<&Node>) -> String {
+    fn walk(node: &Node, out: &mut String) {
+        match node {
+            Node::Leaf { .. } => out.push('L'),
+            Node::Group {
+                axis,
+                children,
+                shares,
+                ..
+            } => {
+                out.push(match axis {
+                    Axis::Horizontal => 'H',
+                    Axis::Vertical => 'V',
+                });
+                out.push('[');
+                for (i, share) in shares.iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    out.push_str(&share.to_string());
+                }
+                out.push_str("](");
+                for (i, child) in children.iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    walk(child, out);
+                }
+                out.push(')');
+            }
+        }
+    }
+    let Some(tree) = tree else {
+        return "-".to_owned();
+    };
+    let mut out = String::new();
+    walk(tree, &mut out);
+    if out.len() > crate::engine::STARTUP_TRACE_MAX_TOPOLOGY {
+        out.truncate(crate::engine::STARTUP_TRACE_MAX_TOPOLOGY);
+    }
+    if out.is_empty() { "-".to_owned() } else { out }
 }
 
 /// Durable authoritative session. See module docs for the transaction model.
@@ -4824,6 +4885,403 @@ mod tests {
     }
 
     #[test]
+    fn move_r4_trace_carries_exact_tree_shapes() {
+        // Live-faithful directional R4 fixture (whole-target wrap decision):
+        // source out-1/ws-1 triple focused win-3, target out-2/ws-1 sole
+        // win-4. Move right wraps the whole target with the mover nearest
+        // the source and collapses the source; move left wraps the whole
+        // source into a nested same-axis group. The trace carries these
+        // shapes so a live journal proves hierarchy without a wire change.
+        let mut d1 = domain();
+        d1.adjacent
+            .insert(Direction::Right, OutputId("out-2".to_owned()));
+        let mut d2 = domain_two();
+        d2.adjacent
+            .insert(Direction::Left, OutputId("out-1".to_owned()));
+        // Canonical components stay single-domain with empty adjacency;
+        // the pair carries the reciprocal adjacency R4 needs.
+        let mut source = Session::new(owner(), generation(), 0, 7, vec![domain()]).expect("new");
+        admit(&mut source, "win-1", true);
+        admit(&mut source, "win-2", true);
+        admit(&mut source, "win-3", true);
+        let mut dest = Session::new(owner(), generation(), 0, 7, vec![domain_two()]).expect("new");
+        {
+            let rev = dest.accepted_revision();
+            let observation = SessionObservation {
+                observation: Observation::new(owner(), generation(), rev, 100 + rev),
+                windows: vec![ObservedWindow {
+                    window: WindowId("win-4".to_owned()),
+                    output: OutputId("out-2".to_owned()),
+                    workspace: WorkspaceId("ws-1".to_owned()),
+                    floating: false,
+                    fullscreen: false,
+                    maximized: false,
+                    sticky: false,
+                    fixed_auto: false,
+                    fixed_suppress: false,
+                    hints: crate::size_hints::WindowSizeHints::none(),
+                }],
+            };
+            let correlation = corr("corr-admit-win-4");
+            let plan = dest
+                .propose(
+                    &SessionCommand::Admit {
+                        window: WindowId("win-4".to_owned()),
+                        output: OutputId("out-2".to_owned()),
+                        workspace: WorkspaceId("ws-1".to_owned()),
+                        exceptions: ExceptionFlags::none(),
+                        exception_behavior: None,
+                        placement_bounds: Rect {
+                            x: 0,
+                            y: 0,
+                            w: 100,
+                            h: 50,
+                        },
+                        suppress_fixed_float: false,
+                    },
+                    &observation,
+                    &correlation,
+                    &LifecycleCapabilities::full(),
+                )
+                .expect("admit propose");
+            dest.acknowledge(&AdapterAck::new(
+                correlation.clone(),
+                owner(),
+                generation(),
+                rev,
+                AckOutcome::Accepted,
+            ))
+            .expect("admit ack");
+            dest.verify_lifecycle(&LifecyclePostObservation::new(
+                Observation::new(owner(), generation(), rev, 200 + rev),
+                correlation,
+                true,
+                plan.dispatch.preconditions.clone(),
+                plan.dispatch.operation.clone(),
+            ))
+            .expect("admit verify");
+        }
+        let mut pair = Session::paired_from_canonical_for_send(&source, Some(&dest), vec![d1, d2])
+            .expect("pair");
+        let commit_move = |session: &mut Session,
+                           rev: u64,
+                           correlation: CorrelationId,
+                           pre: Vec<crate::directional::Precondition>,
+                           op: MoveOperation| {
+            session
+                .acknowledge(&AdapterAck::new(
+                    correlation.clone(),
+                    owner(),
+                    generation(),
+                    rev,
+                    AckOutcome::Accepted,
+                ))
+                .expect("ack");
+            session
+                .verify_move(&PostObservation::new(
+                    Observation::new(owner(), generation(), rev, 4242),
+                    correlation,
+                    true,
+                    pre,
+                    op,
+                ))
+                .expect("verify");
+        };
+        // Right (directional R4): win-3 crosses to out-2. The nested
+        // admission triple first flattens through a local R3 escape (no
+        // trace: local moves record nothing), then the next press crosses.
+        assert!(pair.sync_focus_from_window(&domain_key(), &WindowId("win-3".to_owned())));
+        let rev = pair.accepted_revision();
+        let observation = obs_for(&pair);
+        let flat = pair
+            .propose_move(
+                &domain_key(),
+                &WindowId("win-3".to_owned()),
+                Direction::Right,
+                &observation,
+                &corr("corr-r4-flatten"),
+                &Capabilities::full(),
+            )
+            .expect("flatten proposes")
+            .expect_moved("flatten R3");
+        assert!(pair.last_send_placement().is_none());
+        commit_move(
+            &mut pair,
+            rev,
+            corr("corr-r4-flatten"),
+            flat.dispatch.preconditions.clone(),
+            flat.dispatch.operation.clone(),
+        );
+        let rev = pair.accepted_revision();
+        let observation = obs_for(&pair);
+        let plan = pair
+            .propose_move(
+                &domain_key(),
+                &WindowId("win-3".to_owned()),
+                Direction::Right,
+                &observation,
+                &corr("corr-r4-right"),
+                &Capabilities::full(),
+            )
+            .expect("right move proposes")
+            .expect_moved("right R4");
+        let trace = pair.last_send_placement().expect("trace recorded").clone();
+        // The R3 escape above leaves the flat triple; the R4 leg sees the
+        // exact brief fixture.
+        assert_eq!(trace.anchor_kind, "directional");
+        assert_eq!(trace.source_before, "H[1,1,1](L,L,L)");
+        assert_eq!(trace.target_before, "L");
+        assert_eq!(trace.source_after, "H[1,1](L,L)");
+        assert_eq!(trace.target_after, "H[1,1](L,L)");
+        // Mover lands nearest the source (first child of the new root).
+        let mover_leaf = pair
+            .snapshot()
+            .windows
+            .iter()
+            .find(|l| l.window.0 == "win-3")
+            .expect("mover link")
+            .leaf
+            .clone();
+        commit_move(
+            &mut pair,
+            rev,
+            corr("corr-r4-right"),
+            plan.dispatch.preconditions.clone(),
+            plan.dispatch.operation.clone(),
+        );
+        let snapshot = pair.snapshot();
+        let dest_tree = snapshot
+            .domains
+            .iter()
+            .find(|d| d.output.0 == "out-2")
+            .and_then(|d| d.tree.clone())
+            .expect("dest tree");
+        match dest_tree {
+            Node::Group { children, .. } => {
+                assert_eq!(children.len(), 2);
+                // Mover nearest the source lands first (left child).
+                assert!(matches!(&children[0], Node::Leaf { id } if id == &mover_leaf));
+            }
+            Node::Leaf { .. } => panic!("dest must wrap"),
+        }
+        assert_eq!(plan.desired_focus_leaf, mover_leaf);
+        // Left: win-3 returns to out-1; the whole source wraps nested.
+        let dest_key = DomainKey {
+            output: OutputId("out-2".to_owned()),
+            workspace: WorkspaceId("ws-1".to_owned()),
+        };
+        assert!(pair.sync_focus_from_window(&dest_key, &WindowId("win-3".to_owned())));
+        let rev = pair.accepted_revision();
+        let observation = obs_for(&pair);
+        let back = pair
+            .propose_move(
+                &dest_key,
+                &WindowId("win-3".to_owned()),
+                Direction::Left,
+                &observation,
+                &corr("corr-r4-left"),
+                &Capabilities::full(),
+            )
+            .expect("left move proposes")
+            .expect_moved("left R4");
+        let trace = pair.last_send_placement().expect("trace recorded").clone();
+        assert_eq!(trace.anchor_kind, "directional");
+        assert_eq!(trace.source_before, "H[1,1](L,L)");
+        assert_eq!(trace.target_before, "H[1,1](L,L)");
+        assert_eq!(trace.source_after, "L");
+        assert_eq!(trace.target_after, "H[1,1](H[1,1](L,L),L)");
+        commit_move(
+            &mut pair,
+            rev,
+            corr("corr-r4-left"),
+            back.dispatch.preconditions.clone(),
+            back.dispatch.operation.clone(),
+        );
+        assert_tree_invariants(&pair);
+    }
+
+    #[test]
+    fn directional_local_repropose_clears_stale_send_trace() {
+        // Trace-only freshness: a cross followed by a local re-propose on
+        // the SAME session must not re-emit the cross trace. Same R4
+        // fixture as above: triple on out-1/ws-1 focused win-3, sole win-4
+        // on out-2/ws-1.
+        let mut d1 = domain();
+        d1.adjacent
+            .insert(Direction::Right, OutputId("out-2".to_owned()));
+        let mut d2 = domain_two();
+        d2.adjacent
+            .insert(Direction::Left, OutputId("out-1".to_owned()));
+        let mut source = Session::new(owner(), generation(), 0, 7, vec![domain()]).expect("new");
+        admit(&mut source, "win-1", true);
+        admit(&mut source, "win-2", true);
+        admit(&mut source, "win-3", true);
+        let mut dest = Session::new(owner(), generation(), 0, 7, vec![domain_two()]).expect("new");
+        {
+            let rev = dest.accepted_revision();
+            let observation = SessionObservation {
+                observation: Observation::new(owner(), generation(), rev, 100 + rev),
+                windows: vec![ObservedWindow {
+                    window: WindowId("win-4".to_owned()),
+                    output: OutputId("out-2".to_owned()),
+                    workspace: WorkspaceId("ws-1".to_owned()),
+                    floating: false,
+                    fullscreen: false,
+                    maximized: false,
+                    sticky: false,
+                    fixed_auto: false,
+                    fixed_suppress: false,
+                    hints: crate::size_hints::WindowSizeHints::none(),
+                }],
+            };
+            let correlation = corr("corr-fresh-admit-win-4");
+            let plan = dest
+                .propose(
+                    &SessionCommand::Admit {
+                        window: WindowId("win-4".to_owned()),
+                        output: OutputId("out-2".to_owned()),
+                        workspace: WorkspaceId("ws-1".to_owned()),
+                        exceptions: ExceptionFlags::none(),
+                        exception_behavior: None,
+                        placement_bounds: Rect {
+                            x: 0,
+                            y: 0,
+                            w: 100,
+                            h: 50,
+                        },
+                        suppress_fixed_float: false,
+                    },
+                    &observation,
+                    &correlation,
+                    &LifecycleCapabilities::full(),
+                )
+                .expect("admit propose");
+            dest.acknowledge(&AdapterAck::new(
+                correlation.clone(),
+                owner(),
+                generation(),
+                rev,
+                AckOutcome::Accepted,
+            ))
+            .expect("admit ack");
+            dest.verify_lifecycle(&LifecyclePostObservation::new(
+                Observation::new(owner(), generation(), rev, 200 + rev),
+                correlation,
+                true,
+                plan.dispatch.preconditions.clone(),
+                plan.dispatch.operation.clone(),
+            ))
+            .expect("admit verify");
+        }
+        let mut pair = Session::paired_from_canonical_for_send(&source, Some(&dest), vec![d1, d2])
+            .expect("pair");
+        // Flatten leg first (nested admission triple escapes through a
+        // local R3 move, recording no trace), then the cross leg.
+        assert!(pair.sync_focus_from_window(&domain_key(), &WindowId("win-3".to_owned())));
+        let rev = pair.accepted_revision();
+        let observation = obs_for(&pair);
+        let flat = pair
+            .propose_move(
+                &domain_key(),
+                &WindowId("win-3".to_owned()),
+                Direction::Right,
+                &observation,
+                &corr("corr-fresh-flatten"),
+                &Capabilities::full(),
+            )
+            .expect("flatten proposes")
+            .expect_moved("flatten R3");
+        assert!(pair.last_send_placement().is_none());
+        pair.acknowledge(&AdapterAck::new(
+            corr("corr-fresh-flatten"),
+            owner(),
+            generation(),
+            rev,
+            AckOutcome::Accepted,
+        ))
+        .expect("ack");
+        pair.verify_move(&PostObservation::new(
+            Observation::new(owner(), generation(), rev, 4242),
+            corr("corr-fresh-flatten"),
+            true,
+            flat.dispatch.preconditions.clone(),
+            flat.dispatch.operation.clone(),
+        ))
+        .expect("verify");
+        // Cross leg: win-3 moves right onto out-2, trace recorded.
+        let rev = pair.accepted_revision();
+        let observation = obs_for(&pair);
+        let cross = pair
+            .propose_move(
+                &domain_key(),
+                &WindowId("win-3".to_owned()),
+                Direction::Right,
+                &observation,
+                &corr("corr-fresh-cross"),
+                &Capabilities::full(),
+            )
+            .expect("cross proposes")
+            .expect_moved("cross R4");
+        assert!(
+            matches!(
+                cross.dispatch.operation,
+                crate::directional::MoveOperation::CrossOutput { .. }
+            ),
+            "fixture must cross, got {:?}",
+            cross.dispatch.operation
+        );
+        assert!(
+            pair.last_send_placement().is_some(),
+            "cross records a send trace"
+        );
+        pair.acknowledge(&AdapterAck::new(
+            corr("corr-fresh-cross"),
+            owner(),
+            generation(),
+            rev,
+            AckOutcome::Accepted,
+        ))
+        .expect("ack");
+        pair.verify_move(&PostObservation::new(
+            Observation::new(owner(), generation(), rev, 4242),
+            corr("corr-fresh-cross"),
+            true,
+            cross.dispatch.preconditions.clone(),
+            cross.dispatch.operation.clone(),
+        ))
+        .expect("verify");
+        // Local leg on the same session: win-1 swaps with win-2 inside
+        // out-1. No send trace may survive.
+        assert!(pair.sync_focus_from_window(&domain_key(), &WindowId("win-1".to_owned())));
+        let rev = pair.accepted_revision();
+        let observation = obs_for(&pair);
+        let local = pair
+            .propose_move(
+                &domain_key(),
+                &WindowId("win-1".to_owned()),
+                Direction::Right,
+                &observation,
+                &corr("corr-fresh-local"),
+                &Capabilities::full(),
+            )
+            .expect("local proposes")
+            .expect_moved("local swap");
+        assert!(
+            !matches!(
+                local.dispatch.operation,
+                crate::directional::MoveOperation::CrossOutput { .. }
+            ),
+            "fixture must stay local, got {:?}",
+            local.dispatch.operation
+        );
+        assert!(
+            pair.last_send_placement().is_none(),
+            "local re-propose clears the stale cross trace"
+        );
+        let _ = rev;
+    }
+
+    #[test]
     fn drag_cross_output_invalid_releases_snap_back() {
         let mut source = Session::new(owner(), generation(), 0, 7, vec![domain()]).expect("new");
         admit(&mut source, "win-1", true);
@@ -6836,11 +7294,12 @@ mod tests {
             output: OutputId("out-9".to_owned()),
             workspace: WorkspaceId("ws-1".to_owned()),
         };
-        // Workspace mismatch.
+        // Same output with a different workspace still refuses:
+        // relocation always crosses outputs.
         assert!(!session.relocate_domain(
             &source_key,
             &DomainKey {
-                output: OutputId("out-9".to_owned()),
+                output: OutputId("out-1".to_owned()),
                 workspace: WorkspaceId("ws-other".to_owned()),
             },
             Rect {
@@ -6916,6 +7375,26 @@ mod tests {
         assert_eq!(session.accepted_revision(), before_revision);
         assert!(session.domains().iter().any(|d| d.key() == target));
         assert!(!session.domains().iter().any(|d| d.key() == source_key));
+        // Cross-workspace relocation rekeys the native binding while the
+        // domain moves as a unit.
+        let cross = DomainKey {
+            output: OutputId("out-8".to_owned()),
+            workspace: WorkspaceId("ws-other".to_owned()),
+        };
+        assert!(session.relocate_domain(
+            &target,
+            &cross,
+            Rect {
+                x: 0,
+                y: 0,
+                w: 120,
+                h: 80
+            },
+            0,
+        ));
+        assert_eq!(session.accepted_revision(), before_revision);
+        assert!(session.domains().iter().any(|d| d.key() == cross));
+        assert!(!session.domains().iter().any(|d| d.key() == target));
     }
 
     // ---- canonical pair slice ----

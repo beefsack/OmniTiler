@@ -73,7 +73,7 @@ use std::collections::BTreeMap;
 
 use tiler_core::boundary::CoreCommand;
 use tiler_core::bounds::{is_opaque_id, valid_carried_rect};
-use tiler_core::directional::{NodeId, OutputId, WindowId, WorkspaceId};
+use tiler_core::directional::{Axis, NodeId, OutputId, WindowId, WorkspaceId};
 use tiler_core::geometry::Rect;
 use tiler_core::ids::{MAX_CORRELATION_LEN, MAX_GENERATION_LEN, MAX_OWNER_LEN};
 use tiler_core::workspace_scope::WorkspaceMode;
@@ -1410,10 +1410,148 @@ pub fn encode_reply(reply: &WorldReply) -> String {
     out
 }
 
+/// Trace-only placement prefix (opt-in trace wiring only, never normal logs).
+pub const PLACEMENT_TRACE_PREFIX: &str = "omnitiler:placement-trace";
+
+/// Whether trace-only placement diagnostics are enabled (`1` only).
+/// Mirrors the service trace gate so the protocol choke point can
+/// emit placement traces without new normal-level log volume.
+#[must_use]
+pub fn placement_trace_enabled() -> bool {
+    matches!(
+        std::env::var("OMNITILER_TRACE"),
+        Ok(value) if value == "1"
+    )
+}
+
+fn trace_rect(rect: &Rect) -> String {
+    format!("{},{},{},{}", rect.x, rect.y, rect.w, rect.h)
+}
+
+/// Sanitized opaque token for trace lines: validated project token shape
+/// only, else `unknown`. Covers window/anchor ids without echoing payloads.
+fn trace_id(raw: &str) -> String {
+    if is_opaque_id(raw) {
+        raw.to_owned()
+    } else {
+        "unknown".to_owned()
+    }
+}
+
+fn trace_axis(axis: Axis) -> &'static str {
+    match axis {
+        Axis::Horizontal => "horizontal",
+        Axis::Vertical => "vertical",
+    }
+}
+
+/// Validated correlation for trace lines, else `-`. Only a well-formed
+/// correlation id is ever emitted, so garbage never echoes.
+fn trace_correlation(raw: &str) -> String {
+    match tiler_core::ids::CorrelationId::parse(raw) {
+        Some(id) => id.as_str().to_owned(),
+        None => "-".to_owned(),
+    }
+}
+
+/// Sanitize one trace token: lowercase/digits with dashes or
+/// underscores, capped at 64 chars, else `unknown`. Covers the outcome
+/// and reason vocabulary. Never echoes payload bytes.
+fn trace_token(raw: Option<&str>) -> String {
+    match raw {
+        Some(text)
+            if !text.is_empty()
+                && text.len() <= 64
+                && text.bytes().all(|b| {
+                    b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_'
+                }) =>
+        {
+            text.to_owned()
+        }
+        _ => "unknown".to_owned(),
+    }
+}
+
+/// Trace-only startup placement summary: bounded domain bounds, capped
+/// carried inputs (opaque window token plus rectangle each), fit
+/// outcome/reason, and the resulting ordered tree description with axes
+/// and nested shares. Opaque tokens and integer geometry only. Pure.
+#[must_use]
+pub fn summarize_startup_fit_trace(report: &tiler_core::engine::EngineStartupFitTrace) -> String {
+    let inputs = report
+        .inputs
+        .iter()
+        .map(|input| format!("{}={}", trace_id(&input.window.0), trace_rect(&input.rect)))
+        .collect::<Vec<_>>()
+        .join(";");
+    format!(
+        "{PLACEMENT_TRACE_PREFIX} kind=startup-fit correlation={} windows={} domain={} inputs={} outcome={} reason={} centre_splits={} leaves={} topology={}",
+        trace_correlation(report.correlation.as_str()),
+        report.windows,
+        trace_rect(&report.domain_bounds),
+        if inputs.is_empty() {
+            "-".to_owned()
+        } else {
+            inputs
+        },
+        trace_token(Some(report.outcome)),
+        trace_token(Some(report.reason)),
+        report.centre_splits,
+        report.leaves,
+        if report.topology.is_empty() {
+            "-".to_owned()
+        } else {
+            report.topology.clone()
+        },
+    )
+}
+
+/// Trace-only send placement summary: selected anchor branch plus its
+/// opaque leaf, admission axis, projected rectangle, target leaf
+/// count, and authoritative before/after source/target tree descriptions.
+/// Opaque tokens and integer geometry only. Pure.
+#[must_use]
+pub fn summarize_send_placement_trace(
+    report: &tiler_core::engine::EngineSendPlacementTrace,
+) -> String {
+    format!(
+        "{PLACEMENT_TRACE_PREFIX} kind=send-placement correlation={} anchor={} anchor_leaf={} axis={} projected={} target_leaves={} source_before={} target_before={} source_after={} target_after={}",
+        trace_correlation(report.correlation.as_str()),
+        trace_token(Some(report.anchor_kind)),
+        report
+            .anchor
+            .as_ref()
+            .map(|leaf| trace_id(&leaf.0))
+            .unwrap_or_else(|| "-".to_owned()),
+        trace_axis(report.axis),
+        trace_rect(&report.projected),
+        report.target_leaves,
+        report.source_before,
+        report.target_before,
+        report.source_after,
+        report.target_after,
+    )
+}
+
+/// Trace-only placement lines for the just-completed engine call:
+/// at most one startup-fit line plus at most one send-placement line.
+/// Empty for retained ops with no fresh/send decision. Pure over the engine.
+#[must_use]
+pub fn placement_trace_lines(engine: &tiler_core::engine::Engine) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(report) = engine.last_startup_fit_trace() {
+        out.push(summarize_startup_fit_trace(report));
+    }
+    if let Some(report) = engine.last_send_placement() {
+        out.push(summarize_send_placement_trace(report));
+    }
+    out
+}
+
 /// Retained engine surface for the service boundary: the planner service
 /// drives [`WorldEngine`] through this module so only `tiler-protocol` sits
 /// between the service and the core.
-pub use tiler_core::world_engine::{WorldEngine, WorldOutcome};
+pub use tiler_core::world_engine::{WorldEngine, WorldEngineConfig, WorldOutcome};
 
 #[cfg(test)]
 mod tests {
@@ -1440,5 +1578,99 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
         assert_eq!(parsed["outcome"], "rejected");
         assert_eq!(parsed["gen"], "gen-1");
+    }
+
+    #[test]
+    fn placement_trace_summaries_carry_topology_and_anchors() {
+        use tiler_core::directional::{NodeId, WindowId};
+        use tiler_core::engine::{EngineSendPlacementTrace, EngineStartupFitTrace, StartupInput};
+        use tiler_core::geometry::Rect;
+        use tiler_core::ids::CorrelationId;
+        let correlation = CorrelationId::parse("place-trace-1").expect("valid");
+        let startup = EngineStartupFitTrace {
+            correlation: correlation.clone(),
+            windows: 2,
+            domain_bounds: Rect {
+                x: 0,
+                y: 0,
+                w: 800,
+                h: 600,
+            },
+            inputs: vec![
+                StartupInput {
+                    window: WindowId("win-1".to_owned()),
+                    rect: Rect {
+                        x: 0,
+                        y: 0,
+                        w: 400,
+                        h: 600,
+                    },
+                },
+                StartupInput {
+                    window: WindowId("win-2".to_owned()),
+                    rect: Rect {
+                        x: 400,
+                        y: 0,
+                        w: 400,
+                        h: 600,
+                    },
+                },
+            ],
+            outcome: "fitted",
+            reason: "ok",
+            centre_splits: 0,
+            leaves: 2,
+            topology: "H[1,1](L,L)".to_owned(),
+        };
+        let line = summarize_startup_fit_trace(&startup);
+        assert!(line.starts_with(PLACEMENT_TRACE_PREFIX), "{line}");
+        assert!(line.contains("kind=startup-fit"), "{line}");
+        assert!(line.contains("windows=2"), "{line}");
+        assert!(line.contains("domain=0,0,800,600"), "{line}");
+        assert!(line.contains("win-1=0,0,400,600"), "{line}");
+        assert!(line.contains("win-2=400,0,400,600"), "{line}");
+        assert!(line.contains("outcome=fitted"), "{line}");
+        assert!(line.contains("leaves=2"), "{line}");
+        assert!(line.contains("topology=H[1,1](L,L)"), "{line}");
+        assert!(line.contains("correlation=place-trace-1"), "{line}");
+        let send = EngineSendPlacementTrace {
+            correlation,
+            anchor_kind: "remembered",
+            anchor: Some(NodeId("leaf-1".to_owned())),
+            axis: tiler_core::directional::Axis::Horizontal,
+            projected: Rect {
+                x: 0,
+                y: 0,
+                w: 400,
+                h: 600,
+            },
+            target_leaves: 2,
+            source_before: "H[1,1,1](L,L,L)".to_owned(),
+            target_before: "L".to_owned(),
+            source_after: "H[1,1](L,L)".to_owned(),
+            target_after: "H[1,1](L,L)".to_owned(),
+        };
+        let send_line = summarize_send_placement_trace(&send);
+        assert!(send_line.contains("kind=send-placement"), "{send_line}");
+        assert!(send_line.contains("anchor=remembered"), "{send_line}");
+        assert!(send_line.contains("anchor_leaf=leaf-1"), "{send_line}");
+        assert!(send_line.contains("axis=horizontal"), "{send_line}");
+        assert!(send_line.contains("projected=0,0,400,600"), "{send_line}");
+        assert!(
+            send_line.contains("source_before=H[1,1,1](L,L,L)"),
+            "{send_line}"
+        );
+        assert!(send_line.contains("target_before=L"), "{send_line}");
+        assert!(
+            send_line.contains("source_after=H[1,1](L,L)"),
+            "{send_line}"
+        );
+        assert!(
+            send_line.contains("target_after=H[1,1](L,L)"),
+            "{send_line}"
+        );
+        // Fresh engine with no op records no placement lines.
+        let fresh = WorldEngine::new("w-placement-trace-empty").expect("valid generation");
+        assert!(placement_trace_lines(fresh.engine()).is_empty());
     }
 }

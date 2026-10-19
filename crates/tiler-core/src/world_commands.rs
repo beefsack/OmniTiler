@@ -16,19 +16,24 @@ use crate::seed::EngineWindow;
 use crate::session::{DomainKey, OutputDomain};
 use crate::workspace_scope::{
     MigrationRefill, MigrationRequest, PreviousTarget, TrailingSelection, WorkspaceMode,
-    apply_migration, apply_swap_assignments, plan_migration, resolve_numbered,
-    resolve_relative_send, resolve_relative_step, resolve_trailing,
+    aligned_ring_ids, apply_migration, apply_swap_assignments, plan_migration,
+    resolve_aligned_trailing, resolve_numbered, resolve_relative_send, resolve_relative_step,
+    resolve_trailing,
 };
 use crate::world_engine::{
     KIND_CREATION_EXHAUSTED, KIND_DIRECTION, KIND_FOCUS, KIND_IN_FLIGHT, KIND_MIGRATION,
     KIND_OPERATION, KIND_SCOPE_HELD, KIND_SELECT_UNKNOWN, KIND_SEND_TARGET, KIND_SEND_WINDOW,
     KIND_SNAPSHOT, MSG_CREATION_EXHAUSTED, MSG_DIRECTION, MSG_FOCUS, MSG_IN_FLIGHT, MSG_MIGRATION,
     MSG_OPERATION, MSG_SCOPE_HELD, MSG_SELECT_UNKNOWN, MSG_SEND_TARGET, MSG_SEND_WINDOW,
-    MSG_SNAPSHOT, RetainedTransfer, WorldEngine,
+    MSG_SNAPSHOT, PendingMigration, RetainedTransfer, WorldEngine,
 };
-use crate::world_publish::{current_view, homed_occupancy, live_native_order};
+use crate::world_publish::{
+    current_view, homed_occupancy, homed_occupancy_for_output, live_native_order,
+};
 use crate::world_report::CommandResult;
-use crate::world_report::{OneShotEffect, TransferKind, TransferTarget, WorldCommand, WorldReport};
+use crate::world_report::{
+    OneShotEffect, TilingMode, TransferKind, TransferTarget, WorldCommand, WorldReport,
+};
 
 impl WorldEngine {
     /// Execute one fresh command after the sweep. Returns the emitted
@@ -142,6 +147,9 @@ impl WorldEngine {
                         policy: false,
                         source_output: OutputId(plan.other_output.clone()),
                         source_workspace: plan.active_current.clone(),
+                        members: Vec::new(),
+                        migration_refill: None,
+                        migration_initial_empty: false,
                     });
                     self.history.observe(
                         &plan.active_output,
@@ -176,8 +184,14 @@ impl WorldEngine {
             }
             WorldCommand::SelectTrailing { output } => {
                 let ring = self.selection_ring(report, output);
-                let occupied = homed_occupancy(report);
-                match resolve_trailing(&ring, &occupied) {
+                let selection = if self.is_aligned(report) {
+                    let occupied = crate::world_publish::homed_occupancy_for_output(report, output);
+                    crate::workspace_scope::resolve_aligned_trailing(&ring, &occupied)
+                } else {
+                    let occupied = homed_occupancy(report);
+                    resolve_trailing(&ring, &occupied)
+                };
+                match selection {
                     TrailingSelection::Reuse(target) => {
                         self.retain_view(report, command_seq, output, &target)
                     }
@@ -247,7 +261,15 @@ impl WorldEngine {
                 source_output,
                 target_output,
                 workspace,
-            } => self.start_migration(report, command_seq, source_output, target_output, workspace),
+            } => self.start_migration(
+                report,
+                command_seq,
+                source_output,
+                target_output,
+                workspace,
+                by_id,
+                held_scopes,
+            ),
             WorldCommand::FocusDirectional {
                 window,
                 direction,
@@ -291,7 +313,15 @@ impl WorldEngine {
                 source_output,
                 workspace,
                 direction,
-            } => self.migrate_directional(report, command_seq, source_output, workspace, direction),
+            } => self.migrate_directional(
+                report,
+                command_seq,
+                source_output,
+                workspace,
+                direction,
+                by_id,
+                held_scopes,
+            ),
             WorldCommand::Operation(command) => {
                 self.execute_operation(report, command_seq, command, by_id, held_scopes)
             }
@@ -300,6 +330,613 @@ impl WorldEngine {
 }
 
 impl WorldEngine {
+    /// Whole-workspace migration in aligned mode: the moved logical
+    /// workspace lands in the destination output's trailing empty, keeping
+    /// its logical id, tree, order/shares, remembered focus and tiling
+    /// mode; only its native desktop changes. Nothing is inserted and no
+    /// output renumbers, so the scoped mapping is untouched (unlike the
+    /// disjoint insert-after plan). The emptied source cell mints a fresh
+    /// logical identity. D5 refill (reading B, logical identity): the moved
+    /// source logical and the fresh replacement at the same source native
+    /// are both excluded from the remaining source candidates; the retained
+    /// `op-<seq>-refill` view selects the still-valid unrelated source
+    /// current, else the per-output previous live native (MRU setting), else
+    /// the last remaining native different from the migrated source native.
+    /// D1 is follow-only structurally (no stay variant exists); the retained
+    /// migration transfer keeps the inert `follow:false` metadata both paths
+    /// share (actuation keys on the transfer kind, never the flag). When the destination needs
+    /// a new trailing binding, the move pends on the stable pending
+    /// creation token (never the token as a native id) and commits once
+    /// the binding names the native, exactly like numbered sends.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn start_aligned_migration(
+        &mut self,
+        report: &WorldReport,
+        command_seq: u64,
+        source_output: &OutputId,
+        target_output: &OutputId,
+        workspace: &str,
+        by_id: &BTreeMap<&WindowId, &EngineWindow>,
+        held_scopes: &BTreeSet<DomainKey>,
+    ) -> CommandApplied {
+        if source_output == target_output {
+            return CommandApplied::Rejected {
+                kind: KIND_MIGRATION,
+                message: MSG_MIGRATION,
+            };
+        }
+        if !report
+            .topology
+            .iter()
+            .any(|topology| &topology.output == source_output)
+            || !report
+                .topology
+                .iter()
+                .any(|topology| &topology.output == target_output)
+        {
+            return CommandApplied::Rejected {
+                kind: KIND_MIGRATION,
+                message: MSG_MIGRATION,
+            };
+        }
+        let live_order = live_native_order(report);
+        if !live_order.iter().any(|id| id == workspace) {
+            return CommandApplied::Rejected {
+                kind: KIND_MIGRATION,
+                message: MSG_MIGRATION,
+            };
+        }
+        let source_key = DomainKey {
+            output: source_output.clone(),
+            workspace: crate::directional::WorkspaceId(workspace.to_owned()),
+        };
+        if held_scopes.contains(&source_key) {
+            return CommandApplied::Rejected {
+                kind: KIND_SCOPE_HELD,
+                message: MSG_SCOPE_HELD,
+            };
+        }
+        // One flight per source cell: a retained migration still awaiting
+        // arrival fences a second commit (which would otherwise move the
+        // fresh empty cell and rebind logicals underneath the flight).
+        if self.retained.iter().any(|r| {
+            matches!(&r.target.kind, TransferKind::Migration)
+                && r.source_output == *source_output
+                && r.source_workspace == workspace
+        }) {
+            return CommandApplied::Rejected {
+                kind: KIND_MIGRATION,
+                message: MSG_MIGRATION,
+            };
+        }
+        if !report
+            .domains
+            .iter()
+            .any(|d| d.readable && d.domain.key() == source_key)
+        {
+            return CommandApplied::Rejected {
+                kind: KIND_MIGRATION,
+                message: MSG_MIGRATION,
+            };
+        }
+        let ring = aligned_ring_ids(&live_order);
+        let occupied = homed_occupancy_for_output(report, target_output);
+        match resolve_aligned_trailing(&ring, &occupied) {
+            TrailingSelection::Reuse(dest_native) => {
+                // A pended move for the same source cell owns it until its
+                // binding lands; an immediate commit would move the cell
+                // out from under the intent.
+                if self
+                    .pending_migrations
+                    .iter()
+                    .any(|p| p.source_output == *source_output && p.source_workspace == workspace)
+                {
+                    return CommandApplied::Rejected {
+                        kind: KIND_MIGRATION,
+                        message: MSG_MIGRATION,
+                    };
+                }
+                // Collision backstop (the trailing proof already skips
+                // readable occupancy, so anything found here is unreadable
+                // residue or minimized state the selection could not see).
+                // Target reservation: an outstanding migration or window
+                // send already owns this trailing cell until arrival, and
+                // a pended creation-bound move for the destination drains
+                // onto its next binding; a second commit would double-book
+                // the same native before the first arrives.
+                let target_key = DomainKey {
+                    output: target_output.clone(),
+                    workspace: crate::directional::WorkspaceId(dest_native.clone()),
+                };
+                if self.retained.iter().any(|r| {
+                    r.target.target_output == *target_output
+                        && r.target.target_workspace == dest_native
+                }) || self
+                    .pending_migrations
+                    .iter()
+                    .any(|p| p.target_output == *target_output)
+                {
+                    return CommandApplied::Rejected {
+                        kind: KIND_MIGRATION,
+                        message: MSG_MIGRATION,
+                    };
+                }
+                if report
+                    .domains
+                    .iter()
+                    .any(|d| d.domain.key() == target_key && (!d.readable || !d.windows.is_empty()))
+                    || report.minimized.iter().any(|entry| {
+                        entry.output == *target_output && entry.workspace.0 == dest_native
+                    })
+                {
+                    return CommandApplied::Rejected {
+                        kind: KIND_MIGRATION,
+                        message: MSG_MIGRATION,
+                    };
+                }
+                let operation_id = format!("op-{command_seq}");
+                if self.commit_aligned_migration(
+                    report,
+                    &operation_id,
+                    &source_key,
+                    target_output,
+                    &dest_native,
+                    true,
+                    by_id,
+                ) {
+                    self.note_command(command_seq);
+                    CommandApplied::NoEffect
+                } else {
+                    CommandApplied::Rejected {
+                        kind: KIND_MIGRATION,
+                        message: MSG_MIGRATION,
+                    }
+                }
+            }
+            TrailingSelection::Create => {
+                let Some(logical) = self.pending_token(target_output) else {
+                    return CommandApplied::Rejected {
+                        kind: KIND_CREATION_EXHAUSTED,
+                        message: MSG_CREATION_EXHAUSTED,
+                    };
+                };
+                // One pending move per destination: two intents would drain
+                // onto the same created native. Same-source re-pends fence
+                // the same way.
+                if self.pending_migrations.iter().any(|p| {
+                    p.target_output == *target_output
+                        || (p.source_output == *source_output && p.source_workspace == workspace)
+                }) {
+                    return CommandApplied::Rejected {
+                        kind: KIND_MIGRATION,
+                        message: MSG_MIGRATION,
+                    };
+                }
+                self.note_command(command_seq);
+                self.pending_migrations.push(PendingMigration {
+                    operation_id: format!("op-{command_seq}"),
+                    logical_id: logical,
+                    target_output: target_output.clone(),
+                    source_output: source_output.clone(),
+                    source_workspace: workspace.to_owned(),
+                });
+                CommandApplied::NoEffect
+            }
+        }
+    }
+
+    /// Commit one aligned whole-workspace move onto a known destination
+    /// native: the transactional Engine rekey plus the logical rebinding,
+    /// tiling carry, D5 refill, and retained migration transfer. The scoped
+    /// mapping is untouched. A floating source cell carries sessionlessly
+    /// (no Engine tree exists there); absence of a tree alone never
+    /// refuses. Returns false (no mutation beyond the Engine verdict
+    /// itself, exactly like the disjoint path) when any precondition
+    /// fails. `stage_result` stages the migration provenance for the reply
+    /// being built; the pending-drain path passes false and retains the
+    /// transfer only.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn commit_aligned_migration(
+        &mut self,
+        report: &WorldReport,
+        operation_id: &str,
+        source_key: &DomainKey,
+        target_output: &OutputId,
+        dest_native: &str,
+        stage_result: bool,
+        by_id: &BTreeMap<&WindowId, &EngineWindow>,
+    ) -> bool {
+        let target_key = DomainKey {
+            output: target_output.clone(),
+            workspace: crate::directional::WorkspaceId(dest_native.to_owned()),
+        };
+        let Some(source_report) = report
+            .domains
+            .iter()
+            .find(|d| d.readable && d.domain.key() == *source_key)
+        else {
+            return false;
+        };
+        // The fresh source identity mints below; exhaustion must fence
+        // before the Engine commit, never after.
+        if self.creation_counter == u64::MAX {
+            return false;
+        }
+        let Some((direction, direction_token)) =
+            self.reciprocal_direction_for(&source_key.output, target_output)
+        else {
+            return false;
+        };
+        let _ = direction;
+        // Floating source cells are adapter-owned with no Engine session
+        // (no tree to relocate): carry by sessionless membership remap
+        // below instead of refusing on the absent tree.
+        if self.workspace_tiling_mode(&source_key.output, &source_key.workspace.0)
+            == TilingMode::Floating
+        {
+            return self.carry_floating_migration(
+                report,
+                operation_id,
+                source_key,
+                target_output,
+                dest_native,
+                direction_token,
+                source_report,
+                stage_result,
+            );
+        }
+        // Target scope geometry: the target output's current readable view
+        // when observed, else the source scope. Inset exactly like the
+        // disjoint path; exhaustion refuses with no mutation.
+        let (raw_bounds, raw_gap, raw_outer) = report
+            .domains
+            .iter()
+            .find(|d| {
+                d.readable
+                    && d.domain.id == *target_output
+                    && report.topology.iter().any(|t| {
+                        t.output == *target_output && t.current_native == d.domain.workspace.0
+                    })
+            })
+            .map(|d| (d.domain.bounds, d.domain.gap, d.outer_gap))
+            .unwrap_or((
+                source_report.domain.bounds,
+                source_report.domain.gap,
+                source_report.outer_gap,
+            ));
+        let projected = match crate::geometry::inset_bounds(raw_bounds, raw_outer) {
+            Ok(projected) => projected,
+            Err(_) => return false,
+        };
+        let target_domain = OutputDomain {
+            id: target_output.clone(),
+            workspace: crate::directional::WorkspaceId(dest_native.to_owned()),
+            bounds: projected,
+            gap: raw_gap,
+            adjacent: BTreeMap::new(),
+        };
+        if !target_domain.validate() {
+            return false;
+        }
+        let (Some(owner), Some(correlation)) = (
+            OwnerId::parse(&report.owner),
+            CorrelationId::parse(&report.request_id),
+        ) else {
+            return false;
+        };
+        let accepted = self
+            .engine
+            .session(source_key)
+            .map(|s| (s.accepted_revision(), s.accepted_fingerprint()));
+        let (revision, fingerprint) = accepted.unwrap_or((0, 0));
+        let Some(inset_source) =
+            crate::world_engine::inset_world_domain(&source_report.domain, source_report.outer_gap)
+        else {
+            return false;
+        };
+        let event = CoreEvent {
+            owner,
+            generation: self.core_generation.clone(),
+            correlation,
+            revision,
+            fingerprint,
+            domain: Engine::canonical_component_domain(&inset_source),
+            domain_key: source_key.clone(),
+            outer_gap: source_report.outer_gap,
+            focused_window: source_report.focused.clone(),
+            windows: self.shielded_windows(source_key, &source_report.windows, by_id),
+            closed_windows: source_report.closed.clone(),
+            directional: None,
+            directional_target_outer_gap: None,
+            target_domain: Some((
+                Engine::canonical_component_domain(&target_domain),
+                target_key.clone(),
+            )),
+            target_windows: Vec::new(),
+            command: CoreCommand::MigrateWorkspace {
+                direction: direction_token.to_owned(),
+            },
+        };
+        match self.engine.handle(&event) {
+            CoreReply::MigrateWorkspace(plan) => {
+                let _ = plan;
+                let (mut members, floats) = self
+                    .engine
+                    .session(&target_key)
+                    .map(|session| {
+                        let mut members: Vec<WindowId> = session
+                            .snapshot()
+                            .windows
+                            .into_iter()
+                            .map(|link| link.window)
+                            .collect();
+                        for observed in session.exception_observed() {
+                            if !members.iter().any(|w| w == &observed.window) {
+                                members.push(observed.window.clone());
+                            }
+                        }
+                        members.sort();
+                        (members, session.exception_count())
+                    })
+                    .unwrap_or_default();
+                // Minimized lifetimes homed at the source cell ride the
+                // same move (reported homings only, sticky stays per D7).
+                for entry in &report.minimized {
+                    if entry.output == source_key.output
+                        && entry.workspace.0 == source_key.workspace.0
+                        && !entry.sticky
+                        && !members.iter().any(|w| w == &entry.window)
+                    {
+                        members.push(entry.window.clone());
+                    }
+                }
+                members.sort();
+                self.finish_aligned_migration(
+                    report,
+                    operation_id,
+                    source_key,
+                    target_output,
+                    dest_native,
+                    direction_token,
+                    members,
+                    floats,
+                    stage_result,
+                )
+            }
+            CoreReply::Rejected { .. }
+            | CoreReply::SnapshotInvalid { .. }
+            | CoreReply::Diverged(_) => false,
+            _ => false,
+        }
+    }
+
+    /// D5 refill for one aligned migration (reading B, logical identity):
+    /// remaining source candidates are the live natives in native order
+    /// excluding the migrated source native (the moved logical is gone and
+    /// the fresh replacement minted at the same native is excluded too).
+    /// A still-valid unrelated source current is preserved; else the
+    /// per-output previous live native when the MRU setting selects it;
+    /// else the last remaining native. `None` when no other native lives.
+    pub(crate) fn aligned_source_refill(
+        &self,
+        report: &WorldReport,
+        source_output: &OutputId,
+        migrated_native: &str,
+    ) -> Option<String> {
+        let candidates: Vec<String> = live_native_order(report)
+            .into_iter()
+            .filter(|id| id != migrated_native)
+            .collect();
+        if candidates.is_empty() {
+            return None;
+        }
+        let source_current = report
+            .topology
+            .iter()
+            .find(|topology| &topology.output == source_output)
+            .map(|topology| topology.current_native.clone());
+        if let Some(current) = source_current
+            && current != migrated_native
+            && candidates.iter().any(|id| id == &current)
+        {
+            return Some(current);
+        }
+        match MigrationRefill::from(report.migration_source_refill) {
+            MigrationRefill::MostRecentlyUsed => {
+                if let Some(prev) = self.history.previous(&source_output.0)
+                    && prev != migrated_native
+                    && candidates.iter().any(|id| id == &prev)
+                {
+                    return Some(prev);
+                }
+                candidates.last().cloned()
+            }
+            MigrationRefill::LastRemaining => candidates.last().cloned(),
+        }
+    }
+
+    /// Retain the explicit core refill view for one aligned migration
+    /// (`<operation_id>-refill` on the source output, exactly like the
+    /// disjoint path). The adapter actuates it and verifies both views
+    /// plus all members before focus (D5/D6).
+    pub(crate) fn retain_aligned_refill(
+        &mut self,
+        report: &WorldReport,
+        operation_id: &str,
+        source_key: &DomainKey,
+    ) {
+        let Some(refill_native) =
+            self.aligned_source_refill(report, &source_key.output, &source_key.workspace.0)
+        else {
+            return;
+        };
+        self.retained.retain(|r| {
+            !(matches!(&r.target.kind, TransferKind::View)
+                && r.target.target_output == source_key.output)
+        });
+        self.retained.push(RetainedTransfer {
+            target: TransferTarget {
+                operation_id: format!("{operation_id}-refill"),
+                kind: TransferKind::View,
+                target_output: source_key.output.clone(),
+                target_workspace: refill_native,
+                follow: false,
+                held: false,
+            },
+            policy: false,
+            source_output: source_key.output.clone(),
+            source_workspace: source_key.workspace.0.clone(),
+            members: Vec::new(),
+            migration_refill: None,
+            migration_initial_empty: false,
+        });
+    }
+
+    /// Shared aligned-migration commit tail after the member set is proven
+    /// (Engine relocation or floating carry): tiling-mode carry, logical
+    /// rebinding, staged provenance, and the retained migration plus D5
+    /// refill transfers.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn finish_aligned_migration(
+        &mut self,
+        report: &WorldReport,
+        operation_id: &str,
+        source_key: &DomainKey,
+        target_output: &OutputId,
+        dest_native: &str,
+        direction_token: &str,
+        members: Vec<WindowId>,
+        floats: usize,
+        stage_result: bool,
+    ) -> bool {
+        let target_key = DomainKey {
+            output: target_output.clone(),
+            workspace: crate::directional::WorkspaceId(dest_native.to_owned()),
+        };
+        // The moved unit keeps its tiling mode; the emptied source
+        // cell drops its entry and reseeds from the saved default
+        // on the next report.
+        let mode = self.workspace_tiling_mode(&source_key.output, &source_key.workspace.0);
+        self.tiling.remove(source_key);
+        self.tiling.insert(target_key.clone(), mode);
+        // The moved unit keeps its logical id on the destination
+        // trailing native; the emptied source cell mints fresh.
+        // The displaced empty placeholder at the destination is
+        // replaced, never moved: no ring insertion, no renumber.
+        let moved = self
+            .aligned_logical
+            .remove(&(source_key.output.0.clone(), source_key.workspace.0.clone()));
+        let next = self.creation_counter.saturating_add(1);
+        self.creation_counter = next;
+        self.aligned_logical.insert(
+            (source_key.output.0.clone(), source_key.workspace.0.clone()),
+            format!("al-{next}"),
+        );
+        if let Some(moved) = moved {
+            self.aligned_logical
+                .insert((target_output.0.clone(), dest_native.to_owned()), moved);
+        }
+        if stage_result {
+            self.command_result = Some(CommandResult::Migration {
+                direction: match direction_token {
+                    "left" => Direction::Left,
+                    "right" => Direction::Right,
+                    "up" => Direction::Up,
+                    _ => Direction::Down,
+                },
+                source: source_key.clone(),
+                target: target_key.clone(),
+                members: members.clone(),
+                floats,
+            });
+        }
+        self.retain_aligned_refill(report, operation_id, source_key);
+        let expected_refill =
+            self.aligned_source_refill(report, &source_key.output, &source_key.workspace.0);
+        // D5 MRU snapshot above reads history before this point; only then
+        // forget native-keyed entries naming the rebound cells so the same
+        // native never reinterprets as the fresh/replaced logical.
+        self.history.invalidate_aligned_rebind(
+            &source_key.output.0,
+            &source_key.workspace.0,
+            &target_output.0,
+            dest_native,
+        );
+        let initial_empty = members.is_empty();
+        self.retained.push(RetainedTransfer {
+            target: TransferTarget {
+                operation_id: operation_id.to_owned(),
+                kind: TransferKind::Migration,
+                target_output: target_output.clone(),
+                target_workspace: dest_native.to_owned(),
+                follow: false,
+                held: false,
+            },
+            policy: false,
+            source_output: source_key.output.clone(),
+            source_workspace: source_key.workspace.0.clone(),
+            members,
+            migration_refill: expected_refill,
+            migration_initial_empty: initial_empty,
+        });
+        true
+    }
+
+    /// Sessionless aligned carry for a floating source cell: floating
+    /// scopes are adapter-owned with no Engine session (no tree to
+    /// relocate), so the report's workspace-bound contents move by
+    /// membership remap only. Carries normal/floating/fullscreen/maximized/
+    /// minimized members with the floating mode and logical identity; no
+    /// fabricated tree or focus. Sticky all-desktops members stay on the
+    /// source (D7). Shares the retained settlement with the Engine path.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn carry_floating_migration(
+        &mut self,
+        report: &WorldReport,
+        operation_id: &str,
+        source_key: &DomainKey,
+        target_output: &OutputId,
+        dest_native: &str,
+        direction_token: &str,
+        source_report: &crate::world_report::DomainReport,
+        stage_result: bool,
+    ) -> bool {
+        let mut members: Vec<WindowId> = source_report
+            .windows
+            .iter()
+            .filter(|window| !window.sticky)
+            .map(|window| window.window.clone())
+            .collect();
+        for entry in &report.minimized {
+            if entry.output == source_key.output
+                && entry.workspace.0 == source_key.workspace.0
+                && !entry.sticky
+                && !members.iter().any(|w| w == &entry.window)
+            {
+                members.push(entry.window.clone());
+            }
+        }
+        members.sort();
+        // Minimized entries carry no float flag; only domain-observed
+        // floating members count as floats.
+        let floats = source_report
+            .windows
+            .iter()
+            .filter(|window| !window.sticky && window.floating)
+            .count();
+        self.finish_aligned_migration(
+            report,
+            operation_id,
+            source_key,
+            target_output,
+            dest_native,
+            direction_token,
+            members,
+            floats,
+            stage_result,
+        )
+    }
+
     /// Whole-workspace migration through the pure scope policy (D2)
     /// plus the retained Engine rekey (R-WS-12): refusal reasons stay in
     /// the fixed vocabulary with no native writes. The Engine owns the
@@ -309,6 +946,7 @@ impl WorldEngine {
     /// the Engine commit so a scope refusal never leaves a committed rekey
     /// behind; an Engine refusal leaves scope, flights, and ordering
     /// exactly as before.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn start_migration(
         &mut self,
         report: &WorldReport,
@@ -316,8 +954,9 @@ impl WorldEngine {
         source_output: &OutputId,
         target_output: &OutputId,
         workspace: &str,
+        by_id: &BTreeMap<&WindowId, &EngineWindow>,
+        held_scopes: &BTreeSet<DomainKey>,
     ) -> CommandApplied {
-        // Whole-workspace moves need a provably complete window inventory
         // to prove the target empty and the source fully observed; partial
         // inventory fences even when the monitor topology itself is
         // complete and retained. This preserves the established report
@@ -328,6 +967,17 @@ impl WorldEngine {
                 kind: KIND_MIGRATION,
                 message: MSG_MIGRATION,
             };
+        }
+        if self.is_aligned(report) {
+            return self.start_aligned_migration(
+                report,
+                command_seq,
+                source_output,
+                target_output,
+                workspace,
+                by_id,
+                held_scopes,
+            );
         }
         let live: BTreeSet<String> = live_native_order(report).into_iter().collect();
         let target_current = report
@@ -568,6 +1218,9 @@ impl WorldEngine {
                         policy: false,
                         source_output: source_output.clone(),
                         source_workspace: workspace.to_owned(),
+                        members: Vec::new(),
+                        migration_refill: None,
+                        migration_initial_empty: false,
                     });
                 }
                 self.retained.push(RetainedTransfer {
@@ -582,6 +1235,9 @@ impl WorldEngine {
                     policy: false,
                     source_output: source_output.clone(),
                     source_workspace: workspace.to_owned(),
+                    members: Vec::new(),
+                    migration_refill: None,
+                    migration_initial_empty: false,
                 });
                 CommandApplied::NoEffect
             }
@@ -1138,6 +1794,7 @@ impl WorldEngine {
     /// output, then run the world migration path. The adapter reports
     /// source identity only. Unreadable topology, no candidate, or missing
     /// reverse touch refuses without mutation; no wrap.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn migrate_directional(
         &mut self,
         report: &WorldReport,
@@ -1145,6 +1802,8 @@ impl WorldEngine {
         source_output: &OutputId,
         workspace: &str,
         direction: &str,
+        by_id: &BTreeMap<&WindowId, &EngineWindow>,
+        held_scopes: &BTreeSet<DomainKey>,
     ) -> CommandApplied {
         let Some(direction_parsed) = parse_direction_token(direction) else {
             return CommandApplied::Rejected {
@@ -1167,6 +1826,8 @@ impl WorldEngine {
             source_output,
             &target_output,
             workspace,
+            by_id,
+            held_scopes,
         )
     }
 
@@ -1362,6 +2023,9 @@ impl WorldEngine {
                             policy: false,
                             source_output: source_key.output,
                             source_workspace: source_key.workspace.0,
+                            members: Vec::new(),
+                            migration_refill: None,
+                            migration_initial_empty: false,
                         });
                         return CommandApplied::NoEffect;
                     }
@@ -1441,6 +2105,8 @@ impl WorldEngine {
             &domain_key.output,
             &target_output,
             &domain_key.workspace.0,
+            by_id,
+            held_scopes,
         )
     }
 
@@ -1729,6 +2395,9 @@ impl WorldEngine {
                             policy: false,
                             source_output: cross.source_output.clone(),
                             source_workspace: cross.source_workspace.0.clone(),
+                            members: Vec::new(),
+                            migration_refill: None,
+                            migration_initial_empty: false,
                         });
                     }
                 }
@@ -1803,6 +2472,9 @@ impl WorldEngine {
                         policy: false,
                         source_output,
                         source_workspace: source_workspace.0.clone(),
+                        members: Vec::new(),
+                        migration_refill: None,
+                        migration_initial_empty: false,
                     });
                 }
                 self.note_command(command_seq);

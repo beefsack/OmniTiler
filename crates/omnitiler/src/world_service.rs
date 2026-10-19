@@ -1,11 +1,10 @@
 //! World planner service boundary: retained [`WorldEngine`] behind JSON.
 //!
-//! D-Bus surface (same service/object/interface as the legacy route,
+//! D-Bus surface (same service/object/interface as the intent routes,
 //! [`crate::planner_service`]): `DiscoverWorld` returns the bootstrap
 //! envelope, `DescribeWorld` accepts one complete JSON world report per
 //! call and returns one JSON full desired snapshot or a bounded error.
-//! The legacy `DescribePlan` route remains for transitional compatibility;
-//! the KDE production entry uses only the world route, never a fallback.
+//! The KDE production entry uses only the world route.
 //!
 //! Rules mirrored from the legacy route: bounded 4 MiB request AND reply,
 //! non-queuing single-flight (contended callers fail fast as busy, never
@@ -29,8 +28,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tiler_protocol::world_protocol::{
-    WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES, WorldEngine, WorldOutcome, decode_request,
-    encode_error, encode_reply, is_valid_adapter_id, is_valid_request_id,
+    WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES, WorldEngine, WorldEngineConfig, WorldOutcome,
+    decode_request, encode_error, encode_reply, is_valid_adapter_id, is_valid_request_id,
 };
 
 /// World planning route: one complete JSON world observation plus at most
@@ -82,7 +81,18 @@ struct WorldBackend {
 impl WorldBackend {
     fn fresh() -> Self {
         let generation = mint_core_generation();
-        let engine = WorldEngine::new(&generation).expect("minted generation is valid");
+        // KDE platform opt-in (not a user setting): aligned per-output
+        // workspaces, every output owning the full native-position ring.
+        // Windows/macOS carriers construct their engines elsewhere and
+        // keep the default disjoint model.
+        let engine = WorldEngine::new_with_config(
+            &generation,
+            WorldEngineConfig {
+                aligned_per_output_workspaces: true,
+                ..WorldEngineConfig::default()
+            },
+        )
+        .expect("minted generation is valid");
         Self { engine, generation }
     }
 }
@@ -125,9 +135,27 @@ impl WorldService {
     /// Non-queuing single-flight admission for the D-Bus route: `Some`
     /// guard when idle, `None` when a world call is in flight (fail fast
     /// as busy, never queue). The guard must be held for the whole call,
-    /// including caller verification, exactly like the legacy plan lock.
+    /// including caller verification.
     pub fn try_acquire_guard(&self) -> Option<async_lock::MutexGuard<'_, ()>> {
         self.world_lock.try_lock()
+    }
+
+    /// Trace-only placement lines for the last evaluated world request:
+    /// at most one startup-fit plus one send-placement line, each carrying
+    /// authoritative ordered tree shapes. Empty unless the opt-in trace
+    /// gate is set and the last op recorded a placement diagnostic. Pure
+    /// reads under the backend lock; never mutates, never touches the wire.
+    #[must_use]
+    pub fn placement_trace_lines(&self) -> Vec<String> {
+        if !tiler_protocol::world_protocol::placement_trace_enabled() {
+            return Vec::new();
+        }
+        match self.backend.lock() {
+            Ok(backend) => {
+                tiler_protocol::world_protocol::placement_trace_lines(backend.engine.engine())
+            }
+            Err(_) => Vec::new(),
+        }
     }
 
     /// Discovery/bootstrap body for an adapter incarnation and request id:

@@ -148,6 +148,11 @@ impl super::super::Session {
         if self.drag.is_some() {
             return Err(ProposeError::PendingExists);
         }
+        // Trace-only freshness: a directional re-propose on a reused
+        // session must never re-emit the previous cross trace. Clear at
+        // entry (so refused/no-op/local proposals all record nothing);
+        // the cross branch below records a fresh trace on success.
+        self.last_send_placement = None;
         let Some(_source_domain) = self.domains.iter().find(|d| &d.key() == domain).cloned() else {
             return Err(ProposeError::Refused(RefusalKind::UnknownDomain));
         };
@@ -381,6 +386,59 @@ impl super::super::Session {
             admission_counter: self.admission_counter,
             overlap_accepted: desired_overlap,
         });
+        // Trace-only authoritative tree evidence for cross-output moves
+        // (R4 whole-target wraps): before/after ordered shapes for both
+        // domains, surfaced through the placement-trace line. Local moves
+        // record nothing.
+        if let MoveOperation::CrossOutput {
+            target_output,
+            target_workspace,
+            ..
+        } = &plan.operation
+        {
+            let target_key = DomainKey {
+                output: target_output.clone(),
+                workspace: target_workspace.clone(),
+            };
+            let target_leaves = self
+                .trees
+                .get(&target_key)
+                .and_then(|tree| tree.as_ref())
+                .map(|tree| collect_leaves(tree).len())
+                .unwrap_or(0);
+            let projected = self
+                .domains
+                .iter()
+                .find(|d| d.key() == target_key)
+                .map(|d| d.bounds)
+                .unwrap_or(Rect {
+                    x: 0,
+                    y: 0,
+                    w: 0,
+                    h: 0,
+                });
+            self.last_send_placement = Some(SendPlacementTrace {
+                anchor_kind: "directional",
+                anchor: None,
+                axis: Axis::for_direction(direction),
+                projected,
+                target_leaves,
+                source_before: describe_send_topology(
+                    self.trees.get(domain).and_then(|tree| tree.as_ref()),
+                ),
+                target_before: describe_send_topology(
+                    self.trees.get(&target_key).and_then(|tree| tree.as_ref()),
+                ),
+                source_after: describe_send_topology(
+                    desired_trees.get(domain).and_then(|tree| tree.as_ref()),
+                ),
+                target_after: describe_send_topology(
+                    desired_trees
+                        .get(&target_key)
+                        .and_then(|tree| tree.as_ref()),
+                ),
+            });
+        }
         Ok(SessionMoveOutcome::Moved(SessionMovePlan {
             dispatch,
             desired_snapshot: self.snapshot_for(&desired_trees, &desired_windows),

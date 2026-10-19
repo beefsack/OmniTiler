@@ -67,9 +67,8 @@ pub struct Engine {
     ///
     /// Set only when [`Engine::handle`] converged with nonzero counts; cleared
     /// at the start of every [`Engine::handle`] so callers never read a stale
-    /// op. Bounded counts only, never native identifiers; the correlation
-    /// binds the existing planner summary boundary (`PLAN_SUMMARY_PREFIX`)
-    /// without any [`CoreReply`] change (core has no logging sink). Exact
+    /// op. Bounded counts only, never native identifiers, without any
+    /// [`CoreReply`] change (core has no logging sink). Exact
     /// (zero-count) convergence records nothing so only nonzero counts log.
     last_convergence: Option<EngineConvergenceReport>,
     /// Last fresh adoption-fit report for protocol logging.
@@ -284,7 +283,10 @@ pub struct EngineStartupFitTrace {
 /// Trace-only bounded send placement diagnostic for the protocol trace
 /// boundary. Selected `map_to_tree` anchor branch plus its opaque leaf,
 /// the admission axis derived from its projected rectangle, that
-/// rectangle, and the target leaf count. Opaque tokens only.
+/// rectangle, the target leaf count, and the authoritative before/after
+/// ordered tree descriptions for the source and target domains (same
+/// `L` / `H[s,..]` / `V[s,..]` shape convention as the startup-trace
+/// topology, `-` when a domain holds no tree). Opaque tokens only.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EngineSendPlacementTrace {
     /// Validated correlation for this op (cross-service lookup key).
@@ -300,6 +302,14 @@ pub struct EngineSendPlacementTrace {
     pub projected: Rect,
     /// Leaf count in the target tree before insertion (0 for empty).
     pub target_leaves: usize,
+    /// Ordered source tree before removal (`-` when empty).
+    pub source_before: String,
+    /// Ordered target tree before insertion (`-` when empty).
+    pub target_before: String,
+    /// Ordered source tree after removal (`-` when emptied).
+    pub source_after: String,
+    /// Ordered target tree after insertion (`-` when unchanged-empty).
+    pub target_after: String,
 }
 
 /// Single-domain convergence routing: absent sessions run the existing seed
@@ -3197,6 +3207,10 @@ impl Engine {
                         axis: trace.axis,
                         projected: trace.projected,
                         target_leaves: trace.target_leaves,
+                        source_before: trace.source_before,
+                        target_before: trace.target_before,
+                        source_after: trace.source_after,
+                        target_after: trace.target_after,
                     });
                 }
                 let Some(typed) = crate::boundary::SendWorkspacePlan::from_session(&plan) else {
@@ -3226,8 +3240,9 @@ impl Engine {
     }
 
     /// Explicit whole-workspace migration (R-WS-12) through
-    /// [`Session::relocate_domain`]: same workspace id, different output.
-    /// Sticky members (carried `sticky`) stay homed on the source in a
+    /// [`Session::relocate_domain`]: different output, same or different
+    /// workspace id (cross-workspace relocation rekeys the native binding
+    /// while preserving tree/shares/focus). Sticky members (carried `sticky`) stay homed on the source in a
     /// residual session; workspace floats ride with the domain. The active
     /// client may be tiled, float, sticky, or absent: reply focus names a
     /// migrating tiled leaf only, while `active_window` names a migrated
@@ -3258,7 +3273,7 @@ impl Engine {
         };
         let source_key = event.domain_key.clone();
         let target_key = target_key.clone();
-        if target_key.workspace != source_key.workspace || target_key.output == source_key.output {
+        if target_key.output == source_key.output {
             return CoreReply::Rejected {
                 kind: "cross-domain-mismatch",
                 message: "command target does not match the target domain",
@@ -3283,8 +3298,9 @@ impl Engine {
             }
         }
         // The migration target carries no observation: any carried target
-        // window, or any retained target session, is SAME-workspace residue.
-        // A destination showing a DIFFERENT workspace stays KDE-native.
+        // window, or any retained target session, is residue (same- or
+        // cross-workspace alike). A destination showing a DIFFERENT
+        // workspace stays KDE-native.
         if !event.target_windows.is_empty() || self.sessions.contains_key(&target_key) {
             return CoreReply::Rejected {
                 kind: RefusalKind::Unchanged.as_str(),
@@ -4096,6 +4112,24 @@ impl Engine {
         ) {
             Ok(crate::session::SessionMoveOutcome::Moved(plan)) => {
                 if matches!(plan.dispatch.operation, MoveOperation::CrossOutput { .. }) {
+                    // Trace-only freshness: only a cross emits a send
+                    // placement line. A reused session (or any stale
+                    // non-cross state) must never surface a previous
+                    // cross trace on a local move.
+                    if let Some(trace) = session.last_send_placement().cloned() {
+                        self.last_send_placement = Some(EngineSendPlacementTrace {
+                            correlation: event.correlation.clone(),
+                            anchor_kind: trace.anchor_kind,
+                            anchor: trace.anchor,
+                            axis: trace.axis,
+                            projected: trace.projected,
+                            target_leaves: trace.target_leaves,
+                            source_before: trace.source_before,
+                            target_before: trace.target_before,
+                            source_after: trace.source_after,
+                            target_after: trace.target_after,
+                        });
+                    }
                     let target_outer_gap = event
                         .directional_target_outer_gap
                         .filter(|gap| is_gap(*gap))
@@ -8270,6 +8304,104 @@ mod tests {
         let _ = LifecycleCapabilities::full();
     }
 
+    /// Cross-native migration (aligned per-output workspaces): the target
+    /// names a different native workspace on the destination output. The
+    /// tree, shares, remembered focus and float exceptions ride the rekey;
+    /// every relocated homing (links, exceptions, slots, focus) takes the
+    /// destination native. Same-output targets still refuse.
+    #[test]
+    fn migrate_workspace_relocates_across_native_binding() {
+        use crate::boundary::{CoreCommand, CoreEvent, CoreReply};
+        use crate::directional::WindowId;
+        use crate::ids::CorrelationId;
+        use crate::seed::EngineWindow;
+        fn carried(output: &str, workspace: &str, window: &str) -> EngineWindow {
+            EngineWindow {
+                window: WindowId(window.to_owned()),
+                output: OutputId(output.to_owned()),
+                workspace: WorkspaceId(workspace.to_owned()),
+                rect: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 10,
+                    h: 10,
+                },
+                floating: false,
+                fit_excluded: false,
+                fullscreen: false,
+                maximized: false,
+                sticky: false,
+                fixed_auto: false,
+                fixed_suppress: false,
+                hints: crate::size_hints::WindowSizeHints::none(),
+            }
+        }
+        let mut engine = Engine::new();
+        let owner = OwnerId::parse("owner-a").expect("valid");
+        let gen_id = GenerationId::parse("gen-1").expect("valid");
+        engine.sync_binding(&owner, &gen_id);
+        let source_domain = domain("out-1", "ws-1");
+        let source_key = source_domain.key();
+        let seed_order = ["win-a", "win-b"]
+            .iter()
+            .map(|window| carried("out-1", "ws-1", window))
+            .collect::<Vec<_>>();
+        let seeded = crate::seed::seed_session(&owner, &gen_id, 7, &source_domain, &seed_order)
+            .expect("seeds two");
+        let pre_tree = seeded.tree_for(&source_key).cloned();
+        let pre_revision = seeded.accepted_revision();
+        engine.store_committed(source_key.clone(), seeded, 0);
+        let target_domain = domain("out-2", "ws-3");
+        let target_key = target_domain.key();
+        let event = CoreEvent {
+            owner: owner.clone(),
+            generation: gen_id.clone(),
+            correlation: CorrelationId::parse("corr-migrate-cross-native").expect("valid"),
+            revision: pre_revision,
+            fingerprint: 7,
+            domain: source_domain.clone(),
+            domain_key: source_key.clone(),
+            outer_gap: 0,
+            focused_window: WindowId("win-a".to_owned()),
+            windows: seed_order,
+            directional: None,
+            directional_target_outer_gap: None,
+            target_domain: Some((target_domain.clone(), target_key.clone())),
+            target_windows: vec![],
+            closed_windows: vec![],
+            command: CoreCommand::MigrateWorkspace {
+                direction: "right".to_owned(),
+            },
+        };
+        let plan = match engine.handle(&event) {
+            CoreReply::MigrateWorkspace(plan) => plan,
+            other => panic!("cross-native migration must plan, got {other:?}"),
+        };
+        assert_eq!(plan.source, source_key);
+        assert_eq!(plan.target, target_key);
+        assert_eq!(plan.members, 2);
+        assert!(!engine.contains(&source_key), "source rekeyed away");
+        let moved = engine.session(&target_key).expect("moved");
+        assert_eq!(moved.tree_for(&target_key), pre_tree.as_ref());
+        assert_eq!(moved.accepted_revision(), pre_revision);
+        for link in moved.snapshot().windows.iter() {
+            assert_eq!(link.output.0, "out-2");
+            assert_eq!(link.workspace.0, "ws-3", "native binding rekeyed");
+        }
+        assert_eq!(moved.focus().0, Some(target_key.clone()));
+        // Same-output cross-workspace targets still refuse.
+        let same_output = domain("out-1", "ws-3");
+        let bad = CoreEvent {
+            target_domain: Some((same_output.clone(), same_output.key())),
+            correlation: CorrelationId::parse("corr-migrate-same-output").expect("valid"),
+            ..event
+        };
+        match engine.handle(&bad) {
+            CoreReply::Rejected { kind, .. } => assert_eq!(kind, "cross-domain-mismatch"),
+            other => panic!("same-output migration must refuse, got {other:?}"),
+        }
+    }
+
     #[test]
     fn migrate_workspace_allows_empty_without_fabricated_focus() {
         use crate::boundary::{CoreCommand, CoreEvent, CoreReply};
@@ -8500,8 +8632,10 @@ mod tests {
             CoreReply::Rejected { kind, .. } => assert_eq!(kind, "cross-domain-mismatch"),
             other => panic!("same-output must refuse, got {other:?}"),
         }
-        // Different-workspace target refuses.
-        let other_ws = domain("out-2", "ws-9");
+        // Same-output cross-workspace target refuses: relocation always
+        // crosses outputs (cross-output cross-workspace relocation is
+        // covered by `migrate_workspace_relocates_across_native_binding`).
+        let other_ws = domain("out-1", "ws-9");
         let other_ws_key = other_ws.key();
         let cross_ws = migrate_event(
             &owner,
@@ -8514,7 +8648,7 @@ mod tests {
         );
         match engine.handle(&cross_ws) {
             CoreReply::Rejected { kind, .. } => assert_eq!(kind, "cross-domain-mismatch"),
-            other => panic!("different-workspace must refuse, got {other:?}"),
+            other => panic!("same-output cross-workspace must refuse, got {other:?}"),
         }
         // Carried target windows (SAME-workspace residue) refuse.
         let residue_carried = migrate_event(

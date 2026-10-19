@@ -23,7 +23,7 @@ use crate::world_engine::{
     RetainedTransfer, WorldEngine,
 };
 use crate::world_publish::homed_occupancy;
-use crate::world_report::{TransferKind, TransferTarget, WorldReport};
+use crate::world_report::{OneShotEffect, TransferKind, TransferTarget, WorldReport};
 
 impl WorldEngine {
     /// Record one consumed command sequence on the monotonic high-watermark.
@@ -95,21 +95,30 @@ impl WorldEngine {
     }
 
     /// Settle one executed send: retain the transfer under its stable
-    /// operation identity on success (consuming the command sequence), or
-    /// refuse without mutation. Never retains a view target: sends never
-    /// view-switch, including `follow=false` stays.
+    /// operation identity (consuming the command sequence), then emit the
+    /// one-shot focus outcome. Follow focuses the mover; stay focuses the
+    /// source MRU survivor (`None` when the source is left empty, so no
+    /// effect rather than a guessed fallback). Never retains a view target:
+    /// sends never view-switch, including `follow=false` stays.
     pub(crate) fn settle_send(
         &mut self,
         command_seq: u64,
         operation_id: String,
-        result: Result<RetainedTransfer, (&'static str, &'static str)>,
+        result: Result<(RetainedTransfer, Option<WindowId>), (&'static str, &'static str)>,
     ) -> CommandApplied {
         match result {
-            Ok(retained) => {
+            Ok((retained, focus)) => {
                 debug_assert_eq!(retained.target.operation_id, operation_id);
                 self.note_command(command_seq);
                 self.retained.push(retained);
-                CommandApplied::NoEffect
+                match focus {
+                    Some(target) => CommandApplied::Effect(OneShotEffect::explicit_focus(
+                        command_seq,
+                        target,
+                        self.state_revision + 1,
+                    )),
+                    None => CommandApplied::NoEffect,
+                }
             }
             Err((kind, message)) => CommandApplied::Rejected { kind, message },
         }
@@ -135,7 +144,7 @@ impl WorldEngine {
         follow: bool,
         by_id: &BTreeMap<&WindowId, &EngineWindow>,
         held_scopes: &BTreeSet<DomainKey>,
-    ) -> Result<RetainedTransfer, (&'static str, &'static str)> {
+    ) -> Result<(RetainedTransfer, Option<WindowId>), (&'static str, &'static str)> {
         if self.retained.iter().any(|r| match &r.target.kind {
             TransferKind::Window(w) => w == window,
             TransferKind::View | TransferKind::Migration => false,
@@ -176,6 +185,18 @@ impl WorldEngine {
                 RefusalKind::Unchanged.message(),
             ));
         }
+        // Aligned whole-workspace migrations own their destination
+        // trailing cell until arrival: a window send onto the same cell
+        // would double-book the native before the moved unit lands.
+        if self.is_aligned(report)
+            && self.retained.iter().any(|r| {
+                matches!(&r.target.kind, TransferKind::Migration)
+                    && r.target.target_output == *target_output
+                    && r.target.target_workspace == target_workspace
+            })
+        {
+            return Err((KIND_SEND_TARGET, MSG_SEND_TARGET));
+        }
         if held_scopes.contains(&source_key) || held_scopes.contains(&target_key) {
             return Err((KIND_SCOPE_HELD, MSG_SCOPE_HELD));
         }
@@ -201,19 +222,28 @@ impl WorldEngine {
             if !report.domains.iter().any(|d| d.domain.key() == source_key) {
                 return Err((KIND_SEND_WINDOW, MSG_SEND_WINDOW));
             }
-            return Ok(RetainedTransfer {
-                target: TransferTarget {
-                    operation_id: operation_id.to_owned(),
-                    kind: TransferKind::Window(window.clone()),
-                    target_output: target_output.clone(),
-                    target_workspace: target_workspace.to_owned(),
-                    follow,
-                    held: false,
+            return Ok((
+                RetainedTransfer {
+                    target: TransferTarget {
+                        operation_id: operation_id.to_owned(),
+                        kind: TransferKind::Window(window.clone()),
+                        target_output: target_output.clone(),
+                        target_workspace: target_workspace.to_owned(),
+                        follow,
+                        held: false,
+                    },
+                    policy: false,
+                    source_output: source_key.output,
+                    source_workspace: source_key.workspace.0,
+                    members: Vec::new(),
+                    migration_refill: None,
+                    migration_initial_empty: false,
                 },
-                policy: false,
-                source_output: source_key.output,
-                source_workspace: source_key.workspace.0,
-            });
+                // Membership-only floating boundary: follow names the mover.
+                // Stay keeps the native boundary focus (no engine MRU to
+                // name), so no invented fallback is emitted.
+                follow.then(|| window.clone()),
+            ));
         }
         let owner = report.owner.clone();
         let (Some(owner), Some(correlation)) = (
@@ -270,19 +300,40 @@ impl WorldEngine {
             },
         };
         match self.engine.handle(&event) {
-            CoreReply::SendWorkspace(_) | CoreReply::SendOutput(_) => Ok(RetainedTransfer {
-                target: TransferTarget {
-                    operation_id: operation_id.to_owned(),
-                    kind: TransferKind::Window(window.clone()),
-                    target_output: target_output.clone(),
-                    target_workspace: target_workspace.to_owned(),
-                    follow,
-                    held: false,
-                },
-                policy: false,
-                source_output: source_key.output,
-                source_workspace: source_key.workspace.0,
-            }),
+            CoreReply::SendWorkspace(plan) | CoreReply::SendOutput(plan) => {
+                // Follow names the mover. Stay names the engine's
+                // source-MRU survivor leaf resolved to its window through
+                // the plan geometry; an emptied source names nothing.
+                let focus = if follow {
+                    Some(window.clone())
+                } else {
+                    plan.focus_leaf.as_ref().and_then(|leaf| {
+                        plan.geometry
+                            .iter()
+                            .find(|g| &g.leaf == leaf)
+                            .map(|g| g.window.clone())
+                    })
+                };
+                Ok((
+                    RetainedTransfer {
+                        target: TransferTarget {
+                            operation_id: operation_id.to_owned(),
+                            kind: TransferKind::Window(window.clone()),
+                            target_output: target_output.clone(),
+                            target_workspace: target_workspace.to_owned(),
+                            follow,
+                            held: false,
+                        },
+                        policy: false,
+                        source_output: source_key.output,
+                        source_workspace: source_key.workspace.0,
+                        members: Vec::new(),
+                        migration_refill: None,
+                        migration_initial_empty: false,
+                    },
+                    focus,
+                ))
+            }
             // Engine refusals are fixed redacted vocabularies: safe
             // to forward without echoing input.
             CoreReply::Rejected { kind, message } => Err((kind, message)),
@@ -309,7 +360,7 @@ impl WorldEngine {
         follow: bool,
         by_id: &BTreeMap<&WindowId, &EngineWindow>,
         held_scopes: &BTreeSet<DomainKey>,
-    ) -> Result<RetainedTransfer, (&'static str, &'static str)> {
+    ) -> Result<(RetainedTransfer, Option<WindowId>), (&'static str, &'static str)> {
         if self.retained.iter().any(|r| match &r.target.kind {
             TransferKind::Window(w) => w == window,
             TransferKind::View | TransferKind::Migration => false,
@@ -338,6 +389,18 @@ impl WorldEngine {
         if target_key == source_key {
             return Err((KIND_SEND_TARGET, MSG_SEND_TARGET));
         }
+        // Aligned whole-workspace migrations own their destination
+        // trailing cell until arrival: a window send onto the same cell
+        // would double-book the native before the moved unit lands.
+        if self.is_aligned(report)
+            && self.retained.iter().any(|r| {
+                matches!(&r.target.kind, TransferKind::Migration)
+                    && r.target.target_output == *target_output
+                    && r.target.target_workspace == target_workspace
+            })
+        {
+            return Err((KIND_SEND_TARGET, MSG_SEND_TARGET));
+        }
         if held_scopes.contains(&source_key) || held_scopes.contains(&target_key) {
             return Err((KIND_SCOPE_HELD, MSG_SCOPE_HELD));
         }
@@ -354,19 +417,28 @@ impl WorldEngine {
             if !report.domains.iter().any(|d| d.domain.key() == source_key) {
                 return Err((KIND_SEND_WINDOW, MSG_SEND_WINDOW));
             }
-            return Ok(RetainedTransfer {
-                target: TransferTarget {
-                    operation_id: operation_id.to_owned(),
-                    kind: TransferKind::Window(window.clone()),
-                    target_output: target_output.clone(),
-                    target_workspace: target_workspace.to_owned(),
-                    follow,
-                    held: false,
+            return Ok((
+                RetainedTransfer {
+                    target: TransferTarget {
+                        operation_id: operation_id.to_owned(),
+                        kind: TransferKind::Window(window.clone()),
+                        target_output: target_output.clone(),
+                        target_workspace: target_workspace.to_owned(),
+                        follow,
+                        held: false,
+                    },
+                    policy: false,
+                    source_output: source_key.output,
+                    source_workspace: source_key.workspace.0,
+                    members: Vec::new(),
+                    migration_refill: None,
+                    migration_initial_empty: false,
                 },
-                policy: false,
-                source_output: source_key.output,
-                source_workspace: source_key.workspace.0,
-            });
+                // Membership-only floating boundary: follow names the mover.
+                // Stay keeps the native boundary focus (no engine MRU to
+                // name), so no invented fallback is emitted.
+                follow.then(|| window.clone()),
+            ));
         }
         let owner = report.owner.clone();
         let (Some(owner), Some(correlation)) = (
@@ -420,19 +492,40 @@ impl WorldEngine {
             },
         };
         match self.engine.handle(&event) {
-            CoreReply::SendWorkspace(_) | CoreReply::SendOutput(_) => Ok(RetainedTransfer {
-                target: TransferTarget {
-                    operation_id: operation_id.to_owned(),
-                    kind: TransferKind::Window(window.clone()),
-                    target_output: target_output.clone(),
-                    target_workspace: target_workspace.to_owned(),
-                    follow,
-                    held: false,
-                },
-                policy: false,
-                source_output: source_key.output,
-                source_workspace: source_key.workspace.0,
-            }),
+            CoreReply::SendWorkspace(plan) | CoreReply::SendOutput(plan) => {
+                // Follow names the mover. Stay names the engine's
+                // source-MRU survivor leaf resolved to its window through
+                // the plan geometry; an emptied source names nothing.
+                let focus = if follow {
+                    Some(window.clone())
+                } else {
+                    plan.focus_leaf.as_ref().and_then(|leaf| {
+                        plan.geometry
+                            .iter()
+                            .find(|g| &g.leaf == leaf)
+                            .map(|g| g.window.clone())
+                    })
+                };
+                Ok((
+                    RetainedTransfer {
+                        target: TransferTarget {
+                            operation_id: operation_id.to_owned(),
+                            kind: TransferKind::Window(window.clone()),
+                            target_output: target_output.clone(),
+                            target_workspace: target_workspace.to_owned(),
+                            follow,
+                            held: false,
+                        },
+                        policy: false,
+                        source_output: source_key.output,
+                        source_workspace: source_key.workspace.0,
+                        members: Vec::new(),
+                        migration_refill: None,
+                        migration_initial_empty: false,
+                    },
+                    focus,
+                ))
+            }
             CoreReply::Rejected { kind, message } => Err((kind, message)),
             CoreReply::SnapshotInvalid { message, detail } => Err((detail, message)),
             CoreReply::Diverged(reason) => Err((reason.as_str(), reason.message())),
@@ -494,8 +587,14 @@ impl WorldEngine {
             };
         }
         if index == 0 {
-            let occupied = homed_occupancy(report);
-            match resolve_trailing(&ring, &occupied) {
+            let selection = if self.is_aligned(report) {
+                let occupied = crate::world_publish::homed_occupancy_for_output(report, output);
+                crate::workspace_scope::resolve_aligned_trailing(&ring, &occupied)
+            } else {
+                let occupied = homed_occupancy(report);
+                resolve_trailing(&ring, &occupied)
+            };
+            match selection {
                 TrailingSelection::Reuse(target) => {
                     let operation_id = format!("op-{command_seq}");
                     let result = self.execute_send(

@@ -13,7 +13,7 @@
 use std::io::{BufRead, Write};
 
 use tiler_protocol::world_protocol::{
-    WorldEngine, WorldOutcome, decode_request, encode_error, encode_reply,
+    WorldEngine, WorldEngineConfig, WorldOutcome, decode_request, encode_error, encode_reply,
 };
 
 fn generation_for(counter: u64) -> String {
@@ -47,6 +47,19 @@ fn main() {
     let mut engine: Option<WorldEngine> = None;
     let mut generation = generation_for(0);
     let mut discoveries: u64 = 0;
+    // Test-only platform selection (never a user setting): the KDE
+    // production service enables the aligned per-output model at
+    // construction, so the eval seam mirrors it on request. Unset keeps
+    // the default disjoint model every existing fixture assumes.
+    let aligned = std::env::var_os("WORLD_EVAL_ALIGNED").is_some_and(|v| v == "1");
+    let config = if aligned {
+        WorldEngineConfig {
+            aligned_per_output_workspaces: true,
+            ..WorldEngineConfig::default()
+        }
+    } else {
+        WorldEngineConfig::default()
+    };
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
@@ -65,7 +78,7 @@ fn main() {
             if method == "DiscoverWorld" {
                 discoveries += 1;
                 generation = generation_for(discoveries);
-                let fresh = WorldEngine::new(&generation)?;
+                let fresh = WorldEngine::new_with_config(&generation, config)?;
                 engine = Some(fresh);
                 let active = engine.as_ref()?;
                 Some(discovery_reply(active, body))
