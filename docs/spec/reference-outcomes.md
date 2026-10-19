@@ -15,6 +15,24 @@ behavior or ambiguity (reference WMs disagree, or our behavior is undecided).
 Reuse existing coverage rather than duplicating a scenario with a
 trivially different start state.
 
+<a id="cursor-first-output-targeting-discriminators"></a>
+### Cursor-first output-targeting discriminators
+
+User 2026-10-20 [direction pending evidence](../decisions.md#cursor-first-output-targeting),
+not an approved replacement for R-OUT-05 / REQ-OUT-05. Tier 1 functional-matrix
+evidence is required before override; behavior must be identical across platforms.
+The user's COSMIC recollection is uncertain; existing
+[R-OUT-05](reference-outcomes/multi-output.md#r-out-05-open-a-window-with-two-occupied-outputs)
+records focused-output admission, not pointer routing. Reuse that row for the
+opposite-output launch leg; distinguish launch targeting from ordinary map admission.
+
+| Variant | Minimal action sequence | Pending direction | Unsupported outcome / evidence |
+| --- | --- | --- | --- |
+| Workspace switch with opposite cursor | Focus A on occupied L; put cursor on occupied R without changing focus; select another workspace | Switch R, not L | Tier 1 outcomes, including COSMIC, and native cross-platform outcomes TBD; Windows interim foreground-first commands remain |
+| Workspace send with opposite cursor | Reset the same fixture; send focused A to another workspace | Act on A's output L regardless of cursor | Tier 1 and native outcomes TBD; no pointer-based send subject inferred |
+| Launch same versus other output | Focus A beside B on L; retain a distinct layout on R; launch C with cursor on L; reset and launch C with cursor on R, retaining A's focus before launch | Same output splits A; other output uses R's standard new-window location | Tier 1 launch/map paths and exact destination anchor/shape TBD; "standard location" undefined until evidenced; no R-OUT-05 override |
+| Optional cursor/focus coupling | With both options off, move cursor L -> R; explicitly focus A on L; repeat each leg with only the corresponding option on | Default-off focus-follows-cursor and cursor-follows-focus | Tier 1 defaults, trigger/warp details and native behavior TBD; no implemented settings claimed |
+
 ### Admission and geometric capacity (source audit 2026-10-16)
 
 - Ordinary focused anchors: reuse [R-INS-01/04](reference-outcomes/insertion.md).

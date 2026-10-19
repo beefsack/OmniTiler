@@ -2228,10 +2228,26 @@ platform API behavior.
   wire fixtures; native observation/activation acceptance remains user-owned.
   [Evidence](changes/archive/triage-batch1-kde-shared.md).
 - R-OUT-05: opening with two occupied outputs routes to the focused output and focuses the newcomer, not by pointer (User 2026-10-10, 0.1 triage D06).
+  Conflict, User 2026-10-20: the cursor-first direction below is pending Tier 1
+  functional-matrix evidence; only that evidence may override R-OUT-05 /
+  REQ-OUT-05. The approved focused-output requirement remains in force.
   User 2026-10-14 approves KDE adapter routing for 0.1. Move output selection
   into Rust core/Planner in post-0.1 Push code down, alongside born-maximized;
   the current Planner receives an already selected native domain. Native
   timing/safety checks remain adapter responsibilities. [Delivery](changes/kde-dual-output-live.md#focused-output-admission-correction-and-breadth-repeat-2026-10-14).
+- <a id="cursor-first-output-targeting"></a> User 2026-10-20 direction, pending
+  evidence, not an approved replacement or implemented policy: workspace switches
+  and new-window launches target the output under the cursor; workspace sends act
+  on the focused window's output regardless of cursor. A launch with the cursor
+  on the focused window's output splits the focused window; on another output it
+  uses that output's standard new-window location (definition TBD from evidence).
+  Behavior must be identical on all platforms. Optional focus-follows-cursor and
+  cursor-follows-focus are default-off. The user's uncertain COSMIC recollection
+  is not evidence; the existing R-OUT-05 COSMIC cell records focused-output
+  admission. Capture Tier 1 input-tiler outcomes, including COSMIC, in the
+  [matrix discriminators](spec/reference-outcomes.md#cursor-first-output-targeting-discriminators)
+  before changing the requirement or adapters. Interim Windows foreground-first
+  workspace-command routing (`1e7bfaf4`) stays; admission work waits on the matrix.
 - R-CLOSE-02: a reopened client is fresh admission at current focus, never old-slot restoration (User 2026-10-10, 0.1 triage D07).
 - Shared:
   - User statement 2026-10-03: default split placement is long-edge based: a
@@ -3648,11 +3664,13 @@ platform API behavior.
   off for Windows because its reconcile observation omits maximize; the native
   directional guard reads fresh retained flags, preserving admission semantics.
   Status: shared-core/KDE delivered offline ([record](changes/archive/reference-comparison-implementation.md)); Windows ordinary focus fence/clear-then-move/float-four-halves physically user-accepted 2026-10-12, scoped normal owner, single-output Notepad/Paint, physical keyboard/mouse, base `e506350` plus combined directional/retile/B9 deliveries ([record](changes/archive/windows-maximized-directional-navigation.md)); failure/race/preset/fixed/game/DPI/multi-output pending.
-- Tentative 2026-10-12, pending user review: Windows pre-clear diagnostics
+- User 2026-10-20 accepted Windows pre-clear diagnostics:
   prioritize `fullscreen-raced`, `domain-raced`, `focus-raced`, `suspended`,
   then `elevated-foreground`. Existing project fullscreen metadata also vetoes
   clear when a transitional frame no longer covers the output, preserving
   owned restore state. This is a narrow refusal, without delayed move/retry.
+  Dogfood these permanent per-action refusals for surprising jank
+  ([follow-up](backlog.md#open-work)).
 - User 2026-10-12: a window leaving fullscreen, including borderless windowed
   fullscreen, is admitted/tiled like a newly admitted window; no target writes
   while fullscreen. Startup-fullscreen and born-after-start first exits share
@@ -3834,8 +3852,8 @@ platform API behavior.
   D6 workspace enable leaves fixed automatic clients floating, including
   maximized clients; explicit user tile overrides retain the Q3 slot route.
   - KDE: R-MAX-06 and R-MAX-03 delivered offline, the latter at `29c75fe` ([record](changes/archive/kde-maximized-floating-retile-overlay.md)). Windows R-MAX-03 ordinary retile/restore physically user-accepted 2026-10-12 under the G-06 conditions above ([record](changes/archive/windows-maximized-floating-retile-overlay.md)); hidden/session/fixed/game/DPI/multi-output pending. Tray previous-focus non-restoration is observation only, possibly suitable for keyboard accessibility; no behavior change requested.
-    Tentative 2026-10-12, pending user review: separate lifetime-bound born and
-    retile overlay latches keep born-setting adoption independent of retile.
+    User 2026-10-20 accepted separate lifetime-bound born and retile overlay
+    latches, keeping born-setting adoption independent of retile.
   - CHANGED by user 2026-10-11 (R-MAX-06 born-maximized setting, option B,
     cross-platform): first-seen maximized admission becomes a setting.
     Default tiles: one launch unmaximize, then ordinary admission (tooltip
@@ -3889,10 +3907,12 @@ platform API behavior.
   - Status: shared-core regression/KDE delivered offline ([record](changes/archive/maximized-intentional-unfloat.md)); Windows item 15 ordinary scoped Notepad/Paint clear/frame/focus agent-observed 2026-10-12 ([record](changes/archive/windows-maximized-intentional-unfloat.md)); physical B9/fixed marker/restart/failure/game/DPI/multi-output and KDE native pending.
     Windows reuses D3/D7 fixed override settlement after observed clear and
     fresh admission; no marker/intent commit on an unconfirmed clear.
-    Tentative 2026-10-12, pending user review: `float-maximize-clear` and
-    `float-refused-maximize-clear` diagnostics carry the clear result/cause,
+    User 2026-10-20 accepted `float-maximize-clear` and
+    `float-refused-maximize-clear` diagnostics carrying the clear result/cause,
     matching directional clear diagnostics. Owned fullscreen metadata vetoes
     B9 both before and after clear, including non-covering transition frames.
+    Dogfood these permanent per-action refusals for surprising jank
+    ([follow-up](backlog.md#open-work)).
   Analysis: [post-Windows audit](research/cross-platform-core/post-windows-audit.md),
   [cross-WM consensus](research/reference-wm-consensus.md).
 - Observation-driven reconciliation, three-strike anti-fighting acceptance,

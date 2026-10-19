@@ -13,9 +13,10 @@ and W2M-12 remain blocked on their existing world-route contracts.
 - Diagnose each reported failure from supplied traces and current source.
 - Keep exact transfer/lifetime/visibility fences; do not accept a materially
   wrong allocation as a successful cross-output arrival.
-- Route workspace commands by genuine focus, and ordinary fresh admission
-  by the focused output before newcomer activation (approved R-OUT-05).
-  Preserve cold-start per-output placement.
+- Retain interim foreground-first workspace-command routing (`1e7bfaf4`).
+  Admission waits on the cross-platform cursor-first matrix; approved R-OUT-05
+  remains in force until Tier 1 evidence supports an override. Preserve
+  cold-start per-output placement.
 - Support secondary pager strips with exact tray/clock exclusion geometry or
   the narrowly recognized no-notification-area hierarchy described below;
   refuse unreadable and unknown layouts.
@@ -43,8 +44,8 @@ and W2M-12 remain blocked on their existing world-route contracts.
   focused interval did not reliably update retention. Further verification
   also exposed DPI-virtualized monitor bounds in the external harness. Both
   admission prototypes are parked outside the checkout; neither is shipped.
-  Next: use physical monitor bounds and correlate genuine focus/retention
-  transitions before selecting another admission correction.
+  Admission is now parked pending the cursor-first matrix; a later fixture
+  must use physical monitor bounds and correlate genuine focus/retention.
 - Reported transfer trace shows size scaling near the monitor DPI ratio and
   subsequent reverse scaling. Exact arrival verification correctly refused
   the mismatched frame. A separate PMv2 owned-window probe confirmed that a
@@ -85,8 +86,9 @@ and W2M-12 remain blocked on their existing world-route contracts.
 
 ## Remaining units
 
-1. Re-establish a physical-coordinate admission fixture and resolve retained
-   focus sampling before another admission implementation.
+1. Wait for Tier 1 cursor-first output-targeting matrix evidence and the
+   R-OUT-05 conflict resolution before another admission implementation;
+   then re-establish physical-coordinate fixtures and reliable focus sampling.
 2. Diagnose PMv2 cross-DPI placement with owned disposable windows; preserve
    exact arrival fences and add a regression for any demonstrated correction.
 3. Complete secondary pager physical selection, occupied-workspace,
@@ -96,16 +98,20 @@ and W2M-12 remain blocked on their existing world-route contracts.
 
 ## Decisions and limits
 
-- Tentative (user review pending): workspace-command fallback is foreground,
-  pointer, last-switch cache, stable output order, consistent with the tray's
-  existing focused-output resolver. New-window admission never uses pointer.
-- Tentative (user review pending): secondary bars without a notification area
+- User 2026-10-20 direction supersedes the tentative foreground, pointer,
+  last-switch cache, stable-order policy and "admission never pointer" claim:
+  [cross-platform cursor-first targeting](../decisions.md#cursor-first-output-targeting)
+  is pending Tier 1 functional-matrix evidence, not an approved replacement for
+  R-OUT-05. Interim foreground-first commands (`1e7bfaf4`) stay; admission waits
+  on the matrix, including the definition of standard new-window location.
+- User 2026-10-20 accepted: secondary bars without a notification area
   may anchor at bar-right minus the existing gap only for the observed narrow
   HWND hierarchy: readable descendants, positive visible left app-button
   host, exact full-bar composition bridge and only zero-area input sites or
   recognized left launcher content. Unknown visible hierarchies refuse.
   HWND-less composited pixels are not observable through this census; this
   is bounded shell-topology support, not a universal visual exclusion proof.
+  A quick physical check looked good; broader physical acceptance remains pending.
 - Parked admission prototypes used an HWND-only freshness hint; a successor
   must retain the existing full identity/tag fences and avoid treating an
   enumerated-but-memberless hidden window as genuine established focus.

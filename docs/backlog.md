@@ -24,12 +24,34 @@ decisions of 2026-09-24 are under
   (3) workspace switching with the secondary output focused changes the
   primary; (4) new windows open on the secondary output while the primary is
   focused. Workspace-command routing and secondary pager support fixed with
-  native two-output CLI/carrier/message-selection evidence; physical input,
-  shell/display-change acceptance remain pending. Admission correction is
-  parked after incomplete
-  two-direction acceptance ([record](changes/windows-dual-output-live.md)).
-  Diagnose and fix the remaining defects, then work through the
+  native two-output CLI/carrier/message-selection evidence; secondary pager
+  bar-right anchoring user-accepted 2026-10-20 (quick physical check);
+  physical input, shell/display-change acceptance remain pending. Next: (1)
+  diagnose cross-DPI transfer with per-window DPI/readback diagnostics,
+  preserving exact arrival fences; (4) admission waits on the cursor-first
+  output-targeting matrix below (interim foreground-first command routing
+  stays). Then work through the
   [two-monitor checklist](changes/windows-physical-checklist.md#two-monitor-pc).
+  [Record](changes/windows-dual-output-live.md).
+- P0 | Cross-platform cursor-first output targeting (User 2026-10-20) |
+  Direction: workspace switches and new-window launches target the output
+  under the cursor; window sends to another workspace act on the focused
+  window's output regardless of cursor. A launch with the cursor on the
+  focused window's output splits the focused window; on another output it
+  uses that output's standard new-window location. Optional, default-off
+  focus-follows-cursor and cursor-follows-focus. Must be identical on all
+  platforms. Conflicts with approved R-OUT-05 (2026-10-10, focused output,
+  not pointer); override only with Tier 1 functional-matrix evidence. First:
+  capture the Tier 1 input-tiler outcomes (including COSMIC) as
+  reference-outcome rows and functional-matrix cells, defining "standard
+  location"; then Windows implementation (unblocks Windows defect 4), KDE and
+  macOS adoption by their streams.
+- P1 | Dogfood permanent maximize-clear refusals | User 2026-10-20 accepted
+  Windows pre-clear diagnostic priority with fullscreen veto, and B9
+  `float-maximize-clear` diagnostics with fullscreen veto, but both are
+  final per-action refusals that may feel janky. Watch for surprising
+  refusals while dogfooding and revisit
+  ([decisions](decisions.md#window-state-float-sticky-maximize-fullscreen)).
 - P0 | Windows single-output dogfood 2026-10-19 | Delivered and pushed
   (`a372078e`, `6911b8d2`, CI green); remaining user-run acceptance (app
   hide/reshow, desktop/Start pager, accent change while running) is listed in

@@ -106,8 +106,8 @@
   survivor, sends/new contents while absent, history invalidation/re-prime,
   local/global return and shared no displacement, mixed-DPI geometry/focus and
   clean stop/restore. Nearest-survivor discrimination requires three outputs.
-- Tentative mode schema/adoption, global swap/addressing, shared no displacement
-  and shared startup anchor remain pending user review in
+- User 2026-10-15 approved mode schema/adoption, global swap/addressing, shared
+  no displacement and shared startup anchor in
   [Workspaces](../../decisions.md#workspaces). No additional product choice was
   introduced. Physical journeys and unsupported reference outcomes stay parked
   for that testing; offline item 12 implementation is complete.
