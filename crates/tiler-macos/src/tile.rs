@@ -572,6 +572,28 @@ pub struct HeartbeatState {
     pub input: Option<(u64, u64)>,
 }
 
+/// Trailing-cleanup gate after the cooperative select drain: only a clean
+/// drained/reaped selector (`select_unclean` none) may run MC removal
+/// effects. An unclean drain means the owner is still live — e.g. a hung
+/// MC-create owner that may still actuate — so every owned SID is retained
+/// as explicit residue and ALL cleanup effects are skipped; the hung owner
+/// can never overlap the main-thread remover. Returns the retained-residue
+/// lines on the unclean arm (one per owned SID), or `None` on the clean arm
+/// (the caller runs the preexisting cleanup loop). Pure and portable so
+/// the decision path itself is unit-tested with real lifecycle ownership.
+fn trailing_cleanup_decision(select_unclean: Option<&str>, owned: &[u64]) -> Option<Vec<String>> {
+    select_unclean.map(|_| {
+        owned
+            .iter()
+            .map(|sid| {
+                format!(
+                    "tiler-macos dev trailing residue sid={sid} reason=select drain unclean; retained without removal complete=true"
+                )
+            })
+            .collect()
+    })
+}
+
 /// Product-mode token for terminal JSON (`scoped` vs `unscoped`).
 #[must_use]
 pub const fn mode_str(unscoped: bool) -> &'static str {
@@ -687,6 +709,113 @@ mod native {
         let rows = crate::ffi::sls_display_rows().map_err(|e| format!("space rows: {e}"))?;
         let separate = crate::ffi::ns_separate_spaces();
         Ok(build_snapshot(&ns, &rows, separate))
+    }
+
+    /// One bounded main-thread pump for the cooperative select drain below:
+    /// service application events plus the runloop without entering `run`
+    /// (the same pump as the main loop above; no windows open here).
+    fn pump_once(app: &objc2_app_kit::NSApplication) {
+        objc2::rc::autoreleasepool(|_| {
+            crate::ffi::drain_app_events(app);
+            crate::ffi::pump_runloop_once(50);
+        });
+    }
+
+    /// Adopt one terminal selection completion into lifecycle ownership on
+    /// BOTH outcomes (the Space persists from the verified append) and
+    /// forward the engine binding when the claim minted a token. Shared by
+    /// the live poll and the cooperative shutdown drain so a late proof is
+    /// never silently lost; the caller logs and reports the outcome.
+    fn adopt_select_completion(
+        handle: &crate::runtime::RuntimeHandle,
+        trailing_lifecycle: &mut crate::workspace_select::TrailingLifecycle,
+        completion: &crate::select_owner::SelectCompletion,
+    ) {
+        if let Some(proof) = completion.proof.as_ref() {
+            if let Err(reason) = trailing_lifecycle.adopt_created(proof.created) {
+                eprintln!(
+                    "tiler-macos dev trailing adopt sid={} refused reason={} complete=true",
+                    proof.created, reason,
+                );
+            }
+            match completion.trailing_token.as_deref() {
+                Some(token) => {
+                    handle.submit_trailing_proof(
+                        token,
+                        &proof.display_id,
+                        proof.created,
+                        &proof.before,
+                        &proof.after,
+                    );
+                    eprintln!(
+                        "tiler-macos dev trailing bound token={} sid={} complete=true",
+                        token, proof.created,
+                    );
+                }
+                None => {
+                    eprintln!(
+                        "tiler-macos dev trailing unbound sid={} complete=true",
+                        proof.created,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Report one terminal selection outcome under the claim's operation
+    /// identity (proven applied vs honest refusal classification). Shared
+    /// by the live poll and the cooperative shutdown drain; the caller owns
+    /// its settle-site log line.
+    fn report_select_completion(
+        handle: &crate::runtime::RuntimeHandle,
+        completion: &crate::select_owner::SelectCompletion,
+    ) {
+        match completion.result.as_ref() {
+            Ok(_) => {
+                if let Some(operation_id) = completion.operation_id.as_deref() {
+                    handle.report_select_outcome(
+                        operation_id,
+                        crate::runtime::SelectDrainOutcome::Applied,
+                    );
+                }
+            }
+            Err(reason) => {
+                if let Some(operation_id) = completion.operation_id.as_deref() {
+                    handle.report_select_outcome(
+                        operation_id,
+                        crate::select_feedback::classify_select_drain_error(reason),
+                    );
+                }
+            }
+        }
+    }
+
+    /// Settle one terminal selection completion at shutdown with
+    /// shutdown-site lines (adopt plus outcome report shared with the live
+    /// poll above).
+    fn settle_select_at_shutdown(
+        handle: &crate::runtime::RuntimeHandle,
+        trailing_lifecycle: &mut crate::workspace_select::TrailingLifecycle,
+        completion: crate::select_owner::SelectCompletion,
+        reaped: bool,
+    ) {
+        adopt_select_completion(handle, trailing_lifecycle, &completion);
+        match completion.result.as_ref() {
+            Ok(effect) => {
+                eprintln!(
+                    "tiler-macos dev select settled at shutdown changed={} caffeinate_reaped={} complete=true",
+                    effect.changed, reaped,
+                );
+                report_select_completion(handle, &completion);
+            }
+            Err(reason) => {
+                eprintln!(
+                    "tiler-macos dev select refused at shutdown reason={} complete=false",
+                    reason,
+                );
+                report_select_completion(handle, &completion);
+            }
+        }
     }
 
     /// True when the launcher published a stop for this exact run: the
@@ -1881,8 +2010,11 @@ mod native {
         })?;
         // Display/Space-change observer (events trigger resnapshot;
         // bounded fallback polling below covers a missed event).
-        let (_guard, display_flag) = crate::ffi::install_display_change_guard()
+        let (guard, display_flag) = crate::ffi::install_display_change_guard()
             .map_err(|reason| (1, format!("display guard refused: {reason}")))?;
+        // The guard owns the active-Space observer for the run lifetime;
+        // its shared wake settles off-main Dock-swipe selects event-driven.
+        handle.publish_select_wake(guard.select_wake());
         // Meta+left drag-preview arm (tap route with the startup switch
         // on only): session plus filled carrier plus the mouse-tap owner
         // thread. A spawn denial parks the arm with its reason (keyboard
@@ -1932,10 +2064,16 @@ mod native {
         );
         let mut poll = TopologyPoll::new();
         let mut tracked: BTreeMap<u32, TrackedApp> = BTreeMap::new();
-        // Durable per-runtime product select history: one two-view memory
-        // per display identifier, advancing only on verified arrivals for
-        // the whole run lifetime (never persisted, never guessed).
-        let mut select_state = crate::workspace_select::SelectionState::default();
+        // Durable product select history lives coherently in the
+        // serialized Dock-swipe selection owner (previous per display
+        // identifier plus trailing proofs, advancing only on verified
+        // arrivals for the whole run lifetime — never persisted, never
+        // guessed). The main thread submits claims nonblocking and polls
+        // completions nonblocking; it never waits and never touches
+        // history directly, so no concurrent send/select effect can race
+        // it. Follow-history attributions from settled send follows ride
+        // the same lane ahead of later selects.
+        let mut select_controller = crate::select_owner::SelectController::new();
         // Async live-send controller: the main-thread side of the dedicated
         // managed-send effect owner (spawned lazily on the first submit, so
         // runs that never send never spawn it). Submissions and completion
@@ -2137,8 +2275,11 @@ mod native {
                 crate::ffi::SessionLock::Locked => {
                     lock_stops += 1;
                     // A locked session never dispatches a switch: drop any
-                    // pending select without replay.
+                    // pending select without replay and cancel an inflight
+                    // Dock-swipe select (its terminal completion settles
+                    // honestly on a later tick; never replayed).
                     handle.discard_select_pending();
+                    select_controller.cancel();
                     // A locked session never indicates either: remove the
                     // item and drop queued clicks (unlock refreshes below).
                     indicator.teardown();
@@ -2174,6 +2315,7 @@ mod native {
                     // Lock-screen foreground: same refusal as a locked
                     // session (no switch under the lock screen, no replay).
                     handle.discard_select_pending();
+                    select_controller.cancel();
                     // Same indicator teardown (this branch skips the tick
                     // below).
                     indicator.teardown();
@@ -2207,6 +2349,7 @@ mod native {
                 // Secure Input capture never dispatches a switch (the tap
                 // gate already released interception; this is the backstop).
                 handle.discard_select_pending();
+                select_controller.cancel();
                 // Same for indicator clicks queued under capture.
                 indicator.discard_clicks();
             }
@@ -2292,8 +2435,12 @@ mod native {
                     poll = TopologyPoll::new();
                     topology_failures += 1;
                     // Stale topology never dispatches: drop any pending
-                    // select instead of switching under unreadable rows.
+                    // select instead of switching under unreadable rows and
+                    // cancel an inflight select (its drift legs refuse
+                    // without replay; the terminal completion settles
+                    // honestly on a later tick).
                     handle.discard_select_pending();
+                    select_controller.cancel();
                     // Stale topology never indicates either: remove the
                     // item and drop queued clicks (a good snapshot
                     // refreshes from scratch below).
@@ -2356,7 +2503,7 @@ mod native {
             if let Some(settle) = send_controller.poll() {
                 let outcome = crate::workspace_send::send_drain_outcome_for(settle.outcome);
                 if crate::workspace_send::should_note_history(outcome, settle.follow) {
-                    select_state.note_arrival(&settle.display, settle.from);
+                    select_controller.note_arrival(&settle.display, settle.from);
                 }
                 // Owner-verified trailing append: the created SID adopts
                 // into lifecycle ownership here (token or not: the Space
@@ -2404,15 +2551,50 @@ mod native {
                 );
                 handle.report_send_outcome(&refusal.operation_id, refusal.outcome);
             }
-            if let Some(claim) = handle.claim_select_for_drain() {
-                let session_unlocked = matches!(
-                    crate::ffi::session_state().lock,
-                    crate::ffi::SessionLock::Unlocked
-                );
-                let secure_active = matches!(crate::ffi::secure_input_known(), Some(true));
-                let lock_screen = crate::ffi::frontmost_app()
-                    .map(|(_, bundle)| crate::focus::is_loginwindow_bundle(&bundle))
-                    .unwrap_or(true);
+            // Dock-swipe select completion poll (nonblocking): reconcile at
+            // most one settled select per tick before draining new claims.
+            // The selection owner proved arrival event-driven off-main; the
+            // trailing append proof adopts into lifecycle ownership here
+            // (success or failure — the Space persists from the verified
+            // append) and pairs the engine-minted token, while the proven
+            // outcome reports back under the claim's operation identity.
+            if let Some((completion, reaped)) = select_controller.poll() {
+                adopt_select_completion(&handle, &mut trailing_lifecycle, &completion);
+                match completion.result.as_ref() {
+                    Ok(effect) => {
+                        eprintln!(
+                            "tiler-macos dev select action={} changed={} caffeinate_reaped={} complete=true",
+                            completion
+                                .operation_id
+                                .as_deref()
+                                .unwrap_or("unknown-select"),
+                            effect.changed,
+                            reaped,
+                        );
+                        report_select_completion(&handle, &completion);
+                    }
+                    Err(reason) => {
+                        eprintln!(
+                            "tiler-macos dev select action={} refused reason={} complete=false",
+                            completion
+                                .operation_id
+                                .as_deref()
+                                .unwrap_or("unknown-select"),
+                            reason,
+                        );
+                        report_select_completion(&handle, &completion);
+                    }
+                }
+            }
+            // Explicit cross-lane exclusion: the send owner and the select
+            // owner never actuate concurrently. While either lane is
+            // inflight the pending claim waits for a later tick (the slot
+            // stays pending — never claimed, never dropped here).
+            let effects_busy = select_controller.is_busy() || send_controller.is_busy();
+            if effects_busy {
+                // A send or select effect is inflight: leave the pending
+                // claim for a later tick (never claimed, never dropped).
+            } else if let Some(claim) = handle.claim_select_for_drain() {
                 let id = crate::workspace_input::workspace_action_id(&claim.action)
                     .unwrap_or("unknown-select");
                 // The operation identity rides out of the claim before the
@@ -2423,7 +2605,6 @@ mod native {
                 // the drain pairs the engine-minted pending token with its
                 // exact native append proof.
                 let operation_id = claim.operation_id.clone();
-                let trailing_token = claim.trailing_token.clone();
                 // Numbered sends 1..9 route to the dedicated effect owner
                 // (follows and stays share the single-flight lane; stays
                 // still refused at the engine capability gate until a
@@ -2598,103 +2779,68 @@ mod native {
                         }
                     }
                 } else {
-                    let gates = crate::workspace_select::SelectGates {
-                        session_unlocked,
-                        secure_active,
-                        lock_screen,
-                    };
-                    let outcome = crate::workspace_select::drain_live_claimed(
-                        &mut select_state,
-                        claim,
-                        &gates,
-                    );
-                    handle.release_select_after_drain();
-                    match outcome {
-                        Ok((effect, reaped)) => {
-                            // Trailing append proof: the single take captures
-                            // the runtime-created SID for lifecycle ownership
-                            // (bounded shutdown removes it once proven empty
-                            // and inactive) AND the exact rows for the engine
-                            // binding. Adoption failures never mutate
-                            // ownership; the select stays applied and the core
-                            // feedback below still settles under the claim
-                            // identity. A reuse (no append) proves nothing.
-                            if let Some(proof) = select_state.take_trailing_proof() {
-                                if let Err(reason) = trailing_lifecycle.adopt_created(proof.created)
-                                {
-                                    eprintln!(
-                                        "tiler-macos dev trailing adopt sid={} refused reason={} complete=true",
-                                        proof.created, reason,
-                                    );
-                                }
-                                match trailing_token.as_deref() {
-                                    Some(token) => {
-                                        handle.submit_trailing_proof(
-                                            token,
-                                            &proof.display_id,
-                                            proof.created,
-                                            &proof.before,
-                                            &proof.after,
-                                        );
-                                        eprintln!(
-                                            "tiler-macos dev trailing bound token={} sid={} complete=true",
-                                            token, proof.created,
-                                        );
-                                    }
-                                    None => {
-                                        eprintln!(
-                                            "tiler-macos dev trailing unbound sid={} complete=true",
-                                            proof.created,
-                                        );
-                                    }
-                                }
-                            }
-                            eprintln!(
-                                "tiler-macos dev select action={} changed={} caffeinate_reaped={} complete=true",
-                                id, effect.changed, reaped,
-                            );
-                            if let Some(operation_id) = operation_id.as_deref() {
-                                handle.report_select_outcome(
-                                    operation_id,
-                                    crate::runtime::SelectDrainOutcome::Applied,
-                                );
+                    // Product selects ride the serialized Dock-swipe
+                    // selection owner: this thread only submits nonblocking
+                    // (never waits) and reconciles the completion on a
+                    // later tick above. The owner holds the durable previous
+                    // history and the trailing proof and reads fresh gates
+                    // itself immediately before effecting; this side only
+                    // pins the plain-data display legs. Proof adopts from
+                    // the completion on BOTH outcomes.
+                    let row = last_snapshot.as_ref().and_then(|live| {
+                        crate::workspace_select::user_row_from_rows(&live.rows, 0).ok()
+                    });
+                    let published = handle.published_display_inputs();
+                    let wake = handle.select_wake();
+                    let submit = match (row, published, wake) {
+                        (Some(_row), Some(published), Some(wake))
+                            if published.displays.len() == 1 =>
+                        {
+                            match (
+                                published.displays[0].uuid.clone(),
+                                published.displays[0].cg_id,
+                            ) {
+                                (Some(uuid), cgid) if cgid != 0 => select_controller.submit(
+                                    &claim,
+                                    crate::select_owner::SelectSubmit {
+                                        display_index: 0,
+                                        pinned_cgid: cgid,
+                                        pinned_uuid: &uuid,
+                                        published_displays: &published.displays,
+                                        published_separate: published.separate,
+                                        trailing_enabled:
+                                            crate::workspace_input::TRAILING_CAPABILITY_ENABLED,
+                                        wake: &wake,
+                                    },
+                                ),
+                                _ => Err(
+                                    "product select refuses: published display legs unpinned"
+                                        .to_owned(),
+                                ),
                             }
                         }
+                        _ => Err(
+                            "product select refuses: fresh row, display legs, or select wake unpublished"
+                                .to_owned(),
+                        ),
+                    };
+                    handle.release_select_after_drain();
+                    match submit {
+                        Ok(()) => {
+                            eprintln!(
+                                "tiler-macos dev select action={} submitted route=dock-swipe complete=false",
+                                id,
+                            );
+                        }
                         Err(reason) => {
-                            // The select failed or read back ambiguous AFTER
-                            // a verified append: the Space persists, so its
-                            // SID adopts here (captured at append time, not
-                            // from the failed effect) and its proof still
-                            // binds the engine token - the append proof
-                            // stands even though the select did not.
-                            if let Some(proof) = select_state.take_trailing_proof() {
-                                if let Err(adopt_reason) =
-                                    trailing_lifecycle.adopt_created(proof.created)
-                                {
-                                    eprintln!(
-                                        "tiler-macos dev trailing adopt sid={} refused reason={} complete=true",
-                                        proof.created, adopt_reason,
-                                    );
-                                }
-                                if let Some(token) = trailing_token.as_deref() {
-                                    handle.submit_trailing_proof(
-                                        token,
-                                        &proof.display_id,
-                                        proof.created,
-                                        &proof.before,
-                                        &proof.after,
-                                    );
-                                    eprintln!(
-                                        "tiler-macos dev trailing bound token={} sid={} complete=true",
-                                        token, proof.created,
-                                    );
-                                }
-                            }
                             eprintln!(
                                 "tiler-macos dev select action={} refused reason={} complete=false",
                                 id, reason,
                             );
                             if let Some(operation_id) = operation_id.as_deref() {
+                                // Submit-time refusals never actuated (the
+                                // owner never took the job): proven refusal
+                                // settles without actuation.
                                 handle.report_select_outcome(
                                     operation_id,
                                     crate::select_feedback::classify_select_drain_error(&reason),
@@ -2858,6 +3004,66 @@ mod native {
         // refused on every gate above.
         indicator.teardown();
         let (indicator_updates, indicator_clicks) = (indicator.updates(), indicator.clicks());
+        // Live-select cooperative shutdown drain: new admissions already
+        // stopped with the loop exit above — no claim is submitted past
+        // this point. An already-staged completion settles inline exactly
+        // like the live poll; otherwise the inflight job is cancelled and
+        // the main thread keeps pumping its runloop while polling
+        // nonblocking until the terminal completion stages or the bound
+        // expires. The proof adopts exactly like the live poll on BOTH
+        // outcomes, so a late append is never silently lost. Only then is
+        // the owner stop-signalled and reaped once finished, and only then
+        // does the preexisting main-thread trailing cleanup below run.
+        // Runs before the send shutdown so lane teardown order is
+        // deterministic. The bound reuses `SHUTDOWN_BOUND`: a cancelled job
+        // settles promptly through its latch, but a wedged owner (hung
+        // WindowServer/AX leg inside the off-main MC create) must never
+        // stall the main thread here — expiry reports unclean with the
+        // retained ownership, never clean. Residual bound (no exact hard
+        // lifetime claimed beyond the named constants): this drain spends
+        // at most `SHUTDOWN_BOUND`, after which trailing cleanup (at most
+        // `TRAILING_CLEANUP_BUDGET_SECS`) plus the runtime shutdown
+        // (`SHUTDOWN_BOUND`) still follow — a fully wedged shutdown can
+        // therefore overrun the watchdog grace into its forced dirty exit,
+        // which stays honest (never a success claim). The common path (no
+        // owned SIDs, prompt cancel) settles in milliseconds.
+        let drain_deadline = Instant::now() + SHUTDOWN_BOUND;
+        let mut select_unclean: Option<String> = None;
+        if let Some((completion, reaped)) = select_controller.poll() {
+            settle_select_at_shutdown(&handle, &mut trailing_lifecycle, completion, reaped);
+        }
+        if select_controller.is_busy() {
+            select_controller.cancel();
+            while select_controller.is_busy() && Instant::now() < drain_deadline {
+                pump_once(&app);
+                if let Some((completion, reaped)) = select_controller.poll() {
+                    settle_select_at_shutdown(&handle, &mut trailing_lifecycle, completion, reaped);
+                }
+            }
+            if select_controller.is_busy() {
+                select_unclean = Some(
+                    "select drain expired with an inflight job; terminal proof unadopted"
+                        .to_owned(),
+                );
+            }
+        }
+        select_controller.request_shutdown();
+        while !select_controller.is_finished() && Instant::now() < drain_deadline {
+            pump_once(&app);
+        }
+        match select_controller.try_reap() {
+            Some(_) => {}
+            None => {
+                select_unclean =
+                    Some("select owner still live at the drain bound; lane retained".to_owned());
+            }
+        }
+        if let Some(reason) = select_unclean.as_ref() {
+            eprintln!(
+                "tiler-macos dev select shutdown unclean reason={reason} owned={:?} complete=false",
+                trailing_lifecycle.owned(),
+            );
+        }
         // Live-send terminal shutdown (nonblocking): take a terminal
         // completion poll first, then stop-request, finished-only reap, and
         // retention of an unfinished exact owner for eventual reap. A
@@ -2869,9 +3075,9 @@ mod native {
             match outcome {
                 crate::workspace_send::ShutdownOutcome::Settle(settle) => {
                     let outcome = crate::workspace_send::send_drain_outcome_for(settle.outcome);
-                    if crate::workspace_send::should_note_history(outcome, settle.follow) {
-                        select_state.note_arrival(&settle.display, settle.from);
-                    }
+                    // No follow-history note at shutdown: the run-lifetime
+                    // previous memory ends with the select owner (torn down
+                    // above), so no later select could observe it.
                     // Terminal trailing creation adopts here too (same
                     // ownership rule as the live settle: the Space
                     // persists); the binding forwards only with a token.
@@ -2927,17 +3133,38 @@ mod native {
         // stops (budget or drift will not clear on retry in the same
         // shutdown). No MC effects run here when the fresh row is
         // unreadable. Runs before the runtime shutdown so no engine/AppKit
-        // work is in flight.
+        // work is in flight. Gated on a clean drained/reaped selector (see
+        // `trailing_cleanup_decision`): an unclean drain retains every
+        // owned SID as explicit residue and skips ALL cleanup effects, so
+        // a still-live (possibly hung MC-create) owner never overlaps the
+        // remover below.
         if !trailing_lifecycle.owned().is_empty() {
-            let mut budget = crate::mc_probe::ActionBudget::new(
-                crate::workspace_select::TRAILING_CLEANUP_BUDGET_SECS,
-            );
-            let mut dispatched = false;
-            for _ in 0..trailing_lifecycle.owned().len() {
-                let row = match snapshot_live() {
-                    Ok(snapshot) => {
-                        match crate::workspace_select::user_row_from_rows(&snapshot.rows, 0) {
-                            Ok(row) => row,
+            match trailing_cleanup_decision(select_unclean.as_deref(), trailing_lifecycle.owned()) {
+                Some(residue) => {
+                    for line in residue {
+                        eprintln!("{line}");
+                    }
+                }
+                None => {
+                    let mut budget = crate::mc_probe::ActionBudget::new(
+                        crate::workspace_select::TRAILING_CLEANUP_BUDGET_SECS,
+                    );
+                    let mut dispatched = false;
+                    for _ in 0..trailing_lifecycle.owned().len() {
+                        let row = match snapshot_live() {
+                            Ok(snapshot) => {
+                                match crate::workspace_select::user_row_from_rows(&snapshot.rows, 0)
+                                {
+                                    Ok(row) => row,
+                                    Err(reason) => {
+                                        eprintln!(
+                                            "tiler-macos dev trailing cleanup skipped reason={} complete=true",
+                                            reason,
+                                        );
+                                        break;
+                                    }
+                                }
+                            }
                             Err(reason) => {
                                 eprintln!(
                                     "tiler-macos dev trailing cleanup skipped reason={} complete=true",
@@ -2945,45 +3172,41 @@ mod native {
                                 );
                                 break;
                             }
+                        };
+                        let (removable, residue) =
+                            trailing_lifecycle.cleanup_plan(&row.spaces, row.current, &|sid| {
+                                crate::workspace_select::trailing_emptiness(sid, 0)
+                            });
+                        for sid in &residue {
+                            eprintln!(
+                                "tiler-macos dev trailing residue sid={} reason={} complete=true",
+                                sid.0, sid.1,
+                            );
                         }
-                    }
-                    Err(reason) => {
-                        eprintln!(
-                            "tiler-macos dev trailing cleanup skipped reason={} complete=true",
-                            reason,
-                        );
-                        break;
-                    }
-                };
-                let (removable, residue) =
-                    trailing_lifecycle.cleanup_plan(&row.spaces, row.current, &|sid| {
-                        crate::workspace_select::trailing_emptiness(sid, 0)
-                    });
-                for sid in &residue {
-                    eprintln!(
-                        "tiler-macos dev trailing residue sid={} reason={} complete=true",
-                        sid.0, sid.1,
-                    );
-                }
-                let Some(sid) = removable.into_iter().next() else {
-                    break;
-                };
-                match crate::mc_lifecycle::remove_sid_verified(
-                    sid,
-                    &mut budget,
-                    false,
-                    &mut dispatched,
-                ) {
-                    Ok(_) => {
-                        let _ = trailing_lifecycle.release_removed(sid);
-                        eprintln!("tiler-macos dev trailing removed sid={} complete=true", sid,);
-                    }
-                    Err(reason) => {
-                        eprintln!(
-                            "tiler-macos dev trailing residue sid={} reason={} complete=true",
-                            sid, reason,
-                        );
-                        break;
+                        let Some(sid) = removable.into_iter().next() else {
+                            break;
+                        };
+                        match crate::mc_lifecycle::remove_sid_verified(
+                            sid,
+                            &mut budget,
+                            false,
+                            &mut dispatched,
+                        ) {
+                            Ok(_) => {
+                                let _ = trailing_lifecycle.release_removed(sid);
+                                eprintln!(
+                                    "tiler-macos dev trailing removed sid={} complete=true",
+                                    sid,
+                                );
+                            }
+                            Err(reason) => {
+                                eprintln!(
+                                    "tiler-macos dev trailing residue sid={} reason={} complete=true",
+                                    sid, reason,
+                                );
+                                break;
+                            }
+                        }
                     }
                 }
             }
@@ -3001,7 +3224,9 @@ mod native {
         if let Some(watchdog) = watchdog.as_mut() {
             watchdog.disarm();
         }
-        let outcome = if stopped {
+        let outcome = if select_unclean.is_some() {
+            "unclean-shutdown"
+        } else if stopped {
             "stopped"
         } else if early_refusal.is_some() || input_refusal.is_some() {
             "input-refused"
@@ -3010,10 +3235,12 @@ mod native {
         } else {
             "unclean-shutdown"
         };
-        // Verified clean only with a clean bounded shutdown and no
-        // refusal: the launcher parses this (never stderr volume).
-        let shutdown_clean =
-            report.outcome == crate::runtime::ShutdownOutcome::Clean && input_refusal.is_none();
+        // Verified clean only with a clean bounded shutdown, no refusal,
+        // and a clean select drain: the launcher parses this (never stderr
+        // volume).
+        let shutdown_clean = report.outcome == crate::runtime::ShutdownOutcome::Clean
+            && input_refusal.is_none()
+            && select_unclean.is_none();
         let body = TileOutcome {
             outcome: outcome.to_owned(),
             seconds: request.seconds,
@@ -3618,5 +3845,33 @@ mod tests {
         let body = serde_json::to_string(&outcome).unwrap();
         assert!(body.contains("\"outcome\":\"refused\""));
         assert!(body.contains("locked"));
+    }
+
+    #[test]
+    fn unclean_select_drain_retains_every_owned_sid_without_cleanup() {
+        // Decision path with real lifecycle ownership (never a fake
+        // cleaner/effect): an unclean drain — the owner still live, e.g. a
+        // hung MC-create owner that may still actuate — retains every owned
+        // SID as explicit residue so the shutdown path skips ALL cleanup
+        // effects; a clean drain proceeds to the preexisting cleanup loop.
+        let mut lifecycle = crate::workspace_select::TrailingLifecycle::new(&[1001, 1002]);
+        lifecycle.adopt_created(2001).expect("adopt");
+        lifecycle.adopt_created(2002).expect("adopt");
+        let owned = lifecycle.owned().to_vec();
+        assert_eq!(owned, vec![2001, 2002]);
+        let residue = trailing_cleanup_decision(
+            Some("select owner still live at the drain bound; lane retained"),
+            &owned,
+        )
+        .expect("unclean drain skips effects");
+        assert_eq!(residue.len(), 2);
+        for (sid, line) in owned.iter().zip(residue.iter()) {
+            assert!(line.contains(&format!("sid={sid}")), "{line}");
+            assert!(line.contains("retained without removal"), "{line}");
+        }
+        // Nothing released, nothing adopted: ownership untouched.
+        assert_eq!(lifecycle.owned(), &[2001, 2002]);
+        assert!(trailing_cleanup_decision(None, &owned).is_none());
+        assert!(trailing_cleanup_decision(None, &[]).is_none());
     }
 }

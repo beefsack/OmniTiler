@@ -15,7 +15,11 @@
 //! plus `select-0`/`send-0`, the trailing Desktop-10 digit chords (same
 //! keycode and arms as the armed product catalogue rows, so the normal
 //! tap/admit/drain/owner path proves the trailing select-or-create and
-//! the trailing send-follow). The
+//! the trailing send-follow). A second bound leg admits exactly three more
+//! names - `rel-prev`/`rel-next`/`prev-toggle` (see
+//! [`resolve_textedit_bound`]: the armed relative/previous catalogue
+//! bindings with the exact product flags, so the normal tap/admit/drain
+//! path proves relative wrap and the previous toggle). The
 //! disposable identity is bound by a run-owned record ([`TextEditRecord`]:
 //! exact `(pid, wid)` plus the test-run-created temp directory plus the
 //! per-run random token plus a nonce); the helper spawn record is never
@@ -23,7 +27,10 @@
 //! product action is armed (the chord set is exactly the owned-post set
 //! plus one diagnostic-only `escape` for dismissing a document-title
 //! popover on the same run-owned document: fixed keycode 53, flags 0,
-//! untagged session tap, identical per-edge proof and release gates).
+//! untagged session tap, identical per-edge proof and release gates —
+//! plus the stays/trailing/relative/previous diagnostic transports above,
+//! each pinned to an armed product binding with identical per-edge proof
+//! and release gates).
 //!
 //! Before EACH key edge the live boundary re-proves, in order: session gates
 //! (SLPS available, AX trusted, no Secure Input, unlocked session, post
@@ -59,6 +66,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::config::ProbeModifier;
+use crate::runtime_types::TileBinding;
 
 /// Exact bundle required frontmost before each edge.
 pub const TEXTEDIT_BUNDLE: &str = "com.apple.TextEdit";
@@ -87,7 +95,10 @@ pub(crate) const ESCAPE_ACTION: &str = "escape";
 /// `select-0`/`send-0` (Desktop-10 digit keycode with the product arms:
 /// no arms for the select, Shift for the send; actions `"select"`/`"send"`,
 /// so the posted flags are exactly the effective flags the armed product
-/// catalogue rows carry). No generic raw-key API:
+/// catalogue rows carry). The bound relative/previous names
+/// (`rel-prev`/`rel-next`/`prev-toggle`) are NOT admitted here: their only
+/// admission is [`resolve_textedit_bound`] below (same diagnostic route,
+/// catalogue binding with product flags). No generic raw-key API:
 /// every other name falls through to
 /// [`crate::owned_control::resolve_chord`], so still-unarmed names
 /// (focus-up/down, arbitrary keys) still refuse at the same
@@ -140,6 +151,41 @@ pub(crate) fn resolve_textedit_chord(name: &str) -> Option<crate::owned_control:
         });
     }
     crate::owned_control::resolve_chord(name)
+}
+
+/// Diagnostic-only relative/previous select transport for the armed product
+/// relative/previous rows: `rel-prev` (previous via H), `rel-next` (next via
+/// J), and `prev-toggle` (the previous toggle via Tab). Resolves through the
+/// single catalogue home ([`crate::workspace_input::workspace_catalogue`]):
+/// the returned [`TileBinding`] carries the exact key plus the Shift/Alt/Aux
+/// arms the tile arms, and the post composes
+/// [`crate::workspace_input::effective_flags_for`] identically, so the posted
+/// flags are exactly the effective chord (Ctrl+Cmd+key under the Ctrl role)
+/// the product tap consumes and forwards to the engine. Never a product arm:
+/// [`crate::owned_control::resolve_chord`] still refuses all three names
+/// (covered below), [`resolve_textedit_chord`] above refuses them too (the
+/// bound leg below is their only admission), and the relative sends/stays,
+/// outputs, and trailing stay-0 are never admitted here (the gate matches
+/// only the armed no-focused-subject selects).
+pub(crate) fn resolve_textedit_bound(name: &str) -> Option<TileBinding> {
+    let id = match name {
+        "rel-prev" => "workspace-prev-h",
+        "rel-next" => "workspace-next-j",
+        "prev-toggle" => "workspace-previous",
+        _ => return None,
+    };
+    let row = crate::workspace_input::workspace_catalogue()
+        .into_iter()
+        .find(|row| row.id == id)?;
+    if !row.implemented {
+        return None;
+    }
+    let binding = row.binding()?;
+    match binding.action {
+        crate::runtime_types::InputSemanticAction::WorkspaceRelative { .. }
+        | crate::runtime_types::InputSemanticAction::WorkspacePrevious => Some(binding),
+        _ => None,
+    }
 }
 
 /// Per-run token bounds: long enough to be unguessable per run, short enough
@@ -627,8 +673,24 @@ pub fn run_textedit_post(
         eprintln!("textedit-post refused at {stage}: {error}");
         err_json(stage, error)
     };
-    let chord = resolve_textedit_chord(chord_name)
-        .ok_or_else(|| (2, format!("unknown --chord '{chord_name}' (see help)")))?;
+    // Two admission legs, same record/nonce gates below: the semantic
+    // vocabulary first (owned-post set plus escape/stays/trailing), then the
+    // bound relative/previous leg (catalogue binding, product flags). No
+    // generic raw-key API on either leg.
+    let (key_code_u32, want_flags, action_label): (u32, u64, &'static str) =
+        match resolve_textedit_chord(chord_name) {
+            Some(chord) => (chord.key_code, chord_flags(modifier, chord), chord.action),
+            None => match resolve_textedit_bound(chord_name) {
+                Some(binding) => (
+                    binding.key_code,
+                    crate::workspace_input::effective_flags_for(modifier, &binding),
+                    "select",
+                ),
+                None => {
+                    return Err((2, format!("unknown --chord '{chord_name}' (see help)")));
+                }
+            },
+        };
     if nonce.is_empty() {
         return Err((2, "textedit-post needs a nonempty --nonce".to_owned()));
     }
@@ -642,8 +704,7 @@ pub fn run_textedit_post(
     }
     let pid = record.pid;
     let wid = record.wid;
-    let want_flags = chord_flags(modifier, chord);
-    let key_code = chord.key_code as u16;
+    let key_code = key_code_u32 as u16;
     // Handled-termination arm: SIGINT/SIGTERM latch the shared diagnostic
     // flag from here until return (unregistered on drop, including unwind).
     // Registration failure refuses BEFORE any post. The latch is consulted at
@@ -730,8 +791,8 @@ pub fn run_textedit_post(
                 pid,
                 wid,
                 chord: chord_name.to_owned(),
-                action: chord.action.to_owned(),
-                key_code: chord.key_code,
+                action: action_label.to_owned(),
+                key_code: key_code_u32,
                 flags: want_flags,
                 down_post_us,
                 up_post_us: posted.post_latency_us,
@@ -924,6 +985,411 @@ pub fn run_textedit_grab_inspect(record_path: &str, nonce: &str) -> Result<Strin
     serde_json::to_string(&report).map_err(|e| (1, e.to_string()))
 }
 
+/// Pure close-button verdict over plain data (no OS touch): admits exactly
+/// the window close button (`AXButton` role with `AXCloseButton` subrole).
+/// Anything else (zoom/minimize buttons, toolbars, sheets, unknown roles)
+/// refuses. Unit-tested; the live boundary reads the roles and passes them
+/// here before the single `AXPress`.
+#[must_use]
+pub(crate) fn close_button_match(role: Option<&str>, subrole: Option<&str>) -> bool {
+    matches!(role, Some("AXButton")) && matches!(subrole, Some("AXCloseButton"))
+}
+
+/// Pure close-identity selection over one AX level described as plain data
+/// (reorder-regression seam, no OS touch): returns the identity carried by
+/// the close-button entry, never a position. An equal-length reorder of the
+/// level cannot redirect the choice because positions are never returned.
+/// The live path below moves the matched `AxElement` itself out of its
+/// single fetched `Vec` (never an index plus a second fetch), so the same
+/// no-position rule holds live. Unit-tested.
+#[cfg(test)]
+#[must_use]
+pub(crate) fn select_close_identity(children: &[(u64, Option<&str>, Option<&str>)]) -> Option<u64> {
+    children
+        .iter()
+        .find_map(|(id, role, subrole)| close_button_match(*role, *subrole).then_some(*id))
+}
+
+/// Pure per-child close verdict over a borrowed live element (role reads
+/// already done by the caller): admits exactly the close button.
+fn is_close_element(role: Option<&str>, subrole: Option<&str>) -> bool {
+    close_button_match(role, subrole)
+}
+
+/// Live close-button lookup for the record-bound window: the application
+/// element, the exact-`wid` window, then a bounded two-level child walk that
+/// moves the matched `AxElement` out of its single fetched `Vec` (never an
+/// index plus a second fetch, so an equal-length reorder between reads
+/// cannot redirect the press). Every leg refuses with its cause; nothing is
+/// guessed. No titles, content, or paths travel here.
+fn find_close_button(pid: u32, wid: u32) -> Result<crate::ffi::AxElement, String> {
+    // MAX_CHILDREN bounds every AX traversal in this fixture: child lists
+    // past the bound refuse instead of walking an unbounded tree.
+    const MAX_CHILDREN: usize = 64;
+    let pid_i32 = i32::try_from(pid)
+        .map_err(|_| format!("close: refusing textedit close: pid {pid} out of range"))?;
+    let app = crate::ffi::AxElement::application(pid_i32)
+        .ok_or_else(|| "close: AX application element unavailable".to_owned())?;
+    let windows = app.windows().map_err(|code| {
+        format!(
+            "close: AX window list unreadable ({})",
+            crate::ffi::ax_error_name(code)
+        )
+    })?;
+    if !windows
+        .iter()
+        .any(|w| crate::ffi::ax_window_id(w) == Some(wid))
+    {
+        return Err(format!(
+            "close: record wid {wid} not among live AX windows; refusing stale target"
+        ));
+    }
+    let read_roles =
+        |element: &crate::ffi::AxElement| -> Result<(Option<String>, Option<String>), String> {
+            // An element that does not support the attribute at all
+            // (AttributeUnsupported) simply cannot be the close button:
+            // read it as unknown (non-match, scan continues) rather than
+            // refusing the whole lookup. Any other read failure stays
+            // fatal - a transient failure on the real button must refuse,
+            // never silently skip into a wrong match.
+            let unsupported = crate::ffi::AX_ATTRIBUTE_UNSUPPORTED;
+            let role = match crate::ffi::ax_string_attribute(element, "AXRole") {
+                Err(code) if code == unsupported => None,
+                Err(code) => {
+                    return Err(format!(
+                        "close: AXRole unreadable ({})",
+                        crate::ffi::ax_error_name(code)
+                    ));
+                }
+                Ok(role) => role,
+            };
+            let subrole = match crate::ffi::ax_string_attribute(element, "AXSubrole") {
+                Err(code) if code == unsupported => None,
+                Err(code) => {
+                    return Err(format!(
+                        "close: AXSubrole unreadable ({})",
+                        crate::ffi::ax_error_name(code)
+                    ));
+                }
+                Ok(subrole) => subrole,
+            };
+            Ok((role, subrole))
+        };
+    // One level: consume the single fetched Vec, moving the match out.
+    let take_from =
+        |children: Vec<crate::ffi::AxElement>| -> Result<Option<crate::ffi::AxElement>, String> {
+            if children.len() > MAX_CHILDREN {
+                return Err("close: AX child count over bound; refusing".to_owned());
+            }
+            let mut rest: Vec<crate::ffi::AxElement> = Vec::new();
+            for child in children {
+                let (role, subrole) = read_roles(&child)?;
+                if is_close_element(role.as_deref(), subrole.as_deref()) {
+                    return Ok(Some(child));
+                }
+                rest.push(child);
+            }
+            // One grandchild level (close button nested one group deep):
+            // same bound, same move-out rule, no index use anywhere.
+            for parent in rest {
+                let grandchildren = crate::ffi::ax_children(&parent).map_err(|code| {
+                    format!(
+                        "close: AX children unreadable ({})",
+                        crate::ffi::ax_error_name(code)
+                    )
+                })?;
+                if grandchildren.len() > MAX_CHILDREN {
+                    return Err("close: AX child count over bound; refusing".to_owned());
+                }
+                for grandchild in grandchildren {
+                    let (role, subrole) = read_roles(&grandchild)?;
+                    if is_close_element(role.as_deref(), subrole.as_deref()) {
+                        return Ok(Some(grandchild));
+                    }
+                }
+            }
+            Ok(None)
+        };
+    let window = windows
+        .iter()
+        .find(|w| crate::ffi::ax_window_id(w) == Some(wid))
+        .ok_or_else(|| {
+            format!("close: record wid {wid} not among live AX windows; refusing stale target")
+        })?;
+    let children = crate::ffi::ax_children(window).map_err(|code| {
+        format!(
+            "close: AX children unreadable ({})",
+            crate::ffi::ax_error_name(code)
+        )
+    })?;
+    take_from(children)?
+        .ok_or_else(|| "close: no AXCloseButton among bounded window children; refusing".to_owned())
+}
+
+/// Live save-sheet probe for the record-bound window: true when a sheet
+/// (`AXSheet` role child) is attached. A sheet means close-dirty ambiguity;
+/// the caller stops with no dismiss. Refusals on unreadable legs fail closed
+/// (treated as ambiguous, never as absent).
+fn sheet_attached(pid: u32, wid: u32) -> Result<bool, String> {
+    let pid_i32 = i32::try_from(pid)
+        .map_err(|_| format!("close: refusing textedit close: pid {pid} out of range"))?;
+    let app = crate::ffi::AxElement::application(pid_i32)
+        .ok_or_else(|| "close: AX application element unavailable".to_owned())?;
+    let windows = app.windows().map_err(|code| {
+        format!(
+            "close: AX window list unreadable ({})",
+            crate::ffi::ax_error_name(code)
+        )
+    })?;
+    let window = match windows
+        .iter()
+        .find(|w| crate::ffi::ax_window_id(w) == Some(wid))
+    {
+        Some(window) => window,
+        // Window already gone: no sheet can be attached to it.
+        None => return Ok(false),
+    };
+    let children = crate::ffi::ax_children(window).map_err(|code| {
+        format!(
+            "close: AX children unreadable ({})",
+            crate::ffi::ax_error_name(code)
+        )
+    })?;
+    for child in children.iter().take(64) {
+        let role = crate::ffi::ax_string_attribute(child, "AXRole").map_err(|code| {
+            format!(
+                "close: AXRole unreadable ({})",
+                crate::ffi::ax_error_name(code)
+            )
+        })?;
+        if matches!(role.as_deref(), Some("AXSheet")) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Metadata-only close report for the run-owned disposable TextEdit
+/// document: IDs, press/verify latencies, and the sheet outcome.
+/// `synthetic` is always false (no synthetic input on any path).
+#[derive(Debug, Clone, Serialize)]
+pub struct TextEditCloseReport {
+    pub outcome: String,
+    pub pid: u32,
+    pub wid: u32,
+    pub press_latency_ms: u64,
+    pub verify_latency_ms: u64,
+    pub sheet_seen: bool,
+    pub synthetic: bool,
+    pub note: String,
+}
+
+/// Close ONE run-owned disposable TextEdit document through its exact AX
+/// close button (single `AXPress`, no synthetic input, no key API, no
+/// chord vocabulary, no helper ownership change). Exit codes: 2
+/// usage/validation, 1 gate/proof/press/verify failure with evidence.
+/// Proof reuses the identical per-edge boundary as `textedit-post`
+/// ([`prove_edge`]: session gates, frontmost-TextEdit at the record PID,
+/// oracle agreement, disposable AX identity, CG join). A save sheet (or an
+/// unreadable sheet leg) stops with NO dismiss and no destructive action;
+/// an unverified close (window still present, no sheet) refuses with no
+/// replay. Every refusal is logged to stderr as metadata (stages and IDs
+/// only - never titles, content, or paths).
+pub fn run_textedit_close(record_path: &str, nonce: &str) -> Result<String, (i32, String)> {
+    let err_json = |stage: &str, error: String| -> (i32, String) {
+        (
+            1,
+            serde_json::json!({"stage": stage, "error": error}).to_string(),
+        )
+    };
+    let refuse = |stage: &str, error: String| -> (i32, String) {
+        eprintln!("textedit-close refused at {stage}: {error}");
+        err_json(stage, error)
+    };
+    if nonce.is_empty() {
+        return Err((2, "textedit-close needs a nonempty --nonce".to_owned()));
+    }
+    if record_path.is_empty() {
+        return Err((2, "textedit-close needs a nonempty --record".to_owned()));
+    }
+    let record = load_record(record_path).map_err(|e| refuse("record", e))?;
+    verify_record(&record, nonce).map_err(|e| refuse("record", e))?;
+    if !record.temp_dir.starts_with('/') || !std::path::Path::new(&record.temp_dir).is_dir() {
+        return Err(refuse(
+            "record",
+            "refusing textedit close: record temp dir not a live directory".to_owned(),
+        ));
+    }
+    let pid = record.pid;
+    let wid = record.wid;
+    let _interrupt =
+        crate::space_drag_diag_live::InterruptArmed::arm().map_err(|e| refuse("interrupt", e))?;
+    if crate::space_drag_diag_live::diag_interrupted() {
+        return Err(refuse(
+            "interrupted",
+            "interrupted: SIGINT/SIGTERM latched; refusing close".to_owned(),
+        ));
+    }
+    // Fresh proof immediately before the press (shared boundary; its stage
+    // strings name the post route, the `close-proof` edge prefix names us).
+    if let Err(error) = prove_edge(&record, "close-proof") {
+        return Err((
+            1,
+            serde_json::json!({"stage": "oracle-proof", "error": error}).to_string(),
+        ));
+    }
+    let button = find_close_button(pid, wid).map_err(|e| refuse("close-button", e))?;
+    // Pre-press recheck on the retained handle itself (no index, no second
+    // fetch): the exact record window must still be live and the retained
+    // handle must still read as the close button. Anything else refuses
+    // before the window server is touched.
+    let still_present = crate::ffi::AxElement::application(
+        i32::try_from(pid).map_err(|_| refuse("verify", "close: pid out of range".to_owned()))?,
+    )
+    .ok_or_else(|| {
+        refuse(
+            "verify",
+            "close: AX application element unavailable".to_owned(),
+        )
+    })
+    .and_then(|app| {
+        app.windows().map_err(|code| {
+            refuse(
+                "verify",
+                format!(
+                    "close: AX window list unreadable ({})",
+                    crate::ffi::ax_error_name(code)
+                ),
+            )
+        })
+    })
+    .map(|windows| {
+        windows
+            .iter()
+            .any(|w| crate::ffi::ax_window_id(w) == Some(wid))
+    })?;
+    if !still_present {
+        return Err(refuse(
+            "verify",
+            "close: record window left before the press; refusing stale target".to_owned(),
+        ));
+    }
+    let re_role = crate::ffi::ax_string_attribute(&button, "AXRole").map_err(|code| {
+        refuse(
+            "verify",
+            format!(
+                "close: AXRole unreadable pre-press ({})",
+                crate::ffi::ax_error_name(code)
+            ),
+        )
+    })?;
+    let re_subrole = crate::ffi::ax_string_attribute(&button, "AXSubrole").map_err(|code| {
+        refuse(
+            "verify",
+            format!(
+                "close: AXSubrole unreadable pre-press ({})",
+                crate::ffi::ax_error_name(code)
+            ),
+        )
+    })?;
+    if !is_close_element(re_role.as_deref(), re_subrole.as_deref()) {
+        return Err(refuse(
+            "verify",
+            "close: retained handle no longer reads as the close button; refusing".to_owned(),
+        ));
+    }
+    let press_start = std::time::Instant::now();
+    crate::ffi::ax_perform_action(&button, crate::mc_probe::MC_ACTION_PRESS).map_err(|code| {
+        refuse(
+            "press",
+            format!(
+                "close: AXPress failed ({})",
+                crate::ffi::ax_error_name(code)
+            ),
+        )
+    })?;
+    let press_latency_ms = press_start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+    // Bounded verify (5 s in 100 ms slices): the asynchronous close may
+    // outlive the AXPress delivery, so the outcome needs a bounded
+    // diagnostic readback rather than a single immediate check. Window gone
+    // from the AX list is the close signal (a closed window may retain an
+    // offscreen CG entry until app exit, so CG absence is never the
+    // oracle). Any sheet stops with no dismiss; a lingering window without
+    // a sheet is unproven.
+    let verify_start = std::time::Instant::now();
+    let deadline = std::time::Duration::from_secs(5);
+    let slice = std::time::Duration::from_millis(100);
+    loop {
+        match sheet_attached(pid, wid) {
+            Ok(true) => {
+                return Err(refuse(
+                    "sheet",
+                    "close: save sheet attached (or ambiguous); stopping with no dismiss"
+                        .to_owned(),
+                ));
+            }
+            Ok(false) => {}
+            Err(error) => return Err(refuse("sheet", error)),
+        }
+        let pid_i32 = i32::try_from(pid)
+            .map_err(|e| refuse("verify", format!("close: pid {pid} out of range ({e})")))?;
+        if !crate::ffi::process_exists(pid_i32) {
+            return Err(refuse(
+                "verify",
+                "close: owning app exited with the press (appquit never commanded); refusing"
+                    .to_owned(),
+            ));
+        }
+        let gone = crate::ffi::AxElement::application(pid_i32)
+            .ok_or_else(|| {
+                refuse(
+                    "verify",
+                    "close: AX application element unavailable".to_owned(),
+                )
+            })
+            .and_then(|app| {
+                app.windows().map_err(|code| {
+                    refuse(
+                        "verify",
+                        format!(
+                            "close: AX window list unreadable ({})",
+                            crate::ffi::ax_error_name(code)
+                        ),
+                    )
+                })
+            })
+            .map(|windows| {
+                !windows
+                    .iter()
+                    .any(|w| crate::ffi::ax_window_id(w) == Some(wid))
+            })?;
+        if gone {
+            let verify_latency_ms =
+                verify_start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+            let report = TextEditCloseReport {
+                outcome: "closed".to_owned(),
+                pid,
+                wid,
+                press_latency_ms,
+                verify_latency_ms,
+                sheet_seen: false,
+                synthetic: false,
+                note: "diagnostic-only exact AX close-button press on the run-owned disposable TextEdit document (no synthetic input, no key API, no chord vocabulary); verified by AX window absence with no save sheet, app left running"
+                    .to_owned(),
+            };
+            return serde_json::to_string(&report).map_err(|e| (1, e.to_string()));
+        }
+        if verify_start.elapsed() >= deadline {
+            return Err(refuse(
+                "verify",
+                "close: window still present after 5s with no sheet; unproven, no replay"
+                    .to_owned(),
+            ));
+        }
+        std::thread::sleep(slice);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -985,7 +1451,9 @@ mod tests {
         // two diagnostic-only stays `stay-1`/`stay-2` (tile diag injection
         // transport) plus the two diagnostic-only trailing chords
         // `select-0`/`send-0` (armed product trailing transport): no other
-        // name is admitted.
+        // name is admitted on this semantic leg (the bound relative/previous
+        // leg in `resolve_textedit_bound` admits only
+        // `rel-prev`/`rel-next`/`prev-toggle`, covered separately).
         for name in crate::owned_control::chord_names() {
             assert!(resolve_textedit_chord(name).is_some(), "{name}");
         }
@@ -1147,6 +1615,113 @@ mod tests {
         assert!(crate::owned_control::resolve_chord("select-0").is_none());
         assert!(crate::owned_control::resolve_chord("send-0").is_none());
         assert_eq!(crate::owned_control::chord_names().len(), 44);
+    }
+
+    #[test]
+    fn rel_previous_resolve_catalogue_bindings_with_product_flags() {
+        // Fixed relative/previous shape: the catalogue key with the
+        // Shift/Alt/Aux arms of the armed product rows, so the posted flags
+        // are exactly the effective flags the tile arms under the same
+        // Ctrl-role modifier. Pinned here against `effective_flags_for`
+        // over the catalogue rows (single home each), so parsing and
+        // posting can never drift apart.
+        for (name, id, key_code) in [
+            ("rel-prev", "workspace-prev-h", crate::input_policy::KEY_H),
+            ("rel-next", "workspace-next-j", crate::input_policy::KEY_J),
+            (
+                "prev-toggle",
+                "workspace-previous",
+                crate::workspace_input::KEY_TAB,
+            ),
+        ] {
+            let binding = super::resolve_textedit_bound(name).unwrap();
+            let row = crate::workspace_input::workspace_catalogue()
+                .into_iter()
+                .find(|row| row.id == id)
+                .expect("relative/previous catalogue row exists");
+            assert!(row.implemented, "{name}");
+            let armed = row.binding().expect("relative/previous row is bound");
+            assert_eq!(binding, armed, "{name}");
+            assert_eq!(binding.key_code, key_code, "{name}");
+            assert_eq!(
+                (binding.shift, binding.alt, binding.aux),
+                (false, false, true),
+                "{name}"
+            );
+            for modifier in [
+                ProbeModifier::Ctrl,
+                crate::config::ProbeModifier::Meta,
+                crate::config::ProbeModifier::Shift,
+            ] {
+                assert_eq!(
+                    crate::workspace_input::effective_flags_for(modifier, &binding),
+                    crate::workspace_input::effective_flags_for(modifier, &armed),
+                    "{name}/{modifier:?}"
+                );
+            }
+        }
+        // Flags are the Ctrl+Cmd+key shape under the Ctrl role.
+        assert_eq!(
+            crate::workspace_input::effective_flags_for(
+                ProbeModifier::Ctrl,
+                &super::resolve_textedit_bound("rel-prev").unwrap()
+            ),
+            0x0004_0000 | 0x0010_0000,
+            "rel-prev"
+        );
+        // Never a product arm: the owned-helper catalogue still refuses all
+        // three names and keeps its 44-chord vocabulary; the semantic leg
+        // refuses them too (the bound leg is their only admission).
+        for name in ["rel-prev", "rel-next", "prev-toggle"] {
+            assert!(
+                crate::owned_control::resolve_chord(name).is_none(),
+                "{name}"
+            );
+            assert!(super::resolve_textedit_chord(name).is_none(), "{name}");
+        }
+        assert_eq!(crate::owned_control::chord_names().len(), 44);
+        // Near-miss and unknown names refuse on the bound leg (no generic
+        // arm is introduced: only the three named bindings admit).
+        for name in [
+            "rel",
+            "prev",
+            "previous",
+            "next",
+            "toggle",
+            "rel-next-j",
+            "workspace-prev-h",
+            "workspace-previous",
+            "Rel-Prev",
+            "REL-NEXT",
+            "Prev-Toggle",
+            "",
+        ] {
+            assert!(super::resolve_textedit_bound(name).is_none(), "{name}");
+        }
+    }
+
+    #[test]
+    fn bound_rel_previous_routes_to_record_proof() {
+        // Narrow routing: `rel-prev` is a known chord (usage code is never
+        // 2 for it), so with no record file it reaches the record stage
+        // (code 1, stage record) through the same per-edge gates as any
+        // catalogue chord - proof refusal behaviour is unchanged.
+        // `prev-toggle` routes identically.
+        for name in ["rel-prev", "rel-next", "prev-toggle"] {
+            let err = super::run_textedit_post(
+                "/nonexistent-omnitiler-run/record.json",
+                "0123456789abcdef0123456789abcdef",
+                name,
+                ProbeModifier::Ctrl,
+            )
+            .unwrap_err();
+            assert_eq!(err.0, 1, "{name}: unexpected: {}", err.1);
+            assert!(
+                err.1.contains("\"stage\":\"record\""),
+                "{name}: unexpected: {}",
+                err.1
+            );
+        }
     }
 
     #[test]
@@ -1922,6 +2497,73 @@ mod tests {
             super::run_textedit_grab_inspect("", "0123456789abcdef0123456789abcdef").unwrap_err();
         assert_eq!(err.0, 2, "unexpected: {}", err.1);
         let err = super::run_textedit_grab_inspect(
+            "/nonexistent-omnitiler-run/record.json",
+            "0123456789abcdef0123456789abcdef",
+        )
+        .unwrap_err();
+        assert_eq!(err.0, 1, "unexpected: {}", err.1);
+        assert!(
+            err.1.contains("\"stage\":\"record\""),
+            "unexpected: {}",
+            err.1
+        );
+    }
+
+    #[test]
+    fn close_button_match_admits_only_the_close_button() {
+        assert!(super::close_button_match(
+            Some("AXButton"),
+            Some("AXCloseButton")
+        ));
+        for (role, subrole) in [
+            (Some("AXButton"), Some("AXZoomButton")),
+            (Some("AXButton"), Some("AXMinimizeButton")),
+            (Some("AXButton"), None),
+            (Some("AXToolbar"), Some("AXCloseButton")),
+            (Some("AXSheet"), Some("AXCloseButton")),
+            (None, Some("AXCloseButton")),
+            (Some("AXButton"), Some("axclosebutton")),
+            (None, None),
+        ] {
+            assert!(
+                !super::close_button_match(role, subrole),
+                "unexpected admit: {role:?}/{subrole:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn close_identity_selects_handle_not_position_across_reorder() {
+        // Native-shaped level: (identity, role, subrole). The close handle
+        // keeps identity 7 while an equal-length reorder moves it from
+        // first to last; the choice must follow the identity, never the
+        // position. A level with no close button selects nothing.
+        let ordered = [
+            (7u64, Some("AXButton"), Some("AXCloseButton")),
+            (3u64, Some("AXButton"), Some("AXZoomButton")),
+            (9u64, Some("AXButton"), Some("AXMinimizeButton")),
+        ];
+        let reordered = [ordered[2], ordered[0], ordered[1]];
+        assert_eq!(super::select_close_identity(&ordered), Some(7));
+        assert_eq!(super::select_close_identity(&reordered), Some(7));
+        let no_close = [
+            (3u64, Some("AXButton"), Some("AXZoomButton")),
+            (5u64, Some("AXToolbar"), None),
+        ];
+        assert_eq!(super::select_close_identity(&no_close), None);
+        assert_eq!(super::select_close_identity(&[]), None);
+    }
+
+    #[test]
+    fn close_refuses_before_any_live_touch() {
+        // Missing/empty inputs refuse with usage code 2; a missing record
+        // refuses at the record stage (code 1) - all before any live read.
+        let err =
+            super::run_textedit_close("/nonexistent-omnitiler-run/record.json", "").unwrap_err();
+        assert_eq!(err.0, 2, "unexpected: {}", err.1);
+        let err = super::run_textedit_close("", "0123456789abcdef0123456789abcdef").unwrap_err();
+        assert_eq!(err.0, 2, "unexpected: {}", err.1);
+        let err = super::run_textedit_close(
             "/nonexistent-omnitiler-run/record.json",
             "0123456789abcdef0123456789abcdef",
         )

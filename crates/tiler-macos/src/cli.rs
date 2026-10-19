@@ -171,6 +171,10 @@ pub enum Command {
         record: String,
         nonce: String,
     },
+    TextEditClose {
+        record: String,
+        nonce: String,
+    },
     OwnedSpaceJoin {
         pid: u32,
         nonce: String,
@@ -505,7 +509,9 @@ pub fn help_text() -> String {
               \x20 \x20 chord down/up (the exact owned-post vocabulary plus one\n\
               \x20 \x20 diagnostic-only `escape` - fixed keycode 53 flags 0 for a\n\
               \x20 \x20 same-record document-title popover dismiss - plus stay-1/2\n\
-              \x20 \x20 plus select-0/send-0 - so the product tap test transport\n\
+              \x20 \x20 plus select-0/send-0 plus rel-prev/rel-next/prev-toggle\n\
+              \x20 \x20 (bound catalogue bindings with product flags) - so the\n\
+              \x20 \x20 product tap test transport\n\
               \x20 \x20 - send-2 then send-1 and the selects - can run with TextEdit\n\
               \x20 \x20 foreground) to the run-owned disposable\n\
               \x20 \x20 document bound by the record file; frontmost-TextEdit plus\n\
@@ -517,6 +523,13 @@ pub fn help_text() -> String {
               \x20 \x20 fresh frame proof, then AX role/subrole + AX/WS hit owners\n\
               \x20 \x20 at the five standard titlebar candidates; IDs only, no\n\
               \x20 \x20 posts/writes/moves on any path)\n\
+              \x20 textedit-close --record PATH --nonce HEX\n\
+              \x20 \x20 (diagnostic-only close of the same run-owned disposable\n\
+              \x20 \x20 TextEdit document: same record/nonce gates plus the\n\
+              \x20 \x20 per-edge proof, then one exact AX close-button press\n\
+              \x20 \x20 (no synthetic input, no key API, no chord vocabulary)\n\
+              \x20 \x20 with AX-absence verification; a save sheet stops with\n\
+              \x20 \x20 no dismiss; diagnostic-only)\n\
               \x20 owned-space-join --pid PID --nonce HEX\n\
               \x20 \x20 (public AppKit self-action: helper joins its OWN window\n\
               \x20 \x20 to the current Space via MoveToActiveSpace + self-activate\n\
@@ -1610,7 +1623,9 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
             // file binds (pid, wid, temp dir, token, nonce); the chord
             // vocabulary is exactly the owned-post set plus one
             // diagnostic-only `escape` (fixed keycode 53 flags 0, same-record
-            // popover dismiss; never a new product arm).
+            // popover dismiss; never a new product arm) plus the stays,
+            // trailing chords, and the bound relative/previous names (see
+            // `resolve_textedit_chord`/`resolve_textedit_bound`).
             let mut record: Option<String> = None;
             let mut nonce: Option<String> = None;
             let mut chord: Option<String> = None;
@@ -1634,7 +1649,9 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                 j += 1;
             }
             let chord = chord.ok_or("textedit-post needs --chord")?;
-            if crate::textedit_post::resolve_textedit_chord(&chord).is_none() {
+            if crate::textedit_post::resolve_textedit_chord(&chord).is_none()
+                && crate::textedit_post::resolve_textedit_bound(&chord).is_none()
+            {
                 return Err(format!("textedit-post: unknown --chord '{chord}'"));
             }
             Command::TextEditPost {
@@ -1667,6 +1684,34 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
             Command::TextEditGrabInspect {
                 record: record.ok_or("textedit-grab-inspect needs --record")?,
                 nonce: nonce.ok_or("textedit-grab-inspect needs --nonce")?,
+            }
+        }
+        "textedit-close" => {
+            // Diagnostic-only close of the run-owned disposable TextEdit
+            // document: same record/nonce gates as `textedit-post` but no
+            // chord vocabulary and no posts on any path (one exact AX
+            // close-button press with AX-absence verification; a save
+            // sheet stops with no dismiss).
+            let mut record: Option<String> = None;
+            let mut nonce: Option<String> = None;
+            let mut j = 0;
+            while j < args.len() {
+                match args[j].as_str() {
+                    "--record" => {
+                        j += 1;
+                        record = Some(args.get(j).ok_or("--record needs a value")?.clone());
+                    }
+                    "--nonce" => {
+                        j += 1;
+                        nonce = Some(args.get(j).ok_or("--nonce needs a value")?.clone());
+                    }
+                    other => return Err(format!("textedit-close: unknown arg '{other}'")),
+                }
+                j += 1;
+            }
+            Command::TextEditClose {
+                record: record.ok_or("textedit-close needs --record")?,
+                nonce: nonce.ok_or("textedit-close needs --nonce")?,
             }
         }
         "owned-space-join" => {

@@ -1,19 +1,155 @@
 # Native Spaces: non-SA routes and bounded probe plan
 
-Source survey, 2026-10-14. Policy: native Spaces first, yabai primary reference,
+Initial source survey, 2026-10-14. Policy: native Spaces first, yabai primary reference,
 tier 2, SIP enabled, no scripting addition (SA) or Dock injection; macOS 15
 floor. **Native window moves are not established impossible:** yabai 7.1.25
 claims SIP-on recovery, with a reported bridged-operation success on Tahoe.
 Enumeration/membership and bounded mutations now have
 [owned-fixture evidence][phase0]. The [live verdict below](#live-verdict-2026-10-16)
-establishes selection and lifecycle routes, but **no ordinary-window transfer
-route is yet accepted**. Source routing and observed effects remain separate.
+established selection and lifecycle routes, but not ordinary-window transfer
+at that checkpoint. Subsequent managed drag-send acceptance is recorded in the
+[managed-workspace checkpoints](../../changes/macos-managed-workspaces.md).
+Source routing and observed effects remain separate.
 
 FACT = inspected pinned source; CLAIM = upstream report, not our experiment;
 EVIDENCE = our observed readback; UNKNOWN = not established. Source was read
-from existing checkouts; only the public issue [#2788][move-issue] was fetched.
+from existing checkouts; public issue and OS-help links support upstream claims.
 Pins match the [availability snapshot][pins], including its newer Amethyst,
 rift, glide and paneru pins; historical plan citations are not advanced.
+
+## Dogfood latency investigation (2026-10-19)
+
+- **Subsequent route choice:** the user selected the yabai-informed Dock-swipe
+  selector for dogfood, tentatively replacing MC AX selection only. Transfer,
+  MC trailing create/remove, send waits and observation/reconcile timing remain
+  unchanged. The [implementation checkpoint](../../changes/macos-managed-workspaces.md#dock-swipe-selector-dogfood-checkpoint-2026-10-20)
+  has corrected pre-post order drift and terminal ownership/cleanup. The selector
+  is available for UX dogfood; positive trailing reuse remains unproven because
+  conservative unknown occupancy refused it and retained a test-created Space.
+  The comparison recommendations below describe
+  the preceding investigation, not an outstanding route-choice requirement.
+- **Pinned mechanics rechecked:** [Y7] computes absolute target/current native
+  ordinal distance, posts that many immediate Began/Ended session-tap pairs
+  (progress +/-1, velocity +/-9999), and relies on later Space-change handling
+  rather than synchronous arrival verification. Full native order, including
+  intervening fullscreen Spaces, determines distance. Same-display needs no
+  cursor warp or click. [R1]'s separate >=27 payload remains unvalidated and
+  refused by the existing payload gate. Exact current SID is effect evidence,
+  not visual completion or usable-input latency.
+- **Disposable product checks, 2026-10-20:** existing numbered/relative/previous
+  selections confirmed exact native current in 43-62 ms, settled non-adjacent
+  selection in 54 ms, and numbered send-stay's return in 46 ms. Main-loop
+  observation was roughly 338-371 ms. These boundaries differ from prior MC
+  goto's 628-660 ms end-to-end; neither establishes usable-input/visual latency.
+  Immediate post-create gestures twice posted without arrival. A later successful
+  settled target does not prove that Space age is causal or justify a fixed wait.
+- **Missing source contract identified:** pinned yabai `src/mission_control.c`
+  registers Dock application `AXExposeExit` and clears MC-active state on that
+  notification. This is not equivalent to AX-group absence. The product now arms
+  that notification before create and awaits exit before swipe, off-main with a
+  genuine deadline; no selector sleep/retry/fallback. The reviewed observer passed
+  live post-create acceptance: dispatch/posted/confirmed 915/917/945 ms including
+  MC creation; main-loop observation 1178 ms. Empty-target Finder focus is not
+  document-focus acceptance. Subsequent trailing reuse refused unknown emptiness
+  before a gesture, preserving current and count. Test-created SID 434 remains
+  inactive residue; no foreign-chrome exemption or removal loop is introduced.
+- **Conclusion:** Mission Control exposure is a cost of the current selector,
+  not a demonstrated SIP-on native-Spaces requirement. Keep native workspaces
+  and tier 2; recommend comparing the existing same-display Dock-swipe diagnostic
+  before choosing a product selector. No route change is selected here.
+- EVIDENCE: the user reports slow MC selection and slow destination tiling after
+  send on one display. Earlier MC goto legs measured 628-660 ms each; gesture
+  15/131 ms measured **focus/posting only**, not completed animation or usable
+  input. No retained macOS phase-timing trace establishes the current bottleneck.
+- FACT below means static source, not measured elapsed time. The historical
+  "transfer unresolved" verdict and unresolved Desktop-N probe are superseded
+  by numbered send-follow/stay acceptance in the managed-workspace record;
+  physical feel, minimum-release and multi-display acceptance remain separate.
+
+### Current cost and retile chain
+
+| Stage (FACT, repository source) | Cost or trigger; what it does not prove |
+| --- | --- |
+| Select: `crates/tiler-macos/src/tile.rs:2407`, `workspace_select.rs:740,941`, `mc_lifecycle.rs:418-425,508-526,934-974` | Main-loop synchronous MC open, stabilize, fresh SID/index join, thumbnail AXPress, close-if-present, current-SID verification. Blocks that main-loop turn; native visual completion is not measured. |
+| MC waits: `mc_lifecycle.rs:243-297`; `mc_probe.rs:53-67` | Fixed **300 ms** stabilization. Open/close each poll up to 2 s (100 ms slices); goto effect up to 3 s (200 ms slices after an immediate read). AX messaging timeout 2 s per element. Bounds are not mandatory sleeps; goto normally auto-closes MC. |
+| Send: `workspace_send_managed.rs:563-730`; `space_drag_transfer.rs:508-651` | Dedicated effect owner; fresh identity/focus/dual-hit proof before down-edges, fresh ordinal/holder resolution, mouse down/drag, switch chord, release, exact membership/current readback. Fixed **50 ms grab + 400 ms animation hold**, then immediate read or up to 3 s polling at 200 ms. Native slide overlaps the hold; proof/read costs and any remaining transition are not independently timed here. |
+| Send proof: `workspace_send_native.rs:140,177-182,743-820`; `workspace_send_managed.rs:262-386` | Engine-facts query has a 200 ms timeout, not a 200 ms fixed delay. Repeated fresh AX/CG/SLS and ordinal checks may add time; do not remove safety gates without evidence. |
+| Stay: `workspace_send_native.rs:950-964`; `workspace_send_managed.rs:779-862` | Forward transfer follows the destination, then released MC AX selection returns to the pinned source. Thus stay adds another visible selection leg; changing standalone selection alone does not automatically change the return selector. |
+| Logical move: `crates/tiler-core/src/world_sends.rs:103-125,137-335`; `world_engine.rs:2078-2145` | Admission retains the transfer and shields the mover into the target layout **before native ack**. No universal "wait for Applied before planning" fence. |
+| Native completion: `tile.rs:2348-2395`; `select_feedback.rs:104-123`; `runtime_thread.rs:1269-1286` | Polled on the 250 ms main-loop cadence, then feedback staged for a later world report. Not an immediate scoped reread or layout dispatch. Adds up to a cadence under a responsive loop, not a fixed 250 ms minimum. |
+| Space change: `ffi.rs:8222-8324`; `tile.rs:2214-2258`; `runtime.rs:779-806` | Notification only marks dirty. Main-loop topology read publishes current-SID/revision; publication invalidates stale replies but queues **no reconcile job**. Active-Space-change alone therefore does not retile. |
+| Observation: `native_tile_backend.rs:616-665,1151-1220`; `runtime_native.rs:167-182,331-375` | Per-app AX notifications trigger membership rereads/reconcile; otherwise 1 s silence backstop (failures may delay longer). No AX Space-change subscription among `ffi.rs:483-507` watched notifications. A Space hop may emit focus/move events, but prompt delivery is UNKNOWN. |
+| Frame apply: `world_dispatch.rs:852-937`; `native_tile_backend.rs:216-295,298-418,1461-1520` | Only current-scope controlled frames emit. Each AX size/position/size leg rechecks live membership/current Space, revision and show-state. A different engine dispatch after topology refresh can tile the shielded mover before its own observation; its scoped reread is the reliable convergence path, not a proved prerequisite for first tile. |
+| Retained settlement: `crates/tiler-core/src/world_engine.rs:1106-1180` | Observed target homing settles the window transfer. `Applied` alone does not. Settlement and first successful geometry write are distinct milestones. |
+
+- **Likely fixable gap, not diagnosed latency:** topology and completion both
+  stage facts without dispatch. If no relevant AX event or other dispatch
+  arrives, destination layout convergence can wait for the 1 s reread. An
+  event-driven, coalesced reread on the affected AX owners after active-Space
+  change or verified send arrival is a candidate; preserve full observations,
+  revision fences, current-Space-only writes and fail-closed behavior.
+- Existing event/readback `t_ms` series lives in
+  `workspace_send_native.rs:599-614,865-945`; observation/revision outcomes use
+  metadata-only runtime events. Needed measurement joins: admission -> proof ->
+  chord -> release -> exact membership/current -> topology publish -> notified
+  or backstop reread -> reconcile -> first successful frame readback. Current
+  traces do not identify the read trigger or visual/input-ready completion.
+
+### Does yabai have the same limitation?
+
+| Operation at pinned yabai source | SIP-on / no SA | With SA; consequences |
+| --- | --- | --- |
+| `space --focus` [Y7] | Fallback posts Dock-swipe Began/Ended per ordinal step, progress +/-1, **velocity +/-9999**. No MC thumbnail traversal. [#2780](https://github.com/asmvik/yabai/issues/2780) claims near-instant switching; initial input activation lag was reported, then claimed fixed. A later release-family breakage report reinforces version coupling. | First tries Dock-owned direct Show/Hide/current-Space update [Y5], avoiding the ordinary slide/MC route. Upstream #2780 contrasts its lack of input lag; no comparative local benchmark. SA/reduced SIP is outside the selected tier. |
+| `window --space` [Y1], [Y2], [Y12] | Bridged asynchronous operation if available; else old direct API only below workaround thresholds; else SA attempt then compat-tag fallback. No drag or fixed 450 ms hold in these move helpers. 7.1.25/[#2788][move-issue] claims bridged success on 26.4/26.4.1, not the macOS 15 floor or every fallback. Our earlier dispatcher was absent; direct call had no effect. | Fallback SA moves from Dock's connection. A send without follow need not switch desktops. A direct membership move is different from desktop activation or animation; source cannot establish end-to-end tiling speed. |
+| Cross-Space window focus [Y10], [Y13] | SLPS make-key/AXRaise; optional `skip_window_focus_animation` races native activation with gesture focus. [#2781](https://github.com/asmvik/yabai/issues/2781) and 7.1.21-23 [Y3] describe suppression and focus/gesture conflicts; default off at the pin. **Not a general move-animation toggle.** | Do not confuse this with `space --focus` or move authority. #2788 reports send+follow interaction and recommends separate move then Space focus. |
+| `space --switch` [Y7] | Same-display branch has **no gesture fallback**; cross-display branch swaps window sets. Not the command to copy for ordinary selection. | Same-display is SA focus. |
+
+- Other references (FACT): rift [R1] uses a directional gesture, legacy 15 ms
+  end delay with velocity 200 times progress magnitude, and a separate >=27
+  payload/velocity family. This supports a versioned gesture route, not blanket
+  compatibility. Amethyst/Silica [A1]-[A3] share 50/400 ms drag waits; Amethyst
+  adds a 1 s delayed switch-back. Hammerspoon [H2] exposes MC, waits for AX UI
+  and documents Reduce Motion as minimizing, not removing, the visual shift.
+  AeroSpace corner parking and FlashSpace app hide/show avoid native Space
+  transitions by changing workspace semantics (per-window parking versus
+  app-level assignment), not by finding a faster native setter.
+
+### Ranked candidates (recommendations, not selected changes)
+
+| Rank / candidate | Expected effect and evidence status | Tier, risk and decision consequence |
+| --- | --- | --- |
+| 1. Same-display high-velocity Dock-swipe selection | Removes MC open/traversal and 300 ms stabilization; aims to suppress slide. **EVIDENCE:** exact SID round trip, no warp/click. **CLAIM:** visually instant upstream. **UNKNOWN:** local end-to-end/input readiness. Velocity is already the suppression mechanism, not a separate proven fix. | Tier 2/SIP-on; undocumented event fields and multi-step ordinal drift/version coupling. Already allowed by 2026-10-16 route; replacing 2026-10-17's explicit MC fallback still needs a user choice. Keep exact target readback/no replay and same-display restriction. Does not fix drag-send hold or automatically accelerate stay return. |
+| 2. Measure, then targeted event-driven observation/reconcile | Could remove near-1 s silent-observation tail after send; **FACT:** notification/dispatch gap above; **UNKNOWN:** share of reported delay. Use active-Space event plus verified arrival to request coalesced complete rereads, not blind frame writes or a faster global poll. | Tier 2/SIP-on; observation races/stale-revision loops must be covered offline. Consistent with notification-primary recovery and existing fences. Measure before selecting exact trigger/owners. |
+| 3. Desktop-N chord selection | Avoids MC overview/traversal and fixed 300 ms; ordinarily leaves native slide. **EVIDENCE:** chords transfer windows in current managed sends; standalone posted select speed/physical feel remains UNKNOWN. | Tier 2/SIP-on. Authentic already owns/enables Desktop 1-9 with preimage/Revert; reuse verified holders/provenance, no additional settings writes. Index-bound, collision/reorder risk, <=9 range; relative/previous need resolution and >9 fallback. New selector choice needs user decision. |
+| 4. User-owned Reduce Motion | Reduced movement / possible crossfade rather than slide; not an animation-free guarantee or retile fix. [Apple](https://support.apple.com/guide/mac-help/mchlc03f57a1/mac) documents reduced desktop-switch motion; Hammerspoon [H2] says MC shift remains. Exact crossfade/duration/input effect here is UNKNOWN. | Public OS setting, SIP-on; system-wide visual consequence, user changes/restores it only if desired. Does not remove our 300/450 ms fixed waits. Settings location varies by release (Accessibility Display or Motion). |
+| 5. Tune holds/proof cost; offload synchronous select | At most the measured unnecessary part of 50/400 ms holds/proof/loop blocking. **FACT:** explicit waits and blocking exist; safe lower thresholds UNKNOWN. Does not by itself suppress OS animation. | Tier 2/SIP-on; early release can break transfers, weakened identity gates can misdirect input. Keep safety proof; no speculative sleep removal. MC AX/AppKit thread requirements need design review before moving work. |
+| Deferred: bridged move / SA / virtual workspaces | Bridged move could avoid drag/follow and help stay if available; local symbol/restore gate remains. SA direct activation avoids normal transitions; virtual workspaces avoid native switching entirely. | Bridged remains tier 2 but version/authority/restore-unproven; off critical path by recorded route. SA changes SIP/security tier; parking/app hiding changes user-visible semantics. Neither route change is justified before tier-2 selector/observation investigation. |
+
+- **Inherent to the selected drag method:** follows destination, requires a
+  release/readback boundary, and stay switches back. Not proved inherent to all
+  SIP-on native moves. The 400 ms hold is an implementation choice inherited
+  from Silica, not a documented OS minimum. Native transitions are asynchronous
+  and APIs/version behavior constrain guarantees; neither the MC overview nor
+  a 1 s retile delay is established as unavoidable.
+
+### Minimal user-run discriminator (not executed)
+
+- Follow [live macOS guidance][live]. One display, two existing ordinary
+  Desktops, only disposable TextEdit documents, no terminal target. Keep exact
+  original topology/current, document memberships/frames and optional setting
+  preimage; restore before ending. Use the existing bounded scoped TextEdit
+  procedure in the managed-workspace record, not an unscoped product launch.
+
+| Sequence | Discriminator / required result |
+| --- | --- |
+| Current MC select A -> B -> A; with tiler stopped, physical native Desktop-N chord A -> B -> A only if independently already enabled (otherwise skip) | Separates MC overview from native slide. Note visual completion **and usable input**, exact current SID and unchanged memberships. Authentic Revert may disable its previously owned chords; do not enable extra shortcuts for this comparison. |
+| Product send-follow A -> B -> A, with a resident document at each end; wait for settlement after each action | Note whether movement ends before the first correct tile. Join existing event `t_ms`, exact membership/current, observation/reconcile and frame outcome. If logs cannot distinguish event/backstop, add metadata-only phase instrumentation in a separately chosen implementation unit. |
+| Optional same two pairs after user toggles Reduce Motion, then restore its preimage | Tests crossfade/visual preference versus actual tile delay; no agent setting write. Stop on wrong target, focus disagreement or restoration ambiguity. |
+| Separate reviewed Dock-swipe diagnostic A -> B -> A | `spaces-switch-probe` exists but is a combined setup/recovery/arrow/gesture harness, not a safe one-line gesture benchmark. Review its current ownership/preflight and isolate the comparison before offering commands. Require exact SID/focus restoration, no warp/click, and visual/input-ready timing; do not call old posting-only times end-to-end latency. |
+
+- Exact next decision: whether to prioritize the bounded Dock-swipe selector
+  comparison and metadata-only send phase measurement. No product code, native
+  test, settings, SIP policy or route decision changed in this investigation.
 
 ## Route classification
 

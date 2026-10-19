@@ -648,10 +648,23 @@ fn textedit_post_parses_with_record_identity_and_owned_chords() {
     );
     assert!(matches!(r.command, Command::TextEditPost { .. }));
     // The product tap test transport parses: send-1..9 and select-1..9,
-    // plus the diagnostic-only stays and trailing chords.
+    // plus the diagnostic-only stays, trailing chords, and bound
+    // relative/previous names.
     for chord in [
-        "send-1", "send-2", "select-1", "select-2", "focus-h", "float-g", "escape", "stay-1",
-        "stay-2", "select-0", "send-0",
+        "send-1",
+        "send-2",
+        "select-1",
+        "select-2",
+        "focus-h",
+        "float-g",
+        "escape",
+        "stay-1",
+        "stay-2",
+        "select-0",
+        "send-0",
+        "rel-prev",
+        "rel-next",
+        "prev-toggle",
     ] {
         let r = parse_args(&argv(&[
             "textedit-post",
@@ -667,8 +680,9 @@ fn textedit_post_parses_with_record_identity_and_owned_chords() {
         assert!(r.may_mutate, "{chord} is write-intent");
     }
     // Still-unarmed and unknown chords never parse (no generic arm is
-    // introduced: `escape`, the stays, and the trailing chords are the
-    // diagnostic-only exceptions above; everything else still refuses).
+    // introduced: `escape`, the stays, the trailing chords, and the bound
+    // relative/previous names are the diagnostic-only exceptions above;
+    // everything else still refuses).
     for bad in [
         "stay-0",
         "stay-3",
@@ -788,6 +802,58 @@ fn textedit_grab_inspect_parses_record_identity_and_never_mutates() {
     assert!(
         parse_args(&argv(&[
             "textedit-grab-inspect",
+            "--record",
+            "/tmp/run-abc123/record.json",
+            "--nonce",
+            "0123456789abcdef",
+            "--bogus",
+        ]))
+        .is_err()
+    );
+}
+
+#[test]
+fn textedit_close_parses_record_identity_and_may_mutate() {
+    // Same record/nonce identity as the posting route but no chord
+    // vocabulary and no posts on any path (one exact AX close-button
+    // press). Unlike the grab-inspect route this one mutates, so
+    // `may_mutate` stays true.
+    let r = parse_args(&argv(&[
+        "textedit-close",
+        "--record",
+        "/tmp/run-abc123/record.json",
+        "--nonce",
+        "0123456789abcdef",
+    ]))
+    .unwrap();
+    assert!(r.may_mutate, "textedit-close mutates (AXPress)");
+    assert!(matches!(r.command, Command::TextEditClose { .. }));
+    // Missing identity refuses; unknown flags refuse; chord flags refuse
+    // (no chord vocabulary on this route).
+    assert!(parse_args(&argv(&["textedit-close", "--nonce", "0123456789abcdef"])).is_err());
+    assert!(
+        parse_args(&argv(&[
+            "textedit-close",
+            "--record",
+            "/tmp/run-abc123/record.json",
+        ]))
+        .is_err()
+    );
+    assert!(
+        parse_args(&argv(&[
+            "textedit-close",
+            "--record",
+            "/tmp/run-abc123/record.json",
+            "--nonce",
+            "0123456789abcdef",
+            "--chord",
+            "send-2",
+        ]))
+        .is_err()
+    );
+    assert!(
+        parse_args(&argv(&[
+            "textedit-close",
             "--record",
             "/tmp/run-abc123/record.json",
             "--nonce",

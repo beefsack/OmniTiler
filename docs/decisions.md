@@ -317,7 +317,30 @@ platform API behavior.
     faster path when one arrives. This supersedes the "pending physical
     discriminator" clause of the preview input route above.
     [Physical results](changes/archive/macos-dogfood-hardening.md#user-physical-results-2026-10-16).
-  - **User-approved 2026-10-16 (native workspace route):** a user-run manual
+   - **User-approved 2026-10-19 (tentative selector swap, pending dogfood):**
+     replace managed Space selection's Mission Control AX route with the
+     yabai-informed SIP-on high-velocity Dock-swipe gesture, including numbered,
+     relative, previous, trailing selection and the released numbered send-stay
+     return. Supersedes the MC AX selector choice in the select-only seam and
+     preview fallback below, not their ordinal/history or exactly-one-observed-
+     display restrictions. No selectable route setting. Keep trailing creation
+     and removal on their existing MC routes and window transfer on synthetic
+     title-bar drag plus the existing switch chord; send holds and reconciliation
+     timing are unchanged. Native effect confirmation does not prove visual
+     smoothness or input readiness; the user judges those in dogfooding.
+     - **Tentative technical detail, 2026-10-20:** after MC trailing creation,
+       subscribe before opening MC and await Dock's exact `AXExposeExit`
+       notification before posting the selector, following pinned yabai
+       `mission_control.c`. AX MC-group disappearance alone did not suffice in
+       disposable checks. The 2 s event-pumped deadline bounds a wedged Dock;
+       no fixed stabilization sleep or automatic selector replay is added.
+       Missing exit refuses selection while preserving exact append ownership.
+       Normal existing-Space selection does not arm or wait on this observer.
+       Disposable post-create acceptance passed at 945 ms including MC creation
+       (28 ms from gesture posting to exact current-SID confirmation). Positive
+       trailing reuse remains unproven under conservative unknown occupancy.
+     [Implementation status](changes/macos-managed-workspaces.md#dock-swipe-selector-dogfood-checkpoint-2026-10-20).
+   - **User-approved 2026-10-16 (native workspace route):** a user-run manual
     check moved an ordinary window to another Space by all three native routes
     (title-bar drag plus Ctrl+Right, drag plus enabled Ctrl+2, drag onto the
     Mission Control thumbnail). Build managed native workspaces on these routes:

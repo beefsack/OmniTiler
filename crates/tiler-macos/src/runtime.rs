@@ -259,6 +259,7 @@ impl Runtime {
                 post_accept_hook: Mutex::new(None),
                 topology: None,
                 display_inputs: None,
+                select_wake: None,
                 topology_revision: 0,
                 native_context: None,
                 select_pending: None,
@@ -306,6 +307,7 @@ impl Runtime {
             post_accept_hook: Mutex::new(None),
             topology: None,
             display_inputs: None,
+            select_wake: None,
             topology_revision: 0,
             native_context: None,
             select_pending: None,
@@ -895,6 +897,18 @@ impl RuntimeHandle {
     /// invalidation — both refuse the send). Brief lock clone only.
     pub fn published_display_inputs(&self) -> Option<PublishedDisplayInputs> {
         lock_shared(&self.shared).display_inputs.clone()
+    }
+
+    /// Publish the shared active-Space wake for off-main effect owners.
+    /// Call once after the main-thread display guard installs. Brief lock.
+    pub fn publish_select_wake(&self, wake: crate::ffi::SpaceSelectWake) {
+        lock_shared(&self.shared).select_wake = Some(wake);
+    }
+
+    /// Shared active-Space wake (`None` until published — both waiters
+    /// refuse honestly). Brief lock clone only.
+    pub fn select_wake(&self) -> Option<crate::ffi::SpaceSelectWake> {
+        lock_shared(&self.shared).select_wake.clone()
     }
 
     /// True when the send display slot holds a publication. The tile

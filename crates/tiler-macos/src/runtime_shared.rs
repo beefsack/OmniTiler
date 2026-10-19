@@ -143,6 +143,11 @@ pub(crate) struct Shared {
     pub(crate) topology: Option<TopologySnapshot>,
     /// Latest-wins AppKit display legs; see [`PublishedDisplayInputs`].
     pub(crate) display_inputs: Option<PublishedDisplayInputs>,
+    /// Latest-wins active-Space wake shared with off-main effect owners
+    /// (select settlement and the send-stay return wait on its generation).
+    /// Published once after the main-thread display guard installs;
+    /// `None` until then (both paths refuse honestly, never guessed).
+    pub(crate) select_wake: Option<crate::ffi::SpaceSelectWake>,
     /// Current display/Space revision fence. Synthetic mode holds 0 so every
     /// legacy command (revision 0) passes; native mode tracks the latest
     /// snapshot fingerprint.

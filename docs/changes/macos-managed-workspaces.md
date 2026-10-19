@@ -1,5 +1,139 @@
 # macOS managed native workspaces
 
+## Dock-swipe selector dogfood checkpoint (2026-10-20)
+
+- Goal: replace managed Space selection's MC AX traversal with the pinned
+  yabai SIP-on high-velocity Dock-swipe route, tentatively pending dogfood.
+  Preserve numbered, relative, previous and trailing semantics, the exactly-one
+  observed-display restriction, and numbered send-stay's released return.
+- Non-goals: drag transfer, send waits/reconcile timing, trailing MC create/remove,
+  multi-display support, route settings, or shared-core changes.
+- Outcome: the selector swap is available for UX dogfooding, with the conservative
+  trailing-occupancy limitation below. Pinned gesture contracts, off-main effects,
+  native observer lifetimes and shutdown integration have been reviewed.
+- Acceptance: all product selection paths use the gesture, exact SID readback
+  gates history/success, uncertain effects never replay, later requests recover,
+  own synthetic events bypass interception, and phase logs identify route/timing.
+  Non-adjacent targets use one Began/Ended pair per ordinal distance, matching
+  yabai's pinned fallback. No cursor warp or click is needed on the sole display.
+- Verified source contract: yabai `dd845723` `space_manager.c:927-983` posts
+  session-tap pairs with progress +/-1 and velocity +/-9999, without synchronous
+  arrival confirmation. Rift `8114ccc` uses a different >=27 payload; retain
+  the existing refusal of that unvalidated family rather than invent support.
+- Verification: producer-shaped regressions, macOS/portable allowlist tests,
+  strict clippy, format/diff checks, signed app build/verify and disposable
+  TextEdit live checks. Visual smoothness and input readiness remain user checks.
+- Implementation checkpoint: product numbered/relative/previous/trailing selects
+  and numbered stay returns now route through the gesture executor; the explicit
+  batch and MC lifecycle/recovery diagnostics retain their existing MC selectors.
+  Selection runs on a serialized off-main owner, with active-Space notification
+  latches, exact native-row confirmation, own-event tags and phase timing logs.
+  The obsolete pinned MC selection leg is removed. No shared-core or dependency
+  change. Unsafe blocks are now **124**, all in `ffi.rs`: the added ten blocks
+  implement the reviewed, thread-affine Dock exit observer boundary.
+- Original review blockers fixed: pre-post full native order/display/user-row
+  drift refuses before posting; deferred cleanup/settler machinery is deleted.
+  Shutdown cooperatively pumps and drains the selector, adopts late proof, then
+  runs existing main-thread MC cleanup. Drain expiry reports unclean and skips
+  cleanup effects rather than racing a still-live MC create. Worst-case combined
+  shutdown can exceed watchdog grace and end in the existing forced dirty exit.
+- Latest offline gates: locked four-crate tests **2314 passed**, strict all-target
+  four-crate clippy, workspace format and diff checks pass. Named signed build and
+  independent verification pass. Accessibility grant survived the rebuild.
+
+| Disposable TextEdit live check | Exact native-current confirmation, submit-relative | Outcome |
+| --- | --- | --- |
+| Existing numbered selection both ways | 43-61 ms | Correct SID and resident focus; memberships unchanged. |
+| Previous toggle both ways | 48/56 ms | Correct SID and history toggle. |
+| Relative navigation including two-Space wrap | 50-62 ms | Correct SID and focus. |
+| Settled non-adjacent target, two gesture pairs | 54 ms | Exact destination; no per-step waits. |
+| Numbered send-stay return | 46 ms for return selector | Subject remains at destination; current and focus return to source resident; `Applied`. |
+| Immediate post-create selection, before Dock-exit gate | No arrival within 3 s | Exact append captured, two pairs posted, honest unproven/no replay. One created Space removed; one retained as residue. |
+| Post-create selection with Dock-exit gate | Dispatch 915 ms, posted 917 ms, confirmed 945 ms; observed 1178 ms | Exact new SID, one gesture pair; empty target has Finder focus, no document focus claimed. Logical/native append binding adopted. |
+| Trailing reuse attempt | Refused before gesture; observed 328 ms | Foreign zero-area candidate makes emptiness unknown. Space count/current unchanged, no new append or replay. Positive reuse remains unproven live. |
+
+- Selector completions were observed by the main loop at roughly 338-371 ms;
+  this is distinct from native confirmation and from visual/input readiness.
+  Prior MC AX legs measured 628-660 ms end-to-end; the boundaries are not identical.
+- The post-create failure exposed a missing upstream contract: yabai tracks
+  `AXExposeExit` on Dock, not mere disappearance of the AX MC group. A reviewed
+  gate arms before create and awaits that exact notification before swipe,
+  with an event-pumped 2 s deadline and no fixed sleep, fallback or retry. Failure
+  preserves append ownership. Normal existing selection pays no new wait.
+- **Cleanup and remaining limitation:** the earlier test-created third Space was
+  manually removed and the original two-Space topology re-observed before the
+  final leg. That leg created SID **434**, which remains inactive with current
+  restored to the original first Space. A zero-area foreign accessibility
+  candidate with partial membership prevents proving it empty; existing policy
+  refuses reuse, creation and removal. No exemption, forced removal or repeated
+  cleanup attempt is added. This is retained residue, not restored topology or
+  successful positive reuse. Protected-window records and shortcut/settings
+  preimages remain unchanged; all started runtimes and posting helpers are gone.
+- All four disposable TextEdit documents are now AX-verified closed with no save
+  sheets; the app remains active with no document windows. Scripted cleanup had
+  stalled, but no visible consent prompt was confirmed. A diagnostic-only
+  `textedit-close` uses the existing disposable record/oracle proof, retains the
+  exact AX close-button handle and presses once, then verifies AX absence; it
+  never grants permissions, dismisses sheets, posts keys or quits the app.
+  Initial unsupported-subrole refusal was corrected to treat that producer value
+  as a non-match. Per-document press/verification measured 101-102/23-34 ms.
+  Closed windows may retain offscreen CG entries until app exit; AX absence is
+  the close oracle. Disposable files remain outside the repository as evidence.
+- Final signed executable SHA-256:
+  `808340bab6a6bb51c6e1966000fbd504133e8b56418241d42e523da1e53a4d9c`.
+- Diagnostic-only TextEdit posting adds exact catalogue-derived relative and
+  previous names under the existing per-edge disposable proof; no generic key
+  interface or product binding is added. Numbered tap acceptance uses Authentic:
+  Compatible intentionally passes enabled native Desktop-N chords through.
+- Next: user UX dogfood. Positive trailing reuse, visual/input readiness,
+  minimum-release coverage and multi-display acceptance are not established by
+  these synthetic checks. Send holds/reconcile timing remain separate work.
+
+### Selector UX dogfood checklist
+
+With one display and disposable TextEdit documents on the existing Desktops:
+
+```text
+mise exec -- just tile --user-start --scope com.apple.TextEdit --input tap --preset authentic --meta ctrl --seconds 120
+```
+
+- Try Ctrl+1/2 (and non-adjacent numbers when present), Ctrl+Cmd+H/J relative
+  wrap, Ctrl+Cmd+Tab previous toggle, and Ctrl+0 trailing select/create.
+  Unknown occupancy may refuse Ctrl+0 without effects; positive reuse is pending.
+- For numbered stay, repeat the command with `--diag-stay-index 2`, keep a
+  source resident and press Ctrl+Alt+Shift+2 on another source document. It
+  should move to Desktop 2 while current/focus return to the source resident.
+- Judge visual smoothness, time until typing works, correct desktop and focus.
+  Logs join `route=dock-swipe phase=dispatch|posted|settled|refused` by `op` and
+  submit-relative `elapsed_ms`; `observed_ms` marks main-loop completion receipt.
+  Neither timing proves visual completion or input readiness. Let the bounded
+  runtime stop and retain any residue/refusal report rather than retrying blindly.
+
+## Dogfood latency investigation (2026-10-19)
+
+- User reports slow MC selection and destination tiling after send on one
+  display. [Static causal trace, reference comparison and ranked options](../research/macos-port/native-spaces-routes.md#dogfood-latency-investigation-2026-10-19)
+  separate known waits from unmeasured runtime attribution.
+- Selection pays MC UI traversal plus fixed 300 ms stabilization. Send pays
+  50 ms grab + 400 ms hold, fresh per-edge proof and bounded exact effect
+  readback; stay adds an MC return. Poll/AX timeout maxima are not fixed delays.
+- Post-send geometry is not simply gated on native `Applied`: the core plans
+  the move at admission. Topology updates and completion feedback alone queue
+  no reconcile dispatch; AX observations normally drive convergence, with a
+  1 s silence backstop. Live membership/revision/current-Space frame fences
+  remain. Another dispatch can tile the shielded mover before its own reread;
+  no current phase trace proves the backstop caused the reported delay.
+- Pinned yabai uses high-velocity SIP-on gestures instead of MC for focus;
+  upstream claims animation suppression. Our earlier gesture SID round trip
+  proves effect, not visual/input-ready latency. Neither MC exposure nor the
+  1 s tiling tail is established as inherent to native Spaces.
+- Recommendation pending user choice: retain native/tier-2 policy; compare
+  same-display Dock-swipe selection and measure send phases before changing
+  event triggers or hold durations. Desktop-N selection and user-owned Reduce
+  Motion are alternatives with different animation/settings consequences.
+- Investigation only: documentation/source review, no new native acceptance.
+  The existing implementation checkpoints and remaining gates below stand.
+
 ## Trailing workspace armed checkpoint (2026-10-19)
 
 **Trailing select/send-follow and the indicator slot are armed after offline

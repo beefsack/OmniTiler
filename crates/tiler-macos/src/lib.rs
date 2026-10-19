@@ -40,6 +40,9 @@ pub mod desktop_shortcuts;
 #[cfg(test)]
 mod desktop_shortcuts_tests;
 pub mod dev_selection;
+pub mod dock_swipe_select;
+#[cfg(test)]
+mod dock_swipe_select_tests;
 pub mod drag_drop;
 pub mod drag_fixture;
 pub mod drag_native;
@@ -92,6 +95,9 @@ mod runtime_worker;
 pub mod scope;
 pub mod scope_inspect;
 mod select_feedback;
+pub mod select_owner;
+#[cfg(test)]
+mod select_owner_tests;
 pub mod session;
 pub mod space_direct_probe;
 pub mod space_drag_diag;

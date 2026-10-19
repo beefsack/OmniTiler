@@ -280,29 +280,33 @@ impl SendNativeReaders for OsSendReaders {
         self.fresh_topology().ok().map(|topo| topo.row.current)
     }
     fn select_space(&mut self, sid: u64) -> Result<(), String> {
-        // Ordinary return select on the effect owner: the same pre-dispatch
-        // gates as the native select path, then the proven SID-accepting
-        // goto with exact-current readback over the main-thread-published
-        // plain-data display legs. The SLS-to-CG join rides that pinned
-        // `(cgid, managed UUID)` pair verified against every fresh SLS
-        // snapshot by exact identifier - never an AppKit read, so this
-        // thread neither touches nor blocks the main thread. Never a focus
-        // guess or AX raise: the press addresses the MC Space list, never
-        // an app window.
+        // Released ordinary return select on the effect owner: the
+        // pinned-yabai high-velocity session-tap Dock swipe with
+        // event-driven exact-current readback (same route as every product
+        // select — never the MC press). Owner-fresh gates fence dispatch
+        // (never hardcoded passes); the SLS-to-CG join rides the
+        // main-thread-published plain-data display legs verified against
+        // every fresh SLS snapshot — never an AppKit read, so this thread
+        // neither touches nor blocks the main thread. The guard wake
+        // settles the return through a per-call latch. Never a focus guess
+        // or AX raise: the gesture addresses the session stream, never an
+        // app window. No replay after an uncertain gesture; the stay
+        // settles honestly on the returned verdict.
+        use crate::dock_swipe_select::{
+            GateReads, LiveSwipePoster, LiveSwipeTopology, SELECT_ARRIVAL_DEADLINE_MS,
+        };
         if sid == 0 {
             return Err("stay return refused: source SID unpinned (zero)".to_owned());
         }
-        match crate::ffi::session_state().lock {
-            crate::ffi::SessionLock::Unlocked => {}
-            _ => return Err("stay return refused: session not unlocked pre-dispatch".to_owned()),
+        let mut gate_reads = crate::dock_swipe_select::LiveGateReads;
+        let gates = gate_reads.read_gates();
+        if !gates.session_unlocked {
+            return Err("stay return refused: session not unlocked pre-dispatch".to_owned());
         }
-        if crate::ffi::secure_input_known() == Some(true) {
+        if gates.secure_active {
             return Err("stay return refused: Secure Input active pre-dispatch".to_owned());
         }
-        if crate::ffi::frontmost_app()
-            .map(|(_, bundle)| crate::focus::is_loginwindow_bundle(&bundle))
-            .unwrap_or(true)
-        {
+        if gates.lock_screen {
             return Err("stay return refused: lock screen pre-dispatch".to_owned());
         }
         // Effect-thread display join: the published plain-data legs must
@@ -326,22 +330,42 @@ impl SendNativeReaders for OsSendReaders {
         if pinned.cg_id == 0 {
             return Err("stay return refused: pinned display has no CG display ID".to_owned());
         }
-        let from = crate::mc_lifecycle::live::fresh_snapshot()
-            .map_err(|e| format!("stay return refused: pre-select snapshot ({e})"))?;
-        // Single-press budget matching the select drain bound; the goto
-        // carries its own bounded settle poll (never replayed).
-        let mut budget = ActionBudget::new(30);
-        crate::mc_lifecycle::goto_sid_verified_pinned(
-            &from,
+        let wake = self.handle.select_wake().ok_or_else(|| {
+            "stay return refused: select wake unpublished (no main-thread guard publish yet)"
+                .to_owned()
+        })?;
+        let latch = wake.subscribe();
+        let mut topo = LiveSwipeTopology::pinned(
             0,
-            sid,
             pinned.cg_id,
             &pinned_uuid,
-            &mut budget,
-            false,
-        )
-        .map(|_| ())
-        .map_err(|e| format!("stay return refused: select-back ({e})"))
+            &published.displays,
+            published.separate,
+        );
+        let mut poster = LiveSwipePoster;
+        // The surrounding stay executor honors stop between the forward
+        // leg and this return; the return itself is bounded by the
+        // arrival deadline, so a fresh never-cancelled flag is honest
+        // here (no wider cancel seam reaches this backend leg).
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let req = crate::dock_swipe_select::SwipeRequest {
+            target: sid,
+            os_major: crate::ffi::macos_major(),
+            before: None,
+            op: None,
+            t_base: std::time::Instant::now(),
+            deadline: std::time::Duration::from_millis(SELECT_ARRIVAL_DEADLINE_MS),
+        };
+        let seams = crate::dock_swipe_select::SwipeSeams {
+            topo: &mut topo,
+            poster: &mut poster,
+            latch: &latch,
+            cancel: &cancel,
+            gates: &gates,
+        };
+        crate::dock_swipe_select::execute_dock_swipe_select(req, seams)
+            .map(|_| ())
+            .map_err(|e| format!("stay return refused: select-back ({e})"))
     }
 }
 

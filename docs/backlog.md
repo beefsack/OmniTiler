@@ -4059,6 +4059,16 @@ decisions of 2026-09-24 are under
        actions and physical/two-display checks pending. Four-crate tests 2385
        passed; unsafe 114, unchanged.
        [Checkpoint and checklist](changes/macos-managed-workspaces.md#trailing-workspace-armed-checkpoint-2026-10-19).
+       Dogfood 2026-10-19: MC select animation and post-send tiling feel slow.
+       Offline investigation delivered: MC AX selector plus 300 ms
+       stabilization, 450 ms drag grab/hold, and no reconcile on Space change
+       (1 s backstop when AX is silent) are implementation costs; SIP-on
+       Dock-swipe selection is the leading candidate
+       ([findings](research/macos-port/native-spaces-routes.md)). **Top macOS
+       priority (user 2026-10-19):** fast workspace switching and moving.
+       Dock-swipe selection (yabai-informed) in progress for dogfooding; then
+       send-phase latency (fixed drag waits, reconcile on Space change instead
+       of the 1 s backstop).
   4. Drag/drop overlays, re-scoped (user 2026-10-17): no modifier+drag; the
      producer is a passively observed native title-bar drag of a managed
      window, matching Windows' title-bar route, with physical user acceptance.

@@ -2292,6 +2292,7 @@ mod trailing_join_tests {
             post_accept_hook: Mutex::new(None),
             topology: None,
             display_inputs: None,
+            select_wake: None,
             topology_revision: ctx.revision,
             native_context: Some(Arc::clone(&ctx)),
             native_cell: crate::runtime_shared::NativeContextCell::new(),

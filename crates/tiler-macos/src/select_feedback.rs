@@ -1,16 +1,18 @@
 #![forbid(unsafe_code)]
 
-//! Product select handoff lane (main-thread drain protocol).
+//! Product select handoff lane (claim-slot protocol).
 //!
 //! Split from [`crate::runtime`]: the armed select-only claim slot shared
 //! between the engine (which stores one admitted claim per applied world
-//! command) and the main-thread tile controller (which claims, drains,
-//! and reports it). Draining actuates natively on the main thread; the
-//! proven outcome reports back under the claim's stable operation identity
-//! so the core settles its planner-owned view target instead of retaining
-//! it. Refusals classify honestly: only pre-actuation refusals (the drain
-//! never touched the desktop) settle as proven refusals — ambiguous
-//! mid-actuation output holds without re-actuation.
+//! command) and the main-thread tile controller (which claims it,
+//! submits it nonblocking to the serialized off-main Dock-swipe selection
+//! owner, and reports the polled completion). The proven outcome reports
+//! back under the claim's stable operation identity so the core settles
+//! its planner-owned view target instead of retaining it. Refusals
+//! classify honestly: only pre-actuation refusals (no owner actuation —
+//! the owner never took the job, or gates/drift refused first) settle as
+//! proven refusals — ambiguous mid-actuation output holds without
+//! re-actuation.
 
 use crate::runtime::{RuntimeHandle, invalidate_clock, lock_shared};
 use crate::runtime_thread::EngineJob;
@@ -216,6 +218,9 @@ pub(crate) fn classify_select_drain_error(reason: &str) -> SelectDrainOutcome {
         "bound select refuses:",
         "stale bound select discarded:",
         "expected exactly one native display",
+        "dock-swipe refused:",
+        "select refused:",
+        "select-busy:",
     ] {
         if reason.starts_with(prefix) {
             return SelectDrainOutcome::Refused;
@@ -246,6 +251,12 @@ mod tests {
             "bound select refuses: fresh row unreadable (snapshot failed)",
             "stale bound select discarded: native row moved between admission and drain (row 2 changed); no select dispatched",
             "stale bound select discarded: topology revision moved between admission and drain (3 != 4); no select dispatched",
+            "dock-swipe refused: session not unlocked pre-dispatch",
+            "dock-swipe refused: expected exactly one native display, found 2",
+            "dock-swipe refused: pinned display UUID no longer names the SLS row",
+            "dock-swipe refused: cancelled before dispatch",
+            "select refused: session not unlocked pre-dispatch",
+            "select-busy: one Dock-swipe select already inflight; refusing overlap",
         ] {
             assert_eq!(
                 classify_select_drain_error(reason),
@@ -261,10 +272,14 @@ mod tests {
             "display row missing",
             "previous workspace no longer exists",
             "topology drifted during open (was display 1 index 0, now 1/2); refusing stale dispatch",
+            "dock-swipe unproven: posted 2 pairs but native current reads Some(22) (target 33); history unchanged; no replay",
+            "dock-swipe unproven: began-without-ended partial (began=1 ended=0) release=posted; no replay",
+            "dock-swipe unproven: cancelled during settlement; history unchanged; no replay",
             "",
             "select gated",
             "product select",
             "bound select",
+            "dock-swipe",
         ] {
             assert_eq!(
                 classify_select_drain_error(reason),

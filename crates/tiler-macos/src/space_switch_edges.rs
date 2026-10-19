@@ -54,6 +54,37 @@ pub fn gesture_sign(spaces_in_order: &[u64], original: u64, temp: u64) -> Option
     }
 }
 
+/// Pure multi-step Dock-swipe plan over the NATIVE full ordered Space list
+/// (the raw SLS row order for one display, including fullscreen Spaces the
+/// traversal crosses — never the filtered user-only row, so the ordinal
+/// mapping the WindowServer traverses is preserved exactly).
+///
+/// Returns `(sign, pairs)` with `sign` the yabai progress sign (+1.0 toward
+/// higher indices, −1.0 toward lower) and `pairs` the absolute index
+/// distance `abs(target-current)`. A zero distance is a no-op success with
+/// zero pairs (the caller proves arrival without posting). Either endpoint
+/// missing from the native order refuses honestly (stale topology — never
+/// a guessed user-row distance, which would miscount across fullscreen
+/// inserts).
+pub fn swipe_plan(full_order: &[u64], current: u64, target: u64) -> Result<(f64, usize), String> {
+    let oi = full_order
+        .iter()
+        .position(|s| *s == current)
+        .ok_or_else(|| {
+            format!("dock-swipe refused: current Space {current} not in native order")
+        })?;
+    let ti = full_order
+        .iter()
+        .position(|s| *s == target)
+        .ok_or_else(|| format!("dock-swipe refused: target Space {target} not in native order"))?;
+    let delta = ti as i64 - oi as i64;
+    if delta == 0 {
+        return Ok((1.0, 0));
+    }
+    let sign = if delta > 0 { 1.0 } else { -1.0 };
+    Ok((sign, delta.unsigned_abs() as usize))
+}
+
 /// Pure version gate: the yabai 6-field branch is the only candidate here.
 /// macOS ≥27 refuses (the rift augmented payload needs an exact observed
 /// family select; never blindly used). Unknown refuses the same way.
@@ -393,6 +424,137 @@ pub(crate) fn post_gesture_held(
     PairOutcome::Refused("gesture posts are macOS-only".to_owned())
 }
 
+/// Posted-pair counts for one multi-pair Dock-swipe dispatch (logging and
+/// partial-release bookkeeping only — never inferred arrival).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GesturePostReport {
+    pub began_posted: usize,
+    pub ended_posted: usize,
+}
+
+/// Outcome of one multi-pair Dock-swipe dispatch: all pairs posted, the
+/// second edge of one pair refused after its began posted (pending single
+/// release), or nothing posted for the failing pair (refused with the
+/// honest posted-so-far counts — earlier fully-posted pairs are never
+/// replayed).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) enum GesturePairsOutcome {
+    Paired(GesturePostReport),
+    Pending {
+        report: GesturePostReport,
+        sign: f64,
+        error: String,
+    },
+    Refused {
+        report: GesturePostReport,
+        error: String,
+    },
+}
+
+/// Post `pairs` immediate yabai Dock-swipe began/ended pairs to the session
+/// tap (pinned 6-field branch, no warp/click, no sleeps, no Changed, no
+/// interstep waits — the yabai `space_manager_focus_space_using_gesture`
+/// same-display loop). One fresh [`edge_synth_gates`] check runs before the
+/// first pair (pre-dispatch); every event carries the own-switch provenance
+/// tag so the key tap passes our switch shapes (tap observes key chords
+/// only, so gesture events pass by construction — the tag is parity plus
+/// diagnostic attribution). Arrival is NEVER inferred here: the caller
+/// settles event-driven on the exact SID with a finite deadline and never
+/// replays.
+///
+/// A refused `ended` creation after its `began` posted is
+/// [`GesturePairsOutcome::Pending`] (complete once via
+/// [`post_gesture_release`], never a re-send of `began`). Any other refusal
+/// is [`GesturePairsOutcome::Refused`] with the honest posted-so-far
+/// counts.
+#[cfg(target_os = "macos")]
+pub(crate) fn post_gesture_pairs(sign: f64, pairs: usize) -> GesturePairsOutcome {
+    use objc2_core_graphics::CGEventTapLocation;
+    let mut report = GesturePostReport {
+        began_posted: 0,
+        ended_posted: 0,
+    };
+    if pairs == 0 {
+        return GesturePairsOutcome::Paired(report);
+    }
+    if let Err(e) = edge_synth_gates("gesture-began") {
+        return GesturePairsOutcome::Refused {
+            report,
+            error: e.to_string(),
+        };
+    }
+    // Lock-screen foreground gate (the shared edge gates cover session,
+    // Secure Input, AX trust, and post access; loginwindow foreground is
+    // the remaining pre-post refusal — no swipe under the lock screen).
+    // Sequential read-then-post race accepted: a transition mid-dispatch
+    // still settles unproven without replay at the settlement layer.
+    if crate::ffi::frontmost_app()
+        .map(|(_, bundle)| crate::focus::is_loginwindow_bundle(&bundle))
+        .unwrap_or(true)
+    {
+        return GesturePairsOutcome::Refused {
+            report,
+            error: "gesture began refused: lock screen pre-dispatch".to_owned(),
+        };
+    }
+    for _ in 0..pairs {
+        let began = match gesture_event(sign, GESTURE_PHASE_BEGAN) {
+            Some(e) => e,
+            None => {
+                return GesturePairsOutcome::Refused {
+                    report,
+                    error: "began event creation returned null".to_owned(),
+                };
+            }
+        };
+        objc2_core_graphics::CGEvent::post(CGEventTapLocation::SessionEventTap, Some(&began));
+        report.began_posted += 1;
+        let ended = match gesture_event(sign, GESTURE_PHASE_ENDED) {
+            Some(e) => e,
+            None => {
+                return GesturePairsOutcome::Pending {
+                    report,
+                    sign,
+                    error: "ended event creation returned null".to_owned(),
+                };
+            }
+        };
+        objc2_core_graphics::CGEvent::post(CGEventTapLocation::SessionEventTap, Some(&ended));
+        report.ended_posted += 1;
+    }
+    GesturePairsOutcome::Paired(report)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn post_gesture_pairs(_sign: f64, _pairs: usize) -> GesturePairsOutcome {
+    GesturePairsOutcome::Refused {
+        report: GesturePostReport {
+            began_posted: 0,
+            ended_posted: 0,
+        },
+        error: "gesture posts are macOS-only".to_owned(),
+    }
+}
+
+/// Post ONLY the pending release edge once (gesture-ended of the identical
+/// pinned shape), after a fresh gate recheck. Never re-sends `began`,
+/// never retries the semantic action.
+#[cfg(target_os = "macos")]
+pub(crate) fn post_gesture_release(sign: f64) -> Result<(), String> {
+    use objc2_core_graphics::CGEventTapLocation;
+    edge_synth_gates("gesture-ended").map_err(|e| e.to_string())?;
+    gesture_event(sign, GESTURE_PHASE_ENDED)
+        .map(|event| {
+            objc2_core_graphics::CGEvent::post(CGEventTapLocation::SessionEventTap, Some(&event));
+        })
+        .ok_or_else(|| "ended event creation returned null".to_owned())
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn post_gesture_release(_sign: f64) -> Result<(), String> {
+    Err("gesture release is macOS-only".to_owned())
+}
+
 /// Post ONLY the pending release edge once (key-up or gesture-ended),
 /// after every recheck already passed. Never re-sends `down`/`began`,
 /// never retries the semantic action.
@@ -476,6 +638,52 @@ mod tests {
         assert_eq!(gesture_sign(&[1, 7, 66], 1, 66), None);
         assert_eq!(gesture_sign(&[1], 1, 66), None);
         assert_eq!(gesture_sign(&[], 1, 66), None);
+    }
+
+    #[test]
+    fn swipe_plan_counts_native_full_order_in_both_directions() {
+        // Nonadjacent both directions over the native full order
+        // (fullscreen inserts preserved — never the filtered user row).
+        assert_eq!(swipe_plan(&[1, 2, 3], 1, 3), Ok((1.0, 2)));
+        assert_eq!(swipe_plan(&[1, 2, 3], 3, 1), Ok((-1.0, 2)));
+        assert_eq!(swipe_plan(&[1, 9, 3], 1, 3), Ok((1.0, 2)));
+        // No-op is zero pairs (arrival proven without posting).
+        assert_eq!(swipe_plan(&[1, 2], 1, 1), Ok((1.0, 0)));
+        // Missing endpoints refuse honestly (stale topology).
+        assert!(swipe_plan(&[1, 2], 9, 2).is_err());
+        assert!(swipe_plan(&[1, 2], 1, 9).is_err());
+        assert!(swipe_plan(&[], 1, 2).is_err());
+    }
+
+    /// Offline creation-shape proof: building a gesture event has no live
+    /// effects (nothing posts), so the exact six pinned fields plus the
+    /// own-switch tag read back through the maintained getters on every
+    /// sign/phase combination the poster emits.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn gesture_events_read_back_exact_pinned_fields_and_own_tag() {
+        use objc2_core_graphics::{CGEvent, CGEventField};
+        for (sign, phase) in [
+            (1.0, GESTURE_PHASE_BEGAN),
+            (1.0, GESTURE_PHASE_ENDED),
+            (-1.0, GESTURE_PHASE_BEGAN),
+            (-1.0, GESTURE_PHASE_ENDED),
+        ] {
+            let event = gesture_event(sign, phase).expect("event creation is effect-free");
+            let int = |field: u32| CGEvent::integer_value_field(Some(&event), CGEventField(field));
+            let dbl = |field: u32| CGEvent::double_value_field(Some(&event), CGEventField(field));
+            assert_eq!(int(GESTURE_FIELD_TYPE), GESTURE_TYPE_DOCK_CONTROL);
+            assert_eq!(int(GESTURE_FIELD_HID_TYPE), GESTURE_HID_DOCK_SWIPE);
+            assert_eq!(int(GESTURE_FIELD_MOTION), GESTURE_MOTION_HORIZONTAL);
+            assert_eq!(int(GESTURE_FIELD_PHASE), phase);
+            assert_eq!(dbl(GESTURE_FIELD_PROGRESS), sign);
+            assert_eq!(dbl(GESTURE_FIELD_VELOCITY_X), sign * GESTURE_VELOCITY);
+            assert_eq!(
+                CGEvent::integer_value_field(Some(&event), CGEventField::EventSourceUserData),
+                crate::input_match::OWN_SWITCH_USER_DATA,
+                "own-switch provenance tag rides every gesture event"
+            );
+        }
     }
 
     #[test]

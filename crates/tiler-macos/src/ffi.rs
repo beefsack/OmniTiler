@@ -39,7 +39,7 @@
 
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, AtomicU32};
-use std::sync::{Arc, atomic::Ordering, mpsc::SyncSender};
+use std::sync::{Arc, Condvar, Mutex, atomic::Ordering, mpsc::SyncSender};
 
 use serde::{Deserialize, Serialize};
 
@@ -426,6 +426,7 @@ pub fn current_uid() -> u32 {
 #[derive(Debug, Clone, Default)]
 pub struct DisplayChangeFlag {
     dirty: Arc<AtomicU64>,
+    wake: SpaceSelectWake,
 }
 
 impl DisplayChangeFlag {
@@ -443,6 +444,247 @@ impl DisplayChangeFlag {
     #[must_use]
     pub fn take_changed(&self) -> bool {
         self.dirty.swap(0, Ordering::SeqCst) != 0
+    }
+
+    /// Shareable active-Space wake generation (event-driven select
+    /// settlement waits on this; the main cadence keeps polling
+    /// [`DisplayChangeFlag::take_changed`]).
+    #[must_use]
+    pub fn select_wake(&self) -> SpaceSelectWake {
+        self.wake.clone()
+    }
+}
+
+/// Event-driven active-Space wake shared between the main-thread observer
+/// and off-main select owners. The observer bumps the generation and wakes
+/// all waiters on every `NSWorkspaceActiveSpaceDidChangeNotification`.
+/// Settlement uses per-job [`SpaceSelectLatch`] handles (see
+/// [`SpaceSelectWake::subscribe`]) so cancellation pulses exactly the
+/// waiting job without faking a space notification. Callbacks stay minimal
+/// (locks, increments, notifies; no AX, no snapshot, no log). Portable:
+/// pure `Mutex`/`Condvar` semantics on every host.
+#[derive(Debug, Clone, Default)]
+pub struct SpaceSelectWake {
+    inner: Arc<WakeInner>,
+}
+
+#[derive(Debug, Default)]
+struct WakeInner {
+    generation: Mutex<u64>,
+    subscribers: Mutex<Vec<std::sync::Weak<LatchInner>>>,
+}
+
+#[derive(Debug, Default)]
+struct LatchInner {
+    state: Mutex<LatchState>,
+    cvar: Condvar,
+}
+
+#[derive(Debug, Default)]
+struct LatchState {
+    generation: u64,
+    cancelled: bool,
+}
+
+/// Outcome of one latch wait: the space generation advanced, the job was
+/// cancelled, or the slice of the absolute deadline elapsed with neither.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LatchWait {
+    Advanced(u64),
+    Cancelled,
+    TimedOut,
+}
+
+impl SpaceSelectWake {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Current wake generation (monotonic; every active-Space notification
+    /// advances it by exactly one).
+    #[must_use]
+    pub fn generation(&self) -> u64 {
+        *self
+            .inner
+            .generation
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Subscribe one per-job latch at the current generation. The latch
+    /// advances on every later notification and pulses promptly on
+    /// [`SpaceSelectLatch::cancel`]. Dropping the latch unsubscribes
+    /// (the registry prunes expired entries on the next notification).
+    #[must_use]
+    pub fn subscribe(&self) -> SpaceSelectLatch {
+        let latch = Arc::new(LatchInner {
+            state: Mutex::new(LatchState {
+                generation: self.generation(),
+                cancelled: false,
+            }),
+            cvar: Condvar::new(),
+        });
+        self.inner
+            .subscribers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(Arc::downgrade(&latch));
+        SpaceSelectLatch { inner: latch }
+    }
+
+    /// Record one active-Space notification: bump the generation and pulse
+    /// every live subscriber latch. Minimal by construction (locks,
+    /// increments, notifies; never blocks on OS reads).
+    pub fn notify(&self) {
+        {
+            let mut generation = self
+                .inner
+                .generation
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            *generation = generation.wrapping_add(1);
+        }
+        self.pulse_subscribers();
+        self.prune_subscribers();
+    }
+
+    /// Pulse every live subscriber without bumping the generation (never
+    /// used by the observer: only a real notification advances it).
+    fn pulse_subscribers(&self) {
+        let subs = self
+            .inner
+            .subscribers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        for weak in subs.iter() {
+            if let Some(latch) = weak.upgrade() {
+                let mut state = latch.state.lock().unwrap_or_else(|e| e.into_inner());
+                state.generation = state.generation.wrapping_add(1);
+                latch.cvar.notify_all();
+            }
+        }
+    }
+
+    /// Drop expired subscriber entries (bounded registry hygiene; called
+    /// on notifications alongside the pulse).
+    fn prune_subscribers(&self) {
+        if let Ok(mut subs) = self.inner.subscribers.lock() {
+            subs.retain(|weak| weak.strong_count() > 0);
+        }
+    }
+}
+
+/// Per-job active-Space plus cancellation latch. `Clone` shares the one
+/// job latch (fixtures drive notifications/cancellation deterministically
+/// through a clone while the settlement loop waits on the original).
+#[derive(Debug, Clone)]
+pub struct SpaceSelectLatch {
+    inner: Arc<LatchInner>,
+}
+
+impl SpaceSelectLatch {
+    /// Detached single-event latch for host signals outside the
+    /// active-Space wake (the Dock MC-exit watch): no shared wake, no
+    /// subscriber registry — the watch callback advances exactly this
+    /// latch via [`SpaceSelectLatch::notify`], and the waiter retains an
+    /// early delivery through the generation check in
+    /// [`SpaceSelectLatch::wait`]. Pure `Mutex`/`Condvar` semantics on
+    /// every host.
+    #[must_use]
+    pub fn detached() -> Self {
+        Self {
+            inner: Arc::new(LatchInner {
+                state: Mutex::new(LatchState {
+                    generation: 0,
+                    cancelled: false,
+                }),
+                cvar: Condvar::new(),
+            }),
+        }
+    }
+}
+
+impl SpaceSelectLatch {
+    /// Current latch generation (monotonic per notification).
+    #[must_use]
+    pub fn generation(&self) -> u64 {
+        self.inner
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .generation
+    }
+
+    /// Whether cancellation was requested for this job.
+    #[must_use]
+    pub fn cancelled(&self) -> bool {
+        self.inner
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .cancelled
+    }
+
+    /// Request cancellation for this job and pulse its waiter promptly
+    /// (never fakes a space notification: the generation is untouched, so
+    /// no waiter can mistake this for arrival).
+    pub fn cancel(&self) {
+        {
+            let mut state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.cancelled = true;
+        }
+        self.inner.cvar.notify_all();
+    }
+
+    /// Drive one synthetic notification at this latch (fixtures only: the
+    /// observer owns production notifications). Advances the generation
+    /// and pulses the waiter exactly like a real notification.
+    pub fn notify(&self) {
+        {
+            let mut state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.generation = state.generation.wrapping_add(1);
+        }
+        self.inner.cvar.notify_all();
+    }
+
+    /// Wait until the generation moves past `from`, cancellation arrives,
+    /// or `timeout` elapses. One condvar wait per call (the settlement
+    /// loop re-waits only on genuine events, never a periodic poll);
+    /// spurious wakeups re-wait within the remaining slice.
+    pub fn wait(&self, from: u64, timeout: std::time::Duration) -> LatchWait {
+        let mut state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.cancelled {
+            return LatchWait::Cancelled;
+        }
+        if state.generation != from {
+            return LatchWait::Advanced(state.generation);
+        }
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                return LatchWait::TimedOut;
+            }
+            let (guard, res) = self
+                .inner
+                .cvar
+                .wait_timeout(state, deadline - now)
+                .unwrap_or_else(|e| {
+                    let (guard, result) = e.into_inner();
+                    (guard, result)
+                });
+            state = guard;
+            if state.cancelled {
+                return LatchWait::Cancelled;
+            }
+            if state.generation != from {
+                return LatchWait::Advanced(state.generation);
+            }
+            if res.timed_out() {
+                return LatchWait::TimedOut;
+            }
+        }
     }
 }
 
@@ -562,6 +804,38 @@ pub fn classify_space_type(raw: i32) -> SlsSpaceType {
         4 => SlsSpaceType::Fullscreen,
         2 => SlsSpaceType::System,
         other => SlsSpaceType::Other(other),
+    }
+}
+
+/// Dock Mission Control exit notification name: yabai `dd84572`
+/// `src/mission_control.c` observes exactly this private notification on
+/// the Dock application element (`kAXExposeExit`) and marks Mission
+/// Control inactive only in its callback. The AX `mc`-group presence the
+/// close poll reads is NOT the same contract (it can read absent while
+/// Dock still gates gestures), so a post-create select must wait for this
+/// exact name — never a sibling (`AXExposeShowAllWindows`,
+/// `AXExposeShowFrontWindows`, `AXExposeShowDesktop`) and never group
+/// absence.
+pub const MC_EXIT_NOTIFICATION: &str = "AXExposeExit";
+
+/// Pure match over the exact Dock exit notification name. Wrong AX names
+/// never signal (unit-tested with real-shaped names; no live state).
+#[must_use]
+pub fn is_mc_exit_notification(name: &str) -> bool {
+    name == MC_EXIT_NOTIFICATION
+}
+
+/// Safe delegate for one Dock notification delivery: advances `latch`
+/// exactly on the exit name and ignores every other AX notification. The
+/// extern observer callback is the only production caller; tests drive
+/// this directly with injected name streams (no live AX). Returns whether
+/// this delivery was the exit.
+pub fn handle_dock_exit_notification(name: &str, latch: &SpaceSelectLatch) -> bool {
+    if is_mc_exit_notification(name) {
+        latch.notify();
+        true
+    } else {
+        false
     }
 }
 
@@ -2689,6 +2963,228 @@ mod macos {
                         if status.0 != 0 {
                             failures.push(format!("{name}: {}", super::ax_error_name(status.0)));
                         }
+                    }
+                }
+                if let Some(source) = self.source.take() {
+                    if let Some(rl) = CFRunLoop::current() {
+                        let mode = kCFRunLoopDefaultMode;
+                        rl.remove_source(Some(&source), mode);
+                    }
+                    source.invalidate();
+                }
+                if let Some(refcon_ptr) = self.refcon.take() {
+                    drop(Box::from_raw(refcon_ptr));
+                }
+            }
+            failures
+        }
+    }
+
+    // -- Dock Mission Control exit watch (thread-affine, one notification) --
+    //
+    // Registers exactly `AXExposeExit` on the Dock application element and
+    // retains an early delivery in the latch generation, so a post-create
+    // select dispatches its gesture only after Dock itself reports Mission
+    // Control exited. Shape pinned against yabai `dd84572`
+    // `src/mission_control.c` (`AXObserverCreate` on the Dock PID +
+    // `AXObserverAddNotification(..., kAXExposeExit, ...)` + runloop-source
+    // install; the exit posts `MISSION_CONTROL_EXIT`, and
+    // `space_manager_focus_space` refuses gestures while the mode is
+    // active). Differences from that source (deliberate): one notification
+    // only (never the show/entry siblings), the refcon carries a detached
+    // [`super::SpaceSelectLatch`] (the callback only advances it — no AX,
+    // no log, no panics), and teardown is explicit plus a `Drop` backstop.
+    // No `unsafe impl Send/Sync`: `!Send + !Sync` via `PhantomData<Rc>`
+    // (the compiler rejects moving the watch off the owning select-owner
+    // thread).
+
+    struct DockExitRefcon {
+        latch: super::SpaceSelectLatch,
+    }
+
+    unsafe extern "C-unwind" fn dock_exit_callback(
+        _observer: NonNull<AXObserver>,
+        _element: NonNull<AXUIElement>,
+        notification: NonNull<CFString>,
+        refcon: *mut std::ffi::c_void,
+    ) {
+        // SAFETY: `refcon` is the live `Box<DockExitRefcon>` installed by
+        // `DockExitWatch::arm`, reclaimed only after the notification is
+        // removed and the runloop source is invalidated on the owner
+        // thread. `notification` is borrowed (no ownership transfer); only
+        // its string copy plus a latch advance leave. No AX, no log, no
+        // panics.
+        if refcon.is_null() {
+            return;
+        }
+        let state = unsafe { &*(refcon as *const DockExitRefcon) };
+        let name = unsafe { notification.as_ref() }.to_string();
+        let _ = super::handle_dock_exit_notification(&name, &state.latch);
+    }
+
+    /// Thread-affine Dock MC-exit watch. `!Send + !Sync` via
+    /// `PhantomData<Rc>` (no `unsafe impl`): the compiler rejects moving it
+    /// off the owning select-owner thread. Arm BEFORE the create leg opens
+    /// Mission Control (no lost exit); pump the same thread's runloop while
+    /// awaiting delivery. Prefer explicit [`Self::shutdown`] for an honest
+    /// teardown report; `disarm` covers the armed-but-never-awaited path and
+    /// `Drop` repeats the same steps best-effort.
+    pub struct DockExitWatch {
+        observer: CFRetained<AXObserver>,
+        app: AxElement,
+        source: Option<CFRetained<CFRunLoopSource>>,
+        refcon: Option<*mut DockExitRefcon>,
+        _not_send: std::marker::PhantomData<std::rc::Rc<()>>,
+    }
+
+    impl Drop for DockExitWatch {
+        fn drop(&mut self) {
+            // SAFETY: same teardown ordering as `shutdown` (removal, then
+            // source invalidation, then refcon reclaim); statuses ignored —
+            // explicit `shutdown` is the honest path.
+            let _ = self.teardown();
+        }
+    }
+
+    impl DockExitWatch {
+        /// Arm the exit watch on the calling (owner) thread's runloop: one
+        /// `AXExposeExit` registration on the Dock application element. The
+        /// messaging timeout is set BEFORE registration; refusal fails the
+        /// arm (the caller refuses pre-effect — nothing appended, nothing
+        /// to adopt).
+        pub fn arm(
+            pid: i32,
+            latch: super::SpaceSelectLatch,
+            messaging_timeout_secs: f32,
+        ) -> Result<Self, String> {
+            if pid <= 1 {
+                return Err(format!("refusing reserved pid {pid}"));
+            }
+            let app = AxElement::application(pid).ok_or_else(|| format!("bad pid {pid}"))?;
+            if ax_set_messaging_timeout(&app, messaging_timeout_secs) != 0 {
+                return Err(format!(
+                    "pid {pid}: messaging timeout unset before exit-watch registration"
+                ));
+            }
+            let mut observer_raw: *mut AXObserver = std::ptr::null_mut();
+            // SAFETY: out-pointer valid; maintained `AXObserver::create`;
+            // nonzero status leaves `observer_raw` null and returns fast.
+            let status = unsafe {
+                AXObserver::create(
+                    pid,
+                    Some(dock_exit_callback),
+                    NonNull::new(std::ptr::addr_of_mut!(observer_raw)).expect("non-null"),
+                )
+            };
+            if status.0 != 0 || observer_raw.is_null() {
+                return Err(format!(
+                    "AXObserverCreate pid {pid}: {}",
+                    super::ax_error_name(status.0)
+                ));
+            }
+            // SAFETY: create-rule +1 retained; owned by `CFRetained` exactly
+            // once.
+            let observer: CFRetained<AXObserver> =
+                unsafe { CFRetained::from_raw(NonNull::new(observer_raw).expect("non-null")) };
+            let refcon = Box::new(DockExitRefcon { latch });
+            let refcon_ptr = Box::into_raw(refcon);
+            // SAFETY: observer/app live in maintained wrappers; the name is
+            // a fresh `CFString`; refcon valid until reclaimed in `teardown`
+            // after removal + source invalidation.
+            unsafe {
+                let cf_name = CFString::from_str(super::MC_EXIT_NOTIFICATION);
+                let status = observer.add_notification(
+                    &app.inner,
+                    &cf_name,
+                    refcon_ptr as *mut std::ffi::c_void,
+                );
+                if status.0 != 0 {
+                    drop(Box::from_raw(refcon_ptr));
+                    return Err(format!(
+                        "pid {pid}: {} registration refused ({})",
+                        super::MC_EXIT_NOTIFICATION,
+                        super::ax_error_name(status.0)
+                    ));
+                }
+            }
+            // SAFETY: live observer must vend a runloop source (OS
+            // contract); the maintained accessor asserts non-null.
+            // Installed on the calling (owner) thread's runloop.
+            let source: CFRetained<CFRunLoopSource> = unsafe { observer.run_loop_source() };
+            let rl = match CFRunLoop::current() {
+                Some(rl) => rl,
+                None => {
+                    unsafe {
+                        let cf_name = CFString::from_str(super::MC_EXIT_NOTIFICATION);
+                        let _ = observer.remove_notification(&app.inner, &cf_name);
+                        drop(Box::from_raw(refcon_ptr));
+                    }
+                    return Err("AX exit watch runloop unavailable".to_owned());
+                }
+            };
+            // SAFETY: extern-static default-mode read; source/runloop live.
+            unsafe {
+                let mode = kCFRunLoopDefaultMode;
+                rl.add_source(Some(&source), mode);
+            }
+            Ok(Self {
+                observer,
+                app,
+                source: Some(source),
+                refcon: Some(refcon_ptr),
+                _not_send: std::marker::PhantomData,
+            })
+        }
+
+        /// Pump the owner thread's runloop for at most `slice`: the exit
+        /// callback (if Dock posted it) advances the latch here. The caller
+        /// bounds the total wait; the slice only bounds one pump so a hung
+        /// Dock cannot stall the owner past it.
+        pub fn pump(&self, slice: Duration) {
+            // SAFETY: extern-static default-mode read; bounded slice keeps a
+            // hung Dock from stalling the owner past one slice.
+            unsafe {
+                let mode = kCFRunLoopDefaultMode;
+                CFRunLoop::run_in_mode(mode, slice.as_secs_f64().min(0.25), false);
+            }
+        }
+
+        /// Honest teardown: removes the registration, invalidates the
+        /// runloop source, and reclaims the refcon exactly once. `Err`
+        /// names failed removals (OS status names only); the guard is
+        /// consumed so teardown runs once (`Drop` becomes a no-op).
+        pub fn shutdown(mut self) -> Result<(), String> {
+            let failures = self.teardown();
+            if failures.is_empty() {
+                Ok(())
+            } else {
+                Err(format!("exit-watch teardown: {}", failures.join("; ")))
+            }
+        }
+
+        /// Idempotent disarm for the armed-but-never-awaited path (the
+        /// create leg failed, so no select follows). Statuses ignored —
+        /// explicit `shutdown` is the honest path; `Drop` is the backstop.
+        pub fn disarm(&mut self) {
+            let _ = self.teardown();
+        }
+
+        fn teardown(&mut self) -> Vec<String> {
+            let mut failures = Vec::new();
+            // SAFETY: observer/app live until reclaimed below; statuses
+            // recorded, never assumed. Skipped once the refcon is gone
+            // (teardown already ran — `shutdown`/`disarm`/`Drop` converge
+            // here).
+            unsafe {
+                if self.refcon.is_some() {
+                    let cf_name = CFString::from_str(super::MC_EXIT_NOTIFICATION);
+                    let status = self.observer.remove_notification(&self.app.inner, &cf_name);
+                    if status.0 != 0 {
+                        failures.push(format!(
+                            "{}: {}",
+                            super::MC_EXIT_NOTIFICATION,
+                            super::ax_error_name(status.0)
+                        ));
                     }
                 }
                 if let Some(source) = self.source.take() {
@@ -8180,7 +8676,7 @@ mod macos {
     // additionally registers with a nil object for screen parameters) at
     // https://github.com/acsandmann/rift/blob/8114ccc534b5c9a7e6a77ce27568d8739be9216f/src/actor/notification_center.rs
     // Differences (deliberate): the callbacks do NO snapshot/resnapshot work
-    // and NO AX reads — they only bump one atomic generation. The controller
+    // and NO AX reads — they only bump generations and pulse waiters. The controller
     // polls [`DisplayChangeFlag::take_changed`] and re-snapshots on the main
     // thread itself. No AppKit object crosses threads: the guard
     // (`!Send + !Sync`, main-thread-owned) holds the observer; only the
@@ -8189,6 +8685,7 @@ mod macos {
     #[repr(C)]
     struct DisplayChangeIvars {
         dirty: Arc<AtomicU64>,
+        wake: SpaceSelectWake,
     }
 
     // SAFETY: opaque observer state passed through the `initWith:` shape
@@ -8221,8 +8718,10 @@ mod macos {
 
             #[unsafe(method(activeSpaceDidChange:))]
             fn active_space_did_change(&self, _notif: &objc2_foundation::NSNotification) {
-                // Minimal callback: bump only. No snapshot, no AX, no log.
+                // Minimal callback: bump dirty plus the select wake only. No
+                // snapshot, no AX, no log.
                 self.ivars().dirty.fetch_add(1, Ordering::SeqCst);
+                self.ivars().wake.notify();
             }
         }
     }
@@ -8259,7 +8758,15 @@ mod macos {
         pub fn flag(&self) -> DisplayChangeFlag {
             DisplayChangeFlag {
                 dirty: self.observer.ivars().dirty.clone(),
+                wake: self.observer.ivars().wake.clone(),
             }
+        }
+
+        /// Clone the shareable active-Space wake for off-main select
+        /// owners (event-driven settlement waits on this generation).
+        #[must_use]
+        pub fn select_wake(&self) -> SpaceSelectWake {
+            self.observer.ivars().wake.clone()
         }
     }
 
@@ -8283,6 +8790,7 @@ mod macos {
         // block inside `msg_send!`.
         let ivars = DisplayChangeIvars {
             dirty: flag.dirty.clone(),
+            wake: flag.select_wake(),
         };
         // Ivars set directly, then the superclass `init` (the `define_class!`
         // doc shape): avoids an `initWith:` round-trip through `msg_send!`.
@@ -8328,7 +8836,7 @@ mod macos {
 pub use macos::{
     AX_ATTRIBUTE_UNSUPPORTED, AX_FAILURE, AX_ILLEGAL_ARGUMENT, AX_NO_VALUE, AxElement, AxFrame,
     AxHitDetail, BorderCarrier, BorderCarrierFlags, CgBounds, CgWindow, CgWindowBasic,
-    DisplayChangeGuard, DisplayRect, DragMouseHit, DragMouseKind, DragTapSource,
+    DisplayChangeGuard, DisplayRect, DockExitWatch, DragMouseHit, DragMouseKind, DragTapSource,
     GroupUnderlayCarrier, HotkeySpi, KeyCounts, MouseCounts, NsAppIdentity, NsDisplay,
     Phase1Observer, SLPS_CPS_USER_GENERATED, SLPS_EVENT_LEN, SegmentReadback, SegmentRow, SlpsPsn,
     SlsBridgedAvailability, SlsDisplayRow, SlsMoveSymbols, TapChordSpec, TapHit, TapPump,
@@ -8637,6 +9145,13 @@ mod stub {
     pub struct DisplayChangeGuard {
         _priv: (),
         _not_send: std::marker::PhantomData<std::rc::Rc<()>>,
+    }
+
+    impl DisplayChangeGuard {
+        #[must_use]
+        pub fn select_wake(&self) -> SpaceSelectWake {
+            SpaceSelectWake::new()
+        }
     }
 
     pub fn install_display_change_guard() -> Result<(DisplayChangeGuard, DisplayChangeFlag), String>
@@ -8961,6 +9476,32 @@ mod stub {
         pub fn shutdown(self) -> Result<(), String> {
             Ok(())
         }
+    }
+
+    /// Off-macOS stub for the Dock MC-exit watch: arming always fails fast
+    /// (AX is macOS-only); every other method is a no-op so portable code
+    /// paths compile without live behavior.
+    pub struct DockExitWatch {
+        _priv: (),
+        _not_send: std::marker::PhantomData<std::rc::Rc<()>>,
+    }
+
+    impl DockExitWatch {
+        pub fn arm(
+            _pid: i32,
+            _latch: super::SpaceSelectLatch,
+            _messaging_timeout_secs: f32,
+        ) -> Result<Self, String> {
+            Err("DockExitWatch is macOS-only".to_owned())
+        }
+
+        pub fn pump(&self, _slice: Duration) {}
+
+        pub fn shutdown(self) -> Result<(), String> {
+            Ok(())
+        }
+
+        pub fn disarm(&mut self) {}
     }
 
     pub fn secure_input_known() -> Option<bool> {
@@ -9364,38 +9905,98 @@ mod stub {
 #[cfg(not(target_os = "macos"))]
 pub use stub::{
     AxElement, AxFrame, AxHitDetail, BorderCarrier, BorderCarrierFlags, CgBounds, CgWindow,
-    CgWindowBasic, DisplayChangeGuard, DisplayRect, DragMouseHit, DragMouseKind, DragTapSource,
-    GroupUnderlayCarrier, HotkeySpi, KeyCounts, MouseCounts, NsAppIdentity, NsDisplay,
-    Phase1Observer, SLPS_CPS_USER_GENERATED, SLPS_EVENT_LEN, SegmentReadback, SegmentRow, SlpsPsn,
-    SlsBridgedAvailability, SlsDisplayRow, SlsMoveSymbols, TapChordSpec, TapHit, TapPump,
-    TapSource, TapSourceReport, WorkspaceIndicator, activate_app, activation_policy_raw_for_pid,
-    app_hidden_for_pid, ax_app_focus_leg, ax_bool_attribute, ax_children, ax_direct_focused_read,
-    ax_display_id, ax_element_at_position, ax_focused_preimage, ax_focused_preimage_detailed,
-    ax_focused_preimage_evidence, ax_fullscreen_state, ax_get_frame, ax_hit_test_detail,
-    ax_hit_test_owner, ax_identifier, ax_is_process_trusted, ax_is_size_settable, ax_min_size,
-    ax_observe_bounded, ax_observe_session, ax_perform_action, ax_raise,
-    ax_selected_focus_evidence, ax_set_bool_attribute, ax_set_focused_window, ax_set_frame,
-    ax_set_messaging_timeout, ax_set_position, ax_set_size, ax_string_attribute,
-    ax_system_focus_leg, ax_window_id, ax_window_id_detailed, ax_window_title,
-    border_system_accent, bundle_id_for_pid, cg_carrier_above_target, cg_carrier_below_targets,
-    cg_display_uuid, cg_post_event_access_known, cg_window_list_all, cg_window_list_basic,
-    copy_symbolic_hotkeys, frontmost_app, hotkey_read, hotkey_set_enabled, hotkey_spi_available,
-    install_display_change_guard, key_counts_snapshot, launch_date_for_pid, macos_major,
-    mc_launch_toggle, mouse_counts_snapshot, ns_app_identity_for_pid, ns_display_snapshot,
-    ns_image_for_bundle, ns_separate_spaces, own_bundle_id, process_executable_path,
-    process_exists, pump_runloop_once, resolve_hotkey_spi, run_event_tap_bounded,
-    run_owned_probe_window, runloop_present, running_apps, secure_input_known, session_state,
-    slps_available, slps_front_available, slps_front_pid, slps_post_event, slps_psn_for_pid,
-    slps_set_front, sls_bridged_availability, sls_connection_available, sls_display_rows,
-    sls_display_spaces, sls_main_connection_id, sls_move_symbols, sls_move_windows_direct,
-    sls_order_available, sls_order_below, sls_order_below_txn, sls_order_txn_available,
-    sls_space_type, sls_spaces_for_window, sls_spaces_for_windows, sls_window_at_point,
-    terminate_process, warp_cursor_position,
+    CgWindowBasic, DisplayChangeGuard, DisplayRect, DockExitWatch, DragMouseHit, DragMouseKind,
+    DragTapSource, GroupUnderlayCarrier, HotkeySpi, KeyCounts, MouseCounts, NsAppIdentity,
+    NsDisplay, Phase1Observer, SLPS_CPS_USER_GENERATED, SLPS_EVENT_LEN, SegmentReadback,
+    SegmentRow, SlpsPsn, SlsBridgedAvailability, SlsDisplayRow, SlsMoveSymbols, TapChordSpec,
+    TapHit, TapPump, TapSource, TapSourceReport, WorkspaceIndicator, activate_app,
+    activation_policy_raw_for_pid, app_hidden_for_pid, ax_app_focus_leg, ax_bool_attribute,
+    ax_children, ax_direct_focused_read, ax_display_id, ax_element_at_position,
+    ax_focused_preimage, ax_focused_preimage_detailed, ax_focused_preimage_evidence,
+    ax_fullscreen_state, ax_get_frame, ax_hit_test_detail, ax_hit_test_owner, ax_identifier,
+    ax_is_process_trusted, ax_is_size_settable, ax_min_size, ax_observe_bounded,
+    ax_observe_session, ax_perform_action, ax_raise, ax_selected_focus_evidence,
+    ax_set_bool_attribute, ax_set_focused_window, ax_set_frame, ax_set_messaging_timeout,
+    ax_set_position, ax_set_size, ax_string_attribute, ax_system_focus_leg, ax_window_id,
+    ax_window_id_detailed, ax_window_title, border_system_accent, bundle_id_for_pid,
+    cg_carrier_above_target, cg_carrier_below_targets, cg_display_uuid, cg_post_event_access_known,
+    cg_window_list_all, cg_window_list_basic, copy_symbolic_hotkeys, frontmost_app, hotkey_read,
+    hotkey_set_enabled, hotkey_spi_available, install_display_change_guard, key_counts_snapshot,
+    launch_date_for_pid, macos_major, mc_launch_toggle, mouse_counts_snapshot,
+    ns_app_identity_for_pid, ns_display_snapshot, ns_image_for_bundle, ns_separate_spaces,
+    own_bundle_id, process_executable_path, process_exists, pump_runloop_once, resolve_hotkey_spi,
+    run_event_tap_bounded, run_owned_probe_window, runloop_present, running_apps,
+    secure_input_known, session_state, slps_available, slps_front_available, slps_front_pid,
+    slps_post_event, slps_psn_for_pid, slps_set_front, sls_bridged_availability,
+    sls_connection_available, sls_display_rows, sls_display_spaces, sls_main_connection_id,
+    sls_move_symbols, sls_move_windows_direct, sls_order_available, sls_order_below,
+    sls_order_below_txn, sls_order_txn_available, sls_space_type, sls_spaces_for_window,
+    sls_spaces_for_windows, sls_window_at_point, terminate_process, warp_cursor_position,
 };
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn select_latch_notifies_cancels_and_times_out() {
+        // Portable latch contract: subscribe at the current generation,
+        // notify advances exactly the subscribed latch, cancel pulses
+        // without advancing, waits distinguish all three outcomes, and a
+        // dropped latch never breaks later notifications.
+        let wake = SpaceSelectWake::new();
+        let first = wake.subscribe();
+        assert_eq!(first.generation(), 0);
+        assert!(!first.cancelled());
+        assert_eq!(
+            first.wait(0, std::time::Duration::from_millis(10)),
+            LatchWait::TimedOut
+        );
+        wake.notify();
+        assert_eq!(wake.generation(), 1);
+        assert_eq!(
+            first.wait(0, std::time::Duration::from_millis(10)),
+            LatchWait::Advanced(1)
+        );
+        let second = wake.subscribe();
+        assert_eq!(second.generation(), 1);
+        second.cancel();
+        assert!(second.cancelled());
+        assert!(!first.cancelled());
+        assert_eq!(
+            second.wait(1, std::time::Duration::from_millis(10)),
+            LatchWait::Cancelled
+        );
+        // Cancellation never advances the generation: no waiter can
+        // mistake it for arrival.
+        assert_eq!(first.generation(), 1);
+        drop(second);
+        wake.notify();
+        assert_eq!(
+            first.wait(1, std::time::Duration::from_millis(10)),
+            LatchWait::Advanced(2)
+        );
+    }
+
+    #[test]
+    fn select_latch_wait_wakes_promptly_on_notify() {
+        // Event-driven (no polling): a waiter with a long timeout returns
+        // as soon as another thread notifies.
+        let wake = SpaceSelectWake::new();
+        let latch = wake.subscribe();
+        let driver = latch.clone();
+        let handle = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            driver.notify();
+        });
+        let t0 = std::time::Instant::now();
+        assert_eq!(
+            latch.wait(0, std::time::Duration::from_secs(10)),
+            LatchWait::Advanced(1)
+        );
+        assert!(t0.elapsed() < std::time::Duration::from_secs(5));
+        let _ = handle.join();
+    }
 
     #[test]
     fn ax_error_names_cover_known_codes() {

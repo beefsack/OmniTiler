@@ -716,6 +716,13 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
             // standard titlebar candidates. No posts on any path.
             tiler_macos::textedit_post::run_textedit_grab_inspect(&record, &nonce)
         }
+        Command::TextEditClose { record, nonce } => {
+            // Diagnostic-only close of the run-owned disposable TextEdit
+            // document: same record/nonce gates plus the per-edge proof,
+            // then one exact AX close-button press (no synthetic input,
+            // no key API).
+            tiler_macos::textedit_post::run_textedit_close(&record, &nonce)
+        }
         Command::OwnedDragPost {
             pid,
             nonce,

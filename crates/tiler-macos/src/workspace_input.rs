@@ -74,13 +74,13 @@
 //! relative sends/stays, all
 //! output sends (cross-display TBD), and whole-workspace migration (no
 //! approved form). Arming seam for the armed subset: native single-shot
-//! Space switch via the proven
-//! [`crate::mc_lifecycle::goto_sid_verified`] MC AX route, reused through
-//! [`crate::workspace_select`] (never duplicated); the engine enqueues one
-//! pending select without blocking and the main-thread tile controller
-//! drains it with fresh topology/readback, advancing per-display previous
-//! history only on verified arrival (stale/drift fails narrow without
-//! replay, concurrent presses serialize/refuse).
+//! Space switch via the pinned Dock-swipe route (see
+//! [`crate::dock_swipe_select`]), reused through [`crate::workspace_select`]
+//! backends (never duplicated); the engine enqueues one pending select
+//! without blocking and the serialized off-main selection owner drains it
+//! with fresh topology plus event-driven exact-SID readback, advancing
+//! per-display previous history only on verified arrival (stale/drift
+//! fails narrow without replay, concurrent presses serialize/refuse).
 //!
 //! Numbered sends (`WorkspaceSend` 1-9 with either `follow`) are named
 //! by [`is_armed_send`] and dispatched through the production
