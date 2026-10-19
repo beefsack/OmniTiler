@@ -1,67 +1,160 @@
 # macOS managed native workspaces
 
-## Grab repair and inverse blocker checkpoint (2026-10-19)
+## Trailing workspace armed checkpoint (2026-10-19)
 
-**TextEdit product outward send-follow now passes; product roundtrip remains
-blocked by a fresh managed-facts query receiving no reply.** This supersedes
-the transfer-failure status below, not the incomplete acceptance checklist.
+**Trailing select/send-follow and the indicator slot are armed after offline
+integration review; native acceptance procedure 3 has not run.** This supersedes
+the earlier preparation blockers, not accepted numbered-action evidence.
 
-- A same-document, same-frame diagnostic isolated the grab: changing only x
-  from .2-width to .8-width at y+8 changed no-carry into outward/inverse carry.
-  Scoped images showed the failing press opened the document rename/location
-  popover. Images were inspected and deleted. Exact hit roles were StaticText
-  at .2/.35, MenuButton at .5, and Window/StandardWindow at .65/.8; all five
-  nevertheless joined the same AX/WindowServer owner.
-- `bcafc1d8` plus independent test correction `da63ebbf` requires the exact hit
-  element to be `AXWindow`/`AXStandardWindow`, then retains both owner joins and
-  candidate order. Role and owner come from the same element-at-position read.
-  Producer-shaped regressions fail with owner-only selection and pass with the
-  filter, including actual posted points and zero-post refusals. Tags, key-up
-  flags, event source/tap, delays, per-edge proofs and release remain unchanged.
-  **Tentative eligibility restriction:** a window with no plain-window candidate
-  refuses narrowly; draggable text-only titlebars may therefore be unsupported.
-- Reviewed diagnostic-only `24ba1c0c` adds record-gated Escape to dismiss the
-  owned document's popover; `19c924f8`/`539ff428` add a read-only, identically
-  record-gated candidate-role inspector. Neither arms a product action.
-- Two repaired product outward sends settle `Applied`, with exact target
-  membership/current, focus following and target retiling. They select the first
-  plain candidate (.65 or .35 as the retained layout changes). Native indicator
-  state follows current Desktop 2; scoped target UI/border crops were inspected
-  and deleted. Indicator pixels and a complete inverse/layout/border roundtrip
-  remain unverified. No automatic return command or reconciliation switch-back
-  is observed or present in the traced send path.
-- An early inverse from a fresh Desktop-2-started runtime exposed a separate
-  native-ordinal/scoped-ring mismatch: native order `[1,277]` versus stable core
-  ring `[277,1]` made `SendNumbered(1)` self-target. `e63ff6a8` plus independent
-  semantic regression `54e533e9`/fixture correction `d5a05fdf` resolve the native
-  SID once at admission and dispatch explicit core `Send`, preserving shared
-  core numbering, follow/feedback and pinned drain validation. Old and fixed
-  commands demonstrably reject/accept against the same producer-shaped report.
-  Numbered select has the analogous adapter mismatch and still needs its own fix.
-- Inverse now admits the exact native target, but its first fresh proof refuses
-  `engine-facts-noreply`, with zero effect posts. First observed near 115 seconds
-  of a 120-second run, it recurs mid-runtime: admission at 63815 ms, observer
-  teardown at 63969 ms, then the same refusal. Shutdown is Clean at 120 seconds.
-  Teardown/query causal order is **unknown**; no timeout, authority or retry
-  behavior is changed. After both refusals the document is restored by the
-  independently proven diagnostic, not counted as product inverse acceptance.
-- Final code gates at `d5a05fdf`: 898 macOS library tests plus integration suites,
-  411 core library tests plus integration suites, strict all-target macOS/core
-  clippy, format and unsafe guardrail pass. Hosted
-  [39156662870](https://github.com/beefsack/OmniTiler/actions/runs/39156662870)
-  passes. Unsafe remains **114 blocks**, all in `ffi.rs`; added hit-detail code
-  uses existing safe wrappers. No dependencies added.
-- Holders/preimages, original current and topology are restored; raw protected
-  window records match. Own runtimes, helpers, TextEdit process and display-awake
-  children are gone; own document/record files are removed. Existing extra Space
-  remains; disposable documents may reopen through Resume. No screenshots remain.
+- Authentic defaults add Ctrl+0 and Ctrl+Shift+0. Numbered stays remain
+  default-unbound; trailing stay remains unsupported. This arming is not a
+  dogfood-readiness or native lifecycle claim.
+- The adapter carries the engine's actual pending logical token with the claim,
+  joins it to exact same-output native append proof, and publishes explicit
+  logical/native bindings through the existing full-world contract until ack.
+  No shared-core change is needed. Real admission, proof/feedback jobs, builder
+  and core regressions cover combined-report select/send convergence and no replay.
+- Indicator clicks retain rendered numbered/trailing kind and identity. Stale
+  clicks refuse with the actual reason, never fall back to trailing creation.
+  Send preparation runs on the existing event-driven effect owner using published
+  plain-data display legs; main-thread submission/completion reads do not wait.
+  Original subject, lifetime, source, operation and topology fences remain.
+- Created-Space ownership survives tokenless sends, failed drags and terminal
+  completions. Cleanup only considers runtime-created Spaces with fresh emptiness
+  proof. Unknown occupancy refuses; foreign chrome gains no exemption and baseline
+  Spaces are never adopted. Creation, removal and residue remain unproven live.
+- Known limit: trailing send targets above Desktop 9 refuse before creation;
+  native trailing selection is not restricted by that send-only limit. No
+  relative posting fallback is added.
+- Diagnostic-only TextEdit posts add `select-0`/`send-0` under the existing
+  disposable-document proof. Bounded TextEdit-only `--diag-trailing-click` injects
+  one actual rendered binding through normal click fences. The new harness has
+  offline coverage but has not run live; review it before procedure 3.
+- Final locked core/protocol/effect-FFI/macOS tests: **2385 passed**, zero failures;
+  strict four-crate all-target clippy, workspace format and diff checks pass.
+  Signed build and separate verification pass. Unsafe remains **114 blocks**,
+  all in `ffi.rs`; changes there only extend safe indicator readback and comments,
+  with no unsafe-block changes. No dependencies added. Two diagnostic invocations
+  refused before effects (record validation/session-lock gates); no trailing
+  runtime, input posts, settings changes, Space mutations or captures occurred.
+- Size hotspots for later responsibility splits: `tile.rs`, `runtime_thread.rs`,
+  `workspace_indicator.rs`, and `workspace_send_managed_tests.rs`.
 
-Next: correlate managed-facts enqueue, engine receive/reply and requester outcome
-with observer teardown, without changing behavior; then prove product outward
-and inverse early in one bounded run. Complete both retained layouts, indicator
-pixels and following-border acceptance. Repair numbered-select target parity
-separately. Same-current no-op remains tentative (current refusal unchanged);
-send-stay, trailing lifecycle and per-display attribution remain pending.
+Next: review the diagnostic harness, then procedure 3 on disposable TextEdit.
+Per-display attribution has not started; outward border pixels, relative
+Ctrl+Cmd navigation, physical feel and two-display checks remain pending.
+
+## Same-current and send-stay checkpoint (2026-10-19)
+
+**Same-current send is an honest unchanged no-op; numbered send-stay passes
+TextEdit live in both directions.** This supersedes the capability/next-action
+statements in the earlier checkpoints. Trailing lifecycle, per-display numbering
+and complete physical/visual acceptance remain open.
+
+- Tentative parity choice: shared world sends preserve `RefusalKind::Unchanged`
+  for an existing same-domain target instead of reporting `send-target-unknown`. The macOS
+  producer-shaped regression fails before the correction; tiled/floating core
+  coverage and repeated sends retain no transfer or replay.
+- Stay uses the existing single-flight forward drag, then a released verified
+  selection of the admission-pinned source SID. The core exposes the committed
+  source MRU focus, distinguishing a resident, proven empty and unknown; admission
+  refuses unknown pins. No AX-raise repair is added. Failed/uncertain returns
+  remain `PossiblyExecuted`, never proven refusal or automatic replay.
+- The return selector uses the main-thread display handoff's plain UUID/CGID
+  joined against fresh native rows. A spawned-thread regression covers the
+  background-AppKit failure found during review. Per-edge identity/release gates
+  remain; stays never advance previous history (offline contract, not a live
+  previous-toggle check).
+- Tentative default parity: numbered stay 1-9 is implemented but **unbound by
+  default**, matching KDE and Windows. `--diag-stay-index 1|2` injects one
+  Shift+Alt+digit stay chord only into
+  an explicit bounded TextEdit-only tap run. It does not change default bindings;
+  duplicate effective chords refuse. Trailing, relative and output sends remain
+  disabled.
+
+| Accepted synthetic product check | Outcome |
+| --- | --- |
+| Same-current send-1 on Space 1 | Core `unchanged`, no retained transfer or native effect posts; current/focus unchanged. |
+| Stay-2, disposable B from 1 to 277 with A remaining on 1 | Arrival membership/current `[277]`/277, return `[277]`/1, settlement `Applied`; native focus checks name A. |
+| Stay-1, B from 277 to 1 with C remaining on 277 | Arrival `[1]`/1, return `[1]`/277, settlement `Applied`; native focus checks name C. Later select-1 restores current 1. |
+
+- Both ready scoped runtimes end `Clean`, with no retained shutdown effects.
+  Exact frames and emitted-frame records support both layouts' reflow; no pixel
+  acceptance is inferred. Focus joins and full Revert responses were checked in
+  the execution transcript, not retained as separate raw files. Retained final
+  status/topology receipts show holders disabled, no owned preimage and
+  `[1,277]`/1; protected-window records match exactly. No Space was created or
+  removed. Preexisting 277 remains. Runtime/helper and owned display-awake
+  processes are gone. Exact-document graceful close hung and was stopped;
+  disposable TextEdit documents/files and earlier Resume documents remain.
+- Final four-crate core/protocol/effect-FFI/macOS tests: **2328 passed**, zero
+  failures; strict all-target clippy, format and diff checks pass. Signed build
+  and separate verification pass. Unsafe remains **114 blocks**, all in unchanged
+  `ffi.rs`; no dependencies added. Live probe SHA-256:
+  `62b113e7a6544adf629933a7c4f849e6bdf992aa2fad2c570f4557fa5cc875d5`.
+  No screenshots were taken; outward border pixels remain unproven. Physical
+  shortcut feel and switch-back jank are not established by synthetic input.
+
+Next: implement trailing empty-Space select/send/indicator with conservative
+occupancy/removal proof, then offline per-display attribution. Take a tight
+owned-edge border crop during a suitable live leg. Two-display acceptance and
+relative Ctrl+Cmd navigation remain pending.
+
+## Roundtrip and numbered-select checkpoint (2026-10-19)
+
+**TextEdit product send-follow roundtrip and Desktop-2-started numbered selects
+pass live.** The inverse managed-facts blocker is fixed. This supersedes the
+failure checkpoints below; physical shortcut feel and the remaining capability
+checklist are not complete.
+
+- `462b9da0`/`75e018ca` distinguish facts-query timeout, disconnect, engine-down
+  and closed inbox; engine receive/reply verdicts correlate by exact window,
+  with observer teardown-start and completion separate. Normal metadata-only
+  logs retain these useful outcomes without application content.
+- The decisive inverse query reports `noreply-engine-down elapsed_ms=0`, before
+  observer teardown, with zero effects. Missing facts, revision fences and inbox
+  latency were not the cause. `tile` creates a cloned runtime handle in each
+  send-backend factory; the second submit drops its unused factory because the
+  effect owner already exists. Previously every handle drop stopped the engine
+  and observers. `8a6c2504` counts live handles independently of supervised
+  threads and tears down only on final-handle drop; explicit shutdown is unchanged.
+  The regression fails against the old drop path and passes fixed, including a
+  second observation/facts query and clean shutdown. Independent `8a49c5ad`
+  removes a fixed sleep; the existing final-drop regression still passes.
+- `e63ff6a8` already resolves numbered sends to the native SID once at admission.
+  `5cc017f3` applies the same adapter repair to numbered selects: native order
+  `[1,277]` must not be reinterpreted through a Desktop-2-started core ring
+  `[277,1]`. Explicit `SelectWorkspace` preserves shared core numbering;
+  numbered tap claims pin SID/revision through the existing drain fence.
+  Reordered ordinals refuse without effects. Relative/previous semantics and
+  capability arming are unchanged; independent review accepts the repair.
+
+| Accepted live check | Outcome |
+| --- | --- |
+| One ready TextEdit-only runtime at `8a49c5ad`, product send-2 then send-1 of the same disposable document | Both `Applied`; exact membership/current `[277]`/277 then `[1]`/1; NSWorkspace, SLPS and direct AX agree on the same focused window; no facts refusal. |
+| Both workspace layouts during that roundtrip | Source reflows after departure; target tiles the arriving document beside its resident, then expands its resident after return. An unaffected source document retains its exact frame. The returned document takes a new insertion slot, not its original slot. |
+| Scoped visual evidence | Real TextEdit UI and both current-indicator pixel states inspected. Inverse active border is visible; outward border geometry matches the subject, but its pixels remain inconclusive. Four captures deleted after inspection. |
+| One ready Desktop-2-started runtime at `5cc017f3`, product Ctrl+1 then Ctrl+2 | Both enqueue and drain with `changed=true`; exact current 277 -> 1 -> 277, focus follows each visible TextEdit document; zero select refusals or forwarded chords. No screenshots in this run. |
+
+- Each accepted runtime ends `Clean`; original current/topology `[1,277]`/1 is
+  restored. Both runs report nine-holder Revert with the owned preimage removed;
+  final raw Revert/status receipts were checked for the select run, while the
+  roundtrip's receipt survives only in its execution transcript.
+  Seven raw protected-window records compare equal before/after each run, including
+  onscreen state (the same raw baseline shown in the product-tap checkpoint below).
+  Owned runtimes, documents, records and display-awake children are gone; no
+  screenshots remain. Preexisting Space 277 is retained; disposable documents may
+  reopen through Resume. No new Space is created or removed.
+- Final code gates: **full macOS tests, including integration suites**, strict
+  all-target macOS clippy and format pass; fresh signed build and separate
+  verification pass. Hosted [39167023039](https://github.com/beefsack/OmniTiler/actions/runs/39167023039)
+  passes at `5cc017f3`. Unsafe remains **114 blocks**, all in unchanged `ffi.rs`;
+  no dependencies added. Main signed select-test artifact SHA-256:
+  `629e3b70481a3244e57ba6b05ef24a56ae9f30fdd2fbf427a2a493299559b8f4`.
+
+Continuation: the same-current/send-stay checkpoint above supersedes this next
+step. Plain-window-only grabs still conservatively refuse text-only draggable
+titlebars; physical feel/jank and two-display checks remain pending.
 
 ## Sequence discriminator checkpoint (2026-10-19)
 
@@ -291,16 +384,16 @@ trailing-Space lifecycle and multi-display work parked.
 
 ### Dogfood checklist
 
-- **Current status:** basic actions and existing-Space selects can be checked;
-  TextEdit outward product send-follow now passes after excluding title controls
-  from grab selection. Inverse admits but refuses before posting because fresh
-  managed-facts readback receives no reply; product roundtrip is not accepted.
-  Numbered sends remain armed but not dogfood-ready; no new actions are armed.
-  Startup on a non-first Desktop also exposes a numbered-select target mismatch;
-  that adapter repair is pending. Require observed runtime readiness and scoped
-  subject admission. Inverse, both retained layouts, indicator pixels and full
-  following-border acceptance remain pending; native outward indicator state and
-  scoped target UI/border crops alone do not close them.
+- **Current status:** numbered selects, including Desktop-2 startup, and TextEdit
+  product send-follow roundtrip pass live. Same-current send is unchanged with
+  zero effects; numbered send-stay passes both directions through the scoped
+  diagnostic binding and stays unbound by default. Membership/current, source
+  focus return and layout reflow pass; physical shortcut feel/switch-back jank and
+  outward border pixels remain pending. Earlier follow checks cover both indicator
+  states and inverse border pixels. Trailing actions are armed after offline
+  integration review, but append/reuse/send/indicator/removal remain unproven live.
+  Require observed runtime readiness and scoped subject admission;
+  plain-window grabs may refuse text-only draggable titlebars.
 - The usual user entry is `mise exec -- just dev trace`. It builds/signs before
   launch, is unbounded and unscoped, and can tile ordinary terminal windows.
   For this disposable TextEdit check, use the scoped, explicit Authentic/Ctrl
@@ -330,8 +423,19 @@ trailing-Space lifecycle and multi-display work parked.
   both Spaces, retained slots on revisiting, current indicator and following
   border. Physical shortcut feel and Mission Control jank require this manual
   observation; synthetic posting is not a substitute.
-- Send-stay, trailing empty-Space selection/send and multi-display transfers are
-  not ready. Use one display; do not try Ctrl+0 or Ctrl+Shift+0 as acceptance.
+- **Stay physical check:** replace the tile command above with the same command
+  plus `--diag-stay-index 2`; keep a disposable resident A on Desktop 1 and focus
+  B there. Press Ctrl+Alt+Shift+2: B should move to Desktop 2 while current/focus
+  return to Desktop 1/A. A separate bounded run with `--diag-stay-index 1` tests
+  the inverse from Desktop 2 with a resident C. This explicit diagnostic binding
+  is not a default chord. Record visible switch-back cost separately.
+- **Trailing procedure 3 remains pending:** use one display, Ctrl+0 and
+  Ctrl+Shift+0 (the Meta role uses Ctrl defaults). Check append, empty reuse,
+  rendered trailing-slot selection, occupied-target send-follow, exact binding
+  convergence and only owned proven-empty cleanup. Diagnostic `textedit-post`
+  supports `select-0`/`send-0`; `--diag-trailing-click` is a one-shot rendered-click
+  probe, not a physical click result. Review that harness before live use.
+  Multi-display transfers remain unproven.
 - Wait for bounded teardown, or press Ctrl+C once for graceful stop; a second
   terminal can run `mise exec -- just dev-stop`. Stop leaves window frames in
   place. Then restore owned holders and inspect final state:

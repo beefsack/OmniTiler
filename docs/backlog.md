@@ -4091,21 +4091,17 @@ decisions of 2026-09-24 are under
       snapshots, inspected ring/indicator screenshots and clean overlay teardown.
       903 macOS tests, strict clippy, format and signed build/verify pass; unsafe
       remains 114. [Outcome](changes/archive/macos-full-state-replies.md#final-outcome-2026-10-18).
-   3. Finish managed native workspaces. **2026-10-19:** numbered send-follow
-      Ctrl+Shift+1-9 is armed; outward product transfer, membership/current and
-       focus-follow pass on an owned helper. Authentic holder enable/Revert and
-       Compatible zero mutation pass. Reviewed disposable `textedit-post` closes
-       input ownership, but two TextEdit outward sends fully post and settle
-       `PossiblyExecuted` without carry (brief Space switch/return); no inverse.
-       Not dogfood-ready. Next: admitted-subject/readback diagnostics and observable
-       runtime log readiness before a new discriminator, then scoped roundtrip.
-       Same-current honest no-op, send-stay, trailing selection/send/indicator and
-       per-display numbering follow; two-display checks pending. Final 1030 macOS
-       tests and strict clippy/format pass; signed build/verify passes before the
-       test-only Windows-fixture repair. Unsafe 114, unchanged in ffi.rs. Current
-       Space/settings and exact protected records restored, no owned processes
-       remain; existing Space 277 retained, residual documents may Resume.
-       [Current checkpoint and dogfood checklist](changes/macos-managed-workspaces.md#product-send-follow-partial-live-checkpoint-2026-10-19).
+    3. Finish managed native workspaces. **2026-10-19:** numbered select,
+       send-follow and default-unbound send-stay pass live; same-current send is
+       an unchanged no-op. Trailing select/send-follow/indicator are armed after
+       offline integration review; native procedure 3 remains pending.
+       Existing-contract bindings settle creation; stale clicks refuse; send
+       preparation runs off-main. Trailing sends above Desktop 9 refuse before
+       creation. Next: diagnostic-harness review and disposable TextEdit
+       procedure 3, then per-display attribution. Outward pixels, relative
+       actions and physical/two-display checks pending. Four-crate tests 2385
+       passed; unsafe 114, unchanged.
+       [Checkpoint and checklist](changes/macos-managed-workspaces.md#trailing-workspace-armed-checkpoint-2026-10-19).
   4. Drag/drop overlays, re-scoped (user 2026-10-17): no modifier+drag; the
      producer is a passively observed native title-bar drag of a managed
      window, matching Windows' title-bar route, with physical user acceptance.
