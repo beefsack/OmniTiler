@@ -47,9 +47,44 @@ fn spend_leg(budget: &mut ActionBudget, cleanup: bool, what: &str) -> Result<(),
     }
 }
 
+/// Pinned display join for effect-thread selectors: the caller's
+/// main-thread-published `(cgid, managed UUID)` verified against the
+/// fresh SLS snapshot's exact in-row identifier - never a positional
+/// guess, never an AppKit read, so this runs on any thread without
+/// touching or blocking the main thread. Refuses a zero CG ID, an
+/// unknown display, or an identifier mismatch (stale publication or a
+/// display swap mid-leg). Returns (cgid, Space count).
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn display_cgid_of_pinned(
+    snapshot: &TopologySnapshot,
+    display: usize,
+    pinned_cgid: u32,
+    pinned_uuid: &str,
+) -> Result<(u32, usize), McError> {
+    let row = snapshot.displays.get(display).ok_or_else(|| {
+        McError::Blocked(format!(
+            "display {display} unknown ({} displays)",
+            snapshot.displays.len()
+        ))
+    })?;
+    if pinned_cgid == 0 {
+        return Err(McError::Blocked(
+            "pinned display has no CG display ID; refusing without an exact mapping".to_owned(),
+        ));
+    }
+    match row.identifier.as_deref() {
+        Some(id) if id == pinned_uuid => Ok((pinned_cgid, row.spaces.len())),
+        _ => Err(McError::Blocked(
+            "pinned display UUID no longer names the SLS row; refusing stale dispatch".to_owned(),
+        )),
+    }
+}
+
 #[cfg(target_os = "macos")]
 pub(crate) mod live {
     use super::*;
+
+    pub(crate) use super::display_cgid_of_pinned;
 
     /// Exact-handle `caffeinate -d -t <seconds>` companion, self-bounded via
     /// `-t`. Signals go only to the held handle; `wait()` runs only after an
@@ -290,39 +325,6 @@ pub(crate) mod live {
             "no CG display ID joins the chosen managed display; refusing without an exact mapping"
                 .to_owned(),
         ))
-    }
-
-    /// Pinned display join for effect-thread selectors: the caller's
-    /// main-thread-published `(cgid, managed UUID)` verified against the
-    /// fresh SLS snapshot's exact in-row identifier - never a positional
-    /// guess, never an AppKit read, so this runs on any thread without
-    /// touching or blocking the main thread. Refuses a zero CG ID, an
-    /// unknown display, or an identifier mismatch (stale publication or a
-    /// display swap mid-leg). Returns (cgid, Space count).
-    pub fn display_cgid_of_pinned(
-        snapshot: &TopologySnapshot,
-        display: usize,
-        pinned_cgid: u32,
-        pinned_uuid: &str,
-    ) -> Result<(u32, usize), McError> {
-        let row = snapshot.displays.get(display).ok_or_else(|| {
-            McError::Blocked(format!(
-                "display {display} unknown ({} displays)",
-                snapshot.displays.len()
-            ))
-        })?;
-        if pinned_cgid == 0 {
-            return Err(McError::Blocked(
-                "pinned display has no CG display ID; refusing without an exact mapping".to_owned(),
-            ));
-        }
-        match row.identifier.as_deref() {
-            Some(id) if id == pinned_uuid => Ok((pinned_cgid, row.spaces.len())),
-            _ => Err(McError::Blocked(
-                "pinned display UUID no longer names the SLS row; refusing stale dispatch"
-                    .to_owned(),
-            )),
-        }
     }
 
     /// Fresh AX join of one display's `mc.spaces` group: Dock → `mc` →
@@ -756,6 +758,9 @@ pub(crate) mod live {
 #[cfg(not(target_os = "macos"))]
 pub(crate) mod live {
     use super::*;
+
+    #[cfg(test)]
+    pub(crate) use super::display_cgid_of_pinned;
 
     pub struct CaffeinateGuard {
         pub reaped: bool,

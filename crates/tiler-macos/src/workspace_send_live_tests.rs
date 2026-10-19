@@ -1768,6 +1768,11 @@ fn stay_return_display_join_runs_off_main_without_appkit() {
         old_err.contains("main thread"),
         "old path fails for thread affinity, got: {old_err}"
     );
+    #[cfg(not(target_os = "macos"))]
+    assert!(
+        !old_err.is_empty(),
+        "old path fails closed off-mac, got: {old_err}"
+    );
     // Pinned join succeeds with the exact (cgid, Space count).
     assert_eq!(ok, Ok((7, 2)));
     // A stale publication (UUID no longer naming the row), a zero CG ID,

@@ -190,6 +190,7 @@ impl SelectionState {
     /// created SID into lifecycle ownership AND reports the token/SID
     /// binding back to the engine from this single take, so neither leg
     /// can adopt or bind twice.
+    #[cfg(any(target_os = "macos", test))]
     pub(crate) fn take_trailing_proof(&mut self) -> Option<TrailingAppendProof> {
         self.last_created.take();
         self.last_proof.take()
