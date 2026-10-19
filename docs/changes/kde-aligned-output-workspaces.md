@@ -204,15 +204,19 @@ back to `per-output-local` with a logged reason.
   per-window `outputChanged(oldOutput)` precedes workspace `screensChanged`
   (`src/workspace.cpp:2339-2346,1485-1490`; `src/window.cpp:219-227`). This is
   source evidence, not live event-order confirmation.
-- Hotplug no-merge/return implementation and acceptance are parked rather than
-  claiming the aligned path supports them. Question: can the disconnect probe
-  run after affected Plasma surfaces are moved away, or should it use isolated
-  virtual outputs? Origin retention must precede logical-cell pruning; the
-  current aligned path does not preserve disconnected origins for return.
+- Hotplug no-merge/return is not implemented: the current aligned path does not
+  preserve disconnected origins for return. Origin retention must precede
+  logical-cell pruning.
+- User decision 2026-10-19: probe on the physical outputs. Before disabling an
+  output, move affected Plasma surfaces and windows to the surviving output
+  (the protected terminal stays there), capture the exact output configuration
+  and surface placement, and restore both afterwards. Isolated virtual outputs
+  are not used.
 
 ## Exact next action
 
-- Resolve the hotplug probe placement question above, then implement retained
-  origins/trailing displacement/return before claiming no-merge support.
+- Live-probe native disconnect event order under the decided procedure, then
+  implement retained origins/trailing displacement/return before claiming
+  no-merge support.
   The own-send trace is complete; physical drag remains in the
   [dual-output continuation](kde-dual-output-live.md#current-continuation-2026-10-19).

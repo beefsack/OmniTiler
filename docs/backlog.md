@@ -92,13 +92,16 @@ decisions of 2026-09-24 are under
   settlement and native output-move adoption pass at callback/state level.
   D5 logical source-refill interpretation and old-mode fallback are
   **Tentative (user review pending)**. Disjoint-model T05 is superseded.
-  - PARKED hotplug implementation/live proof: exact Plasma-surface restoration
-    for disconnect was not established. Question: stage those surfaces away
-    first, or probe isolated virtual outputs? Retained origin logicals must
-    precede native evacuation/pruning; aligned no-merge/return is not delivered.
-  - Remaining: physical drag/shortcut evidence; separately trace the earlier
-    own-send membership-without-output-arrival anomaly using complete transport
-    and native homing proof. Native KWin sends pass; that is not own-send proof.
+  - NEXT hotplug: user 2026-10-19 selected the physical route: move affected
+    Plasma surfaces and windows off the output before disabling it, keep the
+    protected terminal on the surviving output, and restore the exact output
+    configuration and surface placement afterwards (no virtual outputs). Probe
+    native disconnect event order first, then implement retained origin
+    logicals before evacuation/pruning, trailing displacement and return on
+    reconnect. Aligned no-merge/return is not delivered yet.
+  - Remaining: physical drag/shortcut evidence. The earlier own-send anomaly
+    did not reproduce under complete wire/native capture
+    ([dual-output record](changes/kde-dual-output-live.md)).
   - Follow-ups: evaluate aligned-option adoption separately on Windows and
     macOS; their independent-set defaults remain unchanged.
   [Record](changes/kde-aligned-output-workspaces.md).
@@ -4996,8 +4999,31 @@ recorded separately from unexercised legs. Reference-WM checks test other compos
   carry is delivered offline under NORMATIVE REQ-MAX-09b (D28 (b), with
   born-fullscreen option (a)); native acceptance remains pending.
   Design questions remain distinct from delivered implementation/live gaps.
+- KDE 2026-10-19 decisions awaiting review: entries marked "Tentative (user
+  review pending), 2026-10-19" in [decisions](decisions.md) and
+  [reference outcomes](spec/reference-outcomes.md) (rapid directional queueing,
+  ring-end retention/sticky occupancy, `global-unique` fallback, aligned D5
+  refill, automatic-float keep-above rules, placement tree traces).
+- KDE 2026-10-19 open questions:
+  - Automatic-float keep-above: track project-owned keep-above outside the
+    script so it is restored on unload/restart (KWin offers no script unload
+    hook)? Blocks acceptance. [record](changes/kde-automatic-float-stacking.md)
+  - World-route active-group highlight has no query producer: drive it from
+    focus/domain/tree lifecycle events or a new native visibility trigger?
+    [record](changes/kde-legacy-route-removal.md)
+  - Remaining physical keyboard/drag/visible-underlay checks: trusted manual
+    input, or a separately scoped absolute-input fixture? Which T03 action
+    should refuse in shared mode? Can mapped-binary identity be proved in a
+    fresh compositor session? Which realistic geometry reaches R4
+    capacity-float fallback, and which focus result should it publish?
+    [record](changes/kde-dual-output-live.md)
 
 ## Known issues and risks
+
+- Linux workspace gates fail in `crates/tiler-macos` since upstream macOS
+  commits of 2026-10-19: non-macOS `display_cgid_of_pinned` is missing for
+  `workspace_send_live_tests.rs`, and `take_trailing_proof` in
+  `workspace_select.rs` fails strict dead-code. KDE/core gates pass otherwise.
 
 - Approved 0.1 known limitation D26(b) (User 2026-10-12): intentional-float
   memory does not survive logout/login under unchanged session-scoped
