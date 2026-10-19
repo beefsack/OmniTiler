@@ -1069,7 +1069,8 @@ impl RuntimeHandle {
 
     /// Submit one menu-bar segment click through the engine lane: the
     /// clicked segment already resolved to an armed select action over its
-    /// render-time row (see [`crate::workspace_indicator::resolve_click`]);
+    /// render-time row (see
+    /// [`crate::workspace_indicator::resolve_indicator_click`]);
     /// the immutable render binding (`expected_sid`, `ui_generation`,
     /// `topology_revision`) rides through engine admission into the
     /// pending claim, and the main-thread drain refuses it against the

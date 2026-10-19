@@ -122,6 +122,42 @@ impl RuntimeHandle {
         }
     }
 
+    /// Proven trailing append proof for one drained trailing claim: the
+    /// claim's engine-minted pending token paired with the exact native
+    /// append rows the drain just verified. Recorded engine-side through
+    /// the session binding store (exact same-output append only - drift,
+    /// guesses, and duplicates refuse without mutation) and carried on
+    /// every full report until the core acknowledges it. Data lane,
+    /// best-effort like the outcome reports above: a full or closed queue
+    /// drops counted, which merely leaves the core pending outstanding -
+    /// never a false resolution, never a replay. Call at most once per
+    /// drained append (the drain takes the proof exactly once).
+    pub fn submit_trailing_proof(
+        &self,
+        logical_id: &str,
+        display_id: &str,
+        created_sid: u64,
+        before: &[u64],
+        after: &[u64],
+    ) {
+        if logical_id.is_empty() || display_id.is_empty() || created_sid == 0 {
+            return;
+        }
+        let job = EngineJob::TrailingProof {
+            logical_id: logical_id.to_owned(),
+            display_id: display_id.to_owned(),
+            created_sid,
+            before: before.to_vec(),
+            after: after.to_vec(),
+        };
+        // Bump before enqueue (see `invalidate_clock` in runtime): the
+        // recorded binding changes the next report.
+        invalidate_clock(&self.shared);
+        if !self.inbox.try_send_data(job) {
+            lock_shared(&self.shared).diagnostics.data_dropped_full += 1;
+        }
+    }
+
     /// Drop a pending (unclaimed) product select without dispatching: the
     /// lock/secure/stale-topology paths refuse narrowly instead of running
     /// a switch under an unsafe context. Returns whether one was dropped.

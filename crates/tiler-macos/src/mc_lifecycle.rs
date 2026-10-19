@@ -292,6 +292,39 @@ pub(crate) mod live {
         ))
     }
 
+    /// Pinned display join for effect-thread selectors: the caller's
+    /// main-thread-published `(cgid, managed UUID)` verified against the
+    /// fresh SLS snapshot's exact in-row identifier - never a positional
+    /// guess, never an AppKit read, so this runs on any thread without
+    /// touching or blocking the main thread. Refuses a zero CG ID, an
+    /// unknown display, or an identifier mismatch (stale publication or a
+    /// display swap mid-leg). Returns (cgid, Space count).
+    pub fn display_cgid_of_pinned(
+        snapshot: &TopologySnapshot,
+        display: usize,
+        pinned_cgid: u32,
+        pinned_uuid: &str,
+    ) -> Result<(u32, usize), McError> {
+        let row = snapshot.displays.get(display).ok_or_else(|| {
+            McError::Blocked(format!(
+                "display {display} unknown ({} displays)",
+                snapshot.displays.len()
+            ))
+        })?;
+        if pinned_cgid == 0 {
+            return Err(McError::Blocked(
+                "pinned display has no CG display ID; refusing without an exact mapping".to_owned(),
+            ));
+        }
+        match row.identifier.as_deref() {
+            Some(id) if id == pinned_uuid => Ok((pinned_cgid, row.spaces.len())),
+            _ => Err(McError::Blocked(
+                "pinned display UUID no longer names the SLS row; refusing stale dispatch"
+                    .to_owned(),
+            )),
+        }
+    }
+
     /// Fresh AX join of one display's `mc.spaces` group: Dock → `mc` →
     /// `mc.display` with `AXDisplayID == cgid` → `mc.spaces`.
     fn spaces_group(cgid: u32) -> Result<crate::ffi::AxElement, McError> {
@@ -413,6 +446,36 @@ pub(crate) mod live {
         })
     }
 
+    /// Pinned add helper for the effect-thread trailing preparation: the
+    /// same single-Space create as [`mc_add_space`], but the SLS-to-CG join
+    /// rides the caller's main-thread-published `(cgid, managed UUID)`
+    /// verified by [`display_cgid_of_pinned`] instead of the AppKit
+    /// snapshot - no main thread touch, no marshal, no block. The pinned
+    /// identity re-verifies post-open (a display swap mid-leg refuses
+    /// before any press).
+    pub fn mc_add_space_pinned(
+        display: usize,
+        pinned_cgid: u32,
+        pinned_uuid: &str,
+        budget: &mut ActionBudget,
+        cleanup: bool,
+    ) -> Result<super::PressOutcome, McError> {
+        action_gates()?;
+        let snapshot = fresh_snapshot()?;
+        let (cgid, _) = display_cgid_of_pinned(&snapshot, display, pinned_cgid, pinned_uuid)?;
+        run_mc_leg("add-open", budget, cleanup, |b| {
+            let fresh = fresh_snapshot()?;
+            let (cgid_fresh, _) =
+                display_cgid_of_pinned(&fresh, display, pinned_cgid, pinned_uuid)?;
+            if cgid_fresh != cgid {
+                return Err(McError::Blocked(format!(
+                    "CG display ID changed during open (was {cgid}, now {cgid_fresh}); refusing stale dispatch"
+                )));
+            }
+            mc_add_pressed(cgid, b, cleanup)
+        })
+    }
+
     fn mc_add_pressed(
         cgid: u32,
         budget: &mut ActionBudget,
@@ -455,6 +518,92 @@ pub(crate) mod live {
         let (cgid, _) = display_cgid_of(&snap0, d0)?;
         run_mc_leg("goto-open", budget, cleanup, |b| {
             mc_goto_pressed(sid, &snap0, cgid, b, cleanup)
+        })
+    }
+
+    /// Go to `sid` on the caller-pinned display (effect-thread stay
+    /// return): the same SID-accepting drift-rejecting shape as
+    /// [`mc_goto_sid`], but the SLS-to-CG join rides the
+    /// main-thread-published plain-data pair verified by
+    /// [`display_cgid_of_pinned`] instead of the AppKit snapshot - no main
+    /// thread touch, no marshal, no block. The post-open re-join
+    /// re-verifies the pinned identity against the fresh snapshot (a
+    /// display swap mid-leg refuses), and the exact AX list-count match
+    /// plus the caller's SLS readback still fence misrouting.
+    pub fn mc_goto_sid_pinned(
+        sid: u64,
+        pinned_cgid: u32,
+        pinned_uuid: &str,
+        budget: &mut ActionBudget,
+        cleanup: bool,
+    ) -> Result<super::PressOutcome, McError> {
+        action_gates()?;
+        let snap0 = fresh_snapshot()?;
+        let (d0, _) = snap0.locate(sid).ok_or_else(|| {
+            McError::Ownership(format!(
+                "Space {sid} not uniquely located before goto; ownership uncertain - refusing"
+            ))
+        })?;
+        let (cgid, _) = display_cgid_of_pinned(&snap0, d0, pinned_cgid, pinned_uuid)?;
+        run_mc_leg("goto-open", budget, cleanup, |b| {
+            mc_goto_pressed_pinned(sid, &snap0, cgid, pinned_uuid, b, cleanup)
+        })
+    }
+
+    /// Pinned press leg: mirrors [`mc_goto_pressed`] with the pinned join
+    /// on both sides. The `cgid_fresh != cgid` fence stays as an invariant
+    /// re-verification (the pinned join returns the pinned CG ID only on an
+    /// exact identifier match, so a display swap mid-leg refuses here).
+    fn mc_goto_pressed_pinned(
+        sid: u64,
+        snap0: &TopologySnapshot,
+        cgid: u32,
+        pinned_uuid: &str,
+        budget: &mut ActionBudget,
+        cleanup: bool,
+    ) -> Result<super::PressOutcome, McError> {
+        action_gates()?;
+        let snap1 = fresh_snapshot()?;
+        let (d1, i1) = snap1.locate(sid).ok_or_else(|| {
+            McError::Ownership(format!(
+                "Space {sid} moved during open; ownership uncertain - refusing"
+            ))
+        })?;
+        let (d0, i0) = snap0.locate(sid).ok_or_else(|| {
+            McError::Ownership(format!("Space {sid} lost its pre-open join; refusing"))
+        })?;
+        if (d1, i1) != (d0, i0) || snap1.displays[d1].identifier != snap0.displays[d0].identifier {
+            return Err(McError::Blocked(format!(
+                "topology drifted during open (was display {d0} index {i0}, now {d1}/{i1}); refusing stale dispatch"
+            )));
+        }
+        let (cgid_fresh, _) = display_cgid_of_pinned(&snap1, d1, cgid, pinned_uuid)?;
+        if cgid_fresh != cgid {
+            return Err(McError::Blocked(format!(
+                "CG display ID changed during open (was {cgid}, now {cgid_fresh}); refusing stale dispatch"
+            )));
+        }
+        let children = spaces_list_children(&spaces_group(cgid_fresh)?)?;
+        if children.len() != snap1.displays[d1].spaces.len() {
+            return Err(McError::Blocked(format!(
+                "AX list count {} != SLS row count {} for display {d1}; refusing index dispatch",
+                children.len(),
+                snap1.displays[d1].spaces.len()
+            )));
+        }
+        let target = &children[i1];
+        super::spend_leg(budget, cleanup, "goto-press")?;
+        action_gates()?;
+        crate::ffi::ax_perform_action(target, MC_ACTION_PRESS).map_err(|code| {
+            McError::System(format!(
+                "goto press refused: {}",
+                crate::ffi::ax_error_name(code)
+            ))
+        })?;
+        Ok(super::PressOutcome {
+            after: fresh_snapshot().ok(),
+            mc_open: true,
+            close_error: None,
         })
     }
 
@@ -669,8 +818,28 @@ pub(crate) mod live {
         unsupported("Mission Control lifecycle")
     }
 
+    pub fn mc_add_space_pinned(
+        _display: usize,
+        _pinned_cgid: u32,
+        _pinned_uuid: &str,
+        _budget: &mut ActionBudget,
+        _cleanup: bool,
+    ) -> Result<super::PressOutcome, McError> {
+        unsupported("Mission Control lifecycle")
+    }
+
     pub fn mc_goto_sid(
         _sid: u64,
+        _budget: &mut ActionBudget,
+        _cleanup: bool,
+    ) -> Result<super::PressOutcome, McError> {
+        unsupported("Mission Control lifecycle")
+    }
+
+    pub fn mc_goto_sid_pinned(
+        _sid: u64,
+        _pinned_cgid: u32,
+        _pinned_uuid: &str,
         _budget: &mut ActionBudget,
         _cleanup: bool,
     ) -> Result<super::PressOutcome, McError> {
@@ -768,6 +937,59 @@ pub(crate) fn goto_sid_verified(
     let mut after = outcome.after.ok_or_else(|| {
         McError::Blocked(format!(
             "goto Space {target}: post-press snapshot unreadable (MC open: {}); effect unknown — restoring",
+            outcome.mc_open
+        ))
+    })?;
+    if validate_goto_effect(from, &after, display, target).is_ok() {
+        return Ok((after, outcome.close_error));
+    }
+    // Async settle: the press was sent; poll fresh readbacks (never a
+    // replay) until the effect lands or the bounded window expires.
+    let t0 = std::time::Instant::now();
+    let mut last = validate_goto_effect(from, &after, display, target).unwrap_err();
+    while t0.elapsed() < std::time::Duration::from_millis(MC_EFFECT_SETTLE_MS) {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        match live::fresh_snapshot() {
+            Ok(s) => {
+                if validate_goto_effect(from, &s, display, target).is_ok() {
+                    return Ok((s, outcome.close_error));
+                }
+                last = validate_goto_effect(from, &s, display, target).unwrap_err();
+                after = s;
+            }
+            Err(e) => {
+                last = e;
+            }
+        }
+    }
+    let _ = after;
+    Err(McError::Blocked(format!(
+        "goto Space {target}: no effect within {}ms after a sent press ({last}); restoring",
+        MC_EFFECT_SETTLE_MS,
+    )))
+}
+
+/// Pinned goto helper for effect-thread selectors (stay return): the same
+/// SID-accepting dispatch plus exact-current readback as
+/// [`goto_sid_verified`], but the SLS-to-CG join rides the caller's
+/// main-thread-published `(cgid, managed UUID)` verified on every fresh
+/// snapshot - never an AppKit read, so the effect owner neither touches
+/// nor blocks the main thread. A sent press still settles asynchronously
+/// with bounded fresh-snapshot polling (never a replay) before the timeout
+/// names the actual diff. Returns (post-goto snapshot, close shortfall).
+pub(crate) fn goto_sid_verified_pinned(
+    from: &TopologySnapshot,
+    display: usize,
+    target: u64,
+    pinned_cgid: u32,
+    pinned_uuid: &str,
+    budget: &mut ActionBudget,
+    cleanup: bool,
+) -> Result<(TopologySnapshot, Option<String>), McError> {
+    let outcome = live::mc_goto_sid_pinned(target, pinned_cgid, pinned_uuid, budget, cleanup)?;
+    let mut after = outcome.after.ok_or_else(|| {
+        McError::Blocked(format!(
+            "goto Space {target}: post-press snapshot unreadable (MC open: {}); effect unknown - restoring",
             outcome.mc_open
         ))
     })?;

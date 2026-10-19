@@ -53,18 +53,25 @@
 //!   friends) are real but outside the repo-established set, so they are
 //!   reported here, never silently disabled under Compatible.
 //!
-//! Execution capability: selects plus numbered send-follow 1..9. The 18
-//! select rows (numbered existing-Space `1..9`, the 8 relative-select
+//! Execution capability: selects plus numbered sends 1..9 (follow and
+//! stay) plus the trailing `index 0` select-or-create and send-0 follow.
+//! The 19
+//! select rows (numbered existing-Space `1..9`, the trailing select-0, the
+//! 8 relative-select
 //! rows, and the previous toggle) carry `implemented: true` and dispatch
 //! through the product tile without a focused-window subject (empty Spaces
-//! navigate). The 9 numbered send-follow rows (`workspace-send-1..9`)
-//! carry `implemented: true` and dispatch through the managed-send effect
-//! owner with a focused managed-window subject. Everything else stays
-//! `implemented: false` and is honestly refused by the engine (see
-//! [`workspace_unsupported_reason`]): the trailing `index 0`
-//! select-or-create (automatic creation/deletion unresolved — occupancy
-//! unproven, so no trailing append), the trailing send-0, all relative
-//! sends, all send-and-stay rows (bindable but unbound AND unarmed), all
+//! navigate). The 10 numbered send-follow rows (`workspace-send-0..9`)
+//! plus the 9 numbered send-stay rows (`stay-workspace-1..9`, bindable but
+//! unbound by default: no default chord) carry `implemented: true` and
+//! dispatch through the managed-send effect owner with a focused
+//! managed-window subject. The trailing `index 0` select-or-create row and
+//! the trailing send-0 follow row arm through the single reviewable
+//! [`TRAILING_CAPABILITY_ENABLED`] gate (`true`: armed end to end through
+//! the production admission/drain/command/indicator/lifecycle route).
+//! Everything else stays `implemented: false` and is
+//! honestly refused by the engine (see [`workspace_unsupported_reason`]):
+//! the trailing stay-0 (mapping only, no native wiring), all
+//! relative sends/stays, all
 //! output sends (cross-display TBD), and whole-workspace migration (no
 //! approved form). Arming seam for the armed subset: native single-shot
 //! Space switch via the proven
@@ -75,12 +82,14 @@
 //! history only on verified arrival (stale/drift fails narrow without
 //! replay, concurrent presses serialize/refuse).
 //!
-//! Numbered send-follow (`WorkspaceSend` 1-9 with `follow: true`) is named
+//! Numbered sends (`WorkspaceSend` 1-9 with either `follow`) are named
 //! by [`is_armed_send`] and dispatched through the production
 //! [`crate::workspace_send`] seam (engine admission, dedicated effect
 //! owner over injectable native readers, holder-ownership helpers): the
-//! catalogue marks rows 1..9 `implemented: true`, the engine admits them,
-//! and the product tap table carries their `Ctrl+Shift+digit` chords.
+//! catalogue marks follow rows 1..9 plus stay rows 1..9 `implemented:
+//! true`, the engine admits them, and the product tap table carries the
+//! follow rows' `Ctrl+Shift+digit` chords (stay rows stay bindable
+//! unbound: no default chord, rebind injects the stay action).
 //! [`is_armed_send`] is consulted for dispatch, tap categorization, and
 //! feedback classification.
 
@@ -302,10 +311,10 @@ pub fn workspace_catalogue() -> Vec<WorkspaceRow> {
     let mut rows = Vec::with_capacity(63);
     for index in [1, 2, 3, 4, 5, 6, 7, 8, 9, 0] {
         let key_code = digit_keycode(index).expect("numbered index has a digit leg");
-        // Select-only arming: existing Spaces 1-9 dispatch; the trailing
-        // index-0 select-or-create stays unarmed (no automatic trailing
-        // creation/deletion this milestone — occupancy unresolved).
-        let select_armed = index != 0;
+        // Select-only arming: existing Spaces 1-9 dispatch, and the
+        // trailing index-0 select-or-create row dispatches through
+        // [`TRAILING_CAPABILITY_ENABLED`] (armed: `is_armed_select`
+        // admits it).
         rows.push(WorkspaceRow {
             id: select_id(index).expect("numbered index has a select id"),
             text: select_text(index).expect("numbered index has a select text"),
@@ -317,7 +326,7 @@ pub fn workspace_catalogue() -> Vec<WorkspaceRow> {
                 aux: false,
             }),
             unbound_key: None,
-            implemented: select_armed,
+            implemented: true,
         });
         rows.push(WorkspaceRow {
             id: send_id(index).expect("numbered index has a send id"),
@@ -333,10 +342,11 @@ pub fn workspace_catalogue() -> Vec<WorkspaceRow> {
                 aux: false,
             }),
             unbound_key: None,
-            // Armed: numbered send-follow 1..9 dispatches through the
-            // managed-send effect owner; trailing send-0 stays unarmed
-            // (no trailing append) and refuses engine-side.
-            implemented: index != 0,
+            // Armed: numbered send-follow 0..9 dispatches through the
+            // managed-send effect owner; the trailing send-0 arms through
+            // [`TRAILING_CAPABILITY_ENABLED`] and refuses engine-side
+            // while unarmed.
+            implemented: true,
         });
         rows.push(WorkspaceRow {
             id: stay_id(index).expect("numbered index has a stay id"),
@@ -347,7 +357,11 @@ pub fn workspace_catalogue() -> Vec<WorkspaceRow> {
             },
             default: None,
             unbound_key: Some(key_code),
-            implemented: false,
+            // Armed: numbered stay 1..9 dispatches through the managed-send
+            // effect owner (bindable unbound: no default chord, rebind
+            // injects the stay action); trailing stay-0 stays unarmed
+            // (no trailing append) and refuses engine-side.
+            implemented: index != 0,
         });
     }
     for (id, key_code, prev) in REL_SELECT_ROWS {
@@ -448,10 +462,11 @@ pub fn workspace_catalogue() -> Vec<WorkspaceRow> {
 /// output sends. Stay rows contribute nothing (bindable, unbound).
 /// Defaulted is not armed: the product tile arms the basic catalogue plus
 /// the implemented select subset ([`crate::workspace_select::bindings`],
-/// 18 rows) plus the implemented numbered send-follow subset
-/// ([`crate::workspace_send::bindings`], 9 rows) via
+/// 19 rows) plus the implemented numbered send subset
+/// ([`crate::workspace_send::bindings`], 10 follow chords; stay rows stay
+/// bindable unbound) via
 /// [`crate::input_policy::effective_bindings`]; every other defaulted row
-/// (trailing select-0, trailing send-0, stays, relative sends, outputs)
+/// (relative sends, outputs)
 /// stays refused engine-side (see [`workspace_unsupported_reason`]).
 #[must_use]
 pub fn workspace_bindings() -> Vec<TileBinding> {
@@ -494,8 +509,19 @@ pub fn workspace_action_id(action: &InputSemanticAction) -> Option<&'static str>
 /// subject and what [`crate::workspace_select::bindings`] arms.
 #[must_use]
 pub const fn is_armed_select(action: &InputSemanticAction) -> bool {
+    is_armed_select_with(action, TRAILING_CAPABILITY_ENABLED)
+}
+
+/// Capability-explicit armed-select predicate: the production route with
+/// `trailing_enabled` threaded from [`TRAILING_CAPABILITY_ENABLED`]
+/// (tests pass an explicit local). Trailing `index 0` arms only when the
+/// capability is enabled.
+#[must_use]
+pub const fn is_armed_select_with(action: &InputSemanticAction, trailing_enabled: bool) -> bool {
     match *action {
-        InputSemanticAction::WorkspaceSelect { index } => index >= 1 && index <= 9,
+        InputSemanticAction::WorkspaceSelect { index } => {
+            (index >= 1 && index <= 9) || (index == 0 && trailing_enabled)
+        }
         InputSemanticAction::WorkspaceRelative { .. } | InputSemanticAction::WorkspacePrevious => {
             true
         }
@@ -503,36 +529,71 @@ pub const fn is_armed_select(action: &InputSemanticAction) -> bool {
     }
 }
 
-/// Send-shape predicate for the numbered send-follow product path:
-/// `WorkspaceSend` with `index` 1-9 and `follow: true` (the
-/// `Ctrl+Shift+1..9` send shape under the default Ctrl role). This names
+/// Send-shape predicate for the numbered send product path:
+/// `WorkspaceSend` with `index` 0-9 follow plus `index` 1-9 stay:
+/// follows ride the
+/// `Ctrl+Shift+1..9` shape under the default Ctrl role, stays ride a
+/// future rebind with no default chord). This names
 /// the action shape the production [`crate::workspace_send`] machinery
 /// dispatches, the tap categorizes, and the engine admits: the catalogue
-/// marks rows 1..9 `implemented: true` and
+/// marks follow rows 0..9 plus stay rows 1..9 `implemented: true` and
 /// [`workspace_unsupported_reason`] / [`workspace_unsupported_outcome`]
 /// consult this predicate (returning `None` here, dispatching). Consumers
 /// are the send lane, the discard/kind classifier
 /// ([`crate::workspace_send::feedback_kind_for`]), and the tests.
-/// Everything else — the trailing `index 0` send, every send-and-stay
-/// (`follow: false`), every relative send, every output send, every
+/// Everything else - the trailing `index 0` stay, every relative send,
+/// every output send, every
 /// select, and every basic action — is NOT send-shaped.
 #[must_use]
 pub const fn is_armed_send(action: &InputSemanticAction) -> bool {
+    is_armed_send_with(action, TRAILING_CAPABILITY_ENABLED)
+}
+
+/// Capability-explicit send-shape predicate: numbered `1..9` always armed;
+/// trailing `index 0` follow arms only when the capability is enabled
+/// (stay-0 never arms: out of scope, no approved form).
+#[must_use]
+pub const fn is_armed_send_with(action: &InputSemanticAction, trailing_enabled: bool) -> bool {
     match *action {
-        InputSemanticAction::WorkspaceSend { index, follow } => follow && index >= 1 && index <= 9,
+        InputSemanticAction::WorkspaceSend { index, follow } => {
+            (index >= 1 && index <= 9) || (index == 0 && follow && trailing_enabled)
+        }
         _ => false,
     }
 }
 
+/// Single reviewable production capability switch for trailing `index 0`.
+/// `true` arms the production route end to end (engine admission, tap
+/// catalogue, command map, drain, and indicator submissions all dispatch
+/// trailing selects/sends), `false` keeps every product route unarmed.
+/// Armed only after the occupancy, lifecycle-removal, and
+/// indicator-acceptance reviews land; tests thread an explicit local
+/// `trailing_enabled` argument through the same production functions
+/// instead of any process-global flag.
+pub const TRAILING_CAPABILITY_ENABLED: bool = true;
+
 /// Honest engine refusal reason for one semantic action (`None` for the
 /// basic actions, which execute, for the armed select subset, which
-/// dispatches, and for the armed numbered send-follow 1..9 subset, which
+/// dispatches, and for the armed numbered sends 1..9 (follow plus stay),
+/// which
 /// dispatches through the managed-send effect owner). Every other
 /// workspace action is recognized but undispatched; the reason names the
 /// exact missing execution seam rather than faking support.
 #[must_use]
 pub fn workspace_unsupported_reason(action: &InputSemanticAction) -> Option<&'static str> {
-    if is_armed_select(action) || is_armed_send(action) {
+    workspace_unsupported_reason_with(action, TRAILING_CAPABILITY_ENABLED)
+}
+
+/// Capability-explicit refusal reason: trailing `index 0` rows report `None`
+/// (dispatched) only when the capability is enabled.
+#[must_use]
+pub fn workspace_unsupported_reason_with(
+    action: &InputSemanticAction,
+    trailing_enabled: bool,
+) -> Option<&'static str> {
+    if is_armed_select_with(action, trailing_enabled)
+        || is_armed_send_with(action, trailing_enabled)
+    {
         return None;
     }
     match action {
@@ -566,13 +627,24 @@ pub fn workspace_unsupported_reason(action: &InputSemanticAction) -> Option<&'st
 
 /// Static log outcome token for one refused workspace action (`None` for
 /// basic actions, the armed select subset, and the armed numbered
-/// send-follow 1..9 subset, all of which dispatch).
+/// sends 1..9 (follow plus stay), all of which dispatch).
 /// The engine counts under `input_refused_unsupported` and emits this
 /// token; the seam detail rides [`workspace_unsupported_reason`]
 /// (docs/tests, never guessed at runtime).
 #[must_use]
 pub fn workspace_unsupported_outcome(action: &InputSemanticAction) -> Option<&'static str> {
-    if is_armed_select(action) || is_armed_send(action) {
+    workspace_unsupported_outcome_with(action, TRAILING_CAPABILITY_ENABLED)
+}
+
+/// Capability-explicit outcome token (same rule as the reason above).
+#[must_use]
+pub fn workspace_unsupported_outcome_with(
+    action: &InputSemanticAction,
+    trailing_enabled: bool,
+) -> Option<&'static str> {
+    if is_armed_select_with(action, trailing_enabled)
+        || is_armed_send_with(action, trailing_enabled)
+    {
         return None;
     }
     match action {

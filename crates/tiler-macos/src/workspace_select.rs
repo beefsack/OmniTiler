@@ -5,7 +5,7 @@
 //! writes, automatic deletion or background lifecycle is implied.
 
 use crate::runtime_types::InputSemanticAction;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelectionSnapshot {
@@ -131,6 +131,34 @@ pub trait SelectionBackend {
 #[derive(Default)]
 pub struct SelectionState {
     previous: BTreeMap<String, u64>,
+    /// Exact-created trailing SID from the latest `execute`, captured
+    /// immediately after the verified append — BEFORE the select dispatch.
+    /// A later select failure or ambiguous readback still leaves the Space
+    /// behind, so the caller adopts this on BOTH outcomes (and clears it)
+    /// instead of learning the SID only from a successful effect. `None`
+    /// when the latest execution reused (no append) or never appended.
+    last_created: Option<u64>,
+    /// Exact-append proof rows from the latest `execute`, captured with
+    /// `last_created` (the `before`/`after` native rows around the single
+    /// append plus the snapshot display identity). The drain pairs this
+    /// with the claim's engine-minted token and reports the binding back
+    /// (see [`crate::trailing_binding`]); cleared together with
+    /// `last_created` so a stale proof can never bind twice.
+    last_proof: Option<TrailingAppendProof>,
+}
+
+/// Exact native append proof for one trailing creation: the snapshot
+/// display identity plus the native rows around the single verified
+/// append. The engine pairs `created` with its pending token through
+/// [`TrailingBindingStore::bind_exact_append`](crate::trailing_binding::TrailingBindingStore::bind_exact_append)
+/// (exact same-output append only - drift refuses); rows travel by value
+/// so the drain never re-reads topology it already proved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrailingAppendProof {
+    pub display_id: String,
+    pub before: Vec<u64>,
+    pub after: Vec<u64>,
+    pub created: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -156,11 +184,27 @@ impl SelectionState {
         self.previous.insert(display.to_owned(), from);
     }
 
+    /// Take the exact-append proof the latest `execute` verified, if any
+    /// (clears both the proof and the SID slot). Call after every trailing
+    /// execution - success or failure - exactly once: the drain adopts the
+    /// created SID into lifecycle ownership AND reports the token/SID
+    /// binding back to the engine from this single take, so neither leg
+    /// can adopt or bind twice.
+    pub(crate) fn take_trailing_proof(&mut self) -> Option<TrailingAppendProof> {
+        self.last_created.take();
+        self.last_proof.take()
+    }
+
     pub fn execute(
         &mut self,
         backend: &mut impl SelectionBackend,
         action: InputSemanticAction,
     ) -> Result<SelectionEffect, String> {
+        // A new execution supersedes any unclaimed append record: each leg
+        // appends at most once, and `take_trailing_proof` clears after every
+        // trailing run, so a stale SID can never adopt twice.
+        self.last_created = None;
+        self.last_proof = None;
         let before = backend.snapshot()?;
         before.validate()?;
         let mut created = None;
@@ -191,6 +235,16 @@ impl SelectionState {
                     }
                     let sid = *after.spaces.last().expect("appended row");
                     created = Some(sid);
+                    // Capture immediately after the verified append: the
+                    // Space exists from here even if the select below
+                    // fails or reads back ambiguous.
+                    self.last_created = Some(sid);
+                    self.last_proof = Some(TrailingAppendProof {
+                        display_id: before.display.clone(),
+                        before: before.spaces.clone(),
+                        after: after.spaces.clone(),
+                        created: sid,
+                    });
                     sid
                 }
             }
@@ -262,23 +316,178 @@ impl SelectionState {
     }
 }
 
-/// Select-only product binding subset: exactly the 18 armed rows —
-/// numbered existing-Space selects `1..9`, the 8 relative-select rows, and
+/// Narrow runtime-created trailing-SID ownership for lifecycle cleanup
+/// (offline pure decision only — no live touch here; the live remover calls
+/// `remove_sid_verified` per eligible SID and reports residue honestly).
+///
+/// Rules (shared trailing-empty semantics, literal native order):
+/// - Only SIDs this runtime created (`adopt_created`) are ever eligible;
+///   baseline/preexisting SIDs never are — even when proven empty.
+/// - An owned SID is eligible only when proven empty (`Ok(true)`), not
+///   current, and removing it keeps at least
+///   [`tiler_core::workspace::MIN_WORKSPACES`].
+/// - Unknown emptiness (`Err`), occupied (`Ok(false)`), or current-owned
+///   SIDs are never eligible: they report residue instead of removing.
+/// - Foreign chrome blocking is modeled as unknown/occupied by the
+///   emptiness proof (the live `verify_space_empty` refuses it) — never
+///   exempted, never removed.
+///
+/// Cleanup iterates owned in reverse (newest first) so a subsequent
+/// occupied trailing append cleans newest-first without shifting older
+/// ownership. Shutdown calls [`TrailingLifecycle::cleanup_plan`] then
+/// removes each eligible SID exactly once (never replayed); unknown
+/// removal leaves residue reported, never retried in the same pass.
+#[derive(Debug, Clone, Default)]
+pub struct TrailingLifecycle {
+    baseline: BTreeSet<u64>,
+    owned: Vec<u64>,
+}
+
+impl TrailingLifecycle {
+    /// New owner over the preexisting baseline row (never removed).
+    #[must_use]
+    pub fn new(baseline: &[u64]) -> Self {
+        Self {
+            baseline: baseline.iter().copied().collect(),
+            owned: Vec::new(),
+        }
+    }
+
+    /// Adopt one runtime-created SID (exact append only: nonzero, not
+    /// baseline, not already owned). Baseline SIDs and duplicates refuse.
+    pub fn adopt_created(&mut self, sid: u64) -> Result<(), String> {
+        if sid == 0 {
+            return Err("trailing ownership: zero SID unadoptable".to_owned());
+        }
+        if self.baseline.contains(&sid) {
+            return Err("trailing ownership: baseline SID never owned".to_owned());
+        }
+        if self.owned.contains(&sid) {
+            return Err("trailing ownership: SID already owned".to_owned());
+        }
+        self.owned.push(sid);
+        Ok(())
+    }
+
+    /// Owned SIDs in adoption order (oldest first).
+    #[must_use]
+    pub fn owned(&self) -> &[u64] {
+        &self.owned
+    }
+
+    /// Pure cleanup plan over the current native row: partitions owned SIDs
+    /// present in `spaces` into `(removable, residue)`. `empty` proves each
+    /// owned SID (`Ok(true)` empty, `Ok(false)` occupied, `Err` unknown —
+    /// unknown never removes). Current-owned, baseline, absent, occupied,
+    /// unknown, and below-floor removals all report residue with an explicit
+    /// reason instead of removing. Removable lists newest-first; residue
+    /// lists `(sid, reason)` in owned order.
+    #[must_use]
+    pub fn cleanup_plan(
+        &self,
+        spaces: &[u64],
+        current: u64,
+        empty: &dyn Fn(u64) -> Result<bool, String>,
+    ) -> (Vec<u64>, Vec<(u64, String)>) {
+        let mut removable = Vec::new();
+        let mut residue = Vec::new();
+        let mut remaining = spaces.len();
+        for &sid in self.owned.iter().rev() {
+            if self.baseline.contains(&sid) {
+                residue.push((sid, "baseline SID never removed".to_owned()));
+                continue;
+            }
+            if !spaces.contains(&sid) {
+                residue.push((sid, "owned SID absent from native row".to_owned()));
+                continue;
+            }
+            if sid == current {
+                residue.push((sid, "owned SID is current; never removed".to_owned()));
+                continue;
+            }
+            match empty(sid) {
+                Ok(true) => {
+                    if remaining <= tiler_core::workspace::MIN_WORKSPACES {
+                        residue.push((
+                            sid,
+                            "removal would breach shared minimum; residue".to_owned(),
+                        ));
+                        continue;
+                    }
+                    removable.push(sid);
+                    remaining -= 1;
+                }
+                Ok(false) => {
+                    residue.push((sid, "owned SID occupied; retained".to_owned()));
+                }
+                Err(reason) => {
+                    residue.push((
+                        sid,
+                        format!("owned SID emptiness unknown; residue ({reason})"),
+                    ));
+                }
+            }
+        }
+        (removable, residue)
+    }
+
+    /// Forget one SID after its verified removal (narrow ownership release).
+    /// Unknown/non-owned SIDs refuse instead of mutating ownership.
+    pub fn release_removed(&mut self, sid: u64) -> Result<(), String> {
+        let Some(pos) = self.owned.iter().position(|s| *s == sid) else {
+            return Err("trailing ownership: SID not owned".to_owned());
+        };
+        self.owned.remove(pos);
+        Ok(())
+    }
+}
+
+/// Select-only product binding subset: exactly the 19 armed rows -
+/// numbered existing-Space selects `1..9`, the trailing `index 0`
+/// select-or-create, the 8 relative-select rows, and
 /// the previous toggle. Never adds send chords (the numbered send-follow
-/// subset lives in [`crate::workspace_send::bindings`]); the trailing `index 0`
-/// select-or-create stays unarmed (no automatic trailing creation/deletion
-/// this milestone — occupancy unresolved), so it is excluded here even
-/// though the explicit `spaces-select` batch retains it. Driven by the
+/// subset lives in [`crate::workspace_send::bindings`]); the trailing
+/// `index 0` arms through
+/// [`crate::workspace_input::TRAILING_CAPABILITY_ENABLED`],
+/// and the explicit `spaces-select` batch retains it. Driven by the
 /// catalogue `implemented` flags plus [`crate::workspace_input::is_armed_select`]
 /// (single source with the engine admission gate); the preview arms this
 /// subset with no-focus dispatch and main-thread drain.
 #[must_use]
 pub fn bindings() -> Vec<crate::runtime_types::TileBinding> {
+    bindings_with(crate::workspace_input::TRAILING_CAPABILITY_ENABLED)
+}
+
+/// Capability-explicit binding subset: the production route above with
+/// `trailing_enabled` threaded from the single capability gate. Disabled
+/// drops the trailing `index 0` row (Ctrl+0) back to 18 rows; production
+/// is armed at 19 rows.
+#[must_use]
+pub fn bindings_with(trailing_enabled: bool) -> Vec<crate::runtime_types::TileBinding> {
     crate::workspace_input::workspace_catalogue()
         .into_iter()
-        .filter(|row| row.implemented && crate::workspace_input::is_armed_select(&row.action))
+        .filter(|row| {
+            row.implemented
+                && crate::workspace_input::is_armed_select_with(&row.action, trailing_enabled)
+        })
         .filter_map(|row| row.binding())
         .collect()
+}
+
+/// Adopt the runtime-created trailing SID from a verified select effect
+/// into the lifecycle owner (no-op when the effect created nothing).
+/// Narrow ownership bookkeeping for the tile main loop: exact-append SIDs
+/// this runtime created adopt; baseline/duplicate/zero SIDs refuse without
+/// mutating ownership. Returns whether an SID was adopted.
+pub fn note_effect_created(
+    lifecycle: &mut TrailingLifecycle,
+    effect: &SelectionEffect,
+) -> Result<bool, String> {
+    let Some(sid) = effect.created else {
+        return Ok(false);
+    };
+    lifecycle.adopt_created(sid)?;
+    Ok(true)
 }
 
 /// Live product select gates sampled by the main-thread tile controller
@@ -293,9 +502,9 @@ pub struct SelectGates {
 }
 
 /// Unbound-claim shorthand over [`drain_claimed_select`] (skips the
-/// bound-claim fence exactly like a relative/previous tap). Test-only shim:
-/// production numbered lanes call [`drain_claimed_select`] with the
-/// admission-bound claim or go through `drain_live_claimed`.
+/// bound-claim fence exactly like a relative/previous tap). Test-only shim
+/// over the production wrapper (gate const); capability-explicit tests call
+/// [`drain_claimed_select_with`] directly with a local `trailing_enabled`.
 #[cfg(test)]
 pub(crate) fn drain_claimed(
     state: &mut SelectionState,
@@ -333,12 +542,31 @@ pub(crate) fn drain_claimed(
 /// binding only narrows which ordinal may dispatch, never widens it.
 /// Live-macOS-only outside tests (the non-test caller is gated to macOS);
 /// portable unit tests exercise this on every host.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg(test)]
 pub(crate) fn drain_claimed_select(
     state: &mut SelectionState,
     backend: &mut impl SelectionBackend,
     claim: crate::runtime_types::ClaimedSelect,
     gates: &SelectGates,
+) -> Result<SelectionEffect, String> {
+    drain_claimed_select_with(
+        state,
+        backend,
+        claim,
+        gates,
+        crate::workspace_input::TRAILING_CAPABILITY_ENABLED,
+    )
+}
+
+/// Capability-explicit full-claim drain: the production route above with
+/// `trailing_enabled` threaded from the single capability gate (tests pass
+/// an explicit local).
+pub(crate) fn drain_claimed_select_with(
+    state: &mut SelectionState,
+    backend: &mut impl SelectionBackend,
+    claim: crate::runtime_types::ClaimedSelect,
+    gates: &SelectGates,
+    trailing_enabled: bool,
 ) -> Result<SelectionEffect, String> {
     if !gates.session_unlocked {
         return Err("select gated: session not unlocked".to_owned());
@@ -349,7 +577,10 @@ pub(crate) fn drain_claimed_select(
     if gates.lock_screen {
         return Err("select gated: lock screen".to_owned());
     }
-    if !crate::workspace_input::is_armed_select(&claim.action) {
+    // Trailing index 0 arms only through the single capability gate (tests
+    // pass an explicit local). The explicit `spaces-select` batch bypasses
+    // this gate via `execute`.
+    if !crate::workspace_input::is_armed_select_with(&claim.action, trailing_enabled) {
         return Err("product select refuses unarmed actions".to_owned());
     }
     // Product targeting rule: exactly ONE native display row. Zero or
@@ -371,32 +602,37 @@ pub(crate) fn drain_claimed_select(
             ));
         }
     }
-    // Bound-claim fence: the ordinal must still name the admission-time SID
-    // and the topology revision must still match. A reorder (or any
-    // revision move) between engine admission and this drain refuses
-    // instead of selecting the new occupant of the ordinal. Relative and
-    // previous taps carry no binding and skip this leg.
+    // Bound-claim fence: numbered claims pin their admission-time SID
+    // plus the topology revision; a reorder or any revision move between
+    // engine admission and this drain refuses instead of selecting the
+    // new occupant of the ordinal. Relative, previous, and trailing
+    // `index 0` taps carry no expected SID and skip this leg entirely;
+    // trailing creation or reuse is decided by the fresh-read `execute`
+    // below, never here. The `index as usize - 1` ordinal read would
+    // underflow on zero, so it is skipped, never wrapped.
     if let Some(expected_sid) = claim.expected_sid {
         let InputSemanticAction::WorkspaceSelect { index } = claim.action else {
             return Err("bound select claim carries a non-numbered action; refusing".to_owned());
         };
-        let fresh = backend
-            .snapshot()
-            .map_err(|e| format!("bound select refuses: fresh row unreadable ({e})"))?;
-        fresh
-            .validate()
-            .map_err(|e| format!("bound select refuses: fresh row unprovable ({e})"))?;
-        match fresh.spaces.get(index as usize - 1) {
-            Some(sid) if *sid == expected_sid => {}
-            Some(_) => {
-                return Err(format!(
-                    "stale bound select discarded: native row moved between admission and drain (row {index} changed); no select dispatched"
-                ));
-            }
-            None => {
-                return Err(format!(
-                    "stale bound select discarded: native row {index} no longer exists; no select dispatched"
-                ));
+        if index != 0 {
+            let fresh = backend
+                .snapshot()
+                .map_err(|e| format!("bound select refuses: fresh row unreadable ({e})"))?;
+            fresh
+                .validate()
+                .map_err(|e| format!("bound select refuses: fresh row unprovable ({e})"))?;
+            match fresh.spaces.get(index as usize - 1) {
+                Some(sid) if *sid == expected_sid => {}
+                Some(_) => {
+                    return Err(format!(
+                        "stale bound select discarded: native row moved between admission and drain (row {index} changed); no select dispatched"
+                    ));
+                }
+                None => {
+                    return Err(format!(
+                        "stale bound select discarded: native row {index} no longer exists; no select dispatched"
+                    ));
+                }
             }
         }
         if let (Some(want), Some(live)) = (claim.topology_revision, backend.revision())
@@ -427,6 +663,48 @@ const PRODUCT_DRAIN_BUDGET_SECS: u64 = 30;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const PRODUCT_DRAIN_CAFFEINATE_SECS: u64 = 60;
 
+/// Proven-emptiness scan for one trailing SID over fresh native reads (SLS
+/// user rows plus full window membership; shell entries skip, zero-area and
+/// unreadable candidates read unknown — never empty). Shared by the
+/// main-thread select backend and the effect-owner trailing preparation so
+/// both prove the identical rule: no AppKit touch anywhere inside, safe on
+/// any thread.
+pub(crate) fn probe_trailing_emptiness(sid: u64) -> Result<bool, String> {
+    let user = crate::mc_observe::fresh_user_spaces().map_err(|e| e.to_string())?;
+    let all = crate::mc_observe::enumerate_window_members().map_err(|e| e.to_string())?;
+    let mut empty = true;
+    for w in all {
+        let member = crate::mc_probe::WindowMember {
+            wid: w.wid,
+            pid: w.pid,
+            bundle: w.bundle,
+            layer: w.layer,
+            onscreen: w.onscreen,
+            w: w.w,
+            h: w.h,
+            exe: w.exe,
+            exe_alias: w.exe_alias,
+        };
+        if crate::mc_probe::classify_window_full(
+            &member,
+            w.spaces.as_ref().ok().map(Vec::as_slice),
+            &user,
+            sid,
+        )
+        .0 == crate::mc_probe::WindowClass::Shell
+        {
+            continue;
+        }
+        let spaces = w
+            .spaces
+            .map_err(|_| "workspace emptiness unknown".to_owned())?;
+        if candidate_occupied(member.wid, member.pid, member.w, member.h, &spaces, sid)? {
+            empty = false;
+        }
+    }
+    Ok(empty)
+}
+
 /// Live product drain for one claimed armed select: builds the proven
 /// [`NativeSelection`] backend over the single native display row and runs
 /// [`drain_claimed`]. The single-display rule inside `drain_claimed`
@@ -447,7 +725,24 @@ pub(crate) fn drain_live_claimed(
     claim: crate::runtime_types::ClaimedSelect,
     gates: &SelectGates,
 ) -> Result<(SelectionEffect, bool), String> {
-    if !crate::workspace_input::is_armed_select(&claim.action) {
+    drain_live_claimed_with(
+        state,
+        claim,
+        gates,
+        crate::workspace_input::TRAILING_CAPABILITY_ENABLED,
+    )
+}
+
+/// Capability-explicit live drain: the production route above with
+/// `trailing_enabled` threaded from the single capability gate.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn drain_live_claimed_with(
+    state: &mut SelectionState,
+    claim: crate::runtime_types::ClaimedSelect,
+    gates: &SelectGates,
+    trailing_enabled: bool,
+) -> Result<(SelectionEffect, bool), String> {
+    if !crate::workspace_input::is_armed_select_with(&claim.action, trailing_enabled) {
         return Err("product select refuses unarmed actions".to_owned());
     }
     let mut awake =
@@ -458,10 +753,39 @@ pub(crate) fn drain_live_claimed(
         budget: crate::mc_probe::ActionBudget::new(PRODUCT_DRAIN_BUDGET_SECS),
         created: Vec::new(),
     };
-    let effect = drain_claimed_select(state, &mut backend, claim, gates);
+    let effect = drain_claimed_select_with(state, &mut backend, claim, gates, trailing_enabled);
     let reaped = awake.stop();
     effect.map(|effect| (effect, reaped))
 }
+
+/// Live proven-emptiness read for one trailing SID on the tile main
+/// thread (same proof as the drain's `NativeSelection::empty`: managed
+/// windows homed exactly to the SID, shell excluded, zero-area/unreadable
+/// candidates unknown — never empty). Bounded under its own short budget;
+/// unknown refuses removal instead of guessing. Shutdown-path only: the
+/// cadence never runs removals mid-loop.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn trailing_emptiness(sid: u64, display: usize) -> Result<bool, String> {
+    let mut backend = NativeSelection {
+        display,
+        budget: crate::mc_probe::ActionBudget::new(TRAILING_CLEANUP_BUDGET_SECS),
+        created: Vec::new(),
+    };
+    backend.empty(sid)
+}
+
+/// Bounded shutdown-cleanup budget (seconds): one worst-case verified
+/// removal runs an MC open leg plus a remove press (each bounded by the
+/// [`crate::mc_probe::MC_ACTION_TIMEOUT_MS`] 8 s action timeout) plus the
+/// [`crate::mc_probe::MC_EFFECT_SETTLE_MS`] 3 s async-settle poll, with the
+/// per-SID emptiness proof (one CG/SLS enumeration, sub-second) on top —
+/// ≈12 s worst case per owned SID. 30 s covers the common single-owned-SID
+/// shutdown with margin inside the same order as
+/// [`PRODUCT_DRAIN_BUDGET_SECS`]; the loop re-proves fresh per removal and
+/// any budget exhaustion surfaces as honest per-SID residue, never a silent
+/// skip. No cleanup legs run in the product select drain.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) const TRAILING_CLEANUP_BUDGET_SECS: u64 = 30;
 
 /// After shell classification, zero-area candidate membership is ambiguous,
 /// not proof of either a reusable empty Space or an occupied document.
@@ -591,39 +915,7 @@ impl SelectionBackend for NativeSelection {
         live_revision()
     }
     fn empty(&mut self, sid: u64) -> Result<bool, String> {
-        let user = crate::mc_observe::fresh_user_spaces().map_err(|e| e.to_string())?;
-        let all = crate::mc_observe::enumerate_window_members().map_err(|e| e.to_string())?;
-        let mut empty = true;
-        for w in all {
-            let member = crate::mc_probe::WindowMember {
-                wid: w.wid,
-                pid: w.pid,
-                bundle: w.bundle,
-                layer: w.layer,
-                onscreen: w.onscreen,
-                w: w.w,
-                h: w.h,
-                exe: w.exe,
-                exe_alias: w.exe_alias,
-            };
-            if crate::mc_probe::classify_window_full(
-                &member,
-                w.spaces.as_ref().ok().map(Vec::as_slice),
-                &user,
-                sid,
-            )
-            .0 == crate::mc_probe::WindowClass::Shell
-            {
-                continue;
-            }
-            let spaces = w
-                .spaces
-                .map_err(|_| "workspace emptiness unknown".to_owned())?;
-            if candidate_occupied(member.wid, member.pid, member.w, member.h, &spaces, sid)? {
-                empty = false;
-            }
-        }
-        Ok(empty)
+        probe_trailing_emptiness(sid)
     }
     fn create(&mut self, before: &SelectionSnapshot) -> Result<(), String> {
         if self.snapshot()? != *before {

@@ -5666,12 +5666,12 @@ mod macos {
     // in `crate::workspace_indicator`). The dropdown menu mirrors the same
     // rows for accessibility. Each segment carries its 1-based position as
     // the button tag and an immutable render-time click binding
-    // (`IndicatorClick`: position, expected SID, UI generation, topology
-    // revision) in its own target object; the action forwards the binding
+    // (`IndicatorClick`: slot kind, position, expected SID, UI generation,
+    // topology revision) in its own target object; the action forwards the
     // verbatim over a bounded channel to the tile controller, which
     // resolves it against the CURRENT render generation and a FRESH native
     // row before submitting through the guarded engine lane (see
-    // `crate::workspace_indicator::resolve_click`). The action method
+    // `crate::workspace_indicator::resolve_indicator_click`). The action method
     // performs no AX, no snapshot, no logging — binding forward only,
     // dropped when the controller is not draining (bounded backpressure,
     // never a block inside the callback). The view and the menu are
@@ -6123,12 +6123,21 @@ mod macos {
         }
 
         /// Live click-target bindings in render order: `(position,
-        /// expected SID, UI generation, topology revision)` read off the
-        /// actual retained target objects. The live-proof harness compares
-        /// these against the fresh native row immediately before any
-        /// synthetic click — a mismatch proves staleness instead of
-        /// dispatching.
-        pub fn segment_targets(&self) -> Vec<(usize, u64, u64, u64)> {
+        /// expected SID, UI generation, topology revision, slot kind)`
+        /// read off the actual retained target objects. The live-proof
+        /// harness compares these against the fresh native row immediately
+        /// before any synthetic click - a mismatch proves staleness
+        /// instead of dispatching. The kind rides so the harness proves
+        /// which slot (numbered select vs trailing create) it read back.
+        pub fn segment_targets(
+            &self,
+        ) -> Vec<(
+            usize,
+            u64,
+            u64,
+            u64,
+            crate::workspace_indicator::IndicatorClickKind,
+        )> {
             self.targets
                 .borrow()
                 .iter()
@@ -6139,6 +6148,7 @@ mod macos {
                         click.expected_sid,
                         click.ui_generation,
                         click.topology_revision,
+                        click.kind,
                     )
                 })
                 .collect()
@@ -9144,7 +9154,15 @@ mod stub {
             Vec::new()
         }
 
-        pub fn segment_targets(&self) -> Vec<(usize, u64, u64, u64)> {
+        pub fn segment_targets(
+            &self,
+        ) -> Vec<(
+            usize,
+            u64,
+            u64,
+            u64,
+            crate::workspace_indicator::IndicatorClickKind,
+        )> {
             Vec::new()
         }
 

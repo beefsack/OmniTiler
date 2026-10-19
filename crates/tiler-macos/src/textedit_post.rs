@@ -7,6 +7,15 @@
 //! vocabulary, so the product tap test transport - send-2 then send-1 and
 //! the selects - can run with TextEdit foreground) through the shared
 //! session-stream primitive to a run-owned disposable TextEdit document. The
+//! diagnostic vocabulary adds exactly five names beyond the owned set: the
+//! popover-dismiss `escape` below plus `stay-1`/`stay-2`, the fixed
+//! Ctrl-role Shift+Alt+digit test transport for the tile
+//! `--diag-stay-index` injection (same effective flags the tile diag
+//! binding arms, so the normal tap/admit/drain path proves the stay),
+//! plus `select-0`/`send-0`, the trailing Desktop-10 digit chords (same
+//! keycode and arms as the armed product catalogue rows, so the normal
+//! tap/admit/drain/owner path proves the trailing select-or-create and
+//! the trailing send-follow). The
 //! disposable identity is bound by a run-owned record ([`TextEditRecord`]:
 //! exact `(pid, wid)` plus the test-run-created temp directory plus the
 //! per-run random token plus a nonce); the helper spawn record is never
@@ -70,10 +79,18 @@ pub(crate) const ESCAPE_ACTION: &str = "escape";
 
 /// Resolve a `textedit-post` chord name: exactly the owned-post vocabulary
 /// plus the single diagnostic-only [`ESCAPE_CHORD_NAME`] (fixed keycode 53,
-/// no Shift/Alt arms, action [`ESCAPE_ACTION`]). No generic raw-key API:
+/// no Shift/Alt arms, action [`ESCAPE_ACTION`]) plus the two
+/// diagnostic-only numbered stays `stay-1`/`stay-2` (Desktop-N digit
+/// keycode with the Shift+Alt arms, action `"stay"`: the exact fixed flags
+/// the tile `--diag-stay-index` binding arms, composed by [`chord_flags`]
+/// identically) plus the two diagnostic-only trailing chords
+/// `select-0`/`send-0` (Desktop-10 digit keycode with the product arms:
+/// no arms for the select, Shift for the send; actions `"select"`/`"send"`,
+/// so the posted flags are exactly the effective flags the armed product
+/// catalogue rows carry). No generic raw-key API:
 /// every other name falls through to
-/// [`crate::owned_control::resolve_chord`], so unarmed names (select-0,
-/// send-0, focus-up/down, arbitrary keys) still refuse at the same
+/// [`crate::owned_control::resolve_chord`], so still-unarmed names
+/// (focus-up/down, arbitrary keys) still refuse at the same
 /// authority the helper path uses. Pure; unit-tested.
 #[must_use]
 pub(crate) fn resolve_textedit_chord(name: &str) -> Option<crate::owned_control::SemanticChord> {
@@ -83,6 +100,43 @@ pub(crate) fn resolve_textedit_chord(name: &str) -> Option<crate::owned_control:
             shift: false,
             alt: false,
             action: ESCAPE_ACTION,
+        });
+    }
+    // Diagnostic-only numbered stay test transport for the tile
+    // `--diag-stay-index` injection (Desktop 1 and 2 only): the Desktop-N
+    // digit keycode with the Shift+Alt arms, so the posted flags are
+    // exactly the effective Shift+Alt+digit chord the tile diag binding
+    // arms under the same Ctrl-role modifier. Never a product arm:
+    // [`crate::owned_control::resolve_chord`] still refuses every
+    // `stay-*` name (covered by the vocabulary test below).
+    if name == "stay-1" || name == "stay-2" {
+        let desktop = if name == "stay-1" { 1 } else { 2 };
+        return crate::desktop_shortcuts::desktop_digit_keycode(desktop).map(|key_code| {
+            crate::owned_control::SemanticChord {
+                key_code,
+                shift: true,
+                alt: true,
+                action: "stay",
+            }
+        });
+    }
+    // Diagnostic-only trailing test transport for the armed product
+    // trailing rows (Desktop 10 only): the Desktop-10 digit keycode with
+    // the product arms (no Shift/Alt for the select, Shift for the send),
+    // so the posted flags are exactly the effective flags the armed
+    // `workspace-select-0` / `workspace-send-0` catalogue rows carry under
+    // the same Ctrl-role modifier. Never a product arm:
+    // [`crate::owned_control::resolve_chord`] still refuses both names
+    // (covered by the vocabulary test below).
+    if name == "select-0" || name == "send-0" {
+        let shift = name == "send-0";
+        return crate::desktop_shortcuts::desktop_digit_keycode(10).map(|key_code| {
+            crate::owned_control::SemanticChord {
+                key_code,
+                shift,
+                alt: false,
+                action: if shift { "send" } else { "select" },
+            }
         });
     }
     crate::owned_control::resolve_chord(name)
@@ -512,7 +566,9 @@ fn prove_edge(record: &TextEditRecord, edge: &str) -> Result<(), String> {
 }
 
 /// Resolve the chord flags exactly like the helper owned-post path: the Ctrl
-/// role plus the chord Shift/Alt arms. Shared vocabulary, shared flags.
+/// role plus the chord Shift/Alt arms. Shared vocabulary, shared flags (the
+/// diagnostic-only stay chords compose the same Shift+Alt arms, so they post
+/// exactly the effective flags the tile diag binding arms).
 /// The diagnostic-only Escape chord is the single exception: fixed flags 0
 /// (no Ctrl role, no arms), so a popover dismiss can never carry a sticky
 /// modifier into the bypass release (which already posts cleared).
@@ -895,14 +951,21 @@ mod tests {
                 }
             );
         }
-        // Nothing previously unarmed is armed here: trailing select-0/send-0,
-        // the excluded Up/Down arms, and unknown names refuse at the same
-        // authority the helper path uses. `escape` stays unarmed in the
-        // owned-helper catalogue (diagnostic-only admission lives in
-        // `resolve_textedit_chord`, never in the product tap transport).
+        // Nothing previously unarmed is armed here: the excluded Up/Down
+        // arms, the numbered stays, and unknown names
+        // refuse at the same authority the helper path uses. `escape` stays
+        // unarmed in the owned-helper catalogue (diagnostic-only admission
+        // lives in `resolve_textedit_chord`, never in the product tap
+        // transport); `stay-1`/`stay-2` stay unarmed there too (their only
+        // admission is the same diagnostic resolver, for the tile
+        // `--diag-stay-index` injection); `select-0`/`send-0` stay unarmed
+        // there too (their only admission is the same diagnostic
+        // resolver, for the armed product trailing rows).
         for name in [
             "select-0",
             "send-0",
+            "stay-1",
+            "stay-2",
             "focus-up",
             "focus-down",
             "move-up",
@@ -918,7 +981,10 @@ mod tests {
             );
         }
         // The diagnostic route admits exactly that owned set plus the single
-        // diagnostic-only `escape` (same-record popover dismiss): no other
+        // diagnostic-only `escape` (same-record popover dismiss) plus the
+        // two diagnostic-only stays `stay-1`/`stay-2` (tile diag injection
+        // transport) plus the two diagnostic-only trailing chords
+        // `select-0`/`send-0` (armed product trailing transport): no other
         // name is admitted.
         for name in crate::owned_control::chord_names() {
             assert!(resolve_textedit_chord(name).is_some(), "{name}");
@@ -928,9 +994,20 @@ mod tests {
         assert_eq!(escape.key_code, 53);
         assert!(!escape.shift && !escape.alt);
         assert_eq!(escape.action, ESCAPE_ACTION);
+        for name in ["stay-1", "stay-2"] {
+            let stay = resolve_textedit_chord(name).unwrap();
+            assert!(stay.shift && stay.alt);
+            assert_eq!(stay.action, "stay");
+        }
+        let select0 = resolve_textedit_chord("select-0").unwrap();
+        assert!(!select0.shift && !select0.alt);
+        assert_eq!(select0.action, "select");
+        let send0 = resolve_textedit_chord("send-0").unwrap();
+        assert!(send0.shift && !send0.alt);
+        assert_eq!(send0.action, "send");
         for name in [
-            "select-0",
-            "send-0",
+            "stay-0",
+            "stay-3",
             "focus-up",
             "focus-down",
             "move-up",
@@ -941,9 +1018,174 @@ mod tests {
             "Escape",
             "ESCAPE",
             "esc",
+            "Stay-1",
+            "STAY-2",
         ] {
             assert!(resolve_textedit_chord(name).is_none(), "{name}");
         }
+    }
+
+    #[test]
+    fn stay_chords_resolve_fixed_shift_alt_digits_with_tile_diag_flags() {
+        // Fixed stay shape: the Desktop-N digit keycode with the Shift+Alt
+        // arms, so the posted flags are exactly the effective flags the
+        // tile `--diag-stay-index` binding arms under the same Ctrl-role
+        // modifier. Pinned here against `effective_flags_for` plus the tile
+        // diag constructor (single home each), so parsing and posting can
+        // never drift apart.
+        for (name, desktop) in [("stay-1", 1u8), ("stay-2", 2u8)] {
+            let stay = resolve_textedit_chord(name).unwrap();
+            let digit =
+                crate::desktop_shortcuts::desktop_digit_keycode(u32::from(desktop)).unwrap();
+            assert_eq!(stay.key_code, digit, "{name}");
+            assert!((stay.shift, stay.alt) == (true, true), "{name}");
+            assert_eq!(stay.action, "stay", "{name}");
+            let binding = crate::tile::diag_stay_binding(desktop).unwrap();
+            assert_eq!(binding.key_code, digit, "{name}");
+            assert!(
+                (binding.shift, binding.alt, binding.aux) == (true, true, false),
+                "{name}"
+            );
+            assert_eq!(
+                binding.action,
+                crate::runtime_types::InputSemanticAction::WorkspaceSend {
+                    index: desktop,
+                    follow: false,
+                },
+                "{name}"
+            );
+            for modifier in [
+                ProbeModifier::Ctrl,
+                crate::config::ProbeModifier::Meta,
+                crate::config::ProbeModifier::Shift,
+            ] {
+                assert_eq!(
+                    chord_flags(modifier, stay),
+                    crate::workspace_input::effective_flags_for(modifier, &binding),
+                    "{name}/{modifier:?}"
+                );
+            }
+            // Flags are the Ctrl+Shift+Alt+digit shape under the Ctrl role.
+            assert_eq!(
+                chord_flags(ProbeModifier::Ctrl, stay),
+                0x0004_0000 | 0x0002_0000 | 0x0008_0000,
+                "{name}"
+            );
+        }
+        // Never a product arm: the owned-helper catalogue still refuses
+        // every stay name and keeps its 44-chord vocabulary.
+        assert!(crate::owned_control::resolve_chord("stay-1").is_none());
+        assert!(crate::owned_control::resolve_chord("stay-2").is_none());
+        assert_eq!(crate::owned_control::chord_names().len(), 44);
+    }
+
+    #[test]
+    fn trailing_chords_resolve_product_digits_with_catalogue_flags() {
+        // Fixed trailing shape: the Desktop-10 digit keycode with the
+        // product arms (no arms for the select, Shift for the send), so
+        // the posted flags are exactly the effective flags the armed
+        // `workspace-select-0` / `workspace-send-0` catalogue rows carry
+        // under the same Ctrl-role modifier. Pinned here against
+        // `effective_flags_for` over the catalogue rows (single home
+        // each), so parsing and posting can never drift apart.
+        for (name, action) in [("select-0", "select"), ("send-0", "send")] {
+            let chord = resolve_textedit_chord(name).unwrap();
+            let digit = crate::desktop_shortcuts::desktop_digit_keycode(10).unwrap();
+            assert_eq!(chord.key_code, digit, "{name}");
+            assert_eq!(chord.key_code, crate::desktop_shortcuts::KEY_0, "{name}");
+            assert_eq!(chord.action, action, "{name}");
+            let row = crate::workspace_input::workspace_catalogue()
+                .into_iter()
+                .find(|row| {
+                    row.id
+                        == if name == "select-0" {
+                            "workspace-select-0"
+                        } else {
+                            "workspace-send-0"
+                        }
+                })
+                .expect("trailing catalogue row exists");
+            let binding = row.binding().expect("trailing row is bound");
+            assert_eq!(binding.key_code, digit, "{name}");
+            assert_eq!(
+                (chord.shift, chord.alt),
+                (binding.shift, binding.alt),
+                "{name}"
+            );
+            for modifier in [
+                ProbeModifier::Ctrl,
+                crate::config::ProbeModifier::Meta,
+                crate::config::ProbeModifier::Shift,
+            ] {
+                assert_eq!(
+                    chord_flags(modifier, chord),
+                    crate::workspace_input::effective_flags_for(modifier, &binding),
+                    "{name}/{modifier:?}"
+                );
+            }
+        }
+        // Flags are the plain Ctrl+digit shape (select) and the
+        // Ctrl+Shift+digit shape (send) under the Ctrl role.
+        assert_eq!(
+            chord_flags(
+                ProbeModifier::Ctrl,
+                resolve_textedit_chord("select-0").unwrap()
+            ),
+            0x0004_0000,
+            "select-0"
+        );
+        assert_eq!(
+            chord_flags(
+                ProbeModifier::Ctrl,
+                resolve_textedit_chord("send-0").unwrap()
+            ),
+            0x0004_0000 | 0x0002_0000,
+            "send-0"
+        );
+        // Never a product arm: the owned-helper catalogue still refuses
+        // both trailing names and keeps its 44-chord vocabulary.
+        assert!(crate::owned_control::resolve_chord("select-0").is_none());
+        assert!(crate::owned_control::resolve_chord("send-0").is_none());
+        assert_eq!(crate::owned_control::chord_names().len(), 44);
+    }
+
+    #[test]
+    fn stay_routes_to_record_proof_and_refuses_without_it() {
+        // Narrow routing: `stay-2` is a known chord (usage code is never 2
+        // for it), so with no record file it reaches the record stage
+        // (code 1, stage record) through the same per-edge gates as any
+        // catalogue chord - proof refusal behaviour is unchanged.
+        let err = super::run_textedit_post(
+            "/nonexistent-omnitiler-run/record.json",
+            "0123456789abcdef0123456789abcdef",
+            "stay-2",
+            ProbeModifier::Ctrl,
+        )
+        .unwrap_err();
+        assert_eq!(err.0, 1, "unexpected: {}", err.1);
+        assert!(
+            err.1.contains("\"stage\":\"record\""),
+            "unexpected: {}",
+            err.1
+        );
+        // stay-1 routes identically; empty nonce still fails closed with
+        // usage code 2 before any read.
+        let err = super::run_textedit_post(
+            "/nonexistent-omnitiler-run/record.json",
+            "0123456789abcdef0123456789abcdef",
+            "stay-1",
+            ProbeModifier::Ctrl,
+        )
+        .unwrap_err();
+        assert_eq!(err.0, 1, "unexpected: {}", err.1);
+        let err = super::run_textedit_post(
+            "/nonexistent-omnitiler-run/record.json",
+            "",
+            "stay-2",
+            ProbeModifier::Ctrl,
+        )
+        .unwrap_err();
+        assert_eq!(err.0, 2, "unexpected: {}", err.1);
     }
 
     #[test]
@@ -1534,8 +1776,18 @@ mod tests {
 
     #[test]
     fn run_validates_chord_and_nonce_before_record() {
-        // Unarmed chords and empty nonces fail closed with usage code 2 and
-        // never reach the record read.
+        // Still-unarmed chords and empty nonces fail closed with usage
+        // code 2 and never reach the record read. The diagnostic-only
+        // trailing chords are known names, so they reach the record stage
+        // (code 1) instead.
+        let err = super::run_textedit_post(
+            "/nonexistent-omnitiler-run/record.json",
+            "0123456789abcdef0123456789abcdef",
+            "stay-0",
+            ProbeModifier::Ctrl,
+        )
+        .unwrap_err();
+        assert_eq!(err.0, 2, "unexpected: {}", err.1);
         let err = super::run_textedit_post(
             "/nonexistent-omnitiler-run/record.json",
             "0123456789abcdef0123456789abcdef",
@@ -1543,7 +1795,12 @@ mod tests {
             ProbeModifier::Ctrl,
         )
         .unwrap_err();
-        assert_eq!(err.0, 2, "unexpected: {}", err.1);
+        assert_eq!(err.0, 1, "unexpected: {}", err.1);
+        assert!(
+            err.1.contains("\"stage\":\"record\""),
+            "unexpected: {}",
+            err.1
+        );
         let err = super::run_textedit_post(
             "/nonexistent-omnitiler-run/record.json",
             "",

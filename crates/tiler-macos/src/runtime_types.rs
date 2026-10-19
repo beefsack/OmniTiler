@@ -644,12 +644,38 @@ pub struct ClaimedSelect {
     /// exact domain and the domain still current — never a moved or hidden
     /// domain. Always `None` for selects.
     pub send_source: Option<DomainKey>,
+    /// Admission-pinned source Space SID for send-shaped claims (the native
+    /// SID of `send_source` under the admission topology). Stay execution
+    /// selects back to exactly this SID; follows ignore it. Always `None`
+    /// for selects and for unbound tap claims before engine admission binds
+    /// them.
+    pub send_source_sid: Option<u64>,
+    /// Stay-only admission-pinned source focus fallback (`"<pid>_<wid>"`):
+    /// the core-proven post-send source-MRU resident, pinned by the engine
+    /// after dispatch from committed core state (never the mover, never a
+    /// guess). `None` with `send_source_focus_empty` set is a proven-empty
+    /// source and makes no focus claim; `None` without that flag is unknown
+    /// and must refuse. Always `None` for selects and follows.
+    pub send_source_focus: Option<String>,
+    /// Stay-only proven-empty flag for `send_source_focus`: true only when
+    /// the core query proved the source empty after the send. `None` plus
+    /// false is unknown and refuses; `None` plus true binds an empty-source
+    /// stay with no focus claim.
+    pub send_source_focus_empty: bool,
     /// Stable world-command operation identity (`op-<command_seq>`) minted
     /// at engine dispatch: the main-thread drain reports its native outcome
     /// under this id so the core settles the planner-owned view target
-    /// (selects) or window transfer (sends) — never replayed. `None` until
+    /// (selects) or window transfer (sends) - never replayed. `None` until
     /// the engine binds the claim.
     pub operation_id: Option<String>,
+    /// Engine-minted pending trailing token (`wl-N`) from the applied
+    /// dispatch reply for trailing lanes (the engine's unbound workspace
+    /// desire for the admitted output). `None` for non-trailing lanes and
+    /// until the engine binds the claim. The drain pairs it with the exact
+    /// native append proof and reports the binding back (see
+    /// [`crate::trailing_binding`]); never guessed, never an existing
+    /// Space, never carried across claims.
+    pub trailing_token: Option<String>,
 }
 
 impl ClaimedSelect {
@@ -666,7 +692,11 @@ impl ClaimedSelect {
             send_subject: None,
             send_generation: None,
             send_source: None,
+            send_source_sid: None,
+            send_source_focus: None,
+            send_source_focus_empty: false,
             operation_id: None,
+            trailing_token: None,
         }
     }
 
@@ -687,7 +717,11 @@ impl ClaimedSelect {
             send_subject: None,
             send_generation: None,
             send_source: None,
+            send_source_sid: None,
+            send_source_focus: None,
+            send_source_focus_empty: false,
             operation_id: None,
+            trailing_token: None,
         }
     }
 }

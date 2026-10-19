@@ -600,22 +600,22 @@ fn tap_specs_carry_select_category_per_action() {
     product.extend(crate::workspace_select::bindings());
     product.extend(crate::workspace_send::bindings());
     let specs = tap_specs_for(ProbeModifier::Ctrl, &product);
-    assert_eq!(specs.len(), 61);
-    assert_eq!(specs.iter().filter(|s| s.select).count(), 18);
+    assert_eq!(specs.len(), 63);
+    assert_eq!(specs.iter().filter(|s| s.select).count(), 19);
     for (spec, binding) in specs.iter().zip(product.iter()) {
         assert_eq!(spec.select, is_armed_select(&binding.action));
         assert_eq!(spec.key_code, binding.key_code);
     }
-    // Full catalogue: only the 18 armed selects flag select (armed
+    // Full catalogue: only the 19 armed selects flag select (armed
     // numbered sends ride the basic cache with the focus gate; stays,
-    // outputs, and trailing select-0 stay basic-gated, refused
+    // outputs, and trailing stay-0 stay basic-gated, refused
     // downstream).
     let specs = tap_specs_for(
         ProbeModifier::Ctrl,
         &crate::workspace_input::workspace_bindings(),
     );
     assert_eq!(specs.len(), 45);
-    assert_eq!(specs.iter().filter(|s| s.select).count(), 18);
+    assert_eq!(specs.iter().filter(|s| s.select).count(), 19);
 }
 
 #[test]

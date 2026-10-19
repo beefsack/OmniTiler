@@ -285,6 +285,17 @@ pub enum Command {
         unscoped: bool,
         /// Exact bundle-ID exclusions (unscoped only, repeatable).
         excluded: Vec<String>,
+        /// Diagnostic-only stay injection (`--diag-stay-index 1|2`):
+        /// exactly one numbered stay chord into the tap table (gated in
+        /// tile validation: tap route, TextEdit-only scope, finite
+        /// lifetime, duplicate-free chord). `None` by default.
+        diag_stay: Option<u8>,
+        /// Diagnostic-only trailing-slot click injection
+        /// (`--diag-trailing-click` flag): once per run the actual
+        /// rendered trailing binding loops back through the click channel
+        /// (gated in tile validation: tap route, TextEdit-only scope,
+        /// finite lifetime). `false` by default.
+        diag_trailing_click: bool,
         /// Foreground log verbosity.
         log: crate::tile::TileLogLevel,
         /// Exact-run directory for graceful lifecycle (created by the
@@ -395,6 +406,13 @@ pub fn help_text() -> String {
            \x20 \x20 event tap by default, off parks; authentic consumes\n\
             \x20 \x20 the exact supported chords while running, compatible leaves known\n\
             \x20 \x20 conflicting chords (unshifted Ctrl+arrows under the Ctrl meta) to macOS;\n\
+            \x20 \x20 --diag-stay-index 1|2 is diagnostic-only (one numbered stay chord\n\
+            \x20 \x20 Shift+Alt+digit into the tap table: needs --input tap plus exactly\n\
+            \x20 \x20 --scope com.apple.TextEdit, never --unscoped; no product change);\n\
+            \x20 \x20 --diag-trailing-click is diagnostic-only (one rendered trailing\n\
+            \x20 \x20 slot binding loops back through the click channel: needs --input\n\
+            \x20 \x20 tap plus exactly --scope com.apple.TextEdit, never --unscoped;\n\
+            \x20 \x20 no product change);\n\
            \x20 \x20 modifier/preset/exclusions resolve CLI-over-settings-file;\n\
            \x20 \x20 active border on by default: [--no-active-border] [--active-border-width 0..=32]\n\
            \x20 \x20 [--active-border-gap 0..=64] [--active-border-radius 0..=64]\n\
@@ -486,9 +504,10 @@ pub fn help_text() -> String {
               \x20 \x20 (diagnostic-only disposable TextEdit tap: one tile-catalogue\n\
               \x20 \x20 chord down/up (the exact owned-post vocabulary plus one\n\
               \x20 \x20 diagnostic-only `escape` - fixed keycode 53 flags 0 for a\n\
-              \x20 \x20 same-record document-title popover dismiss - so the product\n\
-              \x20 \x20 tap test transport - send-2 then send-1 and the selects - can\n\
-              \x20 \x20 run with TextEdit foreground) to the run-owned disposable\n\
+              \x20 \x20 same-record document-title popover dismiss - plus stay-1/2\n\
+              \x20 \x20 plus select-0/send-0 - so the product tap test transport\n\
+              \x20 \x20 - send-2 then send-1 and the selects - can run with TextEdit\n\
+              \x20 \x20 foreground) to the run-owned disposable\n\
               \x20 \x20 document bound by the record file; frontmost-TextEdit plus\n\
               \x20 \x20 disposable-identity proof before EACH edge with unconditional\n\
               \x20 \x20 cleared-modifier release; never helper input)\n\
@@ -2031,6 +2050,8 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
             let mut preset_explicit = false;
             let mut unscoped = false;
             let mut excluded: Vec<String> = Vec::new();
+            let mut diag_stay: Option<u8> = None;
+            let mut diag_trailing_click = false;
             let mut log = crate::tile::TileLogLevel::default();
             let mut run_dir: Option<String> = None;
             let mut border = crate::dev_selection::BorderCli::default();
@@ -2052,6 +2073,19 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                     "--exclude" => {
                         j += 1;
                         excluded.push(args.get(j).ok_or("--exclude needs a value")?.clone());
+                    }
+                    "--diag-stay-index" => {
+                        j += 1;
+                        let raw = parse_u32(
+                            args.get(j).ok_or("--diag-stay-index needs a value")?,
+                            "--diag-stay-index",
+                        )?;
+                        diag_stay = Some(u8::try_from(raw).map_err(|_| {
+                            format!("--diag-stay-index must be 1 or 2, got '{raw}'")
+                        })?);
+                    }
+                    "--diag-trailing-click" => {
+                        diag_trailing_click = true;
                     }
                     "--seconds" => {
                         j += 1;
@@ -2161,6 +2195,8 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                 border,
                 drag,
                 indicator,
+                diag_stay,
+                diag_trailing_click,
             }
         }
         "workspace-indicator-status" => {

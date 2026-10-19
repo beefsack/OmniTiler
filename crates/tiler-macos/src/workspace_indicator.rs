@@ -52,9 +52,13 @@
 //! IDs, titles, or paths; callers must keep them out of every log line.
 //!
 //! Click identity: every rendered segment binds an immutable
-//! [`IndicatorClick`] (1-based position, expected SID, UI generation, and
-//! topology revision at render time). [`resolve_click`] refuses any payload
-//! resolved against a different generation or revision — a rebuild between
+//! [`IndicatorClick`] (slot kind plus 1-based position, expected SID, UI
+//! generation, and topology revision at render time).
+//! [`resolve_indicator_click`] routes by the rendered kind alone:
+//! numbered clicks resolve only through [`resolve_click`], trailing clicks
+//! only through [`resolve_trailing_click`] — stale numbered clicks refuse
+//! instead of falling back to trailing creation. Any payload resolved
+//! against a different generation or revision refuses — a rebuild between
 //! render and drain discards stale instead of selecting the wrong Space.
 //! The engine claim and the native drain carry the same binding (see
 //! [`crate::runtime_types::ClaimedSelect`]), so an ordinal is never
@@ -253,37 +257,70 @@ pub fn project_indicator(
 
 // -- Click mapping ------------------------------------------------------------
 
+/// Which rendered slot a click binding came from. The drain routes
+/// on this kind alone: numbered bindings never fall back to trailing
+/// creation, trailing bindings never resolve as numbered selects.
+/// Carried by value from render to drain so a queued click can never
+/// be reinterpreted against a newer render.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndicatorClickKind {
+    Numbered,
+    Trailing,
+}
+
+impl IndicatorClickKind {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Numbered => "numbered",
+            Self::Trailing => "trailing",
+        }
+    }
+}
+
 /// Immutable per-segment click binding, captured at render time: the
-/// 1-based position the segment showed, the SID it showed, the UI
-/// generation that rendered it (see [`IndicatorDriver`]), and the topology
-/// revision the row was built from. Plain data; crosses the AppKit channel
-/// by value so a queued click can never be reinterpreted against a newer
-/// render. Never logged beyond position tokens by callers.
+/// slot kind plus the 1-based position the segment showed, the SID it
+/// showed (numbered: the Space at that position; trailing: the
+/// render-time native last SID), the UI generation that rendered it
+/// (see [`IndicatorDriver`]), and the topology revision the row was
+/// built from. Plain data; crosses the AppKit channel by value so a
+/// queued click can never be reinterpreted against a newer render.
+/// Never logged beyond position/kind tokens by callers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IndicatorClick {
+    pub kind: IndicatorClickKind,
     pub position: usize,
     pub expected_sid: u64,
     pub ui_generation: u64,
     pub topology_revision: u64,
 }
 
-/// Resolve one queued segment click against the CURRENT render generation
-/// and a FRESH native-order user row plus its revision to the armed select
-/// action. Every staleness refuses with an explicit reason instead of
-/// selecting the wrong Space: a UI rebuild between render and drain
-/// (generation drift), a topology change between render and drain
-/// (revision drift), a row that moved under the click (SID mismatch), a
-/// vanished position, and positions past the armed `1..=9` range (no armed
-/// route). The returned action still travels the full guarded lane (engine
-/// unarmed / busy / topology gates plus the drain's fresh fences and
-/// verified arrival), so this mapping is necessary but never sufficient
-/// for a switch.
+/// Resolve one queued NUMBERED segment click against the CURRENT render
+/// generation and a FRESH native-order user row plus its revision to the
+/// armed select action. Numbered-only: a trailing-kind payload refuses
+/// here (never selects), and stale numbered clicks never fall back to
+/// trailing creation (route through [`resolve_indicator_click`], never
+/// this function plus a trailing retry). Every staleness refuses with an
+/// explicit reason instead of selecting the wrong Space: a UI rebuild
+/// between render and drain (generation drift), a topology change between
+/// render and drain (revision drift), a row that moved under the click
+/// (SID mismatch), a vanished position, and positions past the armed
+/// `1..=9` range (no armed route). The returned action still travels the
+/// full guarded lane (engine unarmed / busy / topology gates plus the
+/// drain's fresh fences and verified arrival), so this mapping is
+/// necessary but never sufficient for a switch.
 pub fn resolve_click(
     click: IndicatorClick,
     current_generation: u64,
     fresh_spaces: &[u64],
     fresh_revision: u64,
 ) -> Result<InputSemanticAction, String> {
+    if click.kind != IndicatorClickKind::Numbered {
+        return Err(
+            "stale workspace click discarded: trailing slot click is never a numbered select; no select dispatched"
+                .to_owned(),
+        );
+    }
     if click.position == 0 || click.position > 9 {
         return Err(format!(
             "workspace segment {} has no armed select route (armed range is 1..=9); refusing instead of selecting the wrong Space",
@@ -353,6 +390,231 @@ pub fn click_action(
         None => Err(format!(
             "stale workspace click discarded: native row {position} no longer exists; no select dispatched"
         )),
+    }
+}
+
+// -- Trailing slot (pure offline seam; product indicator stays existing-only)
+
+/// One trailing action slot: the 1-based position the extra segment would
+/// show (always `spaces.len() + 1` at render time). The slot carries no SID
+/// (the trailing Space may not exist yet); the drain ensures it (reuse
+/// proven-empty last, else exact append) and never double-creates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TrailingSlot {
+    pub position: usize,
+}
+
+/// Project the trailing action slot over one native-order user row
+/// (`None` = no extra slot: reuse the last existing slot instead of
+/// duplicating it, or no slot at all). Rules:
+/// - `Off` mode, non-single display, or unprovable row: `None` (same
+///   hidden/provable rules as [`project_indicator`]).
+/// - `spaces.len() >= MAX_ORDERED`: `None` (shared bound reached).
+/// - Last occupancy `Empty`: `None` (reuse the last existing slot — the
+///   drain reuses proven-empty last; never double-create).
+/// - Last `Occupied` or `Unknown`: `Some` slot at `len + 1` — the
+///   indicator offers the trailing action even when the last is occupied;
+///   unknown still offers the slot (the drain refuses unknown emptiness
+///   instead of appending).
+/// - `Current` mode: trailing slot is offered only when the single shown
+///   row is the last row (same rule over the full row); callers pass the
+///   full row regardless of mode.
+#[must_use]
+pub fn project_trailing_slot(
+    spaces: &[u64],
+    current: u64,
+    display_count: usize,
+    mode: IndicatorMode,
+    last_occupancy: SpaceOccupancy,
+) -> Option<TrailingSlot> {
+    if mode == IndicatorMode::Off || display_count != 1 {
+        return None;
+    }
+    if spaces.is_empty() || spaces.contains(&0) || !spaces.contains(&current) {
+        return None;
+    }
+    if spaces.len() >= tiler_core::workspace::MAX_ORDERED {
+        return None;
+    }
+    match last_occupancy {
+        SpaceOccupancy::Empty => None,
+        SpaceOccupancy::Occupied | SpaceOccupancy::Unknown => Some(TrailingSlot {
+            position: spaces.len() + 1,
+        }),
+    }
+}
+
+/// Title for the trailing action segment: `"+"` when the last Space is
+/// proven occupied (pressing appends), `"+?"` when occupancy is unknown
+/// (shown unavailable and disabled, never falsely empty). Proven-empty
+/// last reuses the existing slot, so no trailing segment renders.
+#[must_use]
+pub fn trailing_segment_title(slot: TrailingSlot, last_occupancy: SpaceOccupancy) -> String {
+    let _ = slot;
+    match last_occupancy {
+        SpaceOccupancy::Occupied => "+".to_owned(),
+        SpaceOccupancy::Empty | SpaceOccupancy::Unknown => "+?".to_owned(),
+    }
+}
+
+/// Immutable trailing click binding, captured at render time: the UI
+/// generation and topology revision that rendered the trailing slot plus
+/// the render-time row length and last SID. Plain data; a queued click can
+/// never be reinterpreted against a newer render or topology.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TrailingClick {
+    pub ui_generation: u64,
+    pub topology_revision: u64,
+    pub render_len: usize,
+    pub render_last_sid: u64,
+}
+
+/// Resolve one queued trailing click against the CURRENT render generation
+/// and a FRESH native-order user row plus its revision to the trailing
+/// select action (`index 0`). Every staleness refuses with an explicit
+/// reason instead of creating/selecting the wrong Space: a UI rebuild
+/// between render and drain (generation drift), a topology change between
+/// render and drain (revision drift), or a row that moved under the click
+/// (length or last-SID mismatch). The returned action still travels the
+/// full guarded lane (explicit test arming, single-display, gates, drain
+/// fences, verified arrival), so this mapping is necessary but never
+/// sufficient for a switch. Stay-0 has no route and is never constructed.
+pub fn resolve_trailing_click(
+    click: TrailingClick,
+    current_generation: u64,
+    fresh_spaces: &[u64],
+    fresh_revision: u64,
+) -> Result<InputSemanticAction, String> {
+    if click.render_len == 0 || click.render_last_sid == 0 {
+        return Err("trailing click identity unprovable".to_owned());
+    }
+    if click.ui_generation != current_generation {
+        return Err(format!(
+            "stale trailing click discarded: status view rebuilt after render (generation {} != current {current_generation}); no select dispatched",
+            click.ui_generation
+        ));
+    }
+    if click.topology_revision != fresh_revision {
+        return Err(format!(
+            "stale trailing click discarded: topology revision moved after render ({} != current {fresh_revision}); no select dispatched",
+            click.topology_revision
+        ));
+    }
+    if fresh_spaces.len() != click.render_len {
+        return Err(
+            "stale trailing click discarded: native row length moved under the click; no select dispatched"
+                .to_owned(),
+        );
+    }
+    match fresh_spaces.last() {
+        Some(sid) if *sid == click.render_last_sid => Ok(InputSemanticAction::WorkspaceSelect {
+            index: 0,
+        }),
+        Some(_) => Err(
+            "stale trailing click discarded: native row moved under the click (last SID changed); no select dispatched"
+                .to_owned(),
+        ),
+        None => Err(
+            "stale trailing click discarded: native row empty; no select dispatched".to_owned(),
+        ),
+    }
+}
+
+/// Route one queued render binding to its armed select action by the kind
+/// carried at render time: numbered bindings resolve only through
+/// [`resolve_click`], trailing bindings only through
+/// [`resolve_trailing_click`]. No fallback exists in either direction: a
+/// stale numbered click (row shrank, reordered, or drifted) refuses as
+/// stale instead of creating a trailing Space, and a numbered-kind
+/// payload at a trailing position refuses the same way. `trailing_enabled`
+/// threads the capability gate explicitly (production `false` refuses
+/// trailing before the engine lane); callers pass
+/// [`crate::workspace_input::TRAILING_CAPABILITY_ENABLED`], tests pass
+/// explicit `true`/`false`. The returned action still travels the full
+/// guarded lane, so this routing is necessary but never sufficient.
+pub fn resolve_indicator_click(
+    click: IndicatorClick,
+    current_generation: u64,
+    fresh_spaces: &[u64],
+    fresh_revision: u64,
+    trailing_enabled: bool,
+) -> Result<InputSemanticAction, String> {
+    match click.kind {
+        IndicatorClickKind::Numbered => {
+            resolve_click(click, current_generation, fresh_spaces, fresh_revision)
+        }
+        IndicatorClickKind::Trailing => {
+            if !trailing_enabled {
+                return Err(
+                    "trailing slot unarmed: no trailing append runs; no select dispatched"
+                        .to_owned(),
+                );
+            }
+            resolve_trailing_click(
+                TrailingClick {
+                    ui_generation: click.ui_generation,
+                    topology_revision: click.topology_revision,
+                    render_len: click.position.saturating_sub(1),
+                    render_last_sid: click.expected_sid,
+                },
+                current_generation,
+                fresh_spaces,
+                fresh_revision,
+            )
+        }
+    }
+}
+
+/// Diagnostic-only pick of the ACTUAL rendered trailing binding for the
+/// `--diag-trailing-click` harness: copies the trailing binding off the
+/// live AppKit targets (position, expected SID, generation, revision -
+/// the same tuple [`crate::ffi::WorkspaceIndicator::segment_targets`]
+/// reads off the retained target objects, never the cached driver model
+/// and never a reconstructed select-0 substitute) and returns it only
+/// when its segment reads enabled there (the live trailing slot: proven
+/// occupied last; a disabled `+?` slot refuses instead of injecting -
+/// the drain would refuse its unknown occupancy anyway). `None` when no
+/// trailing slot rendered, when several render (ambiguous, never guessed),
+/// or when the slot reads disabled. The returned binding still travels
+/// the full guarded lane ([`resolve_indicator_click`] with the capability
+/// gate plus engine admission plus the drain's fresh fences and verified
+/// arrival), so this pick is necessary but never sufficient for a switch.
+/// Pure over the readback tuples; unit-tested.
+#[must_use]
+pub fn diag_rendered_trailing_click(
+    targets: &[(usize, u64, u64, u64, IndicatorClickKind)],
+    enabled_at: &dyn Fn(usize) -> bool,
+) -> Option<IndicatorClick> {
+    let mut trailing = targets
+        .iter()
+        .filter(|row| row.4 == IndicatorClickKind::Trailing);
+    let (position, expected_sid, ui_generation, topology_revision, kind) = *trailing.next()?;
+    if trailing.next().is_some() {
+        return None;
+    }
+    if !enabled_at(position) {
+        return None;
+    }
+    Some(IndicatorClick {
+        kind,
+        position,
+        expected_sid,
+        ui_generation,
+        topology_revision,
+    })
+}
+
+/// Bound one discard reason for the log: reasons name positions,
+/// generations, and revisions only (never SIDs, bundles, or titles);
+/// truncation keeps the line bounded while staying honest about which
+/// fence refused.
+#[must_use]
+pub fn bound_click_discard_reason(reason: &str) -> String {
+    const LIMIT: usize = 160;
+    if reason.len() <= LIMIT {
+        reason.to_owned()
+    } else {
+        format!("{}...", &reason[..LIMIT])
     }
 }
 
@@ -711,6 +973,12 @@ pub enum DriverApply {
 /// every state decision here, so the dedup, lifecycle, and identity rules
 /// below are offline-testable and the native shell stays a thin applier.
 ///
+/// The dedup key is the projection PLUS the trailing action slot (slot
+/// presence plus its occupancy): a slot appearing, disappearing, or
+/// flipping availability while the numbered rows read identical still
+/// applies with a new generation — otherwise the extra segment would go
+/// stale while the rows dedup.
+///
 /// Generations are monotonic per applied render (never reset, not even by
 /// [`IndicatorDriver::teardown`]): a click rendered before a teardown or a
 /// rebuild carries an older generation and
@@ -721,6 +989,7 @@ pub struct IndicatorDriver {
     armed: bool,
     generation: u64,
     last: Option<IndicatorProjection>,
+    last_trailing: Option<(TrailingSlot, SpaceOccupancy)>,
     last_revision: Option<u64>,
     last_observations: u64,
     updates: u64,
@@ -735,6 +1004,7 @@ impl IndicatorDriver {
             armed: mode != IndicatorMode::Off,
             generation: 0,
             last: None,
+            last_trailing: None,
             last_revision: None,
             last_observations: 0,
             updates: 0,
@@ -759,6 +1029,13 @@ impl IndicatorDriver {
     #[must_use]
     pub fn last(&self) -> Option<&IndicatorProjection> {
         self.last.as_ref()
+    }
+
+    /// Cached trailing slot the clicks drain against (`None` when the last
+    /// applied render offered no extra slot).
+    #[must_use]
+    pub const fn last_trailing(&self) -> Option<(TrailingSlot, SpaceOccupancy)> {
+        self.last_trailing
     }
 
     /// Applied native pushes (visible renders only).
@@ -792,10 +1069,12 @@ impl IndicatorDriver {
     /// stays edge-driven). Returns the apply verdict: changed projections
     /// advance the generation, identical ones stay untouched, hidden
     /// projections store without counting a visible update, and disarmed
-    /// drivers store nothing.
+    /// drivers store nothing. The trailing slot rides the dedup key with
+    /// the projection (see the struct docs): a slot-only change applies.
     pub fn apply(
         &mut self,
         projection: IndicatorProjection,
+        trailing: Option<(TrailingSlot, SpaceOccupancy)>,
         revision: u64,
         observations: u64,
     ) -> DriverApply {
@@ -804,12 +1083,13 @@ impl IndicatorDriver {
         }
         self.last_revision = Some(revision);
         self.last_observations = observations;
-        if self.last.as_ref() == Some(&projection) {
+        if self.last.as_ref() == Some(&projection) && self.last_trailing == trailing {
             return DriverApply::Duplicate;
         }
         self.generation += 1;
         let visible = projection.visible;
         self.last = Some(projection);
+        self.last_trailing = trailing;
         if visible {
             self.updates += 1;
         }
@@ -824,6 +1104,7 @@ impl IndicatorDriver {
     /// without dispatching.
     pub fn teardown(&mut self) {
         self.last = None;
+        self.last_trailing = None;
     }
 
     /// Record one accepted click submission (guarded-lane `Accepted` only;
@@ -1385,6 +1666,22 @@ mod tests {
 
     fn typed_click(position: usize, sid: u64, generation: u64, revision: u64) -> IndicatorClick {
         IndicatorClick {
+            kind: IndicatorClickKind::Numbered,
+            position,
+            expected_sid: sid,
+            ui_generation: generation,
+            topology_revision: revision,
+        }
+    }
+
+    fn trailing_binding(
+        position: usize,
+        sid: u64,
+        generation: u64,
+        revision: u64,
+    ) -> IndicatorClick {
+        IndicatorClick {
+            kind: IndicatorClickKind::Trailing,
             position,
             expected_sid: sid,
             ui_generation: generation,
@@ -1421,6 +1718,208 @@ mod tests {
         let err = resolve_click(typed_click(10, 110, 4, 9), 4, &[20, 3], 9)
             .expect_err("past-nine refuses");
         assert!(err.contains("1..=9"), "{err}");
+        // A trailing-kind payload never resolves as a numbered select,
+        // even when the row agrees.
+        assert!(resolve_click(trailing_binding(3, 277, 4, 9), 4, &[1, 277], 9).is_err());
+    }
+
+    #[test]
+    fn indicator_click_routing_retains_rendered_kind_without_fallback() {
+        // Producer-shaped row `[1, 277]`: numbered click on position 2
+        // renders with the position-2 SID; trailing slot renders at
+        // position 3 with the native last SID.
+        let numbered = typed_click(2, 277, 4, 9);
+        let trailing = trailing_binding(3, 277, 4, 9);
+        // Valid clicks route by kind.
+        assert_eq!(
+            resolve_indicator_click(numbered, 4, &[1, 277], 9, false),
+            Ok(InputSemanticAction::WorkspaceSelect { index: 2 })
+        );
+        assert_eq!(
+            resolve_indicator_click(trailing, 4, &[1, 277], 9, true),
+            Ok(InputSemanticAction::WorkspaceSelect { index: 0 })
+        );
+        // Unarmed production refuses trailing before the engine lane.
+        let err = resolve_indicator_click(trailing, 4, &[1, 277], 9, false)
+            .expect_err("unarmed trailing refuses");
+        assert!(err.contains("unarmed"), "{err}");
+        // Stale numbered click when the row shrinks: refuses, never falls
+        // back to trailing creation even when armed.
+        let err = resolve_indicator_click(numbered, 4, &[1], 9, true)
+            .expect_err("shrunk row discards numbered");
+        assert!(err.contains("stale"), "{err}");
+        // Stale numbered click when the row reorders: refuses, never
+        // selects the new occupant and never creates trailing.
+        let err = resolve_indicator_click(numbered, 4, &[277, 1], 9, true)
+            .expect_err("reordered row discards numbered");
+        assert!(err.contains("stale"), "{err}");
+        // Stale trailing click on topology change: refuses even when the
+        // row contents agree.
+        let err = resolve_indicator_click(trailing, 4, &[1, 277], 10, true)
+            .expect_err("moved revision discards trailing");
+        assert!(err.contains("revision"), "{err}");
+        // Stale trailing click when the row appends under it: refuses.
+        let err = resolve_indicator_click(trailing, 4, &[1, 277, 21], 9, true)
+            .expect_err("appended row discards trailing");
+        assert!(err.contains("stale"), "{err}");
+        // Discard reasons stay bounded for the log.
+        assert!(bound_click_discard_reason(&err).len() <= 163);
+    }
+
+    #[test]
+    fn diag_pick_copies_only_the_live_enabled_trailing_binding() {
+        use super::IndicatorClickKind::{Numbered, Trailing};
+        // Rendered row: two numbered segments plus a live trailing slot
+        // at position 3 bound to the native last SID under generation 4
+        // and revision 9. The pick copies that exact binding.
+        let targets = vec![
+            (1, 20, 4, 9, Numbered),
+            (2, 277, 4, 9, Numbered),
+            (3, 277, 4, 9, Trailing),
+        ];
+        assert_eq!(
+            diag_rendered_trailing_click(&targets, &|position| position == 3),
+            Some(trailing_binding(3, 277, 4, 9))
+        );
+        // A disabled slot (unknown occupancy `+?`) refuses: nothing
+        // injects past the honest drain refusal.
+        assert_eq!(diag_rendered_trailing_click(&targets, &|_| false), None);
+        // No trailing slot rendered: nothing to copy (never a direct
+        // select-0 substitute).
+        let numbered_only = vec![(1, 20, 4, 9, Numbered), (2, 277, 4, 9, Numbered)];
+        assert_eq!(
+            diag_rendered_trailing_click(&numbered_only, &|_| true),
+            None
+        );
+        assert_eq!(diag_rendered_trailing_click(&[], &|_| true), None);
+        // Two trailing bindings (impossible in one render): ambiguous,
+        // never guessed.
+        let doubled = vec![(3, 277, 4, 9, Trailing), (4, 277, 4, 9, Trailing)];
+        assert_eq!(diag_rendered_trailing_click(&doubled, &|_| true), None);
+    }
+
+    #[test]
+    fn trailing_segment_title_never_reads_empty() {
+        let slot = TrailingSlot { position: 3 };
+        assert_eq!(trailing_segment_title(slot, SpaceOccupancy::Occupied), "+");
+        assert_eq!(trailing_segment_title(slot, SpaceOccupancy::Unknown), "+?");
+        assert_eq!(trailing_segment_title(slot, SpaceOccupancy::Empty), "+?");
+    }
+
+    #[test]
+    fn trailing_slot_offers_only_when_last_not_proven_empty_never_duplicates() {
+        // Producer-shaped `[1, 277]`: occupied last offers one trailing
+        // slot at position 3; unknown occupancy also offers (the drain
+        // refuses unknown instead of appending).
+        assert_eq!(
+            project_trailing_slot(
+                &[1, 277],
+                1,
+                1,
+                IndicatorMode::All,
+                SpaceOccupancy::Occupied
+            ),
+            Some(TrailingSlot { position: 3 })
+        );
+        assert_eq!(
+            project_trailing_slot(
+                &[1, 277],
+                277,
+                1,
+                IndicatorMode::All,
+                SpaceOccupancy::Unknown
+            ),
+            Some(TrailingSlot { position: 3 })
+        );
+        // Proven-empty last reuses the existing slot: no duplicate slot.
+        assert_eq!(
+            project_trailing_slot(&[1, 277], 1, 1, IndicatorMode::All, SpaceOccupancy::Empty),
+            None
+        );
+        assert_eq!(
+            project_trailing_slot(&[1, 277], 277, 1, IndicatorMode::All, SpaceOccupancy::Empty),
+            None,
+            "current-empty reuses, never duplicates"
+        );
+        // Off mode, multi-display, unprovable rows, and the shared bound
+        // offer nothing.
+        assert_eq!(
+            project_trailing_slot(
+                &[1, 277],
+                1,
+                1,
+                IndicatorMode::Off,
+                SpaceOccupancy::Occupied
+            ),
+            None
+        );
+        assert_eq!(
+            project_trailing_slot(
+                &[1, 277],
+                1,
+                2,
+                IndicatorMode::All,
+                SpaceOccupancy::Occupied
+            ),
+            None
+        );
+        assert_eq!(
+            project_trailing_slot(&[], 1, 1, IndicatorMode::All, SpaceOccupancy::Occupied),
+            None
+        );
+        assert_eq!(
+            project_trailing_slot(&[1, 0], 1, 1, IndicatorMode::All, SpaceOccupancy::Occupied),
+            None
+        );
+        let full: Vec<u64> = (1..=32).collect();
+        assert_eq!(
+            project_trailing_slot(&full, 1, 1, IndicatorMode::All, SpaceOccupancy::Occupied),
+            None,
+            "shared bound holds"
+        );
+    }
+
+    #[test]
+    fn trailing_click_routes_to_index_zero_with_staleness_fences() {
+        let click = TrailingClick {
+            ui_generation: 4,
+            topology_revision: 9,
+            render_len: 2,
+            render_last_sid: 277,
+        };
+        // Happy path: fresh row agrees, routes to trailing select-0.
+        assert_eq!(
+            resolve_trailing_click(click, 4, &[1, 277], 9),
+            Ok(InputSemanticAction::WorkspaceSelect { index: 0 })
+        );
+        // Generation/revision drift discards.
+        assert!(
+            resolve_trailing_click(click, 5, &[1, 277], 9).is_err(),
+            "rebuilt UI discards"
+        );
+        assert!(
+            resolve_trailing_click(click, 4, &[1, 277], 10).is_err(),
+            "moved revision discards"
+        );
+        // Length or last-SID move discards (never the wrong Space).
+        assert!(
+            resolve_trailing_click(click, 4, &[1], 9).is_err(),
+            "shortened row discards"
+        );
+        assert!(
+            resolve_trailing_click(click, 4, &[1, 277, 21], 9).is_err(),
+            "appended row discards"
+        );
+        assert!(
+            resolve_trailing_click(click, 4, &[1, 41], 9).is_err(),
+            "moved last discards"
+        );
+        // Zero identity never dispatches.
+        let bad = TrailingClick {
+            render_last_sid: 0,
+            ..click
+        };
+        assert!(resolve_trailing_click(bad, 4, &[1, 277], 9).is_err());
     }
 
     fn projected(spaces: &[u64], current: u64) -> IndicatorProjection {
@@ -1442,7 +1941,7 @@ mod tests {
         assert!(driver.needs_tick(9, 0), "empty cache always rebuilds");
         // First render applies as generation 1.
         assert_eq!(
-            driver.apply(projected(&[20, 3], 20), 9, 0),
+            driver.apply(projected(&[20, 3], 20), None, 9, 0),
             DriverApply::Applied(1)
         );
         assert_eq!(driver.updates(), 1);
@@ -1450,7 +1949,7 @@ mod tests {
         // (observations moved) but the apply dedups — no native push.
         assert!(driver.needs_tick(9, 1), "observation publish retriggers");
         assert_eq!(
-            driver.apply(projected(&[20, 3], 20), 9, 1),
+            driver.apply(projected(&[20, 3], 20), None, 9, 1),
             DriverApply::Duplicate
         );
         assert_eq!(driver.updates(), 1, "duplicate never pushes");
@@ -1462,7 +1961,7 @@ mod tests {
         // A changed render (native switch) applies with a new generation.
         assert!(driver.needs_tick(10, 1), "revision move retriggers");
         assert_eq!(
-            driver.apply(projected(&[20, 3], 3), 10, 1),
+            driver.apply(projected(&[20, 3], 3), None, 10, 1),
             DriverApply::Applied(2)
         );
         assert_eq!(driver.updates(), 2);
@@ -1474,7 +1973,7 @@ mod tests {
     fn driver_teardown_forces_refresh_and_orphans_queued_clicks() {
         let mut driver = IndicatorDriver::new(IndicatorMode::All);
         assert_eq!(
-            driver.apply(projected(&[20, 3], 20), 9, 0),
+            driver.apply(projected(&[20, 3], 20), None, 9, 0),
             DriverApply::Applied(1)
         );
         // Lifecycle teardown (lock/stale/shutdown): the cache is gone so
@@ -1484,7 +1983,7 @@ mod tests {
         driver.teardown();
         assert!(driver.needs_tick(9, 0), "torn-down cache rebuilds");
         assert_eq!(
-            driver.apply(projected(&[20, 3], 20), 9, 0),
+            driver.apply(projected(&[20, 3], 20), None, 9, 0),
             DriverApply::Applied(2)
         );
         let stale = typed_click(2, 3, 1, 9);
@@ -1502,11 +2001,71 @@ mod tests {
         assert!(!driver.armed());
         assert!(!driver.needs_tick(9, 0));
         assert_eq!(
-            driver.apply(projected(&[20, 3], 20), 9, 0),
+            driver.apply(projected(&[20, 3], 20), None, 9, 0),
             DriverApply::Disarmed
         );
         assert_eq!(driver.updates(), 0);
         assert!(driver.last().is_none());
+        assert_eq!(driver.last_trailing(), None);
+    }
+
+    #[test]
+    fn driver_trailing_slot_rides_the_dedup_key() {
+        // Same numbered rows throughout: only the extra slot state moves.
+        let mut driver = IndicatorDriver::new(IndicatorMode::All);
+        assert_eq!(
+            driver.apply(projected(&[20, 3], 20), None, 9, 0),
+            DriverApply::Applied(1)
+        );
+        // An identical render with no slot still dedups.
+        assert_eq!(
+            driver.apply(projected(&[20, 3], 20), None, 9, 1),
+            DriverApply::Duplicate
+        );
+        // The slot appearing applies with a new generation (no stale
+        // missing segment while the rows read identical).
+        let slot = TrailingSlot { position: 3 };
+        assert_eq!(
+            driver.apply(
+                projected(&[20, 3], 20),
+                Some((slot, SpaceOccupancy::Occupied)),
+                9,
+                2
+            ),
+            DriverApply::Applied(2)
+        );
+        assert_eq!(
+            driver.last_trailing(),
+            Some((slot, SpaceOccupancy::Occupied))
+        );
+        // Same slot, same occupancy: duplicate again.
+        assert_eq!(
+            driver.apply(
+                projected(&[20, 3], 20),
+                Some((slot, SpaceOccupancy::Occupied)),
+                9,
+                3
+            ),
+            DriverApply::Duplicate
+        );
+        assert_eq!(driver.generation(), 2);
+        // Same slot position flipping availability applies (a disabled
+        // `+?` must not render as a live `+`).
+        assert_eq!(
+            driver.apply(
+                projected(&[20, 3], 20),
+                Some((slot, SpaceOccupancy::Unknown)),
+                9,
+                4
+            ),
+            DriverApply::Applied(3)
+        );
+        // The slot disappearing applies too.
+        assert_eq!(
+            driver.apply(projected(&[20, 3], 20), None, 9, 5),
+            DriverApply::Applied(4)
+        );
+        assert_eq!(driver.last_trailing(), None);
     }
 
     #[test]

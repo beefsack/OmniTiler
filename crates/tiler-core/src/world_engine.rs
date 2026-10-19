@@ -123,6 +123,16 @@ pub(crate) fn inset_world_domain(domain: &OutputDomain, outer_gap: i32) -> Optio
     })
 }
 
+/// Exact post-send source focus for one retained stay transfer (see
+/// [`WorldEngine::stay_source_focus`]): a resident source window, a
+/// proven-empty source, or an unknown/unprovable read that must refuse.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StaySourceFocus {
+    Resident(WindowId),
+    Empty,
+    Unknown,
+}
+
 /// Retained transfer plus the source homing needed for shielding and
 /// settlement. The reply projects only the [`TransferTarget`]. Policy
 /// transfers (hotplug displacement/return member moves) share the exact
@@ -461,6 +471,90 @@ impl WorldEngine {
     #[must_use]
     pub fn retained_transfers(&self) -> Vec<TransferTarget> {
         self.retained.iter().map(|r| r.target.clone()).collect()
+    }
+
+    /// Exact post-send source focus for one retained stay transfer: the
+    /// committed source-domain focus after a `follow=false` send, read from
+    /// committed session state (never recomputed, never simulated). Matches
+    /// the retained transfer by stable operation identity plus source
+    /// homing; anything else is `Unknown` and must refuse. `Resident` names
+    /// a window still homed to the source (never the mover): either the
+    /// committed focus when it names a source resident, or the sole
+    /// surviving source resident when committed focus is `None` (a collapsed
+    /// single-leaf tree carries a fresh leaf id the pre-send stack cannot
+    /// name, so the single survivor is exact by elimination, never a
+    /// guess). `Empty` is a proven-empty source with committed focus `None`;
+    /// `Unknown` covers no such transfer, a follow transfer, a source
+    /// mismatch, an unknown session, a focus still naming the mover (as in
+    /// floating-only transfers with no Engine plan), or multiple residents
+    /// with no committed focus (ambiguous, never guessed). Callers map
+    /// `Unknown` to refusal and `Empty` to a `None` fallback; only
+    /// `Resident` pins.
+    #[must_use]
+    pub fn stay_source_focus(&self, operation_id: &str, source: &DomainKey) -> StaySourceFocus {
+        let Some(retained) = self
+            .retained
+            .iter()
+            .find(|r| r.target.operation_id == operation_id)
+        else {
+            return StaySourceFocus::Unknown;
+        };
+        if retained.target.follow {
+            return StaySourceFocus::Unknown;
+        }
+        if retained.source_output != source.output
+            || retained.source_workspace != source.workspace.0
+        {
+            return StaySourceFocus::Unknown;
+        }
+        let mover = match &retained.target.kind {
+            TransferKind::Window(window) => window.clone(),
+            TransferKind::View | TransferKind::Migration => return StaySourceFocus::Unknown,
+        };
+        let Some(session) = self.engine.session(source) else {
+            // No committed session for a retained stay source means the send
+            // emptied and retired it: proven-empty, never unknown. (A
+            // mismatched source already refused above, and a floating-only
+            // transfer with no Engine plan leaves its session behind.)
+            return StaySourceFocus::Empty;
+        };
+        let (focused_domain, focused_leaf) = session.focus();
+        let snapshot = session.snapshot();
+        if let (Some(domain), Some(leaf)) = (focused_domain.clone(), focused_leaf.clone()) {
+            if domain != *source {
+                return StaySourceFocus::Unknown;
+            }
+            let Some(link) = snapshot.windows.iter().find(|link| {
+                link.leaf == leaf
+                    && link.output == source.output
+                    && link.workspace == source.workspace
+            }) else {
+                return StaySourceFocus::Unknown;
+            };
+            if link.window == mover {
+                return StaySourceFocus::Unknown;
+            }
+            StaySourceFocus::Resident(link.window.clone())
+        } else if focused_domain.is_none() && focused_leaf.is_none() {
+            let mut residents: Vec<WindowId> = snapshot
+                .windows
+                .iter()
+                .filter(|link| link.output == source.output && link.workspace == source.workspace)
+                .map(|link| link.window.clone())
+                .collect();
+            residents.sort();
+            residents.dedup();
+            if residents.contains(&mover) {
+                return StaySourceFocus::Unknown;
+            }
+            match residents.len() {
+                0 => StaySourceFocus::Empty,
+                1 => StaySourceFocus::Resident(residents.remove(0)),
+                _ => StaySourceFocus::Unknown,
+            }
+        } else {
+            StaySourceFocus::Unknown
+        }
     }
 
     /// Latest published global revision.

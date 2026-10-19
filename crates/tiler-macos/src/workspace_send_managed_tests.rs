@@ -5,8 +5,10 @@
 //!
 //! The dedicated effect thread owns its fake backend (built on that thread
 //! via the spawn factory); the test thread only submits nonblocking and
-//! polls nonblocking. Numbered send-follow 1..9 is product-armed;
-//! trailing send-0, stays, relative sends, and outputs stay refused.
+//! polls nonblocking. Numbered send-follow 0..9 is product-armed;
+//! trailing send-0 arms through the production capability gate (explicit
+//! locals still pin the disabled lane in these tests), numbered stay 1..9,
+//! relative sends, and outputs stay refused.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, mpsc};
@@ -22,12 +24,13 @@ use crate::workspace_select::{SelectionSnapshot, SelectionState};
 use crate::workspace_send::{SendGates, bindings};
 use crate::workspace_send_effect::{
     BlindRoot, ManagedSendTarget, SendEffectHandoff, SendEffectOutcome, SendFreshEvidence,
-    SendProofRefusal, prove_managed_send,
+    SendProofRefusal, TrailingPrepPins, TrailingPrepProof, TrailingSendRequest, prove_managed_send,
 };
 use crate::workspace_send_managed::{
     EFFECT_REFUSAL_DETAIL_CHARS, ManagedPostPermit, ManagedSendBackend, ManagedSendThread,
     authorize_managed_edge, classify_holder_chord_error, completion_for, execute_managed_send,
-    format_effect_refusal_line, format_proof_refusal_reason, sanitize_refusal_detail,
+    execute_managed_send_stay, execute_trailing_send, format_effect_refusal_line,
+    format_proof_refusal_reason, sanitize_refusal_detail,
 };
 
 const CG_CTRL: u64 = 0x0004_0000;
@@ -125,8 +128,38 @@ struct FakeManaged {
     /// When set, `begin_leg` signals start then blocks for release (busy +
     /// cancellation determinism for the threaded tests).
     block_begin: Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>,
+    /// Stay-return scripting: post-forward fresh-row overrides (popped only
+    /// once the forward chord posted - the pre-forward pin and the forward
+    /// leg's own snapshot both read the canned row - else the canned row
+    /// returns); the `select_back` return actuation log plus its failure
+    /// and wrong-current scripting; the stay return-leg focus read; the
+    /// post-forward gates override; post-return readback failures; and a
+    /// one-shot stop request fired on the first membership read (a cancel
+    /// landing mid-settle, after the forward edges proved).
+    snapshot_script: VecDeque<Result<SelectionSnapshot, String>>,
+    select_back_calls: Vec<u64>,
+    select_back_fail: Option<String>,
+    select_back_hold_current: bool,
+    focused: Option<String>,
+    gates_after_forward: Option<SendGates>,
+    displays_after_forward: Option<Result<usize, String>>,
+    fail_return_reads: bool,
+    cancel_on_membership_read: Option<Arc<SendEffectHandoff>>,
     /// When set, `post_mouse(Down)` requests stop on this lane mid-effect.
     cancel_on_mouse_down: Option<Arc<SendEffectHandoff>>,
+    /// When set, `prepare_trailing_target` requests stop on this lane
+    /// mid-preparation (a cancel landing between the native ensure and the
+    /// drag — the drag must never run, but a ran append still holds).
+    cancel_on_prep: Option<Arc<SendEffectHandoff>>,
+    /// When set, `prepare_trailing_target` signals start then blocks for
+    /// release (busy + shutdown determinism for the threaded tests).
+    block_prep: Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>,
+    /// Trailing preparation scripting: the scripted
+    /// [`ManagedSendBackend::prepare_trailing_target`] verdict plus its
+    /// call count. `None` keeps the default honest refusal (numbered-only
+    /// backend, never serves trailing).
+    trailing_prep: Option<Result<TrailingPrepProof, String>>,
+    prep_calls: usize,
 }
 
 impl FakeManaged {
@@ -167,8 +200,21 @@ impl FakeManaged {
             no_effect: false,
             freeze_current: false,
             unreadable: false,
+            snapshot_script: VecDeque::new(),
+            select_back_calls: Vec::new(),
+            select_back_fail: None,
+            select_back_hold_current: false,
+            focused: None,
+            gates_after_forward: None,
+            displays_after_forward: None,
+            fail_return_reads: false,
+            cancel_on_membership_read: None,
             block_begin: None,
             cancel_on_mouse_down: None,
+            cancel_on_prep: None,
+            block_prep: None,
+            trailing_prep: None,
+            prep_calls: 0,
         }
     }
 
@@ -184,12 +230,41 @@ impl FakeManaged {
 
 impl ManagedSendBackend for FakeManaged {
     fn read_gates(&mut self) -> SendGates {
+        // Post-forward override (the forward chord posted): the stay return
+        // re-fences gates here, while the forward leg's own admission read
+        // the canned gates.
+        if self.counts.key_down > 0
+            && let Some(gates) = self.gates_after_forward
+        {
+            return gates;
+        }
         self.gates
     }
     fn snapshot(&mut self) -> Result<SelectionSnapshot, String> {
-        self.snapshot.clone()
+        // Post-forward override (same key-down discriminator): the
+        // pre-forward pin and the forward leg's own snapshot both read the
+        // canned row; only the return-leg fresh row scripts drift.
+        if self.counts.key_down > 0
+            && let Some(next) = self.snapshot_script.pop_front()
+        {
+            return next;
+        }
+        let mut row = self.snapshot.clone()?;
+        if self.counts.key_down > 0 {
+            // The forward chord posted, so the live view sits on the goal:
+            // the return-leg row carries the arrival current.
+            row.current = self.goal;
+        }
+        Ok(row)
     }
     fn display_count(&mut self) -> Result<usize, String> {
+        // Post-forward override (same key-down discriminator as gates):
+        // the return leg re-fences the single-display rule here.
+        if self.counts.key_down > 0
+            && let Some(next) = self.displays_after_forward.clone()
+        {
+            return next;
+        }
         self.displays.clone()
     }
     fn read_holder(&mut self, symbolic_id: u32) -> Result<ShortcutEntry, String> {
@@ -318,7 +393,16 @@ impl ManagedSendBackend for FakeManaged {
     fn settle_grab(&mut self) {}
     fn settle_hold(&mut self) {}
     fn read_membership(&mut self) -> Option<Vec<u64>> {
+        // One-shot stop fired on the first membership read: models a cancel
+        // landing mid-settle (after the forward edges proved, before the
+        // return leg runs).
+        if let Some(lane) = self.cancel_on_membership_read.take() {
+            lane.cancel();
+        }
         if self.unreadable {
+            return None;
+        }
+        if self.fail_return_reads && !self.select_back_calls.is_empty() {
             return None;
         }
         Some(self.membership.clone())
@@ -327,7 +411,44 @@ impl ManagedSendBackend for FakeManaged {
         if self.unreadable {
             return None;
         }
+        if self.fail_return_reads && !self.select_back_calls.is_empty() {
+            return None;
+        }
         self.current
+    }
+    fn select_back(&mut self, source_sid: u64) -> Result<(), String> {
+        self.select_back_calls.push(source_sid);
+        if let Some(reason) = self.select_back_fail.clone() {
+            return Err(reason);
+        }
+        // Ordinary return select: the mover stays on the target, the view
+        // returns to the source (unless the test holds the wrong current).
+        if !self.select_back_hold_current {
+            self.current = Some(source_sid);
+        }
+        Ok(())
+    }
+    fn read_focused(&mut self) -> Option<String> {
+        self.focused.clone()
+    }
+    fn prepare_trailing_target(
+        &mut self,
+        _pins: &TrailingPrepPins,
+    ) -> Result<TrailingPrepProof, String> {
+        self.prep_calls += 1;
+        if let Some(handoff) = self.cancel_on_prep.take() {
+            handoff.cancel();
+        }
+        if let Some((started, release)) = self.block_prep.take() {
+            let _ = started.send(());
+            // Bounded block: the test releases; a timeout fails closed.
+            if release.recv_timeout(Duration::from_secs(5)).is_err() {
+                return Err("injected prep block timed out".to_owned());
+            }
+        }
+        self.trailing_prep.clone().unwrap_or_else(|| {
+            Err("trailing preparation unimplemented on this backend; refusing".to_owned())
+        })
     }
     fn effect_deadline_ms(&self) -> u64 {
         30
@@ -353,7 +474,7 @@ fn finish_and_poll(
     target: &ManagedSendTarget,
     outcome: SendEffectOutcome,
 ) -> crate::workspace_send_effect::SendCompletion {
-    let completion = completion_for(target, outcome);
+    let completion = completion_for(target, outcome, None);
     assert!(
         handoff.finish(completion.clone()),
         "matching finish stages the terminal completion"
@@ -878,7 +999,7 @@ fn managed_cancel_during_mouse_hold_still_releases() {
     );
     assert!(handoff.is_busy(), "terminal completion (not cancel) frees");
     let done = {
-        let completion = completion_for(&pinned, outcome);
+        let completion = completion_for(&pinned, outcome, None);
         assert!(handoff.finish(completion.clone()));
         handoff
             .poll_completion_for(&pinned)
@@ -1144,7 +1265,7 @@ fn managed_second_operation_on_reused_backend_classifies_fresh() {
     assert!(leg.is_some());
     let first_posts = backend.counts.total();
     assert!(first_posts > 0, "first operation posts");
-    assert!(handoff.finish(completion_for(&pinned, first)));
+    assert!(handoff.finish(completion_for(&pinned, first, None)));
     assert!(handoff.poll_completion_for(&pinned).is_some());
     // Second operation on the SAME backend: focus swaps before any new post.
     backend.evidence_base.focused_window = Some("4242_9".to_owned());
@@ -1162,7 +1283,7 @@ fn managed_second_operation_on_reused_backend_classifies_fresh() {
         first_posts,
         "second operation posts nothing new"
     );
-    assert!(handoff.finish(completion_for(&pinned, second)));
+    assert!(handoff.finish(completion_for(&pinned, second, None)));
     let done = handoff
         .poll_completion_for(&pinned)
         .expect("second terminal polls");
@@ -1177,11 +1298,11 @@ fn managed_terminal_feedback_settles_transfer_and_stale_drops() {
     let pinned = target();
     handoff.submit(pinned.clone()).expect("submits");
     handoff.take_for_owner().expect("takes");
-    let mut stale = completion_for(&pinned, SendEffectOutcome::Applied);
+    let mut stale = completion_for(&pinned, SendEffectOutcome::Applied, None);
     stale.operation_id = "op-9".to_owned();
     assert!(!handoff.finish(stale), "wrong operation is stale");
     assert_eq!(handoff.stale_dropped(), 1);
-    let mut stale = completion_for(&pinned, SendEffectOutcome::Applied);
+    let mut stale = completion_for(&pinned, SendEffectOutcome::Applied, None);
     stale.app_generation = 2;
     assert!(!handoff.finish(stale), "relaunched lifetime is stale");
     let done = finish_and_poll(&handoff, &pinned, SendEffectOutcome::Applied);
@@ -1191,7 +1312,7 @@ fn managed_terminal_feedback_settles_transfer_and_stale_drops() {
         .submit(pinned.clone())
         .expect("resubmits after poll");
     handoff.take_for_owner().expect("takes");
-    assert!(handoff.finish(completion_for(&pinned, SendEffectOutcome::Applied)));
+    assert!(handoff.finish(completion_for(&pinned, SendEffectOutcome::Applied, None)));
     let other = ManagedSendTarget::bind(4242, 7, 1, source_domain(), 3, 9, "op-9")
         .expect("other operation binds");
     assert!(handoff.poll_completion_for(&other).is_none());
@@ -1209,17 +1330,17 @@ fn managed_terminal_feedback_settles_transfer_and_stale_drops() {
 
 #[test]
 fn managed_arming_and_holder_wiring_armed_for_numbered_follow() {
-    // Numbered send-follow 1..9 is armed; trailing send-0, stays, relative
-    // sends, and outputs stay unarmed. The async live controller still
+    // Numbered sends 0..9 follow plus 1..9 stay are armed; trailing
+    // stay-0, relative sends/stays, and outputs stay unarmed. The
+    // async live controller still
     // refuses a claim without admission pins before any thread spawn or
     // post; no holder ensure is wired into the managed backend path
     // (startup owns it).
     for row in crate::workspace_input::workspace_catalogue() {
         match &row.action {
-            crate::runtime_types::InputSemanticAction::WorkspaceSend {
-                index,
-                follow: true,
-            } if (1..=9).contains(index) => {
+            crate::runtime_types::InputSemanticAction::WorkspaceSend { index, follow }
+                if *follow || (1..=9).contains(index) =>
+            {
                 assert!(row.implemented, "{} armed", row.id);
             }
             crate::runtime_types::InputSemanticAction::WorkspaceSend { .. } => {
@@ -1228,7 +1349,11 @@ fn managed_arming_and_holder_wiring_armed_for_numbered_follow() {
             _ => {}
         }
     }
-    assert_eq!(bindings().len(), 9, "9 numbered send-follow chords armed");
+    assert_eq!(
+        bindings().len(),
+        10,
+        "10 numbered send-follow chords armed (stays bindable unbound, no chord)"
+    );
     let mut controller = crate::workspace_send::LiveSendController::new();
     let claim = crate::runtime_types::ClaimedSelect::tap(
         crate::runtime_types::InputSemanticAction::WorkspaceSend {
@@ -1247,6 +1372,152 @@ fn managed_arming_and_holder_wiring_armed_for_numbered_follow() {
             && !source.contains("ensure_holders_for_preset"),
         "no startup holder writes from the managed path this unit"
     );
+}
+
+#[test]
+fn trailing_send_drain_bound_target_submits_and_settles_through_the_same_lane() {
+    use crate::runtime_types::{ClaimedSelect, InputSemanticAction};
+    use crate::workspace_select::SelectionBackend;
+    use crate::workspace_send::{
+        SendDrainOutcome, bind_trailing_send_target, prepare_trailing_send_target,
+        send_drain_outcome_for, should_note_history,
+    };
+    // Admission pins (engine side, explicit local capability): the ORIGINAL
+    // window, lifetime, and source — NO target SID (the Space may not exist
+    // yet); the admission topology revision rides for pre-preparation drift
+    // detection.
+    let mut claim = ClaimedSelect::tap(InputSemanticAction::WorkspaceSend {
+        index: 0,
+        follow: true,
+    });
+    claim.send_subject = Some("4242_7".to_owned());
+    claim.send_generation = Some(1);
+    claim.send_source = Some(source_domain());
+    claim.operation_id = Some("op-2".to_owned());
+    claim.topology_revision = Some(4);
+    assert!(
+        ManagedSendTarget::from_claim(&claim).is_err(),
+        "no admission SID was ever pinned for index 0"
+    );
+    // Drain preparation over a scripted selection backend (the same trait
+    // the live drain proves through): producer-shaped `[1, 277]` with the
+    // last proven empty reuses under the post-preparation revision.
+    struct PrepFake {
+        row: SelectionSnapshot,
+    }
+    impl SelectionBackend for PrepFake {
+        fn display_count(&mut self) -> Result<usize, String> {
+            Ok(1)
+        }
+        fn snapshot(&mut self) -> Result<SelectionSnapshot, String> {
+            Ok(self.row.clone())
+        }
+        fn revision(&mut self) -> Option<u64> {
+            Some(9)
+        }
+        fn empty(&mut self, _: u64) -> Result<bool, String> {
+            Ok(true)
+        }
+        fn create(&mut self, _: &SelectionSnapshot) -> Result<(), String> {
+            unreachable!("proven-empty last reuses without an append");
+        }
+        fn select(&mut self, _: &SelectionSnapshot, _: u64) -> Result<(), String> {
+            unreachable!("preparation never selects");
+        }
+    }
+    let mut prep_backend = PrepFake {
+        row: SelectionSnapshot {
+            display: "display-a".to_owned(),
+            spaces: vec![1, 277],
+            current: 1,
+        },
+    };
+    let prep = prepare_trailing_send_target(&mut prep_backend, true).expect("reuse prepares");
+    assert_eq!(prep.target_sid, 277);
+    assert_eq!(prep.created, None);
+    assert_eq!(prep.revision, 9);
+    // The tile binds the prepared target to the admitted original pins and
+    // re-pins the claim exactly like the drain (the own-append revision move
+    // rides explicitly, never bypassed).
+    let bound = bind_trailing_send_target(&claim, prep).expect("trailing binds");
+    assert_eq!(bound.target_sid(), 277);
+    assert!(bound.follow());
+    claim.expected_sid = Some(bound.target_sid());
+    claim.topology_revision = Some(bound.revision());
+    // The same single-flight lane accepts the drain-bound claim.
+    let mut controller = crate::workspace_send::LiveSendController::new();
+    controller
+        .submit(&claim, "display-a", 1, FakeManaged::new)
+        .expect("drain-bound claim submits");
+    assert!(controller.is_busy());
+    // The same owner executes the bound target to Applied with exact
+    // membership-plus-current readback (row names the prepared SID at the
+    // Desktop-2 ordinal; the fake lands the drag there on release).
+    let mut fake = FakeManaged::new();
+    fake.snapshot = Ok(SelectionSnapshot {
+        display: "display-a".to_owned(),
+        spaces: vec![1, 277],
+        current: 1,
+    });
+    let handoff = SendEffectHandoff::new();
+    let (outcome, leg) = execute_managed_send(&bound, &mut fake, &handoff);
+    assert_eq!(outcome, SendEffectOutcome::Applied);
+    let leg = leg.expect("applied carries readback");
+    assert_eq!(leg.membership, vec![277]);
+    assert_eq!(leg.current, 277);
+    // The same settlement: an Applied follow notes history and settles the
+    // transfer under the claim's operation identity.
+    assert_eq!(send_drain_outcome_for(outcome), SendDrainOutcome::Applied);
+    assert!(should_note_history(
+        SendDrainOutcome::Applied,
+        bound.follow()
+    ));
+    assert_eq!(bound.operation_id(), "op-2");
+    // Reap the submitted owner (its scripted execution refuses on the
+    // default row — target absent there — while the direct execution above
+    // proves the prepared row applies; either terminal settle keeps the
+    // single-flight lane honest).
+    let _ = controller.shutdown();
+}
+
+#[test]
+fn trailing_send_bound_target_refuses_focus_swap_without_actuation() {
+    use crate::runtime_types::{ClaimedSelect, InputSemanticAction};
+    use crate::workspace_send::TrailingSendPrep;
+    use crate::workspace_send::bind_trailing_send_target;
+    // A pure focus swap — the subject stays managed and readable while
+    // focus names another window — refuses at the first edge with zero
+    // posts, even for a drain-bound trailing target.
+    let mut claim = ClaimedSelect::tap(InputSemanticAction::WorkspaceSend {
+        index: 0,
+        follow: true,
+    });
+    claim.send_subject = Some("4242_7".to_owned());
+    claim.send_generation = Some(1);
+    claim.send_source = Some(source_domain());
+    claim.operation_id = Some("op-2".to_owned());
+    let bound = bind_trailing_send_target(
+        &claim,
+        TrailingSendPrep {
+            target_sid: 277,
+            created: None,
+            revision: 9,
+        },
+    )
+    .expect("trailing binds");
+    let mut fake = FakeManaged::new();
+    fake.snapshot = Ok(SelectionSnapshot {
+        display: "display-a".to_owned(),
+        spaces: vec![1, 277],
+        current: 1,
+    });
+    fake.swap_from_call = Some(1);
+    let handoff = SendEffectHandoff::new();
+    let (outcome, leg) = execute_managed_send(&bound, &mut fake, &handoff);
+    assert_eq!(outcome, SendEffectOutcome::RefusedProven);
+    assert!(leg.is_none());
+    assert_eq!(fake.counts.key_down, 0, "no chord posted before proof");
+    assert_eq!(fake.counts.mouse_down, 0, "no grab posted before proof");
 }
 
 #[test]
@@ -1507,4 +1778,995 @@ fn proof_refusal_reason_names_blind_root_only_for_unknown_managed() {
         );
         assert!(reason.contains(refusal.token()), "{reason}");
     }
+}
+
+/// Stay fixtures: the pinned follow target (SID 3, op-3) with the source
+/// SID 20 from the canned row `[20, 3, 7]` (current 20).
+const STAY_SOURCE: u64 = 20;
+
+fn stay_ready_backend() -> FakeManaged {
+    let mut backend = FakeManaged::new();
+    backend.focused = Some("4242_7".to_owned());
+    backend
+}
+
+/// Submit + take to place one request inflight, then run the stay effect
+/// against that lane. Mirrors the threaded owner (take, execute, finish)
+/// without spawning a thread.
+fn execute_stay_inflight(
+    handoff: &SendEffectHandoff,
+    target: &ManagedSendTarget,
+    source_sid: u64,
+    source_focus: Option<&str>,
+    backend: &mut FakeManaged,
+) -> (SendEffectOutcome, Option<crate::space_drag_transfer::LegOk>) {
+    handoff.submit(target.clone()).expect("idle submits");
+    handoff.take_for_owner().expect("owner takes");
+    execute_managed_send_stay(target, source_sid, source_focus, backend, handoff)
+}
+
+#[test]
+fn stay_source_sid_zero_refuses_before_any_post() {
+    // Unpinned source refuses pre-actuation: zero posts, no return leg.
+    let handoff = SendEffectHandoff::new();
+    let mut backend = stay_ready_backend();
+    let (outcome, leg) =
+        execute_stay_inflight(&handoff, &target(), 0, Some("4242_7"), &mut backend);
+    assert_eq!(outcome, SendEffectOutcome::RefusedProven);
+    assert!(leg.is_none());
+    assert_eq!(backend.counts.total(), 0, "zero source posts nothing");
+    assert!(backend.select_back_calls.is_empty());
+}
+
+#[test]
+fn stay_forward_plus_return_applies_and_settles_without_replay() {
+    // Happy path: forward drag proves membership exactly [3] on current 3,
+    // the released select-back returns the view to 20, and the readback
+    // proves membership still exactly [3] with current exactly 20.
+    let handoff = SendEffectHandoff::new();
+    let pinned = target();
+    let mut backend = stay_ready_backend();
+    let (outcome, leg) =
+        execute_stay_inflight(&handoff, &pinned, STAY_SOURCE, Some("4242_7"), &mut backend);
+    assert_eq!(outcome, SendEffectOutcome::Applied);
+    let leg = leg.expect("stay applied carries exact return readback");
+    assert_eq!((leg.membership, leg.current), (vec![3], STAY_SOURCE));
+    assert!(!leg.pending_recovered);
+    assert!(backend.counts.balanced(), "stay releases balance");
+    assert_eq!(
+        backend.select_back_calls,
+        vec![STAY_SOURCE],
+        "exactly one return select to the admission source"
+    );
+    // Same fenced completion roundtrip as the follow path: matching polls,
+    // no replay, lane idles.
+    let done = finish_and_poll(&handoff, &pinned, outcome);
+    assert_eq!(done.outcome, SendEffectOutcome::Applied);
+    assert!(handoff.poll_completion_for(&pinned).is_none(), "no replay");
+    assert!(!handoff.is_busy());
+}
+
+#[test]
+fn stay_empty_source_makes_no_focus_claim() {
+    // Empty source (`None` focus): the stay applies on exact
+    // membership-plus-current alone, with no focus read required.
+    let handoff = SendEffectHandoff::new();
+    let mut backend = FakeManaged::new();
+    backend.focused = None;
+    let (outcome, leg) =
+        execute_stay_inflight(&handoff, &target(), STAY_SOURCE, None, &mut backend);
+    assert_eq!(outcome, SendEffectOutcome::Applied);
+    let leg = leg.expect("empty-source stay applies");
+    assert_eq!((leg.membership, leg.current), (vec![3], STAY_SOURCE));
+    // Contrast: a claimed source focus that reads unknown holds instead of
+    // guessing.
+    let handoff = SendEffectHandoff::new();
+    let mut backend = FakeManaged::new();
+    backend.focused = None;
+    let (outcome, leg) = execute_stay_inflight(
+        &handoff,
+        &target(),
+        STAY_SOURCE,
+        Some("4242_7"),
+        &mut backend,
+    );
+    assert_eq!(outcome, SendEffectOutcome::PossiblyExecuted);
+    assert!(leg.is_none());
+    assert!(backend.counts.balanced());
+}
+
+#[test]
+fn stay_source_focus_mismatch_holds_without_replay() {
+    // Membership exactly [3] with current exactly 20, but focus names a
+    // foreign window: uncertain return holds (never replayed, never a
+    // proven refusal after the forward chord).
+    let handoff = SendEffectHandoff::new();
+    let pinned = target();
+    let mut backend = stay_ready_backend();
+    backend.focused = Some("4242_9".to_owned());
+    let (outcome, leg) =
+        execute_stay_inflight(&handoff, &pinned, STAY_SOURCE, Some("4242_7"), &mut backend);
+    assert_eq!(outcome, SendEffectOutcome::PossiblyExecuted);
+    assert!(leg.is_none());
+    assert!(backend.counts.balanced());
+    assert_eq!(backend.select_back_calls, vec![STAY_SOURCE]);
+    let done = finish_and_poll(&handoff, &pinned, outcome);
+    assert_eq!(done.outcome, SendEffectOutcome::PossiblyExecuted);
+    assert!(handoff.poll_completion_for(&pinned).is_none(), "no replay");
+}
+
+#[test]
+fn stay_failed_select_back_holds_after_key_post() {
+    // The return select refuses after the forward chord posted: hold with
+    // the key post as evidence (never a proven refusal, never replayed).
+    let handoff = SendEffectHandoff::new();
+    let pinned = target();
+    let mut backend = stay_ready_backend();
+    backend.select_back_fail = Some("injected select-back refusal".to_owned());
+    let (outcome, leg) =
+        execute_stay_inflight(&handoff, &pinned, STAY_SOURCE, Some("4242_7"), &mut backend);
+    assert_eq!(outcome, SendEffectOutcome::PossiblyExecuted);
+    assert!(leg.is_none());
+    assert_eq!(backend.counts.key_down, 1, "forward chord posted");
+    assert!(
+        backend.counts.balanced(),
+        "release-first even on return failure"
+    );
+    assert_eq!(backend.select_back_calls, vec![STAY_SOURCE]);
+    let done = finish_and_poll(&handoff, &pinned, outcome);
+    assert_eq!(done.outcome, SendEffectOutcome::PossiblyExecuted);
+    assert!(handoff.poll_completion_for(&pinned).is_none(), "no replay");
+}
+
+#[test]
+fn stay_unreadable_return_readback_holds() {
+    // Post-return membership/current unreadable (the forward readback was
+    // exact): hold, never a false proven refusal.
+    let handoff = SendEffectHandoff::new();
+    let mut backend = stay_ready_backend();
+    backend.fail_return_reads = true;
+    let (outcome, leg) = execute_stay_inflight(
+        &handoff,
+        &target(),
+        STAY_SOURCE,
+        Some("4242_7"),
+        &mut backend,
+    );
+    assert_eq!(outcome, SendEffectOutcome::PossiblyExecuted);
+    assert!(leg.is_none());
+    assert!(backend.counts.balanced());
+    assert_eq!(backend.select_back_calls, vec![STAY_SOURCE]);
+}
+
+#[test]
+fn stay_changed_topology_return_holds_without_select() {
+    // Foreign drift between the pinned pre-forward row and the return-leg
+    // fresh row (SID 7 replaced by 9): hold before any return select. The
+    // expected current change (20 -> 3) is not drift - only the SID
+    // order/identity is fenced here.
+    let handoff = SendEffectHandoff::new();
+    let mut backend = stay_ready_backend();
+    backend.snapshot_script.push_back(Ok(SelectionSnapshot {
+        display: "display-a".to_owned(),
+        spaces: vec![20, 3, 9],
+        current: 3,
+    }));
+    let (outcome, leg) = execute_stay_inflight(
+        &handoff,
+        &target(),
+        STAY_SOURCE,
+        Some("4242_7"),
+        &mut backend,
+    );
+    assert_eq!(outcome, SendEffectOutcome::PossiblyExecuted);
+    assert!(leg.is_none());
+    assert!(
+        backend.select_back_calls.is_empty(),
+        "drift holds before any return select"
+    );
+    assert!(backend.counts.balanced());
+}
+
+#[test]
+fn stay_display_growth_holds_without_select() {
+    // A second display appears after the forward chord: hold before any
+    // return select rather than selecting under widened topology.
+    let handoff = SendEffectHandoff::new();
+    let mut backend = stay_ready_backend();
+    backend.displays_after_forward = Some(Ok(2));
+    let (outcome, leg) = execute_stay_inflight(
+        &handoff,
+        &target(),
+        STAY_SOURCE,
+        Some("4242_7"),
+        &mut backend,
+    );
+    assert_eq!(outcome, SendEffectOutcome::PossiblyExecuted);
+    assert!(leg.is_none());
+    assert!(backend.select_back_calls.is_empty());
+    assert!(backend.counts.balanced());
+}
+
+#[test]
+fn stay_display_identity_change_holds_without_select() {
+    // Same SIDs, different display identity (swap under the row): hold
+    // before any return select.
+    let handoff = SendEffectHandoff::new();
+    let mut backend = stay_ready_backend();
+    backend.snapshot_script.push_back(Ok(SelectionSnapshot {
+        display: "display-b".to_owned(),
+        spaces: vec![20, 3, 7],
+        current: 3,
+    }));
+    let (outcome, leg) = execute_stay_inflight(
+        &handoff,
+        &target(),
+        STAY_SOURCE,
+        Some("4242_7"),
+        &mut backend,
+    );
+    assert_eq!(outcome, SendEffectOutcome::PossiblyExecuted);
+    assert!(leg.is_none());
+    assert!(backend.select_back_calls.is_empty());
+    assert!(backend.counts.balanced());
+}
+
+#[test]
+fn stay_arrival_moved_before_return_holds_without_select() {
+    // A foreign switch moves the view off the forward arrival before the
+    // return leg (current 7, row otherwise unchanged): hold before select.
+    let handoff = SendEffectHandoff::new();
+    let mut backend = stay_ready_backend();
+    backend.snapshot_script.push_back(Ok(SelectionSnapshot {
+        display: "display-a".to_owned(),
+        spaces: vec![20, 3, 7],
+        current: 7,
+    }));
+    let (outcome, leg) = execute_stay_inflight(
+        &handoff,
+        &target(),
+        STAY_SOURCE,
+        Some("4242_7"),
+        &mut backend,
+    );
+    assert_eq!(outcome, SendEffectOutcome::PossiblyExecuted);
+    assert!(leg.is_none());
+    assert!(backend.select_back_calls.is_empty());
+    assert!(backend.counts.balanced());
+}
+
+#[test]
+fn stay_unreadable_fresh_row_holds_without_select() {
+    let handoff = SendEffectHandoff::new();
+    let mut backend = stay_ready_backend();
+    backend
+        .snapshot_script
+        .push_back(Err("injected row loss".to_owned()));
+    let (outcome, leg) = execute_stay_inflight(
+        &handoff,
+        &target(),
+        STAY_SOURCE,
+        Some("4242_7"),
+        &mut backend,
+    );
+    assert_eq!(outcome, SendEffectOutcome::PossiblyExecuted);
+    assert!(leg.is_none());
+    assert!(backend.select_back_calls.is_empty());
+    assert!(backend.counts.balanced());
+}
+
+#[test]
+fn stay_wrong_current_return_holds() {
+    // The return select runs but the view stays on the target: membership
+    // exact, current wrong - hold, never claim arrival.
+    let handoff = SendEffectHandoff::new();
+    let mut backend = stay_ready_backend();
+    backend.select_back_hold_current = true;
+    let (outcome, leg) = execute_stay_inflight(
+        &handoff,
+        &target(),
+        STAY_SOURCE,
+        Some("4242_7"),
+        &mut backend,
+    );
+    assert_eq!(outcome, SendEffectOutcome::PossiblyExecuted);
+    assert!(leg.is_none());
+    assert_eq!(backend.select_back_calls, vec![STAY_SOURCE]);
+    assert!(backend.counts.balanced());
+}
+
+#[test]
+fn stay_cancel_before_return_holds_without_select() {
+    // A stop landing mid-settle (after the forward edges proved, before
+    // the return leg): hold with the forward releases balanced and no
+    // return select attempted.
+    let handoff = Arc::new(SendEffectHandoff::new());
+    let pinned = target();
+    handoff.submit(pinned.clone()).expect("submits");
+    handoff.take_for_owner().expect("takes");
+    let mut backend = stay_ready_backend();
+    backend.cancel_on_membership_read = Some(Arc::clone(&handoff));
+    let (outcome, leg) =
+        execute_managed_send_stay(&pinned, STAY_SOURCE, Some("4242_7"), &mut backend, &handoff);
+    assert!(handoff.cancel_requested(), "stop landed mid-settle");
+    assert_eq!(outcome, SendEffectOutcome::PossiblyExecuted);
+    assert!(leg.is_none());
+    assert!(
+        backend.select_back_calls.is_empty(),
+        "stop before select-back selects nothing"
+    );
+    assert!(backend.counts.balanced());
+    let done = {
+        let completion = completion_for(&pinned, outcome, None);
+        assert!(handoff.finish(completion));
+        handoff
+            .poll_completion_for(&pinned)
+            .expect("terminal completion polls")
+    };
+    assert_eq!(done.outcome, SendEffectOutcome::PossiblyExecuted);
+    assert!(!handoff.is_busy());
+}
+
+#[test]
+fn stay_forward_refusal_attempts_no_return() {
+    // Pre-actuation forward refusal (focus swap): proven refusal, zero key
+    // posts, no return leg.
+    let handoff = SendEffectHandoff::new();
+    let mut backend = stay_ready_backend();
+    backend.evidence_base.focused_window = Some("4242_9".to_owned());
+    let (outcome, leg) = execute_stay_inflight(
+        &handoff,
+        &target(),
+        STAY_SOURCE,
+        Some("4242_7"),
+        &mut backend,
+    );
+    assert_eq!(outcome, SendEffectOutcome::RefusedProven);
+    assert!(leg.is_none());
+    assert_eq!(backend.counts.key_down, 0, "refused forward posts no chord");
+    assert!(backend.select_back_calls.is_empty());
+}
+
+#[test]
+fn stay_gate_recheck_before_return_holds() {
+    // Gates open at forward admission, locked before the return: hold with
+    // the forward chord posted, no return select.
+    let handoff = SendEffectHandoff::new();
+    let mut backend = stay_ready_backend();
+    backend.gates_after_forward = Some(SendGates {
+        session_unlocked: false,
+        ..open_gates()
+    });
+    let (outcome, leg) = execute_stay_inflight(
+        &handoff,
+        &target(),
+        STAY_SOURCE,
+        Some("4242_7"),
+        &mut backend,
+    );
+    assert_eq!(outcome, SendEffectOutcome::PossiblyExecuted);
+    assert!(leg.is_none());
+    assert_eq!(backend.counts.key_down, 1, "forward chord posted");
+    assert!(backend.select_back_calls.is_empty());
+    assert!(backend.counts.balanced());
+}
+
+#[test]
+fn stay_path_never_advances_previous_history() {
+    // Stays keep the source current: the stay orchestrator must never note
+    // a previous-history arrival (the follow drain's arrival note stays
+    // follow-only) and must never touch select state.
+    let source = include_str!("workspace_send_managed.rs");
+    let start = source
+        .find("pub(crate) fn execute_managed_send_stay")
+        .expect("stay path present");
+    let rest = &source[start..];
+    let end = rest
+        .find("\nfn ")
+        .map(|i| start + i)
+        .unwrap_or(source.len());
+    let body = &source[start..end];
+    assert!(
+        !body.contains("note_arrival"),
+        "stay advances no previous history"
+    );
+    assert!(
+        !body.contains("SelectionState"),
+        "stay touches no select state"
+    );
+}
+
+/// Owner stay routing with explicitly supplied pins: mover B (`4242_7`)
+/// leaves source 20 while resident A (`4242_9`) remains, and the caller
+/// pins A as the fallback. The dedicated owner thread runs the forward
+/// drag plus the return select and verifies the A pin. Nothing here
+/// derives the fallback from the subject; the claim path cannot build this
+/// target yet, so the pins are caller-supplied.
+#[test]
+fn managed_thread_routes_explicit_resident_stay_without_replay() {
+    let pinned = ManagedSendTarget::bind_stay(
+        4242,
+        7,
+        1,
+        source_domain(),
+        3,
+        9,
+        "op-3",
+        STAY_SOURCE,
+        Some("4242_9"),
+    )
+    .expect("explicit resident-A stay binds");
+    assert!(!pinned.follow());
+    let mut worker = ManagedSendThread::spawn(|| {
+        let mut backend = FakeManaged::new();
+        backend.focused = Some("4242_9".to_owned());
+        backend
+    });
+    let handoff = worker.handoff();
+    worker.submit(pinned.clone()).expect("idle submits");
+    let mut done = None;
+    for _ in 0..500 {
+        if let Some(completion) = handoff.poll_completion_for(&pinned) {
+            done = Some(completion);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let done = done.expect("effect thread finishes promptly");
+    assert_eq!(done.outcome, SendEffectOutcome::Applied);
+    assert!(!done.follow, "completion carries the pinned stay intent");
+    assert!(handoff.poll_completion_for(&pinned).is_none(), "no replay");
+    assert!(!handoff.is_busy());
+    worker.request_shutdown();
+    let mut released = None;
+    for _ in 0..500 {
+        if let Some(had) = worker.try_reap() {
+            released = Some(had);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(released, Some(false), "nothing outstanding after poll");
+}
+
+/// Stay-branch discrimination through the owner thread: the same explicit
+/// A pin with native focus still on mover B holds, while a follow through
+/// the same backend would apply (it never checks the return focus). This
+/// proves the owner ran the stay branch, not the follow path.
+#[test]
+fn managed_thread_stay_branch_holds_on_focus_mismatch_where_follow_applies() {
+    let pinned = ManagedSendTarget::bind_stay(
+        4242,
+        7,
+        1,
+        source_domain(),
+        3,
+        9,
+        "op-3",
+        STAY_SOURCE,
+        Some("4242_9"),
+    )
+    .expect("explicit resident-A stay binds");
+    let mut worker = ManagedSendThread::spawn(|| {
+        let mut backend = FakeManaged::new();
+        backend.focused = Some("4242_7".to_owned());
+        backend
+    });
+    let handoff = worker.handoff();
+    worker.submit(pinned.clone()).expect("idle submits");
+    let mut done = None;
+    for _ in 0..500 {
+        if let Some(completion) = handoff.poll_completion_for(&pinned) {
+            done = Some(completion);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let done = done.expect("effect thread finishes promptly");
+    assert_eq!(
+        done.outcome,
+        SendEffectOutcome::PossiblyExecuted,
+        "mover-as-focus against an A pin holds"
+    );
+    assert!(!done.follow);
+    assert!(handoff.poll_completion_for(&pinned).is_none(), "no replay");
+    assert!(!handoff.is_busy());
+    worker.request_shutdown();
+    let mut released = None;
+    for _ in 0..500 {
+        if let Some(had) = worker.try_reap() {
+            released = Some(had);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(released, Some(false), "nothing outstanding after poll");
+}
+
+// -- Trailing owner execution (explicit local capability) ---------------------
+
+fn trailing_request(token: Option<&str>) -> TrailingSendRequest {
+    TrailingSendRequest {
+        pid: 4242,
+        wid: 7,
+        window: "4242_7".to_owned(),
+        app_generation: 1,
+        source: source_domain(),
+        operation_id: "op-3".to_owned(),
+        token: token.map(str::to_owned),
+        pins: TrailingPrepPins {
+            display_index: 0,
+            pinned_cgid: 1,
+            pinned_uuid: "uuid-a".to_owned(),
+            trailing_enabled: true,
+        },
+    }
+}
+
+fn trailing_prep(target: u64, created: Option<u64>) -> TrailingPrepProof {
+    let (before, after) = match created {
+        Some(sid) => (vec![20, 3, 7], vec![20, 3, 7, sid]),
+        None => (vec![20, 3, 7], vec![20, 3, 7]),
+    };
+    TrailingPrepProof {
+        target_sid: target,
+        created,
+        revision: 9,
+        display_id: "display-a".to_owned(),
+        before,
+        after,
+    }
+}
+
+fn appended_row() -> SelectionSnapshot {
+    SelectionSnapshot {
+        display: "display-a".to_owned(),
+        spaces: vec![20, 3, 7, 21],
+        current: 20,
+    }
+}
+
+#[test]
+fn trailing_append_binds_token_and_applies_with_proof() {
+    // Owner-verified append plus the engine token: the forward drag runs
+    // against the exact prepared SID and the completion carries the
+    // binding rows for the engine store.
+    let handoff = SendEffectHandoff::new();
+    let request = trailing_request(Some("wl-1"));
+    let mut backend = FakeManaged::new();
+    backend.snapshot = Ok(appended_row());
+    backend.trailing_prep = Some(Ok(trailing_prep(21, Some(21))));
+    let (outcome, target, proof) = execute_trailing_send(&request, &mut backend, &handoff);
+    assert_eq!(outcome, SendEffectOutcome::Applied);
+    assert_eq!(backend.prep_calls, 1, "preparation runs exactly once");
+    let target = target.expect("append binds a target");
+    assert_eq!((target.target_sid(), target.revision()), (21, 9));
+    assert_eq!(target.operation_id(), "op-3");
+    let proof = proof.expect("append with token proves");
+    assert_eq!(proof.target_sid, 21);
+    assert_eq!(proof.revision, 9);
+    assert_eq!(proof.created, Some(21), "creation rides with the token");
+    let binding = proof.binding.as_ref().expect("token pairs the rows");
+    assert_eq!(binding.token, "wl-1");
+    assert_eq!(binding.created, 21);
+    assert_eq!(binding.before, vec![20, 3, 7]);
+    assert_eq!(binding.after, vec![20, 3, 7, 21]);
+    // The bound target settles through the normal completion fence.
+    let done = completion_for(&target, outcome, Some(proof));
+    handoff.submit(target).expect("idle submits");
+    let _ = handoff.take_for_owner();
+    assert!(handoff.finish(done), "proof completion stages");
+}
+
+#[test]
+fn trailing_reuse_applies_without_binding_rows() {
+    // Reuse proves no append: the drag still runs and settles, but no
+    // binding rows travel (nothing to bind).
+    let handoff = SendEffectHandoff::new();
+    let request = trailing_request(Some("wl-1"));
+    let mut backend = FakeManaged::new();
+    backend.trailing_prep = Some(Ok(trailing_prep(7, None)));
+    let (outcome, target, proof) = execute_trailing_send(&request, &mut backend, &handoff);
+    assert_eq!(outcome, SendEffectOutcome::Applied);
+    let target = target.expect("reuse binds a target");
+    assert_eq!(target.target_sid(), 7);
+    let proof = proof.expect("target still reports for settlement");
+    assert_eq!((proof.target_sid, proof.revision), (7, 9));
+    assert_eq!(proof.created, None, "reuse creates nothing");
+    assert!(proof.binding.is_none(), "reuse binds nothing");
+}
+
+#[test]
+fn trailing_tokenless_append_applies_without_binding() {
+    // A tokenless request (dispatch carried no unbound desire) still sends
+    // to its prepared target and still reports the runtime-created SID so
+    // the main thread adopts it into lifecycle ownership; only the engine
+    // binding is token-gated, never invented.
+    let handoff = SendEffectHandoff::new();
+    let request = trailing_request(None);
+    let mut backend = FakeManaged::new();
+    backend.snapshot = Ok(appended_row());
+    backend.trailing_prep = Some(Ok(trailing_prep(21, Some(21))));
+    let (outcome, target, proof) = execute_trailing_send(&request, &mut backend, &handoff);
+    assert_eq!(outcome, SendEffectOutcome::Applied);
+    assert!(target.is_some());
+    let proof = proof.expect("target still reports for settlement");
+    assert_eq!(proof.created, Some(21), "creation rides without a token");
+    assert!(proof.binding.is_none(), "no token means no binding");
+    // The owned creation reaches the real main-thread adoption helper
+    // (the same `adopt_created` the tile settle and shutdown arms call),
+    // so the Space is lifecycle-owned even though nothing binds.
+    let mut lifecycle = crate::workspace_select::TrailingLifecycle::new(&[20, 3, 7]);
+    lifecycle
+        .adopt_created(proof.created.expect("created above"))
+        .expect("exact append adopts");
+    assert_eq!(lifecycle.owned(), &[21]);
+}
+
+#[test]
+fn trailing_prep_pre_actuation_refuses_proven_without_proof() {
+    // Preparation refusals before any press settle proven with no proof
+    // and no posts; the default backend refuses the same way.
+    for reason in [
+        "trailing send-0 unarmed: no trailing append runs",
+        "trailing send refuses: fresh row unreadable (gone)",
+        "trailing send refuses: emptiness unknown (dark)",
+        "trailing send refuses: append ordinal past Desktop-9; unmappable",
+        "trailing send refuses: append failed (pre-create topology drift)",
+        "trailing preparation unimplemented on this backend; refusing",
+        "trailing send refuses: caffeinate unspawnable (spawn failed)",
+    ] {
+        let handoff = SendEffectHandoff::new();
+        let mut backend = FakeManaged::new();
+        backend.trailing_prep = Some(Err(reason.to_owned()));
+        let (outcome, target, proof) =
+            execute_trailing_send(&trailing_request(Some("wl-1")), &mut backend, &handoff);
+        assert_eq!(outcome, SendEffectOutcome::RefusedProven, "{reason}");
+        assert!(target.is_none() && proof.is_none(), "{reason}");
+        assert_eq!(backend.counts.total(), 0, "{reason} posts nothing");
+    }
+    // The default (numbered-only) backend refuses without preparation.
+    let handoff = SendEffectHandoff::new();
+    let mut backend = FakeManaged::new();
+    let (outcome, target, proof) =
+        execute_trailing_send(&trailing_request(Some("wl-1")), &mut backend, &handoff);
+    assert_eq!(outcome, SendEffectOutcome::RefusedProven);
+    assert!(target.is_none() && proof.is_none());
+    assert_eq!(backend.prep_calls, 1);
+}
+
+#[test]
+fn trailing_prep_ambiguous_holds_without_proof() {
+    // Anything past a possibly-sent press holds without re-actuation and
+    // proves nothing (an exact append that validated would have
+    // succeeded, so no rows can bind). Unknown strings hold too.
+    for reason in [
+        "trailing send refuses: append failed (press refused)",
+        "trailing send refuses: post-append row unreadable (gone)",
+        "trailing send refuses: create effect is not an exact same-display append; adoption refused",
+        "trailing send refuses: post-append revision unprovable",
+        "created but MC close unproven: dismiss failed",
+        "something entirely new",
+    ] {
+        let handoff = SendEffectHandoff::new();
+        let mut backend = FakeManaged::new();
+        backend.trailing_prep = Some(Err(reason.to_owned()));
+        let (outcome, target, proof) =
+            execute_trailing_send(&trailing_request(Some("wl-1")), &mut backend, &handoff);
+        assert_eq!(outcome, SendEffectOutcome::PossiblyExecuted, "{reason}");
+        assert!(target.is_none() && proof.is_none(), "{reason}");
+    }
+}
+
+#[test]
+fn trailing_cancel_before_prep_refuses_without_preparation() {
+    // A stop that lands while the request stands inflight refuses before
+    // preparation: proven pre-actuation, preparation never runs.
+    let handoff = SendEffectHandoff::new();
+    let request = trailing_request(Some("wl-1"));
+    handoff
+        .submit_trailing(request.clone())
+        .expect("idle submits");
+    handoff.take_for_owner().expect("owner takes");
+    assert!(handoff.cancel(), "inflight cancel flags the stop");
+    let mut backend = FakeManaged::new();
+    backend.trailing_prep = Some(Ok(trailing_prep(21, Some(21))));
+    let (outcome, target, proof) = execute_trailing_send(&request, &mut backend, &handoff);
+    assert_eq!(outcome, SendEffectOutcome::RefusedProven);
+    assert!(target.is_none() && proof.is_none());
+    assert_eq!(backend.prep_calls, 0, "cancelled preparation never runs");
+}
+
+#[test]
+fn trailing_cancel_after_prep_skips_drag_but_keeps_proof() {
+    // A stop landing between the native ensure and the drag never runs
+    // the drag; a ran append still holds as possibly-executed with its
+    // proof (creation is a press), while a reuse refuses proven.
+    for (created, outcome) in [
+        (Some(21), SendEffectOutcome::PossiblyExecuted),
+        (None, SendEffectOutcome::RefusedProven),
+    ] {
+        let handoff = Arc::new(SendEffectHandoff::new());
+        let request = trailing_request(Some("wl-1"));
+        handoff
+            .submit_trailing(request.clone())
+            .expect("idle submits");
+        handoff.take_for_owner().expect("owner takes");
+        let mut backend = FakeManaged::new();
+        backend.snapshot = Ok(appended_row());
+        backend.trailing_prep = Some(Ok(trailing_prep(21, created)));
+        backend.cancel_on_prep = Some(Arc::clone(&handoff));
+        let (got, target, proof) = execute_trailing_send(&request, &mut backend, &handoff);
+        assert_eq!(got, outcome, "created={created:?}");
+        assert_eq!(backend.counts.total(), 0, "the drag never posts");
+        if created.is_some() {
+            let proof = proof.expect("ran append keeps its proof");
+            assert_eq!(proof.created, created, "stopped append keeps creation");
+            assert!(proof.binding.is_some());
+            assert!(target.is_some(), "bound before the stop");
+        } else {
+            assert!(target.is_some(), "reuse binds before the stop");
+            assert!(proof.expect("target reports").binding.is_none());
+        }
+    }
+}
+
+// -- Trailing controller: off-caller preparation through the owner --------
+
+fn trailing_claim(token: Option<&str>) -> crate::runtime_types::ClaimedSelect {
+    crate::runtime_types::ClaimedSelect {
+        action: crate::runtime_types::InputSemanticAction::WorkspaceSend {
+            index: 0,
+            follow: true,
+        },
+        expected_sid: None,
+        ui_generation: 0,
+        topology_revision: Some(9),
+        send_subject: Some("4242_7".to_owned()),
+        send_generation: Some(1),
+        send_source: Some(source_domain()),
+        send_source_sid: Some(20),
+        send_source_focus: None,
+        send_source_focus_empty: false,
+        operation_id: Some("op-3".to_owned()),
+        trailing_token: token.map(str::to_owned),
+    }
+}
+
+fn trailing_factory(
+    prep: Result<TrailingPrepProof, String>,
+    snapshot: SelectionSnapshot,
+    owner_thread: Arc<std::sync::Mutex<Vec<std::thread::ThreadId>>>,
+) -> impl FnOnce() -> FakeManaged + Send + 'static {
+    move || {
+        owner_thread
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .push(std::thread::current().id());
+        let mut backend = FakeManaged::new();
+        backend.snapshot = Ok(snapshot);
+        backend.trailing_prep = Some(prep);
+        backend
+    }
+}
+
+fn poll_until_settle(
+    controller: &mut crate::workspace_send::LiveSendController,
+) -> Option<crate::workspace_send::SendSettle> {
+    for _ in 0..500 {
+        if let Some(settle) = controller.poll() {
+            return Some(settle);
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    None
+}
+
+#[test]
+fn trailing_controller_prepares_off_caller_and_settles_with_proof() {
+    // The submitting thread never prepares: the owner thread runs the
+    // ensure, binds the token, and actuates the single drag. Submission
+    // and polling are both nonblocking; settlement carries the proof.
+    let owner_thread = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut controller = crate::workspace_send::LiveSendController::new();
+    controller
+        .submit_trailing(
+            &trailing_claim(Some("wl-1")),
+            crate::workspace_send::TrailingSubmit {
+                display_index: 0,
+                pinned_cgid: 1,
+                pinned_uuid: "uuid-a",
+                display: "display-a",
+                from: 20,
+                trailing_enabled: true,
+            },
+            trailing_factory(
+                Ok(trailing_prep(21, Some(21))),
+                appended_row(),
+                Arc::clone(&owner_thread),
+            ),
+        )
+        .expect("trailing submits");
+    assert!(
+        controller.is_busy(),
+        "submitted request serializes the lane"
+    );
+    let settle = poll_until_settle(&mut controller).expect("owner settles");
+    assert_eq!(
+        settle.outcome,
+        crate::workspace_send_effect::SendEffectOutcome::Applied
+    );
+    assert_eq!(settle.target.target_sid(), 21);
+    assert!(settle.follow);
+    let proof = settle.trailing.as_ref().expect("proof settles");
+    let binding = proof.binding.as_ref().expect("append binds");
+    assert_eq!((binding.token.as_str(), binding.created), ("wl-1", 21));
+    assert_eq!(binding.before, vec![20, 3, 7]);
+    assert_eq!(binding.after, vec![20, 3, 7, 21]);
+    assert!(!controller.is_busy(), "polled lane idles");
+    assert!(controller.poll().is_none(), "settlement never replays");
+    // Preparation ran on the owner thread, never the submitter.
+    let threads = owner_thread
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    assert_eq!(threads.len(), 1, "one owner backend built on its thread");
+    assert_ne!(
+        threads[0],
+        std::thread::current().id(),
+        "preparation never runs on the submitting thread"
+    );
+    // Clean shutdown with nothing outstanding stops the owner without
+    // blocking and retains nothing.
+    assert!(
+        controller.shutdown().is_none(),
+        "settled lane shuts down idle"
+    );
+}
+
+#[test]
+fn trailing_controller_refusal_settles_feedback_only() {
+    // Proof-less completions (preparation refused before any press) settle
+    // feedback-only: no target, no history, no proof - never replayed.
+    let owner_thread = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut controller = crate::workspace_send::LiveSendController::new();
+    controller
+        .submit_trailing(
+            &trailing_claim(Some("wl-1")),
+            crate::workspace_send::TrailingSubmit {
+                display_index: 0,
+                pinned_cgid: 1,
+                pinned_uuid: "uuid-a",
+                display: "display-a",
+                from: 20,
+                trailing_enabled: true,
+            },
+            trailing_factory(
+                Err("trailing send refuses: fresh row unreadable (gone)".to_owned()),
+                row(),
+                Arc::clone(&owner_thread),
+            ),
+        )
+        .expect("trailing submits");
+    for _ in 0..500 {
+        if let Some(refusal) = controller.poll_trailing_refusal() {
+            assert_eq!(refusal.operation_id, "op-3");
+            assert_eq!(
+                refusal.outcome,
+                crate::workspace_send::SendDrainOutcome::Refused
+            );
+            assert!(!controller.is_busy());
+            assert!(controller.poll().is_none());
+            assert!(controller.poll_trailing_refusal().is_none());
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    panic!("proof-less completion settles");
+}
+
+#[test]
+fn trailing_controller_busy_and_unpinned_refuse_before_submit() {
+    // A second submit while inflight refuses (concurrent presses
+    // serialize, never overlap); unpinned claims and displays refuse
+    // before any owner spawn or actuation.
+    let mut controller = crate::workspace_send::LiveSendController::new();
+    let owner_thread = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (started_tx, started_rx) = mpsc::channel::<()>();
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    controller
+        .submit_trailing(
+            &trailing_claim(Some("wl-1")),
+            crate::workspace_send::TrailingSubmit {
+                display_index: 0,
+                pinned_cgid: 1,
+                pinned_uuid: "uuid-a",
+                display: "display-a",
+                from: 20,
+                trailing_enabled: true,
+            },
+            move || {
+                owner_thread
+                    .lock()
+                    .unwrap_or_else(|poison| poison.into_inner())
+                    .push(std::thread::current().id());
+                let mut backend = FakeManaged::new();
+                backend.block_prep = Some((started_tx, release_rx));
+                backend
+            },
+        )
+        .expect("first submits");
+    started_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("owner reaches preparation");
+    assert_eq!(
+        controller.submit_trailing(
+            &trailing_claim(Some("wl-1")),
+            crate::workspace_send::TrailingSubmit {
+                display_index: 0,
+                pinned_cgid: 1,
+                pinned_uuid: "uuid-a",
+                display: "display-a",
+                from: 20,
+                trailing_enabled: true,
+            },
+            FakeManaged::new,
+        ),
+        Err("send-effect-busy: one managed send already inflight; refusing overlap".to_owned()),
+        "concurrent presses serialize"
+    );
+    // Unpinned display legs refuse without touching the lane state.
+    let mut idle = crate::workspace_send::LiveSendController::new();
+    assert!(
+        idle.submit_trailing(
+            &trailing_claim(Some("wl-1")),
+            crate::workspace_send::TrailingSubmit {
+                display_index: 0,
+                pinned_cgid: 0,
+                pinned_uuid: "",
+                display: "display-a",
+                from: 20,
+                trailing_enabled: true,
+            },
+            FakeManaged::new,
+        )
+        .is_err()
+    );
+    assert!(!idle.is_busy());
+    // A non-trailing claim refuses too.
+    let mut numbered = trailing_claim(None);
+    numbered.action = crate::runtime_types::InputSemanticAction::WorkspaceSend {
+        index: 2,
+        follow: true,
+    };
+    assert!(
+        idle.submit_trailing(
+            &numbered,
+            crate::workspace_send::TrailingSubmit {
+                display_index: 0,
+                pinned_cgid: 1,
+                pinned_uuid: "uuid-a",
+                display: "display-a",
+                from: 20,
+                trailing_enabled: true,
+            },
+            FakeManaged::new
+        )
+        .is_err()
+    );
+    assert!(!idle.is_busy());
+    // Shutdown never blocks on the held owner and settles honestly: the
+    // blocked preparation may still run, so the dropped inflight holds.
+    let outcome = controller.shutdown().expect("dropped inflight settles");
+    match outcome {
+        crate::workspace_send::ShutdownOutcome::TrailingRefusal(refusal) => {
+            assert_eq!(refusal.operation_id, "op-3");
+            assert_eq!(
+                refusal.outcome,
+                crate::workspace_send::SendDrainOutcome::PossiblyExecuted,
+                "a preparation that may still run holds, never claims refusal"
+            );
+        }
+        other => panic!("blocked trailing shuts down as refusal, got {other:?}"),
+    }
+    let _ = release_tx.send(());
 }

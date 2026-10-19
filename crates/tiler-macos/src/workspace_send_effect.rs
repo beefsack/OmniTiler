@@ -57,8 +57,14 @@ use crate::runtime_types::{ClaimedSelect, parse_window_id};
 
 /// Admission-pinned managed-send target: the only window a live send may
 /// grab. All fields are private so admission pins them once and every
-/// later reader compares against the same pins — no replacement focus
-/// window, no relaunched lifetime, no moved source domain.
+/// later reader compares against the same pins - no replacement focus
+/// window, no relaunched lifetime, no moved source domain. The `follow`
+/// intent rides pinned too (stays return the view to the pinned source).
+/// Stay-only source pins (`source_sid`, `source_focus`) travel here so the
+/// single-flight owner routes without re-sampling; explicit
+/// [`ManagedSendTarget::bind_stay`] sets them for offline tests, and
+/// `from_claim` converts only admission-pinned core-proven stay fallbacks
+/// (resident or proven-empty, never unknown).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManagedSendTarget {
     pid: u32,
@@ -69,11 +75,16 @@ pub struct ManagedSendTarget {
     target_sid: u64,
     revision: u64,
     operation_id: String,
+    follow: bool,
+    source_sid: Option<u64>,
+    source_focus: Option<String>,
 }
 
 impl ManagedSendTarget {
     /// Pin a target from explicit admission-time truth. Refuses empty or
-    /// zero identities rather than guessing.
+    /// zero identities rather than guessing. Follow targets carry no stay
+    /// pins; stay targets pin them through [`ManagedSendTarget::bind_stay`]
+    /// or [`ManagedSendTarget::from_claim`].
     pub fn bind(
         pid: u32,
         wid: u32,
@@ -82,6 +93,66 @@ impl ManagedSendTarget {
         target_sid: u64,
         revision: u64,
         operation_id: &str,
+    ) -> Result<Self, String> {
+        Self::bind_inner(
+            pid,
+            wid,
+            app_generation,
+            source,
+            target_sid,
+            revision,
+            operation_id,
+            true,
+            None,
+            None,
+        )
+    }
+
+    /// Pin a stay target: the follow intent is false and the return leg
+    /// selects back to exactly `source_sid` with the `source_focus`
+    /// fallback (`None` is an empty source and makes no focus claim).
+    /// Refuses zero SIDs instead of guessing.
+    #[allow(clippy::too_many_arguments)]
+    pub fn bind_stay(
+        pid: u32,
+        wid: u32,
+        app_generation: u64,
+        source: DomainKey,
+        target_sid: u64,
+        revision: u64,
+        operation_id: &str,
+        source_sid: u64,
+        source_focus: Option<&str>,
+    ) -> Result<Self, String> {
+        if source_sid == 0 {
+            return Err("send target unpinned: zero source SID; refusing".to_owned());
+        }
+        Self::bind_inner(
+            pid,
+            wid,
+            app_generation,
+            source,
+            target_sid,
+            revision,
+            operation_id,
+            false,
+            Some(source_sid),
+            source_focus.map(str::to_owned),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn bind_inner(
+        pid: u32,
+        wid: u32,
+        app_generation: u64,
+        source: DomainKey,
+        target_sid: u64,
+        revision: u64,
+        operation_id: &str,
+        follow: bool,
+        source_sid: Option<u64>,
+        source_focus: Option<String>,
     ) -> Result<Self, String> {
         if pid == 0 || wid == 0 {
             return Err("send target unpinned: zero PID/WID; refusing".to_owned());
@@ -101,6 +172,9 @@ impl ManagedSendTarget {
             target_sid,
             revision,
             operation_id: operation_id.to_owned(),
+            follow,
+            source_sid,
+            source_focus,
         })
     }
 
@@ -108,9 +182,22 @@ impl ManagedSendTarget {
     /// pin must be present and consistent (subject parses to the pinned
     /// PID/WID, generation and source domain pinned at admission, target
     /// SID and revision bound, operation identity minted): a claim without
-    /// admission pins — e.g. a generation sampled later at dispatch —
-    /// refuses here instead of actuating.
+    /// admission pins - e.g. a generation sampled later at dispatch -
+    /// refuses here instead of actuating. The follow intent rides from the
+    /// claim action. Stay claims pin the return-leg focus fallback from
+    /// admission: the engine pins the core-proven post-send source-MRU
+    /// resident (or a proven-empty source) after dispatch and before the
+    /// claim store, so this path only converts trustworthy pins and never
+    /// synthesizes one. An unknown stay fallback refuses; `None` binds only
+    /// on proven-empty, never as a mover/global/target default. Explicit
+    /// stay targets remain constructible through
+    /// [`ManagedSendTarget::bind_stay`] with caller-supplied pins for
+    /// offline tests.
     pub fn from_claim(claim: &ClaimedSelect) -> Result<Self, String> {
+        let follow = match &claim.action {
+            crate::runtime_types::InputSemanticAction::WorkspaceSend { follow, .. } => *follow,
+            _ => true,
+        };
         let subject = claim.send_subject.as_deref().ok_or_else(|| {
             "send target unpinned: claim carries no subject window; refusing".to_owned()
         })?;
@@ -132,7 +219,68 @@ impl ManagedSendTarget {
         let operation_id = claim.operation_id.as_deref().ok_or_else(|| {
             "send target unpinned: claim carries no operation identity; refusing".to_owned()
         })?;
-        let target = Self::bind(
+        if !follow {
+            // The subject moves to the target on a stay, so it can never
+            // serve as the source fallback: reusing it would fake the pin
+            // and hold on every resident source.
+            let source_sid = claim.send_source_sid.ok_or_else(|| {
+                "send target unpinned: stay source focus unknown; refusing".to_owned()
+            })?;
+            if source_sid == 0 {
+                return Err("send target unpinned: stay source focus unknown; refusing".to_owned());
+            }
+            let source_focus: Option<String> = match (
+                claim.send_source_focus.as_deref(),
+                claim.send_source_focus_empty,
+            ) {
+                // A focus pin plus the proven-empty flag contradicts itself:
+                // a claimed resident and a claimed empty source cannot both
+                // be true, so the pin is unproven and refuses.
+                (Some(_), true) => {
+                    return Err(
+                        "send target unpinned: stay source focus unknown; refusing".to_owned()
+                    );
+                }
+                (Some(focus), false) => {
+                    if focus == subject {
+                        return Err(
+                            "send target unpinned: stay source focus unknown; refusing".to_owned()
+                        );
+                    }
+                    if parse_window_id(focus).is_none() {
+                        return Err(
+                            "send target unpinned: stay source focus unknown; refusing".to_owned()
+                        );
+                    }
+                    Some(focus.to_owned())
+                }
+                (None, true) => None,
+                (None, false) => {
+                    return Err(
+                        "send target unpinned: stay source focus unknown; refusing".to_owned()
+                    );
+                }
+            };
+            let target = Self::bind_inner(
+                pid,
+                wid,
+                app_generation,
+                source,
+                target_sid,
+                revision,
+                operation_id,
+                follow,
+                Some(source_sid),
+                source_focus,
+            )?;
+            if target.window != subject {
+                return Err(format!(
+                    "send target unpinned: subject {subject:?} mismatches pinned PID/WID; refusing"
+                ));
+            }
+            return Ok(target);
+        }
+        let target = Self::bind_inner(
             pid,
             wid,
             app_generation,
@@ -140,6 +288,9 @@ impl ManagedSendTarget {
             target_sid,
             revision,
             operation_id,
+            follow,
+            None,
+            None,
         )?;
         if target.window != subject {
             return Err(format!(
@@ -195,6 +346,26 @@ impl ManagedSendTarget {
     #[must_use]
     pub fn operation_id(&self) -> &str {
         &self.operation_id
+    }
+
+    /// Pinned follow intent: true follows the mover, false stays on the
+    /// source (the return leg selects back to [`ManagedSendTarget::source_sid`]).
+    #[must_use]
+    pub const fn follow(&self) -> bool {
+        self.follow
+    }
+
+    /// Stay-only admission-pinned source SID (`None` for follows).
+    #[must_use]
+    pub const fn source_sid(&self) -> Option<u64> {
+        self.source_sid
+    }
+
+    /// Stay-only return-leg focus fallback (`None` for follows and for
+    /// empty sources, which make no focus claim).
+    #[must_use]
+    pub fn source_focus(&self) -> Option<&str> {
+        self.source_focus.as_deref()
     }
 }
 
@@ -427,21 +598,196 @@ pub enum SendEffectOutcome {
 }
 
 /// One effect-owner completion for a submitted target: fenced by the same
-/// operation identity plus lifetime generation and topology revision. A
-/// completion naming another operation, lifetime, or revision is stale —
-/// dropped counted, never replayed.
+/// operation identity plus lifetime generation, topology revision, and
+/// follow intent. A completion naming another operation, lifetime,
+/// revision, or intent is stale - dropped counted, never replayed.
+/// Trailing requests additionally carry their exact-append proof (the
+/// engine-minted token paired with the owner-verified native rows) so the
+/// main thread reports the binding back without re-reading topology.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SendCompletion {
     pub operation_id: String,
     pub app_generation: u64,
     pub revision: u64,
+    pub follow: bool,
     pub outcome: SendEffectOutcome,
+    pub trailing: Option<TrailingCompletionProof>,
+}
+
+/// Exact-append proof carried by one trailing completion: the owner's
+/// verified bound target plus the runtime-created SID when an append ran
+/// (`None` on reuse) plus, when that append ran with a token, the
+/// binding rows for the engine store. The main thread adopts `created`
+/// into lifecycle ownership on every proof-bearing completion (token or
+/// not: the Space persists either way) and forwards `binding` verbatim
+/// (never re-derived, never guessed); the engine refuses anything but an
+/// exact same-output append there. Reuse carries neither; tokenless
+/// appends carry creation without binding - their transfers settle on
+/// the target alone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrailingCompletionProof {
+    pub target_sid: u64,
+    pub revision: u64,
+    pub created: Option<u64>,
+    pub binding: Option<TrailingBindingProof>,
+}
+
+/// Binding rows for one owner-verified trailing append: the
+/// engine-minted pending token the request carried opaquely, paired with
+/// the exact native rows around the single append.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrailingBindingProof {
+    pub token: String,
+    pub display_id: String,
+    pub created: u64,
+    pub before: Vec<u64>,
+    pub after: Vec<u64>,
+}
+
+/// Owner-side trailing preparation pins: the main-thread-published
+/// plain-data display legs (never an AppKit read on the owner) plus the
+/// capability flag. The owner ensures the send-0 target natively
+/// (reuse proven-empty last, else exactly one append) and fences the
+/// post-preparation revision per edge - an own-append revision move is
+/// carried explicitly, never bypassed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrailingPrepPins {
+    pub display_index: usize,
+    pub pinned_cgid: u32,
+    pub pinned_uuid: String,
+    pub trailing_enabled: bool,
+}
+
+/// Owner-verified trailing target: the exact native SID plus the proof
+/// rows around the preparation (identical `before`/`after` on reuse),
+/// the post-preparation revision, and the runtime-created SID when an
+/// append ran (`None` on reuse).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrailingPrepProof {
+    pub target_sid: u64,
+    pub created: Option<u64>,
+    pub revision: u64,
+    pub display_id: String,
+    pub before: Vec<u64>,
+    pub after: Vec<u64>,
+}
+
+/// One trailing send request for the effect owner: the engine-admitted
+/// original pins (subject, lifetime generation, source domain, operation
+/// identity - never re-sampled) plus the engine-minted pending token
+/// (opaque here; `None` when the dispatch carried no unbound desire) and
+/// the preparation pins. The owner prepares the exact native target,
+/// binds it to these pins (original subject/lifetime/source/operation
+/// fences intact), executes the forward drag, and reports the proof back
+/// on its completion. No second dispatch, no guessed token, no duplicate
+/// native effect: the core drains its pending send on the reported
+/// binding and the single owner drag is the only actuation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrailingSendRequest {
+    pub pid: u32,
+    pub wid: u32,
+    pub window: String,
+    pub app_generation: u64,
+    pub source: tiler_core::session::DomainKey,
+    pub operation_id: String,
+    pub token: Option<String>,
+    pub pins: TrailingPrepPins,
+}
+
+impl TrailingSendRequest {
+    /// Build one owner request from an engine-admitted trailing claim plus
+    /// the main-thread-published display legs. Refuses non-trailing
+    /// actions, unpinned subjects/lifetimes/sources/operations, and
+    /// unpinned displays - the owner never guesses any of them.
+    pub fn from_claim(
+        claim: &ClaimedSelect,
+        display_index: usize,
+        pinned_cgid: u32,
+        pinned_uuid: &str,
+        trailing_enabled: bool,
+    ) -> Result<Self, String> {
+        match &claim.action {
+            crate::runtime_types::InputSemanticAction::WorkspaceSend {
+                index: 0,
+                follow: true,
+            } => {}
+            _ => {
+                return Err(
+                    "send target unpinned: trailing request needs send-0 follow; refusing"
+                        .to_owned(),
+                );
+            }
+        }
+        let subject = claim.send_subject.as_deref().ok_or_else(|| {
+            "send target unpinned: claim carries no subject window; refusing".to_owned()
+        })?;
+        let (pid, wid) = parse_window_id(subject).ok_or_else(|| {
+            format!("send target unpinned: subject {subject:?} unparsable; refusing")
+        })?;
+        let app_generation = claim.send_generation.ok_or_else(|| {
+            "send target unpinned: claim carries no app generation; refusing".to_owned()
+        })?;
+        let source = claim.send_source.clone().ok_or_else(|| {
+            "send target unpinned: claim carries no source domain; refusing".to_owned()
+        })?;
+        let operation_id = claim.operation_id.as_deref().ok_or_else(|| {
+            "send target unpinned: claim carries no operation identity; refusing".to_owned()
+        })?;
+        if pinned_cgid == 0 || pinned_uuid.is_empty() {
+            return Err("send target unpinned: display legs unpublished; refusing".to_owned());
+        }
+        Ok(Self {
+            pid,
+            wid,
+            window: subject.to_owned(),
+            app_generation,
+            source,
+            operation_id: operation_id.to_owned(),
+            token: claim.trailing_token.clone(),
+            pins: TrailingPrepPins {
+                display_index,
+                pinned_cgid,
+                pinned_uuid: pinned_uuid.to_owned(),
+                trailing_enabled,
+            },
+        })
+    }
+}
+
+/// One serialized lane request: an admission-pinned native target (the
+/// existing numbered path) or a trailing request the owner prepares
+/// itself (target unknown until the owner ensures it natively).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SendRequest {
+    Pinned(ManagedSendTarget),
+    Trailing(TrailingSendRequest),
+}
+
+impl SendRequest {
+    /// Whether one completion settles this request: pinned requests fence
+    /// operation, lifetime, revision, and intent; trailing requests fence
+    /// operation and lifetime (the revision is owner-prepared, so the
+    /// completion carries it back rather than matching it).
+    fn settled_by(&self, completion: &SendCompletion) -> bool {
+        match self {
+            Self::Pinned(target) => {
+                completion.operation_id == target.operation_id()
+                    && completion.app_generation == target.app_generation()
+                    && completion.revision == target.revision()
+                    && completion.follow == target.follow()
+            }
+            Self::Trailing(request) => {
+                completion.operation_id == request.operation_id
+                    && completion.app_generation == request.app_generation
+            }
+        }
+    }
 }
 
 #[derive(Debug, Default)]
 struct Lane {
-    pending: Option<ManagedSendTarget>,
-    inflight: Option<ManagedSendTarget>,
+    pending: Option<SendRequest>,
+    inflight: Option<SendRequest>,
     completion: Option<SendCompletion>,
     /// Owner-visible stop request for an inflight request. Set only by
     /// [`SendEffectHandoff::cancel`] while inflight stands; cleared by the
@@ -475,6 +821,17 @@ impl SendEffectHandoff {
     /// Nonblocking engine-side submission. Refuses busy while a request is
     /// pending, inflight, or completed-but-unpolled.
     pub fn submit(&self, target: ManagedSendTarget) -> Result<(), &'static str> {
+        self.submit_request(SendRequest::Pinned(target))
+    }
+
+    /// Nonblocking trailing submission: the owner prepares the exact native
+    /// target itself (reuse-or-append) before binding and actuating.
+    /// Same single-flight refusal as [`SendEffectHandoff::submit`].
+    pub fn submit_trailing(&self, request: TrailingSendRequest) -> Result<(), &'static str> {
+        self.submit_request(SendRequest::Trailing(request))
+    }
+
+    fn submit_request(&self, request: SendRequest) -> Result<(), &'static str> {
         let mut lane = self
             .inner
             .lock()
@@ -482,7 +839,7 @@ impl SendEffectHandoff {
         if lane.pending.is_some() || lane.inflight.is_some() || lane.completion.is_some() {
             return Err("send-effect-busy");
         }
-        lane.pending = Some(target);
+        lane.pending = Some(request);
         Ok(())
     }
 
@@ -498,7 +855,7 @@ impl SendEffectHandoff {
 
     /// Dedicated-owner take: move one pending request to inflight
     /// (`None` when idle — the owner waits without blocking submitters).
-    pub fn take_for_owner(&self) -> Option<ManagedSendTarget> {
+    pub fn take_for_owner(&self) -> Option<SendRequest> {
         let mut lane = self
             .inner
             .lock()
@@ -510,7 +867,8 @@ impl SendEffectHandoff {
 
     /// Dedicated-owner finish: stage the completion for the main thread.
     /// Returns false (counted, no replay) when nothing is inflight or the
-    /// completion names another operation, lifetime, or revision. A
+    /// completion settles another request (see
+    /// [`SendRequest::settled_by`]). A
     /// terminal finish also resolves a pending stop request: it is the
     /// completion — not the cancel — that frees the active lane.
     pub fn finish(&self, completion: SendCompletion) -> bool {
@@ -522,10 +880,7 @@ impl SendEffectHandoff {
             lane.stale_dropped += 1;
             return false;
         };
-        if completion.operation_id != inflight.operation_id
-            || completion.app_generation != inflight.app_generation
-            || completion.revision != inflight.revision
-        {
+        if !inflight.settled_by(&completion) {
             lane.stale_dropped += 1;
             return false;
         }
@@ -536,8 +891,8 @@ impl SendEffectHandoff {
     }
 
     /// Nonblocking main-thread poll: take the completion only when it
-    /// names the expected target's operation, lifetime, and revision.
-    /// A stale completion drops counted and reports `None` — never
+    /// names the expected target's operation, lifetime, revision, and
+    /// intent. A stale completion drops counted and reports `None` - never
     /// replayed, never applied to the wrong target.
     pub fn poll_completion_for(&self, target: &ManagedSendTarget) -> Option<SendCompletion> {
         let mut lane = self
@@ -545,11 +900,69 @@ impl SendEffectHandoff {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         let completion = lane.completion.take()?;
-        if completion.operation_id != target.operation_id
-            || completion.app_generation != target.app_generation
-            || completion.revision != target.revision
+        if completion.operation_id != target.operation_id()
+            || completion.app_generation != target.app_generation()
+            || completion.revision != target.revision()
+            || completion.follow != target.follow()
         {
             lane.stale_dropped += 1;
+            return None;
+        }
+        Some(completion)
+    }
+
+    /// Nonblocking main-thread poll for one trailing request: take the
+    /// completion only when it settles this exact request (operation plus
+    /// lifetime — the revision is owner-prepared and rides back in the
+    /// completion proof) AND carries the bound proof. A stale completion
+    /// drops counted and reports `None` - never replayed, never applied
+    /// to the wrong request. Proof-less completions (preparation never
+    /// bound a target) stay staged for
+    /// [`SendEffectHandoff::poll_trailing_refusal_for`].
+    pub fn poll_trailing_completion_for(
+        &self,
+        request: &TrailingSendRequest,
+    ) -> Option<SendCompletion> {
+        self.poll_trailing_where(request, |completion| completion.trailing.is_some())
+    }
+
+    /// Nonblocking main-thread poll for one trailing request's proof-less
+    /// completion (preparation refused or was cancelled before binding —
+    /// feedback-only settlement, no target to rebuild). Same identity and
+    /// settlement fencing as the proof path; proof-bearing completions
+    /// stay staged for that path. Stale completions drop counted, never
+    /// replayed.
+    pub fn poll_trailing_refusal_for(
+        &self,
+        request: &TrailingSendRequest,
+    ) -> Option<SendCompletion> {
+        self.poll_trailing_where(request, |completion| completion.trailing.is_none())
+    }
+
+    fn poll_trailing_where(
+        &self,
+        request: &TrailingSendRequest,
+        want: impl FnOnce(&SendCompletion) -> bool,
+    ) -> Option<SendCompletion> {
+        // Same shape as the pinned path: the staged completion (already
+        // fenced against the inflight request by `finish`) is verified
+        // against the caller-passed request. Stale completions drop
+        // counted; a completion for the right request but the sibling
+        // path restores unstaged for that poll — never counted, never
+        // dropped.
+        let mut lane = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let completion = lane.completion.take()?;
+        if completion.operation_id != request.operation_id
+            || completion.app_generation != request.app_generation
+        {
+            lane.stale_dropped += 1;
+            return None;
+        }
+        if !want(&completion) {
+            lane.completion = Some(completion);
             return None;
         }
         Some(completion)
@@ -954,7 +1367,9 @@ mod tests {
             operation_id: pinned.operation_id().to_owned(),
             app_generation: pinned.app_generation(),
             revision: pinned.revision(),
+            follow: pinned.follow(),
             outcome,
+            trailing: None,
         }
     }
 
@@ -969,7 +1384,7 @@ mod tests {
         // Concurrent presses serialize/refuse instead of overlapping.
         assert_eq!(lane.submit(pinned.clone()), Err("send-effect-busy"));
         let taken = lane.take_for_owner().expect("owner takes");
-        assert_eq!(taken, pinned);
+        assert_eq!(taken, SendRequest::Pinned(pinned.clone()));
         assert!(lane.take_for_owner().is_none());
         // A sent press is never replayed through a second take.
         assert!(lane.is_busy());

@@ -1,10 +1,11 @@
 #![forbid(unsafe_code)]
 
-//! Numbered send-follow controller (armed for 1..9).
+//! Numbered send controller (armed for 0..9 follow plus 1..9 stay).
 //!
-//! Product sends 1..9 are armed: the send catalogue rows carry
+//! Product sends 1..9 are armed: the send catalogue rows (follow plus
+//! stay) carry
 //! `implemented: true`, the engine admits them, and the product tap table
-//! carries their `Ctrl+Shift+digit` chords. The production path is fully
+//! carries the follow rows' `Ctrl+Shift+digit` chords (stay rows stay The production path is fully
 //! wired and proven through scripted-reader tests: engine admission binds the focused managed window
 //! plus target SID, revision, lifetime generation, and source domain (see
 //! [`crate::runtime_thread::admit_send_claim`] and the send lane), the tile
@@ -13,7 +14,7 @@
 //! actuation edge over current engine-managed facts plus fresh native reads
 //! before posting through the release-first executor.
 //!
-//! Product route: the 9 send-follow shapes (`Ctrl+Shift+1..9` under the
+//! Product route: the 10 send-follow shapes (`Ctrl+Shift+0..9` under the
 //! default Ctrl role, see [`crate::workspace_input::is_armed_send`]) move
 //! the focused managed window to the target Desktop-N ordinal and follow it
 //! there, through the synthetic titlebar-drag plus tagged Desktop-N route:
@@ -78,8 +79,8 @@
 /// scripted-reader tests. The tile submits engine-admitted claims
 /// nonblocking and reconciles completions nonblocking; Authentic startup
 /// ensures Desktop-N holders with owned preimages while Compatible stays
-/// zero-touch. Only numbered send-follow 1..9 is armed: trailing send-0,
-/// stays, relative sends, and output sends stay refused behind the
+/// zero-touch. Numbered sends 0..9 follow plus 1..9 stay are armed:
+/// trailing stay-0, relative sends/stays, and output sends stay refused behind the
 /// catalogue `implemented` flags and the engine unsupported guard.
 /// No modifier-plus-drag product trigger exists.
 use std::path::Path;
@@ -102,10 +103,13 @@ pub struct SendGates {
     pub lock_screen: bool,
 }
 
-/// Offline send-shape binding subset (armed in product: the 9 numbered
-/// send-follow rows `workspace-send-1..9` carry `implemented: true`, so
-/// this returns their 9 `Ctrl+Shift+digit` chords).
-/// Never adds select chords; trailing send-0, stays, relative sends, and
+/// Offline send-shape binding subset (armed in product: the 10 numbered
+/// send-follow rows `workspace-send-0..9` carry `implemented: true`, so
+/// this returns their 10 `Ctrl+Shift+digit` chords; numbered stays 1..9
+/// are armed engine-side but bindable unbound, so they contribute no
+/// chord here).
+/// Never adds select chords; trailing stay-0, relative sends/stays,
+/// and
 /// outputs stay out. Driven by the catalogue `implemented` flags plus
 /// [`crate::workspace_input::is_armed_send`] (single source with the
 /// engine admission gate).
@@ -156,6 +160,236 @@ pub fn context_target_sid(
         }
     }
     send_target_sid(&row, index)
+}
+
+/// Trailing send-follow target decision over one native-order user row
+/// (offline pure decision only — no live touch; the caller ensures the
+/// Space then binds the managed-send target).
+///
+/// - `Ok(true)` (last proven empty, even when current): reuse the last SID.
+///   Reuse never appends, so the shared bound cannot block it — not even at
+///   `MAX_ORDERED`.
+/// - `Ok(false)` (last proven occupied): append is required (returns
+///   `NeedAppend`; the caller creates exactly once then targets the new
+///   SID — never a guess). Refuses at/beyond `MAX_ORDERED` (no append past
+///   the shared bound).
+/// - `Err` (unknown emptiness, including zero-area/foreign-chrome
+///   ambiguity): refuses rather than treating as empty or occupied.
+/// - Empty rows or rows containing zero refuse (native row identity
+///   unprovable); stay-0 is never constructed through this seam.
+///
+/// Ordinal note (not decided here): the native Desktop-N posting route
+/// only maps ordinals `1..=9` (see `execute_managed_send`: a pinned target
+/// past Desktop-9 refuses as unmappable, and preparation refuses before
+/// creating an unmappable Space). A trailing send past nine Spaces stays
+/// honestly refused — never a relative posting route.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrailingSendTarget {
+    Reuse(u64),
+    NeedAppend,
+}
+
+pub fn trailing_send_target(
+    spaces_in_order: &[u64],
+    empty_last: Result<bool, String>,
+) -> Result<TrailingSendTarget, String> {
+    if spaces_in_order.is_empty() || spaces_in_order.contains(&0) {
+        return Err("trailing send: native row identity unprovable".to_owned());
+    }
+    match empty_last {
+        Ok(true) => Ok(TrailingSendTarget::Reuse(
+            *spaces_in_order.last().expect("nonempty row"),
+        )),
+        Ok(false) => {
+            if spaces_in_order.len() >= tiler_core::workspace::MAX_ORDERED {
+                return Err("shared workspace catalogue bound reached".to_owned());
+            }
+            Ok(TrailingSendTarget::NeedAppend)
+        }
+        Err(reason) => Err(format!(
+            "trailing send refuses: emptiness unknown ({reason})"
+        )),
+    }
+}
+
+/// Prepared trailing send-follow target: the exact native SID the owner must
+/// drag to, the runtime-created SID when an append ran (`None` on reuse),
+/// and the fresh post-preparation topology revision the owner fences.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TrailingSendPrep {
+    pub target_sid: u64,
+    pub created: Option<u64>,
+    pub revision: u64,
+}
+
+/// Ensure the trailing send-follow target over a selection backend (the same
+/// [`crate::workspace_select::SelectionBackend`] trait the select drain
+/// proves through, so scripted fakes inject here and the live tile passes
+/// its native backend): reuse the proven-empty last, else exactly one
+/// append. No live effects beyond the single append; unknown emptiness
+/// refuses without touching Mission Control.
+///
+/// Guards, in order: capability (unarmed refuses before any read), fresh
+/// row identity, emptiness proof (unknown refuses — zero-area and
+/// foreign-chrome candidates read unknown through the backend, never
+/// empty), Desktop-N mappability (reuse past position 9 or an append that
+/// would land past 9 refuses BEFORE creating an unmappable Space — the
+/// owner would refuse the same ordinal identically, so preparation never
+/// strands a creation), then one backend append with exact-append adoption
+/// (same-display, same current, length + 1, strict prefix — any drift
+/// refuses instead of adopting a foreign SID).
+///
+/// Revision note: the returned revision is read fresh AFTER preparation
+/// (post-append on the create path), so an own-append revision move is
+/// carried explicitly into [`bind_trailing_send_target`] — never bypassed.
+/// The owner still fences that revision plus focus/generation/source per
+/// edge, so any later drift refuses.
+pub fn prepare_trailing_send_target(
+    backend: &mut impl crate::workspace_select::SelectionBackend,
+    trailing_enabled: bool,
+) -> Result<TrailingSendPrep, String> {
+    if !trailing_enabled {
+        return Err("trailing send-0 unarmed: no trailing append runs".to_owned());
+    }
+    let before = backend
+        .snapshot()
+        .map_err(|e| format!("trailing send refuses: fresh row unreadable ({e})"))?;
+    before
+        .validate()
+        .map_err(|e| format!("trailing send refuses: fresh row unprovable ({e})"))?;
+    let last = *before.spaces.last().expect("validated nonempty row");
+    let empty = backend.empty(last);
+    match trailing_send_target(&before.spaces, empty)? {
+        TrailingSendTarget::Reuse(sid) => {
+            if before.spaces.len() > 9 {
+                return Err(
+                    "trailing send refuses: reuse ordinal past Desktop-9; unmappable".to_owned(),
+                );
+            }
+            let revision = backend.revision().ok_or_else(|| {
+                "trailing send refuses: post-preparation revision unprovable".to_owned()
+            })?;
+            Ok(TrailingSendPrep {
+                target_sid: sid,
+                created: None,
+                revision,
+            })
+        }
+        TrailingSendTarget::NeedAppend => {
+            if before.spaces.len() + 1 > 9 {
+                return Err(
+                    "trailing send refuses: append ordinal past Desktop-9; unmappable".to_owned(),
+                );
+            }
+            backend
+                .create(&before)
+                .map_err(|e| format!("trailing send refuses: append failed ({e})"))?;
+            let after = backend
+                .snapshot()
+                .map_err(|e| format!("trailing send refuses: post-append row unreadable ({e})"))?;
+            after
+                .validate()
+                .map_err(|e| format!("trailing send refuses: post-append row unprovable ({e})"))?;
+            if after.display != before.display
+                || after.current != before.current
+                || after.spaces.len() != before.spaces.len() + 1
+                || !after.spaces.starts_with(&before.spaces)
+            {
+                return Err(
+                    "trailing send refuses: create effect is not an exact same-display append; adoption refused"
+                        .to_owned(),
+                );
+            }
+            let sid = *after.spaces.last().expect("appended row");
+            let revision = backend.revision().ok_or_else(|| {
+                "trailing send refuses: post-append revision unprovable".to_owned()
+            })?;
+            Ok(TrailingSendPrep {
+                target_sid: sid,
+                created: Some(sid),
+                revision,
+            })
+        }
+    }
+}
+
+/// Bind a prepared trailing target to the pinned managed-send identity from
+/// an engine-admitted trailing claim.
+///
+/// Pin contract: the claim must carry the admission pins for the ORIGINAL
+/// window — subject `"<pid>_<wid>"`, app-lifetime generation, source
+/// domain, and operation identity — naming it exactly. A replacement focus
+/// window, a relaunched lifetime, a moved source, a non-trailing action, or
+/// a stay-0 refuses instead of substituting or guessing.
+///
+/// Revision contract (explicit, no fence bypass): the engine cannot pin a
+/// trailing SID at admission (the Space may not exist yet), so the claim's
+/// `expected_sid`/`topology_revision` are NOT trusted here — the fresh
+/// post-preparation `prep` supplies both the exact ensured SID and the
+/// post-append revision. When preparation appended, the target MUST be the
+/// exact-created SID (never a drifted occupant). The dedicated owner then
+/// fences that revision plus focus/generation/source per actuation edge
+/// ([`prove_managed_send`](crate::workspace_send_effect::prove_managed_send)),
+/// so the own-append revision move is carried explicitly and any later
+/// drift refuses without actuation.
+pub fn bind_trailing_send_target(
+    claim: &ClaimedSelect,
+    prep: TrailingSendPrep,
+) -> Result<crate::workspace_send_effect::ManagedSendTarget, String> {
+    match &claim.action {
+        crate::runtime_types::InputSemanticAction::WorkspaceSend {
+            index: 0,
+            follow: true,
+        } => {}
+        _ => {
+            return Err(
+                "send target unpinned: trailing bind needs send-0 follow; refusing".to_owned(),
+            );
+        }
+    }
+    if prep.target_sid == 0 {
+        return Err("send target unpinned: zero trailing SID; refusing".to_owned());
+    }
+    if let Some(created) = prep.created {
+        if created == 0 {
+            return Err("send target unpinned: zero created SID; refusing".to_owned());
+        }
+        if created != prep.target_sid {
+            return Err(
+                "send target unpinned: prepared target is not the exact-created SID; refusing"
+                    .to_owned(),
+            );
+        }
+    }
+    let subject = claim.send_subject.as_deref().ok_or_else(|| {
+        "send target unpinned: claim carries no subject window; refusing".to_owned()
+    })?;
+    let (pid, wid) = crate::runtime_types::parse_window_id(subject)
+        .ok_or_else(|| format!("send target unpinned: subject {subject:?} unparsable; refusing"))?;
+    let app_generation = claim.send_generation.ok_or_else(|| {
+        "send target unpinned: claim carries no app generation; refusing".to_owned()
+    })?;
+    let source = claim.send_source.clone().ok_or_else(|| {
+        "send target unpinned: claim carries no source domain; refusing".to_owned()
+    })?;
+    let operation_id = claim.operation_id.as_deref().ok_or_else(|| {
+        "send target unpinned: claim carries no operation identity; refusing".to_owned()
+    })?;
+    let target = crate::workspace_send_effect::ManagedSendTarget::bind(
+        pid,
+        wid,
+        app_generation,
+        source,
+        prep.target_sid,
+        prep.revision,
+        operation_id,
+    )?;
+    if target.window() != subject {
+        return Err(format!(
+            "send target unpinned: subject {subject:?} mismatches pinned PID/WID; refusing"
+        ));
+    }
+    Ok(target)
 }
 
 /// Which preset enables Desktop-N holders. True only under Authentic;
@@ -225,10 +459,12 @@ pub const fn attempt_outcome_for(outcome: SendDrainOutcome) -> AttemptOutcome {
 
 /// Wire kind for a workspace claim action (pure): sends settle transfers,
 /// everything else settles views. Single home for the discard/feedback
-/// kind branch so a dropped send claim never stages a view row.
+/// kind branch so a dropped send claim never stages a view row. Numbered
+/// sends settle transfers regardless of follow intent (stays transfer the
+/// mover and return the view - never a view switch).
 #[must_use]
 pub fn feedback_kind_for(action: &InputSemanticAction) -> AttemptKind {
-    if crate::workspace_input::is_armed_send(action) {
+    if matches!(action, InputSemanticAction::WorkspaceSend { .. }) {
         AttemptKind::Transfer
     } else {
         AttemptKind::View
@@ -257,6 +493,40 @@ pub fn classify_send_drain_error(reason: &str) -> SendDrainOutcome {
     SendDrainOutcome::PossiblyExecuted
 }
 
+/// Classify one owner-side trailing preparation failure: reasons naming
+/// pre-actuation refusals (unarmed capability, unreadable/unprovable fresh
+/// rows, unknown emptiness, Desktop-9 unmappability decided before any
+/// create, and pre-create drift - the owner never touched the desktop)
+/// refuse proven; every other preparation failure (press failures,
+/// post-append unreadable rows, inexact appends, unprovable revisions,
+/// unproven closes) is ambiguous mid-actuation output and holds as
+/// possibly-executed, never replayed. Unknown strings fail safe toward the
+/// hold - same rule as [`classify_send_drain_error`].
+#[must_use]
+pub fn classify_trailing_prep_error(
+    reason: &str,
+) -> crate::workspace_send_effect::SendEffectOutcome {
+    use crate::workspace_send_effect::SendEffectOutcome;
+    for prefix in [
+        "trailing send-0 unarmed: no trailing append runs",
+        "trailing send refuses: caffeinate unspawnable",
+        "trailing send refuses: expected exactly one native display",
+        "trailing send refuses: display count unreadable",
+        "trailing send refuses: fresh row unreadable",
+        "trailing send refuses: fresh row unprovable",
+        "trailing send refuses: emptiness unknown",
+        "trailing send refuses: reuse ordinal past Desktop-9; unmappable",
+        "trailing send refuses: append ordinal past Desktop-9; unmappable",
+        "trailing send refuses: append failed (pre-create topology drift)",
+        "trailing preparation unimplemented on this backend; refusing",
+    ] {
+        if reason.starts_with(prefix) {
+            return SendEffectOutcome::RefusedProven;
+        }
+    }
+    SendEffectOutcome::PossiblyExecuted
+}
+
 /// Map one dedicated-effect outcome to the drain outcome reported under the
 /// claim's operation identity (pure): the effect owner already proved the
 /// path, so its verdict transfers directly — `Applied` settles the retained
@@ -276,15 +546,31 @@ pub const fn send_drain_outcome_for(
 
 /// One settled live send for the main thread to reconcile: the pinned
 /// target plus the follow-history attribution (display plus source Space)
-/// plus the effect verdict. History advances only on `Applied`; every
-/// outcome reports transfer feedback under the claim's operation identity
-/// so the core settles its retained transfer — never replayed.
+/// plus the effect verdict and the pinned follow intent. History advances
+/// only on `Applied` follows; every outcome reports transfer feedback
+/// under the claim's operation identity so the core settles its retained
+/// transfer - never replayed.
 #[derive(Debug, Clone)]
 pub struct SendSettle {
     pub target: crate::workspace_send_effect::ManagedSendTarget,
     pub display: String,
     pub from: u64,
+    pub follow: bool,
     pub outcome: crate::workspace_send_effect::SendEffectOutcome,
+    /// Owner-verified exact-append proof for trailing executions that
+    /// appended (`None` for numbered sends and trailing reuse). `created`
+    /// rides with or without a token so the drain adopts owned creation;
+    /// only `binding` is token-gated. The drain forwards the binding to
+    /// the engine store verbatim - never re-derived, never guessed.
+    pub trailing: Option<crate::workspace_send_effect::TrailingCompletionProof>,
+}
+
+/// Whether one settled send advances per-display previous history (pure):
+/// only verified follow arrivals do. Stay settlements keep the source
+/// current, so they never note an arrival even when applied.
+#[must_use]
+pub const fn should_note_history(outcome: SendDrainOutcome, follow: bool) -> bool {
+    matches!(outcome, SendDrainOutcome::Applied) && follow
 }
 
 /// Async live-send controller: the main-thread side of the dedicated
@@ -294,8 +580,8 @@ pub struct SendSettle {
 /// never spawn it) and at most one inflight target. Submission and polling
 /// are both nonblocking: the effect (engine-facts proof, tagged HID posts,
 /// bounded readback) runs on the owner thread, never on the engine or
-/// AppKit. Numbered send-follow 1..9 is armed; trailing send-0, stays,
-/// relative sends, and outputs stay refused behind the catalogue
+/// AppKit. Numbered send-follow 0..9 plus stay 1..9 is armed; trailing
+/// stay-0, relative sends, and outputs stay refused behind the catalogue
 /// `implemented` flags and the engine unsupported guard.
 ///
 /// Shutdown policy (explicit terminal): [`shutdown`](
@@ -311,7 +597,13 @@ pub struct SendSettle {
 #[derive(Default)]
 pub struct LiveSendController {
     thread: Option<crate::workspace_send_managed::ManagedSendThread>,
-    inflight: Option<SendSettleTarget>,
+    inflight: Option<SendInflight>,
+}
+
+#[derive(Debug, Clone)]
+enum SendInflight {
+    Pinned(SendSettleTarget),
+    Trailing(TrailingInflight),
 }
 
 #[derive(Debug, Clone)]
@@ -319,6 +611,26 @@ struct SendSettleTarget {
     target: crate::workspace_send_effect::ManagedSendTarget,
     display: String,
     from: u64,
+}
+
+#[derive(Debug, Clone)]
+struct TrailingInflight {
+    request: crate::workspace_send_effect::TrailingSendRequest,
+    display: String,
+    from: u64,
+}
+
+/// Main-thread-published legs for one trailing owner submit: the
+/// plain-data display identity (never an AppKit read here), the
+/// follow-history attribution, and the capability flag. Bundled so the
+/// submit stays within the argument-count lint.
+pub struct TrailingSubmit<'a> {
+    pub display_index: usize,
+    pub pinned_cgid: u32,
+    pub pinned_uuid: &'a str,
+    pub display: &'a str,
+    pub from: u64,
+    pub trailing_enabled: bool,
 }
 
 impl LiveSendController {
@@ -336,14 +648,17 @@ impl LiveSendController {
 
     /// Nonblocking submit of one engine-admitted send claim: pins the
     /// target from the claim's admission pins (subject, generation, source,
-    /// target SID, revision, operation identity — a claim without admission
-    /// pins refuses here instead of actuating), spawns the owner on first
-    /// use through `factory` (which runs ON the owner thread, so backend
-    /// construction stays off the engine/AppKit), and submits through the
-    /// serialized lane. `display`/`from` attribute the later follow-history
-    /// note (read fresh by the caller at submit). Refuses busy while a
-    /// target is inflight — concurrent presses serialize/refuse instead of
-    /// overlapping, and a sent press is never replayed.
+    /// target SID, revision, operation identity, follow intent plus the
+    /// stay-only source SID - a claim without admission pins refuses here
+    /// instead of actuating), spawns the owner on first use through
+    /// `factory` (which runs ON the owner thread, so backend construction
+    /// stays off the engine/AppKit), and submits through the serialized
+    /// lane. `display`/`from` attribute the later follow-history note (read
+    /// fresh by the caller at submit; stays never note history). Refuses
+    /// busy while a target is inflight - concurrent presses
+    /// serialize/refuse instead of overlapping, and a sent press is never
+    /// replayed. The owner routes on the pinned intent (forward drag for
+    /// follows, forward drag plus released return select for stays).
     pub fn submit<B, F>(
         &mut self,
         claim: &ClaimedSelect,
@@ -370,81 +685,256 @@ impl LiveSendController {
             return Err("send-effect-busy: no effect owner; refusing".to_owned());
         };
         thread.submit(target.clone()).map_err(|e| e.to_owned())?;
-        self.inflight = Some(SendSettleTarget {
+        self.inflight = Some(SendInflight::Pinned(SendSettleTarget {
             target,
             display: display.to_owned(),
             from,
-        });
+        }));
+        Ok(())
+    }
+
+    /// Nonblocking submit of one engine-admitted trailing send-0 claim:
+    /// builds the owner request from the claim's original pins (subject,
+    /// lifetime generation, source domain, operation identity, pending
+    /// token) plus the caller-published plain-data display legs - never an
+    /// AppKit read here - spawns the owner on first use through `factory`
+    /// (which runs ON the owner thread), and submits through the
+    /// serialized lane. The owner prepares the exact native target itself
+    /// (reuse-or-append), binds it, and actuates the single drag; the
+    /// main thread only polls the completion. `display`/`from` attribute
+    /// the later follow-history note. Refuses busy while a target is
+    /// inflight, and refuses unpinned claims/displays before any submit -
+    /// a sent press is never replayed.
+    pub fn submit_trailing<B, F>(
+        &mut self,
+        claim: &ClaimedSelect,
+        legs: TrailingSubmit<'_>,
+        factory: F,
+    ) -> Result<(), String>
+    where
+        B: crate::workspace_send_managed::ManagedSendBackend + 'static,
+        F: FnOnce() -> B + Send + 'static,
+    {
+        if self.inflight.is_some() {
+            return Err(
+                "send-effect-busy: one managed send already inflight; refusing overlap".to_owned(),
+            );
+        }
+        let request = crate::workspace_send_effect::TrailingSendRequest::from_claim(
+            claim,
+            legs.display_index,
+            legs.pinned_cgid,
+            legs.pinned_uuid,
+            legs.trailing_enabled,
+        )?;
+        if self.thread.is_none() {
+            self.thread = Some(crate::workspace_send_managed::ManagedSendThread::spawn(
+                factory,
+            ));
+        }
+        let Some(thread) = self.thread.as_ref() else {
+            return Err("send-effect-busy: no effect owner; refusing".to_owned());
+        };
+        thread
+            .submit_trailing(request.clone())
+            .map_err(|e| e.to_owned())?;
+        self.inflight = Some(SendInflight::Trailing(TrailingInflight {
+            request,
+            display: legs.display.to_owned(),
+            from: legs.from,
+        }));
         Ok(())
     }
 
     /// Nonblocking poll for the inflight completion: takes it only when it
-    /// names the submitted target's operation, lifetime, and revision (a
-    /// stale completion drops counted and reports `None` — never replayed,
-    /// never applied to the wrong target). Returns the settle for
-    /// history/feedback reconciliation, or `None` while the effect runs.
+    /// names the submitted target's operation, lifetime, revision, and
+    /// intent (a stale completion drops counted and reports `None` -
+    /// never replayed, never applied to the wrong target). Trailing
+    /// requests match on operation plus lifetime (the revision is
+    /// owner-prepared and rides back in the completion) and rebuild the
+    /// bound target from the completion proof. Returns the
+    /// settle for history/feedback reconciliation, or `None` while the
+    /// effect runs. The settle carries the pinned follow intent so the
+    /// drain notes previous history on applied follows only, plus the
+    /// optional trailing proof for the engine binding store.
     pub fn poll(&mut self) -> Option<SendSettle> {
         let inflight = self.inflight.as_ref()?;
+        let handoff = self.thread.as_ref()?.handoff();
+        match inflight {
+            SendInflight::Pinned(pinned) => {
+                let completion = handoff.poll_completion_for(&pinned.target)?;
+                let inflight = self.inflight.take()?;
+                let SendInflight::Pinned(pinned) = inflight else {
+                    return None;
+                };
+                let follow = pinned.target.follow();
+                Some(SendSettle {
+                    target: pinned.target,
+                    display: pinned.display,
+                    from: pinned.from,
+                    follow,
+                    outcome: completion.outcome,
+                    trailing: None,
+                })
+            }
+            SendInflight::Trailing(trailing) => {
+                let completion = handoff.poll_trailing_completion_for(&trailing.request)?;
+                let inflight = self.inflight.take()?;
+                let SendInflight::Trailing(trailing) = inflight else {
+                    return None;
+                };
+                // Rebuild the owner-bound target from the completion proof
+                // (proven present: the handoff only stages proof-bearing
+                // completions on this path - same expect style as the
+                // select drain's proven invariants).
+                let proof = completion
+                    .trailing
+                    .clone()
+                    .expect("proof path carries proof");
+                let target = crate::workspace_send_effect::ManagedSendTarget::bind(
+                    trailing.request.pid,
+                    trailing.request.wid,
+                    trailing.request.app_generation,
+                    trailing.request.source.clone(),
+                    proof.target_sid,
+                    proof.revision,
+                    &trailing.request.operation_id,
+                )
+                .ok()?;
+                if target.window() != trailing.request.window {
+                    return None;
+                }
+                Some(SendSettle {
+                    target,
+                    display: trailing.display,
+                    from: trailing.from,
+                    follow: true,
+                    outcome: completion.outcome,
+                    trailing: completion.trailing.clone(),
+                })
+            }
+        }
+    }
+
+    /// Nonblocking poll for a trailing request's proof-less completion
+    /// (preparation refused or was cancelled before binding): feedback-only
+    /// settlement under the request's operation identity - no target to
+    /// rebuild, no history to note, never replayed. Returns `None` while
+    /// the effect runs or when the inflight request is a pinned send.
+    pub fn poll_trailing_refusal(&mut self) -> Option<TrailingRefusal> {
+        let SendInflight::Trailing(trailing) = self.inflight.as_ref()? else {
+            return None;
+        };
         let completion = self
             .thread
             .as_ref()?
             .handoff()
-            .poll_completion_for(&inflight.target)?;
+            .poll_trailing_refusal_for(&trailing.request)?;
         let inflight = self.inflight.take()?;
-        Some(SendSettle {
-            target: inflight.target,
-            display: inflight.display,
-            from: inflight.from,
-            outcome: completion.outcome,
+        let SendInflight::Trailing(trailing) = inflight else {
+            return None;
+        };
+        debug_assert_eq!(completion.operation_id, trailing.request.operation_id);
+        Some(TrailingRefusal {
+            operation_id: trailing.request.operation_id,
+            outcome: send_drain_outcome_for(completion.outcome),
         })
     }
 
-    /// Nonblocking terminal shutdown: a terminal poll for an already-staged
-    /// completion first (settled normally when present), then stop request,
-    /// finished-only reap, and retention of an unfinished exact owner for
-    /// eventual reap. A dropped inflight without a terminal completion
-    /// settles honestly (see the struct docs). Returns 0 or 1 settles for
-    /// uniform history/feedback reconciliation. Never blocks, never panics.
-    pub fn shutdown(&mut self) -> Option<SendSettle> {
-        // Terminal nonblocking poll before stopping: an already-staged
-        // completion settles exactly like a live poll.
-        if let Some(settle) = self.poll() {
-            if let Some(thread) = self.thread.take() {
-                thread.request_shutdown();
-                match thread.shutdown_nonblocking() {
-                    // Already stop-signalled above; `shutdown_nonblocking`
-                    // re-signals harmlessly. Reaped here.
-                    None => {}
-                    Some(thread) => {
-                        crate::workspace_send_native::spawn_terminal_reaper(thread);
-                    }
-                }
-            }
-            return Some(settle);
-        }
-        let inflight = self.inflight.take();
+    /// Stop the owner thread without joining: signal stop, reap only when
+    /// already finished, and hand an unfinished exact owner to the
+    /// dedicated terminal reaper (which joins it off-thread and only then
+    /// releases the lane). Shared by every shutdown arm below.
+    fn stop_owner(&mut self) {
         if let Some(thread) = self.thread.take() {
             thread.request_shutdown();
-            let uncertain = thread.handoff().is_busy();
             match thread.shutdown_nonblocking() {
+                // Already stop-signalled above; `shutdown_nonblocking`
+                // re-signals harmlessly. Reaped here.
                 None => {}
                 Some(thread) => {
                     crate::workspace_send_native::spawn_terminal_reaper(thread);
                 }
             }
-            return inflight.map(|inflight| SendSettle {
-                target: inflight.target,
-                display: inflight.display,
-                from: inflight.from,
-                outcome: if uncertain {
-                    crate::workspace_send_effect::SendEffectOutcome::PossiblyExecuted
-                } else {
-                    crate::workspace_send_effect::SendEffectOutcome::RefusedProven
-                },
-            });
         }
-        None
     }
+
+    /// Nonblocking terminal shutdown: a terminal poll for an already-staged
+    /// completion first (settled normally when present - full settle or
+    /// feedback-only trailing refusal), then stop request, finished-only
+    /// reap, and retention of an unfinished exact owner for eventual reap.
+    /// A dropped inflight without a terminal completion settles honestly
+    /// (see the struct docs, plus the trailing refusal when no target was
+    /// ever bound). Returns 0 or 1 settlements for uniform
+    /// history/feedback reconciliation. Never blocks, never panics.
+    pub fn shutdown(&mut self) -> Option<ShutdownOutcome> {
+        // Terminal nonblocking polls before stopping: an already-staged
+        // completion settles exactly like a live poll.
+        if let Some(settle) = self.poll() {
+            self.stop_owner();
+            return Some(ShutdownOutcome::Settle(Box::new(settle)));
+        }
+        if let Some(refusal) = self.poll_trailing_refusal() {
+            self.stop_owner();
+            return Some(ShutdownOutcome::TrailingRefusal(refusal));
+        }
+        let inflight = self.inflight.take();
+        let thread = self.thread.take()?;
+        thread.request_shutdown();
+        let uncertain = thread.handoff().is_busy();
+        match thread.shutdown_nonblocking() {
+            None => {}
+            Some(thread) => {
+                crate::workspace_send_native::spawn_terminal_reaper(thread);
+            }
+        }
+        let outcome = if uncertain {
+            crate::workspace_send_effect::SendEffectOutcome::PossiblyExecuted
+        } else {
+            crate::workspace_send_effect::SendEffectOutcome::RefusedProven
+        };
+        match inflight {
+            Some(SendInflight::Pinned(pinned)) => {
+                Some(ShutdownOutcome::Settle(Box::new(SendSettle {
+                    target: pinned.target.clone(),
+                    display: pinned.display.clone(),
+                    from: pinned.from,
+                    follow: pinned.target.follow(),
+                    outcome,
+                    trailing: None,
+                })))
+            }
+            Some(SendInflight::Trailing(trailing)) => {
+                Some(ShutdownOutcome::TrailingRefusal(TrailingRefusal {
+                    operation_id: trailing.request.operation_id.clone(),
+                    outcome: send_drain_outcome_for(outcome),
+                }))
+            }
+            None => None,
+        }
+    }
+}
+
+/// One settled trailing refusal for feedback-only reconciliation: the
+/// operation identity plus the drain outcome. No target was ever bound
+/// (preparation refused or was cancelled first), so there is no history to
+/// note and no proof to report - the transfer settles or holds under its
+/// identity alone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrailingRefusal {
+    pub operation_id: String,
+    pub outcome: SendDrainOutcome,
+}
+
+/// One terminal shutdown settlement for uniform reconciliation: either a
+/// full settle (pinned sends and owner-bound trailing executions) or a
+/// feedback-only trailing refusal (preparation never bound a target).
+/// The settle boxes (its pinned target dominates the size) so the enum
+/// stays compact.
+#[derive(Debug, Clone)]
+pub enum ShutdownOutcome {
+    Settle(Box<SendSettle>),
+    TrailingRefusal(TrailingRefusal),
 }
 
 /// One bounded metadata-only readiness line for a scoped tile runtime,

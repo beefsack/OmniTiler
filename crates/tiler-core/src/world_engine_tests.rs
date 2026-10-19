@@ -281,6 +281,42 @@ fn transfer_retained_across_lag_and_confirmed_by_observation() {
 }
 
 #[test]
+fn same_domain_send_refuses_unchanged_without_plan() {
+    use crate::session::RefusalKind;
+    // Same-domain sends are honest unchanged no-ops (shared-core
+    // RefusalKind::Unchanged, no plan): the world shortcut returns exactly
+    // the Engine verdict, retaining no transfer, for tiled and floating
+    // movers alike.
+    for floating in [false, true] {
+        let mut engine = WorldEngine::new("gen-1").expect("valid");
+        accepted_reply(&mut engine, &float_report(1, 1, floating));
+        let mut send = float_report(2, 2, floating);
+        with_command(
+            &mut send,
+            2,
+            5,
+            WorldCommand::Send {
+                window: WindowId("win-f".to_owned()),
+                target_output: OutputId("out".to_owned()),
+                target_workspace: "ws1".to_owned(),
+                follow: true,
+            },
+        );
+        match engine.handle_report(&send) {
+            WorldOutcome::Rejected { kind, message } => {
+                assert_eq!(kind, RefusalKind::Unchanged.as_str());
+                assert_eq!(message, RefusalKind::Unchanged.message());
+            }
+            other => panic!("same-domain send refuses unchanged, got {other:?}"),
+        }
+        assert!(
+            engine.retained_transfers().is_empty(),
+            "refused same-domain send retains no transfer"
+        );
+    }
+}
+
+#[test]
 fn consumed_command_reconciles_without_reexecution() {
     let mut engine = WorldEngine::new("gen-1").expect("valid");
     accepted_reply(&mut engine, &base_report(1, 1));
@@ -4439,4 +4475,85 @@ fn unequal_height_occupied_return_r4_recovers_vacated_source() {
         }
         other => panic!("unexpected outcome: {other:?}"),
     }
+}
+
+#[test]
+fn stay_source_focus_pins_resident_empty_and_unknown() {
+    use crate::session::DomainKey;
+    use crate::world_engine::StaySourceFocus;
+    // Resident: ws1 holds win-a plus mover win-b; sending win-b to ws2
+    // with follow=false leaves win-a as the committed source focus.
+    let mut engine = WorldEngine::new("gen-1").expect("valid");
+    let mut base = base_report(1, 1);
+    base.domains = vec![
+        domain_report(
+            "out",
+            "ws1",
+            "win-b",
+            vec![
+                win("win-a", "out", "ws1", 0),
+                win("win-b", "out", "ws1", 150),
+            ],
+        ),
+        domain_report("out", "ws2", "win-c", vec![win("win-c", "out", "ws2", 0)]),
+    ];
+    accepted_reply(&mut engine, &base);
+    let mut send = base_report(2, 2);
+    send.domains = base.domains.clone();
+    send.topology = base.topology.clone();
+    send.bindings = base.bindings.clone();
+    send.command_seq = Some(5);
+    send.command = Some(WorldCommand::Send {
+        window: WindowId("win-b".to_owned()),
+        target_output: OutputId("out".to_owned()),
+        target_workspace: "ws2".to_owned(),
+        follow: false,
+    });
+    accepted_reply(&mut engine, &send);
+    let source = DomainKey {
+        output: OutputId("out".to_owned()),
+        workspace: WorkspaceId("ws1".to_owned()),
+    };
+    assert_eq!(
+        engine.stay_source_focus("op-5", &source),
+        StaySourceFocus::Resident(WindowId("win-a".to_owned())),
+        "mover win-b leaves resident win-a pinned"
+    );
+    // Mismatched operation and mismatched source both refuse as unknown.
+    assert_eq!(
+        engine.stay_source_focus("op-9", &source),
+        StaySourceFocus::Unknown,
+        "unknown operation refuses"
+    );
+    let wrong = DomainKey {
+        output: OutputId("out".to_owned()),
+        workspace: WorkspaceId("ws2".to_owned()),
+    };
+    assert_eq!(
+        engine.stay_source_focus("op-5", &wrong),
+        StaySourceFocus::Unknown,
+        "mismatched source refuses"
+    );
+    // Empty: ws1 holds only the mover; sending it leaves a proven-empty
+    // source with committed focus None.
+    let mut solo = WorldEngine::new("gen-1").expect("valid");
+    accepted_reply(&mut solo, &base_report(1, 1));
+    let mut last = base_report(2, 2);
+    last.command_seq = Some(6);
+    last.command = Some(WorldCommand::Send {
+        window: WindowId("win-a".to_owned()),
+        target_output: OutputId("out".to_owned()),
+        target_workspace: "ws2".to_owned(),
+        follow: false,
+    });
+    accepted_reply(&mut solo, &last);
+    let solo_source = DomainKey {
+        output: OutputId("out".to_owned()),
+        workspace: WorkspaceId("ws1".to_owned()),
+    };
+    assert_eq!(
+        solo.stay_source_focus("op-6", &solo_source),
+        StaySourceFocus::Empty,
+        "last window leaves proven-empty source"
+    );
 }

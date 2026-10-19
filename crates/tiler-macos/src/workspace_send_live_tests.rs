@@ -6,8 +6,8 @@
 //! nonpanic teardown, and the Authentic/Compatible settings gate. No live
 //! touch: scripted reader fakes stand in for the OS on the effect owner,
 //! and the test thread only submits nonblocking plus a bounded completion
-//! poll. Numbered send-follow 1..9 is product-armed; trailing send-0,
-//! stays, relative sends, and outputs stay refused.
+//! poll. Numbered send-follow 0..9 plus stay 1..9 is product-armed;
+//! trailing stay-0, relative sends, and outputs stay refused.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::mpsc;
@@ -26,8 +26,11 @@ use crate::workspace_select::SelectionSnapshot;
 use crate::workspace_send::{LiveSendController, SendGates, send_drain_outcome_for};
 use crate::workspace_send_effect::{
     BlindRoot, ManagedSendTarget, SendEffectHandoff, SendEffectOutcome, SendFreshEvidence,
+    SendRequest,
 };
-use crate::workspace_send_managed::{ManagedSendBackend, ManagedSendThread, execute_managed_send};
+use crate::workspace_send_managed::{
+    ManagedSendBackend, ManagedSendThread, execute_managed_send, execute_managed_send_stay,
+};
 use crate::workspace_send_native::{
     AxSubjectState, GrabContext, LiveManagedSendBackend, SendNativeReaders, SendTopology,
     spawn_terminal_reaper,
@@ -189,7 +192,11 @@ fn admitted_claim() -> ClaimedSelect {
         send_subject: Some(WINDOW.to_owned()),
         send_generation: Some(GENERATION),
         send_source: Some(source_domain()),
+        send_source_sid: Some(20),
+        send_source_focus: None,
+        send_source_focus_empty: false,
         operation_id: Some(OP.to_owned()),
+        trailing_token: None,
     }
 }
 
@@ -232,6 +239,9 @@ struct FakeReaders {
     engine_calls: usize,
     focus: Option<(u32, Option<u32>)>,
     agree: bool,
+    select_calls: Vec<u64>,
+    select_fail: Option<String>,
+    return_source: Option<u64>,
     grab_base: Option<GrabContext>,
     ax_hit: Option<(u32, u32)>,
     ws_hit: Option<u32>,
@@ -284,6 +294,9 @@ impl FakeReaders {
             engine_calls: 0,
             focus: Some((PID, Some(WID))),
             agree: true,
+            select_calls: Vec::new(),
+            select_fail: None,
+            return_source: None,
             grab_base: Some(grab_ok()),
             ax_hit: Some((PID, WID)),
             ws_hit: Some(WID),
@@ -319,10 +332,17 @@ impl FakeReaders {
         if self.topo_err_at == Some(call) {
             return Err("injected topology unreadable".to_owned());
         }
-        if let Some(topo) = self.topo_script.pop_front() {
-            return Ok(topo);
+        let mut topo = if let Some(topo) = self.topo_script.pop_front() {
+            topo
+        } else {
+            self.topo_base.clone()
+        };
+        if self.carried && self.return_source.is_none() {
+            // The switch fired on chord-down, so the live row current sits
+            // on the goal until the return select moves it back.
+            topo.row.current = self.effect_goal;
         }
-        Ok(self.topo_base.clone())
+        Ok(topo)
     }
 
     fn block_on(pair: &mut Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>, what: &str) {
@@ -470,10 +490,23 @@ impl SendNativeReaders for FakeReaders {
         Ok(())
     }
     fn read_current(&mut self) -> Option<u64> {
+        if let Some(source) = self.return_source {
+            return Some(source);
+        }
         if self.carried {
             return Some(self.effect_goal);
         }
         self.current
+    }
+    fn select_space(&mut self, sid: u64) -> Result<(), String> {
+        // Ordinary return select: the mover stays on the goal, the view
+        // returns to the source.
+        self.select_calls.push(sid);
+        if let Some(reason) = self.select_fail.clone() {
+            return Err(reason);
+        }
+        self.return_source = Some(sid);
+        Ok(())
     }
 }
 
@@ -957,6 +990,50 @@ fn live_grab_drift_between_edges_refuses_before_chord() {
 // -- Cancellation and release -----------------------------------------------
 
 #[test]
+fn live_stay_forward_plus_select_back_applies() {
+    // Stay through the production backend seam: the forward drag applies,
+    // the return fence sees the arrival current with unchanged display
+    // identity and SID row, the ordinary select returns the view to the
+    // source, and the readback proves membership exactly [target] with
+    // current exactly source.
+    let target = pinned_target();
+    let lane = handoff();
+    lane.submit(target.clone()).expect("idle submits");
+    lane.take_for_owner().expect("owner takes");
+    let mut backend = LiveManagedSendBackend::new(FakeReaders::new());
+    let (outcome, leg) =
+        execute_managed_send_stay(&target, 20, Some("4242_7"), &mut backend, &lane);
+    assert_eq!(outcome, SendEffectOutcome::Applied);
+    let leg = leg.expect("stay applied carries exact return readback");
+    assert_eq!(leg.membership, vec![TARGET_SID]);
+    assert_eq!(leg.current, 20);
+    assert!(!leg.pending_recovered);
+    assert!(backend.counts().balanced(), "stay releases balance");
+}
+
+#[test]
+fn live_stay_select_back_refusal_holds() {
+    // The ordinary return select refuses after the forward chord posted:
+    // hold with the key post as evidence, never replayed.
+    let target = pinned_target();
+    let lane = handoff();
+    lane.submit(target.clone()).expect("idle submits");
+    lane.take_for_owner().expect("owner takes");
+    let mut readers = FakeReaders::new();
+    readers.select_fail = Some("injected select-back refusal".to_owned());
+    let mut backend = LiveManagedSendBackend::new(readers);
+    let (outcome, leg) =
+        execute_managed_send_stay(&target, 20, Some("4242_7"), &mut backend, &lane);
+    assert_eq!(outcome, SendEffectOutcome::PossiblyExecuted);
+    assert!(leg.is_none());
+    assert_eq!(backend.counts().key_down, 1, "forward chord posted");
+    assert!(
+        backend.counts().balanced(),
+        "release-first on return failure"
+    );
+}
+
+#[test]
 fn live_cancel_before_effect_refuses_proven_with_zero_posts() {
     // Deterministic pre-effect stop: cancel lands after the owner take
     // but before execution starts. The entry gate refuses with zero posts:
@@ -966,7 +1043,7 @@ fn live_cancel_before_effect_refuses_proven_with_zero_posts() {
     lane.submit(pinned_target())
         .expect("lane holds the request");
     let taken = lane.take_for_owner().expect("owner takes");
-    assert_eq!(taken, pinned_target());
+    assert_eq!(taken, SendRequest::Pinned(pinned_target()));
     assert!(lane.cancel(), "cancel flags the stop while inflight stands");
     assert!(lane.cancel_requested(), "owner observes the stop");
     let mut backend = LiveManagedSendBackend::new(FakeReaders::new());
@@ -1191,6 +1268,9 @@ fn live_controller_shutdown_settles_honestly_without_blocking() {
         .recv_timeout(Duration::from_secs(10))
         .expect("owner reaches chord-down");
     let settle = controller.shutdown().expect("dropped inflight settles");
+    let crate::workspace_send::ShutdownOutcome::Settle(settle) = settle else {
+        panic!("pinned shutdown settles, never refuses trailing");
+    };
     assert_eq!(
         settle.outcome,
         SendEffectOutcome::PossiblyExecuted,
@@ -1432,14 +1512,36 @@ fn live_hotkey_to_feedback_pathway_with_injected_readers() {
         tiler_core::world_report::AttemptOutcome::Applied
     );
     assert!(controller.poll().is_none(), "completion never replays");
-    // Unsupported forms still refuse admission and engine dispatch.
+    // Numbered stay-2 dispatches too (armed, bindable unbound): no
+    // unsupported outcome, admitted engine-side. Trailing send-0 follow
+    // dispatches the same way (armed through the capability gate).
     for action in [
+        InputSemanticAction::WorkspaceSend {
+            index: 2,
+            follow: false,
+        },
         InputSemanticAction::WorkspaceSend {
             index: 0,
             follow: true,
         },
+    ] {
+        assert_eq!(workspace_unsupported_outcome(&action), None, "{action:?}");
+        assert!(
+            crate::runtime_thread::admit_send_claim(
+                true,
+                false,
+                false,
+                ClaimedSelect::tap(action.clone())
+            )
+            .is_ok(),
+            "{action:?} admitted"
+        );
+    }
+    // Unsupported forms still refuse admission and engine dispatch
+    // (trailing stay-0, relative sends/stays, outputs).
+    for action in [
         InputSemanticAction::WorkspaceSend {
-            index: 2,
+            index: 0,
             follow: false,
         },
         InputSemanticAction::WorkspaceSendRelative {
@@ -1581,4 +1683,129 @@ fn live_inverse_roundtrip_discriminates_noreply_from_unmanaged() {
     assert_eq!(backend.blind_root(), Some(BlindRoot::EngineFactsUnmanaged));
     assert_eq!(backend.counts().key_down, 0, "no chord posted");
     assert_eq!(backend.counts().mouse_down, 0, "no grab posted");
+}
+
+fn admitted_stay_claim() -> ClaimedSelect {
+    ClaimedSelect {
+        action: InputSemanticAction::WorkspaceSend {
+            index: 2,
+            follow: false,
+        },
+        expected_sid: Some(TARGET_SID),
+        ui_generation: 0,
+        topology_revision: Some(REVISION),
+        send_subject: Some(WINDOW.to_owned()),
+        send_generation: Some(GENERATION),
+        send_source: Some(source_domain()),
+        send_source_sid: Some(20),
+        send_source_focus: None,
+        send_source_focus_empty: false,
+        operation_id: Some(OP.to_owned()),
+        trailing_token: None,
+    }
+}
+
+#[test]
+fn live_controller_refuses_stay_claim_without_mru_query() {
+    // Honest unarmed state: the stay claim carries an unknown source-focus
+    // fallback (no core-proven pin), so `from_claim` refuses rather than
+    // pinning the subject - the subject is on the target after the drag.
+    // Nothing spawns, nothing posts, the lane stays idle.
+    let mut controller = LiveSendController::new();
+    let err = controller
+        .submit(&admitted_stay_claim(), "display-a", 20, || {
+            LiveManagedSendBackend::new(FakeReaders::new())
+        })
+        .expect_err("stay claim refuses without MRU query");
+    assert!(err.contains("source focus"), "{err}");
+    assert!(!err.contains(WINDOW), "refusal carries no window identity");
+    assert!(!controller.is_busy());
+}
+
+#[test]
+fn stay_return_display_join_runs_off_main_without_appkit() {
+    // Effect-thread regression for the stay return selector: it runs on
+    // the managed-send effect thread (never the main thread). The old
+    // AppKit acquisition seam (`display_cgid_of` over
+    // `ns_display_snapshot`) must fail on a spawned thread for the actual
+    // thread-affinity reason, while the pinned plain-data join succeeds
+    // over the same scripted snapshot. Zero effects allowed: no budget
+    // spend, no press, no HID post, no AX action - only the read-only
+    // join acquisition on both seams, then pure refusal checks.
+    use crate::mc_probe::TopologySnapshot;
+    let rows = vec![crate::ffi::SlsDisplayRow {
+        identifier: Some("uuid-9".to_owned()),
+        spaces: vec![20, 3],
+        current: Some(20),
+    }];
+    let snapshot = TopologySnapshot::from_rows(&rows);
+    let joined = std::thread::Builder::new()
+        .name("stay-return-join-regression".to_owned())
+        .spawn(move || {
+            // Old seam: the AppKit display snapshot acquisition the
+            // pre-fix selector reached through `display_cgid_of`.
+            let old = crate::ffi::ns_display_snapshot();
+            // New seam: the pinned plain-data join (cgid/uuid as
+            // published from the main thread) over the scripted snapshot.
+            let ok = crate::mc_lifecycle::live::display_cgid_of_pinned(&snapshot, 0, 7, "uuid-9");
+            let wrong_uuid =
+                crate::mc_lifecycle::live::display_cgid_of_pinned(&snapshot, 0, 7, "uuid-other");
+            let zero_cgid =
+                crate::mc_lifecycle::live::display_cgid_of_pinned(&snapshot, 0, 0, "uuid-9");
+            let unknown_display =
+                crate::mc_lifecycle::live::display_cgid_of_pinned(&snapshot, 4, 7, "uuid-9");
+            (old, ok, wrong_uuid, zero_cgid, unknown_display)
+        })
+        .expect("join regression thread spawns")
+        .join()
+        .expect("join regression thread finishes");
+    let (old, ok, wrong_uuid, zero_cgid, unknown_display) = joined;
+    // Old path fails off-main for the thread-affinity reason (on macOS
+    // the marker names the main thread; off-mac the stub refuses).
+    let old_err = old.expect_err("AppKit acquisition fails off the main thread");
+    #[cfg(target_os = "macos")]
+    assert!(
+        old_err.contains("main thread"),
+        "old path fails for thread affinity, got: {old_err}"
+    );
+    // Pinned join succeeds with the exact (cgid, Space count).
+    assert_eq!(ok, Ok((7, 2)));
+    // A stale publication (UUID no longer naming the row), a zero CG ID,
+    // and an unknown display all refuse without guessing.
+    let wrong_err = wrong_uuid.expect_err("stale pinned UUID refuses");
+    assert!(
+        wrong_err.to_string().contains("pinned display UUID"),
+        "stale pin names its leg, got: {wrong_err}"
+    );
+    assert!(
+        zero_cgid.is_err(),
+        "zero CG ID refuses without an exact mapping"
+    );
+    assert!(
+        unknown_display.is_err(),
+        "unknown display refuses without guessing"
+    );
+}
+
+#[test]
+fn off_main_send_backend_never_touches_main_only_display_reads() {
+    // The effect-owner backend (evidence, trailing preparation, stay
+    // return) runs off the main thread, where the AppKit display snapshot
+    // fails closed. Pin the rule at the source: any `ns_display_snapshot`
+    // or unpinned `display_cgid_of(` call in this module would block or
+    // fail the owner, so it fails this test first. The pinned join
+    // (`display_cgid_of_pinned`) is the only display join allowed here.
+    let source = include_str!("workspace_send_native.rs");
+    assert!(
+        !source.contains("ns_display_snapshot"),
+        "off-main backend must not read the AppKit display snapshot"
+    );
+    assert!(
+        !source.contains("display_cgid_of(&"),
+        "off-main backend must join displays through the pinned legs only"
+    );
+    assert!(
+        source.contains("mc_add_space_pinned(") && source.contains("pinned_cgid"),
+        "the pinned (cgid, UUID) legs stay the off-main display route"
+    );
 }

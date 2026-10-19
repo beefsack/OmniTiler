@@ -13,8 +13,11 @@
 //! Fixed Unit A contract (see `docs/changes/macos-full-state-replies.md`):
 //! - [`WorkspaceMode::PerOutputLocal`](tiler_core::workspace_scope::WorkspaceMode)
 //!   always; topology and domain keys are the observed native ones.
-//! - Logical bindings are always empty: no native logical creation and no
-//!   ordinary window transfer is invented. The core rebuilds its
+//! - Logical bindings carry trailing creation proof only (see
+//!   [`crate::trailing_binding`]): the adapter publishes an explicit
+//!   logical/native row for each native-created trailing Space whose
+//!   exact-append proof is bound to the engine's pending token. Nothing
+//!   else is invented: the core rebuilds its
 //!   planner-owned mapping from the reported topology each report.
 //! - Topology `geometry` carries the FULL native output rectangle from the
 //!   already-retained [`NativeDomain`](crate::runtime_types::NativeDomain)
@@ -56,7 +59,7 @@ use tiler_core::size_hints::FixedSizePredicate;
 use tiler_core::workspace_scope::WorkspaceMode;
 use tiler_core::world_report::{
     AttemptFeedback, DomainReport, HoldReason, MinimizedEntry, OutputTopology,
-    WORLD_CONTRACT_VERSION, WorldCommand, WorldReport,
+    WORLD_CONTRACT_VERSION, WorkspaceBinding, WorldCommand, WorldReport,
 };
 
 use crate::runtime_core::collect_app_windows;
@@ -107,6 +110,11 @@ pub(crate) struct ReportInput<'a> {
     pub refill: MigrationSourceRefill,
     /// Saved default-tiling seed for newly observed natives.
     pub default_tiled: bool,
+    /// Explicit trailing creation bindings (see [`crate::trailing_binding`]):
+    /// one logical/native row per native-created trailing Space bound to
+    /// the engine's pending token. Empty in all other cases: no native
+    /// logical creation and no ordinary window transfer is invented.
+    pub bindings: &'a [WorkspaceBinding],
     /// Primary output (`None` = first output in context order).
     pub primary_output: Option<OutputId>,
     /// Adapter-side outer gap riding with each domain's raw bounds (the
@@ -163,6 +171,7 @@ impl<'a> ReportInput<'a> {
             predicate: FixedSizePredicate::BothAxes,
             refill: MigrationSourceRefill::LastRemaining,
             default_tiled: true,
+            bindings: &[],
             primary_output: None,
             domain_outer_gap: PHASE1_OUTER_GAP,
         }
@@ -331,9 +340,10 @@ pub(crate) fn build_report(input: &ReportInput<'_>) -> WorldReport {
         command: input.command.clone(),
         workspace_mode: WorkspaceMode::PerOutputLocal,
         topology,
-        // Empty by contract: no native logical creation, no ordinary
-        // window transfer. The core rebuilds planner mapping from topology.
-        bindings: Vec::new(),
+        // Trailing creation proof only (see the `bindings` input): one
+        // explicit logical/native row per bound trailing Space. The core
+        // rebuilds planner mapping from topology.
+        bindings: input.bindings.to_vec(),
         domains,
         minimized,
         fixed_size_predicate: input.predicate,
@@ -487,12 +497,12 @@ mod tests {
     }
 
     #[test]
-    fn catalogue_pins_exactly_18_select_bindings_without_trailing() {
+    fn catalogue_pins_exactly_19_select_bindings_with_armed_trailing() {
         // Native catalog normative: `workspace_select::bindings()` is exactly
-        // the 18 armed select-only rows (numbered 1..=9, 8 relative, previous
-        // toggle) with no trailing select-0 and no transfer.
+        // the 19 armed select-only rows (numbered 1..=9, trailing select-0,
+        // 8 relative, previous toggle) with no transfer.
         let bindings = crate::workspace_select::bindings();
-        assert_eq!(bindings.len(), 18, "armed select-only catalog is 18 rows");
+        assert_eq!(bindings.len(), 19, "armed select-only catalog is 19 rows");
         for binding in &bindings {
             assert!(
                 crate::workspace_input::is_armed_select(&binding.action),
@@ -511,7 +521,7 @@ mod tests {
                 crate::runtime_types::InputSemanticAction::WorkspaceSelect { index: 0 }
             )
         });
-        assert!(!has_trailing, "trailing select-0 stays unarmed");
+        assert!(has_trailing, "trailing select-0 armed in product");
     }
 
     #[test]

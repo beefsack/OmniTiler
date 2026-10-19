@@ -93,8 +93,15 @@ pub(crate) enum DispatchVerdict {
     /// A reply applied (frames/focus/transfers consumed). Carries the
     /// mintable select operation identity when the dispatched command was
     /// a planner-owned select (the caller binds the pending claim under
-    /// it); `None` otherwise.
-    Applied { select_operation: Option<String> },
+    /// it); `None` otherwise. Trailing lanes additionally carry the
+    /// engine-minted pending token from the applied reply (the unbound
+    /// workspace desire for the commanded output, if any) so the
+    /// main-thread drain pairs the real token with its exact native
+    /// append proof - never a guess, never a second dispatch.
+    Applied {
+        select_operation: Option<String>,
+        trailing_token: Option<String>,
+    },
     /// Duplicate of the latest reply: no state change, no re-emission.
     Duplicate,
     /// Core or sequencer refusal: counted, no state change — except the
@@ -108,6 +115,28 @@ pub(crate) enum DispatchVerdict {
     },
     /// Nothing reportable (empty context): counted, no state change.
     NoReport,
+}
+
+/// Trailing token for one applied reply: the engine-minted pending token
+/// (`wl-N`) behind the dispatched trailing command, if the reply still
+/// desires it unbound for the commanded output. `SelectTrailing` and
+/// trailing `SendNumbered{index: 0}` both resolve core-side to
+/// reuse-or-create; only the unbound (pending-creation) case yields a
+/// token - a reuse resolves to a bound native and yields `None`, so the
+/// drain records no binding. Pure (never actuates, never guesses).
+fn trailing_token_for(
+    command: Option<&tiler_core::world_report::WorldCommand>,
+    reply: &tiler_core::world_report::WorldReply,
+) -> Option<String> {
+    use tiler_core::world_report::WorldCommand;
+    let output = match command {
+        Some(WorldCommand::SelectTrailing { output }) => output,
+        Some(WorldCommand::SendNumbered {
+            output, index: 0, ..
+        }) => output,
+        _ => return None,
+    };
+    crate::trailing_binding::unbound_trailing_token(reply, output)
 }
 
 /// Dispatch one complete report and consume its reply: the single
@@ -334,7 +363,10 @@ fn dispatch_ticket(
                         generation,
                         seq,
                     );
-                    DispatchVerdict::Applied { select_operation }
+                    DispatchVerdict::Applied {
+                        select_operation,
+                        trailing_token: trailing_token_for(ticket.command.as_ref(), &applied),
+                    }
                 }
                 ReplyVerdict::Refused { reason } => {
                     // Newer input landed mid-flight (or a fence tripped):
@@ -438,7 +470,10 @@ fn dispatch_ticket(
                         generation,
                         seq,
                     );
-                    DispatchVerdict::Applied { select_operation }
+                    DispatchVerdict::Applied {
+                        select_operation,
+                        trailing_token: trailing_token_for(ticket.command.as_ref(), &applied),
+                    }
                 }
                 ReplyVerdict::Refused { reason } => {
                     count_token(shared, &format!("{op}-refused-{reason}"));
@@ -544,7 +579,12 @@ fn retry_observation_only(
     ) {
         // The refused command already executed core-side: a recovered
         // apply still settles under its original operation identity.
-        DispatchVerdict::Applied { .. } => DispatchVerdict::Applied { select_operation },
+        // A recovered trailing token cannot be re-derived (the retry
+        // reply is not in scope here): the drain proceeds without proof.
+        DispatchVerdict::Applied { .. } => DispatchVerdict::Applied {
+            select_operation,
+            trailing_token: None,
+        },
         DispatchVerdict::Refused { token, .. } => DispatchVerdict::Refused {
             token,
             select_operation,
@@ -804,6 +844,11 @@ fn consume_world_reply(
     generation: u64,
     seq: u64,
 ) {
+    // Trailing creation bookkeeping: bindings the applied reply
+    // acknowledges (bound rows published) release; the rest persist for
+    // the next report. Silent state (no ring line): acknowledgement is
+    // the expected steady state, not an event.
+    let _ = session.note_trailing_ack(reply);
     let current: BTreeSet<(String, String)> = {
         let guard = lock_shared(shared);
         match guard.native_context.clone() {
@@ -1231,5 +1276,127 @@ fn settle_select_transfers(
     if held {
         lock_shared(shared).select_pending = None;
         emit(shared, pid, generation, seq, "input", "select-held", 0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tiler_core::directional::OutputId;
+    use tiler_core::world_report::{TilingMode, WorkspaceDesire};
+
+    fn output() -> OutputId {
+        OutputId("macos-display-1".to_owned())
+    }
+
+    fn empty_reply() -> WorldReply {
+        WorldReply {
+            contract_version: tiler_core::world_report::WORLD_CONTRACT_VERSION,
+            adapter_incarnation: "adapter-1".to_owned(),
+            core_generation: "gen-1".to_owned(),
+            request_id: "req-0".to_owned(),
+            based_on_observation_seq: 0,
+            state_revision: 0,
+            ready: false,
+            command_consumed: false,
+            scopes: Vec::new(),
+            workspaces: Vec::new(),
+            outputs: Vec::new(),
+            windows: Vec::new(),
+            transfers: Vec::new(),
+            effects: Vec::new(),
+            command_result: None,
+            presentation_bytes: 0,
+        }
+    }
+
+    fn unbound_row(logical: &str) -> WorkspaceDesire {
+        WorkspaceDesire {
+            id: logical.to_owned(),
+            output: output(),
+            native_binding: None,
+            logical_id: Some(logical.to_owned()),
+            scope: "macos-display-1".to_owned(),
+            order: 2,
+            tiling_mode: TilingMode::Tiled,
+            existence: true,
+            hold: None,
+        }
+    }
+
+    #[test]
+    fn trailing_token_rides_only_trailing_commands_with_unbound_desire() {
+        use tiler_core::directional::WindowId;
+        use tiler_core::world_report::WorldCommand;
+        // No command or no unbound desire: no token (the drain records no
+        // binding on the reuse path).
+        assert_eq!(trailing_token_for(None, &empty_reply()), None);
+        let mut reply = empty_reply();
+        assert_eq!(
+            trailing_token_for(
+                Some(&WorldCommand::SelectTrailing { output: output() }),
+                &reply
+            ),
+            None
+        );
+        // Unbound desire behind a trailing select: the real engine token.
+        reply.workspaces.push(unbound_row("wl-3"));
+        assert_eq!(
+            trailing_token_for(
+                Some(&WorldCommand::SelectTrailing { output: output() }),
+                &reply
+            ),
+            Some("wl-3".to_owned())
+        );
+        // Trailing send-0 resolves the same way (reuse-or-create
+        // core-side, pending token when unbound).
+        assert_eq!(
+            trailing_token_for(
+                Some(&WorldCommand::SendNumbered {
+                    window: WindowId("4242_7".to_owned()),
+                    output: output(),
+                    index: 0,
+                    follow: true,
+                }),
+                &reply
+            ),
+            Some("wl-3".to_owned())
+        );
+        // Numbered commands never carry a token, even with an unbound row
+        // present (their target binds at admission, never through proof).
+        assert_eq!(
+            trailing_token_for(
+                Some(&WorldCommand::SendNumbered {
+                    window: WindowId("4242_7".to_owned()),
+                    output: output(),
+                    index: 2,
+                    follow: true,
+                }),
+                &reply
+            ),
+            None
+        );
+        assert_eq!(
+            trailing_token_for(
+                Some(&WorldCommand::SelectWorkspace {
+                    output: output(),
+                    workspace: "space-3".to_owned(),
+                }),
+                &reply
+            ),
+            None
+        );
+        // Bound rows never yield a token (reuse path proves nothing).
+        let mut bound = empty_reply();
+        let mut row = unbound_row("wl-3");
+        row.native_binding = Some("space-278".to_owned());
+        bound.workspaces.push(row);
+        assert_eq!(
+            trailing_token_for(
+                Some(&WorldCommand::SelectTrailing { output: output() }),
+                &bound
+            ),
+            None
+        );
     }
 }

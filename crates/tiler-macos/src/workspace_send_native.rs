@@ -23,6 +23,7 @@
 use std::sync::Arc;
 
 use crate::desktop_shortcuts::ShortcutEntry;
+use crate::mc_probe::ActionBudget;
 use crate::runtime::RuntimeHandle;
 use crate::runtime_types::NativeContext;
 use crate::space_drag_transfer::{
@@ -31,7 +32,9 @@ use crate::space_drag_transfer::{
 use crate::synth::HidMouseKind;
 use crate::workspace_select::SelectionSnapshot;
 use crate::workspace_send::SendGates;
-use crate::workspace_send_effect::{BlindRoot, ManagedSendTarget, SendFreshEvidence};
+use crate::workspace_send_effect::{
+    BlindRoot, ManagedSendTarget, SendFreshEvidence, TrailingPrepPins, TrailingPrepProof,
+};
 use crate::workspace_send_managed::{ManagedPostPermit, ManagedSendBackend, ManagedSendThread};
 
 /// Joined fresh send topology from one read set: the single-display user
@@ -121,6 +124,13 @@ pub trait SendNativeReaders: Send {
     fn hid_key(&mut self, keycode: u32, flags: u64, down: bool) -> Result<(), String>;
     /// Fresh current Space for the single display (`None` = unknown).
     fn read_current(&mut self) -> Option<u64>;
+    /// Ordinary native select of one existing SID (stay return only). The
+    /// production override runs the proven SID-accepting goto with
+    /// exact-current readback on this thread; the default refuses honestly.
+    fn select_space(&mut self, sid: u64) -> Result<(), String> {
+        let _ = sid;
+        Err("stay return unimplemented: no live select-back route".to_owned())
+    }
 }
 
 /// Bound for one engine-managed-facts query from the effect owner: the
@@ -268,6 +278,70 @@ impl SendNativeReaders for OsSendReaders {
     }
     fn read_current(&mut self) -> Option<u64> {
         self.fresh_topology().ok().map(|topo| topo.row.current)
+    }
+    fn select_space(&mut self, sid: u64) -> Result<(), String> {
+        // Ordinary return select on the effect owner: the same pre-dispatch
+        // gates as the native select path, then the proven SID-accepting
+        // goto with exact-current readback over the main-thread-published
+        // plain-data display legs. The SLS-to-CG join rides that pinned
+        // `(cgid, managed UUID)` pair verified against every fresh SLS
+        // snapshot by exact identifier - never an AppKit read, so this
+        // thread neither touches nor blocks the main thread. Never a focus
+        // guess or AX raise: the press addresses the MC Space list, never
+        // an app window.
+        if sid == 0 {
+            return Err("stay return refused: source SID unpinned (zero)".to_owned());
+        }
+        match crate::ffi::session_state().lock {
+            crate::ffi::SessionLock::Unlocked => {}
+            _ => return Err("stay return refused: session not unlocked pre-dispatch".to_owned()),
+        }
+        if crate::ffi::secure_input_known() == Some(true) {
+            return Err("stay return refused: Secure Input active pre-dispatch".to_owned());
+        }
+        if crate::ffi::frontmost_app()
+            .map(|(_, bundle)| crate::focus::is_loginwindow_bundle(&bundle))
+            .unwrap_or(true)
+        {
+            return Err("stay return refused: lock screen pre-dispatch".to_owned());
+        }
+        // Effect-thread display join: the published plain-data legs must
+        // name exactly one display (the product single-display rule), and
+        // its managed UUID plus CG ID pin the selector below.
+        let published = self.handle.published_display_inputs().ok_or_else(|| {
+            "stay return refused: display snapshot unpublished (no main-thread publish yet)"
+                .to_owned()
+        })?;
+        if published.displays.len() != 1 {
+            return Err(format!(
+                "stay return refused: single-display rule ({} published displays)",
+                published.displays.len()
+            ));
+        }
+        let pinned = &published.displays[0];
+        let pinned_uuid = pinned
+            .uuid
+            .clone()
+            .ok_or_else(|| "stay return refused: pinned display has no managed UUID".to_owned())?;
+        if pinned.cg_id == 0 {
+            return Err("stay return refused: pinned display has no CG display ID".to_owned());
+        }
+        let from = crate::mc_lifecycle::live::fresh_snapshot()
+            .map_err(|e| format!("stay return refused: pre-select snapshot ({e})"))?;
+        // Single-press budget matching the select drain bound; the goto
+        // carries its own bounded settle poll (never replayed).
+        let mut budget = ActionBudget::new(30);
+        crate::mc_lifecycle::goto_sid_verified_pinned(
+            &from,
+            0,
+            sid,
+            pinned.cg_id,
+            &pinned_uuid,
+            &mut budget,
+            false,
+        )
+        .map(|_| ())
+        .map_err(|e| format!("stay return refused: select-back ({e})"))
     }
 }
 
@@ -510,8 +584,9 @@ fn assemble_evidence<R: SendNativeReaders>(
 /// ([`release_mouse`](ManagedSendBackend::release_mouse) /
 /// [`release_key`](ManagedSendBackend::release_key)) bypass the anchor and
 /// always attempt. Reused across requests on one owner thread: per-request
-/// state resets in `snapshot` (the one call [`execute_managed_send`]
-/// makes per operation).
+/// post state resets in `snapshot` (anchor, goal, held inputs, leg clock);
+/// the proven subject is retained so the stay return fence can snapshot
+/// and then read the return membership for the same pinned window.
 pub struct LiveManagedSendBackend<R: SendNativeReaders> {
     readers: R,
     anchor: Option<TopologyAnchor>,
@@ -705,7 +780,12 @@ impl<R: SendNativeReaders> ManagedSendBackend for LiveManagedSendBackend<R> {
             spaces: topo.row.spaces.clone(),
             revision: topo.revision,
         });
-        self.subject = None;
+        // The proven subject survives this reset on purpose: the stay
+        // return fence snapshots after the forward leg, then reads the
+        // return membership for the same pinned window. Single-flight
+        // serializes operations, and every down-edge re-proves and
+        // overwrites the subject before any membership read, so no stale
+        // window can leak across operations.
         self.goal = None;
         self.last_point = None;
         self.key_held = None;
@@ -866,6 +946,169 @@ impl<R: SendNativeReaders> ManagedSendBackend for LiveManagedSendBackend<R> {
     }
     fn counts(&self) -> PostCounts {
         self.counts
+    }
+    fn select_back(&mut self, source_sid: u64) -> Result<(), String> {
+        // Released ordinary return select over the readers seam: the proven
+        // SID-accepting goto with exact-current readback. Single-flight,
+        // gates, and cancellation are fenced by the stay caller; this only
+        // actuates the native select and reports its verdict honestly.
+        self.readers.select_space(source_sid)
+    }
+    fn read_focused(&mut self) -> Option<String> {
+        // Honest oracle (the same selected-focus read as the forward
+        // proof's focus leg): consulted only when a stay routes, which
+        // engine admission refuses while stays are unarmed.
+        self.readers
+            .selected_focus()
+            .and_then(|(pid, wid)| wid.map(|w| format!("{pid}_{w}")))
+    }
+
+    fn prepare_trailing_target(
+        &mut self,
+        pins: &TrailingPrepPins,
+    ) -> Result<TrailingPrepProof, String> {
+        // Bounded caffeinate companion around preparation only (same shape
+        // as the retired main-thread preparation): covers the create plus
+        // settle reads and self-terminates via `-t` even if the reaper
+        // wedges. Spawn failure refuses before any read.
+        let mut awake =
+            crate::mc_lifecycle::live::CaffeinateGuard::spawn(TRAILING_PREP_BUDGET_SECS)
+                .map_err(|e| format!("trailing send refuses: caffeinate unspawnable ({e})"))?;
+        // Single-display rule up front (same rule as the drag below): the
+        // pinned legs name exactly one display, never a first-display
+        // guess.
+        match self.readers.display_count() {
+            Ok(1) => {}
+            Ok(n) => {
+                let _ = awake.stop();
+                return Err(format!(
+                    "trailing send refuses: expected exactly one native display, found {n}"
+                ));
+            }
+            Err(e) => {
+                let _ = awake.stop();
+                return Err(format!(
+                    "trailing send refuses: display count unreadable ({e})"
+                ));
+            }
+        }
+        let mut adapter = OwnerTrailingAdapter {
+            readers: &mut self.readers,
+            display_index: pins.display_index,
+            pinned_cgid: pins.pinned_cgid,
+            pinned_uuid: pins.pinned_uuid.clone(),
+            budget: ActionBudget::new(TRAILING_PREP_BUDGET_SECS),
+            before: None,
+            after: None,
+        };
+        let prep = crate::workspace_send::prepare_trailing_send_target(
+            &mut adapter,
+            pins.trailing_enabled,
+        );
+        let _ = awake.stop();
+        let prep = prep?;
+        let (before, after) = adapter
+            .snapshots()
+            .ok_or_else(|| "trailing send refuses: post-preparation row unprovable".to_owned())?;
+        Ok(TrailingPrepProof {
+            target_sid: prep.target_sid,
+            created: prep.created,
+            revision: prep.revision,
+            display_id: before.display.clone(),
+            before: before.spaces.clone(),
+            after: after.spaces.clone(),
+        })
+    }
+}
+
+/// Preparation budget (seconds) for the owner-side trailing ensure: the
+/// same bound as the main-thread select drain it replaces (worst-case
+/// single create plus settle reads with margin). No cleanup legs run
+/// inside preparation.
+const TRAILING_PREP_BUDGET_SECS: u64 = 30;
+
+/// Owner-side trailing preparation adapter: one [`SelectionBackend`] over
+/// the send readers seam plus the main-thread-published pinned display
+/// legs. Lets the effect owner run the exact same
+/// [`prepare_trailing_send_target`](crate::workspace_send::prepare_trailing_send_target)
+/// reuse-or-append proof the main thread used to run - same row/
+/// emptiness/create guards, same budget shape, same exact-append
+/// adoption - with zero AppKit touch: rows come from the readers' fresh
+/// SLS topology, the revision is the SLS fingerprint, and the create
+/// joins through the pinned `(cgid, managed UUID)` pair verified on every
+/// fresh snapshot (never an AppKit read, so this thread neither touches
+/// nor blocks the main thread). Records the first and latest snapshots
+/// as the engine binding rows (`before`/`after`: identical on reuse).
+struct OwnerTrailingAdapter<'r, R: SendNativeReaders> {
+    readers: &'r mut R,
+    display_index: usize,
+    pinned_cgid: u32,
+    pinned_uuid: String,
+    budget: ActionBudget,
+    before: Option<SelectionSnapshot>,
+    after: Option<SelectionSnapshot>,
+}
+
+impl<'r, R: SendNativeReaders> OwnerTrailingAdapter<'r, R> {
+    fn snapshots(&self) -> Option<(&SelectionSnapshot, &SelectionSnapshot)> {
+        self.before.as_ref().zip(self.after.as_ref())
+    }
+}
+
+impl<R: SendNativeReaders> crate::workspace_select::SelectionBackend
+    for OwnerTrailingAdapter<'_, R>
+{
+    fn snapshot(&mut self) -> Result<SelectionSnapshot, String> {
+        let topo = self
+            .readers
+            .fresh_topology()
+            .map_err(|e| format!("fresh row unreadable ({e})"))?;
+        if self.before.is_none() {
+            self.before = Some(topo.row.clone());
+        }
+        self.after = Some(topo.row.clone());
+        Ok(topo.row)
+    }
+
+    fn display_count(&mut self) -> Result<usize, String> {
+        self.readers.display_count()
+    }
+
+    fn revision(&mut self) -> Option<u64> {
+        self.readers.fresh_topology().ok().map(|topo| topo.revision)
+    }
+
+    fn empty(&mut self, sid: u64) -> Result<bool, String> {
+        crate::workspace_select::probe_trailing_emptiness(sid)
+    }
+
+    fn create(&mut self, before: &SelectionSnapshot) -> Result<(), String> {
+        if self.snapshot()? != *before {
+            return Err("pre-create topology drift".to_owned());
+        }
+        let raw = crate::mc_lifecycle::live::fresh_snapshot().map_err(|e| e.to_string())?;
+        let outcome = crate::mc_lifecycle::live::mc_add_space_pinned(
+            self.display_index,
+            self.pinned_cgid,
+            &self.pinned_uuid,
+            &mut self.budget,
+            false,
+        )
+        .map_err(|e| e.to_string())?;
+        let after = crate::mc_lifecycle::live::await_snapshot(&|s| {
+            crate::mc_probe::validate_create_effect(&raw, s, self.display_index).is_ok()
+        })
+        .map_err(|e| e.to_string())?;
+        crate::mc_probe::validate_create_effect(&raw, &after, self.display_index)
+            .map_err(|e| e.to_string())?;
+        if let Some(e) = outcome.close_error {
+            return Err(format!("created but MC close unproven: {e}"));
+        }
+        Ok(())
+    }
+
+    fn select(&mut self, _before: &SelectionSnapshot, _sid: u64) -> Result<(), String> {
+        Err("owner trailing preparation never selects; refusing".to_owned())
     }
 }
 

@@ -106,6 +106,12 @@ pub(crate) struct WorldSession {
     /// retained truth missed input, so the next report publishes
     /// `inventory_complete = false` until a fresh observation lands.
     coverage_gap: bool,
+    /// Outstanding trailing creation bindings (see
+    /// [`crate::trailing_binding`]): published on every native report
+    /// until the core acknowledges the bound row or the native vanishes.
+    /// Empty until the trailing drain records an exact-append proof, so
+    /// all current reports are unchanged.
+    trailing: crate::trailing_binding::TrailingBindingStore,
 }
 
 impl WorldSession {
@@ -137,6 +143,7 @@ impl WorldSession {
             pending_writes: BTreeMap::new(),
             spent_frame_ops: BTreeSet::new(),
             coverage_gap: false,
+            trailing: crate::trailing_binding::TrailingBindingStore::default(),
         }
     }
 
@@ -211,6 +218,52 @@ impl WorldSession {
     /// Spend one explicit float-placement token; false when already spent.
     pub(crate) fn spend_frame_op(&mut self, operation: &str) -> bool {
         self.spent_frame_ops.insert(operation.to_owned())
+    }
+
+    /// Outstanding trailing bindings for the next report. Prunes natives
+    /// that left this dispatch's live topology first, so a vanished Space
+    /// never reports a stale binding.
+    pub(crate) fn trailing_report_bindings(
+        &mut self,
+        ctx: &NativeContext,
+    ) -> Vec<tiler_core::world_report::WorkspaceBinding> {
+        use std::collections::BTreeMap;
+        let mut live: BTreeMap<OutputId, Vec<String>> = BTreeMap::new();
+        for domain in &ctx.domains {
+            live.entry(domain.output.clone())
+                .or_default()
+                .push(domain.workspace.0.clone());
+        }
+        self.trailing.prune_vanished(&live);
+        self.trailing.report_bindings()
+    }
+
+    /// Release trailing bindings the core acknowledged (the applied reply
+    /// publishes their bound rows). Called once per applied reply; returns
+    /// the acknowledged logical ids.
+    pub(crate) fn note_trailing_ack(
+        &mut self,
+        reply: &tiler_core::world_report::WorldReply,
+    ) -> Vec<String> {
+        self.trailing.note_ack(reply)
+    }
+
+    /// Record one exact-append trailing proof against the engine's pending
+    /// token (see
+    /// [`TrailingBindingStore::bind_exact_append`](crate::trailing_binding::TrailingBindingStore::bind_exact_append)).
+    /// Production drains call this through the [`EngineJob::TrailingProof`](crate::runtime_thread::EngineJob::TrailingProof)
+    /// lane (capability-disabled production never reaches it: admission
+    /// refuses trailing first).
+    pub(crate) fn adopt_trailing_binding(
+        &mut self,
+        logical_id: &str,
+        output: &OutputId,
+        created_sid: u64,
+        before: &[u64],
+        after: &[u64],
+    ) -> Result<(), String> {
+        self.trailing
+            .bind_exact_append(logical_id, output, created_sid, before, after)
     }
 }
 
@@ -451,6 +504,7 @@ pub(crate) fn build_dispatch_report(
             let incomplete = session.coverage_gap || !ctx.skipped.is_empty();
             let owned_command = ticket_command.clone();
             let owned_request = request_id.to_owned();
+            let staged_bindings = session.trailing_report_bindings(ctx);
             let input = ReportInput {
                 owner: PHASE1_OWNER,
                 adapter_incarnation: session.incarnation(),
@@ -475,6 +529,7 @@ pub(crate) fn build_dispatch_report(
                 predicate: session.predicate,
                 refill: MigrationSourceRefill::LastRemaining,
                 default_tiled: true,
+                bindings: &staged_bindings,
                 primary_output: None,
                 domain_outer_gap: PHASE1_OUTER_GAP,
             };
@@ -533,6 +588,8 @@ pub(crate) fn build_dispatch_report(
                 predicate: session.predicate,
                 refill: MigrationSourceRefill::LastRemaining,
                 default_tiled: true,
+                // The synthetic skeleton never trails: no bindings invented.
+                bindings: &[],
                 primary_output: None,
                 // Edge-to-edge legacy skeleton parity (the world engine
                 // insets by the carried gap; 0 preserves exact geometry).

@@ -86,7 +86,9 @@ use crate::workspace_select::SelectionSnapshot;
 use crate::workspace_send::SendGates;
 use crate::workspace_send_effect::{
     BlindRoot, ManagedSendTarget, SendCompletion, SendEffectHandoff, SendEffectOutcome,
-    SendFreshEvidence, SendProofRefusal, prove_managed_send,
+    SendFreshEvidence, SendProofRefusal, SendRequest, TrailingBindingProof,
+    TrailingCompletionProof, TrailingPrepPins, TrailingPrepProof, TrailingSendRequest,
+    prove_managed_send,
 };
 
 /// Injectable managed-send backend for the dedicated effect owner.
@@ -149,6 +151,36 @@ pub trait ManagedSendBackend: Send {
     }
     fn read_membership(&mut self) -> Option<Vec<u64>>;
     fn read_current(&mut self) -> Option<u64>;
+    /// Stay-only ordinary select-back to the source SID after a released
+    /// forward leg (the follow path never calls this). The production
+    /// backend runs the proven SID-accepting native select with
+    /// exact-current readback; the offline fake scripts the return.
+    /// Numbered stays stay unarmed in
+    /// [`crate::workspace_input::is_armed_send`], so no product caller
+    /// reaches here until a reviewed arming change.
+    fn select_back(&mut self, source_sid: u64) -> Result<(), String>;
+    /// Stay-only fresh focused-window read (`"<pid>_<wid>"`) for the
+    /// return-leg source-focus fallback. `None` is unreadable: an empty
+    /// source (`source_focus` of `None` in [`execute_managed_send_stay`])
+    /// makes no focus claim, while a claimed source focus that reads
+    /// unknown holds.
+    fn read_focused(&mut self) -> Option<String>;
+    /// Ensure the trailing send-0 target natively on the effect thread
+    /// (reuse proven-empty last, else exactly one append) and return the
+    /// verified target plus its proof rows. Runs entirely on the owner:
+    /// the main thread never waits for preparation - it only submits the
+    /// request nonblocking and polls the completion. Default refuses (the
+    /// numbered-only fakes never serve trailing); the live backend and
+    /// trailing-capable fakes override. Errors name the refusing leg;
+    /// anything past a possibly-sent press classifies ambiguous (see
+    /// [`crate::workspace_send::classify_trailing_prep_error`]).
+    fn prepare_trailing_target(
+        &mut self,
+        pins: &TrailingPrepPins,
+    ) -> Result<TrailingPrepProof, String> {
+        let _ = pins;
+        Err("trailing preparation unimplemented on this backend; refusing".to_owned())
+    }
     /// Post-release poll window (live 3 s; fakes fast).
     fn effect_deadline_ms(&self) -> u64 {
         crate::space_drag_transfer::EFFECT_SETTLE_MS
@@ -483,6 +515,15 @@ fn log_effect_refusal(
         start,
         end,
     );
+    emit_owner_line(&line);
+}
+
+/// Single owner emission site (pinned by
+/// `effect_owner_emits_exactly_one_bounded_refusal_line_site`): every
+/// owner log line funnels through here so the refusal surface stays one
+/// bounded token-only emitter. Lines carry IDs and static tokens only -
+/// never titles, content, or paths.
+fn emit_owner_line(line: &str) {
     eprintln!("{line}");
 }
 
@@ -723,18 +764,450 @@ pub(crate) fn execute_managed_send<B: ManagedSendBackend>(
     }
 }
 
+/// Numbered send-stay effect (product stays are unarmed in
+/// [`crate::workspace_input::is_armed_send`] and refused at engine admission,
+/// so no product caller reaches here until a reviewed arming change; the
+/// world-command mapping already preserves the stay intent): the forward
+/// native drag through [`execute_managed_send`], then a released ordinary
+/// select-back to the exact admission source SID.
+///
+/// Stay protocol (single-flight through the caller's handoff lane with
+/// release-first, session/lock gates, and every forward per-edge
+/// identity/ordinal/revision check retained):
+/// - Pre-forward (nothing posted yet): the source SID must be nonzero and
+///   present in the pinned fresh row, else a proven refusal.
+/// - Forward: one [`execute_managed_send`]. Anything but `Applied` returns
+///   as-is: no return attempted, no history, no replay.
+/// - Return (the forward chord posted, so every failure below holds as
+///   `PossiblyExecuted`, never replayed): stop-request, session gates, and
+///   the single-display rule re-fenced; one fresh row must carry the pinned
+///   display identity plus exact `spaces` order/identity with the view still
+///   on the forward arrival (revision legitimately moved, so only the SID
+///   row plus arrival are fenced); the ordinary
+///   [`ManagedSendBackend::select_back`] actuates; the readback must prove
+///   membership exactly `[target]` with current exactly `source`, plus the
+///   source-focus fallback (`source_focus` names `"<pid>_<wid>"`; `None`
+///   is an empty source and makes no focus claim, never an AX raise).
+///   Callers must supply the fallback explicitly: it has to be the
+///   post-removal source-MRU resident (or a proven-empty source), and the
+///   admission subject is on the target after the drag so it must never be
+///   reused as the source pin. The claim path (`from_claim`) converts only
+///   core-proven stay fallbacks pinned by the engine after dispatch (resident
+///   or proven-empty, never unknown); explicit `bind_stay` targets serve
+///   offline tests.
+///
+/// Never advances previous history: stays keep the source current, so a
+/// future product caller must not `note_arrival` a stay settlement.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn execute_managed_send_stay<B: ManagedSendBackend>(
+    target: &ManagedSendTarget,
+    source_sid: u64,
+    source_focus: Option<&str>,
+    backend: &mut B,
+    handoff: &SendEffectHandoff,
+) -> (SendEffectOutcome, Option<LegOk>) {
+    let start_counts = backend.counts();
+    if source_sid == 0 {
+        return refuse_proven(
+            target,
+            "stay-source",
+            "stay source SID unpinned (zero); refusing",
+            start_counts,
+            backend.counts(),
+        );
+    }
+    let forward_row = match backend.snapshot() {
+        Ok(row) => row,
+        Err(detail) => {
+            return refuse_proven(
+                target,
+                "stay-row",
+                &format!("stay source row unreadable ({detail})"),
+                start_counts,
+                backend.counts(),
+            );
+        }
+    };
+    if forward_row.validate().is_err() {
+        return refuse_proven(
+            target,
+            "stay-row",
+            "stay source row/current identity unprovable",
+            start_counts,
+            backend.counts(),
+        );
+    }
+    if !forward_row.spaces.contains(&source_sid) {
+        return refuse_proven(
+            target,
+            "stay-source",
+            "stay source absent from the fresh row; refusing",
+            start_counts,
+            backend.counts(),
+        );
+    }
+    let (outcome, leg) = execute_managed_send(target, backend, handoff);
+    if outcome != SendEffectOutcome::Applied {
+        return (outcome, leg);
+    }
+    let forward = match leg {
+        Some(leg) => leg,
+        None => {
+            return hold_stay_return(
+                target,
+                "stay-return",
+                "stay return unproven: forward applied without readback",
+                start_counts,
+                backend.counts(),
+            );
+        }
+    };
+    if !crate::space_recovery::membership_is_exact(&forward.membership, target.target_sid())
+        || forward.current != target.target_sid()
+    {
+        return hold_stay_return(
+            target,
+            "stay-return",
+            "stay return unproven: forward readback names no exact target",
+            start_counts,
+            backend.counts(),
+        );
+    }
+    // The forward chord posted: every path below holds (never a proven
+    // refusal, never replayed).
+    if handoff.cancel_requested() {
+        return hold_stay_return(
+            target,
+            "stay-return",
+            "stay return stopped: managed send cancel requested before select-back",
+            start_counts,
+            backend.counts(),
+        );
+    }
+    let gates = backend.read_gates();
+    if !gates.session_unlocked {
+        return hold_stay_return(
+            target,
+            "stay-return",
+            "stay return gated: session-locked",
+            start_counts,
+            backend.counts(),
+        );
+    }
+    if gates.secure_active {
+        return hold_stay_return(
+            target,
+            "stay-return",
+            "stay return gated: secure-active",
+            start_counts,
+            backend.counts(),
+        );
+    }
+    if gates.lock_screen {
+        return hold_stay_return(
+            target,
+            "stay-return",
+            "stay return gated: lock-screen",
+            start_counts,
+            backend.counts(),
+        );
+    }
+    match backend.display_count() {
+        Ok(1) => {}
+        Ok(other) => {
+            return hold_stay_return(
+                target,
+                "stay-return",
+                &format!("stay return refused: single-display rule ({other} displays)"),
+                start_counts,
+                backend.counts(),
+            );
+        }
+        Err(detail) => {
+            return hold_stay_return(
+                target,
+                "stay-return",
+                &format!("stay return refused: display count unreadable ({detail})"),
+                start_counts,
+                backend.counts(),
+            );
+        }
+    }
+    let fresh = match backend.snapshot() {
+        Ok(row) => row,
+        Err(detail) => {
+            return hold_stay_return(
+                target,
+                "stay-return",
+                &format!("stay return refused: fresh row unreadable ({detail})"),
+                start_counts,
+                backend.counts(),
+            );
+        }
+    };
+    if fresh.validate().is_err() {
+        return hold_stay_return(
+            target,
+            "stay-return",
+            "stay return refused: fresh row/current identity unprovable",
+            start_counts,
+            backend.counts(),
+        );
+    }
+    // Return-leg fence without the stale revision fingerprint: display
+    // identity plus SID order/identity must equal the pinned pre-forward
+    // row, and the view must still sit on the forward arrival (the current
+    // legitimately moved source to target, so the revision moved too -
+    // only the SID row plus arrival are fenced here). A display swap,
+    // foreign SID drift, or a foreign current move holds rather than
+    // selecting under drifted topology. Pure geometry drift is invisible
+    // to this SID row, but the select itself is SID-accepting with a
+    // same-shape plus exact-current readback, so it cannot misroute.
+    if fresh.display != forward_row.display {
+        return hold_stay_return(
+            target,
+            "stay-return",
+            "stay return refused: display identity moved mid-stay",
+            start_counts,
+            backend.counts(),
+        );
+    }
+    if fresh.spaces != forward_row.spaces {
+        return hold_stay_return(
+            target,
+            "stay-return",
+            "stay return refused: native row moved mid-stay",
+            start_counts,
+            backend.counts(),
+        );
+    }
+    if fresh.current != target.target_sid() {
+        return hold_stay_return(
+            target,
+            "stay-return",
+            "stay return refused: forward arrival moved before select-back",
+            start_counts,
+            backend.counts(),
+        );
+    }
+    if let Err(detail) = backend.select_back(source_sid) {
+        return hold_stay_return(
+            target,
+            "stay-return",
+            &format!("stay return unproven: select-back refused ({detail})"),
+            start_counts,
+            backend.counts(),
+        );
+    }
+    let (membership, current) = match (backend.read_membership(), backend.read_current()) {
+        (Some(membership), Some(current)) => (membership, current),
+        _ => {
+            return hold_stay_return(
+                target,
+                "stay-return",
+                "stay return unproven: membership/current unreadable",
+                start_counts,
+                backend.counts(),
+            );
+        }
+    };
+    if !crate::space_recovery::membership_is_exact(&membership, target.target_sid())
+        || current != source_sid
+    {
+        return hold_stay_return(
+            target,
+            "stay-return",
+            "stay return unproven: membership/current not exactly target-on-source",
+            start_counts,
+            backend.counts(),
+        );
+    }
+    if let Some(expected) = source_focus {
+        match backend.read_focused() {
+            Some(actual) if actual == expected => {}
+            _ => {
+                return hold_stay_return(
+                    target,
+                    "stay-return",
+                    "stay return unproven: source focus fallback unproven",
+                    start_counts,
+                    backend.counts(),
+                );
+            }
+        }
+    }
+    (
+        SendEffectOutcome::Applied,
+        Some(LegOk {
+            membership,
+            current,
+            pending_recovered: forward.pending_recovered,
+            counts: backend.counts(),
+        }),
+    )
+}
+
+/// Stay-return hold terminal for [`execute_managed_send_stay`]: the forward
+/// chord already posted, so a failed or uncertain return is ambiguous
+/// mid-actuation output - held without re-actuation, never a proven
+/// refusal, never replayed. Logs the single bounded token-only owner line
+/// like [`refuse_proven`].
+#[cfg_attr(not(test), allow(dead_code))]
+fn hold_stay_return(
+    target: &ManagedSendTarget,
+    stage: &'static str,
+    reason: &str,
+    start: PostCounts,
+    end: PostCounts,
+) -> (SendEffectOutcome, Option<LegOk>) {
+    log_effect_refusal(
+        target,
+        SendEffectOutcome::PossiblyExecuted,
+        stage,
+        reason,
+        start,
+        end,
+    );
+    (SendEffectOutcome::PossiblyExecuted, None)
+}
+
 /// Completion for one executed target: fenced on the same operation,
-/// lifetime, and revision the handoff enforces.
+/// lifetime, revision, and follow intent the handoff enforces. Trailing
+/// executions attach their exact-append proof (`None` on reuse; tokenless
+/// requests attach creation without binding) so the main thread adopts
+/// owned creation and reports the binding back without re-reading
+/// topology.
 pub(crate) fn completion_for(
     target: &ManagedSendTarget,
     outcome: SendEffectOutcome,
+    trailing: Option<TrailingCompletionProof>,
 ) -> SendCompletion {
     SendCompletion {
         operation_id: target.operation_id().to_owned(),
         app_generation: target.app_generation(),
         revision: target.revision(),
+        follow: target.follow(),
         outcome,
+        trailing,
     }
+}
+
+/// Execute one trailing send request on the calling (effect-owner) thread:
+/// prepare the exact native target (reuse proven-empty last, else exactly
+/// one append), bind it to the request's original pins, run the single
+/// forward drag, and return the terminal outcome plus the bound target
+/// plus the optional binding proof. Never submits, finishes, polls, or
+/// releases the handoff - the threaded owner below does that - but honors
+/// its stop request between phases.
+///
+/// Phase contract:
+/// - Cancel before preparation: proven refusal (nothing posted), no proof.
+/// - Preparation refusal: pre-actuation reasons refuse proven; anything
+///   past a possibly-sent press holds as possibly-executed, never
+///   replayed (see [`crate::workspace_send::classify_trailing_prep_error`]).
+///   No proof either way: an exact append that validated would have
+///   succeeded, so anything else cannot bind.
+/// - Preparation success: the target binds to the original pins through
+///   the single pin contract (subject/lifetime/source/operation fences
+///   intact; the post-preparation revision rides explicitly so the
+///   own-append move is never bypassed). A bind failure holds as
+///   possibly-executed with the proof when an append ran (the Space may
+///   exist) - never a silent drop.
+/// - Cancel after preparation but before the drag: the drag never runs;
+///   possibly-executed with the proof when an append ran (creation is a
+///   press), proven refusal otherwise.
+/// - The drag outcome stands; the proof rides along whenever an append
+///   ran (reuse proves no creation). A token pairs the rows into a
+///   binding; tokenless appends still report `created` so the main
+///   thread adopts the owned Space - only the binding is token-gated.
+pub(crate) fn execute_trailing_send<B: ManagedSendBackend>(
+    request: &TrailingSendRequest,
+    backend: &mut B,
+    handoff: &SendEffectHandoff,
+) -> (
+    SendEffectOutcome,
+    Option<ManagedSendTarget>,
+    Option<TrailingCompletionProof>,
+) {
+    if handoff.cancel_requested() {
+        return (SendEffectOutcome::RefusedProven, None, None);
+    }
+    let prep = match backend.prepare_trailing_target(&request.pins) {
+        Ok(prep) => prep,
+        Err(reason) => {
+            let outcome = crate::workspace_send::classify_trailing_prep_error(&reason);
+            emit_owner_line(&format!(
+                "tiler-macos send trailing prep op={} outcome={outcome:?} complete=false",
+                request.operation_id,
+            ));
+            return (outcome, None, None);
+        }
+    };
+    let proof = || -> Option<TrailingCompletionProof> {
+        let created = prep.created;
+        let binding = match (created, request.token.clone()) {
+            (Some(created), Some(token)) => Some(TrailingBindingProof {
+                token,
+                display_id: prep.display_id.clone(),
+                created,
+                before: prep.before.clone(),
+                after: prep.after.clone(),
+            }),
+            _ => None,
+        };
+        Some(TrailingCompletionProof {
+            target_sid: prep.target_sid,
+            revision: prep.revision,
+            created,
+            binding,
+        })
+    };
+    // Bind through the single pin contract: the ephemeral claim carries
+    // the admitted original pins verbatim (the trailing SID/revision legs
+    // of the bind read the fresh preparation, never the claim).
+    let claim = crate::runtime_types::ClaimedSelect {
+        action: crate::runtime_types::InputSemanticAction::WorkspaceSend {
+            index: 0,
+            follow: true,
+        },
+        expected_sid: None,
+        ui_generation: 0,
+        topology_revision: None,
+        send_subject: Some(request.window.clone()),
+        send_generation: Some(request.app_generation),
+        send_source: Some(request.source.clone()),
+        send_source_sid: None,
+        send_source_focus: None,
+        send_source_focus_empty: false,
+        operation_id: Some(request.operation_id.clone()),
+        trailing_token: request.token.clone(),
+    };
+    let send_prep = crate::workspace_send::TrailingSendPrep {
+        target_sid: prep.target_sid,
+        created: prep.created,
+        revision: prep.revision,
+    };
+    let target = match crate::workspace_send::bind_trailing_send_target(&claim, send_prep) {
+        Ok(target) => target,
+        Err(reason) => {
+            emit_owner_line(&format!(
+                "tiler-macos send trailing bind op={} reason={reason} complete=false",
+                request.operation_id,
+            ));
+            return (SendEffectOutcome::PossiblyExecuted, None, proof());
+        }
+    };
+    if handoff.cancel_requested() {
+        // The drag never runs; a ran append is still a press.
+        let outcome = if prep.created.is_some() {
+            SendEffectOutcome::PossiblyExecuted
+        } else {
+            SendEffectOutcome::RefusedProven
+        };
+        return (outcome, Some(target), proof());
+    }
+    let (outcome, _) = execute_managed_send(&target, backend, handoff);
+    (outcome, Some(target), proof())
 }
 
 /// Dedicated scoped managed-send effect thread.
@@ -800,10 +1273,60 @@ impl ManagedSendThread {
                     if thread_stop.load(Ordering::SeqCst) {
                         break;
                     }
-                    if let Some(target) = thread_handoff.take_for_owner() {
-                        let (outcome, _) =
-                            execute_managed_send(&target, &mut backend, &thread_handoff);
-                        let _ = thread_handoff.finish(completion_for(&target, outcome));
+                    if let Some(request) = thread_handoff.take_for_owner() {
+                        match request {
+                            SendRequest::Pinned(target) => {
+                                // Single-flight owner routes on the pinned intent:
+                                // follows run the forward drag, stays run the
+                                // forward drag plus the released return select.
+                                // Stay source pins travel in the target (explicit
+                                // `bind_stay` pins or core-proven `from_claim` pins,
+                                // never re-sampled). A stay without a pinned source SID selects back to
+                                // zero, which the stay path refuses proven before
+                                // any post.
+                                let (outcome, _) = if target.follow() {
+                                    execute_managed_send(&target, &mut backend, &thread_handoff)
+                                } else {
+                                    let sid = target.source_sid().unwrap_or(0);
+                                    execute_managed_send_stay(
+                                        &target,
+                                        sid,
+                                        target.source_focus(),
+                                        &mut backend,
+                                        &thread_handoff,
+                                    )
+                                };
+                                let _ =
+                                    thread_handoff.finish(completion_for(&target, outcome, None));
+                            }
+                            SendRequest::Trailing(request) => {
+                                // Trailing owner flow: prepare the exact
+                                // native target on this thread (the main
+                                // thread never waits for preparation), bind
+                                // it to the admitted original pins, and run
+                                // the single forward drag. No second
+                                // dispatch, no duplicate effect: this drag
+                                // is the only actuation; the core drains
+                                // its pending send on the reported binding.
+                                let (outcome, target, proof) =
+                                    execute_trailing_send(&request, &mut backend, &thread_handoff);
+                                let completion = match target {
+                                    Some(target) => completion_for(&target, outcome, proof),
+                                    None => SendCompletion {
+                                        operation_id: request.operation_id.clone(),
+                                        app_generation: request.app_generation,
+                                        // Unknown until preparation binds:
+                                        // the trailing poll fences operation
+                                        // plus lifetime, never this.
+                                        revision: 0,
+                                        follow: true,
+                                        outcome,
+                                        trailing: proof,
+                                    },
+                                };
+                                let _ = thread_handoff.finish(completion);
+                            }
+                        }
                         continue;
                     }
                     // Idle: event-driven wait for submit/cancel/shutdown.
@@ -830,6 +1353,17 @@ impl ManagedSendThread {
     /// owner exactly once on success.
     pub fn submit(&self, target: ManagedSendTarget) -> Result<(), &'static str> {
         let result = self.handoff.submit(target);
+        if result.is_ok() {
+            let _ = self.wake_tx.send(());
+        }
+        result
+    }
+
+    /// Nonblocking trailing submit: the owner prepares the exact native
+    /// target itself before binding and actuating. Same single-flight
+    /// refusal and exactly-once wake as [`ManagedSendThread::submit`].
+    pub fn submit_trailing(&self, request: TrailingSendRequest) -> Result<(), &'static str> {
+        let result = self.handoff.submit_trailing(request);
         if result.is_ok() {
             let _ = self.wake_tx.send(());
         }

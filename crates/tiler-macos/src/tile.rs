@@ -157,6 +157,25 @@ pub struct TileRequest {
     /// Unscoped product mode (ordinary apps minus own bundles/exclusions).
     /// Without it the run is scoped (explicit allowlist, Ghostty refused).
     pub unscoped: bool,
+    /// Diagnostic-only stay injection (`--diag-stay-index 1|2`): exactly one
+    /// numbered stay chord (Desktop 1 or 2) appended to the effective tap
+    /// table, so the normal tap/admit/drain path proves the armed stay.
+    /// Gated in [`TileRequest::validate`]: explicit `--user-start` plus
+    /// `--input tap` plus exactly `--scope com.apple.TextEdit` (never
+    /// unscoped), finite scoped lifetime, and a duplicate-free effective
+    /// chord. No product/default binding changes.
+    pub diag_stay: Option<u8>,
+    /// Diagnostic-only trailing-slot click injection
+    /// (`--diag-trailing-click`): once per run, copy the ACTUAL rendered
+    /// trailing binding off the live AppKit targets (never reconstructed,
+    /// never a direct select-0 substitute) and loop it back through the
+    /// same click channel an AppKit press would use, so the normal
+    /// kind-routed drain plus engine admission plus fresh fences prove
+    /// the trailing select-or-create. Gated in [`TileRequest::validate`]:
+    /// explicit `--user-start` plus `--input tap` plus exactly
+    /// `--scope com.apple.TextEdit` (never unscoped) plus finite scoped
+    /// lifetime. No product/default binding changes.
+    pub diag_trailing_click: bool,
     /// Exact bundle-ID exclusions (unscoped only).
     pub excluded: Vec<String>,
     /// Foreground log verbosity.
@@ -217,6 +236,77 @@ impl TileRequest {
             return Err("tile: --run-dir must not be empty".to_owned());
         }
         self.selection().validate()?;
+        if let Some(index) = self.diag_stay {
+            // Diagnostic-only stay injection: exactly one numbered stay
+            // (Desktop 1 or 2) over the normal tap/admit/drain path. Narrow
+            // gates: the tap route, a scoped TextEdit-only run (never
+            // unscoped, so no ordinary-app input authority), and the finite
+            // scoped lifetime above. The chord is the fixed Shift+Alt+digit
+            // shape, refused here when it is not duplicate-free in the run's
+            // own effective catalogue under its own preset/modifier.
+            if index != 1 && index != 2 {
+                return Err("tile: --diag-stay-index must be 1 or 2".to_owned());
+            }
+            if self.input != TileInput::Tap {
+                return Err("tile: --diag-stay-index needs --input tap".to_owned());
+            }
+            if self.unscoped {
+                return Err(
+                    "tile: --diag-stay-index refuses --unscoped (TextEdit-only scope)".to_owned(),
+                );
+            }
+            // TextEdit-only scope, spelled literally so this product file
+            // never names the diagnostic route module (the isolation test
+            // pins that): must equal the disposable-post bundle constant.
+            if self.scopes != ["com.apple.TextEdit"] {
+                return Err(
+                    "tile: --diag-stay-index needs exactly --scope com.apple.TextEdit".to_owned(),
+                );
+            }
+            let binding =
+                diag_stay_binding(index).ok_or("tile: --diag-stay-index has no digit leg")?;
+            let catalogue = crate::input_policy::effective_bindings(
+                self.preset,
+                self.modifier,
+                &product_catalogue(),
+            );
+            let want = crate::workspace_input::effective_flags_for(self.modifier, &binding);
+            if catalogue.iter().any(|existing| {
+                existing.key_code == binding.key_code
+                    && crate::workspace_input::effective_flags_for(self.modifier, existing) == want
+            }) {
+                return Err(
+                    "tile: --diag-stay-index chord collides with the effective catalogue"
+                        .to_owned(),
+                );
+            }
+        }
+        if self.diag_trailing_click {
+            // Diagnostic-only trailing-click injection: the same narrow
+            // gates as the stay injection (tap route, scoped
+            // TextEdit-only run, finite scoped lifetime above) minus the
+            // chord-collision leg (no tap chord is involved: the drain
+            // consumes the actual rendered trailing binding through its
+            // own kind/generation/revision fences).
+            if self.input != TileInput::Tap {
+                return Err("tile: --diag-trailing-click needs --input tap".to_owned());
+            }
+            if self.unscoped {
+                return Err(
+                    "tile: --diag-trailing-click refuses --unscoped (TextEdit-only scope)"
+                        .to_owned(),
+                );
+            }
+            // TextEdit-only scope, spelled literally so this product file
+            // never names the diagnostic route module (the isolation test
+            // pins that): must equal the disposable-post bundle constant.
+            if self.scopes != ["com.apple.TextEdit"] {
+                return Err(
+                    "tile: --diag-trailing-click needs exactly --scope com.apple.TextEdit"
+                        .to_owned(),
+                );
+            }
+        }
         // Defensive: a preset must never arm an empty chord set (Compatible
         // only removes known-conflicting arrows/digits, so this is
         // unreachable today, but an empty tap would silently intercept
@@ -256,18 +346,48 @@ impl TileRequest {
 }
 
 /// Product chord catalogue: the basic tiling chords plus the armed
-/// select subset (18 rows: numbered existing-Space `1..9`, the 8 relative
+/// select subset (19 rows: numbered existing-Space `1..9`, the trailing
+/// select-0, the 8 relative
 /// selects, the previous toggle) plus the armed numbered send-follow
-/// subset (9 rows: `workspace-send-1..9` as `Ctrl+Shift+digit` under the
+/// subset (10 rows: `workspace-send-0..9` as `Ctrl+Shift+digit` under the
 /// default Ctrl role). Stays, relative sends, outputs, and the trailing
-/// select-0/send-0 never enter the tap table (the engine refuses them as
-/// the backstop even if configured).
+/// stay-0 never enter the tap table (the engine refuses them as
+/// the backstop even if configured); the diagnostic `--diag-stay-index`
+/// route appends exactly one stay chord explicitly (see
+/// [`diag_stay_binding`]), never by default.
 #[must_use]
 pub fn product_catalogue() -> Vec<crate::runtime_types::TileBinding> {
     let mut catalogue = crate::native_input::tile_catalogue();
     catalogue.extend(crate::workspace_select::bindings());
     catalogue.extend(crate::workspace_send::bindings());
     catalogue
+}
+
+/// Diagnostic-only stay binding for the `--diag-stay-index` harness: the
+/// Desktop-N digit keycode with the Shift+Alt arms carrying the stay
+/// (`follow: false`) action for Desktop 1 or 2. The Shift+Alt+digit shape
+/// is duplicate-free in the effective product catalogue (digits only carry
+/// the plain select and Shifted send shapes), so the tap consumes it
+/// exactly like a product chord and the engine admits it through the normal
+/// tap/admit/drain/owner/settle path. `None` for any other index. Pure;
+/// unit-tested.
+#[must_use]
+pub fn diag_stay_binding(index: u8) -> Option<crate::runtime_types::TileBinding> {
+    if index != 1 && index != 2 {
+        return None;
+    }
+    crate::desktop_shortcuts::desktop_digit_keycode(u32::from(index)).map(|key_code| {
+        crate::runtime_types::TileBinding {
+            key_code,
+            shift: true,
+            alt: true,
+            aux: false,
+            action: crate::runtime_types::InputSemanticAction::WorkspaceSend {
+                index,
+                follow: false,
+            },
+        }
+    })
 }
 
 /// Whether a discovered (pid, bundle) may be launched under a scoped
@@ -801,6 +921,11 @@ mod native {
             if !self.driver.needs_tick(revision, observations) {
                 return;
             }
+            let mut trailing: Option<(
+                crate::workspace_indicator::TrailingSlot,
+                crate::workspace_indicator::SpaceOccupancy,
+                u64,
+            )> = None;
             let projection = match crate::workspace_select::user_row_from_rows(rows, 0) {
                 Ok(row) => {
                     let (domains, complete) = Self::retained_domains(&report, revision);
@@ -810,6 +935,32 @@ mod native {
                         complete,
                         frontmost_pid,
                     );
+                    // The trailing action slot renders only while the
+                    // capability gate arms it (production `false`: no extra
+                    // segment, no trailing click binding — disabled and
+                    // unshown while unarmed, never an enabled-looking slot).
+                    // The binding carries the TRUE native row identity
+                    // (`row.spaces.last()` over the full native row, never
+                    // the filtered projection's last row, which in
+                    // `Current` mode shows only the current Space).
+                    if crate::workspace_input::TRAILING_CAPABILITY_ENABLED {
+                        let last_occupancy = summary
+                            .iter()
+                            .zip(row.spaces.iter())
+                            .find(|(_, s)| **s == *row.spaces.last().unwrap_or(&0))
+                            .map(|((o, _), _)| *o)
+                            .unwrap_or(crate::workspace_indicator::SpaceOccupancy::Unknown);
+                        trailing = row.spaces.last().copied().and_then(|native_last| {
+                            crate::workspace_indicator::project_trailing_slot(
+                                &row.spaces,
+                                row.current,
+                                rows.len(),
+                                self.options.mode,
+                                last_occupancy,
+                            )
+                            .map(|slot| (slot, last_occupancy, native_last))
+                        });
+                    }
                     crate::workspace_indicator::project_indicator(
                         &row.spaces,
                         row.current,
@@ -852,9 +1003,14 @@ mod native {
                     rows: Vec::new(),
                 },
             };
-            match self.driver.apply(projection, revision, observations) {
+            match self.driver.apply(
+                projection,
+                trailing.map(|(slot, occupancy, _)| (slot, occupancy)),
+                revision,
+                observations,
+            ) {
                 crate::workspace_indicator::DriverApply::Applied(generation) => {
-                    self.push_native(generation, revision);
+                    self.push_native(generation, revision, trailing);
                 }
                 crate::workspace_indicator::DriverApply::Duplicate
                 | crate::workspace_indicator::DriverApply::Disarmed => {}
@@ -904,8 +1060,29 @@ mod native {
         /// claim and the drain). Icons resolve per bundle through a
         /// main-thread cache when the flag is on; any unreadable icon
         /// renders the plain number instead. The button title clears:
-        /// the segments carry every ordinal.
-        fn push_native(&mut self, generation: u64, revision: u64) {
+        /// the segments carry every ordinal. The trailing action slot
+        /// (when the pure projection offers one) renders one extra
+        /// segment after the existing rows: `"+"` live when the last
+        /// Space is proven occupied (pressing appends), `"+?"` disabled
+        /// when occupancy is unknown (shown unavailable, never falsely
+        /// empty — the drain refuses unknown instead of appending).
+        /// Proven-empty last reuses the existing slot with no extra
+        /// segment. The trailing click carries kind Trailing with position
+        /// `render_len + 1` and the render-time NATIVE last SID
+        /// (the true native row identity, never the filtered projection's
+        /// last row), fenced at drain by [`crate::workspace_indicator::resolve_indicator_click`]
+        /// plus the same guarded engine lane (capability-disabled drains
+        /// refuse at admission; the slot renders only while armed).
+        fn push_native(
+            &mut self,
+            generation: u64,
+            revision: u64,
+            trailing: Option<(
+                crate::workspace_indicator::TrailingSlot,
+                crate::workspace_indicator::SpaceOccupancy,
+                u64,
+            )>,
+        ) {
             let Some(projection) = self.driver.last().cloned() else {
                 return;
             };
@@ -943,7 +1120,7 @@ mod native {
                 return;
             };
             handle.set_title(self.mtm, "");
-            let rows: Vec<crate::ffi::SegmentRow> = projection
+            let mut rows: Vec<crate::ffi::SegmentRow> = projection
                 .rows
                 .iter()
                 .map(|row| {
@@ -970,6 +1147,7 @@ mod native {
                         occupancy: row.occupancy,
                         icon,
                         click: crate::workspace_indicator::IndicatorClick {
+                            kind: crate::workspace_indicator::IndicatorClickKind::Numbered,
                             position: row.position,
                             expected_sid: row.sid,
                             ui_generation: generation,
@@ -978,6 +1156,27 @@ mod native {
                     }
                 })
                 .collect();
+            // Trailing action segment: same channel, position `len + 1`,
+            // the render-time NATIVE last SID as the binding. Live
+            // (enabled) only when the last Space is proven occupied;
+            // unknown occupancy renders disabled, never as empty.
+            if let Some((slot, last_occupancy, native_last)) = trailing {
+                rows.push(crate::ffi::SegmentRow {
+                    position: slot.position,
+                    title: crate::workspace_indicator::trailing_segment_title(slot, last_occupancy),
+                    current: false,
+                    enabled: last_occupancy == crate::workspace_indicator::SpaceOccupancy::Occupied,
+                    occupancy: last_occupancy,
+                    icon: None,
+                    click: crate::workspace_indicator::IndicatorClick {
+                        kind: crate::workspace_indicator::IndicatorClickKind::Trailing,
+                        position: slot.position,
+                        expected_sid: native_last,
+                        ui_generation: generation,
+                        topology_revision: revision,
+                    },
+                });
+            }
             handle.rebuild(self.mtm, &rows);
             let occupied = projection
                 .rows
@@ -996,22 +1195,30 @@ mod native {
                 .map(|r| r.position)
                 .unwrap_or(0);
             eprintln!(
-                "tiler-macos dev indicator rows={} current={} occupied={} unknown={} generation={} complete=true",
+                "tiler-macos dev indicator rows={} current={} occupied={} unknown={} trailing={} generation={} complete=true",
                 projection.rows.len(),
                 current,
                 occupied,
                 unknown,
+                u8::from(trailing.is_some()),
                 generation,
             );
         }
 
-        /// Drain queued click bindings: each resolves against the CURRENT
-        /// render generation plus the cadence's fresh user row and revision
-        /// (rebuilt UI, moved topology, moved rows, and past-nine positions
-        /// all refuse before any backend touch) and submits through the
-        /// guarded engine lane with its immutable binding — the same gates
-        /// as a tap select, the same main-thread drain, the same verified
-        /// arrival. Positions and outcome tokens in the log only.
+        /// Drain queued click bindings: each routes by its rendered kind
+        /// through [`crate::workspace_indicator::resolve_indicator_click`]
+        /// against the CURRENT render generation plus the cadence's fresh
+        /// user row and revision (rebuilt UI, moved topology, moved rows,
+        /// and past-nine positions all refuse before any backend touch)
+        /// and submits through the guarded engine lane with its immutable
+        /// binding - the same gates as a tap select, the same main-thread
+        /// drain, the same verified arrival. Numbered clicks never fall
+        /// through to trailing creation; trailing slot clicks resolve only
+        /// while the capability gate arms the slot (unarmed discards
+        /// before the engine lane) with the same generation/revision/row
+        /// fencing and the same lane. Refusals log the honest bounded
+        /// reason (position/kind tokens plus the refusing fence, never
+        /// SIDs). Positions and outcome tokens in the log only.
         fn drain_clicks(
             &mut self,
             fresh: &crate::workspace_select::SelectionSnapshot,
@@ -1028,12 +1235,15 @@ mod native {
             let current_generation = self.driver.generation();
             while let Ok(click) = rx.try_recv() {
                 let position = click.position;
-                match crate::workspace_indicator::resolve_click(
+                let kind = click.kind.as_str();
+                let action = crate::workspace_indicator::resolve_indicator_click(
                     click,
                     current_generation,
                     &fresh.spaces,
                     fresh_revision,
-                ) {
+                    crate::workspace_input::TRAILING_CAPABILITY_ENABLED,
+                );
+                match action {
                     Ok(action) => {
                         let id = crate::workspace_input::workspace_action_id(&action)
                             .unwrap_or("unknown-select");
@@ -1058,10 +1268,12 @@ mod native {
                             }
                         }
                     }
-                    Err(_) => {
+                    Err(reason) => {
                         eprintln!(
-                            "tiler-macos dev indicator click position={} discarded reason=stale-or-unarmed",
+                            "tiler-macos dev indicator click kind={} position={} discarded reason={}",
+                            kind,
                             position,
+                            crate::workspace_indicator::bound_click_discard_reason(&reason),
                         );
                     }
                 }
@@ -1080,9 +1292,18 @@ mod native {
         }
 
         /// Live click-target bindings in render order: `(position,
-        /// expected SID, UI generation, topology revision)` off the actual
-        /// retained target objects. Empty without a rendered item.
-        pub(crate) fn segment_targets(&self) -> Vec<(usize, u64, u64, u64)> {
+        /// expected SID, UI generation, topology revision, slot kind)`
+        /// off the actual retained target objects. Empty without a
+        /// rendered item.
+        pub(crate) fn segment_targets(
+            &self,
+        ) -> Vec<(
+            usize,
+            u64,
+            u64,
+            u64,
+            crate::workspace_indicator::IndicatorClickKind,
+        )> {
             self.handle
                 .as_ref()
                 .map(|handle| handle.segment_targets())
@@ -1110,6 +1331,45 @@ mod native {
         /// through its own path.
         pub(crate) fn try_recv_click(&self) -> Option<crate::workspace_indicator::IndicatorClick> {
             self.rx.as_ref()?.try_recv().ok()
+        }
+
+        /// Diagnostic-only trailing-click injection for
+        /// `--diag-trailing-click`: copy the ACTUAL rendered trailing
+        /// binding off the live AppKit targets via
+        /// [`crate::workspace_indicator::diag_rendered_trailing_click`]
+        /// (never reconstructed, never a direct select-0 substitute; a
+        /// disabled `+?` slot or a missing slot refuses instead of
+        /// injecting) and loop it back through the same click channel an
+        /// AppKit press would use. Returns a metadata-only token line
+        /// (position/kind tokens, never SIDs) for the run log. The normal
+        /// [`Self::drain_clicks`] path still fences the binding fresh
+        /// (kind, generation, revision, row identity, capability gate)
+        /// plus engine admission plus verified arrival, so this injection
+        /// is necessary but never sufficient for a switch.
+        pub(crate) fn diag_inject_rendered_trailing(&self) -> Result<String, String> {
+            let tx = self.tx.as_ref().ok_or_else(|| {
+                "diag-trailing-click: indicator disarmed (off mode); nothing injected".to_owned()
+            })?;
+            let targets = self.segment_targets();
+            let snapshot = self.segment_snapshot();
+            let click =
+                crate::workspace_indicator::diag_rendered_trailing_click(&targets, &|position| {
+                    snapshot
+                        .iter()
+                        .any(|readback| readback.position == position && readback.enabled)
+                })
+                .ok_or_else(|| {
+                    "diag-trailing-click: no live trailing slot rendered; nothing injected"
+                        .to_owned()
+                })?;
+            let position = click.position;
+            let kind = click.kind.as_str();
+            tx.try_send(click).map_err(|e| {
+                format!("diag-trailing-click: channel refused the binding ({e}); nothing injected")
+            })?;
+            Ok(format!(
+                "tiler-macos dev diag-trailing-click kind={kind} position={position} injected=true complete=false"
+            ))
         }
     }
 
@@ -1344,12 +1604,36 @@ mod native {
 
         let selection = request.selection();
         // Effective chord set under the selected preset: Authentic arms the
-        // whole product catalogue (basic plus the 18 armed selects),
+        // whole product catalogue (basic plus the 19 armed selects plus
+        // the 10 armed send-follows),
         // Compatible leaves known conflicting chords to macOS (unarmed,
         // passing through natively — under the Ctrl role that is the 4
-        // unshifted arrow basics plus the 9 numbered selects, the latter
+        // unshifted arrow basics plus the 10 numbered selects, the latter
         // still switching Spaces natively via Switch to Desktop N).
-        let catalogue = effective_bindings(request.preset, request.modifier, &product_catalogue());
+        let mut catalogue =
+            effective_bindings(request.preset, request.modifier, &product_catalogue());
+        // Diagnostic-only stay injection: exactly one numbered stay chord
+        // appended to the same effective table the tap tunes and the config
+        // validates (duplicate-free proven in `TileRequest::validate`; the
+        // `RuntimeConfig` validator below re-checks). No product/default
+        // binding change.
+        if let Some(index) = request.diag_stay {
+            let binding = diag_stay_binding(index)
+                .ok_or((2, "tile: --diag-stay-index must be 1 or 2".to_owned()))?;
+            let want = crate::workspace_input::effective_flags_for(request.modifier, &binding);
+            if catalogue.iter().any(|existing| {
+                existing.key_code == binding.key_code
+                    && crate::workspace_input::effective_flags_for(request.modifier, existing)
+                        == want
+            }) {
+                return Err((
+                    2,
+                    "tile: --diag-stay-index chord collides with the effective catalogue"
+                        .to_owned(),
+                ));
+            }
+            catalogue.push(binding);
+        }
         let active_chords = catalogue.len();
         // Authentic Desktop-N holder ensure (enable-only with owned durable
         // preimages; explicit `spaces-desktop-revert` restores; no
@@ -1406,6 +1690,10 @@ mod native {
         // cadence snapshot plus engine observation counts (no polling of
         // its own). Clicks drain through the guarded engine lane.
         let mut indicator = IndicatorGuard::new(mtm, request.indicator);
+        // Diagnostic-only trailing-click injection state (single-shot per
+        // run: exactly one rendered trailing binding loops back, then the
+        // normal drain fences it fresh).
+        let mut diag_trailing_injected = false;
         // Drag-preview Escape watch (tap route with the startup switch
         // on only): the keyboard tap forwards otherwise-unmatched Escape
         // edges unsuppressed on this channel while the arm lives, so the
@@ -1690,6 +1978,12 @@ mod native {
         // Refreshed on every good read, not just on change.
         let mut last_snapshot: Option<TopologySnapshot> = None;
 
+        // Trailing lifecycle owner: baselined on the preexisting native row
+        // (never removed, even when proven empty). Exact-append SIDs this
+        // runtime creates adopt on verified select effects; only owned SIDs
+        // ever remove, and only when proven empty, inactive, above the
+        // shared floor, with fresh native proof at bounded shutdown.
+        let mut trailing_lifecycle = crate::workspace_select::TrailingLifecycle::default();
         // Initial snapshot before any discovery: scoped observations fence
         // without a published context, so publish first. A failed read
         // invalidates (clears the live cell and the stored snapshot alike)
@@ -1701,6 +1995,10 @@ mod native {
                 poll.poll(&snapshot);
                 publish_snapshot_context(&facts_store, &snapshot);
                 handle.publish_display_inputs(&snapshot);
+                if let Ok(row) = crate::workspace_select::user_row_from_rows(&snapshot.rows, 0) {
+                    trailing_lifecycle =
+                        crate::workspace_select::TrailingLifecycle::new(&row.spaces);
+                }
                 last_snapshot = Some(snapshot.clone());
                 handle.update_topology_with(snapshot, &|sid| crate::ffi::sls_space_type(sid).ok());
                 topology_updates += 1;
@@ -1929,6 +2227,9 @@ mod native {
                         handle.publish_display_inputs(&snapshot);
                     }
                     last_snapshot = Some(snapshot.clone());
+                    // Trailing bookkeeping reads the row before the move below.
+                    let trailing_row =
+                        crate::workspace_select::user_row_from_rows(&snapshot.rows, 0).ok();
                     if !matches!(
                         poll.poll(&snapshot),
                         crate::topology::PollOutcome::Unchanged
@@ -1938,6 +2239,22 @@ mod native {
                             crate::ffi::sls_space_type(sid).ok()
                         });
                         topology_updates += 1;
+                        // Trailing bookkeeping on a moved topology: forget
+                        // owned SIDs that vanished from the native row
+                        // (externally removed — never re-removed here, never
+                        // replayed). No MC effects run mid-loop; actual
+                        // removals wait for the bounded shutdown below.
+                        if let Some(row) = trailing_row.as_ref() {
+                            for sid in trailing_lifecycle.owned().to_vec() {
+                                if !row.spaces.contains(&sid) {
+                                    let _ = trailing_lifecycle.release_removed(sid);
+                                    eprintln!(
+                                        "tiler-macos dev trailing released-externally sid={} complete=true",
+                                        sid,
+                                    );
+                                }
+                            }
+                        }
                     }
                     // Indicator refresh (event-driven, change-only): the
                     // snapshot revision, engine observation counts, and an
@@ -2005,37 +2322,70 @@ mod native {
             // the tap callback and the serial engine handed off
             // asynchronously and never block. Selects (action plus, for
             // indicator clicks, the immutable render-time SID/revision
-            // binding) run the proven native switch. Numbered send-follow
-            // 1..9 (engine-admitted): the `is_armed_send` leg below
+            // binding) run the proven native switch. Numbered sends 0..9
+            // follow plus 1..9 stay
+            // (engine-admitted; stays bindable unbound, so only the diag
+            // chord delivers them): the send leg below
             // submits engine-admitted send claims to the dedicated
             // managed-send effect owner (fresh proof, tagged HID posts, and
             // bounded readback all run there — never on the engine or this
             // AppKit thread) and reconciles their completions nonblocking
-            // on later ticks. Both lanes refuse unless exactly one native
+            // on later ticks. The owner routes on the pinned intent
+            // (forward drag for follows, forward drag plus released return
+            // select for stays). Both lanes refuse unless exactly one native
             // display row exists (no first-display guessing), refuse bound
             // claims whose ordinal no longer names their SID or whose
             // revision drifted, recheck session/Secure Input/lock-screen
             // immediately pre-dispatch (the native legs re-gate
             // session/trust at every leg boundary; no atomicity past the
-            // recheck is promised). Verified arrival advances
-            // the per-display previous history; every refusal (gates,
-            // unarmed, display count, subject, target, holder, drift, stale
-            // binding, no effect) clears without replay and advances
-            // nothing. A claim still held at shutdown is dropped, never
-            // dispatched.
+            // recheck is promised). Verified follow arrival advances
+            // the per-display previous history (stays never note history);
+            // every refusal (gates, unarmed, display count, subject,
+            // target, holder, drift, stale binding, no effect) clears
+            // without replay and advances nothing. A claim still held at
+            // shutdown is dropped, never dispatched.
             //
             // Live-send completion poll (nonblocking): reconcile at most
             // one settled effect per tick before draining new claims. The
             // effect owner proved arrival post-release; the follow-history
-            // note and the transfer feedback under the claim's operation
-            // identity settle the core's retained transfer here. Focus
-            // follows through the observation loop (the proof held focus on
-            // the subject at every edge; no focus substitution actuation
-            // repairs a send).
+            // note (applied follows only) and the transfer feedback under
+            // the claim's operation identity settle the core's retained
+            // transfer here. Focus follows through the observation loop
+            // (the proof held focus on the subject at every edge; no focus
+            // substitution actuation repairs a send).
             if let Some(settle) = send_controller.poll() {
                 let outcome = crate::workspace_send::send_drain_outcome_for(settle.outcome);
-                if outcome == crate::workspace_send::SendDrainOutcome::Applied {
+                if crate::workspace_send::should_note_history(outcome, settle.follow) {
                     select_state.note_arrival(&settle.display, settle.from);
+                }
+                // Owner-verified trailing append: the created SID adopts
+                // into lifecycle ownership here (token or not: the Space
+                // persists even when the drag failed), while the binding
+                // proof forwards verbatim only when the request carried a
+                // token (reuse and tokenless executions bind nothing).
+                if let Some(proof) = settle.trailing.as_ref() {
+                    if let Some(created) = proof.created
+                        && let Err(reason) = trailing_lifecycle.adopt_created(created)
+                    {
+                        eprintln!(
+                            "tiler-macos dev trailing adopt sid={created} refused reason={reason} complete=true",
+                        );
+                    }
+                    if let Some(binding) = proof.binding.as_ref() {
+                        handle.submit_trailing_proof(
+                            &binding.token,
+                            &binding.display_id,
+                            binding.created,
+                            &binding.before,
+                            &binding.after,
+                        );
+                        eprintln!(
+                            "tiler-macos dev trailing bound token={} sid={} complete=true",
+                            binding.token, binding.created,
+                        );
+                    } else if let Some(created) = proof.created {
+                        eprintln!("tiler-macos dev trailing unbound sid={created} complete=true",);
+                    }
                 }
                 eprintln!(
                     "tiler-macos send settled target={} outcome={:?} complete=true",
@@ -2043,6 +2393,16 @@ mod native {
                     outcome,
                 );
                 handle.report_send_outcome(settle.target.operation_id(), outcome);
+            }
+            // Proof-less trailing completions (preparation refused or was
+            // cancelled before binding): feedback-only settlement under the
+            // operation identity - no history, no proof, never replayed.
+            if let Some(refusal) = send_controller.poll_trailing_refusal() {
+                eprintln!(
+                    "tiler-macos send trailing refused outcome={:?} complete=true",
+                    refusal.outcome,
+                );
+                handle.report_send_outcome(&refusal.operation_id, refusal.outcome);
             }
             if let Some(claim) = handle.claim_select_for_drain() {
                 let session_unlocked = matches!(
@@ -2058,66 +2418,182 @@ mod native {
                 // The operation identity rides out of the claim before the
                 // drain consumes it: the proven outcome reports back under
                 // the same id so the core settles its planner-owned view
-                // target (selects) or window transfer (sends) — never
-                // replayed.
+                // target (selects) or window transfer (sends) - never
+                // replayed. The trailing token rides out the same way so
+                // the drain pairs the engine-minted pending token with its
+                // exact native append proof.
                 let operation_id = claim.operation_id.clone();
-                if crate::workspace_input::is_armed_send(&claim.action) {
-                    // Follow-history attribution from this tick's fresh user
-                    // row (single reads, never a poll): the display plus the
-                    // source Space the send follows away from. A row that is
-                    // unreadable here refuses the submit before any post.
-                    let row = last_snapshot.as_ref().and_then(|live| {
-                        crate::workspace_select::user_row_from_rows(&live.rows, 0).ok()
-                    });
-                    // Admission trace, formatted before the submit consumes
-                    // the row: pins the exact subject/target/source/op while
-                    // the run lives. Emitted on the submitted path only.
-                    let admitted = row.as_ref().map(|row| {
-                        crate::workspace_send::format_send_admitted_line(
-                            id,
-                            claim.send_subject.as_deref().unwrap_or("none"),
-                            claim.expected_sid.unwrap_or(0),
-                            row.current,
-                            &row.display,
-                            claim.operation_id.as_deref().unwrap_or("none"),
-                        )
-                    });
-                    let submit = match row {
-                        Some(row) => {
-                            let handle_clone = handle.clone();
-                            send_controller.submit(&claim, &row.display, row.current, move || {
-                                crate::workspace_send_native::LiveManagedSendBackend::new(
-                                    crate::workspace_send_native::OsSendReaders::live(handle_clone),
-                                )
-                            })
-                        }
-                        None => {
-                            Err("product send refuses: fresh row unreadable at submit".to_owned())
-                        }
-                    };
-                    handle.release_select_after_drain();
-                    match submit {
-                        Ok(()) => {
-                            eprintln!(
-                                "{}",
-                                admitted
-                                    .as_deref()
-                                    .unwrap_or("tiler-macos send admitted missing-context")
-                            );
-                        }
-                        Err(reason) => {
-                            eprintln!(
-                                "tiler-macos dev send action={} refused reason={} complete=false",
-                                id, reason,
-                            );
-                            if let Some(operation_id) = operation_id.as_deref() {
-                                // Submit-time refusals never actuated (no
-                                // post performed): proven refusal settles the
-                                // transfer without actuation.
-                                handle.report_send_outcome(
-                                    operation_id,
-                                    crate::workspace_send::SendDrainOutcome::Refused,
+                let trailing_token = claim.trailing_token.clone();
+                // Numbered sends 1..9 route to the dedicated effect owner
+                // (follows and stays share the single-flight lane; stays
+                // still refused at the engine capability gate until a
+                // reviewed arming, so no product stay reaches here yet).
+                // Trailing send-0 follow routes the same lane (armed: the
+                // drain ensures the
+                // target natively first (reuse-or-append), binds it to the
+                // admitted original pins, and submits the pinned target.
+                if matches!(
+                    claim.action,
+                    crate::runtime_types::InputSemanticAction::WorkspaceSend { index: 1..=9, .. }
+                ) || matches!(
+                    claim.action,
+                    crate::runtime_types::InputSemanticAction::WorkspaceSend {
+                        index: 0,
+                        follow: true,
+                    }
+                ) {
+                    let trailing_send = matches!(
+                        claim.action,
+                        crate::runtime_types::InputSemanticAction::WorkspaceSend { index: 0, .. }
+                    );
+                    if trailing_send {
+                        // Owner-side trailing preparation (capability-gated
+                        // inside the owner): the request carries the admitted
+                        // original pins plus the published plain-data display
+                        // legs - never an AppKit read on this thread. The
+                        // owner ensures the target natively (reuse-or-append),
+                        // binds it, and actuates the single drag; this thread
+                        // only polls the completion on later ticks and never
+                        // waits for preparation or settlement. A submit
+                        // refusal reports and releases here (never actuated,
+                        // never replayed).
+                        let row = last_snapshot.as_ref().and_then(|live| {
+                            crate::workspace_select::user_row_from_rows(&live.rows, 0).ok()
+                        });
+                        let published = handle.published_display_inputs();
+                        let submit = match (row, published) {
+                            (Some(row), Some(published)) if published.displays.len() == 1 => {
+                                let legs = &published.displays[0];
+                                match (legs.uuid.clone(), legs.cg_id) {
+                                    (Some(uuid), cgid) if cgid != 0 => {
+                                        let handle_clone = handle.clone();
+                                        send_controller.submit_trailing(
+                                            &claim,
+                                            crate::workspace_send::TrailingSubmit {
+                                                display_index: 0,
+                                                pinned_cgid: cgid,
+                                                pinned_uuid: &uuid,
+                                                display: &row.display,
+                                                from: row.current,
+                                                trailing_enabled:
+                                                    crate::workspace_input::TRAILING_CAPABILITY_ENABLED,
+                                            },
+                                            move || {
+                                                crate::workspace_send_native::LiveManagedSendBackend::new(
+                                                    crate::workspace_send_native::OsSendReaders::live(
+                                                        handle_clone,
+                                                    ),
+                                                )
+                                            },
+                                        )
+                                    }
+                                    _ => Err(
+                                        "trailing send refuses: published display legs unpinned"
+                                            .to_owned(),
+                                    ),
+                                }
+                            }
+                            _ => Err(
+                                "trailing send refuses: fresh row or display legs unpublished"
+                                    .to_owned(),
+                            ),
+                        };
+                        handle.release_select_after_drain();
+                        match submit {
+                            Ok(()) => {
+                                eprintln!(
+                                    "tiler-macos send trailing submitted action={} subject={} op={} complete=false",
+                                    id,
+                                    claim.send_subject.as_deref().unwrap_or("none"),
+                                    operation_id.as_deref().unwrap_or("none"),
                                 );
+                            }
+                            Err(reason) => {
+                                eprintln!(
+                                    "tiler-macos dev send action={} refused reason={} complete=false",
+                                    id, reason,
+                                );
+                                if let Some(operation_id) = operation_id.as_deref() {
+                                    // Submit-time refusals never actuated (no
+                                    // post performed): proven refusal settles the
+                                    // transfer without actuation.
+                                    handle.report_send_outcome(
+                                        operation_id,
+                                        crate::workspace_send::SendDrainOutcome::Refused,
+                                    );
+                                }
+                            }
+                        }
+                    } else {
+                        // Numbered sends 1..9 route to the dedicated effect owner
+                        // with admission-pinned native targets (follows and stays
+                        // share the single-flight lane; stays still refused at
+                        // the engine capability gate until a reviewed arming, so
+                        // no product stay reaches here yet).
+                        // Follow-history attribution from this tick's fresh user
+                        // row (single reads, never a poll): the display plus the
+                        // source Space the send follows away from. A row that is
+                        // unreadable here refuses the submit before any post.
+                        let row = last_snapshot.as_ref().and_then(|live| {
+                            crate::workspace_select::user_row_from_rows(&live.rows, 0).ok()
+                        });
+                        // Admission trace, formatted before the submit consumes
+                        // the row: pins the exact subject/target/source/op while
+                        // the run lives. Emitted on the submitted path only.
+                        let admitted = row.as_ref().map(|row| {
+                            crate::workspace_send::format_send_admitted_line(
+                                id,
+                                claim.send_subject.as_deref().unwrap_or("none"),
+                                claim.expected_sid.unwrap_or(0),
+                                row.current,
+                                &row.display,
+                                claim.operation_id.as_deref().unwrap_or("none"),
+                            )
+                        });
+                        let submit =
+                            match row {
+                                Some(row) => {
+                                    let handle_clone = handle.clone();
+                                    send_controller.submit(
+                                &claim,
+                                &row.display,
+                                row.current,
+                                move || {
+                                    crate::workspace_send_native::LiveManagedSendBackend::new(
+                                        crate::workspace_send_native::OsSendReaders::live(
+                                            handle_clone,
+                                        ),
+                                    )
+                                },
+                            )
+                                }
+                                None => Err("product send refuses: fresh row unreadable at submit"
+                                    .to_owned()),
+                            };
+                        handle.release_select_after_drain();
+                        match submit {
+                            Ok(()) => {
+                                eprintln!(
+                                    "{}",
+                                    admitted
+                                        .as_deref()
+                                        .unwrap_or("tiler-macos send admitted missing-context")
+                                );
+                            }
+                            Err(reason) => {
+                                eprintln!(
+                                    "tiler-macos dev send action={} refused reason={} complete=false",
+                                    id, reason,
+                                );
+                                if let Some(operation_id) = operation_id.as_deref() {
+                                    // Submit-time refusals never actuated (no
+                                    // post performed): proven refusal settles the
+                                    // transfer without actuation.
+                                    handle.report_send_outcome(
+                                        operation_id,
+                                        crate::workspace_send::SendDrainOutcome::Refused,
+                                    );
+                                }
                             }
                         }
                     }
@@ -2135,6 +2611,44 @@ mod native {
                     handle.release_select_after_drain();
                     match outcome {
                         Ok((effect, reaped)) => {
+                            // Trailing append proof: the single take captures
+                            // the runtime-created SID for lifecycle ownership
+                            // (bounded shutdown removes it once proven empty
+                            // and inactive) AND the exact rows for the engine
+                            // binding. Adoption failures never mutate
+                            // ownership; the select stays applied and the core
+                            // feedback below still settles under the claim
+                            // identity. A reuse (no append) proves nothing.
+                            if let Some(proof) = select_state.take_trailing_proof() {
+                                if let Err(reason) = trailing_lifecycle.adopt_created(proof.created)
+                                {
+                                    eprintln!(
+                                        "tiler-macos dev trailing adopt sid={} refused reason={} complete=true",
+                                        proof.created, reason,
+                                    );
+                                }
+                                match trailing_token.as_deref() {
+                                    Some(token) => {
+                                        handle.submit_trailing_proof(
+                                            token,
+                                            &proof.display_id,
+                                            proof.created,
+                                            &proof.before,
+                                            &proof.after,
+                                        );
+                                        eprintln!(
+                                            "tiler-macos dev trailing bound token={} sid={} complete=true",
+                                            token, proof.created,
+                                        );
+                                    }
+                                    None => {
+                                        eprintln!(
+                                            "tiler-macos dev trailing unbound sid={} complete=true",
+                                            proof.created,
+                                        );
+                                    }
+                                }
+                            }
                             eprintln!(
                                 "tiler-macos dev select action={} changed={} caffeinate_reaped={} complete=true",
                                 id, effect.changed, reaped,
@@ -2147,6 +2661,35 @@ mod native {
                             }
                         }
                         Err(reason) => {
+                            // The select failed or read back ambiguous AFTER
+                            // a verified append: the Space persists, so its
+                            // SID adopts here (captured at append time, not
+                            // from the failed effect) and its proof still
+                            // binds the engine token - the append proof
+                            // stands even though the select did not.
+                            if let Some(proof) = select_state.take_trailing_proof() {
+                                if let Err(adopt_reason) =
+                                    trailing_lifecycle.adopt_created(proof.created)
+                                {
+                                    eprintln!(
+                                        "tiler-macos dev trailing adopt sid={} refused reason={} complete=true",
+                                        proof.created, adopt_reason,
+                                    );
+                                }
+                                if let Some(token) = trailing_token.as_deref() {
+                                    handle.submit_trailing_proof(
+                                        token,
+                                        &proof.display_id,
+                                        proof.created,
+                                        &proof.before,
+                                        &proof.after,
+                                    );
+                                    eprintln!(
+                                        "tiler-macos dev trailing bound token={} sid={} complete=true",
+                                        token, proof.created,
+                                    );
+                                }
+                            }
                             eprintln!(
                                 "tiler-macos dev select action={} refused reason={} complete=false",
                                 id, reason,
@@ -2167,7 +2710,25 @@ mod native {
             // past-nine positions all refuse before any backend touch, and
             // the rest submit through the guarded engine lane with their
             // immutable binding (same gates, same verified arrival — never
-            // a stale index select).
+            // a stale index select). Diagnostic-only trailing-click
+            // injection (single-shot): the actual rendered trailing
+            // binding loops back through the click channel ahead of this
+            // drain, which still fences it fresh below.
+            if request.diag_trailing_click && !diag_trailing_injected {
+                match indicator.diag_inject_rendered_trailing() {
+                    Ok(line) => {
+                        eprintln!("{line}");
+                        diag_trailing_injected = true;
+                    }
+                    Err(_) => {
+                        // No live trailing slot yet (or the channel is
+                        // full): retry next tick, still exactly one
+                        // injection per run. Silence keeps the cadence
+                        // log bounded; the render lines carry the slot
+                        // evidence meanwhile.
+                    }
+                }
+            }
             if indicator.armed()
                 && let Some(live) = last_snapshot.as_ref()
                 && let Ok(row) = crate::workspace_select::user_row_from_rows(&live.rows, 0)
@@ -2304,17 +2865,128 @@ mod native {
         // owner may have actuated, proven-refused otherwise) so the core
         // never retains a transfer the drain abandoned. Runs before the
         // runtime shutdown so the feedback still enqueues.
-        if let Some(settle) = send_controller.shutdown() {
-            let outcome = crate::workspace_send::send_drain_outcome_for(settle.outcome);
-            if outcome == crate::workspace_send::SendDrainOutcome::Applied {
-                select_state.note_arrival(&settle.display, settle.from);
+        if let Some(outcome) = send_controller.shutdown() {
+            match outcome {
+                crate::workspace_send::ShutdownOutcome::Settle(settle) => {
+                    let outcome = crate::workspace_send::send_drain_outcome_for(settle.outcome);
+                    if crate::workspace_send::should_note_history(outcome, settle.follow) {
+                        select_state.note_arrival(&settle.display, settle.from);
+                    }
+                    // Terminal trailing creation adopts here too (same
+                    // ownership rule as the live settle: the Space
+                    // persists); the binding forwards only with a token.
+                    if let Some(proof) = settle.trailing.as_ref() {
+                        if let Some(created) = proof.created
+                            && let Err(reason) = trailing_lifecycle.adopt_created(created)
+                        {
+                            eprintln!(
+                                "tiler-macos dev trailing adopt sid={created} refused reason={reason} complete=true",
+                            );
+                        }
+                        if let Some(binding) = proof.binding.as_ref() {
+                            handle.submit_trailing_proof(
+                                &binding.token,
+                                &binding.display_id,
+                                binding.created,
+                                &binding.before,
+                                &binding.after,
+                            );
+                            eprintln!(
+                                "tiler-macos dev trailing bound token={} sid={} complete=true",
+                                binding.token, binding.created,
+                            );
+                        }
+                    }
+                    eprintln!(
+                        "tiler-macos send settled at shutdown target={} outcome={:?} complete=true",
+                        settle.target.target_sid(),
+                        outcome,
+                    );
+                    handle.report_send_outcome(settle.target.operation_id(), outcome);
+                }
+                crate::workspace_send::ShutdownOutcome::TrailingRefusal(refusal) => {
+                    // Preparation never bound a target: feedback-only
+                    // settlement under the operation identity, no history.
+                    eprintln!(
+                        "tiler-macos send trailing refused at shutdown outcome={:?} complete=true",
+                        refusal.outcome,
+                    );
+                    handle.report_send_outcome(&refusal.operation_id, refusal.outcome);
+                }
             }
-            eprintln!(
-                "tiler-macos send settled at shutdown target={} outcome={:?} complete=true",
-                settle.target.target_sid(),
-                outcome,
+        }
+        // Trailing shutdown cleanup (bounded, main thread only): each
+        // removal re-proves fresh — one fresh native row plus fresh
+        // per-SID emptiness proof per iteration, then at most one verified
+        // removal via the verified remover (which itself re-verifies
+        // emptiness and row identity per SID) before forgetting it. A row
+        // that moved under an earlier removal re-plans instead of removing
+        // under a stale plan. Never replays uncertain removal: occupied,
+        // current-owned, unknown-emptiness, absent, and below-floor SIDs all
+        // report residue and stay owned; a failed removal logs residue and
+        // stops (budget or drift will not clear on retry in the same
+        // shutdown). No MC effects run here when the fresh row is
+        // unreadable. Runs before the runtime shutdown so no engine/AppKit
+        // work is in flight.
+        if !trailing_lifecycle.owned().is_empty() {
+            let mut budget = crate::mc_probe::ActionBudget::new(
+                crate::workspace_select::TRAILING_CLEANUP_BUDGET_SECS,
             );
-            handle.report_send_outcome(settle.target.operation_id(), outcome);
+            let mut dispatched = false;
+            for _ in 0..trailing_lifecycle.owned().len() {
+                let row = match snapshot_live() {
+                    Ok(snapshot) => {
+                        match crate::workspace_select::user_row_from_rows(&snapshot.rows, 0) {
+                            Ok(row) => row,
+                            Err(reason) => {
+                                eprintln!(
+                                    "tiler-macos dev trailing cleanup skipped reason={} complete=true",
+                                    reason,
+                                );
+                                break;
+                            }
+                        }
+                    }
+                    Err(reason) => {
+                        eprintln!(
+                            "tiler-macos dev trailing cleanup skipped reason={} complete=true",
+                            reason,
+                        );
+                        break;
+                    }
+                };
+                let (removable, residue) =
+                    trailing_lifecycle.cleanup_plan(&row.spaces, row.current, &|sid| {
+                        crate::workspace_select::trailing_emptiness(sid, 0)
+                    });
+                for sid in &residue {
+                    eprintln!(
+                        "tiler-macos dev trailing residue sid={} reason={} complete=true",
+                        sid.0, sid.1,
+                    );
+                }
+                let Some(sid) = removable.into_iter().next() else {
+                    break;
+                };
+                match crate::mc_lifecycle::remove_sid_verified(
+                    sid,
+                    &mut budget,
+                    false,
+                    &mut dispatched,
+                ) {
+                    Ok(_) => {
+                        let _ = trailing_lifecycle.release_removed(sid);
+                        eprintln!("tiler-macos dev trailing removed sid={} complete=true", sid,);
+                    }
+                    Err(reason) => {
+                        eprintln!(
+                            "tiler-macos dev trailing residue sid={} reason={} complete=true",
+                            sid, reason,
+                        );
+                        break;
+                    }
+                }
+            }
         }
         let report = handle.shutdown(SHUTDOWN_BOUND);
         let diagnostics = handle.diagnostics();
@@ -2536,6 +3208,8 @@ mod tests {
             border: ActiveBorderOptions::default(),
             drag: crate::drag_drop::DragOptions::default(),
             indicator: crate::workspace_indicator::IndicatorOptions::default(),
+            diag_stay: None,
+            diag_trailing_click: false,
         }
     }
 
@@ -2554,6 +3228,8 @@ mod tests {
             border: ActiveBorderOptions::default(),
             drag: crate::drag_drop::DragOptions::default(),
             indicator: crate::workspace_indicator::IndicatorOptions::default(),
+            diag_stay: None,
+            diag_trailing_click: false,
         }
     }
 
@@ -2673,6 +3349,162 @@ mod tests {
         ] {
             assert!(request(&[scope]).validate().is_err(), "{scope}");
         }
+    }
+
+    #[test]
+    fn diag_stay_binding_carries_fixed_shift_alt_digit_stay() {
+        // Fixed diagnostic shape: Desktop 1 and 2 only, digit keycode with
+        // the Shift+Alt arms, stay (follow: false) action. Everything else
+        // has no binding.
+        for index in [1u8, 2] {
+            let binding = diag_stay_binding(index).unwrap();
+            assert_eq!(
+                binding.key_code,
+                crate::desktop_shortcuts::desktop_digit_keycode(u32::from(index)).unwrap(),
+                "index {index}"
+            );
+            assert!((binding.shift, binding.alt, binding.aux) == (true, true, false));
+            assert_eq!(
+                binding.action,
+                crate::runtime_types::InputSemanticAction::WorkspaceSend {
+                    index,
+                    follow: false
+                },
+                "index {index}"
+            );
+            assert!(binding.validate().is_ok());
+        }
+        for index in [0u8, 3, 9, 10, 255] {
+            assert!(diag_stay_binding(index).is_none(), "index {index}");
+        }
+    }
+
+    #[test]
+    fn diag_stay_chord_is_duplicate_free_in_effective_catalogue() {
+        // The Shift+Alt+digit shape shares no effective chord with the
+        // product table: digits only carry the plain select and Shifted
+        // send shapes. Pinned under both presets for the Ctrl role (the
+        // live harness role), and the config validator admits the combined
+        // table.
+        for preset in [InputPreset::Authentic, InputPreset::Compatible] {
+            let catalogue = crate::input_policy::effective_bindings(
+                preset,
+                ProbeModifier::Ctrl,
+                &product_catalogue(),
+            );
+            for index in [1u8, 2] {
+                let binding = diag_stay_binding(index).unwrap();
+                let want =
+                    crate::workspace_input::effective_flags_for(ProbeModifier::Ctrl, &binding);
+                assert!(
+                    !catalogue.iter().any(|existing| {
+                        existing.key_code == binding.key_code
+                            && crate::workspace_input::effective_flags_for(
+                                ProbeModifier::Ctrl,
+                                existing,
+                            ) == want
+                    }),
+                    "{preset:?} index {index}"
+                );
+                let mut combined = catalogue.clone();
+                combined.push(binding);
+                assert!(
+                    crate::runtime_types::RuntimeConfig {
+                        tile_bindings: Some(combined),
+                        ..crate::runtime_types::RuntimeConfig::default()
+                    }
+                    .validate()
+                    .is_ok(),
+                    "{preset:?} index {index}"
+                );
+            }
+        }
+        // The Alt Ctrl-role collapses the Shift arm onto the send shape
+        // (same key, same effective flags): the validator refuses there, so
+        // the harness stays on roles where the chord is provably free.
+        let (alt_base, _) = crate::input::cg_flag_bits(ProbeModifier::Alt);
+        let diag_flags =
+            alt_base | crate::native_input::CG_SHIFT_BIT | crate::native_input::CG_ALT_BIT;
+        let send_flags = alt_base | crate::native_input::CG_SHIFT_BIT;
+        assert_eq!(
+            diag_flags, send_flags,
+            "Alt-role collapse documents the refusal"
+        );
+    }
+
+    #[test]
+    fn diag_stay_validate_gates_textedit_tap_only() {
+        // Valid harness: TextEdit-only scoped tap run with a finite
+        // lifetime under the Ctrl role.
+        let mut r = request(&["com.apple.TextEdit"]);
+        r.modifier = ProbeModifier::Ctrl;
+        r.diag_stay = Some(2);
+        assert!(r.validate().is_ok());
+        // Index 1 validates too (the inverse leg); anything else refuses.
+        r.diag_stay = Some(1);
+        assert!(r.validate().is_ok());
+        for index in [0u8, 3, 9] {
+            r.diag_stay = Some(index);
+            assert!(r.validate().is_err(), "index {index}");
+        }
+        // Non-tap routes refuse (no off-route injection).
+        r.diag_stay = Some(2);
+        r.input = TileInput::Off;
+        assert!(r.validate().is_err());
+        r.input = TileInput::Tap;
+        // Unscoped refuses (no ordinary-app input authority).
+        r.unscoped = true;
+        assert!(r.validate().is_err());
+        r.unscoped = false;
+        // Non-TextEdit and multi scopes refuse (TextEdit-only).
+        r.scopes = vec!["com.apple.Calculator".to_owned()];
+        assert!(r.validate().is_err());
+        r.scopes = vec![
+            "com.apple.TextEdit".to_owned(),
+            "com.apple.Calculator".to_owned(),
+        ];
+        assert!(r.validate().is_err());
+        r.scopes = vec!["com.apple.TextEdit".to_owned()];
+        assert!(r.validate().is_ok());
+        // The Alt Ctrl-role collides with the send shape (same effective
+        // flags): refused as a duplicate, never silently rebound.
+        r.modifier = ProbeModifier::Alt;
+        assert!(r.validate().is_err());
+        r.modifier = ProbeModifier::Ctrl;
+        assert!(r.validate().is_ok());
+        // Absent injection leaves every existing validation unchanged.
+        r.diag_stay = None;
+        assert!(r.validate().is_ok());
+    }
+
+    #[test]
+    fn diag_trailing_click_validate_gates_textedit_tap_only() {
+        // Valid harness: TextEdit-only scoped tap run with a finite
+        // lifetime (no chord involved, so any preset/modifier validates).
+        let mut r = request(&["com.apple.TextEdit"]);
+        r.diag_trailing_click = true;
+        assert!(r.validate().is_ok());
+        // Non-tap routes refuse (no off-route injection).
+        r.input = TileInput::Off;
+        assert!(r.validate().is_err());
+        r.input = TileInput::Tap;
+        // Unscoped refuses (no ordinary-app input authority).
+        r.unscoped = true;
+        assert!(r.validate().is_err());
+        r.unscoped = false;
+        // Non-TextEdit and multi scopes refuse (TextEdit-only).
+        r.scopes = vec!["com.apple.Calculator".to_owned()];
+        assert!(r.validate().is_err());
+        r.scopes = vec![
+            "com.apple.TextEdit".to_owned(),
+            "com.apple.Calculator".to_owned(),
+        ];
+        assert!(r.validate().is_err());
+        r.scopes = vec!["com.apple.TextEdit".to_owned()];
+        assert!(r.validate().is_ok());
+        // Absent injection leaves every existing validation unchanged.
+        r.diag_trailing_click = false;
+        assert!(r.validate().is_ok());
     }
 
     #[test]

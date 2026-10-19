@@ -647,9 +647,11 @@ fn textedit_post_parses_with_record_identity_and_owned_chords() {
         "textedit-post posts input and must be write-intent"
     );
     assert!(matches!(r.command, Command::TextEditPost { .. }));
-    // The product tap test transport parses: send-1..9 and select-1..9.
+    // The product tap test transport parses: send-1..9 and select-1..9,
+    // plus the diagnostic-only stays and trailing chords.
     for chord in [
-        "send-1", "send-2", "select-1", "select-2", "focus-h", "float-g", "escape",
+        "send-1", "send-2", "select-1", "select-2", "focus-h", "float-g", "escape", "stay-1",
+        "stay-2", "select-0", "send-0",
     ] {
         let r = parse_args(&argv(&[
             "textedit-post",
@@ -664,12 +666,12 @@ fn textedit_post_parses_with_record_identity_and_owned_chords() {
         assert!(matches!(r.command, Command::TextEditPost { .. }), "{chord}");
         assert!(r.may_mutate, "{chord} is write-intent");
     }
-    // Unarmed and unknown chords never parse (no new arm is introduced:
-    // `escape` is the single diagnostic-only exception above; everything
-    // else still refuses).
+    // Still-unarmed and unknown chords never parse (no generic arm is
+    // introduced: `escape`, the stays, and the trailing chords are the
+    // diagnostic-only exceptions above; everything else still refuses).
     for bad in [
-        "select-0",
-        "send-0",
+        "stay-0",
+        "stay-3",
         "focus-up",
         "workspace-select-1",
         "ctrl-h",
@@ -1546,6 +1548,81 @@ fn tile_never_implies_scope_or_start() {
     // Unknown flags refuse at parse time.
     assert!(parse_args(&argv(&["tile", "--user-start", "--scope", "x", "--bogus"])).is_err());
     assert!(parse_args(&argv(&["tile", "--scope"])).is_err());
+}
+
+#[test]
+fn tile_diag_stay_index_parses_and_defaults_to_none() {
+    // Absent flag: no injection (product table unchanged).
+    let r = parse_args(&argv(&["tile", "--user-start", "--scope", "x"])).unwrap();
+    assert!(matches!(
+        r.command,
+        Command::Tile {
+            diag_stay: None,
+            ..
+        }
+    ));
+    // Explicit index parses through (bounds gate in tile validation).
+    for index in [1u8, 2] {
+        let r = parse_args(&argv(&[
+            "tile",
+            "--user-start",
+            "--scope",
+            "com.apple.TextEdit",
+            "--input",
+            "tap",
+            "--diag-stay-index",
+            &index.to_string(),
+        ]))
+        .unwrap();
+        assert!(
+            matches!(r.command, Command::Tile { diag_stay: Some(got), .. } if got == index),
+            "index {index}"
+        );
+    }
+    // Missing value and non-numeric values refuse at parse time.
+    assert!(parse_args(&argv(&["tile", "--user-start", "--diag-stay-index"])).is_err());
+    assert!(
+        parse_args(&argv(&[
+            "tile",
+            "--user-start",
+            "--scope",
+            "x",
+            "--diag-stay-index",
+            "two"
+        ]))
+        .is_err()
+    );
+}
+
+#[test]
+fn tile_diag_trailing_click_parses_and_defaults_to_off() {
+    // Absent flag: no injection (product drain unchanged).
+    let r = parse_args(&argv(&["tile", "--user-start", "--scope", "x"])).unwrap();
+    assert!(matches!(
+        r.command,
+        Command::Tile {
+            diag_trailing_click: false,
+            ..
+        }
+    ));
+    // Explicit flag parses through (scope/input gates in tile validation).
+    let r = parse_args(&argv(&[
+        "tile",
+        "--user-start",
+        "--scope",
+        "com.apple.TextEdit",
+        "--input",
+        "tap",
+        "--diag-trailing-click",
+    ]))
+    .unwrap();
+    assert!(matches!(
+        r.command,
+        Command::Tile {
+            diag_trailing_click: true,
+            ..
+        }
+    ));
 }
 
 #[test]

@@ -2703,7 +2703,7 @@ fn select_enqueues_without_focus_and_serializes_concurrent_presses() {
     // claimed refuses busy instead of overlapping — never replayed.
     use tiler_macos::runtime::InputSemanticAction as Action;
     let bindings = select_product_bindings();
-    assert_eq!(bindings.len(), 52, "34 basic + 18 armed selects");
+    assert_eq!(bindings.len(), 53, "34 basic + 19 armed selects");
     let fixture = start(select_config(bindings.clone()));
     fixture
         .handle
@@ -2743,11 +2743,14 @@ fn select_enqueues_without_focus_and_serializes_concurrent_presses() {
 
 #[test]
 fn unarmed_workspace_rows_refuse_without_dispatch() {
-    // Test-only over-arming (the product never arms these): trailing
-    // select-0, trailing send-0, stay-1, relative send, and output send
-    // still refuse engine-side with their honest tokens and never enqueue
-    // — the engine is the backstop. Numbered send-follow 1..9 is armed in
-    // product and dispatches (covered by the send-claim test below). No
+    // Test-only over-arming (the product never arms these): relative send
+    // and output send still refuse engine-side with their honest tokens
+    // and never enqueue - the engine is the backstop. Trailing select-0
+    // and send-0 follow are armed in product and dispatch (covered by the
+    // send-claim test below for sends and the select unit lanes for
+    // select-0), so they stay out of this unarmed set. Numbered sends
+    // 0..9 follow plus 1..9 stay are armed in
+    // product and dispatch (covered by the send-claim test below). No
     // planner dispatch runs for the unsupported rows: no claim enqueues,
     // no world command is forwarded.
     use tiler_macos::runtime::InputDirection;
@@ -2756,38 +2759,16 @@ fn unarmed_workspace_rows_refuse_without_dispatch() {
     bindings.extend(
         tiler_macos::workspace_input::workspace_catalogue()
             .into_iter()
-            .filter(|row| {
-                matches!(
-                    row.id,
-                    "workspace-select-0" | "workspace-send-0" | "send-prev-h" | "send-output-left"
-                )
-            })
+            .filter(|row| matches!(row.id, "send-prev-h" | "send-output-left"))
             .filter_map(|row| row.binding()),
     );
-    // Product arms numbered send-follow 1..9 (not over-armed here).
-    assert_eq!(tiler_macos::workspace_send::bindings().len(), 9);
+    // Product arms numbered send-follow 0..9 (not over-armed here).
+    assert_eq!(tiler_macos::workspace_send::bindings().len(), 10);
     let fixture = start(select_config(bindings.clone()));
     fixture
         .handle
         .update_topology_with(two_space_snapshot(), &user_space);
-    send_select_chord(&fixture, &bindings, Action::WorkspaceSelect { index: 0 });
-    wait_diagnostics(
-        &fixture.handle,
-        |d| {
-            d.input_refused_unsupported == 1
-                && log_has(
-                    &fixture.handle,
-                    "input",
-                    "refused-workspace-switch-unsupported",
-                )
-        },
-        "trailing select-0 refused",
-    );
     for action in [
-        Action::WorkspaceSend {
-            index: 0,
-            follow: true,
-        },
         Action::WorkspaceSendRelative {
             prev: true,
             follow: true,
@@ -2799,10 +2780,12 @@ fn unarmed_workspace_rows_refuse_without_dispatch() {
     ] {
         send_select_chord(&fixture, &bindings, action.clone());
     }
-    // Stay rows are bindable-unbound (no chord): refuse via direct submit.
+    // Stay rows are bindable-unbound (no chord): trailing stay-0 refuses
+    // via direct submit (numbered stays 1..9 are armed and dispatch, so
+    // they stay out of this unarmed set).
     assert_eq!(
         fixture.handle.submit_input_action(Action::WorkspaceSend {
-            index: 1,
+            index: 0,
             follow: false
         }),
         SubmitOutcome::Accepted
@@ -2810,7 +2793,7 @@ fn unarmed_workspace_rows_refuse_without_dispatch() {
     wait_diagnostics(
         &fixture.handle,
         |d| {
-            d.input_refused_unsupported == 5
+            d.input_refused_unsupported == 3
                 && log_has(
                     &fixture.handle,
                     "input",
@@ -2862,7 +2845,7 @@ fn numbered_send_hotkey_claim_settles_transfer_end_to_end() {
     use tiler_macos::workspace_send::SendDrainOutcome;
     let mut bindings = select_product_bindings();
     bindings.extend(tiler_macos::workspace_send::bindings());
-    assert_eq!(bindings.len(), 61, "34 basic + 18 selects + 9 sends");
+    assert_eq!(bindings.len(), 63, "34 basic + 19 selects + 10 sends");
     let fixture = start(select_config(bindings.clone()));
     let revision = fixture
         .handle

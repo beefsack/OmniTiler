@@ -13,6 +13,7 @@ use crate::engine::Engine;
 use crate::ids::{CorrelationId, OwnerId};
 use crate::seed::EngineWindow;
 use crate::session::DomainKey;
+use crate::session::RefusalKind;
 use crate::workspace_scope::{TrailingSelection, resolve_numbered, resolve_trailing};
 use crate::world_commands::CommandApplied;
 use crate::world_engine::{
@@ -165,8 +166,15 @@ impl WorldEngine {
             output: target_output.clone(),
             workspace: crate::directional::WorkspaceId(target_workspace.to_owned()),
         };
+        // Same-domain sends are honest unchanged no-ops (shared-core
+        // `RefusalKind::Unchanged`, no plan): never a native transfer,
+        // never a mistargeted failure. This shortcut returns exactly the
+        // verdict the Engine ordinary transfer below would produce.
         if target_key == source_key {
-            return Err((KIND_SEND_TARGET, MSG_SEND_TARGET));
+            return Err((
+                RefusalKind::Unchanged.as_str(),
+                RefusalKind::Unchanged.message(),
+            ));
         }
         if held_scopes.contains(&source_key) || held_scopes.contains(&target_key) {
             return Err((KIND_SCOPE_HELD, MSG_SCOPE_HELD));

@@ -1,5 +1,6 @@
 #![cfg(test)]
 use crate::runtime_types::InputSemanticAction as Action;
+use crate::workspace_input::TRAILING_CAPABILITY_ENABLED;
 use crate::workspace_select::*;
 
 struct Fake {
@@ -46,7 +47,17 @@ impl SelectionBackend for Fake {
     fn create(&mut self, _: &SelectionSnapshot) -> Result<(), String> {
         self.creates += 1;
         if self.effect {
-            self.row.spaces.push(21);
+            // Append a fresh SID per leg (21 first, then 22, ...): a second
+            // trailing on an occupied append proves one create per leg
+            // without duplicating the first SID.
+            let next = if !self.row.spaces.contains(&21) {
+                21
+            } else if !self.row.spaces.contains(&22) {
+                22
+            } else {
+                self.row.spaces.iter().max().copied().unwrap_or(22) + 1
+            };
+            self.row.spaces.push(next);
         }
         if self.drift {
             self.row.spaces.swap(0, 1);
@@ -124,6 +135,368 @@ fn trailing_reuses_empty_but_appends_when_occupied_or_below_shared_floor() {
         assert_eq!(effect.created, if creates == 0 { None } else { Some(21) });
     }
 }
+
+#[test]
+fn trailing_failed_select_still_reports_created_for_lifecycle_adoption() {
+    // The append is verified (exact same-display append) but the follow-up
+    // select fails: the Space persists, so `take_trailing_proof` still reports the
+    // exact-created SID for lifecycle ownership (the tile adopts on both
+    // outcomes). The drift here breaks the pre-select topology check after
+    // the verified append — the single append already ran exactly once.
+    struct FailSelect {
+        inner: Fake,
+    }
+    impl SelectionBackend for FailSelect {
+        fn display_count(&mut self) -> Result<usize, String> {
+            self.inner.display_count()
+        }
+        fn snapshot(&mut self) -> Result<SelectionSnapshot, String> {
+            self.inner.snapshot()
+        }
+        fn revision(&mut self) -> Option<u64> {
+            self.inner.revision()
+        }
+        fn empty(&mut self, sid: u64) -> Result<bool, String> {
+            self.inner.empty(sid)
+        }
+        fn create(&mut self, before: &SelectionSnapshot) -> Result<(), String> {
+            self.inner.create(before)
+        }
+        fn select(&mut self, _: &SelectionSnapshot, _: u64) -> Result<(), String> {
+            Err("goto failed".to_owned())
+        }
+    }
+    let mut backend = FailSelect {
+        inner: Fake {
+            row: SelectionSnapshot {
+                display: "display-a".to_owned(),
+                spaces: vec![1, 277],
+                current: 1,
+            },
+            empty: Ok(false),
+            ..Fake::default()
+        },
+    };
+    let mut state = SelectionState::default();
+    let err = state
+        .execute(&mut backend, Action::WorkspaceSelect { index: 0 })
+        .expect_err("failed goto refuses");
+    assert!(err.contains("goto failed"), "{err}");
+    assert_eq!(
+        backend.inner.creates, 1,
+        "exactly one append, never replayed"
+    );
+    // Ownership capture even though the effect failed: the created Space
+    // is real and must enter lifecycle tracking, and its exact-append
+    // proof must still bind the engine token.
+    let proof = state.take_trailing_proof().expect("proof captured");
+    assert_eq!(proof.created, 21);
+    assert_eq!(proof.display_id, "display-a");
+    assert_eq!(proof.before, vec![1, 277]);
+    assert_eq!(proof.after, vec![1, 277, 21]);
+    assert!(
+        state.take_trailing_proof().is_none(),
+        "taking clears the slot"
+    );
+}
+
+#[test]
+fn trailing_reuse_current_empty_is_same_current_noop() {
+    // Producer-shaped native row `[1, 277]` current on the trailing empty:
+    // selecting trailing reuses last with no create, no dispatch, unchanged.
+    let mut fake = Fake {
+        row: SelectionSnapshot {
+            display: "display-a".to_owned(),
+            spaces: vec![1, 277],
+            current: 277,
+        },
+        empty: Ok(true),
+        ..Fake::default()
+    };
+    let effect = SelectionState::default()
+        .execute(&mut fake, Action::WorkspaceSelect { index: 0 })
+        .unwrap();
+    assert_eq!(effect.target, 277);
+    assert_eq!(effect.created, None);
+    assert!(!effect.changed);
+    assert_eq!(fake.creates, 0);
+    assert!(fake.selects.is_empty(), "same-current never dispatches");
+}
+
+#[test]
+fn trailing_reuse_noncurrent_empty_selects_without_create() {
+    // `[1, 277]` current 1, last proven empty: reuse 277 with one dispatch.
+    let mut fake = Fake {
+        row: SelectionSnapshot {
+            display: "display-a".to_owned(),
+            spaces: vec![1, 277],
+            current: 1,
+        },
+        empty: Ok(true),
+        ..Fake::default()
+    };
+    let effect = SelectionState::default()
+        .execute(&mut fake, Action::WorkspaceSelect { index: 0 })
+        .unwrap();
+    assert_eq!(effect.target, 277);
+    assert_eq!(effect.created, None);
+    assert!(effect.changed);
+    assert_eq!(fake.creates, 0);
+    assert_eq!(fake.selects, vec![277], "single dispatch, never replayed");
+}
+
+#[test]
+fn trailing_occupied_appends_once_then_subsequent_occupied_appends_again() {
+    // First trailing on occupied `[1, 277]` appends exactly one SID.
+    let mut fake = Fake {
+        row: SelectionSnapshot {
+            display: "display-a".to_owned(),
+            spaces: vec![1, 277],
+            current: 1,
+        },
+        empty: Ok(false),
+        ..Fake::default()
+    };
+    let first = SelectionState::default()
+        .execute(&mut fake, Action::WorkspaceSelect { index: 0 })
+        .unwrap();
+    assert_eq!(first.created, Some(21));
+    assert_eq!(first.target, 21);
+    assert_eq!(fake.creates, 1);
+    // The appended trailing is now occupied too: a second trailing appends
+    // again (exact append, never a guess), proving no double-create per leg.
+    fake.empty = Ok(false);
+    let second = SelectionState::default()
+        .execute(&mut fake, Action::WorkspaceSelect { index: 0 })
+        .unwrap();
+    assert_eq!(fake.creates, 2, "one create per trailing leg");
+    assert_eq!(second.target, *fake.row.spaces.last().unwrap());
+    assert!(second.created.is_some());
+}
+
+#[test]
+fn trailing_unknown_emptiness_refuses_without_create_or_dispatch() {
+    for empty in [
+        Err("unreadable".to_owned()),
+        Err("trailing emptiness unknown: zero-area/unreadable candidate WID7/PID77".to_owned()),
+    ] {
+        let mut fake = Fake {
+            row: SelectionSnapshot {
+                display: "display-a".to_owned(),
+                spaces: vec![1, 277],
+                current: 1,
+            },
+            empty,
+            ..Fake::default()
+        };
+        let err = SelectionState::default()
+            .execute(&mut fake, Action::WorkspaceSelect { index: 0 })
+            .expect_err("unknown refuses");
+        assert!(
+            err.contains("unreadable") || err.contains("unknown"),
+            "{err}"
+        );
+        assert_eq!(fake.creates, 0, "unknown never appends");
+        assert!(fake.selects.is_empty(), "unknown never dispatches");
+    }
+}
+
+#[test]
+fn trailing_lifecycle_owns_only_created_proven_empty_never_baseline() {
+    // Baseline `[1, 277]` (Space277 preexisting keep); runtime creates 21.
+    let mut life = TrailingLifecycle::new(&[1, 277]);
+    assert!(life.adopt_created(1).is_err(), "baseline never owned");
+    assert!(
+        life.adopt_created(277).is_err(),
+        "preexisting 277 never owned"
+    );
+    assert!(life.adopt_created(0).is_err(), "zero never adopted");
+    life.adopt_created(21).expect("created adopts");
+    assert!(life.adopt_created(21).is_err(), "double adopt refuses");
+    assert_eq!(life.owned(), &[21]);
+    // Proven empty, non-current: eligible.
+    let (remove, residue) = life.cleanup_plan(&[1, 277, 21], 1, &|_| Ok(true));
+    assert_eq!(remove, vec![21]);
+    assert!(residue.is_empty(), "{residue:?}");
+    // Occupied owned: residue, never removed.
+    let (remove, residue) = life.cleanup_plan(&[1, 277, 21], 1, &|_| Ok(false));
+    assert!(remove.is_empty());
+    assert_eq!(residue.len(), 1, "foreign/occupied chrome blocks");
+    // Unknown emptiness (foreign chrome ambiguity): residue, never removed.
+    let (remove, residue) =
+        life.cleanup_plan(&[1, 277, 21], 1, &|_| Err("members unreadable".to_owned()));
+    assert!(remove.is_empty());
+    assert!(residue[0].1.contains("unknown"), "{residue:?}");
+    // Current-owned: never removed even when proven empty.
+    let (remove, residue) = life.cleanup_plan(&[1, 277, 21], 21, &|_| Ok(true));
+    assert!(remove.is_empty());
+    assert!(residue[0].1.contains("current"), "{residue:?}");
+    // Non-owned SID in the row: never touched (no removal, honest residue
+    // for the absent owned SID).
+    let (remove, residue) = life.cleanup_plan(&[1, 277, 99], 1, &|_| Ok(true));
+    assert!(remove.is_empty(), "non-owned never removed");
+    assert_eq!(
+        residue.len(),
+        1,
+        "absent owned reports residue: {residue:?}"
+    );
+    assert!(residue[0].1.contains("absent"), "{residue:?}");
+    // Below-floor protection: owned empty but removal would breach MIN.
+    let small = TrailingLifecycle::new(&[1]);
+    let mut small = small;
+    small.adopt_created(21).unwrap();
+    let (remove, residue) = small.cleanup_plan(&[1, 21], 1, &|_| Ok(true));
+    assert!(remove.is_empty(), "MIN floor holds");
+    assert!(!residue.is_empty());
+    // Release after verified removal forgets narrowly; unknown refuses.
+    life.release_removed(21).expect("release owned");
+    assert!(life.owned().is_empty());
+    assert!(life.release_removed(21).is_err(), "double release refuses");
+    assert!(life.release_removed(99).is_err(), "non-owned refuses");
+}
+
+#[test]
+fn trailing_drain_armed_offline_proves_gates_display_and_arrival() {
+    // Capability-disabled pin (explicit `false`): trailing refuses with
+    // no backend touch. Production is armed (gate `true`): the same drain
+    // reuses the proven-empty last below.
+    let mut fake = Fake {
+        row: SelectionSnapshot {
+            display: "display-a".to_owned(),
+            spaces: vec![1, 277],
+            current: 1,
+        },
+        empty: Ok(true),
+        ..Fake::default()
+    };
+    let mut state = SelectionState::default();
+    let err = drain_claimed_select_with(
+        &mut state,
+        &mut fake,
+        crate::runtime_types::ClaimedSelect::tap(Action::WorkspaceSelect { index: 0 }),
+        &open_gates(),
+        false,
+    )
+    .expect_err("capability-disabled trailing refuses");
+    assert!(err.contains("unarmed"), "{err}");
+    assert_eq!(fake.creates, 0);
+    assert!(fake.selects.is_empty());
+    // Production admission (gate const): armed trailing drains through
+    // the same route.
+    let mut fake = Fake {
+        row: SelectionSnapshot {
+            display: "display-a".to_owned(),
+            spaces: vec![1, 277],
+            current: 1,
+        },
+        empty: Ok(true),
+        ..Fake::default()
+    };
+    let mut state = SelectionState::default();
+    let effect = drain_claimed_select_with(
+        &mut state,
+        &mut fake,
+        crate::runtime_types::ClaimedSelect::tap(Action::WorkspaceSelect { index: 0 }),
+        &open_gates(),
+        TRAILING_CAPABILITY_ENABLED,
+    )
+    .expect("production trailing armed");
+    assert_eq!(effect.target, 277);
+    assert_eq!(fake.selects, vec![277]);
+    // Explicit local capability through the same production drain: reuse
+    // path drains with verified arrival.
+    let mut fake = Fake {
+        row: SelectionSnapshot {
+            display: "display-a".to_owned(),
+            spaces: vec![1, 277],
+            current: 1,
+        },
+        empty: Ok(true),
+        ..Fake::default()
+    };
+    let mut state = SelectionState::default();
+    let effect = drain_claimed_select_with(
+        &mut state,
+        &mut fake,
+        crate::runtime_types::ClaimedSelect::tap(Action::WorkspaceSelect { index: 0 }),
+        &open_gates(),
+        true,
+    )
+    .expect("armed trailing drains");
+    assert_eq!(effect.target, 277);
+    assert_eq!(fake.selects, vec![277]);
+    // Single-display gate still applies when armed: 2 displays refuse.
+    let mut fake = Fake {
+        row: SelectionSnapshot {
+            display: "display-a".to_owned(),
+            spaces: vec![1, 277],
+            current: 1,
+        },
+        displays: 2,
+        empty: Ok(true),
+        ..Fake::default()
+    };
+    let mut state = SelectionState::default();
+    let err = drain_claimed_select_with(
+        &mut state,
+        &mut fake,
+        crate::runtime_types::ClaimedSelect::tap(Action::WorkspaceSelect { index: 0 }),
+        &open_gates(),
+        true,
+    )
+    .expect_err("multi-display refuses even when armed");
+    assert!(err.contains("exactly one native display"), "{err}");
+    assert!(fake.selects.is_empty());
+}
+
+#[test]
+fn trailing_ownership_adopts_appends_and_releases_verified_removal() {
+    // Full production-path orchestration with fakes: armed drain appends
+    // exactly once on occupied trailing, the lifecycle adopts the created
+    // SID, and the cleanup plan removes it once proven empty and releases
+    // it — never touching the preexisting baseline.
+    let mut fake = Fake {
+        row: SelectionSnapshot {
+            display: "display-a".to_owned(),
+            spaces: vec![1, 277],
+            current: 1,
+        },
+        empty: Ok(false),
+        ..Fake::default()
+    };
+    let mut state = SelectionState::default();
+    let effect = drain_claimed_select_with(
+        &mut state,
+        &mut fake,
+        crate::runtime_types::ClaimedSelect::tap(Action::WorkspaceSelect { index: 0 }),
+        &open_gates(),
+        true,
+    )
+    .expect("occupied trailing appends");
+    let created = effect.created.expect("exact append recorded");
+    let mut life = TrailingLifecycle::new(&[1, 277]);
+    assert!(note_effect_created(&mut life, &effect).expect("adopts"));
+    assert_eq!(life.owned(), &[created]);
+    // Occupied while current work continues: residue, never removed.
+    let (remove, _) = life.cleanup_plan(&fake.row.spaces, 1, &|_| Ok(false));
+    assert!(remove.is_empty());
+    // Proven empty and inactive: the single owned SID removes.
+    let (remove, residue) = life.cleanup_plan(&fake.row.spaces, 1, &|_| Ok(true));
+    assert_eq!(remove, vec![created]);
+    assert!(residue.is_empty(), "{residue:?}");
+    life.release_removed(created)
+        .expect("release verified removal");
+    assert!(life.owned().is_empty());
+    // Baseline SIDs are never adopted through the effect path.
+    let reuse = SelectionEffect {
+        from: 1,
+        target: 277,
+        created: None,
+        changed: true,
+    };
+    assert!(!note_effect_created(&mut life, &reuse).expect("no-op"));
+    assert!(life.owned().is_empty());
+}
 #[test]
 fn unknown_emptiness_create_drift_and_no_effect_refuse_without_replay() {
     let mut fake = Fake {
@@ -181,16 +554,18 @@ fn invalid_rows_deleted_previous_and_other_display_fail_narrowly() {
 }
 #[test]
 fn select_subset_contains_only_armed_numbered_and_auxiliary_arms() {
-    // Product subset: exactly the 18 armed rows (numbered 1-9, the 8
-    // relative rows, previous). The trailing select-0 stays out (no
-    // automatic trailing creation/deletion this milestone).
+    // Product subset: exactly the 19 armed rows (numbered 1-9, trailing
+    // select-0, the 8
+    // relative rows, previous). Never a send chord here.
     let bindings = bindings();
-    assert_eq!(bindings.len(), 18);
-    assert!(
+    assert_eq!(bindings.len(), 19);
+    assert_eq!(
         bindings
             .iter()
-            .all(|b| !matches!(b.action, Action::WorkspaceSelect { index: 0 })),
-        "trailing select-0 never armed"
+            .filter(|b| matches!(b.action, Action::WorkspaceSelect { index: 0 }))
+            .count(),
+        1,
+        "trailing select-0 armed in product"
     );
     assert!(bindings.iter().all(|b| !b.shift && !b.alt));
     for b in &bindings {
@@ -200,6 +575,25 @@ fn select_subset_contains_only_armed_numbered_and_auxiliary_arms() {
     for b in &bindings {
         assert!(crate::workspace_input::is_armed_select(&b.action));
     }
+    // Capability-disabled subset drops exactly the trailing select-0 row.
+    let unarmed = bindings_with(false);
+    assert_eq!(unarmed.len(), 18);
+    assert!(
+        unarmed
+            .iter()
+            .all(|b| !matches!(b.action, Action::WorkspaceSelect { index: 0 })),
+        "capability-disabled trailing select-0 unarmed"
+    );
+    // Capability-enabled subset adds exactly the trailing select-0 row.
+    let armed = bindings_with(true);
+    assert_eq!(armed.len(), 19);
+    assert_eq!(
+        armed
+            .iter()
+            .filter(|b| matches!(b.action, Action::WorkspaceSelect { index: 0 }))
+            .count(),
+        1
+    );
     let mut fake = Fake::default();
     assert!(
         SelectionState::default()
@@ -311,7 +705,6 @@ fn drain_runs_single_dispatch_and_advances_history_only_on_arrival() {
 #[test]
 fn drain_refuses_unarmed_actions_without_backend_touch() {
     for action in [
-        Action::WorkspaceSelect { index: 0 },
         Action::WorkspaceSend {
             index: 1,
             follow: true,
@@ -333,6 +726,21 @@ fn drain_refuses_unarmed_actions_without_backend_touch() {
         assert!(fake.selects.is_empty());
         assert_eq!(fake.creates, 0);
     }
+    // Trailing select-0 is armed in production: the capability-disabled
+    // lane still refuses it with no backend touch.
+    let mut fake = Fake::default();
+    let mut state = SelectionState::default();
+    let err = drain_claimed_select_with(
+        &mut state,
+        &mut fake,
+        crate::runtime_types::ClaimedSelect::tap(Action::WorkspaceSelect { index: 0 }),
+        &open_gates(),
+        false,
+    )
+    .expect_err("capability-disabled drain refuses");
+    assert!(err.contains("unarmed"), "{err}");
+    assert!(fake.selects.is_empty());
+    assert_eq!(fake.creates, 0);
 }
 
 #[test]
@@ -748,8 +1156,20 @@ fn explicit_select_resolves_native_ordinal_once_at_admission() {
     assert_eq!(context_target_sid(&ctx, &output, 10), None);
     assert_eq!(
         select_command(&select(0), output.clone(), "space-1"),
+        Some(WorldCommand::SelectTrailing {
+            output: output.clone()
+        }),
+        "trailing select-0 armed through the capability gate"
+    );
+    assert_eq!(
+        crate::world_command_map::select_command_with_capability(
+            &select(0),
+            output.clone(),
+            "space-1",
+            false
+        ),
         None,
-        "trailing select-0 stays refused"
+        "capability-disabled trailing select-0 has no route"
     );
 
     // Unknown native targets keep their honest core refusal.
@@ -789,4 +1209,52 @@ fn explicit_select_resolves_native_ordinal_once_at_admission() {
     let previous =
         select_command(&Action::WorkspacePrevious, output.clone(), "").expect("previous route");
     assert_eq!(previous, WorldCommand::SelectPrevious { output });
+}
+
+#[test]
+fn trailing_append_captures_exact_proof_once_and_reuse_proves_nothing() {
+    // Occupied trailing appends: the effect and the single proof take
+    // agree on the exact rows, and the take clears the slot.
+    let mut fake = Fake {
+        row: SelectionSnapshot {
+            display: "display-a".to_owned(),
+            spaces: vec![1, 277],
+            current: 1,
+        },
+        empty: Ok(false),
+        ..Fake::default()
+    };
+    let mut state = SelectionState::default();
+    let effect = state
+        .execute(&mut fake, Action::WorkspaceSelect { index: 0 })
+        .expect("occupied trailing appends and selects");
+    assert_eq!(effect.created, Some(21));
+    let proof = state.take_trailing_proof().expect("proof captured");
+    assert_eq!(proof.created, effect.created.unwrap());
+    assert_eq!(proof.display_id, "display-a");
+    assert_eq!(proof.before, vec![1, 277]);
+    assert_eq!(proof.after, vec![1, 277, proof.created]);
+    assert!(
+        state.take_trailing_proof().is_none(),
+        "taking clears the slot"
+    );
+    // Proven-empty reuse: no append, no proof, no lifecycle adoption.
+    let mut fake = Fake {
+        row: SelectionSnapshot {
+            display: "display-a".to_owned(),
+            spaces: vec![1, 277],
+            current: 1,
+        },
+        empty: Ok(true),
+        ..Fake::default()
+    };
+    let mut state = SelectionState::default();
+    let effect = state
+        .execute(&mut fake, Action::WorkspaceSelect { index: 0 })
+        .expect("empty trailing reuses");
+    assert_eq!(effect.created, None);
+    assert!(
+        state.take_trailing_proof().is_none(),
+        "reuse proves nothing"
+    );
 }

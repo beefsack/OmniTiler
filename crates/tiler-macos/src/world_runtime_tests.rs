@@ -62,6 +62,7 @@ fn select_commands_cover_exactly_the_armed_subset() {
     // (never re-resolved core-side through the scoped ring); relative and
     // previous keep their shared core semantics.
     for action in [
+        InputSemanticAction::WorkspaceSelect { index: 0 },
         InputSemanticAction::WorkspaceSelect { index: 1 },
         InputSemanticAction::WorkspaceSelect { index: 9 },
         InputSemanticAction::WorkspaceRelative { prev: true },
@@ -80,11 +81,12 @@ fn select_commands_cover_exactly_the_armed_subset() {
             "{action:?} has a planner route"
         );
     }
-    // Numbered send-follow 1..9 dispatches (never the select route) with
-    // a planner-owned send route; trailing select-0, trailing send-0,
-    // stays, relative sends, and outputs have no dispatch route beyond
-    // their honest refusal.
-    for index in 1..=9u8 {
+    // Numbered send-follow 0..9 plus numbered stays 1..9 dispatch (never
+    // the select route) with a planner-owned send route; trailing
+    // stay-0, relative sends/stays, and outputs
+    // have no dispatch route beyond their honest refusal. Trailing
+    // select-0 dispatches through the select route.
+    for index in 0..=9u8 {
         let action = InputSemanticAction::WorkspaceSend {
             index,
             follow: true,
@@ -98,19 +100,55 @@ fn select_commands_cover_exactly_the_armed_subset() {
             select_command(&action, output.clone(), "space-1").is_none(),
             "{action:?} never selects"
         );
+        if index == 0 {
+            assert!(
+                send_command(&action, "4242_7", output.clone(), "space-277").is_some(),
+                "{action:?} has the product trailing send route"
+            );
+        } else {
+            assert!(
+                send_command(&action, "4242_7", output.clone(), "space-1").is_some(),
+                "{action:?} has the product send route"
+            );
+        }
+    }
+    for index in 1..=9u8 {
+        let stay = InputSemanticAction::WorkspaceSend {
+            index,
+            follow: false,
+        };
+        assert_eq!(
+            workspace_unsupported_outcome(&stay),
+            None,
+            "{stay:?} dispatches (armed, bindable unbound)"
+        );
         assert!(
-            send_command(&action, "4242_7", output.clone(), "space-1").is_some(),
-            "{action:?} has the product send route"
+            select_command(&stay, output.clone(), "space-1").is_none(),
+            "{stay:?} never selects"
+        );
+        assert!(
+            send_command(&stay, "4242_7", output.clone(), "space-1").is_some(),
+            "{stay:?} has the product send route"
         );
     }
+    // Trailing select-0 dispatches through the planner-owned select route.
+    assert_eq!(
+        workspace_unsupported_outcome(&InputSemanticAction::WorkspaceSelect { index: 0 }),
+        None,
+        "select-0 dispatches"
+    );
+    assert!(
+        select_command(
+            &InputSemanticAction::WorkspaceSelect { index: 0 },
+            output.clone(),
+            "space-1"
+        )
+        .is_some(),
+        "select-0 has the planner trailing route"
+    );
     for action in [
-        InputSemanticAction::WorkspaceSelect { index: 0 },
         InputSemanticAction::WorkspaceSend {
             index: 0,
-            follow: true,
-        },
-        InputSemanticAction::WorkspaceSend {
-            index: 1,
             follow: false,
         },
         InputSemanticAction::WorkspaceSendRelative {
@@ -460,4 +498,103 @@ fn ordinary_frame_traffic_never_occupies_write_correlation() {
         ),
         "ordinary rows leave no correlation behind"
     );
+}
+
+#[test]
+fn trailing_session_carries_exact_proof_until_core_ack() {
+    use tiler_core::geometry::Rect;
+    use tiler_core::world_report::{TilingMode, WorkspaceDesire, WorldReply};
+
+    use std::sync::Arc;
+
+    use crate::focus_route::FocusRoute;
+    use crate::world_sequencer::ObservationClock;
+
+    const UUID: &str = "A1B2C3D4-E5F6-47A8-B9C0-D1E2F3A4B5C6";
+    let output = OutputId("macos-display-1".to_owned());
+    let domain = |space: u64, current: bool| NativeDomain {
+        cg_id: 1,
+        uuid: Some(UUID.to_owned()),
+        output: output.clone(),
+        workspace: WorkspaceId(crate::topology::workspace_key(space)),
+        space,
+        current,
+        readable: true,
+        bounds: Rect {
+            x: 0,
+            y: 0,
+            w: 1440,
+            h: 900,
+        },
+        visible: Rect {
+            x: 0,
+            y: 25,
+            w: 1440,
+            h: 875,
+        },
+    };
+    let created = NativeContext {
+        revision: 10,
+        domains: vec![domain(1, false), domain(277, false), domain(278, true)],
+        skipped: Vec::new(),
+    };
+    let mut session = WorldSession::new(
+        tiler_core::size_hints::FixedSizePredicate::BothAxes,
+        true,
+        FocusRoute::Slps,
+        Arc::new(ObservationClock::new()),
+    );
+    // Exact proof records through the production seam.
+    session
+        .adopt_trailing_binding("wl-1", &output, 278, &[1, 277], &[1, 277, 278])
+        .expect("exact append adopts");
+    // Drift refuses without mutating the recorded binding.
+    assert!(
+        session
+            .adopt_trailing_binding("wl-2", &output, 279, &[1, 277], &[1, 279, 278])
+            .is_err()
+    );
+    // The next full report carries exactly the recorded binding.
+    let staged = session.trailing_report_bindings(&created);
+    assert_eq!(staged.len(), 1);
+    assert_eq!(staged[0].logical_id, "wl-1");
+    assert_eq!(staged[0].native_id, "space-278");
+    assert!(staged[0].managed, "proven owned creation");
+    assert!(!staged[0].pinned, "trailing stays cleanup-eligible");
+    // The unbound desire never acknowledges; the bound row releases.
+    let mut reply = WorldReply {
+        contract_version: tiler_core::world_report::WORLD_CONTRACT_VERSION,
+        adapter_incarnation: "adapter-1".to_owned(),
+        core_generation: "gen-1".to_owned(),
+        request_id: "req-0".to_owned(),
+        based_on_observation_seq: 0,
+        state_revision: 0,
+        ready: false,
+        command_consumed: false,
+        scopes: Vec::new(),
+        workspaces: Vec::new(),
+        outputs: Vec::new(),
+        windows: Vec::new(),
+        transfers: Vec::new(),
+        effects: Vec::new(),
+        command_result: None,
+        presentation_bytes: 0,
+    };
+    reply.workspaces.push(WorkspaceDesire {
+        id: "wl-1".to_owned(),
+        output: output.clone(),
+        native_binding: None,
+        logical_id: Some("wl-1".to_owned()),
+        scope: "macos-display-1".to_owned(),
+        order: 2,
+        tiling_mode: TilingMode::Tiled,
+        existence: true,
+        hold: None,
+    });
+    assert!(session.note_trailing_ack(&reply).is_empty());
+    assert_eq!(session.trailing_report_bindings(&created).len(), 1);
+    reply.workspaces[0].native_binding = Some("space-278".to_owned());
+    reply.workspaces[0].id = "space-278".to_owned();
+    assert_eq!(session.note_trailing_ack(&reply), vec!["wl-1".to_owned()]);
+    assert!(session.trailing_report_bindings(&created).is_empty());
 }

@@ -744,11 +744,12 @@ pub fn resolve_proof_click(
     fresh_spaces: &[u64],
     fresh_revision: u64,
 ) -> Result<InputSemanticAction, String> {
-    crate::workspace_indicator::resolve_click(
+    crate::workspace_indicator::resolve_indicator_click(
         click,
         current_generation,
         fresh_spaces,
         fresh_revision,
+        false,
     )
 }
 
@@ -1071,7 +1072,7 @@ mod live {
                 .indicator
                 .segment_targets()
                 .first()
-                .map(|(_, _, generation, _)| *generation)
+                .map(|(_, _, generation, _, _)| *generation)
                 .unwrap_or(0);
             Ok((generation, revision))
         }
@@ -2093,9 +2094,9 @@ mod live {
                 ));
             }
             let targets = live.indicator.segment_targets();
-            let (position, sid, binding_generation, binding_revision) = targets
+            let (position, sid, binding_generation, binding_revision, binding_kind) = targets
                 .iter()
-                .find(|(position, _, _, _)| *position == 2)
+                .find(|(position, _, _, _, _)| *position == 2)
                 .copied()
                 .ok_or_else(|| {
                     live.cleanup_fail("click-target", "no live target for position 2".to_owned())
@@ -2106,7 +2107,14 @@ mod live {
                     "position 2 does not name the temp SID".to_owned(),
                 ));
             }
+            if binding_kind != crate::workspace_indicator::IndicatorClickKind::Numbered {
+                return Err(live.cleanup_fail(
+                    "click-target",
+                    "position 2 read back a non-numbered slot kind".to_owned(),
+                ));
+            }
             let binding = crate::workspace_indicator::IndicatorClick {
+                kind: binding_kind,
                 position,
                 expected_sid: sid,
                 ui_generation: binding_generation,
@@ -2116,7 +2124,7 @@ mod live {
             // a down. The generation rides the latest render.
             let current_generation = targets
                 .first()
-                .map(|(_, _, generation, _)| *generation)
+                .map(|(_, _, generation, _, _)| *generation)
                 .unwrap_or(binding_generation);
             let action =
                 resolve_proof_click(binding, current_generation, &fresh.spaces, fresh_revision)
@@ -2346,7 +2354,7 @@ mod live {
                 .indicator
                 .segment_targets()
                 .first()
-                .map(|(_, _, generation, _)| *generation)
+                .map(|(_, _, generation, _, _)| *generation)
                 .unwrap_or(delivered.ui_generation);
             let effect = live
                 .drain_click_via_engine(
@@ -2700,6 +2708,7 @@ mod tests {
     fn binding_matrix_matches_the_product_lane() {
         // Fresh binding resolves through the exact product mapping.
         let click = IndicatorClick {
+            kind: crate::workspace_indicator::IndicatorClickKind::Numbered,
             position: 2,
             expected_sid: 3,
             ui_generation: 7,
