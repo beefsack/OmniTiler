@@ -250,7 +250,7 @@ Column legs below use separately stated column Givens with the same identities a
 - Then karousel/Lazy: sticky preparation has no script verb (host `setOnAllDesktops`); the owner restart re-admits via `addExistingClients` fresh (shapeability plus rules plus exactly-1 desktop/activity gates); script destroy writes no desktops, so the host sticky list is retained and B re-admits as ordinary `Floating` (0 desktops fails the gate, no sticky state in script); B stays visible on the selected WS2 via the retained host assignment with no script-remembered origin. `S(S-kar-acts)` + `S(S-kar-readmit)` + `S(S-kar-float)` + `S(S-kwin-sticky)`.
 - Then paneru: TBD (host sticky journey plus restart carry both
   untraced). `S(S-pan-cmds)`; queued.
-- Then Ours KDE: source adopts surviving native sticky as unknown-origin sticky float; Q3 leaves this behavior and un-stick semantics unchanged. Confirmed adopted-sticky-off ordinary intent now survives the next owner restart through membership-only persistence (user decisions 2026-10-08, delivered offline; D7 tile-override persistence pending), covered by [offline fixtures](../../../kwin/tests/float-intent.test.ts). `S(S-ours-sticky-restart)` + `D(D-sticky)` baseline; exact native restart/visibility journey TBD
+- Then Ours KDE: source adopts surviving native sticky as unknown-origin sticky float; Q3 leaves this behavior and un-stick semantics unchanged. Confirmed adopted-sticky-off ordinary intent now survives the next owner restart through membership-only persistence (user decisions 2026-10-08, delivered offline; D7 tile-override persistence pending), covered by [world entry restart fixtures](../../../kwin/tests/world-entry.test.ts). `S(S-ours-sticky-restart)` + `D(D-sticky)` baseline; exact native restart/visibility journey TBD
 - Then Ours Windows: namespaced window-lifetime markers re-adopt sticky as sticky, preserving either pre-sticky origin without hydration native writes. Agent-observed 2026-10-11, base `e48aed1` plus delivery commit: both origins survive two graceful restarts and remain visible at the same frame on WS2; ordinary intentional float/tile hide. [Revision-bound gates/live evidence](../../changes/archive/windows-restart-intent.md). Native 2026-10-17: six protected mixed restarts preserve both sticky origins and ordinary float frames through first-observation fixed-anchor `duplicate-window`, with zero tiled writes and next-observation adoption; Windows-only observation holds are rebuilt from validated markers/lifetimes, not durable state. [Repair and limits](../../changes/archive/windows-restart-hydration-rejection.md). Post-restart un-stick outcomes are recorded observations only and remain TBD; physical input/app dogfood user-owned. `S(S-ours-sticky-restart)` + `D(D-sticky)` baseline consumption superseded.
 - Variant hook: V-STICKY-SCOPE.
 
@@ -614,6 +614,13 @@ applicable unknowns are queued, evidenced absent verbs are not.
   stacking and TBD. Lower has no path (unfloat only restores the prior
   state). `S(S-ours-focus)` + `S(S-ours-fltstack)`; order queued, lower is
   a qualified no-counterpart leg.
+- KDE qualification (User 2026-10-17/18): automatic fixed-size floats share
+  the above-tiles layer without project activation or geometry writes.
+  Pre-existing keep-below gets zero stacking writes; pre-existing above is
+  untouched. Focused fullscreen-game safety overrides project-owned above.
+  Relative F/G order remains host-owned, not a new raise/lower verb.
+  World-route implementation is offline-tested; unload ownership and final
+  native acceptance remain open ([record](../../changes/kde-automatic-float-stacking.md)).
 - Then Ours Windows: focusing F actuates focus (`actuate_focus` /
   `SetForegroundWindow` path) while admitted floats sit in the topmost
   band with order by placement/activation; relative order TBD. Lower has

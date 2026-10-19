@@ -1,5 +1,9 @@
 # Cross-Output Directional Focus And Movement
 
+- Historical delivery: DescribePlan and adapter transaction details below refer
+  to the removed KDE domain route. Current production uses complete world
+  reports, direction commands and observation convergence without ack/verify.
+
 ## Goal
 
 Restore the documented COSMIC output-edge behavior for `Meta+Arrow` focus and

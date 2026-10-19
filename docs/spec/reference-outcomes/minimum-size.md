@@ -55,7 +55,7 @@ Part of the [outcome matrix index](../reference-outcomes.md). Notation, profiles
   search; newcomer focus is synthesized to C. Exact native frames TBD
   (L: client-enforced minima). `S(S-pan-fresh)` + `S(S-pan-admit)` +
   `S(S-pan-stripwidth)`; frames queued.
-- Then Ours KDE: Shared projection reallocates within the selected tree, without alternative-arrangement search; overconstrained members keep slots and writable members use tile origin with each extent at least its declared minimum (B6). Offline newcomer journey verified; exact native fixture/result TBD. Code: [adapter](../../../kwin/src/plan-adapter.ts) `overconstrainedEffective`, `writeGeometries`; [real-engine fixtures](../../../kwin/tests/workspace-send-engine-fixture.test.ts). Automatic victim/return policy unselected, `D(D-min-games)`.
+- Then Ours KDE: Shared projection reallocates within the selected tree, without alternative-arrangement search; overconstrained members keep slots and writable members use tile origin with each extent at least its declared minimum (B6). Offline newcomer journey verified; exact native fixture/result TBD. Code: [shared minimum projection](../../../crates/tiler-core/src/size_hints.rs); [core fixtures](../../../crates/tiler-core/tests/size_hints.rs). Automatic victim/return policy unselected, `D(D-min-games)`.
 - Then Ours Windows: Shared projection reallocates within the selected tree, without alternative-arrangement search; overconstrained members keep slots; Windows uses origin+minimum. Exact fixture/result TBD; automatic victim/return policy unselected, `D(D-min-games)`.
 - Variant hook: V-START-MIN.
 
@@ -109,7 +109,7 @@ Part of the [outcome matrix index](../reference-outcomes.md). Notation, profiles
   focus is unwritten. Exact shrink/grow frames and grow-back recovery
   follow the live frames, TBD (L: client runtime). `S(S-pan-admit)` +
   `S(S-pan-stripwidth)` + `S(S-pan-colops)`; frames queued.
-- Then Ours KDE: Same shared minimum projection; writable shrink-infeasible members use origin+minimum (B6), neither auto-floats. Offline shrink/grow recovery verified; exact native journey TBD. Code: [adapter](../../../kwin/src/plan-adapter.ts) `effectiveTargetFor`, `writeGeometries`; [real-engine fixtures](../../../kwin/tests/workspace-send-engine-fixture.test.ts). A hint-only change on KDE is not an independent dispatch trigger, `D(D-min-games)`.
+- Then Ours KDE: Same shared minimum projection; writable shrink-infeasible members use origin+minimum (B6), neither auto-floats. Offline shrink/grow recovery verified; exact native journey TBD. Code: [shared minimum projection](../../../crates/tiler-core/src/size_hints.rs); [core fixtures](../../../crates/tiler-core/tests/size_hints.rs). A hint-only change on KDE is not an independent dispatch trigger, `D(D-min-games)`.
 - Then Ours Windows: Same shared minimum projection; current Windows origin+minimum, neither auto-floats. Exact shrink/grow journey TBD, `D(D-min-games)`.
 - Variant hook: V-START-MIN.
 
@@ -158,7 +158,7 @@ Part of the [outcome matrix index](../reference-outcomes.md). Notation, profiles
   overflow stays with the client and newcomer focus is synthesized to A.
   Exact sole-leaf native frame TBD (L: client runtime). `S(S-pan-fresh)` +
   `S(S-pan-admit)` + `S(S-pan-stripwidth)`; frame queued.
-- Then Ours KDE: Core projects the sole leaf and flags its violated minimum; writable KDE raises the violated extent at tile origin (B6), allowing overflow. Offline oversized sole-leaf/offset-domain journey settles quietly. Code: [adapter](../../../kwin/src/plan-adapter.ts) `overconstrainedEffective`, `writeGeometries`; [real-engine fixtures](../../../kwin/tests/workspace-send-engine-fixture.test.ts). Floating cannot make this minimum fit the work area; exact native journey TBD, `D(D-min-games)`.
+- Then Ours KDE: Core projects the sole leaf and flags its violated minimum; writable KDE raises the violated extent at tile origin (B6), allowing overflow. Offline oversized sole-leaf/offset-domain journey settles quietly. Code: [shared minimum projection](../../../crates/tiler-core/src/size_hints.rs); [core fixtures](../../../crates/tiler-core/tests/size_hints.rs). Floating cannot make this minimum fit the work area; exact native journey TBD, `D(D-min-games)`.
 - Then Ours Windows: Core projects the sole leaf and flags its violated minimum; writable Windows raises width at tile origin. Floating cannot make this minimum fit the work area; exact native journey TBD, `D(D-min-games)`.
 - Variant hook: V-START-MIN.
 

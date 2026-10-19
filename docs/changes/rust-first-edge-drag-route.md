@@ -1,5 +1,9 @@
 # Rust-First Edge-Drag Route
 
+- Historical transport proposal: DescribePlan and its adapter were removed.
+  Current production uses the world route; the old adapter-specific echo and
+  transport discussion below is not a current implementation contract.
+
 ## Verified Facts
 
 - KWin 6.7.4 snapshots `moveResizeGeometry()` before start emission

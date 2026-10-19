@@ -832,9 +832,9 @@ verb inventory); selected intent and doc assertions are never evidence.
   migrates with its stable backing id retained, implemented offline,
   native journey TBD; NORMATIVE D1-D9, User 2026-10-08, D8 carry
   delivered offline 2026-10-09). [Engine](../../../crates/tiler-core/src/engine.rs),
-  [adapter](../../../kwin/src/workspace-send-adapter.ts),
+  [world actuation](../../../kwin/src/world-apply.ts),
   [native map](../../../kwin/src/workspace-native.ts),
-  [fixtures](../../../kwin/tests/workspace-migrate.test.ts),
+  [world migration fixtures](../../../kwin/tests/world-apply-migration.test.ts),
   [record](../../changes/archive/kde-whole-workspace-output-migration.md).
 - Then Ours Windows: mixed: hidden WS2 has no counterpart to the active-only
   verbs; explicitly select WS2 in an independent leg, then migrate with its
@@ -1601,8 +1601,8 @@ baseline above is unchanged. Record:
   shared refuses `mode-shared`, false refuses `per-output-disabled`,
   unreadable refuses `per-output-unreadable`; never writes the
   setting. Implemented offline (NORMATIVE D2, User 2026-10-08), native journey TBD.
-  [Observer](../../../kwin/src/plan-adapter-entry.ts),
-  [fixtures](../../../kwin/tests/workspace-migrate.test.ts).
+  [World observer](../../../kwin/src/world-observe.ts),
+  [world migration fixtures](../../../kwin/tests/world-apply-migration.test.ts).
 - Then Ours Windows: local independent project-owned per-output views provide
   capability, with no KWin flag or native policy writes. Delivered offline
   2026-10-14; item 12 non-local modes and physical journey remain pending.
@@ -1694,7 +1694,7 @@ baseline above is unchanged. Record:
   native journey TBD.
   [Engine](../../../crates/tiler-core/src/engine.rs),
   [native map](../../../kwin/src/workspace-native.ts),
-  [engine fixtures](../../../kwin/tests/workspace-migrate-engine-fixture.test.ts).
+  [aligned migration fixtures](../../../kwin/tests/world-aligned-migration-engine.test.ts).
 - Then Ours Windows: active stable ID/tree/unequal shares/remembered focus
   retained via tiled Engine rekey; insert after target current, prior hidden,
   source refill shown and follow after verified transfer. Untiled mode stays
@@ -1785,11 +1785,11 @@ baseline above is unchanged. Record:
   entry use last remaining; a still-scoped live current view is kept in both
   modes. Shared selector/KDE KCM/live setting/MRU delivered offline 2026-10-10;
   destination insertion and history invalidation unchanged.
-  [Production-entry real-Engine default/MRU fixtures](../../../kwin/tests/g06-g37-entry-discrimination.test.ts),
+  [World migration refill fixtures](../../../kwin/tests/world-apply-migration.test.ts),
   [eligibility/config fixtures](../../../kwin/tests/migration-source-refill.test.ts).
   [Discriminating variants](../reference-outcomes.md#2026-10-10-reference-comparison-discriminators).
   [Native map](../../../kwin/src/workspace-native.ts),
-  [fixtures](../../../kwin/tests/workspace-migrate.test.ts).
+  [world actuation](../../../kwin/src/world-apply.ts).
 - Then Ours Windows: last-remaining default or eligible pre-mutation
   per-output previous ID with MRU; invalid/out-of-scope/migrated IDs fall back.
   Schema-v1 additive setting, UI Apply/Revert and live runtime delivered
@@ -1871,8 +1871,8 @@ baseline above is unchanged. Record:
   output remap (never fresh-tiled); S stays on the source and is
   never a member. Implemented offline (NORMATIVE D7, User 2026-10-08),
   native geometry TBD.
-  [Adapter](../../../kwin/src/workspace-send-adapter.ts),
-  [engine fixtures](../../../kwin/tests/workspace-migrate-engine-fixture.test.ts).
+  [World actuation](../../../kwin/src/world-apply.ts),
+  [aligned migration fixtures](../../../kwin/tests/world-aligned-migration-engine.test.ts).
 - Then Ours Windows: F carries via move-only native output remap with fresh
   arrival proof and retained class/origin; sticky S stays source and re-homes
   to source refill. Delivered offline 2026-10-14; physical native geometry TBD.
@@ -1954,9 +1954,9 @@ baseline above is unchanged. Record:
   follow logs `native-only`, not confirmed native client focus. Frozen-state
   changes still settle/reconcile normally. Exact native focus/re-fit and
   mid-flight mode-change outcomes remain TBD for user testing.
-  [Adapter](../../../kwin/src/workspace-send-adapter.ts),
-  [fixtures](../../../kwin/tests/workspace-migrate.test.ts),
-  [Engine fixtures](../../../kwin/tests/workspace-migrate-engine-fixture.test.ts),
+  [World actuation](../../../kwin/src/world-apply.ts),
+  [world migration fixtures](../../../kwin/tests/world-apply-migration.test.ts),
+  [aligned migration fixtures](../../../kwin/tests/world-aligned-migration-engine.test.ts),
   [record](../../changes/archive/migration-overlay-carry.md).
 - Then Ours Windows: D8 carry delivered offline 2026-10-14: real max/fullscreen
   observations, overlay-only native remap, no ordinary overlay geometry or
@@ -2044,8 +2044,8 @@ baseline above is unchanged. Record:
   arrival/views/focus with correlated partial/uncertain/recovery
   terminals. Implemented offline (NORMATIVE D9, User 2026-10-08), native/hotplug TBD.
   [Native map](../../../kwin/src/workspace-native.ts),
-  [adapter](../../../kwin/src/workspace-send-adapter.ts),
-  [fixtures](../../../kwin/tests/workspace-migrate.test.ts).
+  [world actuation](../../../kwin/src/world-apply.ts),
+  [world migration fixtures](../../../kwin/tests/world-apply-migration.test.ts).
 - Then Ours Windows: moved previous IDs clear under per-output scope, without
   ordinal reinterpretation/recreation; only moved hotplug-return association
   removed, siblings retained. Commit-last candidates and failed-arrival
@@ -2145,3 +2145,21 @@ baseline above is unchanged. Record:
   physical multi-candidate journey TBD.
   [Record](../../changes/archive/windows-workspace-output-migration.md).
 - Variant hook: NORMATIVE workspace-output migration (User decision 2026-10-09).
+
+## KDE aligned-grid discriminators (2026-10-18 decisions; evidence 2026-10-19)
+
+These rows supersede KDE's disjoint startup ownership and aligned-mode D4
+insertion only. Other profiles' exact outcomes remain TBD for these fixtures;
+the selected KDE behavior is not evidence of reference-WM equivalence.
+See the [active record](../../changes/kde-aligned-output-workspaces.md).
+
+| Discriminator | Minimal action sequence | Selected KDE outcome and evidence |
+|---|---|---|
+| Hidden foreign startup member | L shows native 1, R shows 2, R member A is hidden on 1; start, select R1 | Adopt without membership/output conversion; R1 shows A. Offline and native callback/state pass. Shared-current variant: offline pass, native TBD. |
+| Unequal extent/padding | L occupies 1, R occupies 3; select L3, then trailing on each output | Both rings address every native position; L3 selects an empty cell without creating. L trailing is 2, R trailing is 4, not the same global-last cell. Offline pass; independent trailing native pass. |
+| Hole versus compaction | R occupies 2 while L2 is empty; then empty 2 on both and make it unshown/nontrailing/unprotected | Keep the hole while occupied anywhere; retire only after all-output guards pass, allowing native renumbering without window moves for compaction. Offline and bounded native lifecycle pass. |
+| Native output move | With different L/R currents, move A from source-current to the other output using native send; repeat by drag | Membership follows destination-current; observe the new cell without ownership theft or an extra project migration. Native send both ways passes after window-signal correction; physical drag TBD. |
+| Migration collision/rebinding | R1 occupied, L1 occupied and L trailing 2; migrate active R1 to L, then return | Land in L2, preserve the moved logical/tree/shares/focus/mode, refresh the source placeholder, refill source by D5, and wait for members plus both views. Offline producer and native round trip pass. D5 logical interpretation is tentative. |
+| Retained arrival/closure | Migrate A,B; delay B, make arrival unreadable, close a migrating member, then report fresh complete state; repeat reverse direction | Keep identity/topology and target reservation; no premature settlement, duplicate moves or feedback loop; explicit closure settles without inferring closure from absence. Core and real-producer regressions pass. |
+| Hotplug collision/return | L1 and R1 occupied; disconnect R, then reconnect | Selected: preserve origin logicals, displace into L trailing without merging, return then-current contents without individually pulling moved-away windows. Implementation/live outcomes TBD; parked probe placement question. |
+| Minimum/lifecycle | Start with one empty native; fill the last occupied cell, then close/hide candidates | Grow to at least two total including trailing; coalesce global creation, preserve exact binding attribution and hold on incomplete evidence. Offline pass; native two-workspace floor retained. |

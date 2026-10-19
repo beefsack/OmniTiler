@@ -31,8 +31,8 @@ ancestry claims. Ours cells cite Engine + adapter source at `9241c94`
   `switch-preset-column-width` / `switch-preset-column-width-back`
   (`Mod+R` / `Mod+Shift+R`); PaperWM `resizeWInc` / `resizeWDec`; karousel
   `columnWidthIncrease` / `columnWidthDecrease`; paneru `Resize(Grow)` /
-  `Resize(Shrink)`; Ours KDE `requestResize("right", "outwards")` /
-   `requestResize("right", "inwards")`, each at press_index 0; Windows
+  `Resize(Shrink)`; Ours KDE world-route `resize` operation commands (outwards/inwards toward right,
+   press counter from 0); Windows
    Win+Alt+Right / Win+Alt+Shift+Right use the shared resize path. Explicit px legs are named command parameters,
   not changes to shipped config; bare i3/sway defaults use ppt.
 - Observe: ratio vs pixel increment, neighbor allocation and reversibility.

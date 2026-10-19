@@ -11,73 +11,201 @@
 - Preserve existing windows and restore settings, output configuration and
   development lifecycle state.
 
-## Current continuation (2026-10-18)
+## Current continuation (2026-10-19)
 
-- Disjoint-model T05 continuation is paused, superseded by
-  [aligned per-output workspaces](kde-aligned-output-workspaces.md).
-  The captured replay recommendation below is historical, not the next action.
-- Implementation detail not yet user-reviewed: tolerate only the proven,
-  guarded same-flight desktop echo; one-shot actuation and retry policy remain
-  unchanged. Revalidate migration settlement under aligned native rebinding.
-- Accepted bounded fix: a successful native output send can change desktop
-  membership to the destination's captured current while output readback still
-  names the source. Complete wire capture and immediate native branch evidence
-  prove this delayed-output echo. Accept that exact same-flight shape alongside
-  the synchronous target-output echo, with unchanged view, listing, safety and
-  freshness gates. Both migration members now receive their membership writes;
-  arbitrary third locations still supersede. Arrival and follow remain separate.
-- Per-member diagnostics retain bounded gate/setter/proof tags without raw
-  identities. Producer-shaped RED/GREEN tests cover delayed output propagation,
-  both-member application, late arrival without replay, ordinary sends and
-  unrelated-desktop refusal. Independent safety review accepts this KDE-only
-  correction. No new product policy, retry or wire contract is selected.
-- T05 remains blocked. The parked global-inventory confirmation defect is real:
-  KDE repeats its native desktop inventory under each output, so source-list
-  absence cannot confirm identity migration. A member-homing prototype settled
-  before target follow; a view-gated correction reached target follow but left
-  source refill ambiguous after its one native attempt. Retention then produced
-  repeated removal feedback/no-op dispatches after member closure. Neither core
-  prototype ships; existing core settlement is unchanged. Do not repeat either
-  approach without replaying the complete arrival/refill/feedback sequence.
-- Original T02 fixture passes right-follow, left-follow return and stay both
-  ways: two owned peers per shown workspace, complete request/reply bytes,
-  native arrival/focus/views and subsequent no-replay observations. The earlier
-  retained `scope-held` did not recur. These passes used the core prototype;
-  the final KDE-only repeat stopped at the protected-active fixture gate before
-  its first command, so final-tree native revalidation remains pending.
-- Ordinary topology subcases pass on the prototype-integrated tree: local
-  horizontal precedence, horizontal cross-focus both ways, vertical-local focus
-  and occupied R4 crossings both ways. Projected allocations/native frames match
-  whole-target wrapping, but contain no internal tree: exact-tree acceptance is
-  still pending. Three submissions without dispatch and later delayed focus
-  evidence remain unrooted; invocation alone is not acceptance.
-- Reversible opposite-edge rearrangement selected the new touching neighbor;
-  the old absent direction did not cross. A positive physical gap prevented
-  output-send crossing/wrap. FULL rectangles and work areas were captured
-  separately. Post-gap local-focus settlement remains pending. Panel/work-area
-  mutation was not attempted without an exact reversible API; a true split edge
-  needs a third output and was unavailable.
-- Full wire capture uses correlated bus method calls and returns, positively
-  checked before each accepted leg. Initial diagnostic summaries were not full
-  payloads and are excluded from complete-wire claims. Evidence keys include
-  `wire.jsonl`, `mig-journal.txt`, `t05pre/post`, `t02sendR/L`, `t02stayR/L`,
-  `l2r4pre/post/ret`, `bpostR`, `cpostR`, and baseline/restoration snapshots.
-- Final integrated accepted-tree gates: Rust workspace **3280/3280**, KWin **1885/1885**,
-  typecheck, script/Planner build, strict all-target workspace Clippy, formatting
-  and portable-core gate pass. Dependency-notice verification remains blocked by
-  an uncached platform dependency under frozen/offline checking; no dependency
-  changed.
-- Restoration: protected frames/membership/outputs and shown views match their
-  captured baselines, including settled recovery of an arbitrary frame after
-  teardown. Output configuration, panels and shortcuts are restored; owned
-  clients/scripts are gone and development is DOWN. Newer external focus/pointer
-  changes were preserved, not overwritten. Empty-desktop/name/default-tiling
-  churn remains the documented lifecycle exception.
-- Exact next action: replay the captured delayed member arrival, target follow,
-  source-refill attempt and repeated feedback offline. Diagnose refill setter
-  resolution/readback and terminal feedback before changing confirmation or
-  retry policy. Then perform one bounded T05 repeat; inverse migration, exact
-  tree, panel/work-area and final-tree native matrix remain open.
+- Production acceptance now uses the world adapter and aligned workspace model;
+  the disjoint-model T05 failures and prototype recommendations below are
+  historical. Aligned migration settlement is covered by the
+  [aligned-workspace outcome](kde-aligned-output-workspaces.md#accepted-evidence-2026-10-19).
+- Configuration safety: recovered the original captures and the chain of later
+  full configuration copies. Desktop count/names, project settings, shortcuts
+  and empty float-intent bytes agree with the captured baseline. The first run
+  recorded only a configuration hash, not its complete bytes: its original byte
+  delta remains unattributable. No speculative rollback was performed.
+- Structurally traced explicit output sends in both directions with complete,
+  serial-correlated request/reply JSON and native output/membership/focus/view
+  readbacks. Both follow arrivals settle without replay; the earlier
+  membership-without-proven-output anomaly did not recur. Two-domain send-back
+  remains readable and controlled; `scope-held` did not recur.
+- Found and fixed a separate output-stay defect: the world route discarded the
+  Engine send plan's focus result, leaving the mover active at the destination.
+  Successful sends now publish a one-shot focus effect: mover for follow, source
+  focused-removal MRU survivor for stay, no invented fallback for an emptied
+  source. Native right/left stays now focus the source peer with unchanged
+  views; follow and subsequent quiet observations pass. Existing freshness,
+  overlay and at-most-once adapter fences are unchanged. Independent review
+  accepts the correction; no new product decision was selected.
+- RED/GREEN and current producer-shaped regressions:
+  [world send focus](../../crates/tiler-core/tests/world_output_send_stay_focus.rs).
+  Eight tests include aligned replicated inventory, global focus repeated in
+  both shown domains, competing MRU survivors in both directions, follow,
+  settled/duplicate/unrelated-focus quietness, emptied source and refusals.
+  Deferred trailing-creation sends now propagate their commit-time focus result
+  too; the capacity-float R4 fallback remains outside the correction.
+- T03 uses populated aligned cells plus an owned sticky input anchor on an empty
+  cell. Numbered 1/3/4, empty-cell numbered departure 4->1, adjacent steps,
+  backward wrap and Previous pass with independent views. Arrow/letter callbacks
+  pass, not preset Apply/reconciliation or keyboard delivery. Numbered 4->1 is
+   not relative forward wrap. The then-observed sticky-anchor arrival extended
+   the ring; the [occupancy correction below](#empty-ring-end-correction-2026-10-19)
+   now proves forward relative wrap on both outputs.
+  Two uinput keyboard variants were not enumerated by KWin; no keyboard-path
+  acceptance is claimed. Shared selection refusal is not an established oracle;
+  see the [discriminators](../spec/reference-outcomes.md#kde-dual-output-admission-and-workspace-scope-discriminators).
+- R4 authoritative production trace now proves a flat three-leaf source becomes
+  a pair, then return creates `H[1,1](H[1,1](L,L),L)` on the occupied target.
+  Correlated native readbacks prove both arrivals and mover focus with unchanged
+  views. The protected client is excluded from this fixture. This is hierarchy
+  proof, not exact named-leaf proof: traces redact leaf identities and the live
+  remaining pair was W2,W1 rather than the requested W1,W2. Exact named order
+  and physical delivery remain pending; the offline test asserts mover position.
+- T06 actual screenshots show the active border on an owned client on each
+  scale/origin, clearing the old border when focus crosses outputs. The normal
+  staged effect/oracle route was loaded and later unloaded. Mapped-inode/hash
+  freshness is still unproven because process maps are inaccessible; staged
+  hash, ABI compatibility and successful loading are narrower evidence. Direct
+  preview API screenshots now show set/clear localized to each output at both
+  scales/origins; this is diagnostic rendering, not production drag preview.
+  Group set/clear state passes, but its display gate stays closed without a
+  trusted chord or interactive move. Visible underlay and dynamic scale/mode
+  changes remain pending. The staged binary postdates compositor startup; no
+  in-effect build identity exists and process maps remain inaccessible.
+- T15 passes with both outputs enabled: vertically touching FULL rectangles
+  with an existing panel-created work-area gap, down-send and inverse up-send,
+  native frames inside the respective work areas, exact original-topology
+  restoration, positive physical-gap no-cross/no-wrap refusal, then successful
+  product local-focus settlement after restoring topology. Modes/scales/panel
+  settings were not changed; native panel surfaces restored exactly.
+- T08 remains parked before input. An existing-protocol absolute fake-input
+  route avoids relative acceleration and needs no new dependency. Its two
+  proposed wrappers failed independent review: command/reply grammar mismatch,
+  absent held-drag soak, script lifecycle and baseline/restoration integration
+  prevent live use. Pure geometry and ownership predicates pass offline, not the
+  complete harness. Earlier relative drags remain excluded; no mouse-delivery,
+  preview/drop, re-cross, no-jump, cancellation or bidirectional target-matrix
+  acceptance is claimed. Hotplug and output disconnect were not attempted.
+- Evidence sets: `aligned-ownsend` (`mon-pairs.json`, `mon-pairs2.json`),
+  `ownsend-stayfix` (`leg1..5-pairs.json`), `t03-aligned` (`mon-pairs.json`),
+  `r4exact` (`pairs-final.json`), `t15-vertical` (`mon-*-pairs.json`), and
+  `t06-render` (first/second-output active-border screenshots). Accepted
+  wire legs have positive capture markers, exact-owned action gates and native
+  before/after state. Screenshot evidence is border-only, not drag acceptance.
+- Deferred trailing-send correction: two producer-shaped regressions fail before
+  the fix and pass after. Binding arrival emits original-operation focus once:
+  follow mover, stay source MRU survivor, emptied source no fallback. Three
+  [regressions](../../crates/tiler-core/tests/world_pending_send_focus.rs) pass;
+  independent review accepts identity, ordering and freshness. Native repeat is
+  pending. Capacity-float R4 remains parked after two fixtures failed to reach
+  its fallback; no unproven focus policy was implemented.
+- **Tentative (user review pending):** opt-in placement traces retain capped
+  ordered source/target before/after shapes and shares, not native/leaf identity,
+  on the production world route. No wire or actuation changes. Same-session
+  local proposals clear stale cross traces; world trace capture stays inside
+  the single-flight guard. RED/GREEN freshness regression and independent
+  review accept these diagnostic fences.
+- Added evidence: `t03-wrap` (`mon-pairs.json`, I3/I12 numbered departures),
+  `r4exact-live` (`dev-trace3.log`, req-3/req-5 and `pairs-final.json`),
+  `leg3-drag` (rejected harness, offline-only tests), and `t06u-live`
+  (preview set/clear screenshots, hidden-underlay state, freshness readbacks).
+- Final integrated gates: Rust workspace **3348 passed**, zero failed/ignored;
+  KWin **1919 passed**, zero failed; workspace/script builds, typecheck, Rust
+  formatting, strict all-target workspace Clippy and portable-core gate pass.
+- Final independent native readback: protected frame/modes/membership/output/
+  focus, per-output views, original desktop count/names, pointer, outputs,
+  shortcuts, float-intent bytes and effects restored. Controller unloaded,
+  Planner unowned, owned clients/scripts gone. Configuration deltas since the
+  full-copy baseline are only native-ID/default-tiling lifecycle churn, not a
+  byte-identical configuration claim. A detached development teardown failed
+  to finish automatically; normal owned lifecycle cleanup and exact transient
+  effect unload completed, then restoration was reverified. The later R4 run
+  also leaked its transient effect across development restarts: raw pre=false /
+  post=true contradicted its initial restoration claim. Exact owned unload and
+  fresh native/effect readbacks corrected it; final effect state is unloaded,
+  with protected placement/focus/views/pointer unchanged. T06 had preserved the
+  leaked state as its own baseline; that was not the original run baseline.
+  A second audit corrected desktop restoration: T03 startup retired two original
+  empties, and its initial teardown claim incorrectly treated the resulting two
+  desktops as baseline. Exactly two empties were recreated with the captured
+  names/order; final count/names equal the actual four-desktop entry capture.
+  Recreated native IDs differ; protected membership/views/focus/frame/pointer
+  remain identical. Controller and Planner stayed stopped during restoration.
+- Parked questions, in execution order:
+  - Which T03 action should refuse in shared mode? Shared ordinal/relative
+    selection is supported; migration refusal is a different inventory leg.
+  - Can the remaining keyboard/drag/visible-underlay journeys be performed
+    through trusted input, or should the rejected absolute fixture receive a
+    separately scoped lifecycle implementation? No third wrapper retry here.
+  - Can a fresh compositor session load a build with an in-effect identity
+    readout for mapped-binary proof? No session restart was attempted.
+  - Which producer-shaped geometry reaches R4 capacity-float fallback, and
+    should its world reply publish the Engine's follow/source-focus result?
+- Exact next action: resolve the restoration boundary below and trusted-input
+  route before further live T03/T08; independently retain the exact named-leaf
+  R4 fixture and deferred-send native repeat as distinct pending checks. This
+  record remains active because acceptance gaps remain.
+
+## Empty ring-end correction (2026-10-19)
+
+- **Tentative (user review pending):** selecting/showing any existing empty
+  aligned cell creates no spare, including the trailing empty and ring end.
+  Relative-next from that end wraps under existing wrap settings. Occupancy,
+  not visibility, advances the trailing empty. This resolves parked question 1
+  from aligned-workspace decisions 1/3 without changing empty-cell retirement,
+  minimum-two maintenance or selection ranges.
+- Root cause: production core counted the T03 sticky anchor's homed domain as
+  occupied. Spare occupancy now excludes live/minimized sticky rows; ordinary
+  minimized and non-sticky rows still count. Sticky homes remain retained
+  against removal, preventing desired-removal/apply-hold feedback. KDE's
+  empty-list sticky homes at the output current, so departure can release and
+  retire the old globally empty, unshown, non-trailing end normally. The fix
+  lives in `crates/tiler-core/src/world_publish.rs`; no legacy route or adapter
+  actuation changed.
+- Tier 1 source check: COSMIC `3d55cba0` appends only for an occupied/pinned
+  last workspace (`src/shell/mod.rs:652-672`) and excludes its separate sticky
+  layer from workspace emptiness (`src/shell/workspace.rs:1538-1543`). Hyprland
+  `19fb395d` finds an existing target before on-demand creation
+  (`src/config/shared/actions/ConfigActions.cpp:150-198`). i3 `903bcd51` and
+  sway `1652c54b` remove invisible empty workspaces, without a trailing-spare
+  equivalent. No strong contradiction; exact reference runtime fixture TBD.
+- RED/GREEN: sticky-show creation and sticky-home retention regressions fail
+  before their respective corrections and pass after. Core aligned tests
+  **17/17** include both wraps/fills, minimized-sticky distinction, mixed
+  occupancy and shared/disjoint retention. Real `world_eval` plus production
+  entry/apply uses fresh serial replies and native-shaped `desktops:[]` sticky;
+  both-output wraps, genuine empty show, numbered departure, fills, binding
+  settlement and no replay pass. A pinned-sticky fixture initially exposed a
+  removal/hold loop; separate retention fixes it, while the final fixture
+  follows real native rehoming. Independent review accepts the final behavior.
+- Native evidence set `t03-live-20261019T150000`: complete correlated
+  `mon-pairs.json` and `journal-Lwrap-left.txt` / `journal-Rwrap-right.txt`
+  prove both callback-driven forward wraps with the opposite view unchanged
+  and no spare creation. `journal-Rto-empty.txt` proves genuinely empty show
+  creates none. `journal-fillC.txt` / `journal-fillD.txt` and settled replies
+  prove exactly one new spare per ordinary fill on each output, all bindings
+  resolved and no retained transfers. Right-fill apply `held=1` clears on the
+  next fresh reply; no refusal was emitted. This is callback/native-state
+  evidence, not physical keyboard or anchorless-wrap acceptance.
+- Gates: Rust workspace **3353 passed**, zero failures; KWin **1920 passed**,
+  zero failures. Workspace/script builds, typecheck, Rust formatting, strict
+  all-target workspace Clippy and portable-core scan pass. The final
+  native-shaped fixture was followed by a fresh full KWin suite/typecheck/build;
+  Rust production changes since its full gates are comments only.
+- Restoration is **incomplete**, not byte-exact acceptance. Original byte
+  copies were retained; protected placement/modes/membership/focus, pointer,
+  output configuration, desktop count/names/order and corresponding views are
+  restored. Two retired original empties were recreated; their native IDs
+  differ. Shortcuts/float-intent bytes and absent script configuration agree.
+  The complete configuration delta is two replaced desktop IDs plus eight
+  default tiling groups; no other keys changed. Controller/Planner are stopped,
+  owned clients/scripts gone, and the project transient effect is unloaded.
+  The full pre-run loaded-effects list was not captured, so full-list equality
+  cannot be established. Original bytes were not copied over live replacement
+  desktop IDs, which would make persisted and active identities disagree.
+- Remaining restoration question: accept the documented native-ID/default-
+  tiling churn with recreated count/names/order, or require a separately
+  established session-boundary restoration procedure for the original bytes?
+  The dual-output record stays active for this boundary and the unrelated
+  inventory gaps above.
 
 ## Earlier continuation (2026-10-18)
 
@@ -231,20 +359,20 @@ Accepted subcases and remaining gaps are qualified below.
 | ID | Inventory | Journey | Outcome / evidence |
 | --- | --- | --- | --- |
 | T01 | D06, #46 | New native windows join the focused output; left/right focus crosses outputs without wrong-domain writes | PASS prior subcases plus corrected opposite-pointer admission in both directions. Final-source inverse repeat has an owned managed focus, both outputs occupied, unchanged opposite pointer and routed newcomer focus/membership. Offline pre-debounce focus-race regressions pass. PENDING: clean physical cross-focus, wrong-domain-write audit and remaining birth/activation timing variants |
-| T02 | D13, #43, #46 | Directional move exhausts local structure then crosses; explicit output send-follow/stay, empty/occupied targets and floating boundaries | PASS original two-peer right-follow/left-return and both stays on the prototype-integrated tree; no retained hold or replay. Local precedence and occupied R4 geometry pass both ways. PENDING: final KDE-only native repeat (fixture refused before dispatch), exact D13 tree proof, physical stay bindings and floating boundaries |
-| T03 | #14 | Per-output workspace switching/history, shared-scope refusal where required, preset-specific arrows and letter bindings | PASS 2026-10-18 ten current-world callback/native-state cases: numbered, adjacent relative previous/next and history toggles on each uniquely bound populated output-local ring; other output unchanged. PENDING: full ring ends/wrap, shared-scope refusal, presets and physical delivery |
+| T02 | D13, #43, #46 | Directional move exhausts local structure then crosses; explicit output send-follow/stay, empty/occupied targets and floating boundaries | PASS aligned follow/stay both ways, source-MRU focus/views/no replay; occupied R4 arrivals/focus and authoritative nested return shape. PENDING: exact named-leaf order, D13 fixture, physical stay bindings, empty/float matrix and deferred trailing-send native repeat |
+| T03 | #14 | Per-output workspace switching/history, shared-scope refusal where required, preset-specific arrows and letter bindings | PASS independent numbered/adjacent/history/backward wrap, both-output forward empty-end wrap and sticky-anchor numbered departures; arrow/letter callbacks. Empty show creates none; both ordinary fills create one spare. Restoration limits above remain open. PENDING: shared-refusal discriminator, actual preset application and keyboard-path delivery |
 | T04 | #15 | Relative workspace send follow/stay, ring ends, trailing-empty fill and sole-mover source emptying on both outputs | PASS primary-scope next/previous follow, native arrival/state-confirmed, source retirement and other-view independence; stay retained view/membership. Secondary shown current outside its managed ring refused before commit twice. Stay-focus fixture lacked a same-output eligible peer and is not defect evidence. PENDING: complete ring-end/previous/stay matrix on both outputs |
-| T05 | #42 | Whole-workspace migration preserves identity/order/tree/tiling state, occupied target and hidden workspace; overlay and float members | PARTIAL: INT_MAX accepted; source-output-lag echo corrected and both members move without replay. FAIL full settlement: core global-inventory confirmation is incompatible; unshipped confirmation prototypes lose target follow or retain an ambiguous source refill with no-op feedback storm. Inverse, exact tree/state and hidden/overlay/float matrix pending |
-| T06 | #34, #44, N4 | Mixed-scale/origin geometry, gaps, border, underlay and preview; dynamic mode/scale/work-area changes and restoration | PASS prior geometry subcases retained. Latest normal development startup established effect/oracle availability during the run. PENDING: mapped-binary freshness, rendering and dynamic mode/scale changes; load/setter diagnostics do not prove rendering |
+| T05 | #42 | Whole-workspace migration preserves identity/order/tree/tiling state, occupied target and hidden workspace; overlay and float members | PASS aligned trailing-landing round trip with source refill, focus and quiet settlement; disjoint-model failure below superseded by the aligned-workspace record. PENDING: complete exact-tree/state, hidden, overlay and float native matrix |
+| T06 | #34, #44, N4 | Mixed-scale/origin geometry, gaps, border, underlay and preview; dynamic mode/scale/work-area changes and restoration | PASS geometry/work-area, active border and direct-API preview set/clear screenshots on both scales/origins; group state only (display gate closed). PENDING: mapped-binary identity, visible group underlay, production drag preview and dynamic mode/scale changes |
 | T07 | #1, #34 | Fullscreen/maximize on each output, carry/restore, reserved slot and no unsolicited fullscreen geometry/focus writes | PASS tiled-overlay subcases: five-second fullscreen hold; fullscreen carry left and maximize carry right with arrival/follow; destination peer retained half-slot; native overlay exit restored exact original modes/frames. PENDING: intentional-float overlay, born-state and real-game legs. Earlier synchronous/expando probes remain invalid |
-| T08 | #47 | Pointer drag across outputs to occupied/empty targets; preview/drop agreement, snap-back/cancel and source removal | BLOCKED: earlier crossings prove fallback recovery only. Latest effect-loaded same-output attempt violated pointer-path ownership through acceleration overshoot and is excluded from clean acceptance. Relative synthetic motion/drag now refuses before device allocation; physical preview/drop, hold, re-cross, cancel and removal proof remain pending |
+| T08 | #47 | Pointer drag across outputs to occupied/empty targets; preview/drop agreement, snap-back/cancel and source removal | PARKED before input: two absolute-wrapper attempts rejected on integration/lifecycle defects; pure offline helper tests are not fixture acceptance. Earlier accelerated relative drag excluded. Both-direction occupied/empty targets, preview/drop, held alignment/re-cross, no-jump, cancel and source removal remain pending |
 | T09 | #49 | Hidden/sticky domains quiet; immediate/delayed and rapid transfers reconcile without ping-pong or stale replay | PASS prior quiet/sticky and two correlated successive output-transfer round trips. Latest rapid fixture parked: wrong-direction no-target dispatch and timeout-bound clients are not transfer evidence. No new PASS. PENDING: in-flight rapid stress, actual delayed arrival/reply and stale replay |
 | T10 | #14, #51 | Disable/re-enable displacement/return and primary change; exact topology restoration; physical unplug remains a distinct leg | PASS prior sampled software cases plus inverse disable/displace/return with exact frames and output configuration; explicit workspace move while absent was not undone by return. Return affinity of changed donor contents remains qualified. PENDING: new-content discriminator and physical unplug |
 | T11 | #14 | Output-local trailing empty workspace: fill, close/empty, switch, stable spare and independent other output | PASS prior subcases plus two relative-follow fills, source retirement, sole-client close and three-second stable empty shown view with the other output unchanged. PENDING: direct per-output spare identity, switch/history route, repetition and complete inverse matrix; global append/order alone is not identity proof |
 | T12 | #30, #50, N3 | Isolated Planner loss/recovery on two outputs; sleep/wake and native gaming remain separate legs | PASS Planner termination produced confirmed owner loss/narrow refusal with controller alive; manual fresh Planner replied, then managed development restart restored consistent lifecycle state. Later correlated transfers prove successful changed plans. PENDING: automatic supervision, sleep/wake and native gaming |
 | T13 | #48 | KWin restart with surviving Planner and fresh-ID adoption | PENDING: restart not exercised |
 | T14 | #2 | Wide source with two destination candidates | PENDING: requires a third output |
-| T15 | #43 | Vertical output arrangement and work-area gap; up/down crossing and no-candidate refusal | PASS prior gated up/down sends; new opposite-edge selection and positive-gap no-cross/no-wrap on the prototype-integrated tree, exact output restoration. Physical gaps are not panel/work-area gaps. PENDING: panel/work-area mutation, post-gap local focus, exhausted R4 up/down and rendering |
+| T15 | #43 | Vertical output arrangement and work-area gap; up/down crossing and no-candidate refusal | PASS current-tree vertical FULL-touch with panel/work-area gap, down/up sends and in-workarea frames, positive physical-gap refusal, restored-topology product local focus and exact output/panel restoration. PENDING: exhausted vertical R4 and full rendering matrix |
 
 ## Initial accepted live evidence
 

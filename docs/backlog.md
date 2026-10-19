@@ -47,142 +47,34 @@ decisions of 2026-09-24 are under
   pass after it; Rust workspace **2888 passed**, KWin **1772 passed**.
   [Evidence and script-restart re-check](changes/archive/kde-unfloat-immediate-retile.md).
 - P0 | KDE dual-output live testing and fixes | Comprehensive native
-  two-output pass (mixed scale, offset outputs) over the multi-output
-  must-pass checks ([coverage](research/two-output-test-environment.md),
-  [checks](#multi-output-setup)); fix defects found and record outcomes.
-  User 2026-10-18: use a physical two-output setup for native testing; the
-  researched VM route is not being pursued now.
-  [Partial native pass](changes/kde-dual-output-live.md): D06 focused-output
-  routing corrected and opposite-pointer admission reverified both ways;
-  output follow/stay, workspace source-empty/spare lifecycle and native
-  fullscreen/maximize restore have sampled evidence. Output-send diagnostics
-   and R4 own-mover tolerance reverified live; latest KWin suite passes 1885
-  tests. Unified input/callback wrapper and post-query polling repair pass
-  offline review. Software disable/return, priority and vertical send subcases
-  pass. Protected placement restored and development stopped. Remaining
-  inventory legs are pending; no full inventory gate completed.
-  - User live 2026-10-14: shortcut Apply passed; cross-output R4 right passed
-    (`L=H[W1,W2,W3*]`, `R=W4` -> `L=H[W1,W2]`, `R=H[W3*,W4]`).
-  - DEFECT corrected offline | User 2026-10-14 selects COSMIC R4 whole-target
-    D-axis wrapping for every occupied target, including parallel roots:
-    `L=H[W1,W2]` gains W3 as `H[H[W1,W2],W3]`. Near/far remembered-leaf
-    insertion and flat append are excluded; empty targets stay lone movers.
-    Supersedes the far-side-only `e94723f` correction; all-direction core
-    regressions cover target preservation and remembered-leaf variants.
-    [Record](changes/kde-dual-output-live.md#whole-target-r4-wrap-decision-2026-10-14).
-    Corrected native exact-tree repeat remains pending in the multi-output checks.
-  - DEFECT narrowed | Cross-output drag source/verdict lookup, hidden-output
-    reconcile fences, missing-preview-reply recovery and redundant preview
-    planning/logging corrected offline; full KWin suite passes 1565 tests.
-    [Record and physical repeat](changes/kde-dual-output-live.md#cross-output-drag-lifecycle-correction-2026-10-14).
-    Earlier occupied/empty/reverse crossings prove fallback recovery only. Native
-    effect/oracle availability established under normal `just dev trace` on
-    2026-10-15; mapped-binary freshness unproven. Same-output probe excluded from
-    clean acceptance after accelerated pointer overshoot onto a non-test frame;
-    relative synthetic move/drag now refuses before device allocation. Original
-    focus and protected placement restored, development DOWN. Physical
-    smoothness/CPU cost, cursor alignment on continuous re-cross, preview/drop
-    agreement, no-jump hold and cancellation remain pending; original Planner
-    mismatch/malformed-topology bands remain unrooted. Recommendation: physical
-    repeat with loaded effect/oracle, rather than further fixture redesign.
-    Flat-profile test-device probes positioned exactly within one output, but
-    a held cross-seam endpoint missed by 150 logical pixels; later controller-DOWN
-    fixture results are excluded from product acceptance. Synthetic journeys
-    parked; original pointer/focus and protected placement restored exactly.
-  - DEFECT size gate fixed and reverified, native migration still failing | Whole-workspace
-    migration (T05) previously refused `scope-invalid` when
-     an ordinary client reports Qt's unbounded maximum size (INT_MAX): the
-     retired migrate validator capped sizes at 16384. Current world validation
-     was corrected by `3c94a819`; exact producer/core migration regressions now
-     pass with bounded minimum + INT_MAX maximum; a complete-wire live command
-     now accepts them. Native T05 then exposed KWin's output-send desktop echo
-     being misclassified as external input, stranding the second member. Narrow
-      branch evidence now proves desktop membership can echo before native output
-      readback changes. The bounded same-flight source-output-lag correction moves
-      both members; typecheck/build and 1885 KWin tests pass. Whole migration is
-      still blocked by global-inventory confirmation and ambiguous source refill.
-      Unshipped confirmation prototypes lose target follow or retain a no-op
-      feedback storm after member closure. Next: replay exact arrival/refill/
-      feedback before another fix; no native whole-migration pass claimed.
-      PAUSED 2026-10-18: superseded by "KDE aligned per-output workspaces".
-    [Reproduction](changes/kde-dual-output-live.md#whole-workspace-migration-unbounded-maximum-size-refusal-2026-10-15).
-   - DEFECT corrected and reverified | User 2026-10-18: in two-output use some outputs show
-     too many workspaces, and workspace switching does not work correctly on
-     some outputs. Switching refusal reproduced diagnostically: secondary
-     ordinal 3 rejects `selection-unknown`, primary switches. Full-state native
-     desktop creation used the wrong KWin void API; corrected and reverified
-     with complete wire/native evidence. That repeat exposed missing local
-     creation-binding feedback; fixed offline with four producer regressions,
-     combined typecheck/build and 1850 KWin tests passing. Binding fix reverified
-      live with bound scoped spare and output-local numbered switching.
-      User decisions 2026-10-18 delivered: core single-homes startup natives,
-      gives shared-current secondary outputs fresh backing with membership-only
-      conversion (float/fullscreen/maximized/minimized preserved; sticky exempt),
-      and owns distinct secondary currents on that output. KDE binds by unique
-      token then renames to `Desktop N`. Native shared/distinct startup,
-      independent numbered/relative switching, output-send follow both directions,
-      exceptional-state preservation and normal controller restart pass; exact
-      protected/config/runtime restoration verified. Final integrated offline
-      gates and qualified limits: [outcome](changes/archive/kde-startup-desktop-ownership.md).
-  - Current-world native continuation: T03 numbered/adjacent relative/history
-    checks pass 10/10 across both outputs with independence. Ring wrap, presets,
-    shared refusal and physical delivery remain pending. T02 explicit follow
-    now passes the original two-peer right-follow/left-return and both stays on
-    the prototype-integrated tree; earlier retained `scope-held` did not recur.
-    Final KDE-only repeat stopped at the protected-active fixture gate before
-    dispatch. Ordinary local precedence/focus and occupied R4 geometry pass;
-    flat allocation/frame evidence does not prove exact tree structure. Reversible
-    opposite-edge selection and positive-gap no-cross/no-wrap pass; panel/work-area
-    mutation and post-gap local focus remain pending. T05 is parked above; T06
-    rendering and exact-tree R4 still need distinct evidence. Protected frames,
-    views, outputs/settings restored; development DOWN; newer external focus/
-    pointer changes preserved. Final integrated Rust workspace 3280/3280, KWin 1885/1885.
-  - Re-run the non-sticky multi-desktop membership discriminator against
-    aligned startup adoption: place one client on native desktops A and B,
-    enable once, and compare complete memberships. Additional-membership
-    retention remains TBD; do not reuse the removed conversion oracle.
-- P0 | KDE floating dialog pushed behind other windows | User live 2026-10-16:
-  Steam dialogs (game-launch controller prompt; fixed-size startup loading
-  dialog, admitted floating) repeatedly drop behind Steam or a terminal on the
-  same workspace; Alt+Tab shows them only briefly. Reproduced under
-  `just dev trace`.
-  - DELIVERED 2026-10-17, pending user live retest: reconcile now preserves
-    focused automatic fixed-size floats using exact-reference effective-floating
-    classification, without keep-above writes (D8). Correlated automatic-focus
-    attempt/result diagnostics distinguish setter acceptance from native focus.
-    Regressions reproduced sibling activation before the fix; full KWin suite
-    1574/1574, typecheck and build pass; independent review accepted.
-    [Outcome](changes/archive/kde-fixed-float-focus-preservation.md).
-    Retest Steam loading dialog + Alt+Tab with a terminal on the same workspace
-    under `just dev trace`; native incident attribution remains unconfirmed.
-  - User retest 2026-10-17: improved; reconcile focus skip engaged, no
-    automatic focus attempts. Residual drop-behind unattributed (likely native
-    stacking: automatic floats have no keep-above).
-  - NEXT | User decision 2026-10-17: automatic fixed-size floats stay above
-    tiled windows like Meta+G floats on KDE (COSMIC places both in one
-    floating layer above tiles), still with no geometry or focus writes.
-    Amend D8 and `REQ-SPC-04h`, qualify R-FLT-12; Windows unchanged. Accept
-    only after live checks with a fixed-size windowed game, a focused
-    fullscreen game and a modal dialog; game safety wins on conflict.
-  - User decision 2026-10-18 (option A): an automatic float that already has
-    keep-below set (user or app) receives no stacking writes and stays below;
-    pre-existing keep-above stays untouched; Meta+G keep-below
-    clearing/restoration is unchanged. KWin 6.7.5 exposes script-readable
-    `keepBelow` for Wayland clients with keep-above/below exclusivity.
-  - ROUTE GAP found 2026-10-18: production `kwin/src/entry.ts` starts only the
-    world adapter; the legacy `PlanAdapter` is never called. The focus
-    preservation fix (`0bc59d07`) lives in `PlanAdapter`, so it is not on the
-    shipped route; world-route focus preservation for automatic floats is
-    unverified (no equivalent guard or diagnostics found in `kwin/src/world-*.ts`).
-    A first keep-above attempt also targeted `PlanAdapter` and was discarded
-    unlanded. Production also lacks an established script-unload restoration
-    callback for project-owned keep-above.
-  - NEXT: implement keep-above (option A) on the world route beside the
-    existing manual/sticky keep-above handling in `kwin/src/world-native.ts`;
-    decide unload restoration (recommendation: match Meta+G world-route
-    behavior); verify or port automatic-float focus preservation to the world
-    route; then live checks above and the user Steam retest.
-    [Record](changes/kde-automatic-float-stacking.md).
+  two-output inventory on physical outputs, not the researched VM route
+  (User 2026-10-18). [Current evidence and parked questions](changes/kde-dual-output-live.md),
+  [checks](#multi-output-setup), [coverage](research/two-output-test-environment.md).
+  Aligned migration/send settlement, source-MRU stays, independent workspace
+  switching and panel-gap vertical sends pass sampled native checks. New:
+  both-output empty-end forward wrap, R4 authoritative nested-return shape and
+  direct-API preview screenshots; deferred trailing-send focus fixed offline.
+  Empty show creates no spare; each ordinary fill does. Policy is Tentative
+  (user review pending). Pending: preset application/keyboard delivery,
+  exact named-leaf R4 order, reviewed drag lifecycle, visible underlay, mapped
+  effect identity and remaining inventory matrix. Hotplug stays parked.
+  Rust 3353 / KWin 1920 pass; protected state/count/names/order restored,
+  development stopped, project effect unloaded. Byte-exact config and full
+  effects-baseline restoration remain unproven; no full inventory gate completed.
+  Additional non-sticky multi-desktop membership retention remains TBD against
+  aligned startup adoption, not the superseded conversion oracle.
+- P0 | KDE floating dialog pushed behind other windows | Implemented offline
+  2026-10-19 on the shipped world route: option A keep-above, focused automatic
+  float preservation and correlated diagnostics; no legacy edits, Windows
+  unchanged. D8 / REQ-SPC-04h / R-FLT-12 amended. KWin **1951**, Rust **3353**
+  pass; strict gates clean. Native stand-ins exposed an admission-focus write,
+  now fixed offline; corrected live repeat remains. **BLOCKED**: actual unload
+  leaves owned above without recoverable ownership across restart; matching
+  existing world behavior is unsafe. External lifecycle ownership question,
+  incomplete baseline restoration (pointer/views, two retired empty desktops)
+  and capture limits are in the [record](changes/kde-automatic-float-stacking.md).
+  Concurrent fullscreen/game, final modal/terminal checks and user's Steam
+  retest remain pending; no live acceptance claimed.
 - P0 | KDE rapid input drops and stalled geometry | Delivered 2026-10-19:
   production tiled directional FIFO with drain-time subject binding, exact
   convergence-based clamp budgets, and vacated-source R4 return reconciliation.
@@ -192,16 +84,23 @@ decisions of 2026-09-24 are under
   acceptance remains; original short-height cause lacked frames, while current
   full-height arrivals pass. [Outcome](changes/archive/kde-rapid-input-geometry.md).
 - P0 (after floating dialog defect) | KDE aligned per-output workspaces |
-  Dogfood 2026-10-18: disjoint backing desktops disagree with KDE's global
-  desktop numbering and strand members outside their output's ring. User
-  decisions 2026-10-18: aligned numbering (logical N = native N on every
-  output) via an internal platform-enabled core option, off by default;
-  per-output trailing empty; holes kept until a native is empty on all
-  outputs; minimum two including trailing; migration and hotplug
-  displacement into the trailing empty; no-merge hotplug kept, with a pivot
-  checkpoint; startup adopts the native grid; `global-unique` removed on KDE.
-  Supersedes the 2026-10-18 startup conversion and, in aligned mode, D4
-  insertion. T05 on the disjoint model is paused.
+  Implemented 2026-10-19: full aligned grid, per-output trailing, global
+  hole/removal guards, minimum two including trailing, startup adoption,
+  KDE `global-unique` removal/fallback and trailing-landing logical migration.
+  Rust **3335**, KWin **1919**, strict gates pass. Native hidden-member
+  reachability, independent trailing, holes/removal, migration out/back with
+  settlement and native output-move adoption pass at callback/state level.
+  D5 logical source-refill interpretation and old-mode fallback are
+  **Tentative (user review pending)**. Disjoint-model T05 is superseded.
+  - PARKED hotplug implementation/live proof: exact Plasma-surface restoration
+    for disconnect was not established. Question: stage those surfaces away
+    first, or probe isolated virtual outputs? Retained origin logicals must
+    precede native evacuation/pruning; aligned no-merge/return is not delivered.
+  - Remaining: physical drag/shortcut evidence; separately trace the earlier
+    own-send membership-without-output-arrival anomaly using complete transport
+    and native homing proof. Native KWin sends pass; that is not own-send proof.
+  - Follow-ups: evaluate aligned-option adoption separately on Windows and
+    macOS; their independent-set defaults remain unchanged.
   [Record](changes/kde-aligned-output-workspaces.md).
 - P1 (after floating dialog defect) | KDE open-animation tile jump | New
   windows play the open effect at initial placement, then jump into the tile.
@@ -305,20 +204,12 @@ decisions of 2026-09-24 are under
   observes; retain complete reports/replies, known-set bindings and exact refusal
   site. No delay-only workaround or controller-restart pass inferred.
   [Coverage matrix](changes/kde-live-acceptance.md#remaining-coverage-and-next-step).
-- P1 | KDE two-domain tiled send-back `scope-held` diagnosis | One tiled
-  send-follow passed; the subsequent observe published a hold and send-stay back
-  refused without movement. This may be the capacity hold that best-effort
-  admission clears: re-check the delivered admission change before investigating.
-  If it persists, retain full reports/replies and endpoint hold reasons, then replay
-  send-follow/observe/send-back offline. Cause remains unclassified; later retries
-  after the first refusal are not clean acceptance.
-  [Coverage matrix](changes/kde-live-acceptance.md#remaining-coverage-and-next-step).
-- P0 | KDE restart float-intent loss on held first observation | Native
-  restart read one persisted float and one tile override; the first accepted
-  observation held the scope as `unreadable` and the next persistence write
-  dropped the float without an explicit toggle. Add the producer-shaped offline
-  replay first, then fix any uncommanded loss of settled float intent.
-  [Investigation](changes/kde-triage-live.md#parked-restart-intent-loss-investigation).
+- P0 | KDE restart float-intent loss on held first observation | Delivered:
+  held-first preservation and fresh script-stream handover now pass the complete-
+  baseline two-output restart; both intent sets survive and explicit retiling
+  retains the fixed override. KWin 1962/Rust 3353; native-ID/default-tiling churn
+  only. Historical silence traced to a helper-ID collision; no lifecycle policy
+  selected. [Accepted outcome and limits](changes/archive/kde-restart-float-intent.md).
 - P1 | Windows: adopt full world-state core replies | W2a gated offline
   diagnostics delivered 2026-10-18: 55 fixtures reconciled onto current main;
   native build/test/strict clippy/fmt/whitespace pass (2,852 passed, 1 ignored).
@@ -1049,26 +940,18 @@ decisions of 2026-09-24 are under
   [Research](research/windows-port/safe-win32-wrappers.md),
   [evidence](changes/archive/windows-unsafe-ffi-consolidation.md).
 - P1 | Remove legacy routes and code | User 2026-10-18: pre-0.1, prune legacy
-  aggressively; remove the legacy KDE plan route as soon as possible. Production
-  `kwin/src/entry.ts` runs only the world adapter, yet `plan-adapter.ts` (~13k
-  lines), `plan-adapter-entry.ts` (~10k), `workspace-send-adapter.ts` (~6.8k),
-  `workspace-send-adapter-entry.ts` and their tests/fixtures remain. Work done
-  there no longer ships (`0bc59d07` focus preservation, the removed timing
-  probe and a discarded keep-above attempt all targeted it). Move still-used
-  shared pieces first (e.g. `active-group-highlight.ts` imports plan contract
-  constants from `plan-adapter.ts`), port any behavior production still needs,
-  then delete. Also inventory other legacy items for removal, for example the
-  KDE planner `DescribePlan` method (still referenced by the effect FFI group
-  highlight and planner service), the legacy per-domain core API once Windows
-  and macOS finish world adoption, legacy-only spec/decision text, superseded fixtures,
-  native-only callers and dead settings, with a reviewed removal list and
-  per-platform dependencies before deleting.
+  aggressively. KDE removal delivered 2026-10-19: plan/workspace-send adapters,
+  DescribePlan service/protocol, exclusive tests/fixtures and obsolete custom-tile
+  harness removed; world formatter, native rendering/settings and intent store
+  retained. Remaining: portable per-domain core API after Windows/macOS world
+  adoption, plus reviewed native-only callers, fixtures and dead settings.
+  [Evidence and outstanding visual/group smoke gap](changes/kde-legacy-route-removal.md).
 - P1 | Repository cleanup pass | User 2026-10-18: the repository has grown
   large and cluttered; schedule a cleanup pass soon. Inventory and remove
-  obsolete harnesses/scripts (e.g. `scripts/custom-tile-acceptance.sh` and its
-  test, whose `[Tiling]` preflight conflicts with the accepted live baseline),
-  superseded routes and fixtures, stale records and dead code, with a
-  reviewed removal list before deleting. Windows inventory complete: one
+  obsolete harnesses/scripts, superseded routes and fixtures, stale records and
+  dead code, with a reviewed removal list before deleting. KDE's obsolete
+  custom-tile acceptance harness/test and legacy-route fixture are removed
+  ([evidence](changes/kde-legacy-route-removal.md)). Windows inventory complete: one
   completed note archived unchanged; no source/scripts proven safe to delete.
   Active acceptance records and parked implementation/test bases retained;
   three cleanup groups await user review. [Windows inventory](changes/archive/windows-cleanup-inventory.md).
@@ -1078,11 +961,9 @@ decisions of 2026-09-24 are under
   helper-extraction exceptions (keyboard match arms, run-loop wait/intake/tick). Windows first:
   `crates/tiler-windows/src/tiling_sys/`, then
   `workspace_owner.rs` (~12k) and `snapkey.rs` (~6.5k). Shared crates
-  (`tiler-protocol` `planner_protocol.rs`, `tiler-core` `engine.rs` and
-  `session.rs`) and KDE files
-  (`kwin/src/plan-adapter.ts`, `plan-adapter-entry.ts`,
-  `workspace-send-adapter.ts`, `kwin/tests/plan-adapter.test.ts`) are split
-  in coordination with their work streams. About 40 files exceed 2k lines.
+  (`tiler-core` `engine.rs` and `session.rs`) and production KDE world files
+  are split in coordination with their work streams. Legacy KDE adapters and
+  `planner_protocol.rs` were removed rather than split.
   Windows phase 1: 14 pure-move extraction commits reduce `tiling_sys.rs`
   from 61,917 to 35,537 lines (-26,380, 42.6%). All 28 inline test modules
   now occupy separate child files totaling 26,288 lines; production unchanged.
@@ -4966,23 +4847,24 @@ recorded separately from unexercised legs. Reference-WM checks test other compos
   [R-WS-17](spec/reference-outcomes/workspaces.md#r-ws-17-previous-around-disconnect-displacement-and-reconnect-return).
 
 - [Checklist and partial native results](changes/kde-dual-output-live.md):
-  newcomers on both outputs and first-output opposite-pointer admission;
-  corrected sole-source R4 left/right native-written/followed/arrived;
-  explicit output follow and callback stay; first-output workspace follow/
-  stay/source-empty/spare lifecycle; native maximize/fullscreen hold/restore
-  on both scales. Unified action gate and post-query polling repair pass
-  offline review; exact-tree diagnostics and safe drag geometry remain fixture gaps.
-  Recovered software disable/return and priority subcases plus vertical setup/
-  restore pass. Protected placements, outputs and packaged enablement restored;
-  prior shortcut backup matches baseline, development stopped.
-  Product desktop cleanup remains an observation. Full inventory gates and
-  all unexercised subcases remain pending in the checklist.
+  aligned migration and explicit follow/stay settlement, independent numbered/
+  relative/history switching, empty-cell numbered departure, border rendering,
+  panel-gap vertical sends and direct-API preview rendering pass sampled legs.
+  Authoritative R4 nested-return shape passes; exact named-leaf order does not.
+  Deferred trailing-send focus fixed offline (3 regressions), native repeat TBD.
+  Forward relative-end wrap needs its spare-maintenance oracle; preset Apply and
+  keyboard delivery remain pending. Absolute drag wrappers rejected twice;
+  no live drag acceptance. Visible underlay/mapped identity remain pending.
+  Protected placement/settings restored, development stopped and transient
+  effect unloaded; normal desktop lifecycle churn retained. No full inventory
+  gate is claimed. Hotplug/disconnect remains parked.
 
 - Occupied R4 whole-target wrap (User 2026-10-14, offline delivered): start
   `L=H[W1,W2,W3*]`, `R=W4`; move right -> `L=H[W1,W2]`, `R=H[W3,W4]`;
   move left -> `L=H[H[W1,W2],W3]`, `R=W4`. Verify the exact tree, including
-  the nested same-axis group, with focus following W3. Native tree proof
-  remains pending; projected frames alone do not establish hierarchy.
+  the nested same-axis group, with focus following W3. Authoritative production
+  trace proves nested same-axis return and native mover focus. Exact named-leaf
+  proof remains pending: trace redacts identities, live peer pair was reversed.
   [Record](changes/kde-dual-output-live.md#whole-target-r4-wrap-decision-2026-10-14).
 - KDE Q4 R-WS-12/R-WS-21..26 (offline delivered, user decisions 2026-10-08): rebind
   the four empty-default migration actions; local/global-unique with native
@@ -5019,15 +4901,16 @@ recorded separately from unexercised legs. Reference-WM checks test other compos
    output-left/right follow and stay (invokeShortcut) have arrival/focus evidence;
    diagnostic routes reverified live. Sole-source R4 arrived/followed both ways
    after the own-mover observation-gap fix. Exact D13 local-wrap, occupied R4
-   repeat, floating-workspace/fixed boundaries, vertical cases and physical
+    named-leaf order, floating-workspace/fixed boundaries and physical
    stay bindings remain pending.
 - Core extraction K1 visual policy: confirmed by the user
   (2026-09-30: active border, fullscreen/maximise suppression, group
   underlay, drag preview). Remaining: border, underlay and preview remap
   correctly across outputs with differing scales/origins.
-  Destination frame/gap readback passed in the
-  [partial native pass](changes/kde-dual-output-live.md); overlay rendering
-  remains pending.
+   Destination frame/gap, active border and direct-API preview rendering pass
+   sampled native checks in the [record](changes/kde-dual-output-live.md).
+   Visible underlay, production drag preview and mapped-binary identity remain
+   pending.
   [change](changes/archive/portable-core-k1-visual-policy.md)
 - Born-fullscreen dogfood: game fullscreen beside tiles (no gap,
   `initial-fullscreen-held`), exit (fresh tile, `initial-fullscreen-released`),

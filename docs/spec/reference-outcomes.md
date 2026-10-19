@@ -57,6 +57,19 @@ trivially different start state.
 | Protected remainder and game safety | Put a retained fullscreen/maximized reserved slot beside normal A; shrink until projection fails; repeat with only protected slots or nonpositive usable area | D7 only safe eligible victims, preserve overlays/fixed overrides, defer gestures, never classify refusal as capacity; impossible protected remainder stays narrowly held | Native safety TBD; no live game probe performed |
 | Apply settings versus repeated full replies | Capacity-float N; change anchor/no-space settings; resend identical observations, including after manual focus/frame changes; separately start a new admission | D10 next-decision only, no reclassification/retry; stable targets/operation identities, no repeated focus/raise/transfer/frame reset. Actual new geometry may repair once | Windows/macOS consumer adoption and native settings pickup TBD |
 
+### KDE automatic fixed-float stacking discriminators
+
+Selected D8 amendment and option A (User 2026-10-17/18); Windows unchanged.
+[Current evidence and blockers](../changes/kde-automatic-float-stacking.md).
+
+| Variant | Minimal action sequence | Selected / offline outcome | Native or unsupported outcome |
+| --- | --- | --- | --- |
+| Automatic float versus tiled focus | Open fixed-size F over tile A; focus disposable terminal T; refocus F; reconcile | F above tiles, no F frame/focus/below writes; automatic survivor-focus intent cannot activate A over focused F; explicit command focus unchanged | Initial native F had one admission-focus write, corrected offline; corrected native repeat/physical Alt+Tab and Steam TBD |
+| Existing and later native flags | Admit F with keep-below, then separately pre-existing keep-above; separately set below after project admission | Existing below: zero stacking writes through tile/stop; existing above: untouched. Tentative (user review pending): later below wins without reassertion | Native flag matrix TBD |
+| Fullscreen conflict and exit | Admit F above tiles; focus fullscreen G in the same scope; exit fullscreen | Tentative (user review pending): release owned above once, reacquire on exit; G receives no writes | Only isolated focused-fullscreen stand-in sampled; concurrent F/G coverage and actual game TBD |
+| Unload with surviving float | Admit F; unload/reload script without closing F; focus fullscreen G | Actual unload has no JavaScript stop callback; former project above becomes indistinguishable from pre-existing above and is not owned for suspension | Unresolved safety blocker, no selected recovery ownership; native journey TBD |
+| Modal sibling | Open fixed-size window-modal F; focus T on same workspace; refocus F; reconcile | Keep modal relationship and native frame/focus; project adds only eligible above | Modal flag/above and API focus cycle sampled, zero switch-time controller actuations; physical interaction and corrected-build repeat TBD |
+
 ### Full-state reply settlement discriminators
 
 Selected core/KDE contract, delivered offline; native/reference outcomes
@@ -181,7 +194,7 @@ Variant of [R-OUT-01](reference-outcomes/multi-output.md#r-out-01-move-left-onto
 
 | Variant | Minimal action sequence | Ours offline outcome | Reference / native |
 | --- | --- | --- | --- |
-| Near-side remembered leaf on parallel multi-window target | Set `L=H[W1,W2]` remembering W2 (near-side), `R=H[W3*,W4]`; move W3 left. Mirror with the target remembering its near-left leaf | Selected 2026-10-14: `L=H[H[W1,W2],W3]`, mirrored right `H[W4,H[W1,W2]]`; every occupied R4 landing wraps the whole target tree per REQ-MOV-08, no remembered-leaf insertion, no flat append; empty takes the mover alone. Far-side history: before change `L=H[H[W1,W3],W2]`; far-side correction kept the same whole-wrap pair. Core implementation covers all four directions with focused tests passing | COSMIC S20/S23 observations wrap the whole target, including a parallel root. Pre-change KDE nested beside the remembered leaf when that leaf was near-side. R-OUT-01 proves i3 flat tail insertion, considered rejected for the predictable layout-preserving policy; sway has a parallel-left flat branch, exact wrapper TBD; Hyprland exact shape TBD. No established overriding Tier 1 majority beyond the COSMIC observation. Corrected live shape and native acceptance TBD |
+| Near-side remembered leaf on parallel multi-window target | Set `L=H[W1,W2]` remembering W2 (near-side), `R=H[W3*,W4]`; move W3 left. Mirror with the target remembering its near-left leaf | Selected 2026-10-14: `L=H[H[W1,W2],W3]`, mirrored right `H[W4,H[W1,W2]]`; every occupied R4 landing wraps the whole target tree per REQ-MOV-08, no remembered-leaf insertion, no flat append; empty takes the mover alone. Far-side history: before change `L=H[H[W1,W3],W2]`; far-side correction kept the same whole-wrap pair. Core implementation covers all four directions with focused tests passing | COSMIC S20/S23 observations wrap the whole target, including a parallel root. Authoritative KDE world trace 2026-10-19 proves nested return `H[1,1](H[1,1](L,L),L)` with native arrival/mover focus; trace redacts leaf identities and live peer order was W2,W1, so exact named fixture remains TBD. i3 flat tail insertion is rejected for the selected layout-preserving policy; sway/Hyprland exact wrapper TBD. No overriding Tier 1 majority established |
 
 ### Core-owned topology split-edge discriminator
 
@@ -204,6 +217,8 @@ Variants of [R-OUT-05](reference-outcomes/multi-output.md#r-out-05-open-a-window
 | --- | --- | --- | --- |
 | Inverse opposite-pointer admission | Occupy both outputs; focus B on the second while pointer stays on the first; launch ordinary C; record native output, membership and active window | Pre-fix C joined the pointer output. Corrected exact-birth routing reaches the focused output with C active; final-source managed-anchor inverse repeat has routed/native membership evidence ([record](../changes/kde-dual-output-live.md#focused-output-admission-correction-and-breadth-repeat-2026-10-14)) | D06 remains selected. Intra-round birth placement and remaining native activation-order/reference timing outcomes TBD |
 | Managed focus shift and birth within one debounce | Settle A and B on different outputs; focus A, then activate known managed B and open C before the pending debounce; pointer stays on A's output | Offline pre-fix C followed stale A; synchronous managed-activation capture now routes C to B. Both transfer and same-output burst regressions pass | Native tightly coalesced focus/birth ordering and reference timing outcomes TBD; sampled settled-anchor admission does not establish this leg |
+| Empty ring-end departure versus spare maintenance | On each output show/select an existing empty ring end with a sticky anchor, then relative-next; separately show a genuinely empty end and depart by ordinal 1; finally occupy each output's trailing end | **Tentative (user review pending), 2026-10-19:** showing/selecting creates nothing; relative-next wraps to cell 1 with the opposite view unchanged. Root cause was counting the sticky anchor as occupancy, not selection itself. Core RED/GREEN and real world_eval + production apply/fresh replies cover both wraps and fills, including native empty-list sticky homing. Native callbacks prove both forward wraps and one new spare per ordinary fill; genuinely empty show creates none. A departed globally empty, unshown, non-trailing cell may retire after sticky rehome | Tier 1 source: COSMIC `3d55cba0:src/shell/mod.rs:652-672` appends only for occupied/pinned last; `src/shell/workspace.rs:1538-1543` excludes its separate sticky layer from emptiness. Hyprland `19fb395d:src/config/shared/actions/ConfigActions.cpp:150-198` creates only a missing target, not another spare when selecting an existing empty. i3/sway have no trailing-spare equivalent; no contradiction found. Exact reference runtime fixture and keyboard delivery remain TBD. [Native evidence/restoration limits](../changes/kde-dual-output-live.md#empty-ring-end-correction-2026-10-19) |
+| Shared selection versus migration refusal | In shared mode select ordinal 2, step next and Previous; separately request whole-workspace output migration | Production core supports the shared selection ring; migration has distinct refusal rules. No shared-mode live refusal leg was dispatched | Which T03 selection action is expected to refuse, and with which reason? Native/reference outcomes TBD until the action is specified |
 | Shown secondary current outside its managed ring | Enable with distinct populated native currents; select ordinal 2 and return, then step next/previous on each output | User-selected 2026-10-18: each distinct shown current belongs to its output, one ring per native. Core claims complete startup currents before generic binding echoes; secondary no longer inherits a foreign-homed current. Native KWin 6.7.5 distinct-current enable and eight independent numbered/relative transitions pass ([outcome](../changes/archive/kde-startup-desktop-ownership.md)) | Full inverse relative-send ring-end/follow/stay matrix remains separate; switching proof does not claim send coverage |
 | Full-state startup rings with shared or distinct visible currents | Enable `per-output-local` with the same populated native current on both outputs; repeat with distinct populated currents; inspect complete wire/native bindings and scoped switching | User-selected 2026-10-18: shared current stays primary-owned; each other showing output receives fresh backing and same-output membership moves of its non-sticky windows. Distinct secondary current belongs to secondary. Native shared/distinct legs pass with direct mode evidence, one ring/native, friendly spare names, independent numbered/relative switching and output-send follow in both directions. No duplicate visible-current ownership ([outcome](../changes/archive/kde-startup-desktop-ownership.md)) | Native physical shortcut delivery, whole-workspace migration and full inventory acceptance remain separate |
 | Shared-current startup with exceptional window states | Before enable put ordinary, intentional-floating, fullscreen, maximized, minimized, sticky and minimized-sticky clients on the non-primary output's shared current; record native state and enable once | Native KWin 6.7.5: every non-sticky client changes only backing membership/output-local view; output and float/overlay/minimized state preserved; both sticky clients unchanged. Minimized wire entries now require native `sticky` evidence; source-slot restore policy is unchanged | Multi-desktop non-sticky memberships and exact post-unminimize restore shape not tested here |
@@ -334,7 +349,13 @@ establish KGlobalAccel's held-key delivery or select a repeat-suppression policy
 
 | Variant | Minimal action sequence | Offline evidence | Physical outcome / remaining decision |
 | --- | --- | --- | --- |
-| Held-key delivery | Focus ordinary eligible A; hold Meta+M past the repeat delay; release; press once again. From a fresh ordinary A, repeat with Meta+Shift+G | [KWin fixtures](../../kwin/tests/plan-adapter.test.ts) pin one native attempt per delivered maximize callback, repeated native restore/restick cycles and duplicate sticky notification convergence; existing sticky fixtures pin per-activation attempts | Ours KDE: callback count while held, visible cycling, release/repress delivery and any required suppression policy TBD, user-owned. Ours Windows: held repeats consumed without dispatch per the recorded decision; physical journey TBD. Reference WMs: this exact held-key sequence TBD; no source/native claim added |
+| Held-key delivery | Focus ordinary eligible A; hold Meta+M past the repeat delay; release; press once again. From a fresh ordinary A, repeat with Meta+Shift+G | Historical removed-legacy fixtures pinned one native attempt per delivered maximize callback, repeated native restore/restick cycles and duplicate sticky notification convergence, plus per-activation sticky attempts; world-route re-verification TBD | Ours KDE: callback count while held, visible cycling, release/repress delivery and any required suppression policy TBD, user-owned. Ours Windows: held repeats consumed without dispatch per the recorded decision; physical journey TBD. Reference WMs: this exact held-key sequence TBD; no source/native claim added |
+
+### KDE world-route group-highlight discriminator
+
+| Variant | Minimal action sequence | Current evidence | Unsupported outcome / decision |
+| --- | --- | --- | --- |
+| World group payload production | Tile A/B in one group; focus A; hold Meta+Shift; release; start and finish an interactive move of A | The world entry can forward active-group/no-group results, but no production caller submits the core active-group operation. Ordinary focus/observation live samples emitted no group setter. This gap predates legacy-route deletion | Chord/move rendering TBD. Decide whether to query on focus/domain/tree lifecycle changes or add a native visibility-triggered query; neither trigger migration is selected here |
 
 ### R-LAY-01 Windows held-key discriminator
 
@@ -468,6 +489,13 @@ lifetime, linking existing fixtures:
 | Windows caller rights / hidden urgency (D27, 2026-10-14) | A foreground, B current then product-hidden on workspace 2: plain `SetForegroundWindow` from a fresh never-attached background process; separately `FlashWindowEx(FLASHW_TRAY)`; compare a previously attached controller and tiler off/on; observe foreground, visibility, selected workspace and owned shell flash | User-approved 2026-10-16: OS-permitted Switch and focus has no fullscreen/game urgency-only downgrade, not yet implemented. Default Mark urgent only/non-permitted unchanged; explicit selection separate. Visible urgency/clear design unselected | At `f4b9f41`, fresh current/hidden calls denied, no focus/workspace switch; previously attached caller granted hidden activation with workspace convergence. Shell flash heard for hidden targets, not visible-marker proof. Helper self-request/native-permitted clean route, visible mark/clear, fullscreen/game and physical selection TBD ([record](../changes/archive/windows-d27-activation-verification.md)); reference outcomes TBD |
 | Windows OS-permitted activation over fullscreen/game (D27 5b) | With a game/fullscreen window foreground on WS1 and B hidden on WS2, request B activation with established OS permission; repeat in Switch and focus and Mark urgent only, then with a denied request | User-approved 2026-10-16: Switch and focus plus OS permission switches to WS2 and focuses B, even though WS1/game becomes hidden; default Mark urgent only and denied requests unchanged. No extra tiler game-protection override. Approved target, implementation/tests pending | Clean permission discriminator and real-game active/idle outcomes TBD; no new live evidence or KDE behavior change |
 | New-login intentional-float memory (D26) | End session; start a new login and observe owned intent | Selected (b) listed 0.1 known limitation: intentional-float memory does not survive logout/login under unchanged session-scoped REQ-RST-01d; reopened apps have new identities. Revisit after 0.1 with shared restart store ([decision](../decisions.md#restart-persistence), User 2026-10-12) | Ours TBD; ref/native TBD beyond linked R-RST-02; native dogfood/live check pending, verification-only |
+
+### KDE script restart with a retained Planner
+
+| Variant | Minimal action sequence | Established target / offline evidence | Unsupported outcome |
+| --- | --- | --- | --- |
+| Fresh script stream versus workspace-mode reset | Saved default Floating; explicitly tile two occupied output scopes; settle normal float A and fixed-window tile override B; restart only the script, retaining Planner and clients; observe before commands, then explicitly tile both scopes again | REQ-CTL-04 resets scope modes to the saved default; REQ-RST-01b preserves float/tile identities. Real-entry/retained-engine replay accepts fresh request/command counters under a new adapter incarnation, retains both persisted sets and native frames/memberships, then proves controlled fixed-window geometry after explicit retiling. Fixed incarnation reproduces `request-superseded`. Complete-baseline native repeat confirms both phases ([outcome](../changes/archive/kde-restart-float-intent.md)) | Reference counterparts TBD. No saved-layout or scope-mode preservation selected |
+| Loaded object versus evaluated controller | Load a helper after the controller; leave the helper running while removing the controller; load its replacement and inspect/run the returned ID | Historical receipts plus pinned KWin source identify numeric-path reuse: the replacement's ID addresses the surviving helper, whose already-running `run` is a no-op despite plugin-name loaded state. Teardown/verify helpers before removing an older controller; require evaluated readiness ([procedure](../live-kwin-testing.md#kwin-script-lifecycle)) | Historical helper source/plugin and direct collided-path dispatch were not captured; reference counterparts TBD. Do not reproduce the collision on a live desktop |
 
 ### Windows restart hydration discriminator
 
@@ -1672,20 +1700,19 @@ Legend:
 - `D-min-games` [minimums and game admission](../research/cross-platform-core/post-windows-audit.md#2026-10-05-follow-up-q2-minimum-infeasibility--q3-games)
   (2026-10-05 current project source and pinned upstream comparison;
   unsupported exact native outcomes remain TBD, not inferred from source policy)
-- `S-ours-toggle` omnitiler:kwin/src/plan-adapter.ts:2873-2899,4793-4801
-  and crates/tiler-windows/src/tiling_sys.rs:6482-6491 @ad6d69c
-  (persistent KDE attempted-state fence vs discrete Windows dispatch;
-  source paths, not physical repeat-delivery proof)
-- `S-ours-fs-exit` omnitiler:kwin/src/plan-adapter.ts:2926-2938
-  and crates/tiler-windows/src/tiling.rs:635-677 @ad6d69c
-  (public KDE fullscreen setter vs Windows project-preimage exit gate)
+- `S-ours-toggle` omnitiler:crates/tiler-windows/src/tiling_sys.rs:6482-6491 @ad6d69c
+  (historical KDE attempted-state fence, removed with the legacy route, vs
+  discrete Windows dispatch; source paths, not physical repeat-delivery proof)
+- `S-ours-fs-exit` omnitiler:crates/tiler-windows/src/tiling.rs:635-677 @ad6d69c
+  (historical KDE public fullscreen setter, removed with the legacy route, vs
+  Windows project-preimage exit gate)
 - `S-ours-ovref` overlay isolation parity: omnitiler:
   crates/tiler-windows/src/tiling.rs:377-394 (`overlay_refusal` for
   directional/pointer routes; focus carries no write and stays allowed) +
   crates/tiler-windows/src/tiling_sys.rs:5983-5998 (maximized focused
-  mover refuses before Engine mutation) + kwin/src/plan-adapter.ts:
-  2538-2563 (KDE focus-exempt fullscreen/maximize isolation with carried
-  applied rects)
+  mover refuses before Engine mutation) + kwin/src/world-apply.ts
+  (overlay guards: fit-excluded, fullscreen, and sticky rows take no
+  geometry writes)
   @9241c94
 - `S-ours-winsend` omnitiler:crates/tiler-windows/src/
   tiling_sys.rs:10532-10548 (tiled-to-tiled Engine send with source reflow
@@ -1694,20 +1721,19 @@ Legend:
   mover proceeds with flag recheck; target allocation kept, overlay
   geometry never writes)
   @9241c94
-- `S-ours-send-boundary` omnitiler:kwin/src/plan-adapter.ts:661-666
-  (retired `isSendActive` coordination hook only; R4 cross-output still
-  writes `setDesktops` per :7778) + kwin/src/workspace-send-adapter.ts:1-9
-  (standalone same-output prototype is dev-only, not a production route;
-  the host-native desktop-send journey remains untraced)
+- `S-ours-send-boundary` historical: the retired `isSendActive`
+  coordination hook (removed with the legacy route) plus the standalone
+  same-output prototype (dev-only, never a production route);
+  the host-native desktop-send journey remains untraced and world-route
+  re-verification is TBD
   @9241c94
-- `S-ours-sticky-restart` omnitiler:kwin/src/plan-adapter.ts:3007-3036
-  and crates/tiler-windows/src/tiling_sys.rs:8867-8898,8981-8999 @ad6d69c
-  (native-sticky unknown-float adoption vs marker consumption into normal float)
-- `S-ours-overlay-unfloat` omnitiler:kwin/src/plan-adapter.ts:2815-2841,7645-7648,7750-7765
-  and crates/tiler-windows/src/tiling.rs:395-410,
+- `S-ours-sticky-restart` omnitiler:crates/tiler-windows/src/tiling_sys.rs:8867-8898,8981-8999 @ad6d69c
+  (historical KDE native-sticky unknown-float adoption, removed with the
+  legacy route, vs Windows marker consumption into normal float)
+- `S-ours-overlay-unfloat` omnitiler:crates/tiler-windows/src/tiling.rs:395-410,
   crates/tiler-windows/src/tiling_sys.rs:7788-7813 @ad6d69c
-  (KDE floating target bypasses overlay dispatch refusal; Windows refuses;
-  settled KDE native outcome remains TBD)
+  (historical KDE floating-target overlay dispatch bypass, removed with the
+  legacy route; Windows refuses; settled KDE native outcome remains TBD)
 - `D-alt-tab`
   [hidden-workspace Alt+Tab research](../research/windows-port/alt-tab-hidden-workspaces.md)
   (official docs, pinned KWin/reference source and upstream reports; no live probe)
@@ -2185,10 +2211,10 @@ Legend:
   (`converge_observation` drops host-closed windows via the same
   collapse) and
   crates/tiler-core/src/cosmic_v1.rs:175-190
-  (`proportional_removal_shares`) and kwin/src/plan-adapter.ts:8290-8315
-  (remove-empty scope retire) @9241c94
-  (Engine desired topology/focus plus KDE applied-scope delivery;
-  adapter native focus confirmation stays a TBD sub-leg)
+  (`proportional_removal_shares`) @9241c94
+  (Engine desired topology/focus plus KDE world-route applied-scope delivery;
+  world-route scope-retire proof and native focus confirmation stay TBD
+  sub-legs)
 - `S-close-verbs` shared close-verb inventory for R-CLOSE-03/04/05:
   COSMIC data/keybindings.ron:6-7 (`Close` Super+q/Alt+F4) +
   src/input/actions.rs:180 @3d55cba06c9cf6f27609cdefb520f7857dba20af;
@@ -2275,12 +2301,12 @@ Legend:
   @2bdd944536fa2608f60b68686f8ec57d61663726
   (floating windows hold exceptions, not tile leaves; directional focus
   selects only tree siblings/descendants)
-- `S-ours-flt-subject` omnitiler:kwin/src/plan-adapter-entry.ts:1697,
-  kwin/src/plan-adapter.ts:2155-2200,2639-2645 and
+- `S-ours-flt-subject` omnitiler:kwin/src/world-entry.ts (directional
+  commands for float/sticky subjects drop with `command-dropped ...-float`;
+  float subjects take the float-subject path instead) and
   crates/tiler-windows/src/tiling_sys.rs:5904-5954
   @2bdd944536fa2608f60b68686f8ec57d61663726
-  (KDE excludes floating/sticky subjects; Windows refuses each explicitly;
-  cited lines are unchanged by the current uncommitted KDE reconcile fix)
+  (KDE drops floating/sticky subjects from tile dispatch; Windows refuses each explicitly)
 - `S-cos-newgroup` cosmic-comp:src/shell/layout/tiling/mod.rs:2898-2937
   @3d55cba0
   (new_group moves the split leaf first, then appends the newcomer, and
@@ -2459,8 +2485,8 @@ Legend:
   Horizontal, else Vertical) and
   crates/tiler-core/src/session/ops/lifecycle.rs:237-261 (normal tiled
   admission dispatches through `admission_axis_for_rect` plus eligible
-  focus into `insert_tiled`) and kwin/src/plan-adapter.ts:90 (`PlanOp`
-  `admit`) and crates/tiler-windows/src/product_hide.rs:825
+  focus into `insert_tiled`) and
+  crates/tiler-windows/src/product_hide.rs:825
   (`admit_managed_claim` managed-claim gate) @9241c94
   (shared Engine plus adapter integration; newcomer focus, order, and exact
   frames are separate TBD sub-legs, never read from this tag)
@@ -2470,20 +2496,16 @@ Legend:
   crates/tiler-core/src/session/ops/lifecycle.rs:249 (normal admission
   resolves that eligible focus) and :331-349 (admitted newcomer becomes
   the desired focus leaf with `last_active` updated, then dispatches) and
-  kwin/src/plan-adapter.ts:6962-6967 (complete-reply binding covers the
-  admit window set) and :8444-8467 (admit qualifies as a geometry-plan
-  boundary with `planned-applied`) and
   crates/tiler-windows/src/tiling_sys.rs:4,21 (Windows retains the shared
   `tiler_core::engine::Engine` as layout) @9241c94
-  (Engine desired-focus plus both adapters' admit application; adapter-side
+  (Engine desired-focus plus adapters' admit application; adapter-side
   physical focus confirmation and exact frames stay TBD sub-legs).
   D05 float-focus leg: the retained Engine convergence route anchors at the
   prior tiled focus (a focused ordinary float holds an exception, never a
   tile leaf; same B via the evolving tiled focus), proven offline by
   `crates/tiler-core/tests/session_float_focus_admission.rs` (convergence
-  fixture) plus the `float-focus-admission` KWin wire characterization,
-  under the unchanged admission policy; native observation/activation
-  journey pending (live TBD, user-owned).
+  fixture); the legacy KWin wire characterization was removed with the legacy
+  route, native observation/activation journey pending (live TBD, user-owned).
 - `S-ours-admission-capacity` omnitiler:crates/tiler-core/src/seed.rs:360-409
   (`order_spatial_with_focus_last`: deterministic spatial `(y,x,h,w)` stable
   sort with the focused window last; ties preserve adapter observation order;
@@ -2829,13 +2851,12 @@ Legend:
   crates/tiler-core/src/session/ops/focus.rs:26-115 (`propose_focus`:
   opaque match, `plan_focus` wrap, `Edge` refuses `Unchanged` with no
   plan and no pending; single-output cross-output attempts refuse the
-  same way) and kwin/src/plan-adapter.ts:2351-2358 (tile-origin focus
-  dispatch body) and :8167-8220 (`writeGeometries` actuates
-  `planned.focus` via exactly one `setActive`, fail-closed) and
+  same way) and kwin/src/world-apply.ts (focus arrives only via one-shot
+  command effects with arrival/view proof) and
   crates/tiler-windows/src/tiling_sys.rs:5402 (`actuate_focus`) and
   :6111-6120 (`FocusDirectional` reply actuated, `focus-ok` outcome)
   @9241c94
-  (leaf-only directional focus model plus both adapters' delivery;
+  (leaf-only directional focus model plus adapters' delivery;
   selected intent is never evidence)
 - `S-cos-move` cosmic-comp:src/shell/layout/tiling/mod.rs:1507-1560
   (`move_current_node` entry, stack-internal move, R1 orientation
@@ -3391,10 +3412,10 @@ Legend:
   (no fixed-size admission counterpart: AX exposes no min/max hint
   equality, so fixed-hint fixtures cannot classify; rule-assigned float
   only; app-owned geometry observed with no re-float)
-- `S-ours-spc-kde` KDE observer gate at this HEAD:
-  omnitiler:kwin/src/plan-adapter-entry.ts:781 (non-`normalWindow`
-  snapshots skipped before observation) + kwin/src/kwin-globals.d.ts:131
-  (`normalWindow` is KWin `src/window.h` state)
+- `S-ours-spc-kde` KDE observer gate on the world route:
+  omnitiler:kwin/src/world-observe.ts:434 (non-`normalWindow`
+  windows skipped before observation) + kwin/src/kwin-globals.d.ts
+  (`normalWindow` Q_PROPERTY)
   @f0969090a810ce85937728630f9b69ed2601dbe9
   (kind gate only; dialog/splash/utility type-eligibility mapping is
   untraced with no pinned KWin source in-repo, so typed fixtures stay TBD)
@@ -3422,13 +3443,11 @@ Legend:
   crates/tiler-core/src/directional.rs:1297 (`apply_resize_shares`) +
   crates/tiler-core/src/session/ops/mod.rs:8-15 (operation families:
   drag/float/focus/lifecycle/move/resize/workspace, no equalize family) +
-  kwin/src/plan-adapter.ts:90 (`PlanOp`: admit/remove/move/focus/resize/
-  reconcile/update-gaps/pointer-resize/toggle-float/drag-drop/
-  release-domain, no equalize op) and :3027-3090 (`requestResize`
-  dispatches `op: "resize"` with direction/mode/press_index)
+  kwin/src/world-report.ts (directional focus/move plus generic `operation`
+  commands; no equalize op)
   @9241c94
-  (shared Engine plus KDE adapter dispatch; no equalize verb in either
-  inventory)
+  (shared Engine plus world-route operation dispatch; no equalize verb in
+  either inventory)
 - `S-ours-winbind` omnitiler:crates/tiler-windows/src/settings.rs:773-775
   (resize rows `implemented: false`) and :1892-1898 (resize rows are the
   only unimplemented ones) and :1167,1216 (unimplemented guards) +
@@ -3454,8 +3473,8 @@ Legend:
   | Default resize rows; Windows chord ownership unknown | Apply Compatible, then Authentic | Both keep Win+Alt and Win+Shift+Alt resize defaults with unknown-ownership / unproven-containment notes; Compatible disables known conflicts only (2026-10-11, base `f794cf9` + delivery commit, preset fixtures) | Actual foreign owner and physical OS containment TBD |
 - `S-ours-mou` omnitiler:crates/tiler-windows/src/tiling_sys.rs:13017-13045
   (pointer gestures map to `CoreCommand::DragDrop`/`PointerResize`) +
-  kwin/src/plan-adapter.ts:90 (`PlanOp` incl `pointer-resize`/`drag-drop`)
-  and :1784-1789 (drop-intent correlation for both families)
+  kwin/src/world-report.ts (pointer/drag intents ride generic `operation`
+  commands) and kwin/src/world-drag.ts (tiled move-drop route)
   @9241c94
   (verb inventory only, never behavior: gesture verbs exist on both
   platforms while every host click/hover/share/drop outcome stays TBD)
@@ -3766,9 +3785,9 @@ Legend:
   drag/float/focus/lifecycle/move/resize/workspace only) +
   crates/tiler-core/src/directional.rs:236 (`MoveOperation` is
   directional-only) and :517 (`FocusPlan` is directional leaf-or-Edge only);
-  KDE adapter dispatch: omnitiler:kwin/src/plan-adapter.ts:90
-  (`PlanOp`: admit/remove/move/focus/resize/reconcile/update-gaps/
-  pointer-resize/toggle-float/drag-drop/release-domain);
+  KDE adapter dispatch on the world route: omnitiler:kwin/src/world-report.ts
+  (directional focus/move, workspace select/send/migrate, tiling commands,
+  plus generic `operation` commands);
   Windows dispatch: omnitiler:crates/tiler-windows/src/snapkey.rs:104-107
   (`SnapOp`: Focus/Move only) and :427-430 (`WorkspaceOp`: Select/Send only)
   @a77dd341f311da080ba94347c82a34d1d1c57893
@@ -4221,10 +4240,10 @@ Legend:
   :297-315 (index resolvers incl
   trailing) and :400-415 (`focus_target` prefers `last_focus`, else first
   visible) and crates/tiler-windows/src/snapkey.rs:427-447 (`WorkspaceOp`
-  Select/Send, index only) + KDE:
-  omnitiler:kwin/src/plan-adapter.ts:7699 (`resolveDesktop`) and
-  :7778 (`setDesktops` membership write; desktops themselves are
-  Plasma-owned) @60771bd
+  Select/Send, index only) + KDE world route:
+  omnitiler:kwin/src/world-native.ts (`resolveDesktop` desktop handle
+  resolution) and kwin/src/world-apply.ts (membership/view actuation;
+  desktops themselves are Plasma-owned) @60771bd
   (Engine/KDE have no select verb; Windows has index-only Select;
   no history/relative/whole-workspace verb in these inventories)
 - `S-cos-minimize` cosmic-comp:src/shell/mod.rs:4369-4410
@@ -4457,18 +4476,15 @@ Legend:
   inventory at pin lists no minimize verb) @b1b6abbd3f1a4be138152b6f0389c9ff1b27a269
   (minimize-mark path; old-slot restore only same-workspace without an
   insertion override; strip reflow and focus target stay TBD)
-- `S-ours-minkde` KDE production observer at this HEAD:
-  omnitiler:kwin/src/entry.ts:19 (production uses
-  `startPlanAdapterEntry`; one bounded DescribePlan adapter owns
-  observation) and kwin/src/plan-adapter-entry.ts:1484-1750
-  (`observeNative`: `normalWindow`/output/desktop/frame gates only, no
-  minimized filter; unreadable frame quarantines the whole domain to
-  null, never a transient remove/re-admit; null/non-normal
-  `activeWindow`, or active missing from entries, returns null) and
-  kwin/src/kwin-globals.d.ts:185-189 (`minimized` Q_PROPERTY documented
-  with NOTIFY `minimizedChanged`) @13dcb76
+- `S-ours-minkde` KDE production observer on the world route:
+  omnitiler:kwin/src/world-observe.ts (`captureWorldObservation`:
+  non-`normalWindow` windows skipped; output/desktop/frame gates hold the
+  domain instead of converging partial membership; minimized rows ride
+  separate lifetimes; active-window value decides global focus) and
+  kwin/src/kwin-globals.d.ts (`minimized` Q_PROPERTY with
+  `minimizedChanged` NOTIFY) @13dcb76
   (minimized frame readability and native active-window value decide
-  between stale-frame observation and fail-closed null; Engine effect
+  between stale-frame observation and fail-closed holds; Engine effect
   and focus stay TBD)
 - `S-ours-minwin` Windows adapter minimize path at this HEAD:
   crates/tiler-windows/src/tiling_sys.rs:523-525 (doc: `IsIconic` read
@@ -4875,10 +4891,8 @@ Legend:
 - `S-ours-fltrefuse` shared Engine float refusal:
   omnitiler:crates/tiler-core/src/session/ops/resize.rs:102-104
   (keyboard resize refuses exceptions as `NotTiled`) and :454-456
-  (pointer resize refuses exceptions as `NotTiled`) +
-  kwin/src/plan-adapter.ts:3669-3676 (adapter gates fullscreen/maximize
-  only, so float intents reach the Engine refusal) @9241c94
-  (project float resize has no path on either platform; host journeys stay TBD)
+  (pointer resize refuses exceptions as `NotTiled`) @9241c94
+  (project float resize has no shared path; host journeys stay TBD)
 - `S-ours-fltsel` Windows float workspace select:
   omnitiler:crates/tiler-windows/src/tiling_sys.rs:9840-9900
   (leaving members hide through identity or recovery read, reveal on
@@ -4887,8 +4901,9 @@ Legend:
   @9241c94
   (float hide/reveal with last-focus return; frames TBD)
 - `S-ours-fltstack` float stacking on both Ours platforms:
-  omnitiler:kwin/src/plan-adapter.ts:3459 (sticky keepAbove) and
-  :8083-8115 (float apply sets keepAbove plus geometry; unfloat restores)
+  omnitiler:kwin/src/world-native.ts (automatic fixed-float keep-above
+  application with below-wins and external-clear release; relative F/G
+  order stays host-owned)
   + crates/tiler-windows/src/tiling_sys.rs:7263-7280 (admission places
   non-topmost floats with `HWND_TOPMOST`) and :3993-4014
   (`set_topmost_band` without move/size/activate) and :7450-7521
@@ -5168,9 +5183,9 @@ Legend:
   omnitiler:crates/tiler-core/src/session/world.rs:380-389
   (`sync_focus_from_window` only resyncs focus for ordinary
   activation of a known tiled window in an existing domain, failing
-  closed otherwise) + kwin/src/plan-adapter.ts:89 (observed
-  `PlanSignal` kinds carry no attention/urgency signal) and :630
-  (`setActive` is the sole focus actuator) +
+  closed otherwise) + kwin/src/world-apply.ts (focus arrives only via
+  one-shot command effects with arrival/view proof; no
+  attention/urgency signal) +
   crates/tiler-windows/src/workspace.rs:388-397 (`note_foreground`
   records foreground observation as last-focus; no flash or marker
   path exists in the adapter)
@@ -5270,20 +5285,17 @@ Legend:
   (periodic save registration and startup load)
   @b1b6abbd3f1a4be138152b6f0389c9ff1b27a269
   (grace-windowed startup matching; exact strips/widths/focus untraced)
-- `S-ours-kde-rst` Ours KDE restart position at this HEAD:
+- `S-ours-kde-rst` Ours KDE restart position on the world route:
   omnitiler:crates/tiler-core/src/session/world.rs:677-700
   (`converge_observation` converges each session from a fresh complete
   observation; the session object holds no layout store) +
-  kwin/src/plan-adapter-entry.ts:3221-3222 (startup observes the live
-  workspace plus hidden domains, admitting existing windows) and
-  :1681-1684 (production observation reads fullscreen/maximized and
-  derives ordinary floating from the session-local ids; sticky is native) and
-  :2608 (intentional-float ids live in a fresh per-session `Set`) and
-  :2946-2949 (`setFloating` adds/deletes ids at runtime only)
+  kwin/src/world-entry.ts (fresh complete observation per dispatch; no
+  TS layout store; float/tile-override identity seeds from the
+  Rust-owned runtime store via `ReadFloatIntent`)
   @6da3d86
-  (fresh admission with classified exceptions on restart; intentional
-  floats reset because the id set is session-local; native focus and
-  host-max restore untraced)
+  (fresh admission with classified exceptions on restart; cross-login
+  intent memory remains a known limitation; native focus and host-max
+  restore untraced)
 - `S-ours-win-rst` Ours Windows restart position at this HEAD:
   omnitiler:crates/tiler-windows/src/tiling_sys.rs:3 (product
   loop runs a full `EnumWindows` observation) and :1202-1204 (saved
@@ -5385,7 +5397,7 @@ Legend:
 | V-MAX-MODEL | Maximize: retained-slot overlay vs layout reflow vs no state | Selected: retained-slot overlay (`D-dec-ww` KDE + `D-dec-max`); [Q3](../decisions.md#window-state-float-sticky-maximize-fullscreen) includes R-MAX-03 (stays maximized over reserved slot), KDE [delivered offline](../changes/archive/kde-maximized-floating-retile-overlay.md) and Windows [delivered offline 2026-10-12](../changes/archive/windows-maximized-floating-retile-overlay.md). R-MAX-06 changed 2026-10-11 to default tile-on-launch with overlay alternative ([Windows setting](../changes/archive/windows-born-maximized-setting.md)); R-MAX-03 independent. Native journeys TBD |
 | V-FS-SLOT | In-place fullscreen: retain slot vs remove/reflow | Retained slot selected (`D-dec-ww`); born-fullscreen is a separate future row |
 | V-START-SEED | Startup non-fitting topology: centre-cut inference vs long-edge seed | Selected: sequential long-edge seed, no centre inference (startup hybrid User 2026-10-08) |
-| V-START-MIN | Minimum-infeasible writes: origin+minimum vs skip vs float | B6 selected on both platforms, no setting (user 2026-10-07); KDE [delivered offline](../changes/archive/kde-minimum-origin-placement.md), native journey TBD (`D-place`; [adapter](../../kwin/src/plan-adapter.ts) `overconstrainedEffective`) |
+| V-START-MIN | Minimum-infeasible writes: origin+minimum vs skip vs float | B6 selected on both platforms, no setting (user 2026-10-07); KDE [delivered offline](../changes/archive/kde-minimum-origin-placement.md), native journey TBD (`D-place`; [shared minimum projection](../../crates/tiler-core/src/size_hints.rs)) |
 | V-CLOSE-FOCUS | Removal focus: source-MRU top vs spatial neighbor vs target history | `D-dec-cos` selects source-MRU top |
 | V-GROUP-STACK | Tabbed stacks: supported vs fail-closed refuse | User 2026-10-07: tabs first after 0.1; close active tab keeps group, activates next (COSMIC/Hyprland/i3/sway); until then refuse closed (`D-dec-cos`) |
 | V-R4-DIR | Exhausted directional move: cross-output vs no-op vs workspace cycle | USER 2026-10-07 item 5 as replaced by User decision 2026-10-09: local restructure/swap/escape first, then all-four-direction crossing including sole root leaf; reciprocal edge-touch + positive overlap on FULL output rectangles, horizontal too; window-based selection (shared edge containing moving window centre projection, else larger window-span overlap, final left/top tie-break); whole-workspace migration largest shared edge then left/top; unreadable topology refuses, no candidate no-op, no wrap. Shared core/KDE selection [delivered offline](../changes/archive/position-based-output-selection.md); work-area placement retained; occupied R4 landing is whole-target wrap nearest source, no flat append or remembered-leaf insertion, empty takes mover alone (User decision 2026-10-14; [wrap decision](../changes/kde-dual-output-live.md#whole-target-r4-wrap-decision-2026-10-14)); Windows directional wiring [delivered offline 2026-10-13](../changes/windows-multi-output-foundation.md); [selector audit and explicit-send integration](../changes/archive/windows-position-based-output-selection.md) `fda618f`, 2026-10-14. Physical journeys and item-14 migration integration remain pending (R-MOV-08/11..13) |

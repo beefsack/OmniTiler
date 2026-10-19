@@ -1,5 +1,9 @@
 # Edge Drag Share Adjustment
 
+- Historical delivery: adapter/DescribePlan citations below refer to the removed
+  KDE route. Production now uses world reports and world-drag; the surviving
+  oracle endpoint is not a second planner route.
+
 ## Scope
 
 - Slice 1 adds a separate disabled-by-default inert `dragoracle` effect. It

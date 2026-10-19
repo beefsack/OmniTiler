@@ -1,5 +1,10 @@
 # Placement-Aware Startup Adoption
 
+- Historical implementation evidence: legacy KDE adapter/DescribePlan citations
+  below describe the removed route. The selected fitting policy remains; current
+  production observes and applies through the world route. Legacy test results
+  are not current-world acceptance evidence.
+
 ## Decision Proposal
 
 - Approved: the initial first-startup policy is a versioned Rust-owned,

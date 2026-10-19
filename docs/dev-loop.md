@@ -184,9 +184,10 @@ Current world-route diagnostics:
   request/outcome correlation without raw payloads; egress `msg=<fixed-check>`
   distinguishes validation failures without exposing content.
 
-The operation-specific `DescribePlan` journal forms retained below describe
-the legacy domain path and earlier acceptance evidence, not the current KDE
-transport. Use the [full-state live checklist](changes/archive/core-full-state-replies.md#remaining-work-and-user-owned-live-checks)
+The removed legacy domain path's operation-specific `DescribePlan` journal
+forms are intentionally not documented below; archived records that cite them
+are historical evidence, not current implementation proof. Use the
+[full-state live checklist](changes/archive/core-full-state-replies.md#remaining-work-and-user-owned-live-checks)
 for the migrated path; live runs remain separately authorized.
 
 ## Manual Fallback
@@ -253,7 +254,7 @@ devenv shell --impure -- bash scripts/start-test.sh start
 - Confirm `isScriptLoaded s omnitiler-kwin` decodes to the strict
   `{"type":"b","data":[true]}` envelope.
 - Confirm `just dev-status` reports `dev mode: UP`.
-- Confirm the single-engine journal shapes below appear under the recorded
+- Confirm the current world-route diagnostics above appear under the recorded
    KWin PID (`journalctl --user --no-pager _PID=<kwin-pid>`); loaded state alone never
   proves callbacks.
 
@@ -268,7 +269,7 @@ devenv shell --impure -- bash scripts/dogfood-install.sh enable
 `start-test.sh stop` requires both the nonce-owned receipt and the exact
 script ID; a mismatched receipt, a missing receipt, or an already-unloaded
 plugin fails closed without touching another script. Stopping/unloading does
-not roll back window geometries the single DescribePlan engine already
+not roll back window geometries the single world engine already
 applied.
 
 ## Manual Single-Engine Journey (3-6 Windows)
@@ -333,112 +334,14 @@ prove live callbacks.
 
 ## Journal Line Forms
 
-Output move/send (item 5, offline verified; two-output native journey pending):
-
-- Multiple readable adjacent outputs now select by window-centre projection,
-  else span overlap, then left/top; reverse multiplicity is accepted.
-  `omnitiler:plan:output-send-refused-ambiguous` is a retained refusal
-  token for unreadable mover selection evidence, not candidate multiplicity;
-  zero transfer writes. Unreadable topology reports
-  `event=output-send outcome=scope-invalid reason=topology-unreadable`.
-- `omnitiler:plan:busy-refused kind=output-send`: existing plan/send
-  flight holds the route; no second dispatch.
-- `omnitiler:route-diag component=cosmic-send stage=entry ... event=output-send`:
-  `outcome=no-target` is a no-op; `refused`, `scope-invalid`,
-  `native-refused` and `native-failed` describe refusals/failures.
-  `gate=floating-boundary outcome=native-moved` is membership-only;
-  `follow=followed|stayed|arrival-unconfirmed|focus-unconfirmed` reports the
-  separate focus/visibility proof. Floating frames are not placement plans.
-- Tiled output send reuses send diagnostics with
-  `stage=arrival event=transfer outcome=transferred`, then `event=arrival outcome=arrived`;
-  follow reports `state-confirmed`, stay `stay-confirmed`. Output and sole
-  desktop membership must read back on the exact live mover; no desktop switch
-  runs because the destination workspace is already current on its output.
-- R4 move diagnostics/arrival fences now cover Up/Down as well as Left/Right.
-  Full output rectangles select adjacency; carried placement remains work-area
-  based. Failed/stale/timeout transfers force both-domain refresh without replay.
-
-Workspace send follow/stay (item 2, offline verified; native journey pending):
-
-- `omnitiler:route-diag component=cosmic-send stage=follow ... event=follow outcome=stay-confirmed`:
-  fresh transfer arrived, source still selected; core-bound source MRU focus
-  applied, or null desired focus required no setter. No desktop switch.
-- The same stage emits `event=stay-pre|stay-focused` with existing redacted
-  equality/count fields; `focus-unconfirmed`, `hooks-unavailable` and
-  `arrival-unconfirmed` remain truthful terminal focus/arrival failures.
-- `stage=entry ... outcome=native-moved follow=followed|stayed|arrival-unconfirmed|switch-unconfirmed|focus-unconfirmed|native-unavailable gate=floating-boundary`:
-  membership-only boundary write succeeded; follow token reports the separate
-  switch/focus result. `native-failed` or `native-refused` reports
-  `follow=not-reached`, never a preservation/success claim.
-- Relative target is frozen once from the scoped ring; `req_ord=-1` means
-  relative/no numbered ordinal, `0` is append/trailing. Stay source-view drift
-  before a reply produces `stale-revision` with zero writes; drift after the
-  membership write produces `arrival-unconfirmed`, no hidden-source focus.
-- `omnitiler:workspace:workspace-send-relative-absent:<reason>`:
-  target resolution refused (`empty-ring`, `current-unknown`,
-  `current-out-of-ring`, `no-active-output`, `unknown-output`, `target-removed`).
-
-Workspace previous/relative diagnostics (opaque stable workspace IDs and
-session-local output keys; native selection attempt completion is not visual
-acceptance):
-
-- `omnitiler:workspace:workspace-previous-recorded:<id>`: a changed
-  current view was observed; `<id>` is the new current view, previous is the
-  preceding observed ID. Native/send-follow/hotplug use the same observation.
-- `omnitiler:workspace:workspace-previous-discarded:<key>`: disconnected
-  output history and its observation baseline discarded.
-- `omnitiler:workspace:workspace-previous-invalidated:<removed|out-of-scope>`.
-- `omnitiler:workspace:workspace-previous-completed:<id>` and
-  `omnitiler:workspace:workspace-relative-completed:<id>`: native
-  selection seam invoked; recording follows observation, not setter return.
-- `omnitiler:workspace:workspace-previous-absent:<no-active-output|unknown-output|no-history>`.
-- `omnitiler:workspace:workspace-relative-absent:<no-active-output|unknown-output|empty-ring|current-unknown|current-out-of-ring|target-removed>`.
-- `omnitiler:workspace:workspace-previous-no-op:already-there` and
-  `omnitiler:workspace:workspace-relative-no-op:already-there`.
-
-Whole-workspace output migration (R-WS-12, follow-only, current
-offline-delivered baseline verified; native journey pending):
-
-- `omnitiler:route-diag component=workspace-migrate stage=entry correlation=<correlation> generation=<generation> revision=0 diag_seq=-1 event=workspace-migrate outcome=<outcome> follow=not-reached gate=pre-commit phase=entry reason=<reason> req_ord=-1 inflight_stage=<stage>`:
-  entry outcomes `invalid-direction`, `disabled`, `busy-send`,
-  `busy-plan`, `mode-shared`, `mode-invalid`, `per-output-disabled`,
-  `per-output-unreadable`, `no-target` (quiet no-op,
-  `reason=no-adjacent-output`), `refused` (`reason=scope-unreadable`).
-  A busy entry also emits `omnitiler:plan:busy-refused
-  kind=workspace-migrate`; an unreadable scope also emits
-  `omnitiler:plan:workspace-migrate-refused-scope`.
-- `omnitiler:route-diag component=workspace-migrate
-  route=migrate-workspace stage=<stage> correlation=<correlation>
-  generation=<generation> revision=<revision> diag_seq=<seq>
-  event=<event> outcome=<outcome>`: pre-commit refusals carry
-  `follow=not-reached gate=pre-commit phase=request reason=<token>`
-  with reasons `disabled`, `direction-invalid`,
-  `transfer-unavailable`, `sequence-invalid`, `scope-invalid`,
-  `mode-shared`, `mode-invalid`, `per-output-disabled`,
-  `per-output-unreadable`, `same-output`, `workspace-mismatch`,
-  `target-visible`, `desktop-cap`, `overlay-present`,
-  `focus-mismatch`, `mode-unreadable`, `mode-mismatch`,
-  `correlation-invalid`, `payload-invalid`, `request-over-cap`,
-  `timeout`, `in-flight`.
-- The `overlay-present` refusal above is the current offline-delivered
-  baseline and is still implemented. User decision D8 2026-10-08 selects
-  fullscreen+maximized carry instead; implementation pending, so no carry
-  trace is claimed here.
-- `omnitiler:workspace:workspace-migrate-refused:<shared-mode|unknown-output|unknown-workspace|out-of-scope|target-current|duplicate-target>`,
-  `omnitiler:workspace:workspace-previous-invalidated:migrated`,
-  `omnitiler:workspace:workspace-migrate-undisplaced`, and
-  `omnitiler:workspace:workspace-migrate-completed` (map commit only,
-  never a native-arrival claim).
-- Terminals settle `release` (the settled refresh reconciles both
-  domains from native observation) or `arrival`: `arrived` only after
-  verified per-member arrival, views, and focus; `follow` reports
-  `state-confirmed`, `focus-unconfirmed`, `arrival-unconfirmed`, or
-  `hooks-unavailable`. A written-target/unwritten-source split settles
-  `source-empty` (partial); other uncertain terminals include
-  `member-closed`, `write-failed`, `switch-unconfirmed`,
-  `output-unconfirmed`, `stale-revision`, `stale-scope`, `timeout`,
-  and `arrival-timeout`. The Engine `planned` reply is a retained
-  rekey, never a native-completion claim.
+The only production KDE journal shapes are the current world-route
+diagnostics above plus the world-route automatic fixed-float diagnostics and
+the owner/tray records below. The removed legacy domain path's
+`omnitiler:plan:*` operation tokens are intentionally undocumented here;
+per-operation detail on the current path uses the same `omnitiler:world:`
+prefix (see `kwin/src/world-entry.ts`, `kwin/src/world-apply.ts`,
+`kwin/src/world-native.ts`, `kwin/src/world-drag.ts` and the Planner
+`omnitiler:world-summary` / `omnitiler:intent-summary` emitters).
 
 Filter by the recorded KWin PID only: `journalctl --user --no-pager _PID=<kwin-pid>`
 (never `journalctl --system`). All emitted production diagnostics carry the
@@ -450,68 +353,26 @@ payloads. No line carries a caption or title. Window-bearing trace lines carry
 the stable `resource_class` application identifier as well as the opaque id; it
 is not a caption and cannot contain document or page content.
 
-Native effect endpoint transitions (one initial state and, after initial
-failure, one recovery on a later activation/reconfigure; no retry spam):
-
-- `omnitiler:active-border:endpoint stage=failed service=<0|1> object=<0|1>` (first failed registration, including partial success before rollback)
-- `omnitiler:active-border:endpoint available=<0|1>` (initial availability, then recovery if initially unavailable)
-- `omnitiler:drag-oracle:endpoint stage=failed service=<0|1> object=<0|1>` (first failed registration, including partial success before rollback)
-- `omnitiler:drag-oracle:endpoint available=<0|1>` (initial availability, then recovery if initially unavailable)
-- `omnitiler:drag-oracle:press-spy available=<0|1>` (only if input was initially unavailable; late installation reports `1` once)
-
-The name and object scalars describe that registration attempt only; `available=1`
-requires both to succeed. These lines contain no native identities or payloads.
-
-Startup context (exactly one line per successful plan entry start, using the
+Startup context (exactly one line per successful world entry start, using the
 existing owner/generation provenance plus the compiled-in source revision;
 `<source-rev>` is the installed build's bounded git revision, else
 `local-dev`):
 
-- `omnitiler:plan:ready owner=<owner> generation=<generation> source=<source-rev>`
+- `omnitiler:world:ready <state> source=<source-rev>`
 
-Same-axis setting reload (ordinary output, only when the validated value changes
-on `Options.configChanged`; affects subsequent move requests, no tree rebuild):
+World-route automatic fixed-float diagnostics:
 
-- `omnitiler:plan:config-reloaded stage=same-axis-move mode=<group-with-neighbor|swap-with-neighbor>`
-
-Fixed-size predicate reload (same trigger; subsequent admissions only, no
-reclassification of existing windows):
-
-- `omnitiler:plan:config-reloaded stage=fixed-size-predicate predicate=<both-axes-fixed|either-axis-fixed>`
-
-An unknown protocol `fixed_size_predicate` returns
-`snapshot-invalid/fixed-predicate-invalid`; invalid KDE config falls back to
-`both-axes-fixed` before dispatch.
-
-Fixed-size automatic admission (normal output, only new classifications or
-committed automatic membership, not per-frame polling):
-
-- `[kwin] omnitiler:plan:fixed-size-classification op=<op> correlation=<correlation> evaluated=<N> classified=<N> reason=fixed-equal phase=classify`
-- `[planner] omnitiler:fixed-size-admission op=<op> correlation=<correlation> evaluated=<N> admitted=<N> reason=fixed-equal`
-
-The KDE line identifies classification before dispatch, not application.
-The Planner line reports committed automatic membership; it does not prove
-native placement or focus. Correlate the existing `planned-applied`/failure
-terminal separately. These summaries carry no window/native IDs, geometry,
-resource classes, captions or payloads. Admission adds no geometry, focus,
-stacking or keep-above writes to the automatically floating client.
-
-Automatic fixed-float focus preservation (ordinary output; D8 no-touch):
-
-- `omnitiler:plan:focus-skipped correlation=<correlation> kind=reconcile reason=<reason> window=<id> target=<id>`: a reconcile reply carried retained tiled-survivor focus while the observed focused window floats. `floating-active` and `sticky-active` are the pre-existing native reasons; `automatic-active` is a retained automatic fixed-size float matched by exact native reference. A skip runs no setter.
-- `omnitiler:plan:automatic-focus-attempt correlation=<correlation> kind=<reconcile|update-gaps> window=<id> target=<id> reason=planned-focus`: an automatic focus setter run is starting. Emitted only for reconcile/update-gaps setter runs; explicit-op focus setters emit neither line, and protected skips attempt nothing.
-- `omnitiler:plan:automatic-focus-result correlation=<correlation> kind=<reconcile|update-gaps> window=<id> target=<id> reason=planned-focus outcome=<setter-accepted|setter-refused|threw>`: the synchronous setter outcome for the attempt above. `setter-accepted` reports setter acceptance only, never proven native focus. `setter-refused` and `threw` fail the flight `write-failed`.
+- `omnitiler:world:focus-skipped kind=effect reason=<automatic-active|floating-active|sticky-active> window=<id> target=<id> id=<effect>`: automatic admission focus is suppressed over a focused float; explicit command effects are exempt.
+- `omnitiler:world:automatic-focus-attempt req=<req> rev=<rev> target=<id> reason=planned-focus` and matching `automatic-focus-result ... outcome=<setter-accepted|setter-refused|threw> active=<true|false>` distinguish setter acceptance from native activation. Eligible automatic fixed-float targets never take admission activation.
+- `omnitiler:world:automatic-keep-above window=<id> target=<target> outcome=<outcome>` records stacking readback/refusal; below-wins and external-clear release lines name the reason. Final state alone does not prove zero writes.
 
 Intentional-float/fixed-window tile-override owner restart (ordinary output; one startup read and settled
 membership writes, not per-frame snapshots):
 
-- `[kwin] omnitiler:plan:intent-read correlation=<generation>-i<seq> outcome=<ok|degraded|rejected> stored=<N> returned=<N> tile_stored=<N> tile_returned=<N> reason=<fixed-token|->`
-- `[kwin] omnitiler:plan:intent-write correlation=<generation>-i<seq> outcome=<stored|rejected|unavailable> stored=<N|-> tile_stored=<N|-> reason=<fixed-token|->`
 - `[planner] omnitiler:intent-summary direction=egress op=<read|write> correlation=<correlation|-> outcome=<outcome> stored=<N|-> returned=<N|-> tile_stored=<N|-> tile_returned=<N|-> reason=<fixed-token|->`
-- `[kwin] omnitiler:plan:intent-bootstrap-deferred kind=<operation>`
 
-`stored` on the write terminal is a separate storage acknowledgement, not
-`planned-applied` and not an atomic native/store commit. Read hydration occurs
+`stored` on the write terminal is a separate storage acknowledgement,
+not an atomic native/store commit. Read hydration occurs
 before planning; membership only leaves recovered float frames untouched.
 `tile_stored`/`tile_returned` count explicit fixed-window tile overrides;
 they authorize normal tile placement, never saved positions or float writes.
@@ -520,162 +381,10 @@ Missing state is empty. Degraded reasons include `unreadable`, `corrupt`,
 `timeout`, `transport`, `malformed` and `oversize`. Reads settle empty on those
 failures; failed writes retain local intent and the next settled membership
 update sends the full set. There is no hold/retry scheduler. The brief startup
-bootstrap defers plan/send requests until the read settles or its deadline,
+bootstrap defers command requests until the read settles or its deadline,
 without queuing/replaying user commands. Summaries contain no native IDs,
 application content, bus owners, geometry, paths or raw payloads. See the
 [Q3 record](changes/archive/kde-intentional-float-restart.md).
-
-When a complete startup signal attachment fails, the entry remains inert and
-retries on a later `windowAdded` or `Options.configChanged` event (one attempt
-per event, no timer or attempt cap). Only transitions are logged:
-
-- `omnitiler:plan:entry-attach stage=failed cause=<added|removed|activated|geometry|scope|maximize|enable-refused> recovery=retry-on-native-event`
-- `omnitiler:plan:entry-attach stage=recovered`
-
-Per dispatched `DescribePlan` flight, ordinary output retains one terminal
-verdict line. Trace also records its route entry:
-
-- `omnitiler:plan:cmd=<correlation> kind=<op> windows=<N> outcome=dispatch`
-- `omnitiler:plan:cmd=<correlation> kind=<op> windows=<N> outcome=<outcome>`
-
-The `outcome=dispatch` form is trace-only; the terminal form is ordinary.
-
-where `<op>` is one of `admit|remove|move|focus|resize|reconcile|pointer-resize|toggle-float|toggle-orientation|drag-drop`,
-`<correlation>` is `<generation>-p<seq>` (production: `plan-1-p<seq>`), `<N>`
-is the observed window count, and terminal outcomes are `planned-applied`,
-`rejected`, or the local fail-closed values `timer-failed`, `dbus-failed`,
-`timeout`, `service-fault`, `correlation-mismatch`, `stale-dropped`,
-`precondition-mismatch`, `stale-scope`, `write-failed`. Example pair:
-
-- `omnitiler:plan:cmd=plan-1-p3 kind=admit windows=4 outcome=dispatch`
-- `omnitiler:plan:cmd=plan-1-p3 kind=admit windows=4 outcome=planned-applied`
-
-Per Rust rejection (one `rejected` kind line following the `outcome=rejected`
-command line). `snapshot-invalid` includes its bounded Planner detail so the
-invalid request cause is directly observable:
-
-- `omnitiler:plan:rejected kind=<kind>`
-- `omnitiler:plan:rejected kind=snapshot-invalid detail=<detail>`
-- `omnitiler:plan:rejected kind=snapshot-invalid detail=window-out-of-bounds window=<id> resource_class=<class> rect=<rect> bounds=<rect>`
-
-The third form is emitted when the adapter can identify the invalid carried
-rectangle. It uses the same stable opaque id, resource class, and integer
-geometry already emitted for applied writes.
-
-Trace only: per applied geometry command (every member exactly one line, non-focus ops;
-`<id>` is the stable opaque normalized window id, `<class>` is KWin's bounded
-non-sensitive resource class, and `<rect>` is `x,y,w,h`):
-
-- `omnitiler:plan:write window=<id> resource_class=<class> disposition=<written|skip-fullscreen|skip-maximized|skip-floating|skip-already-equal|write-failed|float-written|float-write-failed> rect=<rect>`
-
-`write-failed` and `float-write-failed` remain ordinary failure evidence.
-
-Per initially fullscreen window (once on hold and once on its first
-non-fullscreen observation; `<id>` is the same opaque normalized window id):
-
-- `omnitiler:plan:initial-fullscreen-held window=<id>`
-- `omnitiler:plan:initial-fullscreen-released window=<id>`
-
-Held windows are planner-only floating exceptions with no tile slot and no
-geometry write. A subsequent fullscreen of a tiled window still retains its
-slot and reports `skip-fullscreen` when a plan reflows siblings.
-
-Per work-area/scope change (dedicated pair, never the generic reconcile line):
-
-- `omnitiler:plan:scope-transition old=<old-rect> new=<new-rect>`
-- `omnitiler:plan:work-area-reprojection selected=retained`
-
-Per slice-2 pointer echo fence transition (one fixed token each):
-
-- `omnitiler:plan:echo-fence-armed`
-- `omnitiler:plan:echo-fence-consumed`
-- `omnitiler:plan:echo-fence-cleared-equality`
-- `omnitiler:plan:echo-fence-mismatched`
-
-Per maximize-at-admission clear (first exit of a held born-fullscreen window
-only; one attempt per live window identity, never a retry). Q3 first-seen
-maximized admission, including R-MAX-03 floating-to-tiled, reserves a slot and
-preserves maximize, so it emits no clear/echo lines; an applied
-overlay reports `skip-maximized` with its reserved rectangle:
-
-- `omnitiler:plan:maximize-admission-clear window=<id> resource_class=<class> outcome=<issued|invoked|missing|threw|observed-cleared|observed-maximized|observed-absent>`
-- `omnitiler:plan:maximize-admission-echo-armed`
-- `omnitiler:plan:maximize-admission-echo-consumed`
-- `omnitiler:plan:maximize-admission-echo-mismatched`
-- `omnitiler:plan:maximize-admission-echo-cleared-no-signal`
-
-Explicit native state writes arm before their native call, consume only the
-same Window object, and clear immediately when no synchronous echo arrives:
-
-- `omnitiler:plan:maximize-toggle window=<id> resource_class=<class> target=<maximized|restored> outcome=<issued|invoked|missing|threw>`
-- `omnitiler:plan:maximize-toggle-echo-armed|consumed|mismatched|cleared-no-signal`
-- `omnitiler:plan:sticky-toggle window=<id> resource_class=<class> target=<all-desktops|current-desktop> outcome=<issued|invoked|missing|threw>`
-- `omnitiler:plan:sticky-echo-armed|consumed|mismatched|cleared-no-signal`
-
-`observed-cleared` confirms that the immediate re-observation saw restore.
-`observed-maximized` records that KWin still reported maximize after the one
-call, including an application that immediately reasserted it; it is then the
-ordinary post-admission maximize-isolation case, with no further clear.
-`missing` and `threw` distinguish an unavailable method from a native-call
-exception.
-
-Per refusal/rejection path (exact distinct tokens, one per cause; every
-shortcut and pointer-route refusal carries its own fixed token):
-
-- `omnitiler:plan:focus-refused-disabled` (shortcut focus while the adapter is disabled)
-- `omnitiler:plan:focus-refused-invalid-direction`
-- `omnitiler:plan:focus-refused-observe`
-- `omnitiler:plan:focus-refused-floating` (directional focus on an intentionally floating active window)
-- `omnitiler:plan:move-refused-disabled`
-- `omnitiler:plan:move-refused-invalid-direction`
-- `omnitiler:plan:move-refused-observe`
-- `omnitiler:plan:move-refused-floating` (directional move on an intentionally floating active window)
-- `omnitiler:plan:move-refused-fullscreen` (directional move refused on a fullscreen focused window)
-- `omnitiler:plan:move-refused-maximize` (directional move refused on a maximized focused window; fullscreen wins when both)
-- `omnitiler:plan:resize-refused-disabled`
-- `omnitiler:plan:resize-refused-invalid-direction`
-- `omnitiler:plan:resize-refused-invalid-mode`
-- `omnitiler:plan:resize-refused-observe`
-- `omnitiler:plan:resize-refused-floating` (directional resize on an intentionally floating active window)
-- `omnitiler:plan:resize-refused-fullscreen` (directional resize refused on a fullscreen focused window)
-- `omnitiler:plan:resize-refused-maximize` (directional resize refused on a maximized focused window; fullscreen wins when both)
-- `omnitiler:plan:toggle-orient-refused-disabled`
-- `omnitiler:plan:toggle-orient-refused-observe` (no valid observation or tiled focused target)
-- `omnitiler:plan:toggle-orient-refused-floating` (floating or excluded active subject)
-- `omnitiler:plan:toggle-orient-refused-workspace-floating`
-- `omnitiler:plan:toggle-orient-refused-fullscreen` (focused overlay only, like resize)
-- `omnitiler:plan:toggle-orient-refused-maximize` (focused overlay only; fullscreen wins when both)
-- `omnitiler:plan:pointer-refused-disabled`
-- `omnitiler:plan:pointer-refused-identity`
-- `omnitiler:plan:pointer-refused-direction`
-- `omnitiler:plan:pointer-refused-boundary`
-- `omnitiler:plan:pointer-refused-observe`
-- `omnitiler:plan:pointer-refused-absent`
-- `omnitiler:plan:pointer-refused-fullscreen` (pointer-resize target refused while fullscreen)
-- `omnitiler:plan:pointer-refused-maximize` (pointer-resize target refused while maximized; fullscreen wins when both)
-- `omnitiler:plan:maximize-signal-unavailable` (logged once if an eligible window lacks `maximizedChanged`; tiling continues using fresh `maximizeMode` reads)
-- `omnitiler:plan:maximize-refused-signal` (maximize subscription infrastructure unavailable)
-- `omnitiler:plan:float-refused-disabled` (toggle-float while the adapter is disabled)
-- `omnitiler:plan:float-refused-observe` (toggle-float target not found in the observation)
-- `omnitiler:plan:float-refused-not-tiled` (toggle-float on an active-excluded or otherwise non-tiled target)
-- `omnitiler:plan:float-refused-fullscreen` (toggle-float on a fullscreen focused window)
-- `omnitiler:plan:float-refused-maximize` (toggle-float on a maximized focused window; fullscreen wins when both)
-- `omnitiler:plan:sticky-refused-disabled|observe`
-- `omnitiler:plan:sticky-refused-fullscreen|maximize|untracked|attempted window=<id> resource_class=<class>`
-- `omnitiler:plan:maximize-refused-disabled|observe`
-- `omnitiler:plan:maximize-refused-fullscreen|attempted window=<id> resource_class=<class>`
-- `omnitiler:plan:drag-drop-refused-disabled|identity|coords|observe|absent|fullscreen|maximize|floating|cross-domain` (one per tiled move-drop refusal cause; `coords` covers a missing or out-of-range finish pointer capture)
-- `omnitiler:plan:busy-refused kind=<focus|move|resize|toggle-float|toggle-orientation|toggle-sticky|toggle-maximize|drag-drop|drag-preview>` (shortcuts refuse busy; a move drop refuses during an R4 flight, otherwise defers behind an ordinary flight; preview backs off without queuing)
-- `omnitiler:plan:reconcile-accepted windows=<count> cause=stable-drift recovery=accept-client-rect` (bounded reassertions exhausted; exact per-window geometry accepted)
- - `omnitiler:plan:stale-replan` (pre-write stale reply replanned once against fresh complete observation)
-- `omnitiler:plan:shortcut-failed action=<action> sequence=<sequence>` (per failed shortcut registration)
-- `omnitiler:plan:shortcut-dispatch-shadowed action=<action> sequence=<sequence> holder_component=<component> holder_action=<action>`
-
-Additional ordinary lifecycle terminals and transitions:
-
-- `omnitiler:plan:drag-reconcile-settled correlation=<drag-N> outcome=unavailable plan=none` (no observed domain or proven workspace/output removal from a complete topology list; never an applied claim)
-- `omnitiler:plan:highlight-attach stage=failed reason=bridge-unavailable` (group bridge startup failed; logged once until recovery)
-- `omnitiler:plan:highlight-attach stage=recovered` (later Plan-applied/config event reattached the group bridge; logged once)
 
 Rust owner-monitor and tray startup diagnostics use fixed, redacted records:
 
@@ -683,112 +392,3 @@ Rust owner-monitor and tray startup diagnostics use fixed, redacted records:
 - `omnitiler:route-diag component=tray-endpoint stage=owner event=startup outcome=query-failed` (startup KWin owner unknown; later authenticated live-owner publish can recover)
 - `omnitiler:route-diag component=tray-endpoint stage=watcher event=query outcome=query-failed` (startup or later query failed; the watcher retry remains active)
 - `omnitiler:route-diag component=tray-endpoint stage=watcher event=register outcome=registered` (live-confirmed watcher recovery)
-
-Intentional-float Planner snapshot-invalid details:
-
-- `toggle-float-op-invalid`
-- `toggle-float-window-invalid`
-- `float-rect-invalid`
-
-Parent-orientation Planner snapshot-invalid details:
-
-- `toggle-orient-op-invalid`
-- `toggle-orient-window-invalid`
-
-`kind=toggle-orientation` uses ordinary plan diagnostics and terminal handling.
-A lone root leaf returns Rust `unchanged` without setters; floating subjects
-return `not-tiled`. Sibling fullscreen/maximized members retain native state
-and report existing `skip-fullscreen`/`skip-maximized` write dispositions.
-
-Trace only: per window excluded before admission (one line per unchanged exclusion state for
-an identified window; `<id>` is the normalized window id, or `unknown` when
-KWin cannot provide one. `<class>` is KWin's non-sensitive resource class, or
-`unknown` when unavailable):
-
-- `omnitiler:plan:observe-excluded reason=<active-normal-window|normal-window|output-missing|output-mismatch|desktop-mismatch|frame-rect-missing|frame-rect-coordinate-invalid|frame-rect-size-invalid|frame-rect-coordinate-out-of-range|frame-rect-size-out-of-range> window=<id> resource_class=<class>`
-
-Trace only: normal drag pull and verdict lines. Ordinary output retains the
-failure tokens below plus the `drag-drop-refused-*` tokens above; the pointer
-route's adapter emits the exact `pointer-refused-*` token above per cause:
-
-- `omnitiler:route-diag:drag-pull action=dispatch`
-- `omnitiler:route-diag:drag-verdict cancelled=<true|false> correlation=<drag-N> reason=<reason>`
-- `omnitiler:route-diag:drag-drop-dispatched correlation=<drag-N> accepted=<true|false>` (tiled move finish routed to `kind=drag-drop`; `accepted=true` means the intent entered or deferred into the single flight, not that geometry applied; `false` means refused or failed before entering it, with a cause token and drag-rejection marker)
-- `omnitiler:plan:drag-preview-backed-off correlation=<drag-N> reason=busy` (a sampled read-only preview yielded to the command flight; no queued request)
-- `omnitiler:plan:drag-preview-settled correlation=<drag-N> outcome=<applied|refused|stale> reason=<token>` (only `applied` supplies a slot; refusal hides it)
-- `omnitiler:route-diag:drag-preview-shown correlation=<drag-N>` / `drag-preview-cleared correlation=<drag-N> reason=<finish|refused|terminal>` (edge-only native setter/clear requests; no visual-delivery claim)
-- `omnitiler:plan:drag-drop-cross-output correlation=<drag-N> source=cross-output dest=destination` / `drag-drop-cross-applied correlation=<drag-N> plan=<plan-id>` / `drag-drop-cross-refused correlation=<drag-N> reason=<token>` (cross-output destination dispatch, actual applied plan or terminal failure; no raw output or workspace IDs)
-- `omnitiler:route-diag:drag-drop-thrown correlation=<drag-N>` (synchronous routing exception, fail-closed)
-- `omnitiler:route-diag:drag-call-missing` (pull with no call binding)
-- `omnitiler:route-diag:drag-call-thrown` (pull whose D-Bus call threw)
-- `omnitiler:route-diag:drag-reply-invalid` (any malformed or unparseable reply)
-- `omnitiler:route-diag:drag-route-missing` (non-cancelled verdict with no pointer route installed)
-- `omnitiler:route-diag:drag-context-invalid`
-- `omnitiler:route-diag:drag-scope-invalid`
-- `omnitiler:route-diag:drag-unknown-window`
-- `omnitiler:route-diag:drag-ref-mismatch`
-- `omnitiler:route-diag:drag-start-missing`
-- `omnitiler:route-diag:drag-move-ignored`
-- `omnitiler:route-diag:drag-start-invalid`
-- `omnitiler:route-diag:drag-edge-invalid`
-
-Drag-oracle entry startup refusal (exactly one token per refused
-`startDragOraclePullEntry` start, one per cause; the entry returns null):
-
-- `omnitiler:route-diag:drag-entry-workspace-missing`
-- `omnitiler:route-diag:drag-entry-call-missing`
-- `omnitiler:route-diag:drag-entry-call-thrown`
-- `omnitiler:route-diag:drag-entry-list-missing`
-- `omnitiler:route-diag:drag-entry-list-thrown`
-- `omnitiler:route-diag:drag-entry-list-invalid`
-- `omnitiler:route-diag:drag-entry-finished-invalid` (a connectable finished signal that failed to attach)
-- `omnitiler:route-diag:drag-entry-no-windows` (empty window list)
-- `omnitiler:route-diag:drag-entry-no-finished` (windows exist but none expose a connectable finished signal)
-- `omnitiler:route-diag:drag-entry-added-invalid` (missing or non-connectable windowAdded signal)
-- `omnitiler:route-diag:drag-entry-added-connect-failed` (windowAdded attach returned null or threw)
-
-Tiled move-drop lifecycle (shipped offline, live check pending): the finish context captures
-`workspace.cursorPos` synchronously at FINISH before the async oracle pull;
-the verdict carries no pointer and the route never reads the cursor at
-reply. The entry calls `adapter.requestDragDrop` with that captured point
-plus the verdict window identity through the shared single flight (deferred
-when busy, never concurrent). Stepped tiled moves sample the pointer into
-read-only Planner `drag-preview` requests on fresh, size-hinted destination
-observations; one sample is outstanding at a time and a later step coalesces.
-Both preview and final drop bind the observed mover as the logical focused
-window for drag placement, even if KWin's active window is another tile.
-The preview's `drag-N` correlation is local to Started; the final verdict's
-`drag-N` comes from the native oracle and may have a different number. The
-completed preview prior transfers across those two correlations.
-While KWin reports an interactive move or resize, ordinary reconciliation
-holds the gesture window even across pauses longer than the old missing-Finished
-bound. A missing Finished releases that hold on a subsequent observation only
-after KWin reports the gesture ended; the old Started-keyed move/resize timeout
-tokens are retired.
-The pointer selects the preview domain, with a read-only prospective mover
-insertion when native reassignment has not yet arrived. The preview result
-and its exact hover prior are scoped to the Started identity/revision;
-Finish clears the independent native overlay and fences late replies while
-preserving the last completed prior for the final drop. The native setter
-accepts a translucent filled target rect above windows; center, refusal and
-cancellation leave it hidden. A valid Started source-output mismatch dispatches
-to the destination and successful application forces complete source-domain
-reconciliation; the destination restore marker cannot fight the source.
-Without a Started binding, retained `appliedById` evidence still guards
-cross-domain direct callers. If native output has not yet reassigned at Finish,
-the adapter uses the pointer's destination snapshot, sends the mover to that
-output, sets its target desktop, and checks fresh complete destination
-membership before applying planned geometry; refusal takes the existing
-destination marker path. See the offline verification and remaining-size
-rationale in `changes/archive/cross-output-drag-preview.md`.
-
-Map each journey step above to one Plan command: add -> `kind=admit`, close ->
-`kind=remove`, directional focus -> `kind=focus`, directional move ->
-`kind=move`, resize -> `kind=resize`, intentional float toggle ->
-`kind=toggle-float`, tiled move drop -> `kind=drag-drop` (ordinary terminal
-plus trace dispatch, same fences as other ops). Ordinary output emits its
-terminal outcome; trace also emits its dispatch line. Pointer focus change
-alone emits no command line. A
-rejection still emits its ordinary terminal and rejection-kind lines, then
-recovers on the next fresh observation; the adapter never disables itself after
-a reply.

@@ -1158,16 +1158,43 @@ platform API behavior.
   insertion below. Startup adopts the native grid; minimum workspace count
   is two in total, including the trailing empty. Shared mode is unchanged.
   [Selected replacement](changes/kde-aligned-output-workspaces.md).
-- `workspaceMode` (`per-output-local`, `global-unique`, `shared`) runs on a
-    session-local project-owned KWin backing-desktop mapping, never the native
-    COSMIC workspace-set mapping. Adopted preexisting desktops are managed,
-    never disposed on teardown. Every live local/global-unique output domain
-    and the shared domain keeps at least two logical workspaces plus one
-    structural trailing empty (literal native-order trailing empty retained;
-    empty non-final managed desktops removable once invisible everywhere).
+- KDE enables the internal aligned option only for `per-output-local`:
+  every output selects the full native-position ring; each output's trailing
+  empty follows its own last occupied cell. Empty holes stay while occupied
+  elsewhere; native removal requires global emptiness, no trailing/view or
+  protection claim, and the two-workspace floor. Startup adopts all cells
+  without conversion moves. Exact creation attribution and friendly names as
+  presentation, never identity, remain unchanged. Core's default independent
+  sets and `global-unique` remain available to other platforms.
+- **Tentative (user review pending), 2026-10-19:** aligned migration's D5
+  source refill excludes the moved logical workspace and its newly empty
+  replacement cell. MRU selects a surviving previous source cell, otherwise
+  the last remaining cell; an unrelated valid source current stays. A retained
+  native binding does not mean that the moved logical remains on the source.
+- **Tentative (user review pending), 2026-10-19:** selecting or showing an
+  empty aligned cell, including the trailing empty or ring end, creates no
+  spare. Relative-next from the empty ring end wraps under the existing wrap
+  setting. Occupying the trailing empty creates the next spare; showing it
+  does not. Sticky all-desktop windows do not count as spare occupancy,
+  including minimized-sticky lifetimes; their homed cells remain protected
+  against removal until close/unhome. Normal global empty-cell retirement and
+  the minimum-two floor remain unchanged. COSMIC's occupied/pinned-last
+  creation and sticky exclusion support this boundary; Hyprland creates only
+  a missing selected target, not a new spare for an existing empty target.
+  [Discriminator and evidence](spec/reference-outcomes.md#kde-dual-output-admission-and-workspace-scope-discriminators).
+- **Tentative (user review pending), 2026-10-19:** a saved KDE
+  `global-unique` mode falls back to `per-output-local` with a logged reason.
+- KDE `workspaceMode` exposes `per-output-local` and `shared`; its former
+    `global-unique` mapping is superseded by alignment. The session-local
+    mapping is never the native COSMIC workspace-set mapping. Adopted
+    preexisting desktops are managed, never disposed on teardown. The minimum
+    is two workspaces in total, including a trailing empty, not two plus a
+    trailing empty. Aligned lifecycle follows the all-output rule above;
+    shared mode retains its literal native-order trailing empty.
     Occupied (including floating, fullscreen, maximized), visible,
     flight-pinned, displaced, and unmapped desktops stay protected; sticky
-    all-desktops windows do not occupy every backing desktop; unmapped
+    all-desktops windows do not occupy backing cells for spare purposes,
+    but their homed cells remain protected against removal; unmapped
     desktops remain outside management. Disconnected output: displaced layout
     preserved in separate workspace(s), never merged into remaining layout.
     Active-focus survivor choice: disconnected-monitor active window shows its
@@ -1187,7 +1214,10 @@ platform API behavior.
     selection never consults or restores prior-view history (R-WS-08 history
     still records observed hotplug changes per 1.5). Session-local scope, no
     restart-persistent mapping or return guarantee.
-- User decisions 2026-10-18, KDE per-output-local startup conversion:
+- Historical KDE per-output-local startup conversion (2026-10-18),
+  **superseded by aligned startup adoption**. The ownership/splitting and
+  startup-primary rules below no longer apply to KDE aligned mode; exact
+  creation attribution and friendly-name non-identity still apply:
   - A native desktop initially shown on multiple outputs has one owner: the
     startup primary. Every other showing output receives its own fresh backing
     desktop; its non-sticky windows on the shared desktop change membership
@@ -1324,11 +1354,14 @@ platform API behavior.
     edge-touch + positive-overlap candidates, no output wrap, follow only.
     Largest shared edge then left/top selection (User decision 2026-10-09).
     Unreadable topology refuses; no candidate is a no-op.
-  - D4 destination: preserve backing ID, tree/order/shares, remembered
+  - D4 destination for independent sets: preserve backing ID, tree/order/shares, remembered
     focus and workspace tiling mode via core `relocate_domain` as
     delivered. Insert immediately after the target output's current
     workspace and show the moved workspace; the previous target
     workspace stays listed and hidden.
+    KDE aligned mode supersedes this insertion/backing-ID rule: land in the
+    destination's trailing empty, preserve logical identity/tree/shares/focus/
+    tiling mode, rebind only the native desktop, and never reorder other rings.
   - D5 source/empty (G-37, User 2026-10-10):
     `Source workspace after migration` selects `last-remaining-workspace`
     (default, label `Last remaining workspace`, tooltip COSMIC) or
@@ -1416,10 +1449,8 @@ platform API behavior.
   Compile-only Windows fixes preserving current Windows behavior are allowed;
   correctness-first adapter wiring remains in the backlog handoff.
 - Item 1 (R-WS-08 / R-WS-11) and item 2 (R-WS-01 / R-WS-14): see Workspaces
-  above. KDE floating-boundary sends currently preserve source view
-  (`kwin/src/plan-adapter-entry.ts:4018-4022,4067-4085`); item 2 routes
-  explicit follow/stay through that path so the default follows
-  (implementation gap, not a new decision).
+  above. Explicit follow/stay applies at the floating boundary too; default
+  follow remains the selected behavior, not a route-specific exception.
 - Item 3, R-MOV-03 (user decision 2026-10-08; functional IDs delivered offline):
   - 3.1: one global setting, KDE `sameAxisMove`, Windows
     `core.same_axis_move`, with `group-with-neighbor` default (label
@@ -1601,10 +1632,31 @@ platform API behavior.
     hint loss. Approved shared policy, not implemented. All targets including
     KDE are affected by the future change; the Windows interim above stays
     untouched until shared delivery.
-  - D8 no-touch: automatic fixed floats are membership-only: no
-    geometry, focus, stacking or keep-above writes. Manual floats
-    retain keep-above because intentional floats stay above windowed
-    games.
+  - D8 (KDE amendment, User 2026-10-17): automatic fixed floats stay
+    above tiled windows, like the intended Meta+G floating layer, with no
+    geometry or focus writes. COSMIC's single floating layer above tiles is
+    the selected basis. Game safety wins: no writes to fullscreen clients
+    and no project keep-above float covering a focused fullscreen game.
+    Acceptance requires fixed-size windowed-game, focused-fullscreen-game
+    and modal-dialog live checks. Windows retains membership-only automatic
+    floats with no geometry/focus/stacking/keep-above writes.
+  - KDE option A (User 2026-10-18): pre-existing user/app keep-below gets
+    zero stacking writes and stays below; pre-existing keep-above remains
+    untouched. Meta+G keep-below clearing/restoration is unchanged.
+  - Tentative (user review pending), 2026-10-19: later user/app keep-below
+    or clearing project-owned above wins without reassertion for that live
+    window. Suspend owned above in the focused fullscreen client's scope,
+    reacquire after exit; restore on loss of automatic classification or
+    explicit tile, subject to live overlay safety. Explicit adapter stop
+    attempts safe restoration, not writes to overlays.
+  - Unload decision PARKED: matching the existing world route's lack of
+    unload restoration is unsafe. KWin v6.7.5 deletes the script without a
+    JavaScript stop callback; surviving above loses ownership on restart
+    and cannot safely be distinguished from untouched pre-existing above.
+    Question: should project-owned automatic-float keep-above be tracked by
+    a lifecycle owner outside the script so it can be restored on
+    unload/restart, while pre-existing keep-above remains untouched?
+    [Implementation, evidence and gaps](changes/kde-automatic-float-stacking.md).
   - Status: shared core/Linux planner and KDE delivered offline
     ([record](changes/archive/fixed-size-admission.md)). Windows
     admission D1-D8/G-05 delivered offline 2026-10-11, prerequisite `a41fcb5`
@@ -2293,8 +2345,14 @@ platform API behavior.
 - Delivered offline 2026-10-17
   ([evidence](changes/archive/core-full-state-replies.md)). These choices
   supersede older no-world-sequence, KDE `DescribePlan` and 1 MiB/64 KiB
-  boundary decisions for the migrated KDE path. The legacy domain interface
-  and its bounds remain transitional for Windows/macOS, not a KDE fallback.
+  boundary decisions for the migrated KDE path. The portable per-domain core
+  interface remains transitional for Windows/macOS, not a KDE fallback.
+- User direction 2026-10-18: remove unshipped legacy routes aggressively before
+  0.1. KDE's plan/workspace-send adapters and DescribePlan transport are removed;
+  production uses only DiscoverWorld/DescribeWorld plus float-intent persistence.
+  Group highlighting forwards world active-group results to the existing native
+  effect endpoint. Portable per-domain core APIs remain until Windows/macOS
+  complete world adoption. [Removal evidence](changes/kde-legacy-route-removal.md).
 - User accepted 2026-10-18 (T1): additive
   `WorldEngine::new_with_config(&str, WorldEngineConfig) -> Option<Self>`
   configures `fixed_send_admission` and `maximized_focus_fence` at construction.
@@ -2964,13 +3022,14 @@ platform API behavior.
   activation. User-manager session teardown stops the service; D-Bus
   connection/name loss also ends the Planner without durable recovery state.
 - KWin restart with a surviving Planner (user decision 2026-09-28, option A):
-  keep the fixed script generation `plan-1` and retained topology for domains
-  sharing any observed window ID. KWin 6.7.5 constructs fresh per-window
+  retain topology for domains sharing observed window IDs. KWin 6.7.5 constructs fresh per-window
   `internalId` UUIDs after restart; a complete nonempty reconcile with no
   shared IDs fresh-adopts that domain instead of rebuilding in arbitrary ID
   order. An empty observation retains normal retirement/revision semantics;
   a mismatched owner or generation still rejects rather than replacing the
   retained session. Other domains and the Planner binding remain intact.
+  The world discovery/generation contract above replaces the removed fixed
+  `plan-1` script-generation mechanism.
 - Selected 2026-09-16: on CONFIRMED Planner loss, establish one bounded fresh
   Planner session automatically. This on-demand activation is distinct from a
   systemd restart loop. It starts from current eligible windows only, with no
@@ -2978,11 +3037,9 @@ platform API behavior.
   internal history. The old in-flight transaction remains terminal with
   old-generation replies rejected; this does not replay interrupted commands,
   recover uncertain native mutation, apply stale old-session replies, or infer
-  commit for an unresolved workspace send. Normal Plan transport pins a unique owner via
-  strict `NameHasOwner` plus one bounded `StartServiceByName(..., 0)`
-  accepting only `PrimaryOwner`/`AlreadyOwner` then `GetNameOwner`; ambiguous
-  terminals may run one bounded identity probe and only absence or a changed
-  owner recovers. A failed recovery stays bounded without loops.
+  commit for an unresolved workspace send. Recovery remains bounded without
+  loops; current world discovery and generation fencing supersede the removed
+  domain transport's owner-probe lifecycle.
   If the Planner survives sleep, retain its current in-memory layouts rather
   than rebuild them.
 - Selected Rust KWin commands first resolve the Planner name. An absent name
@@ -2993,19 +3050,17 @@ platform API behavior.
   pending plan never rebinds after a restarted owner. Session activation
   improves immutable delivery but public KWin scripting still cannot attest the
   initially resolved same-UID Planner binary.
-- Planner caller authorization is a single fail-closed session-bus check:
+- Planner caller authorization includes a fail-closed session-bus check:
   `org.freedesktop.DBus.GetConnectionUnixUser` for the caller's unique name
   must equal the Planner process UID. A malformed name, failed lookup, unknown
   UID, or differing UID rejects. Process executable/PID/start-tick/boot,
-  systemd MainPID/parentage, wrapper-pair, cgroup, KWin-owner, and pre/post
-  revalidation do not participate in caller authorization.
-- On authorization failure, `DescribePlan` returns the fixed bounded in-band
-  JSON rejection `outcome:"rejected", kind:"unauthorized"` so KWin records
-  `result=rejected`.
-- `DescribePlan` is the sole shipped automatic-tiling route. Its approved lifecycle
-  includes ordered N-ary `cosmic_v1` admission/removal, same-output send,
-  restored backing-desktop/numbered workspace routes, bounded reconciliation,
-  and the selected initial first-startup fitting direction below. General
+  systemd MainPID/parentage and wrapper-pair/cgroup identity do not participate.
+  Current world and float-intent methods additionally require the live KWin
+  unique owner; authorization failures return bounded in-band rejections.
+- DiscoverWorld/DescribeWorld is KDE's sole shipped automatic-tiling route.
+  Its approved lifecycle includes ordered N-ary `cosmic_v1` admission/removal,
+  sends, numbered workspace routes, observation convergence, and the selected
+  initial first-startup fitting direction below. General
   historical-layout reconstruction remains unselected; complete observed
   membership is now incrementally adopted into retained domains as described
   under Engine Architecture and Convergence. Before launch, this and every other
@@ -3102,6 +3157,12 @@ platform API behavior.
   [Evidence](changes/kde-dual-output-live.md#product-defect-and-offline-fix).
 - Normal operation shows bounded summaries; opt-in trace covers high-volume
   detail with no frame/poll noise.
+- **Tentative (user review pending), 2026-10-19:** production KDE world placement
+  traces include capped ordered source/target tree shapes and shares before and
+  after send/R4 planning, without native or leaf identities. This distinguishes
+  nested whole-target wrapping from flat insertion, not exact named-leaf order;
+  the wire and actuation are unchanged.
+  [Evidence and limits](changes/kde-dual-output-live.md#current-continuation-2026-10-19).
 - User 2026-10-14: Windows trace outlier thresholds are 50 ms
   queue/transport/work and 10 ms dispatch, otherwise one summary per second
   while active. Windows
@@ -3328,7 +3389,11 @@ platform API behavior.
   offline; [native verification](backlog.md) remains pending, outcome TBD.
 - R-SPC-01: transient dialogs float rather than tile; Windows owned-dialog exclusion remains an intentional divergence, with parent-focus/modal legs TBD (User 2026-10-10, 0.1 triage D02).
 - R-FLT-13: ordinary floats hide while their workspace is not shown and retain their frame across the switch (User 2026-10-10, 0.1 triage D19).
-- R-FLT-12: focusing an overlapping float raises it; no project lower verb for now (User 2026-10-10, 0.1 triage D20).
+- R-FLT-12: focusing an overlapping float raises it; no project lower verb for
+  now (User 2026-10-10, 0.1 triage D20). KDE automatic fixed floats share the
+  above-tiles layer without project focus writes, qualified by D8 game safety
+  and option A (User 2026-10-17/18). Relative float order remains host-owned;
+  Windows unchanged. Unload restoration and final native acceptance remain open.
 - R-CLOSE-04: closing a focused ordinary float leaves tiles untouched and refocuses the MRU survivor (User 2026-10-10, 0.1 triage D24).
 - Approved 2026-09-16: background tiling is supported at startup and on window
   open or move for non-visible workspaces, without switching visibility or
@@ -3758,7 +3823,7 @@ platform API behavior.
   reconciliation. Thin platform adapters own native observation, actuation,
   lifecycle, permissions, and effects. On KWin, direct geometry is the
   structural actuator; Custom Tiles are not a second topology authority.
-- Production uses the single `DescribePlan` engine with direct geometry and no
+- KDE production uses the single world engine with direct geometry and no
   Custom Tile topology authority or Legacy fallback. Custom Tile production
   research is closed (User decision 2026-10-09;
   [archived feasibility](changes/archive/integrated-plasma-structural-feasibility.md));
@@ -3823,12 +3888,13 @@ platform API behavior.
   neighbors on full output rectangles; wrapping and workspace
   cycling remain excluded. Rust converges complete source plus target observations, then synchronously commits the planned R4 topology into the canonical per-domain sessions and returns both-domain geometry plus the native assignment; no pair survives the call. Occupied R4 uses whole-target D-axis wrapping nearest the source (Move item 5.5; explicit output send instead uses ordinary admission), retaining the existing owner, generation, revision, correlation,
   single-flight, visibility, exception, and
-  fail-closed target fences, with no acknowledgement, verification, pending, status, cancel, or abandon. The active `DescribePlan` route delivers the
-  corresponding exhausted horizontal focus transfer with no layout or
-  membership writes. R4 uses KWin 6.7.5 public
-  `workspace.sendClientToScreen(window, output)` and exact desktop assignment,
-  with native write order output, then desktop membership, then source/target geometry (B6 effective origin+minimum targets for overconstrained members). KWin keeps a short flight-local source/target pin with separate unanswered-request and arrival deadlines, stale-reply discard before any setter, prompt follow once on fresh exact mover-on-target proof, forced complete both-domain reconcile even on equal applied evidence with unreadable quarantine, and no `blocksPlan`. Timeout, stale scope, wrong output,
-  failed write, identity loss, or partial proof converge on the next complete observations without replay, phantom, or verified-success claim.
+  fail-closed target fences, with no acknowledgement, verification, pending,
+  status, cancel, or abandon. The world route delivers the corresponding
+  exhausted horizontal focus transfer with no layout or membership writes.
+  KWin applies output and desktop membership through its public native API,
+  then desired geometry. Stale replies authorize no setters; failed writes,
+  identity loss or partial native proof converge from fresh complete world
+  observations without command replay or a verified-success claim.
 - User 2026-10-14 approves R4 own-mover observation tolerance only after native
   transfer setters: allow exactly the flight set minus its mover with retained
   native identity and in-scope output/single-desktop proof. Pre-transfer,

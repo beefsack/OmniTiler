@@ -83,6 +83,11 @@
 - No product source changed and no defect fix was committed. Rust workspace,
   KWin and settings suites were not rerun for this evidence-only update. Fresh
   executable and KWin bundle builds succeeded during the attempt.
+- Follow-up 2026-10-19: genuine first-observation replay reproduced the loss and
+  the production world-route correction passes offline. A separate fixed-stream
+  restart fence is corrected; complete-baseline native restart now preserves
+  both intent sets and fixed override control after explicit scope retiling. See
+  [accepted outcome and lifecycle collision diagnosis](archive/kde-restart-float-intent.md).
 
 ### Continuation restoration and next gate
 

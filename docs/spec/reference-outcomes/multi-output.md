@@ -52,7 +52,8 @@ paneru legs distinguish the native Space from virtual rows.
   empty takes the mover alone. Reciprocal FULL
   rectangle selection now includes sole root leaves; work-area placement and
   commit/arrival fences retained. [Item-5 offline record](../../changes/archive/four-direction-output-transfer.md);
-  corrected native tree journey pending; live acceptance TBD. User decision 2026-10-09 window-based selection
+  production trace proves nested same-axis return with native mover focus;
+  exact named-leaf order and physical delivery remain TBD. User decision 2026-10-09 window-based selection
   delivered offline ([selection record](../../changes/archive/position-based-output-selection.md)); single-target crossing stands.
 - Then Ours Windows: exhausted horizontal crossing to the target current
   workspace delivered offline in the [foundation](../../changes/windows-multi-output-foundation.md).
@@ -255,7 +256,12 @@ offline); workspace send still refuses cross-output (`S(S-ours-out)` pinned base
   here). Sticky/intentional floats excluded; floating-workspace boundaries
   transfer membership only, tiled sides reflow. Shared core/protocol, KDE
   arrival/visibility fences and native catalog/presets delivered offline;
-  [record](../../changes/archive/four-direction-output-transfer.md). Native journey TBD.
+  [record](../../changes/archive/four-direction-output-transfer.md).
+  Current world-route native callbacks pass both directions: follow focuses A,
+  stay focuses the source peer with unchanged views and quiet later observations.
+  The discarded Engine focus result was corrected with
+  [producer-shaped regressions](../../../crates/tiler-core/tests/world_output_send_stay_focus.rs);
+  [native evidence and remaining physical/floating gates](../../changes/kde-dual-output-live.md#current-continuation-2026-10-19).
 - Then Ours Windows: distinct output send delivered offline `fda618f`,
   2026-10-14 ([record](../../changes/archive/windows-explicit-output-send.md)).
   Win+Ctrl+Alt+arrows/HJKL follows; four unbound stay rows keep source MRU/null

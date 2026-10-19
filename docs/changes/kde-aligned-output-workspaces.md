@@ -76,8 +76,18 @@
    rule. Exact creation attribution, friendly-name non-identity and
    incomplete-report protection remain.
 
-Tentative (not yet reviewed): an existing KDE `global-unique` setting falls
+Tentative (user review pending): an existing KDE `global-unique` setting falls
 back to `per-output-local` with a logged reason.
+
+- **Tentative (user review pending), 2026-10-19:** aligned migration applies D5
+  to logical workspace identity: the moved source logical is excluded from the
+  remaining source ring, including its newly empty replacement cell. Choose
+  the previous surviving source cell for MRU, otherwise the last remaining
+  cell; preserve an unrelated still-valid source current. Native IDs remain
+  positional bindings, not proof that the moved logical still belongs there.
+- Floating workspaces carry their workspace-bound contents and floating mode;
+  absence of a retained tiled tree does not authorize a migration refusal.
+  Sticky members stay on the source, as required by D7.
 
 ## Approach
 
@@ -109,5 +119,100 @@ back to `per-output-local` with a logged reason.
 
 ## Current state
 
-- Planned; no implementation. Whole-workspace migration (T05) on the
-  disjoint model is paused because step 3 supersedes it.
+- Implemented 2026-10-19: default-off core option, enabled by KDE;
+  per-output logical/native bindings, full aligned rings, per-output trailing,
+  globally guarded retirement and minimum-two growth, startup grid adoption,
+  and KDE `global-unique` removal/fallback. Shared mode and other platform
+  defaults are unchanged.
+- Whole-workspace migration rebinds the logical unit onto the destination
+  trailing cell, carries tree/shares/focus/mode and workspace-bound exceptions,
+  snapshots D5 refill before exact-cell history invalidation, and retains
+  member/both-view proof across delayed and incomplete observations. Source
+  and destination cells are flight-pinned; reservations prevent double booking.
+- KDE observes native per-window output/desktop changes. Only the actuated
+  window's synchronous safe homing echoes defer to one post-apply observation;
+  closure, unsafe readback and other windows still invalidate immediately.
+  Paired migration view switches share one fresh entry proof and independent
+  exact-output readbacks, avoiding a source-refill stall on the target's signal.
+- No deletion is safe in the shared core disjoint/startup helpers: the default
+  independent-set model still calls them. KDE aligned mode bypasses them;
+  legacy plan routes are unchanged and their larger removal remains separate.
+- Disjoint-model T05 is superseded. This record remains active for parked
+  hotplug and the remaining native journey evidence, not archived as complete.
+
+## Accepted evidence (2026-10-19)
+
+- Latest integrated gates: Rust workspace **3335 passed**, zero failures or
+  ignored tests; KWin **1919/1919**, zero failures; typecheck/build, Rust fmt,
+  strict all-target workspace Clippy, native settings **27/27** and native
+  effect **34/34** pass.
+- Core grid/migration regressions cover replicated inventory, padding,
+  independent trailing, global hole/removal/minimum rules, startup adoption,
+  exact creation binding, reservation conflicts, floating/minimized carry,
+  retained topology under delayed/partial/unreadable arrival, close at either
+  end, external supersession and logical-history invalidation.
+- Real `world_eval` plus production entry/apply regressions use fresh replies:
+  migration out/back, native membership echo, paired follow/refill, member
+  closure in both directions, unreadable/stale rounds, empty migration and
+  logical rebinding without replay/feedback loops. Native homing regressions
+  cover output moves both ways, same-output desktop changes and teardown.
+- Native two-output evidence: hidden member on the other output's native 1
+  becomes reachable by numbered selection; unequal per-output trailing targets
+  select independently; holes survive occupancy elsewhere; globally empty,
+  unshown natives retire and the minimum of two holds. Differing pre-existing
+  currents and memberships were adopted without startup conversion moves.
+- Native migration round trip: **2/2** trailing landings, explicit core source
+  refills, mover focus retained, and subsequent replies with no transfers.
+  Complete correlated raw JSON plus native state establish settlement. The
+  earlier one-view/refill stall reproduced offline before its correction.
+- After correcting the missing per-window subscriptions, native KWin
+  send-to-output **2/2** changed membership to destination-current and triggered
+  automatic fresh observations, correct retiling and trailing lifecycle, with
+  no project migration/send command. The earlier blind spot is not acceptance.
+- Protected window frame/state/membership/focus, output configuration, original
+  desktop count/names/views, shortcuts, effects and float-intent bytes were
+  restored. Empty native IDs/default-tiling groups underwent lifecycle churn.
+  The first run lacked a full pre-run configuration copy, so its configuration
+  byte delta is not fully attributable; later runs retained full copies and
+  only desktop-ID/default-tiling churn remained.
+
+## Remaining native evidence
+
+- Physical shortcuts, perceived latency and pointer drag are not established
+  by callback invocation. Drag question: after a normal window is dragged
+  across each output boundary, does membership follow destination-current and
+  does the controller observe/reconcile it without an extra migration?
+- An earlier OmniTiler directional-send trial changed membership without a
+  proven output arrival and lacked structural transport capture. A subsequent
+  [complete own-send trace](kde-dual-output-live.md#current-continuation-2026-10-19)
+  proves output/membership arrival, follow and quiet settlement both ways on
+  the aligned tree; the earlier anomaly did not recur. A separate discarded
+  stay-focus result was found and corrected, then source-MRU focus passed both
+  ways. The historical trial's precise cause remains unproven.
+- Native shared-current startup, physical drag and hotplug remain unverified;
+  shared-current startup is covered offline. A fresh automatic-fixed newcomer
+  and a post-close empty scope produced held fixtures during investigation;
+  their independent causes are not established by this change.
+
+### Hotplug checkpoint (2026-10-19)
+
+- Native disconnect probing stopped before disabling an output: Plasma surfaces
+  on that output would be evacuated, and exact restoration of their placement
+  was not established. Output configuration alone is insufficient restoration
+  proof. The read-only inventory probe was unloaded and baseline verified.
+- At pinned KWin `ab7df7cc`, output evacuation preserves desktop membership;
+  per-window `outputChanged(oldOutput)` precedes workspace `screensChanged`
+  (`src/workspace.cpp:2339-2346,1485-1490`; `src/window.cpp:219-227`). This is
+  source evidence, not live event-order confirmation.
+- Hotplug no-merge/return implementation and acceptance are parked rather than
+  claiming the aligned path supports them. Question: can the disconnect probe
+  run after affected Plasma surfaces are moved away, or should it use isolated
+  virtual outputs? Origin retention must precede logical-cell pruning; the
+  current aligned path does not preserve disconnected origins for return.
+
+## Exact next action
+
+- Resolve the hotplug probe placement question above, then implement retained
+  origins/trailing displacement/return before claiming no-merge support.
+  The own-send trace is complete; physical drag remains in the
+  [dual-output continuation](kde-dual-output-live.md#current-continuation-2026-10-19).

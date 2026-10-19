@@ -1,5 +1,11 @@
 # AR6: logical workspace model in core - integration decision pending
 
+- Historical proposal: the ownership inventory below describes the retired KDE
+  domain route, not current production. World adoption superseded that route;
+  `workspace-native.ts` now retains only shared free functions. See
+  [world architecture](../decisions.md#engine-architecture-and-convergence) and
+  [removal evidence](kde-legacy-route-removal.md).
+
 ## Goal and scope
 
 Move the portable logical-workspace policy into dependency-free `tiler-core` while preserving the workspace modes, synchronous native behavior and Planner-loss behavior in `docs/decisions.md`. KWin retains `outputTuple`, observation, signal wiring, desktop/window references and all native reads/writes. Windows/macOS `Managed` capability implementations are out of scope. AR4/AR11 and the architecture review are untouched.
