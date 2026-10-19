@@ -84,13 +84,28 @@ impl Drop for WinEventHook {
 /// Install one out-of-context hook for `[event_min, event_max]`;
 /// `None` when the API refuses it (the caller degrades, as before).
 pub fn install_win_event_hook(event_min: u32, event_max: u32) -> Option<WinEventHook> {
+    install_win_event_hook_for(event_min, event_max, 0)
+}
+
+/// PID-scoped install: only events from `pid` are delivered to the sink.
+/// Thread scope stays all threads of that process (`idthread = 0`). The
+/// existing all-process wrapper above is unchanged.
+pub fn install_win_event_hook_for_pid(
+    event_min: u32,
+    event_max: u32,
+    pid: u32,
+) -> Option<WinEventHook> {
+    install_win_event_hook_for(event_min, event_max, pid)
+}
+
+fn install_win_event_hook_for(event_min: u32, event_max: u32, pid: u32) -> Option<WinEventHook> {
     let raw = unsafe {
         SetWinEventHook(
             event_min,
             event_max,
             std::ptr::null_mut(),
             Some(win_event_trampoline),
-            0,
+            pid,
             0,
             windows_sys::Win32::UI::WindowsAndMessaging::WINEVENT_OUTOFCONTEXT,
         )

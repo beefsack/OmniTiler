@@ -22,7 +22,7 @@ fn real_main() -> Result<(), (i32, String)> {
     let output = match command {
         "--help" | "-h" | "help" => {
             println!(
-                "tiler-test-window commands:\n  run --receipt PATH [--seconds N] [--passive]  create owned test window (passive stays hidden until show)\n  close HWND [--tag TAG]  post WM_CLOSE to owned window (proof always passes the captured tag; bare form stays for the WinArrow harness)\n  inspect HWND  print owned window snapshot JSON\n  show HWND --tag TAG  admit a passive helper without activation or z-order change (no hide)\n  minimize HWND --tag TAG  minimize without activating\n  restore HWND --tag TAG  restore a minimized helper without activating\n  move HWND --tag TAG --to X,Y,W,H  exact-bound location move without activation or z-order change"
+                "tiler-test-window commands:\n  run --receipt PATH [--seconds N] [--passive]  create owned test window (passive stays hidden until show)\n  close HWND [--tag TAG]  post WM_CLOSE to owned window (proof always passes the captured tag; bare form stays for the WinArrow harness)\n  inspect HWND  print owned window snapshot JSON\n  show HWND --tag TAG  admit a passive helper without activation or z-order change (no hide)\n  minimize HWND --tag TAG  minimize without activating\n  restore HWND --tag TAG  restore a minimized helper without activating\n  move HWND --tag TAG --to X,Y,W,H  exact-bound location move without activation or z-order change\n  cloak-preflight HWND --tag TAG  read-only experimental gate + baseline (run before the first cloak; success instructs but never asserts the recovery proof)\n  cloak HWND --tag TAG --seconds N [--delete-tab] --stop-file PATH --log PATH  finite experimental cloak controller with auto-restore; stop file must not preexist, log is created fresh (needs Windows x64 build 26300)\n  uncloak HWND --tag TAG [--added-tab]  standalone exact-identity recovery, foreground-safe; the private uncloak call always runs, even on an uncloaked baseline (that baseline call is the recovery proof)\n  cloak-observe HWND --tag TAG --seconds N --stop-file PATH --log PATH  observation-only PID-scoped event logging, no cloak writes"
             );
             return Ok(());
         }
@@ -67,10 +67,34 @@ fn real_main() -> Result<(), (i32, String)> {
                 .map_err(|message| (2, message))?;
             tiler_windows::test_window::sys::move_owned(&target).map_err(|e| (1, e.to_string()))?
         }
+        "cloak-preflight" => {
+            let tagged =
+                tiler_windows::test_window::parse_tagged_hwnd_args("cloak-preflight", rest)
+                    .map_err(|message| (2, message))?;
+            tiler_windows::test_window::sys::cloak_preflight(tagged.hwnd, &tagged.tag)
+                .map_err(|e| (1, e.to_string()))?
+        }
+        "cloak" => {
+            let parsed =
+                tiler_windows::cloak::parse_cloak_args(rest).map_err(|message| (2, message))?;
+            tiler_windows::test_window::sys::cloak_owned(&parsed).map_err(|e| (1, e.to_string()))?
+        }
+        "uncloak" => {
+            let parsed =
+                tiler_windows::cloak::parse_uncloak_args(rest).map_err(|message| (2, message))?;
+            tiler_windows::test_window::sys::uncloak_owned(&parsed)
+                .map_err(|e| (1, e.to_string()))?
+        }
+        "cloak-observe" => {
+            let parsed =
+                tiler_windows::cloak::parse_observe_args(rest).map_err(|message| (2, message))?;
+            tiler_windows::test_window::sys::cloak_observe(&parsed)
+                .map_err(|e| (1, e.to_string()))?
+        }
         _ => {
             return Err((
                 2,
-                "usage: tiler-test-window run --receipt PATH [--seconds N] [--passive]|close HWND [--tag TAG]|inspect HWND|show HWND --tag TAG|minimize HWND --tag TAG|restore HWND --tag TAG|move HWND --tag TAG --to X,Y,W,H"
+                "usage: tiler-test-window run --receipt PATH [--seconds N] [--passive]|close HWND [--tag TAG]|inspect HWND|show HWND --tag TAG|minimize HWND --tag TAG|restore HWND --tag TAG|move HWND --tag TAG --to X,Y,W,H|cloak-preflight HWND --tag TAG|cloak HWND --tag TAG --seconds N [--delete-tab] --stop-file PATH --log PATH|uncloak HWND --tag TAG [--added-tab]|cloak-observe HWND --tag TAG --seconds N --stop-file PATH --log PATH"
                     .to_owned(),
             ));
         }

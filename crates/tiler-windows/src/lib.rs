@@ -3,6 +3,7 @@
 pub mod active_border;
 #[cfg(windows)]
 pub mod active_border_sys;
+pub mod cloak;
 #[cfg(windows)]
 pub mod ffi;
 pub mod gaming;

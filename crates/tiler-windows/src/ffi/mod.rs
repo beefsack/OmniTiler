@@ -36,6 +36,7 @@
 //! - [`fs`]: directory-change notification watches plus atomic file moves.
 //! - [`test_window`]: message-only and owned overlapped test windows (test
 //!   support only).
+//! - [`cloak`]: experimental owned-helper private COM cloak and taskbar calls.
 //! - [`overlay`]: owned layered-overlay carrier (active border, group
 //!   underlay, drop preview): class registration, the accent-version window
 //!   procedure, DIB presentation with caller painters, and placement.
@@ -45,6 +46,7 @@
 //! - [`icons`]: icon-handle ownership plus worker-rendered pixel buffers.
 
 pub mod accent;
+pub mod cloak;
 pub mod dpi;
 pub mod enumeration;
 pub mod fs;
@@ -68,6 +70,10 @@ pub mod tray;
 pub mod window;
 
 pub use accent::{AccentStage, OwnerAccentSource, accent_version};
+pub use cloak::{
+    EXPECTED_BUILD as CLOAK_EXPECTED_BUILD, check_experimental_gate, cloak_hwnd, cloak_mask_of,
+    taskbar_add_tab, taskbar_delete_tab, uncloak_hwnd,
+};
 pub use dpi::{set_process_pm_v2, system_metric, system_metric_for_dpi, thread_pm_v2_active};
 pub use enumeration::{
     MonitorInfo, enumerate_child_windows, enumerate_monitors, enumerate_windows,
@@ -76,7 +82,10 @@ pub use fs::{
     ChangeNotification, move_file_no_replace, move_file_replace, rearm_watch, watch_directory,
     watch_raw_handle, watch_signaled,
 };
-pub use hooks::{WinEvent, WinEventHook, WinEventSink, install_win_event_hook, set_win_event_sink};
+pub use hooks::{
+    WinEvent, WinEventHook, WinEventSink, install_win_event_hook, install_win_event_hook_for_pid,
+    set_win_event_sink,
+};
 pub use icons::{AppIcon, IconPixels, class_icon, exe_icon, message_icon, render_icon};
 pub use input::{
     KeyPairSend, async_key_down, cursor_pos, pack_mouse_lparam, prime_foreground_key,

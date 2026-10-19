@@ -196,10 +196,13 @@ pub mod sys {
         HELPER_MAX_SECONDS, TEST_WINDOW_CLASS, TEST_WINDOW_H, TEST_WINDOW_PROP, TEST_WINDOW_W,
         TEST_WINDOW_X, TEST_WINDOW_Y, WindowSnapshot,
     };
+    use crate::cloak::CloakOps;
+    use crate::ffi::cloak::CloakError;
     use crate::ffi::{
-        FfiOwnedTestWindow, foreground_window, get_prop, is_iconic, is_visible, is_window,
-        owner_of, parent_of, post_close, set_prop, set_window_pos, show_window, try_class_name,
-        window_pid, window_rect,
+        FfiOwnedTestWindow, check_experimental_gate, cloak_hwnd, cloak_mask_of, foreground_window,
+        get_prop, install_win_event_hook_for_pid, is_iconic, is_visible, is_window, owner_of,
+        parent_of, post_close, set_prop, set_window_pos, show_window, taskbar_add_tab,
+        taskbar_delete_tab, try_class_name, uncloak_hwnd, window_pid, window_rect,
     };
     use crate::lifecycle::exe_paths_equal;
     use crate::model::ProcessIdentity;
@@ -376,6 +379,16 @@ pub mod sys {
         if foreground_u64() == hwnd_u64 {
             return Err(absent("helper is foreground"));
         }
+        verify_target(hwnd_u64, expected_tag)
+    }
+
+    /// Fresh exact-identity revalidation with no foreground gate: HWND plus
+    /// peer exe/class/process (pid + creation)/session/integrity, the opaque
+    /// lifetime tag, a held-process liveness guard, and a fresh pid recheck
+    /// immediately before the caller writes. Every cloak write path calls
+    /// this immediately before its own write; observation polls call it per
+    /// slice and stop (without writing) when the identity is gone.
+    fn verify_target(hwnd_u64: u64, expected_tag: &str) -> SResult<(WindowSnapshot, HeldProcess)> {
         let me = current_identity().map_err(|e| failed(format!("identity {e}")))?;
         let snap = query_owned(hwnd_u64, &me.exe_path, &me.user_sid, me.session_id)?;
         if snap.tag != expected_tag {
@@ -619,6 +632,612 @@ pub mod sys {
             return Err(failed(e.message()));
         }
         Ok(json)
+    }
+
+    // ---------- experimental private-cloak spike (test helper only) ----------
+
+    fn cloak_gate() -> SResult<u32> {
+        check_experimental_gate().map_err(|e| match e {
+            CloakError::UnsupportedArch | CloakError::UnsupportedBuild { .. } => {
+                absent(e.to_string())
+            }
+            other => failed(other.to_string()),
+        })
+    }
+
+    /// Best-effort state read for reports: every field is fail-closed and a
+    /// geometry failure stays `None`, never a fake rect. Identity binding is
+    /// the caller's job (`verify_target` immediately before any write).
+    fn state_of(hwnd_u64: u64) -> crate::cloak::CloakStateReport {
+        let mask = cloak_mask_of(hwnd_u64);
+        let rect = match rect_of(hwnd_u64) {
+            Ok(raw) => Some([raw.0, raw.1, raw.2, raw.3]),
+            Err(_) => None,
+        };
+        crate::cloak::CloakStateReport::new(
+            hwnd_u64,
+            is_visible(hwnd_u64),
+            is_iconic(hwnd_u64),
+            mask,
+            rect,
+            foreground_u64(),
+        )
+    }
+
+    /// Shared flushed JSONL log plus event counter for one controller or
+    /// observer run.
+    struct CloakLog {
+        inner: std::sync::Mutex<crate::cloak::JsonlLog>,
+        events: std::sync::atomic::AtomicU64,
+    }
+
+    impl CloakLog {
+        fn append(&self, value: &serde_json::Value) {
+            if let Ok(mut guard) = self.inner.lock() {
+                guard.append(value);
+            }
+        }
+
+        fn log_failed(&self) -> bool {
+            self.inner.lock().map(|guard| guard.failed).unwrap_or(true)
+        }
+
+        fn bump_events(&self) {
+            self.events
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+
+        fn event_count(&self) -> u64 {
+            self.events.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    /// Live [`crate::cloak::CloakOps`]: `original` is the exact process
+    /// identity captured at entry verification and `held` is the open handle
+    /// from that same verification, retained across the whole operation.
+    /// Every `verify` compares the fresh snapshot against the original (a
+    /// matching tag alone never suffices) and rechecks the retained handle's
+    /// liveness plus the HWND's pid; `write` repeats that recheck immediately
+    /// before the raw native operation. `log` is `None` for standalone
+    /// recovery, which reports on stdout instead (and therefore never skips
+    /// writes for log health).
+    struct LiveOps {
+        hwnd: u64,
+        tag: String,
+        original: ProcessIdentity,
+        held: HeldProcess,
+        log: Option<std::sync::Arc<CloakLog>>,
+    }
+
+    impl crate::cloak::CloakOps for LiveOps {
+        fn verify(&mut self) -> Result<crate::cloak::CloakStateReport, crate::cloak::VerifyFault> {
+            let me = current_identity()
+                .map_err(|e| crate::cloak::VerifyFault(format!("identity {e}")))?;
+            let fresh = query_owned(self.hwnd, &me.exe_path, &me.user_sid, me.session_id)
+                .map_err(|e| crate::cloak::VerifyFault(e.to_string()))?;
+            if fresh.tag != self.tag {
+                return Err(crate::cloak::VerifyFault("tag mismatch".to_owned()));
+            }
+            if fresh.process != self.original {
+                return Err(crate::cloak::VerifyFault(
+                    "helper identity changed".to_owned(),
+                ));
+            }
+            if pid_of(self.hwnd) != Some(self.original.pid) || !self.held.is_alive() {
+                return Err(crate::cloak::VerifyFault("helper pid changed".to_owned()));
+            }
+            Ok(state_of(fresh.hwnd))
+        }
+
+        fn write(&mut self, op: crate::cloak::WriteOp) -> Result<(), String> {
+            // Recheck the exact original identity and the retained handle's
+            // liveness immediately before the raw native operation: the
+            // sequencer verified first, and this closes the gap to the call.
+            let me = current_identity().map_err(|e| format!("identity {e}"))?;
+            let fresh = query_owned(self.hwnd, &me.exe_path, &me.user_sid, me.session_id)
+                .map_err(|e| e.to_string())?;
+            if fresh.tag != self.tag || fresh.process != self.original {
+                return Err("helper identity changed".to_owned());
+            }
+            if pid_of(self.hwnd) != Some(self.original.pid) || !self.held.is_alive() {
+                return Err("helper pid changed".to_owned());
+            }
+            match op {
+                crate::cloak::WriteOp::Cloak => cloak_hwnd(self.hwnd).map_err(|e| e.to_string()),
+                crate::cloak::WriteOp::DeleteTab => {
+                    taskbar_delete_tab(self.hwnd).map_err(|e| e.to_string())
+                }
+                crate::cloak::WriteOp::Uncloak => {
+                    uncloak_hwnd(self.hwnd).map_err(|e| e.to_string())
+                }
+                crate::cloak::WriteOp::AddTab => {
+                    taskbar_add_tab(self.hwnd).map_err(|e| e.to_string())
+                }
+            }
+        }
+
+        fn log(&mut self, line: serde_json::Value) -> bool {
+            if let Some(log) = &self.log {
+                log.append(&line);
+                !log.log_failed()
+            } else {
+                true
+            }
+        }
+    }
+
+    /// Read-only exact-bound preflight: gate, identity, baseline, and the
+    /// independent-recovery route. Allows foreground (it only reports
+    /// `is_target_foreground`). Success asserts nothing about recovery
+    /// working: it instructs the baseline uncloak call that proves it.
+    pub fn cloak_preflight(hwnd_u64: u64, expected_tag: &str) -> SResult<String> {
+        let build = cloak_gate()?;
+        let me = current_identity().map_err(|e| failed(format!("identity {e}")))?;
+        let snap = query_owned(hwnd_u64, &me.exe_path, &me.user_sid, me.session_id)?;
+        if snap.tag != expected_tag {
+            return Err(absent("tag mismatch"));
+        }
+        let state = state_of(hwnd_u64);
+        crate::cloak::validate_baseline(state.visible, state.iconic, state.cloak_mask, state.rect)
+            .map_err(absent)?;
+        Ok(serde_json::json!({
+            "preflight": "ok",
+            "build": build,
+            "arch": std::env::consts::ARCH,
+            "hwnd": snap.hwnd,
+            "tag": snap.tag,
+            "process": snap.process,
+            "state": state,
+            "recovery": format!("candidate independent recovery route (foreground-safe): uncloak {} --tag {} [--added-tab]; verify the baseline call before cloak, then verify recovery after controller exit", snap.hwnd, snap.tag),
+        })
+        .to_string())
+    }
+
+    /// Observation-only sink: exact-HWND events only, no input recording.
+    /// Each delivery compares the fresh snapshot against the original
+    /// process identity captured at entry (a matching tag alone never
+    /// suffices) and logs an EVENT line carrying the OS event id/time;
+    /// identity loss is logged honestly with no state. The sink retains no
+    /// raw handle: the original [`ProcessIdentity`] is sufficient.
+    struct CloakSink {
+        hwnd: u64,
+        tag: String,
+        original: ProcessIdentity,
+        start: std::time::Instant,
+        seq: std::sync::atomic::AtomicU64,
+        log: std::sync::Arc<CloakLog>,
+    }
+
+    impl CloakSink {
+        fn push_verified(&self, kind: &str, event_id: Option<u32>, os_time: Option<u32>) {
+            let seq = self.seq.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let me = match current_identity() {
+                Ok(me) => me,
+                Err(e) => {
+                    self.log.bump_events();
+                    self.log
+                        .append(&crate::cloak::event_line(crate::cloak::EventLine {
+                            seq,
+                            elapsed_ms: self.start.elapsed().as_millis() as u64,
+                            kind,
+                            event_id,
+                            os_time,
+                            state: None,
+                            verified: false,
+                            detail: &format!("identity {e}"),
+                        }));
+                    return;
+                }
+            };
+            let (state, verified, detail) =
+                match query_owned(self.hwnd, &me.exe_path, &me.user_sid, me.session_id) {
+                    Ok(snap) if snap.tag == self.tag && snap.process == self.original => {
+                        (Some(state_of(snap.hwnd)), true, String::new())
+                    }
+                    Ok(_) => (None, false, "helper identity changed".to_owned()),
+                    Err(e) => (None, false, e.to_string()),
+                };
+            self.log.bump_events();
+            self.log
+                .append(&crate::cloak::event_line(crate::cloak::EventLine {
+                    seq,
+                    elapsed_ms: self.start.elapsed().as_millis() as u64,
+                    kind,
+                    event_id,
+                    os_time,
+                    state: state.as_ref(),
+                    verified,
+                    detail: &detail,
+                }));
+        }
+    }
+
+    impl crate::ffi::WinEventSink for CloakSink {
+        fn on_win_event(&self, event: crate::ffi::WinEvent) {
+            // Exact-HWND gate first: unrelated windows never enter the log.
+            if !crate::cloak::event_is_relevant(event.hwnd, self.hwnd) {
+                return;
+            }
+            self.push_verified(
+                crate::cloak::hook_event_kind(event.event),
+                Some(event.event),
+                Some(event.time),
+            );
+        }
+    }
+
+    /// PID-scoped hooks for foreground + cloak transitions only: the OS
+    /// delivers helper-process events to the sink. The existing all-process
+    /// wrapper is untouched; no global input hooks are installed.
+    fn install_cloak_hooks(
+        sink: std::sync::Arc<CloakSink>,
+        pid: u32,
+    ) -> SResult<Vec<crate::ffi::WinEventHook>> {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            EVENT_OBJECT_CLOAKED, EVENT_OBJECT_UNCLOAKED, EVENT_SYSTEM_FOREGROUND,
+        };
+        crate::ffi::set_win_event_sink(sink);
+        let hooks = [
+            (EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND),
+            (EVENT_OBJECT_CLOAKED, EVENT_OBJECT_UNCLOAKED),
+        ]
+        .into_iter()
+        .map(|(min, max)| install_win_event_hook_for_pid(min, max, pid))
+        .collect::<Option<Vec<_>>>();
+        hooks.ok_or_else(|| failed("SetWinEventHook failed"))
+    }
+
+    /// Hook + poll observation: hook deliveries flow through the thread pump
+    /// while a 500ms poll supplements them with verified state reads. Every
+    /// poll revalidates the identity; on identity loss the loop stops without
+    /// writing, and on stop-file appearance it records the stop source.
+    /// Returns the stop source: `"timeout"`, `"stop-file"`, or
+    /// `"identity-lost"`. Polling alone never claims event completeness.
+    fn observe_seconds(
+        ops: &mut LiveOps,
+        sink: &std::sync::Arc<CloakSink>,
+        _hooks: &[crate::ffi::WinEventHook],
+        seconds: u64,
+        stop_file: &std::path::Path,
+    ) -> String {
+        let slices = seconds.saturating_mul(2).max(2);
+        for _ in 0..slices {
+            crate::ffi::drain_messages();
+            if sink.log.log_failed() {
+                return "log-failed".to_owned();
+            }
+            if crate::cloak::stop_requested(stop_file) {
+                return "stop-file".to_owned();
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            crate::ffi::drain_messages();
+            if crate::cloak::stop_requested(stop_file) {
+                return "stop-file".to_owned();
+            }
+            match ops.verify() {
+                Ok(state) => {
+                    let seq = sink.seq.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    sink.log.bump_events();
+                    sink.log
+                        .append(&crate::cloak::event_line(crate::cloak::EventLine {
+                            seq,
+                            elapsed_ms: sink.start.elapsed().as_millis() as u64,
+                            kind: "poll",
+                            event_id: None,
+                            os_time: None,
+                            state: Some(&state),
+                            verified: true,
+                            detail: "",
+                        }));
+                }
+                Err(fault) => {
+                    let seq = sink.seq.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    sink.log.bump_events();
+                    sink.log
+                        .append(&crate::cloak::event_line(crate::cloak::EventLine {
+                            seq,
+                            elapsed_ms: sink.start.elapsed().as_millis() as u64,
+                            kind: "poll",
+                            event_id: None,
+                            os_time: None,
+                            state: None,
+                            verified: false,
+                            detail: &fault.0,
+                        }));
+                    return "identity-lost".to_owned();
+                }
+            }
+        }
+        crate::ffi::drain_messages();
+        "timeout".to_owned()
+    }
+
+    /// Finite controller: baseline, `SetCloak(1, 2)`, optional `DeleteTab`
+    /// pairing, PID-scoped observation, then independently verified restore
+    /// (`Uncloak`, plus `AddTab` when the obligation was marked). Every write
+    /// is freshly verified immediately before it; any attempted mutation is
+    /// followed by a restore attempt with aggregated errors, regardless of
+    /// prior failures. Refuses foreground at entry like other mutations.
+    /// This binary is a GUI-subsystem process, so no console handler exists:
+    /// the mandatory stop file is the graceful-stop path, and the log file
+    /// carries the write-ahead evidence. `uncloak` remains the standalone
+    /// recovery.
+    pub fn cloak_owned(args: &crate::cloak::CloakArgs) -> SResult<String> {
+        let build = cloak_gate()?;
+        crate::cloak::stop_file_armed(&args.stop_file).map_err(absent)?;
+        let log = std::sync::Arc::new(CloakLog {
+            inner: std::sync::Mutex::new(
+                crate::cloak::JsonlLog::create(&args.log).map_err(absent)?,
+            ),
+            events: std::sync::atomic::AtomicU64::new(0),
+        });
+        // Entry gates before START: exact identity, foreground refusal, and
+        // the visible/uncloaked/non-iconic/geometric baseline.
+        let (snap, held) = bound_target(args.hwnd, &args.tag)?;
+        // The entry-verified original identity and its held handle are
+        // retained for the whole run: every later verify compares against
+        // this original, and the handle spans the operation.
+        let mut ops = LiveOps {
+            hwnd: args.hwnd,
+            tag: args.tag.clone(),
+            original: snap.process.clone(),
+            held,
+            log: Some(log.clone()),
+        };
+        let baseline = state_of(snap.hwnd);
+        crate::cloak::validate_baseline(
+            baseline.visible,
+            baseline.iconic,
+            baseline.cloak_mask,
+            baseline.rect,
+        )
+        .map_err(absent)?;
+        let me = current_identity().map_err(|e| failed(format!("identity {e}")))?;
+        let intended: Vec<&str> = if args.delete_tab {
+            vec!["cloak", "delete-tab", "uncloak", "add-tab"]
+        } else {
+            vec!["cloak", "uncloak"]
+        };
+        log.append(&crate::cloak::start_line(crate::cloak::StartLine {
+            controller: &me,
+            target: &snap.process,
+            hwnd: snap.hwnd,
+            tag: &snap.tag,
+            baseline: &baseline,
+            build,
+            variant: "cloak",
+            intended_ops: &intended,
+            recovery: &format!("uncloak {} --tag {} [--added-tab]", snap.hwnd, snap.tag),
+        }));
+        if log.log_failed() {
+            return Err(failed("log write failed before mutation"));
+        }
+        let sink = std::sync::Arc::new(CloakSink {
+            hwnd: snap.hwnd,
+            tag: snap.tag.clone(),
+            original: snap.process.clone(),
+            start: std::time::Instant::now(),
+            seq: std::sync::atomic::AtomicU64::new(0),
+            log: log.clone(),
+        });
+        let hooks = match install_cloak_hooks(sink.clone(), snap.process.pid) {
+            Ok(hooks) => hooks,
+            Err(e) => {
+                log.append(&serde_json::json!({
+                    "line": "end",
+                    "variant": "cloak",
+                    "detail": format!("hook install failed before mutation: {e}"),
+                    "errors": [e.to_string()],
+                }));
+                return Err(e);
+            }
+        };
+        let part = crate::cloak::cloak_part(&mut ops, args.delete_tab);
+        let mut errors = part.errors();
+        let after_cloak = part.cloak.after.clone();
+        // Observation only runs on a clean cloak: attempted, error-free,
+        // with a readable nonzero cloak mask. Any other attempted-mutation
+        // outcome restores immediately.
+        let mut stop_source = "cloak-failed".to_owned();
+        let mut restore = None;
+        if part.mutation_attempted() {
+            if errors.is_empty()
+                && !log.log_failed()
+                && matches!(&after_cloak, Some(state) if state.cloak_mask.is_some_and(|m| m != 0))
+            {
+                stop_source =
+                    observe_seconds(&mut ops, &sink, &hooks, args.seconds, &args.stop_file);
+            }
+            let restored = crate::cloak::restore_part(&mut ops, part.tab_obligation);
+            errors.extend(restored.errors());
+            restore = Some(restored);
+        }
+        // Final restoration evidence: a fresh verify after all steps, so the
+        // report never reuses a stale pre-restore readback. Absence is
+        // reported as unreadable, never papered over.
+        let restored_state = ops.verify().ok();
+        if log.log_failed() {
+            errors.push(
+                "log write failed during run; persisted prefix is in the log file".to_owned(),
+            );
+        }
+        let mut mismatches = match &restored_state {
+            Some(state) => crate::cloak::restoration_mismatches(
+                baseline.rect,
+                state.rect,
+                baseline.visible,
+                state.visible,
+                state.cloak_mask,
+            ),
+            None => vec!["restoration unreadable".to_owned()],
+        };
+        if part.mutation_attempted() && restored_state.is_none() {
+            mismatches.push("owned residue: restore writes refused or failed; independent recovery: uncloak with the logged HWND+tag".to_owned());
+        }
+        log.append(&serde_json::json!({
+            "line": "end",
+            "variant": "cloak",
+            "hwnd": snap.hwnd,
+            "stop_source": stop_source,
+            "after_cloak": after_cloak,
+            "restore": restore,
+            "mismatches": mismatches,
+            "errors": errors,
+            "event_count": log.event_count(),
+            "log_failed": log.log_failed(),
+        }));
+        let report = serde_json::json!({
+            "controller": me,
+            "build": build,
+            "hwnd": snap.hwnd,
+            "tag": snap.tag,
+            "delete_tab": args.delete_tab,
+            "stop_source": stop_source,
+            "baseline": baseline,
+            "after_cloak": after_cloak,
+            "restored": restored_state,
+            "mismatches": mismatches,
+            "errors": errors,
+            "event_count": log.event_count(),
+            "log": args.log,
+            "log_failed": log.log_failed(),
+            "foreground_note": "uncloak allows a foreground target after user selection",
+        });
+        if errors.is_empty() && mismatches.is_empty() {
+            Ok(report.to_string())
+        } else {
+            Err(failed(format!(
+                "cloak run failed (see log {}): errors={errors:?} mismatches={mismatches:?}",
+                args.log.display(),
+            )))
+        }
+    }
+
+    /// Standalone recovery: exact HWND + tag, foreground-safe (user
+    /// selection may have foregrounded the helper). The private
+    /// `SetCloak(1, 0)` call always runs on the freshly verified target,
+    /// even on an uncloaked baseline: that baseline call is the
+    /// independent-recovery proof, not a no-op bypass. `AddTab` only with
+    /// the explicit `--added-tab` flag.
+    pub fn uncloak_owned(args: &crate::cloak::UncloakArgs) -> SResult<String> {
+        let build = cloak_gate()?;
+        // Entry identity for the report (no foreground refusal: recovery
+        // must work on a foregrounded target). The entry-verified original
+        // and its held handle are retained for the restore that follows.
+        let (snap, held) = verify_target(args.hwnd, &args.tag)?;
+        let mut ops = LiveOps {
+            hwnd: args.hwnd,
+            tag: args.tag.clone(),
+            original: snap.process.clone(),
+            held,
+            log: None,
+        };
+        let before = state_of(snap.hwnd);
+        let baseline_call = before.cloak_mask == Some(0);
+        let part = crate::cloak::restore_part(&mut ops, args.added_tab);
+        let errors = part.errors();
+        // Final evidence: a fresh verify after all steps, never a stale
+        // pre-restore readback.
+        let after = ops.verify().ok();
+        let report = serde_json::json!({
+            "uncloaked": snap.hwnd,
+            "tag": snap.tag,
+            "build": build,
+            "baseline_call": baseline_call,
+            "added_tab": args.added_tab,
+            "before": before,
+            "after": after,
+            "process": snap.process,
+            "errors": errors,
+        });
+        if errors.is_empty() {
+            Ok(report.to_string())
+        } else {
+            Err(failed(format!("uncloak failed: {errors:?}")))
+        }
+    }
+
+    /// Observation-only command: identity-bound PID-scoped event logging plus
+    /// verified poll snapshots, no cloak writes ever.
+    pub fn cloak_observe(args: &crate::cloak::ObserveArgs) -> SResult<String> {
+        let build = cloak_gate()?;
+        crate::cloak::stop_file_armed(&args.stop_file).map_err(absent)?;
+        let log = std::sync::Arc::new(CloakLog {
+            inner: std::sync::Mutex::new(
+                crate::cloak::JsonlLog::create(&args.log).map_err(absent)?,
+            ),
+            events: std::sync::atomic::AtomicU64::new(0),
+        });
+        // Read-only entry: exact identity, no foreground gate. The
+        // entry-verified original and its held handle are retained for the
+        // whole run.
+        let (snap, held) = verify_target(args.hwnd, &args.tag)?;
+        let mut ops = LiveOps {
+            hwnd: args.hwnd,
+            tag: args.tag.clone(),
+            original: snap.process.clone(),
+            held,
+            log: Some(log.clone()),
+        };
+        let baseline = state_of(snap.hwnd);
+        let me = current_identity().map_err(|e| failed(format!("identity {e}")))?;
+        log.append(&crate::cloak::start_line(crate::cloak::StartLine {
+            controller: &me,
+            target: &snap.process,
+            hwnd: snap.hwnd,
+            tag: &snap.tag,
+            baseline: &baseline,
+            build,
+            variant: "observe",
+            intended_ops: &["observe"],
+            recovery: &format!("uncloak {} --tag {} [--added-tab]", snap.hwnd, snap.tag),
+        }));
+        if log.log_failed() {
+            return Err(failed("log write failed before observation"));
+        }
+        let sink = std::sync::Arc::new(CloakSink {
+            hwnd: snap.hwnd,
+            tag: snap.tag.clone(),
+            original: snap.process.clone(),
+            start: std::time::Instant::now(),
+            seq: std::sync::atomic::AtomicU64::new(0),
+            log: log.clone(),
+        });
+        let hooks = match install_cloak_hooks(sink.clone(), snap.process.pid) {
+            Ok(hooks) => hooks,
+            Err(e) => {
+                log.append(&serde_json::json!({
+                    "line": "end",
+                    "variant": "observe",
+                    "detail": format!("hook install failed: {e}"),
+                    "errors": [e.to_string()],
+                }));
+                return Err(e);
+            }
+        };
+        let stop_source = observe_seconds(&mut ops, &sink, &hooks, args.seconds, &args.stop_file);
+        let final_state = ops.verify().ok();
+        log.append(&serde_json::json!({
+            "line": "end",
+            "variant": "observe",
+            "hwnd": snap.hwnd,
+            "stop_source": stop_source,
+            "final": final_state,
+            "event_count": log.event_count(),
+            "log_failed": log.log_failed(),
+        }));
+        Ok(serde_json::json!({
+            "observed": snap.hwnd,
+            "tag": snap.tag,
+            "build": build,
+            "baseline": baseline,
+            "final": final_state,
+            "stop_source": stop_source,
+            "event_count": log.event_count(),
+            "log": args.log,
+            "log_failed": log.log_failed(),
+        })
+        .to_string())
     }
 
     fn write_receipt_atomic(receipt: &std::path::Path, json: &str) -> SResult<()> {

@@ -958,6 +958,7 @@ dependencies = [
  "serde_json",
  "tiler-core",
  "windows",
+ "windows-core",
  "windows-sys",
 ]
 

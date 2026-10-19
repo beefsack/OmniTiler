@@ -1,6 +1,12 @@
 # Alt+Tab and taskbar presence for hidden managed workspaces
 
-Research only. 0.1 presentation decided User 2026-10-17 (keep `SW_HIDE`); post-0.1 mechanism open. No code or host settings changed.
+Research only. 0.1 presentation decided User 2026-10-17 (keep `SW_HIDE`); post-0.1 mechanism open. No product behavior or host settings changed.
+The [active private-cloak spike](../../changes/windows-cloak-spike.md) adds
+owned-helper-only tooling and exact user-run steps (2026-10-19); no product
+behavior or 0.1 decision changes. Native listing, selection and crash recovery
+results are pending. User intent for that bounded investigation is retained
+taskbar/Alt+Tab entries with selection switching workspace and focusing, not
+pulling the window; this is not a backend-adoption decision.
 Checked 2026-10-04; extended 2026-10-17 with an owned-helper live
 visibility baseline (no Alt+Tab/Task View visual observation) and a
 per-option presentation comparison. User decision 2026-10-17: keep `SW_HIDE`
