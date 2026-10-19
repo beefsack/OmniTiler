@@ -658,14 +658,33 @@
      variants, and healthy next-tick separation after maximized startup admission.
      Wider game/DPI/output/fault variants remain unproven, not blockers for the
      bounded offline corrections.
-- Delivery pending upstream integration: the remote main branch advanced seven
-  commits after this tree's base, including shared-core workspace changes,
-  removal of the legacy protocol route, macOS work and overlapping specification
-  records. The passing gates above precede that integration, not evidence for a
-  combined tree. No upstream work has been overwritten. Integrate both sets of
-  changes without dropping either set of records, rerun applicable offline gates,
-  then check CI before treating delivery as complete.
-- Open product decisions: none for these corrections. Exact next action: finish
-  upstream integration and combined-tree verification, then run corrected-build
-  user acceptance above and correlate remaining presentation failures. Keep this
-  record active until those physical outcomes are known.
+- Delivery complete: `a372078e` (`fix(windows): complete single-output dogfood
+  corrections`) includes the accepted focus, stacking, limited-fullscreen,
+  styling, shared-accent, diagnostics and external-hide corrections plus their
+  specifications. Upstream core/protocol, macOS and KDE changes integrated
+  without textual conflicts or discarded documentation. Source review found no
+  adapter semantic conflict: the removed legacy protocol is not used by this
+  Windows adapter, and opt-in aligned workspace behavior leaves its disjoint
+  workspace model unchanged.
+- Combined-tree strict clippy exposed upstream macOS cfg boundaries, repaired by
+  `1461d164` (`fix(macos): preserve portable trailing and pinned-join checks`).
+  The trailing-proof drain helper now compiles only for macOS/tests. The unchanged
+  pure pinned-display join is available to the portable test through its existing
+  path; the off-mac regression also asserts the unsupported AppKit read fails.
+  No native behavior, shared-core semantics or test coverage was removed.
+- Final combined-tree offline gates passed: locked five-package build and strict
+  all-target clippy; locked core/protocol/KWin-FFI/Windows tests 2,811/0/1
+  (Windows 1,702/0/1), workspace format, unsafe guardrail 32/0 and diff check.
+  Test totals differ from the pre-integration result because upstream retired
+  legacy protocol suites and added core suites. Portable macOS selection tests
+  passed 26/26 and the pinned-join regression 1/1. The eight known local macOS
+  Unix-helper failures were not rerun or altered.
+- Both code commits are pushed on main. [CI run 39233274045](https://github.com/beefsack/OmniTiler/actions/runs/39233274045)
+  for `1461d164` passed all eight jobs: Windows, macOS, Rust workspace, KWin,
+  native, shell, licenses and notices. The Windows CI runner passed the full
+  five-package test command, including macOS tests; its environment does not
+  reproduce the local Unix-helper availability blocker. This documentation
+  follow-up records the delivered state without runtime changes.
+- Open product decisions: none for these corrections. Exact next action: run
+  corrected-build user acceptance above and correlate remaining presentation
+  failures. Keep this record active until those physical outcomes are known.
