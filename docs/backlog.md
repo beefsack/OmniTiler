@@ -18,7 +18,10 @@ decisions of 2026-09-24 are under
   checks; (8) 0.1 packaging/NixOS/Ubuntu/licensing gates; (9) shared core and
   KDE module-size refactoring. Live passes recorded before the full-state
   route (2026-10-17) need repeating where that route changed the path.
-- P0 | Windows single-output dogfood 2026-10-19 | User reports: (1) a
+- P0 | Windows single-output dogfood 2026-10-19 | Delivered and pushed
+  (`a372078e`, `6911b8d2`, CI green); remaining user-run acceptance (app
+  hide/reshow, desktop/Start pager, accent change while running) is listed in
+  the [record](changes/windows-single-output-dogfood.md). User reports: (1) a
   fullscreen game run as administrator (unmanageable) suspended all tiling;
   user-approved: other managed windows keep non-activating geometry
   reconciliation, game untouched, focus/overlays suppressed (user physically
@@ -26,7 +29,8 @@ decisions of 2026-09-24 are under
   user physically accepted, as are the centered number halo and the shared
   WinRT system accent for border theme mode and pager highlight. Open: (4)
   pager disappears when the desktop background is clicked or the Start menu
-  opens (gate diagnostics delivered; user repro pending); (5) intermittent
+  opens (low-integrity Start surface was misclassified as elevated; fixed,
+  native visibility/topmost diagnostics added; user recheck pending); (5) intermittent
   black accent and startup crash (cached WinRT factory across apartments)
   fixed and user physically accepted over 10 starts; (6) closing W2 in
   `H[W1 V[W2 W3]]` left W3 unexpanded with a gap: Steam hid its live
