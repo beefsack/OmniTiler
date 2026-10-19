@@ -389,6 +389,34 @@ platform API behavior.
      creation or failed transfer. This satisfies the earlier integration
      prerequisite, not physical acceptance or complete manager parity.
      [Outcome and physical check](changes/macos-managed-workspaces.md#select-only-fallback-handover-2026-10-17).
+   - **User-approved 2026-10-19 — managed native workspaces** (to be checked in
+     dogfooding; supersedes the select-only fallback's "all sends disabled"):
+     - Sends use a synthetic title-bar drag of the engine-named managed window
+       plus a tagged Desktop-N (or Control+Fn arrow) Mission Control chord.
+       The grab point must be plain window chrome proven by same-element AX
+       role/owner evidence; title bars with no plain chrome refuse.
+     - Before posting, the effect owner (its own event-driven thread, off the
+       engine and AppKit threads) re-proves admission-pinned window identity,
+       fresh focus and a dual AX/WindowServer hit at the grab point; posting
+       permits are consumed per point/chord. Refuse with a log on any mismatch.
+     - Display topology is published by the main thread at startup and on
+       screen-parameter notifications into a latest-wins slot; the effect owner
+       never calls main-thread-only APIs or waits on the main thread.
+     - A send to the current Space reports `Unchanged` with no effects,
+       matching core/KDE/Windows.
+     - Numbered send-stay is supported but unbound by default.
+     - Trailing empty Space: Ctrl (default Meta)+0 selects, Ctrl+Shift+0
+       sends-follow, and the indicator shows a trailing slot; there is no
+       trailing send-stay. Creation settles through existing logical/native
+       bindings (no shared-core change). Only runtime-created, proven-empty
+       Spaces are removed; unknown occupancy refuses removal, with no exemption
+       for foreign system chrome. Sends beyond Desktop 9 refuse before creation.
+       Stale indicator clicks refuse instead of creating.
+     - Test harness only: chords may be posted into disposable TextEdit
+       documents in a run-owned temporary directory, never when another app is
+       frontmost. CG frames sampled while Mission Control is shown are not
+       evidence of window drift.
+     [Checkpoint and dogfood checklist](changes/macos-managed-workspaces.md#trailing-workspace-armed-checkpoint-2026-10-19).
 
 - User decision 2026-10-17 (supersedes the KDE-only scope below): release
   0.1 covers KDE Plasma, Windows and macOS. The goal is feature parity with
@@ -2406,7 +2434,8 @@ platform API behavior.
   alignment is not silently decided by ownership extraction.
   [Offline delivery and open questions](changes/archive/shared-core-owned-output-topology.md).
 
-- **Tentative macOS complete-world mapping, 2026-10-18:** represent observed
+- **macOS complete-world mapping, 2026-10-18 — User-approved 2026-10-19
+  (to be checked in dogfooding):** represent observed
   native Spaces in per-output-local mode, without inventing logical creation
   or ordinary window-transfer capability. Preserve the existing 18 armed
   select-only bindings and explicit-command-only native focus; this migration

@@ -43,6 +43,11 @@ selected route; Dock injection and SIP reduction are out of scope.
   or send keys or events to it, even when it appears to be an owned
   window. If the hosting terminal cannot be distinguished with certainty,
   stop and ask the user before any window-affecting step.
+- Keep raw before/after records (PID, window ID, layer, onscreen, bounds) for
+  every protected window, not just counts. CG bounds sampled while Mission
+  Control is shown reflect its scaled thumbnails, not real moves: re-sample
+  after Mission Control has closed before declaring drift, and stop on drift
+  that persists.
 
 ## Required Preflight
 
