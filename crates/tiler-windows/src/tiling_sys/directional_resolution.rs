@@ -48,8 +48,11 @@ fn foreground_output(areas: &[MonitorArea]) -> Option<String> {
     rect_from_win(raw).map(|r| output_for_rect(areas, &r))
 }
 
-/// Exact output context for a digit chord: cached active output when known,
-/// else the foreground monitor, else the pointer monitor, else ordering.
+/// Exact output context for a digit chord: the genuine foreground monitor
+/// when known, else the pointer monitor, else the cached last-switch
+/// output when still known, else output ordering. The cached value is
+/// deliberately last: a stale last-switch cache must never beat live
+/// focus (tray pager parity). Never invents a key.
 pub(super) fn chord_output(state: &TileLoop, areas: &[MonitorArea]) -> Option<String> {
     let cached = if state.active_output.is_empty() {
         None

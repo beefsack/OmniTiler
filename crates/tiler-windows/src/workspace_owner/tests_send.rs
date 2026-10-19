@@ -481,21 +481,32 @@ fn send_output_admits_remembered_mru_and_root_instead_of_r4() {
 }
 
 #[test]
-fn output_context_prefers_cached_then_foreground_then_order() {
+fn output_context_prefers_foreground_then_pointer_then_cache() {
     let mut spaces = ManagedWorkspaces::new();
     spaces.ensure_output("mon-a");
     spaces.ensure_output("mon-b");
+    // Stale cache (mon-b) loses to genuine foreground (mon-a): defect (3).
     assert_eq!(
-        output_context(&spaces, Some("mon-b"), Some("mon-a"), Some("mon-a")).as_deref(),
-        Some("mon-b")
-    );
-    assert_eq!(
-        output_context(&spaces, Some("gone"), Some("mon-a"), Some("mon-b")).as_deref(),
+        output_context(&spaces, Some("mon-b"), Some("mon-a"), Some("mon-b")).as_deref(),
         Some("mon-a")
     );
     assert_eq!(
-        output_context(&spaces, Some("gone"), None, Some("mon-b")).as_deref(),
+        output_context(&spaces, Some("mon-a"), Some("mon-b"), Some("mon-a")).as_deref(),
         Some("mon-b")
+    );
+    // No foreground: pointer beats a stale cache.
+    assert_eq!(
+        output_context(&spaces, Some("mon-a"), None, Some("mon-b")).as_deref(),
+        Some("mon-b")
+    );
+    // Neither focus proxy known: fall back to the cache, then ordering.
+    assert_eq!(
+        output_context(&spaces, Some("mon-b"), Some("gone"), Some("gone")).as_deref(),
+        Some("mon-b")
+    );
+    assert_eq!(
+        output_context(&spaces, Some("gone"), Some("gone"), Some("gone")).as_deref(),
+        Some("mon-a")
     );
     assert_eq!(
         output_context(&spaces, None, None, None).as_deref(),

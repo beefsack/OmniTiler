@@ -268,6 +268,12 @@ native outcomes remain TBD.
 | Primary taskbar auto-hide | Enable auto-hide; reveal the taskbar temporarily; disable auto-hide | User-confirmed 2026-10-17, as shipped: hide the pager throughout auto-hide, retaining tray number/menu; restore from fresh geometry when disabled. Read-only production ABM_GETSTATE, offline transition coverage and native toggle/exact-state restoration passed ([record](../changes/archive/windows-taskbar-pager-lifecycle.md)) | Slide-in/out tracking deferred; reference outcome TBD |
 | Nonactivating topmost cover | With an unchanged visible pager and already-shown disposable helper overlapping it, promote the helper to topmost with `NOMOVE/NOSIZE/NOACTIVATE`; observe raw events and independent z-order | Native 2026-10-18: desktop-parent `REORDER`, object `-4`, accompanied observed burial; current subscription omits it. Pager remained visible and recovered between sampled readbacks. Broader complete coverage unproven; retain existing 2 s recovery ([probe](../changes/archive/windows-pager-event-coverage.md)) | Universal visibility/topmost coverage, self-feedback safety, own-window/Explorer/display/DPI legs TBD; no OS-silence, timer-only cause or weaker contract claimed |
 
+### Windows focused-output workspace discriminator
+
+| Variant | Minimal action sequence | Ours outcome / evidence | Unsupported outcome |
+| --- | --- | --- | --- |
+| Native focus differs from last selected output | Select a workspace on A; focus an existing ordinary window on B; select ordinal 2 without an explicit output; reverse A/B | Corrected 2026-10-20: genuine foreground monitor beats the stale last-switch cache. Offline both-direction/cache/unknown-output regressions and agent-driven exact-owner CLI selections on both outputs pass. Tentative (user review pending) fallback without readable foreground: pointer, cache, stable output order, matching the existing tray resolver. [Record](../changes/windows-dual-output-live.md) | Physical digit chords and exact reference fallback outcomes TBD; CLI evidence establishes routing, not physical hook delivery |
+
 ### Windows shared startup discriminator
 
 | Variant | Minimal action sequence | Ours offline outcome | Reference / native |

@@ -18,6 +18,16 @@ decisions of 2026-09-24 are under
   checks; (8) 0.1 packaging/NixOS/Ubuntu/licensing gates; (9) shared core and
   KDE module-size refactoring. Live passes recorded before the full-state
   route (2026-10-17) need repeating where that route changed the path.
+- P0 | Windows dual-output live testing and fixes | User 2026-10-19 first
+  two-monitor run: (1) cross-output window move right-to-left fails (tiling
+  within each output works); (2) no workspace pager on the secondary output;
+  (3) workspace switching with the secondary output focused changes the
+  primary; (4) new windows open on the secondary output while the primary is
+  focused. Workspace-command routing fixed and verified through the native
+  CLI on both outputs; admission correction remains parked after incomplete
+  two-direction acceptance ([record](changes/windows-dual-output-live.md)).
+  Diagnose and fix the remaining defects, then work through the
+  [two-monitor checklist](changes/windows-physical-checklist.md#two-monitor-pc).
 - P0 | Windows single-output dogfood 2026-10-19 | Delivered and pushed
   (`a372078e`, `6911b8d2`, CI green); remaining user-run acceptance (app
   hide/reshow, desktop/Start pager, accent change while running) is listed in

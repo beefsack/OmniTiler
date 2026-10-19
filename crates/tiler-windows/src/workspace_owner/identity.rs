@@ -1,9 +1,12 @@
 #![forbid(unsafe_code)]
 use super::*;
 
-/// Resolve which output a digit chord acts on: the cached active output when
-/// it still exists, else the foreground monitor, else the pointer monitor,
-/// else output ordering. Never invents a key.
+/// Resolve which output a digit chord acts on: the genuine foreground
+/// monitor when known, else the pointer monitor, else the cached
+/// last-switch output when still known, else output ordering. The cached
+/// value is deliberately last: a stale last-switch cache must never beat
+/// live focus (tray pager parity: genuine focus over stale cache). Never
+/// invents a key.
 #[must_use]
 pub fn output_context(
     spaces: &ManagedWorkspaces,
@@ -11,17 +14,17 @@ pub fn output_context(
     foreground: Option<&str>,
     pointer: Option<&str>,
 ) -> Option<String> {
-    if let Some(key) = cached
-        && spaces.output_keys().iter().any(|k| k == key)
-    {
-        return Some(key.to_owned());
-    }
     if let Some(key) = foreground
         && spaces.output_keys().iter().any(|k| k == key)
     {
         return Some(key.to_owned());
     }
     if let Some(key) = pointer
+        && spaces.output_keys().iter().any(|k| k == key)
+    {
+        return Some(key.to_owned());
+    }
+    if let Some(key) = cached
         && spaces.output_keys().iter().any(|k| k == key)
     {
         return Some(key.to_owned());
