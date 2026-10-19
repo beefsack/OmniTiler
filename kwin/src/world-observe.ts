@@ -14,12 +14,10 @@ import {
     readFixedSizePredicateValue,
 } from "./fixed-size-predicate";
 
-// Fixed-size admission predicate (legacy parity with plan-adapter
-// isFixedSize, same validated predicate tokens): a window is fixed-size
+// Fixed-size admission predicate (same validated predicate tokens): a window is fixed-size
 // when its declared min/max extents are finite, in range, non-sentinel, and
 // equal on both axes (default) or either axis (either-axis-fixed). Pure
-// classification; the core owns admission. Kept local so the production
-// bundle never pulls the legacy plan adapter.
+// classification; the core owns admission.
 function isFixedSizeWindow(
     minSize: { readonly w: unknown; readonly h: unknown } | null | undefined,
     maxSize: { readonly w: unknown; readonly h: unknown } | null | undefined,
@@ -255,7 +253,13 @@ export interface ObserveEnv {
     readOuterGap: () => number;
     gestureActive: () => boolean;
     knownClosed: () => ReadonlyArray<string>;
-    logicalBindingOf: (nativeId: string) => { logical: string; out: string; pin: boolean; disp: boolean; managed: boolean } | null;
+    logicalBindingOf: (nativeId: string, out?: string) => { logical: string; out: string; pin: boolean; disp: boolean; managed: boolean } | null;
+    // Aligned per-output workspaces (KDE production): the same native
+    // desktop id exists on every output with a distinct logical identity
+    // per (output, native), so bindings replicate per output instead of
+    // collapsing through one native->logical row. Off preserves the
+    // disjoint single-row behavior for existing callers and tests.
+    replicateBindingsPerOutput?: boolean;
     // Adapter-owned intentional-float membership (observation input, never
     // policy): converged from accepted Planner exception rows. Absent reads
     // as tiled.
@@ -461,10 +465,9 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
             }
         }
         // Sticky native (onAllDesktops true) with an empty desktop list is
-        // legitimate (legacy adopts it homed, never whole-report
-        // unreadable): normalize homing from the observed output current,
-        // never a fabricated id. Sticky occupies exactly this homing, never
-        // all backings.
+        // homed from the observed output current (never a fabricated id and
+        // never whole-report unreadable). The homing feeds retention only, never
+        // spare occupancy: sticky never occupies any backing cell.
         if (home === "") {
             let stickyEmpty = false;
             try {
@@ -495,7 +498,7 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
                 return false;
             }
         })();
-        // Fixed-size admission classification (legacy parity): fresh
+        // Fixed-size admission classification: fresh
         // admissions classify from declared size hints under the validated
         // predicate; recorded origins decorate retained automatic/suppress
         // provenance read-only. Never policy: the core owns admission from
@@ -533,7 +536,7 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
         if (tileOverride) {
             fixedSuppress = true;
         }
-        // Native overlay reads use the legacy KWin property names
+        // Native overlay reads use the KWin property names
         // (`fullScreen`, `maximizeMode`, `onAllDesktops`): the lowercase
         // aliases exist only for offline test fakes and apply when the
         // native property is absent, never overriding a live native read.
@@ -672,11 +675,29 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
         (domains[0] as ObservedDomain).closed = closed.slice(0, MAX_CLOSED);
     }
     // Bindings from the adapter-owned mapping snapshot (logical<->native).
+    // Replicated mode emits one row per (output, native) so the shared
+    // native grid keeps a distinct logical identity per output cell;
+    // only mapped cells emit (unmapped cells mint core-side). The
+    // disjoint mode keeps one row per native as before.
     const bindings: WorldObservation["bindings"] = [];
-    for (const id of desktopById.keys()) {
-        const bound = env.logicalBindingOf(id);
-        if (bound !== null) {
-            bindings.push({ logical: bound.logical, native: id, out: bound.out, pin: bound.pin, disp: bound.disp, managed: bound.managed });
+    if (env.replicateBindingsPerOutput === true) {
+        // Desktop-major order (all outputs per native) keeps the wire
+        // byte-stable with the disjoint single-row order: one row per
+        // native becomes one row per (output, native) in place.
+        for (const id of desktopById.keys()) {
+            for (const screen of screenEntries) {
+                const bound = env.logicalBindingOf(id, screen.name);
+                if (bound !== null) {
+                    bindings.push({ logical: bound.logical, native: id, out: screen.name, pin: bound.pin, disp: bound.disp, managed: bound.managed });
+                }
+            }
+        }
+    } else {
+        for (const id of desktopById.keys()) {
+            const bound = env.logicalBindingOf(id);
+            if (bound !== null) {
+                bindings.push({ logical: bound.logical, native: id, out: bound.out, pin: bound.pin, disp: bound.disp, managed: bound.managed });
+            }
         }
     }
     // Per-output native order (core MAX_NATIVE_PER_OUTPUT): truncation
@@ -688,7 +709,7 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
     // Live native output geometry plus the active-screen primary, per
     // output: independent native facts for the core-owned topology
     // authority and hotplug nearest-survivor placement (never window
-    // frames). The primary mirrors the legacy active-screen key.
+    // frames). The primary mirrors the active-screen key.
     const activeName: string | null = (() => {
         try {
             const screen = readProp(target, "activeScreen");

@@ -177,3 +177,81 @@ describe("world observation inventory bounds", () => {
         assert.equal(homings.length, 1);
     });
 });
+
+describe("world observation aligned binding replication", () => {
+    it("emits one binding per (output, native) with distinct logicals", () => {
+        const { surface } = makeInventory(3, 3, 2);
+        const obs = captureWorldObservation({
+            workspace: surface,
+            readMode: () => "per-output-local",
+            readGap: () => 8,
+            readOuterGap: () => 8,
+            gestureActive: () => false,
+            knownClosed: () => [],
+            logicalBindingOf: (nativeId, out) => ({
+                logical: `${out}-${nativeId}`,
+                out: out ?? "out-?",
+                pin: false,
+                disp: false,
+                managed: true,
+            }),
+            isFloating: () => false,
+            replicateBindingsPerOutput: true,
+        });
+        assert.ok(obs !== null);
+        // 3 natives x 2 outputs, desktop-major order: ws-0 rows first.
+        assert.equal(obs.bindings.length, 6);
+        assert.deepEqual(
+            obs.bindings.map((b) => `${b.out}/${b.native}=${b.logical}`),
+            [
+                "out-0/ws-0=out-0-ws-0",
+                "out-1/ws-0=out-1-ws-0",
+                "out-0/ws-1=out-0-ws-1",
+                "out-1/ws-1=out-1-ws-1",
+                "out-0/ws-2=out-0-ws-2",
+                "out-1/ws-2=out-1-ws-2",
+            ],
+        );
+    });
+
+    it("omits unmapped cells so the core mints them", () => {
+        const { surface } = makeInventory(2, 0, 2);
+        const obs = captureWorldObservation({
+            workspace: surface,
+            readMode: () => "per-output-local",
+            readGap: () => 8,
+            readOuterGap: () => 8,
+            gestureActive: () => false,
+            knownClosed: () => [],
+            logicalBindingOf: (nativeId, out) =>
+                out === "out-0" && nativeId === "ws-0"
+                    ? { logical: "al-1", out, pin: false, disp: false, managed: true }
+                    : null,
+            isFloating: () => false,
+            replicateBindingsPerOutput: true,
+        });
+        assert.ok(obs !== null);
+        assert.equal(obs.bindings.length, 1);
+    });
+
+    it("keeps single-row bindings without the replication flag", () => {
+        const { surface } = makeInventory(2, 0, 2);
+        const seen: string[] = [];
+        const obs = captureWorldObservation({
+            workspace: surface,
+            readMode: () => "per-output-local",
+            readGap: () => 8,
+            readOuterGap: () => 8,
+            gestureActive: () => false,
+            knownClosed: () => [],
+            logicalBindingOf: (nativeId) => {
+                seen.push(nativeId);
+                return { logical: `desk-${nativeId}`, out: "out-0", pin: false, disp: false, managed: true };
+            },
+            isFloating: () => false,
+        });
+        assert.ok(obs !== null);
+        assert.equal(obs.bindings.length, 2);
+        assert.deepEqual(seen, ["ws-0", "ws-1"]);
+    });
+});

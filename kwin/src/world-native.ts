@@ -65,11 +65,23 @@ export interface WorldNativeToggles {
     // the attempt narrowly; a later explicit press may retry. Never
     // retries setters and never decides tiling (core owns the command
     // through submitSettledCommand).
-    readonly pollPendingUnfloat: (fresh: WorldObservation, gesture: boolean) => void;
-    // Terminates a pending attempt. Omitted cause drops silently (stop);
+    readonly pollPendingUnfloat: (fresh: WorldObservation, gesture: boolean) => void;    // Terminates a pending attempt. Omitted cause drops silently (stop);
     // "newer-input" logs a supersede outcome without failing the old
     // label; any other cause fails that label narrowly.
     readonly cancelPendingUnfloat: (cause?: string) => void;
+    // Automatic fixed-size float stacking (option A): project-owned
+    // keepAbove above tiles, driven per accepted report with the fresh
+    // observation. No geometry or focus writes, never a keepBelow write.
+    readonly syncAutomaticFloatStacking: (fresh: WorldObservation) => void;
+    // Releases project-owned keepAbove for one window (explicit unfloat
+    // tile path). Closed/replaced references take zero cleanup writes;
+    // an already-cleared above (later keepBelow exclusivity included)
+    // releases with zero writes.
+    readonly releaseAutomaticFloat: (id: string, reason: string) => void;
+    // Best-effort release of all owned keepAbove on explicit stop only
+    // (handle.stop(); the actual KWin script unload path is unharnessed
+    // and makes no claim through this function).
+    readonly releaseAllAutomaticFloats: (reason: string) => void;
 }
 
 // Exact KWin reads with the offline lowercase fallback only when the
@@ -193,6 +205,14 @@ export function createWorldNativeToggles(env: WorldNativeEnv): WorldNativeToggle
     // keepAbove/keepBelow before it, restored on sticky-off.
     const stickyPrevFloating = new Map<string, boolean>();
     const stickyPrevAbove = new Map<string, { above: boolean; below: boolean }>();
+    // Automatic fixed-size float stacking (option A): project-owned
+    // keepAbove above tiles. Win-keyed ownership with no stored refs;
+    // every write goes through the freshly resolved live ref after a
+    // live overlay recheck, so stale captures never write. Preexisting
+    // below admits nothing; preexisting above stays untouched/unowned.
+    const autoOwned = new Set<string>();
+    const autoNoReacquire = new Set<string>();
+    const autoSkipNoted = new Set<string>();
 
     // Fence outstanding world applies BEFORE setters (no races): an
     // in-flight DescribeWorld or a queued command fails the toggle closed
@@ -639,7 +659,308 @@ export function createWorldNativeToggles(env: WorldNativeEnv): WorldNativeToggle
         }
     };
 
-    return { submitFloat, setStickyNative, setMaximizedNative, setFullscreenNative, pollPendingUnfloat, cancelPendingUnfloat };
+    // Automatic fixed-size float stacking driver (option A). `fresh`
+    // carries classification flags only; every stacking write re-reads
+    // live overlay state first and resolves a fresh live ref, so a stale
+    // capture never writes. A live-fullscreen target takes no write on
+    // any path; a scope with live-verified fullscreen focus suspends
+    // owned above and admits nothing.
+    const resolveAutoLive = (win: string): object | null => {
+        let live: object | null = null;
+        try {
+            live = env.liveRefById(win);
+        } catch (error) {
+            void error;
+            return null;
+        }
+        if (live === null || !isListed(live)) {
+            return null;
+        }
+        if (liveWindowId(readProp, live) !== win) {
+            return null;
+        }
+        return live;
+    };
+
+    // Live overlay recheck immediately before every stacking write
+    // (exact KWin names, offline alias fallback). Null or any overlay
+    // fails closed with zero writes; ownership is retained for retry.
+    const readAutoSafety = (ref: object): { fullscreen: boolean; maximized: boolean; minimized: boolean; sticky: boolean } | null => {
+        try {
+            const fsRaw = readProp(ref, "fullScreen");
+            const fullscreen = typeof fsRaw === "boolean" ? fsRaw : readNativeAlias(readProp, ref, "fullscreen");
+            const modeRaw = readProp(ref, "maximizeMode");
+            const maximized = typeof modeRaw === "number" ? modeRaw !== 0 : readNativeAlias(readProp, ref, "maximized");
+            const minimized = readProp(ref, "minimized");
+            const stickyRaw = readProp(ref, "onAllDesktops");
+            const sticky = typeof stickyRaw === "boolean" ? stickyRaw : readNativeAlias(readProp, ref, "sticky");
+            if (typeof fullscreen !== "boolean" || typeof maximized !== "boolean" ||
+                typeof minimized !== "boolean" || typeof sticky !== "boolean") {
+                return null;
+            }
+            return { fullscreen, maximized, minimized, sticky };
+        } catch (error) {
+            void error;
+            return null;
+        }
+    };
+
+    const writeAutoAbove = (live: object, win: string, want: boolean, target: string): boolean => {
+        const safety = readAutoSafety(live);
+        if (safety === null || safety.fullscreen || safety.maximized || safety.minimized || safety.sticky) {
+            log(`omnitiler:world:automatic-keep-above window=${token(win)} target=${target} outcome=refused`);
+            return false;
+        }
+        let invoked = false;
+        try {
+            invoked = Reflect.set(live, "keepAbove", want);
+        } catch (error) {
+            void error;
+            invoked = false;
+        }
+        const state = readAutoAboveBelow(readProp, live);
+        const ok = invoked && state !== null && state.above === want && (want === false || state.below === false);
+        log(`omnitiler:world:automatic-keep-above window=${token(win)} target=${target} outcome=${ok ? "applied" : "refused"}`);
+        return ok;
+    };
+
+    const dropAutoWin = (win: string): void => {
+        autoOwned.delete(win);
+        autoNoReacquire.delete(win);
+        autoSkipNoted.delete(`${win} below`);
+        autoSkipNoted.delete(`${win} suspended`);
+    };
+
+    const releaseAutomaticFloat = (id: string, reason: string): void => {
+        try {
+            if (!autoOwned.has(id)) {
+                return;
+            }
+            const live = resolveAutoLive(id);
+            if (live === null) {
+                dropAutoWin(id);
+                return;
+            }
+            const flags = readAutoAboveBelow(readProp, live);
+            if (flags === null || !flags.above) {
+                autoOwned.delete(id);
+                if (flags !== null && flags.below) {
+                    autoNoReacquire.add(id);
+                }
+                return;
+            }
+            // A refused write (live overlay) retains ownership for a
+            // later retry with zero writes; only success drops it.
+            if (writeAutoAbove(live, id, false, `restore-${reason}`)) {
+                autoOwned.delete(id);
+            }
+        } catch (error) {
+            void error;
+        }
+    };
+
+    // Best-effort release of all owned keepAbove on explicit stop only.
+    // Safety-guarded restores; refused targets stay owned but unwritten.
+    // This covers handle.stop(); the actual KWin script unload path is
+    // unharnessed and makes no claim through this function.
+    const releaseAllAutomaticFloats = (reason: string): void => {
+        try {
+            for (const win of [...autoOwned]) {
+                const live = resolveAutoLive(win);
+                if (live === null) {
+                    dropAutoWin(win);
+                    continue;
+                }
+                const flags = readAutoAboveBelow(readProp, live);
+                if (flags === null || !flags.above) {
+                    autoOwned.delete(win);
+                    continue;
+                }
+                if (writeAutoAbove(live, win, false, `restore-${reason}`)) {
+                    autoOwned.delete(win);
+                }
+            }
+            autoNoReacquire.clear();
+            autoSkipNoted.clear();
+        } catch (error) {
+            void error;
+        }
+    };
+
+    const syncAutomaticFloatStacking = (fresh: WorldObservation): void => {
+        try {
+            const entries = new Map<string, { entry: WorldObservation["domains"][number]["windows"][number]; scope: string }>();
+            for (const domain of fresh.domains) {
+                const scope = `${domain.id}/${domain.ws}`;
+                for (const w of domain.windows) {
+                    if (!entries.has(w.win)) {
+                        entries.set(w.win, { entry: w, scope });
+                    }
+                }
+            }
+            for (const m of fresh.minimized) {
+                if (!entries.has(m.win)) {
+                    entries.set(m.win, { entry: m, scope: `${m.out}/${m.ws}` });
+                }
+            }
+            // Suspend scopes with live-verified fullscreen focus; the
+            // stale capture is only a fallback when live focus is
+            // unreadable. Scopes use the live `out/ws` form with the
+            // observation scope as fallback.
+            const suspendScopes = new Set<string>();
+            let liveFocusRead = false;
+            try {
+                const liveId = env.activeWindowId();
+                if (liveId !== null) {
+                    const liveRef = env.liveRefById(liveId);
+                    if (liveRef !== null) {
+                        const safety = readAutoSafety(liveRef);
+                        if (safety !== null) {
+                            liveFocusRead = true;
+                            if (safety.fullscreen) {
+                                const scope = readScopeOf(liveRef) ?? entries.get(liveId)?.scope ?? null;
+                                if (scope !== null) {
+                                    suspendScopes.add(scope);
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (error) {
+                void error;
+            }
+            if (!liveFocusRead) {
+                const focusedId = fresh.focusedGlobal;
+                if (typeof focusedId === "string" && focusedId !== "") {
+                    const focused = entries.get(focusedId);
+                    if (focused !== undefined && focused.entry.fullscreen === true) {
+                        suspendScopes.add(focused.scope);
+                    }
+                }
+            }
+            for (const win of [...autoOwned]) {
+                const live = resolveAutoLive(win);
+                if (live === null) {
+                    dropAutoWin(win);
+                    continue;
+                }
+                const flags = readAutoAboveBelow(readProp, live);
+                if (flags === null) {
+                    continue;
+                }
+                if (flags.below) {
+                    autoOwned.delete(win);
+                    autoNoReacquire.add(win);
+                    log(`omnitiler:world:automatic-keep-above window=${token(win)} target=release reason=below-wins outcome=released`);
+                    continue;
+                }
+                const current = entries.get(win);
+                if (current !== undefined && (current.entry.fixedAuto !== true || current.entry.fixedSuppress === true)) {
+                    // Lost automatic classification restores owned above
+                    // once; a refused write retains for a later retry.
+                    if (flags.above && !writeAutoAbove(live, win, false, "restore-classification-lost")) {
+                        continue;
+                    }
+                    autoOwned.delete(win);
+                    continue;
+                }
+                const scope = readScopeOf(live) ?? current?.scope ?? null;
+                if (flags.above && scope !== null && suspendScopes.has(scope)) {
+                    // A refused write (live overlay, including a
+                    // fullscreen target itself) retains for retry.
+                    if (!writeAutoAbove(live, win, false, "restore-suspended-fullscreen")) {
+                        continue;
+                    }
+                    autoOwned.delete(win);
+                    continue;
+                }
+                if (
+                    current !== undefined &&
+                    (current.entry.sticky === true || current.entry.fullscreen === true ||
+                        current.entry.maximized === true || current.entry.minimized === true)
+                ) {
+                    continue;
+                }
+                if (!flags.above) {
+                    autoOwned.delete(win);
+                    autoNoReacquire.add(win);
+                    log(`omnitiler:world:automatic-keep-above window=${token(win)} target=release reason=external-clear outcome=released`);
+                    continue;
+                }
+            }
+            for (const [win, current] of entries) {
+                if (autoOwned.has(win)) {
+                    continue;
+                }
+                const entry = current.entry;
+                if (entry.fixedAuto !== true || entry.fixedSuppress === true) {
+                    continue;
+                }
+                if (entry.floating !== true || entry.sticky === true || entry.fullscreen === true ||
+                    entry.maximized === true || entry.minimized === true) {
+                    continue;
+                }
+                const live = resolveAutoLive(win);
+                if (live === null) {
+                    continue;
+                }
+                const flags = readAutoAboveBelow(readProp, live);
+                if (flags === null) {
+                    log(`omnitiler:world:automatic-keep-above window=${token(win)} target=above outcome=missing`);
+                    continue;
+                }
+                if (flags.below) {
+                    const key = `${win} below`;
+                    if (!autoSkipNoted.has(key)) {
+                        autoSkipNoted.add(key);
+                        log(`omnitiler:world:automatic-keep-above window=${token(win)} target=above outcome=skipped reason=preexisting-below`);
+                    }
+                    continue;
+                }
+                if (flags.above) {
+                    // Preowned above stays untouched and untracked; an
+                    // ended lifetime becomes eligible again below.
+                    autoNoReacquire.delete(win);
+                    continue;
+                }
+                if (autoNoReacquire.has(win)) {
+                    continue;
+                }
+                const applicantScope = readScopeOf(live) ?? current.scope;
+                if (suspendScopes.has(applicantScope)) {
+                    const key = `${win} suspended`;
+                    if (!autoSkipNoted.has(key)) {
+                        autoSkipNoted.add(key);
+                        log(`omnitiler:world:automatic-keep-above window=${token(win)} target=above outcome=skipped reason=fullscreen-sibling`);
+                    }
+                    continue;
+                }
+                autoSkipNoted.delete(`${win} below`);
+                autoSkipNoted.delete(`${win} suspended`);
+                if (writeAutoAbove(live, win, true, "above")) {
+                    autoOwned.add(win);
+                }
+            }
+        } catch (error) {
+            void error;
+        }
+    };
+
+    return { submitFloat, setStickyNative, setMaximizedNative, setFullscreenNative, pollPendingUnfloat, cancelPendingUnfloat, syncAutomaticFloatStacking, releaseAutomaticFloat, releaseAllAutomaticFloats };
+}
+
+function readAutoAboveBelow(readProp: WorldNativeEnv["readProp"], ref: object): { above: boolean; below: boolean } | null {
+    try {
+        const above = readProp(ref, "keepAbove");
+        const below = readProp(ref, "keepBelow");
+        if (typeof above !== "boolean" || typeof below !== "boolean") {
+            return null;
+        }
+        return { above, below };
+    } catch (error) {
+        void error;
+        return null;
+    }
 }
 
 // Native host bindings for the shared apply loop (moved verbatim from the

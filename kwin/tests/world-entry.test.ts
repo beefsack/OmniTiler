@@ -6,7 +6,8 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { startWorldAdapterEntry } from "../src/world-entry";
+import { startWorldAdapterEntry, mintAdapterIncarnation } from "../src/world-entry";
+import { isOpaqueId } from "../src/world-seq";
 
 interface FakeDesktop {
     id: string;
@@ -362,14 +363,25 @@ describe("world entry discovery and observation", () => {
         assert.ok((requestOf(h)["domains"] as Array<unknown>).length >= 1);
     });
 
-    it("accepts all three workspace modes", () => {
-        for (const mode of ["per-output-local", "global-unique", "shared"]) {
+    it("accepts per-output-local and shared; global-unique falls back with a logged reason", () => {
+        for (const mode of ["per-output-local", "shared"]) {
             const h = makeHarness(mode);
             discover(h);
             h.handle?.requestWorkspaceRelative(1);
             h.runTimers();
             assert.equal(requestOf(h)["mode"], mode);
         }
+        // Tentative (user review pending): a persisted `global-unique`
+        // falls back to `per-output-local` on the world route, once.
+        const h = makeHarness("global-unique");
+        discover(h);
+        h.handle?.requestWorkspaceRelative(1);
+        h.runTimers();
+        assert.equal(requestOf(h)["mode"], "per-output-local");
+        assert.ok(
+            h.logs.some((l) => l.includes("workspace-mode-fallback") && l.includes("from=global-unique")),
+            "fallback logged",
+        );
     });
 
     it("wires the saved default tiling into reports and the snapshot", () => {
@@ -1119,5 +1131,1176 @@ describe("world entry rapid directional FIFO", () => {
         h.handle?.requestFocus("right");
         assert.ok(h.logs.some((l) => l.includes("shortcut-failed")));
         assert.equal(h.calls.filter((c) => c.method === "DescribeWorld").length, callsBefore);
+    });
+});
+
+describe("world entry aligned bindings", () => {
+    it("converges bindings per (output, native) and prunes non-live cells", () => {
+        const h = makeHarness("per-output-local");
+        discover(h);
+        // Dispatch a command-carrying report; the accepted reply binds the
+        // same native on two outputs with a distinct logical each.
+        h.handle?.requestWorkspaceRelative(1);
+        h.runTimers();
+        const first = h.lastCall("DescribeWorld");
+        const firstBody = JSON.parse(first.payload);
+        const wsRow = (id: string, out: string, bind: string, order: number) => ({
+            id, out, bind, logical: id, scope: out, order, mode: "tiled", exist: true, hold: "",
+        });
+        first.callback(acceptedReply("gen-1", firstBody.req, firstBody.obs, "1", {
+            workspaces: [
+                wsRow("al-1", "out", "ws1", 0),
+                wsRow("al-9", "out-2", "ws1", 0),
+            ],
+        }));
+        // A second dispatch (native invalidation + debounce) carries the
+        // converged per-cell bindings for live cells only: (out, ws1) kept,
+        // (out-2, ws1) pruned with its output gone.
+        for (const handler of (h.signals.desktopsChanged as FakeSignal).handlers) {
+            handler();
+        }
+        h.runTimers();
+        const second = requestOf(h);
+        const bindings = second["bindings"] as Array<Record<string, unknown>>;
+        assert.deepEqual(bindings, [
+            { logical: "al-1", native: "ws1", out: "out", pin: false, disp: false, managed: true },
+        ]);
+    });
+
+    it("replicates bindings per output in per-output-local across two screens", () => {
+        const h = makeHarness("per-output-local");
+        h.world.screens.push({ name: "out-2", geometry: { x: 1920, y: 0, width: 1920, height: 1080 } });
+        discover(h);
+        assert.equal(requestOf(h)["mode"], "per-output-local");
+        h.handle?.requestWorkspaceRelative(1);
+        h.runTimers();
+        const first = h.lastCall("DescribeWorld");
+        const firstBody = JSON.parse(first.payload);
+        const wsRow = (id: string, out: string, bind: string, order: number) => ({
+            id, out, bind, logical: id, scope: out, order, mode: "tiled", exist: true, hold: "",
+        });
+        first.callback(acceptedReply("gen-1", firstBody.req, firstBody.obs, "1", {
+            workspaces: [
+                wsRow("al-1", "out", "ws1", 0),
+                wsRow("al-9", "out-2", "ws1", 0),
+            ],
+        }));
+        for (const handler of (h.signals.desktopsChanged as FakeSignal).handlers) {
+            handler();
+        }
+        h.runTimers();
+        const second = requestOf(h);
+        const bindings = second["bindings"] as Array<Record<string, unknown>>;
+        // One row per (output, native): the same native binds a distinct
+        // logical on each output.
+        assert.deepEqual(bindings, [
+            { logical: "al-1", native: "ws1", out: "out", pin: false, disp: false, managed: true },
+            { logical: "al-9", native: "ws1", out: "out-2", pin: false, disp: false, managed: true },
+        ]);
+    });
+
+    it("keeps single-row bindings in shared and resolves without output scope", () => {
+        const h = makeHarness("shared");
+        discover(h);
+        h.handle?.requestWorkspaceRelative(1);
+        h.runTimers();
+        const first = h.lastCall("DescribeWorld");
+        const firstBody = JSON.parse(first.payload);
+        assert.equal(firstBody.mode, "shared");
+        first.callback(acceptedReply("gen-1", firstBody.req, firstBody.obs, "1", {
+            workspaces: [
+                { id: "sh-1", out: "out", bind: "ws1", logical: "sh-1", scope: "shared", order: 0, mode: "tiled", exist: true, hold: "" },
+            ],
+        }));
+        for (const handler of (h.signals.desktopsChanged as FakeSignal).handlers) {
+            handler();
+        }
+        h.runTimers();
+        const second = requestOf(h);
+        const bindings = second["bindings"] as Array<Record<string, unknown>>;
+        // Shared is unchanged: one row per native, resolved through the
+        // output-less lookup (never replicated per output).
+        assert.deepEqual(bindings, [
+            { logical: "sh-1", native: "ws1", out: "out", pin: false, disp: false, managed: true },
+        ]);
+    });
+});
+
+describe("world entry restart float-intent preservation", () => {
+    for (const holdMode of ["scoped", "global"] as const) {
+    it(`holds settled float across a genuinely held first engine reply (${holdMode} hold)`, { timeout: 120000 }, async () => {
+        // Producer-shaped replay through the real WorldEngine (world_eval
+        // with WORLD_EVAL_ALIGNED=1, same bridge as the aligned-migration
+        // engine test): no hand-built replies on the asserted paths.
+        // Scoped hold is genuinely native: clientArea returns null for ws-1,
+        // which world-observe turns into an explicit domain hold
+        // "unreadable". Global hold poisons one live rect so the whole
+        // inventory reads unreadable and every domain empties its windows
+        // while staying non-null. One settled float (win-a on out-a/ws-1)
+        // plus one disjoint tile override (win-b on out-b/ws-2) seed from
+        // the real persisted-store read shape. No commands ride.
+        const { spawn } = await import("node:child_process");
+        const { existsSync } = await import("node:fs");
+        const { createInterface } = await import("node:readline");
+        const { dirname, join, resolve } = await import("node:path");
+        const repoRoot = (): string => {
+            let dir = resolve(process.cwd());
+            for (let depth = 0; depth < 4; depth += 1) {
+                if (existsSync(join(dir, "Cargo.toml"))) {
+                    return dir;
+                }
+                dir = dirname(dir);
+            }
+            throw new Error("fixture root not found");
+        };
+        interface EngineWaiter {
+            resolve: (reply: string) => void;
+            reject: (error: Error) => void;
+        }
+        const proc = spawn("cargo", ["run", "--offline", "-q", "-p", "tiler-protocol", "--example", "world_eval"], {
+            cwd: repoRoot(),
+            stdio: ["pipe", "pipe", "pipe"],
+            env: { ...process.env, WORLD_EVAL_ALIGNED: "1" },
+        });
+        const waiters: EngineWaiter[] = [];
+        let engineFailed: Error | null = null;
+        const stderrChunks: string[] = [];
+        try {
+            proc.stderr?.on("data", (chunk: unknown) => {
+                stderrChunks.push(String(chunk));
+            });
+        } catch (error) {
+            void error;
+        }
+        const failEngine = (error: Error): void => {
+            if (engineFailed === null) {
+                engineFailed = error;
+            }
+            while (waiters.length > 0) {
+                waiters.shift()?.reject(error);
+            }
+        };
+        proc.on("error", (error: Error) => {
+            failEngine(error);
+        });
+        proc.on("exit", (code: number | null, signal: string | null) => {
+            failEngine(new Error(`world_eval exited code=${String(code)} signal=${String(signal)} stderr=${stderrChunks.join("").slice(0, 500)}`));
+        });
+        const stdout = proc.stdout;
+        assert.ok(stdout !== null && stdout !== undefined, "world_eval stdout unavailable");
+        const lines = createInterface({ input: stdout });
+        lines.on("line", (line: string) => {
+            waiters.shift()?.resolve(line);
+        });
+        const engineSend = (method: string, body: string): Promise<string> => new Promise<string>((resolvePromise, rejectPromise) => {
+            if (engineFailed !== null) {
+                rejectPromise(engineFailed);
+                return;
+            }
+            const timer = setTimeout(() => {
+                const index = waiters.findIndex((w) => w.resolve === resolvePromise);
+                if (index >= 0) {
+                    waiters.splice(index, 1);
+                }
+                rejectPromise(new Error(`world_eval timeout method=${method}`));
+            }, 15000);
+            waiters.push({
+                resolve: (reply: string) => {
+                    clearTimeout(timer);
+                    resolvePromise(reply);
+                },
+                reject: (error: Error) => {
+                    clearTimeout(timer);
+                    rejectPromise(error);
+                },
+            });
+            try {
+                const ok = proc.stdin?.write(JSON.stringify({ method, body }) + "\n");
+                if (ok === false) {
+                    proc.stdin?.once("drain", () => undefined);
+                }
+            } catch (error) {
+                clearTimeout(timer);
+                rejectPromise(error instanceof Error ? error : new Error(String(error)));
+            }
+        });
+        const ws1 = desk("ws1");
+        const ws2 = desk("ws2");
+        const w1 = win("win-a", "out-a", ws1, 0);
+        const w2 = win("win-b", "out-b", ws2, 0);
+        const screens = [
+            { name: "out-a", geometry: { x: 0, y: 0, width: 800, height: 600 } },
+            { name: "out-b", geometry: { x: 800, y: 0, width: 800, height: 600 } },
+        ];
+        const currents = new Map([["out-a", "ws1"], ["out-b", "ws2"]]);
+        // Genuine native unreadability while heldFirst is true.
+        // Scoped: the ws-1 work area reads as null, so the dispatched
+        // report holds out-a/ws-1 as unreadable. Global: one live rect
+        // poisons the whole inventory read, so every domain empties its
+        // windows while the report stays non-null.
+        let heldFirst = true;
+        const signals: Record<string, FakeSignal> = {
+            windowAdded: fakeSignal(),
+            windowRemoved: fakeSignal(),
+            windowActivated: fakeSignal(),
+            desktopsChanged: fakeSignal(),
+            screensChanged: fakeSignal(),
+            currentDesktopChanged: fakeSignal(),
+            activeScreenChanged: fakeSignal(),
+        };
+        const calls: CapturedCall[] = [];
+        const timers: Array<{ delay: number; cb: () => void }> = [];
+        const writes: string[] = [];
+        const surface = {
+            windowList: () => {
+                if (heldFirst && holdMode === "global") {
+                    // Poison one live rect: the observer marks the whole
+                    // inventory unreadable and empties every domain's
+                    // windows (global hold, still a non-null report).
+                    (w1 as unknown as Record<string, unknown>)["frameGeometry"] = { x: 0, y: 0, width: 0, height: 200 };
+                }
+                return [w1, w2];
+            },
+            screens,
+            desktops: [ws1, ws2],
+            activeScreen: { name: "out-a" },
+            cursorPos: { x: 2, y: 100 },
+            windowAdded: (signals.windowAdded as FakeSignal).signal,
+            windowRemoved: (signals.windowRemoved as FakeSignal).signal,
+            windowActivated: (signals.windowActivated as FakeSignal).signal,
+            desktopsChanged: (signals.desktopsChanged as FakeSignal).signal,
+            screensChanged: (signals.screensChanged as FakeSignal).signal,
+            currentDesktopChanged: (signals.currentDesktopChanged as FakeSignal).signal,
+            activeScreenChanged: (signals.activeScreenChanged as FakeSignal).signal,
+            get activeWindow() {
+                return w1;
+            },
+            clientArea: (_area: number, _out: unknown, deskRef: unknown) => {
+                if (heldFirst && holdMode === "scoped" && (deskRef as { id?: unknown }).id === "ws1") {
+                    return null;
+                }
+                return { x: 0, y: 0, width: 800, height: 600 };
+            },
+            currentDesktopForScreen: (screen: { name: string }) => (currents.get(screen.name) === "ws2" ? ws2 : ws1),
+            setCurrentDesktopForScreen: (deskRef: unknown, screen: { name: string }) => {
+                currents.set(screen.name, (deskRef as { id: string }).id);
+            },
+            sendClientToScreen: () => undefined,
+            createDesktop: () => null,
+            removeDesktop: () => false,
+        };
+        const handle = startWorldAdapterEntry({
+            workspace: surface,
+            owner: "owner-a",
+            adapter: "test-adapter",
+            floatIntent: true,
+            callDbus: (_service, _path, _iface, method, payload, callback) => {
+                if (method === "ReadFloatIntent") {
+                    // Real persisted-store read shape
+                    // (float_intent_store read_ok_reply): ok outcome with
+                    // members/stored/returned plus tile/tile_stored/
+                    // tile_returned. Seeded before the first dispatch, so the
+                    // first native capture already floats win-a.
+                    const body = JSON.parse(payload) as Record<string, unknown>;
+                    callback(JSON.stringify({
+                        v: 1,
+                        correlation_id: body["correlation_id"],
+                        outcome: "ok",
+                        members: ["win-a"],
+                        stored: 1,
+                        returned: 1,
+                        tile: ["win-b"],
+                        tile_stored: 1,
+                        tile_returned: 1,
+                    }));
+                    return;
+                }
+                if (method === "WriteFloatIntent") {
+                    writes.push(payload);
+                    return;
+                }
+                if (method === "DiscoverWorld" || method === "DescribeWorld") {
+                    calls.push({ method, payload, callback });
+                }
+            },
+            scheduleOnce: (delay, cb) => {
+                timers.push({ delay, cb });
+                return () => undefined;
+            },
+            log: () => undefined,
+            gestureActive: () => false,
+            registerShortcutFn: () => true,
+            readWorkspaceModeFn: () => "per-output-local",
+            readDefaultTiledFn: () => true,
+        });
+        assert.ok(handle !== null);
+        const runTimers = (maxDelay = 120): void => {
+            for (let i = 0; i < timers.length; i += 1) {
+                const t = timers[i] as { delay: number; cb: () => void };
+                if (t.delay <= maxDelay) {
+                    timers.splice(i, 1);
+                    i -= 1;
+                    t.cb();
+                }
+            }
+        };
+        let flushed = 0;
+        const flushNextDescribe = async (): Promise<{ req: Record<string, unknown>; reply: Record<string, unknown>; rawReply: string }> => {
+            const at = calls.findIndex((c, i) => i >= flushed && c.method === "DescribeWorld");
+            assert.ok(at >= 0, "expected a queued DescribeWorld");
+            flushed = at + 1;
+            const rawReply = await engineSend(calls[at]!.method, calls[at]!.payload);
+            calls[at]!.callback(rawReply);
+            return { req: JSON.parse(calls[at]!.payload) as Record<string, unknown>, reply: JSON.parse(rawReply) as Record<string, unknown>, rawReply };
+        };
+        try {
+            const discAt = calls.findIndex((c) => c.method === "DiscoverWorld");
+            assert.ok(discAt >= 0, "entry discovers on start");
+            calls[discAt]!.callback(await engineSend("DiscoverWorld", calls[discAt]!.payload));
+            // First accepted observation: the auto observation-only dispatch
+            // after discovery, with the hold applied. No commands.
+            const first = await flushNextDescribe();
+            const firstDomains = first.req["domains"] as Array<Record<string, unknown>>;
+            if (holdMode === "scoped") {
+                const heldDomain = firstDomains.find((d) => d["id"] === "out-a" && d["ws"] === "ws1");
+                assert.equal(
+                    heldDomain?.["hold"],
+                    "unreadable",
+                    `first dispatched request holds out-a/ws-1 unreadable: ${JSON.stringify(firstDomains.map((d) => [d["id"], d["ws"], d["hold"]]))}`,
+                );
+                const otherDomain = firstDomains.find((d) => d["id"] === "out-b" && d["ws"] === "ws2");
+                assert.equal(
+                    otherDomain?.["hold"],
+                    "",
+                    `out-b/ws-2 stays complete: ${JSON.stringify(firstDomains.map((d) => [d["id"], d["ws"], d["hold"]]))}`,
+                );
+            } else {
+                // Global inventory failure empties every domain's windows
+                // while the report stays non-null.
+                const wins = firstDomains.flatMap((d) => d["windows"] as Array<unknown>);
+                assert.equal(wins.length, 0, `global hold empties domain windows: ${JSON.stringify(firstDomains.map((d) => [d["id"], d["ws"], d["hold"], (d["windows"] as Array<unknown>).length]))}`);
+                assert.ok(
+                    firstDomains.some((d) => d["hold"] !== ""),
+                    `global hold marks unreadable: ${JSON.stringify(firstDomains.map((d) => [d["id"], d["ws"], d["hold"]]))}`,
+                );
+            }
+            // The genuine Engine reply must lack any untouched/no-hold row
+            // for the seeded float: that absence is the producer condition
+            // behind the restart loss. Tile win-b rides its own row.
+            const firstWins = first.reply["windows"] as Array<Record<string, unknown>>;
+            const firstRowA = firstWins.find((w) => w["win"] === "win-a");
+            // Genuine engine behavior: the held scope carries no win-a row
+            // at all (scopes: out-a/ws1 auth=hold reason=unreadable), so the
+            // reply lacks any untouched/no-hold row for the seeded float.
+            assert.ok(
+                !(firstRowA?.["frame_auth"] === "untouched" && firstRowA?.["frame_hold"] === ""),
+                `first engine reply holds the float row: ${JSON.stringify(firstRowA)} scopes=${JSON.stringify(first.reply["scopes"])}`,
+            );
+            // Restore the readable native condition and recapture the same
+            // live identities completely.
+            heldFirst = false;
+            if (holdMode === "global") {
+                (w1 as unknown as Record<string, unknown>)["frameGeometry"] = { x: 0, y: 0, width: 200, height: 200 };
+            }
+            for (const handler of [...(signals.desktopsChanged as FakeSignal).handlers]) {
+                handler();
+            }
+            runTimers();
+            const second = await flushNextDescribe();
+            const secondDomains = second.req["domains"] as Array<Record<string, unknown>>;
+            assert.ok(
+                secondDomains.every((d) => d["hold"] === ""),
+                `second dispatched request is complete: ${JSON.stringify(secondDomains.map((d) => [d["id"], d["ws"], d["hold"]]))}`,
+            );
+            // No uncommanded settled float loss: every durable snapshot
+            // retains win-a, keeps win-b on the tile side only (disjoint),
+            // and never overlaps sides.
+            const settled = writes.map((w) => JSON.parse(w) as Record<string, unknown>);
+            assert.ok(settled.length >= 1, `expected settled writes, got ${settled.length}`);
+            for (const w of settled) {
+                const members = w["members"] as Array<string>;
+                const tile = (w["tile"] as Array<string> | undefined) ?? [];
+                assert.ok(members.includes("win-a"), `held first reply must not drop settled float: ${JSON.stringify(w)}`);
+                assert.ok(tile.includes("win-b"), `tile override must survive: ${JSON.stringify(w)}`);
+                assert.ok(!members.includes("win-b"), `fixed tile override is not a float: ${JSON.stringify(w)}`);
+                assert.ok(!tile.includes("win-a"), `float side stays disjoint: ${JSON.stringify(w)}`);
+            }
+            // The second dispatched observation still reports the seeded
+            // float as floating with the same live identities.
+            const secondWins = secondDomains.flatMap((d) => d["windows"] as Array<Record<string, unknown>>);
+            const rowA = secondWins.find((w) => w["win"] === "win-a");
+            assert.equal(
+                rowA?.["floating"],
+                true,
+                `second dispatched observation still floats seeded win-a: ${JSON.stringify(rowA)}`,
+            );
+        } finally {
+            try {
+                handle?.stop();
+            } catch (error) {
+                void error;
+            }
+            try {
+                lines.close();
+            } catch (error) {
+                void error;
+            }
+            try {
+                proc.stdin?.end();
+            } catch (error) {
+                void error;
+            }
+            await new Promise<void>((resolvePromise) => {
+                const timer = setTimeout(() => {
+                    try {
+                        proc.kill("SIGKILL");
+                    } catch (error) {
+                        void error;
+                    }
+                    resolvePromise();
+                }, 3000);
+                proc.on("exit", () => {
+                    clearTimeout(timer);
+                    resolvePromise();
+                });
+                if (proc.exitCode !== null || proc.signalCode !== null) {
+                    clearTimeout(timer);
+                    resolvePromise();
+                }
+            });
+        }
+    });
+    }
+});
+
+describe("world entry script-restart sequence handover", () => {
+    it("hands reset counters to a fresh incarnation on the retained engine", { timeout: 120000 }, async () => {
+        // Producer-shaped restart replay through the real WorldEngine behind
+        // one retained world_eval process (aligned, like production): the
+        // first producer advances request+command watermarks with a float +
+        // fixed tile seed, then a second producer with a fresh
+        // production-minted incarnation restarts both counters at 1 on the
+        // same generation and is accepted, never superseded/consumed.
+        const { spawn } = await import("node:child_process");
+        const { existsSync } = await import("node:fs");
+        const { createInterface } = await import("node:readline");
+        const { dirname, join, resolve } = await import("node:path");
+        const repoRoot = (): string => {
+            let dir = resolve(process.cwd());
+            for (let depth = 0; depth < 4; depth += 1) {
+                if (existsSync(join(dir, "Cargo.toml"))) {
+                    return dir;
+                }
+                dir = dirname(dir);
+            }
+            throw new Error("fixture root not found");
+        };
+        interface EngineWaiter {
+            resolve: (reply: string) => void;
+            reject: (error: Error) => void;
+        }
+        const proc = spawn("cargo", ["run", "--offline", "-q", "-p", "tiler-protocol", "--example", "world_eval"], {
+            cwd: repoRoot(),
+            stdio: ["pipe", "pipe", "pipe"],
+            env: { ...process.env, WORLD_EVAL_ALIGNED: "1" },
+        });
+        const waiters: EngineWaiter[] = [];
+        let engineFailed: Error | null = null;
+        const stderrChunks: string[] = [];
+        try {
+            proc.stderr?.on("data", (chunk: unknown) => {
+                stderrChunks.push(String(chunk));
+            });
+        } catch (error) {
+            void error;
+        }
+        const failEngine = (error: Error): void => {
+            if (engineFailed === null) {
+                engineFailed = error;
+            }
+            while (waiters.length > 0) {
+                waiters.shift()?.reject(error);
+            }
+        };
+        proc.on("error", (error: Error) => {
+            failEngine(error);
+        });
+        proc.on("exit", (code: number | null, signal: string | null) => {
+            failEngine(new Error(`world_eval exited code=${String(code)} signal=${String(signal)} stderr=${stderrChunks.join("").slice(0, 500)}`));
+        });
+        const stdout = proc.stdout;
+        assert.ok(stdout !== null && stdout !== undefined, "world_eval stdout unavailable");
+        const lines = createInterface({ input: stdout });
+        lines.on("line", (line: string) => {
+            waiters.shift()?.resolve(line);
+        });
+        const engineSend = (method: string, body: string): Promise<string> => new Promise<string>((resolvePromise, rejectPromise) => {
+            if (engineFailed !== null) {
+                rejectPromise(engineFailed);
+                return;
+            }
+            const timer = setTimeout(() => {
+                const index = waiters.findIndex((w) => w.resolve === resolvePromise);
+                if (index >= 0) {
+                    waiters.splice(index, 1);
+                }
+                rejectPromise(new Error(`world_eval timeout method=${method}`));
+            }, 15000);
+            waiters.push({
+                resolve: (reply: string) => {
+                    clearTimeout(timer);
+                    resolvePromise(reply);
+                },
+                reject: (error: Error) => {
+                    clearTimeout(timer);
+                    rejectPromise(error);
+                },
+            });
+            try {
+                const ok = proc.stdin?.write(JSON.stringify({ method, body }) + "\n");
+                if (ok === false) {
+                    proc.stdin?.once("drain", () => undefined);
+                }
+            } catch (error) {
+                clearTimeout(timer);
+                rejectPromise(error instanceof Error ? error : new Error(String(error)));
+            }
+        });
+        // Shared native inventory: the same apps stay alive across restart.
+        const ws1 = desk("ws1");
+        const ws2 = desk("ws2");
+        const w1 = win("win-a", "out-a", ws1, 0);
+        const w2 = win("win-b", "out-b", ws2, 0);
+        // One managed tile on the restarted scope: the engine projects
+        // retained tiled geometry for managed members, so the scope under
+        // test carries a managed tile plus the seeded float exception.
+        const w3 = win("win-c", "out-a", ws1, 300);
+        // Genuine fixed-size declaration in out-b coordinates (observer
+        // predicate: integer min/max, equal and nonzero on both axes). The
+        // seeded tile override suppresses automatic float admission, so
+        // win-b stays tiled under core geometry.
+        (w2 as unknown as Record<string, unknown>)["frameGeometry"] = { x: 900, y: 100, width: 640, height: 480 };
+        (w2 as unknown as Record<string, unknown>)["minSize"] = { width: 640, height: 480 };
+        (w2 as unknown as Record<string, unknown>)["maxSize"] = { width: 640, height: 480 };
+        const screens = [
+            { name: "out-a", geometry: { x: 0, y: 0, width: 800, height: 600 } },
+            { name: "out-b", geometry: { x: 800, y: 0, width: 800, height: 600 } },
+        ];
+        const currents = new Map([["out-a", "ws1"], ["out-b", "ws2"]]);
+        // Switchable active fixture/output: both scopes tile explicitly.
+        const focus: { screen: string; window: FakeWindow } = { screen: "out-a", window: w1 };
+        const geometryWrites: string[] = [];
+        const membershipWrites: string[] = [];
+        for (const w of [w1, w2, w3]) {
+            let frame = w.frameGeometry;
+            Object.defineProperty(w, "frameGeometry", {
+                configurable: true,
+                get: () => frame,
+                set: (rect: { x: number; y: number; width: number; height: number }) => {
+                    frame = rect;
+                    geometryWrites.push(`${w.internalId}@${rect.x},${rect.y},${rect.width},${rect.height}`);
+                    return true;
+                },
+            });
+        }
+        const nativeSnapshot = (): string => JSON.stringify([
+            w1.frameGeometry, w1.desktops.map((d) => d.id),
+            w2.frameGeometry, w2.desktops.map((d) => d.id),
+            w3.frameGeometry, w3.desktops.map((d) => d.id),
+        ]);
+        // Float/tile lifetimes never take unsolicited geometry writes; the
+        // managed tile may rewrite its identical frame on first-accept.
+        const floatTileWriteCount = (): number =>
+            geometryWrites.filter((line) => line.startsWith("win-a@") || line.startsWith("win-b@")).length;
+        interface Producer {
+            handle: NonNullable<ReturnType<typeof startWorldAdapterEntry>>;
+            calls: CapturedCall[];
+            timers: Array<{ delay: number; cb: () => void }>;
+            writes: string[];
+            signals: Record<string, FakeSignal>;
+            flushed: { count: number };
+            runTimers: (maxDelay?: number) => void;
+        }
+        const startProducer = (adapter: string, tag: string): Producer => {
+            const signals = {
+                windowAdded: fakeSignal(),
+                windowRemoved: fakeSignal(),
+                windowActivated: fakeSignal(),
+                desktopsChanged: fakeSignal(),
+                screensChanged: fakeSignal(),
+                currentDesktopChanged: fakeSignal(),
+                activeScreenChanged: fakeSignal(),
+            };
+            const calls: CapturedCall[] = [];
+            const timers: Array<{ delay: number; cb: () => void }> = [];
+            const writes: string[] = [];
+            const surface = {
+                windowList: () => [w1, w3, w2],
+                screens,
+                desktops: [ws1, ws2],
+                get activeScreen() {
+                    return { name: focus.screen };
+                },
+                cursorPos: { x: 2, y: 100 },
+                windowAdded: signals.windowAdded.signal,
+                windowRemoved: signals.windowRemoved.signal,
+                windowActivated: signals.windowActivated.signal,
+                desktopsChanged: signals.desktopsChanged.signal,
+                screensChanged: signals.screensChanged.signal,
+                currentDesktopChanged: signals.currentDesktopChanged.signal,
+                activeScreenChanged: signals.activeScreenChanged.signal,
+                get activeWindow() {
+                    return focus.window;
+                },
+                clientArea: (_area: number, _out: unknown, deskRef: unknown) => {
+                    const id = (deskRef as { id?: unknown }).id;
+                    if (id === "ws2") {
+                        return { x: 800, y: 0, width: 800, height: 600 };
+                    }
+                    return { x: 0, y: 0, width: 800, height: 600 };
+                },
+                currentDesktopForScreen: (screen: { name: string }) => (currents.get(screen.name) === "ws2" ? ws2 : ws1),
+                setCurrentDesktopForScreen: (deskRef: unknown, screen: { name: string }) => {
+                    membershipWrites.push(`${tag}:view ${(deskRef as { id: string }).id} on ${screen.name}`);
+                    currents.set(screen.name, (deskRef as { id: string }).id);
+                },
+                sendClientToScreen: () => {
+                    membershipWrites.push(`${tag}:send`);
+                },
+                createDesktop: () => null,
+                removeDesktop: () => false,
+            };
+            const handle = startWorldAdapterEntry({
+                workspace: surface,
+                owner: "owner-a",
+                adapter,
+                floatIntent: true,
+                callDbus: (_service, _path, _iface, method, payload, callback) => {
+                    if (method === "ReadFloatIntent") {
+                        const body = JSON.parse(payload) as Record<string, unknown>;
+                        callback(JSON.stringify({
+                            v: 1,
+                            correlation_id: body["correlation_id"],
+                            outcome: "ok",
+                            members: ["win-a"],
+                            stored: 1,
+                            returned: 1,
+                            tile: ["win-b"],
+                            tile_stored: 1,
+                            tile_returned: 1,
+                        }));
+                        return;
+                    }
+                    if (method === "WriteFloatIntent") {
+                        writes.push(payload);
+                        return;
+                    }
+                    if (method === "DiscoverWorld" || method === "DescribeWorld") {
+                        calls.push({ method, payload, callback });
+                    }
+                },
+                scheduleOnce: (delay, cb) => {
+                    timers.push({ delay, cb });
+                    return () => undefined;
+                },
+                log: () => undefined,
+                gestureActive: () => false,
+                registerShortcutFn: () => true,
+                readWorkspaceModeFn: () => "per-output-local",
+                readDefaultTiledFn: () => false,
+            });
+            assert.ok(handle !== null);
+            return {
+                handle: handle as NonNullable<typeof handle>,
+                calls, timers, writes, signals,
+                flushed: { count: 0 },
+                runTimers: (maxDelay = 120): void => {
+                    for (let i = 0; i < timers.length; i += 1) {
+                        const t = timers[i] as { delay: number; cb: () => void };
+                        if (t.delay <= maxDelay) {
+                            timers.splice(i, 1);
+                            i -= 1;
+                            t.cb();
+                        }
+                    }
+                },
+            };
+        };
+        const flushNext = async (p: Producer): Promise<{ req: Record<string, unknown>; reply: Record<string, unknown> }> => {
+            const at = p.calls.findIndex((c, i) => i >= p.flushed.count && c.method === "DescribeWorld");
+            assert.ok(at >= 0, "expected a queued DescribeWorld");
+            p.flushed.count = at + 1;
+            const rawReply = await engineSend("DescribeWorld", p.calls[at]!.payload);
+            p.calls[at]!.callback(rawReply);
+            return { req: JSON.parse(p.calls[at]!.payload) as Record<string, unknown>, reply: JSON.parse(rawReply) as Record<string, unknown> };
+        };
+        const assertStoreSettled = (writes: string[], label: string): void => {
+            assert.ok(writes.length >= 1, `${label}: expected store writes`);
+            for (const payload of writes) {
+                const body = JSON.parse(payload) as Record<string, unknown>;
+                const members = body["members"] as Array<string>;
+                const tile = (body["tile"] as Array<string> | undefined) ?? [];
+                assert.ok(members.includes("win-a"), `${label}: float identity retained: ${payload}`);
+                assert.ok(tile.includes("win-b"), `${label}: tile override retained: ${payload}`);
+                assert.ok(!members.includes("win-b"), `${label}: sides disjoint: ${payload}`);
+                assert.ok(!tile.includes("win-a"), `${label}: sides disjoint: ${payload}`);
+            }
+        };
+        let p1: Producer | null = null;
+        let p2: Producer | null = null;
+        try {
+            // Producer 1: fresh production-minted stream on the saved
+            // default (false) with an explicit tiling override, advancing
+            // both watermarks with real commands.
+            const adapter1 = mintAdapterIncarnation();
+            assert.ok(isOpaqueId(adapter1) && adapter1.startsWith("kwin-world-adapter-"));
+            p1 = startProducer(adapter1, "p1");
+            const disc1 = [...p1.calls].reverse().find((c) => c.method === "DiscoverWorld");
+            assert.ok(disc1 !== undefined, "producer1 discovers on start");
+            assert.equal((JSON.parse(disc1.payload) as Record<string, unknown>)["adapter"], adapter1);
+            const bootRaw = await engineSend("DiscoverWorld", disc1.payload);
+            const boot = JSON.parse(bootRaw) as Record<string, unknown>;
+            const gen = boot["gen"] as string;
+            assert.ok(typeof gen === "string" && gen.length > 0, "retained generation bound");
+            disc1.callback(bootRaw);
+            const first = await flushNext(p1);
+            assert.equal(first.reply["ready"], true, `first observation accepted: ${JSON.stringify(first.reply)}`);
+            for (let round = 0; round < 2; round += 1) {
+                for (const handler of [...(p1.signals.desktopsChanged as FakeSignal).handlers]) {
+                    handler();
+                }
+                p1.runTimers();
+                const next = await flushNext(p1);
+                assert.equal(next.reply["ready"], true, `observation ${round} accepted`);
+            }
+            // Explicit tiling toggles on BOTH scopes advance the command
+            // watermark and leave both tiled (overrides on default false).
+            // The dispatched report carries the genuine fixed origin plus
+            // the tile-override suppress flag for win-b.
+            const findWin = (req: Record<string, unknown>, id: string): Record<string, unknown> | undefined => {
+                const domains = req["domains"] as Array<Record<string, unknown>>;
+                for (const domain of domains) {
+                    const found = (domain["windows"] as Array<Record<string, unknown>>).find((w) => w["win"] === id);
+                    if (found !== undefined) {
+                        return found;
+                    }
+                }
+                return undefined;
+            };
+            let lastRev = first.reply["rev"] as string;
+            let lastReqSeq = first.req["reqSeq"] as string;
+            p1.handle.requestWorkspaceTilingToggle();
+            p1.runTimers();
+            const toggledA = await flushNext(p1);
+            assert.equal(toggledA.reply["ready"], true, "toggle out-a accepted");
+            assert.equal(toggledA.reply["consumed"], false, "toggle out-a executes");
+            lastRev = toggledA.reply["rev"] as string;
+            lastReqSeq = toggledA.req["reqSeq"] as string;
+            focus.screen = "out-b";
+            focus.window = w2;
+            p1.handle.requestWorkspaceTilingToggle();
+            p1.runTimers();
+            const toggledB = await flushNext(p1);
+            assert.equal(toggledB.reply["ready"], true, "toggle out-b accepted");
+            assert.equal(toggledB.reply["consumed"], false, "toggle out-b executes");
+            lastRev = toggledB.reply["rev"] as string;
+            lastReqSeq = toggledB.req["reqSeq"] as string;
+            const reportedB = findWin(toggledB.req, "win-b");
+            assert.equal(reportedB?.["fixedAuto"], true, `fixed origin declared for win-b: ${JSON.stringify(reportedB)}`);
+            assert.equal(reportedB?.["fixedSuppress"], true, `tile override suppresses float admission: ${JSON.stringify(reportedB)}`);
+            assert.equal(reportedB?.["floating"], false, "tile override stays tiled in report");
+            const replyScopesB = toggledB.reply["scopes"] as Array<Record<string, unknown>>;
+            assert.equal(replyScopesB.find((s) => s["scope"] === "out-b/ws2")?.["auth"], "controlled", "out-b/ws2 tiled and controlled");
+            const replyRowsB = toggledB.reply["windows"] as Array<Record<string, unknown>>;
+            const rowB = replyRowsB.find((w) => w["win"] === "win-b");
+            assert.equal(rowB?.["frame_auth"], "controlled", "fixed tile under controlled frame authority");
+            assert.equal(rowB?.["member_auth"], "controlled", "fixed tile under controlled membership authority");
+            assert.ok(rowB?.["alloc"] !== null && rowB?.["alloc"] !== undefined, `fixed tile carries desired geometry: ${JSON.stringify(rowB)}`);
+            assert.ok(Number(lastReqSeq) >= 5, `request watermark advanced: ${lastReqSeq}`);
+            focus.screen = "out-a";
+            focus.window = w1;
+            assert.equal(p1.handle.getWorkspaceTilingSnapshot().tiled, true, "out-a override tiled before restart");
+            focus.screen = "out-b";
+            focus.window = w2;
+            assert.equal(p1.handle.getWorkspaceTilingSnapshot().tiled, true, "out-b override tiled before restart");
+            focus.screen = "out-a";
+            focus.window = w1;
+            assertStoreSettled(p1.writes, "producer1");
+            const nativeBefore = nativeSnapshot();
+            const floatTileBefore = floatTileWriteCount();
+            const memberBefore = membershipWrites.length;
+            p1.handle.stop();
+            // Producer 2: script restart with a fresh production-minted
+            // incarnation on the SAME retained engine/generation. Discovery
+            // replays the retained generation for the new stream without
+            // resetting the engine (world_eval resets only on its own
+            // DiscoverWorld, which the restart never sends).
+            const adapter2 = mintAdapterIncarnation();
+            assert.notEqual(adapter2, adapter1, "restart mints a fresh stream");
+            p2 = startProducer(adapter2, "p2");
+            const disc2 = [...p2.calls].reverse().find((c) => c.method === "DiscoverWorld");
+            assert.ok(disc2 !== undefined, "producer2 discovers on start");
+            const disc2Body = JSON.parse(disc2.payload) as Record<string, unknown>;
+            disc2.callback(JSON.stringify({ ...boot, adapter: adapter2, req: disc2Body["req"] }));
+            const restarted = await flushNext(p2);
+            assert.equal(restarted.req["adapter"], adapter2);
+            assert.equal(restarted.req["req"], "req-1", "restarted request counter begins at 1");
+            assert.equal(restarted.req["command"], null, "restart carries no replayed command");
+            assert.equal(restarted.reply["ready"], true, `restart accepted on retained engine, never superseded: ${JSON.stringify(restarted.reply)}`);
+            assert.equal(restarted.reply["rev"], String(Number(lastRev) + 1), "retained revision advances");
+            // A subsequent observation is accepted and the store keeps both
+            // identities with no drop.
+            for (const handler of [...(p2.signals.desktopsChanged as FakeSignal).handlers]) {
+                handler();
+            }
+            p2.runTimers();
+            const settled = await flushNext(p2);
+            assert.equal(settled.reply["ready"], true, "post-restart observation accepted");
+            assertStoreSettled(p2.writes, "producer2");
+            // REQ-CTL-04: per-workspace overrides reset on restart; the saved
+            // default (false) reseeds BOTH scopes and native state is untouched.
+            const snapA = p2.handle.getWorkspaceTilingSnapshot();
+            assert.equal(snapA.tiled, false, `out-a override resets to saved default on restart: ${JSON.stringify(snapA)}`);
+            focus.screen = "out-b";
+            focus.window = w2;
+            const snapB = p2.handle.getWorkspaceTilingSnapshot();
+            assert.equal(snapB.tiled, false, `out-b override resets to saved default on restart: ${JSON.stringify(snapB)}`);
+            focus.screen = "out-a";
+            focus.window = w1;
+            assert.equal(nativeSnapshot(), nativeBefore, "restart performs no unsolicited native changes");
+            assert.equal(floatTileWriteCount(), floatTileBefore, "float/tile take no geometry writes across restart");
+            assert.equal(membershipWrites.length, memberBefore, "no membership writes across restart");
+            // Explicit retile of BOTH scopes through NEW commands executes in
+            // the fresh command namespace (old commands never replay).
+            p2.handle.requestWorkspaceTilingToggle();
+            p2.runTimers();
+            const retiledA = await flushNext(p2);
+            assert.equal(retiledA.reply["ready"], true, "retile out-a accepted");
+            assert.equal(retiledA.reply["consumed"], false, "retile out-a executes, never consumed");
+            assert.equal(p2.handle.getWorkspaceTilingSnapshot().tiled, true, "out-a scope retiled");
+            focus.screen = "out-b";
+            focus.window = w2;
+            p2.handle.requestWorkspaceTilingToggle();
+            p2.runTimers();
+            const retiled = await flushNext(p2);
+            assert.equal(retiled.reply["ready"], true, "retile out-b accepted");
+            assert.equal(retiled.reply["consumed"], false, "retile out-b executes, never consumed");
+            assert.equal(p2.handle.getWorkspaceTilingSnapshot().tiled, true, "out-b scope retiled");
+            focus.screen = "out-a";
+            focus.window = w1;
+            assert.equal(p2.handle.getWorkspaceTilingSnapshot().tiled, true, "out-a scope still tiled");
+            // The accepted reply still floats win-a explicitly and carries
+            // the fixed tile under controlled authority with desired
+            // geometry; the native fixed frame matches the accepted frame
+            // and the store keeps both sides.
+            const rows = retiled.reply["windows"] as Array<Record<string, unknown>>;
+            assert.equal(rows.find((w) => w["win"] === "win-a")?.["floating"], true, "float persists in accepted reply");
+            const rowFixed = rows.find((w) => w["win"] === "win-b");
+            assert.equal(rowFixed?.["frame_auth"], "controlled", "fixed tile under controlled frame authority");
+            assert.equal(rowFixed?.["member_auth"], "controlled", "fixed tile under controlled membership authority");
+            assert.ok(rowFixed?.["alloc"] !== null && rowFixed?.["alloc"] !== undefined, `fixed tile carries desired geometry: ${JSON.stringify(rowFixed)}`);
+            const nativeFixed = w2.frameGeometry;
+            assert.deepEqual(
+                [nativeFixed.x, nativeFixed.y, nativeFixed.width, nativeFixed.height],
+                rowFixed?.["frame"],
+                `native fixed frame matches accepted frame: ${JSON.stringify(nativeFixed)} vs ${JSON.stringify(rowFixed?.["frame"])}`,
+            );
+            assertStoreSettled(p2.writes, "producer2 retiled");
+            assert.equal(nativeSnapshot(), nativeBefore, "frames converge back to pre-restart geometry");
+            p2.handle.stop();
+            p2 = null;
+        } finally {
+            try {
+                p1?.handle.stop();
+            } catch (error) {
+                void error;
+            }
+            try {
+                p2?.handle.stop();
+            } catch (error) {
+                void error;
+            }
+            try {
+                lines.close();
+            } catch (error) {
+                void error;
+            }
+            try {
+                proc.stdin?.end();
+            } catch (error) {
+                void error;
+            }
+            await new Promise<void>((resolvePromise) => {
+                const timer = setTimeout(() => {
+                    try {
+                        proc.kill("SIGKILL");
+                    } catch (error) {
+                        void error;
+                    }
+                    resolvePromise();
+                }, 3000);
+                proc.on("exit", () => {
+                    clearTimeout(timer);
+                    resolvePromise();
+                });
+                if (proc.exitCode !== null || proc.signalCode !== null) {
+                    clearTimeout(timer);
+                    resolvePromise();
+                }
+            });
+        }
+    });
+});
+
+describe("world entry float-intent reconcile controls", () => {
+    // Compact offline harness for the intent-membership paths touched by the
+    // restart-preservation fix: seeded persisted float (win-a) plus disjoint
+    // tile override (win-b), hand-built accepted replies, real entry.
+    interface FloatHarness {
+        handle: NonNullable<ReturnType<typeof startWorldAdapterEntry>>;
+        calls: CapturedCall[];
+        timers: Array<{ delay: number; cb: () => void }>;
+        writes: string[];
+        live: FakeWindow[];
+        w1: FakeWindow;
+        w2: FakeWindow;
+        signals: Record<string, FakeSignal>;
+        rev: { count: number };
+        runTimers: (maxDelay?: number) => void;
+        lastCall: (method: string) => CapturedCall;
+    }
+
+    function makeFloatHarness(): FloatHarness {
+        const ws1 = desk("ws1");
+        const ws2 = desk("ws2");
+        const w1 = win("win-a", "out", ws1, 0);
+        const w2 = win("win-b", "out", ws2, 0);
+        const live: FakeWindow[] = [w1, w2];
+        const signals: Record<string, FakeSignal> = {
+            windowAdded: fakeSignal(),
+            windowRemoved: fakeSignal(),
+            windowActivated: fakeSignal(),
+            desktopsChanged: fakeSignal(),
+            screensChanged: fakeSignal(),
+            currentDesktopChanged: fakeSignal(),
+            activeScreenChanged: fakeSignal(),
+        };
+        const calls: CapturedCall[] = [];
+        const timers: Array<{ delay: number; cb: () => void }> = [];
+        const writes: string[] = [];
+        const surface = {
+            windowList: () => [...live],
+            screens: [{ name: "out", geometry: { x: 0, y: 0, width: 1920, height: 1080 } }],
+            desktops: [ws1, ws2],
+            activeScreen: { name: "out" },
+            cursorPos: { x: 2, y: 100 },
+            windowAdded: (signals.windowAdded as FakeSignal).signal,
+            windowRemoved: (signals.windowRemoved as FakeSignal).signal,
+            windowActivated: (signals.windowActivated as FakeSignal).signal,
+            desktopsChanged: (signals.desktopsChanged as FakeSignal).signal,
+            screensChanged: (signals.screensChanged as FakeSignal).signal,
+            currentDesktopChanged: (signals.currentDesktopChanged as FakeSignal).signal,
+            activeScreenChanged: (signals.activeScreenChanged as FakeSignal).signal,
+            get activeWindow() {
+                return w1;
+            },
+            clientArea: () => ({ x: 0, y: 0, width: 800, height: 600 }),
+            currentDesktopForScreen: () => ws1,
+            setCurrentDesktopForScreen: () => undefined,
+            sendClientToScreen: () => undefined,
+            createDesktop: () => null,
+            removeDesktop: () => false,
+        };
+        const handle = startWorldAdapterEntry({
+            workspace: surface,
+            owner: "owner-a",
+            adapter: "test-adapter",
+            floatIntent: true,
+            callDbus: (_service, _path, _iface, method, payload, callback) => {
+                if (method === "ReadFloatIntent") {
+                    const body = JSON.parse(payload) as Record<string, unknown>;
+                    callback(JSON.stringify({
+                        v: 1,
+                        correlation_id: body["correlation_id"],
+                        outcome: "ok",
+                        members: ["win-a"],
+                        stored: 1,
+                        returned: 1,
+                        tile: ["win-b"],
+                        tile_stored: 1,
+                        tile_returned: 1,
+                    }));
+                    return;
+                }
+                if (method === "WriteFloatIntent") {
+                    writes.push(payload);
+                    return;
+                }
+                if (method === "DiscoverWorld" || method === "DescribeWorld") {
+                    calls.push({ method, payload, callback });
+                }
+            },
+            scheduleOnce: (delay, cb) => {
+                timers.push({ delay, cb });
+                return () => undefined;
+            },
+            log: () => undefined,
+            gestureActive: () => false,
+            registerShortcutFn: () => true,
+            readWorkspaceModeFn: () => "per-output-local",
+            readDefaultTiledFn: () => true,
+        });
+        assert.ok(handle !== null);
+        const h = {
+            handle, calls, timers, writes, live, w1, w2, signals, rev: { count: 0 },
+            runTimers: (maxDelay = 120): void => {
+                for (let i = 0; i < timers.length; i += 1) {
+                    const t = timers[i] as { delay: number; cb: () => void };
+                    if (t.delay <= maxDelay) {
+                        timers.splice(i, 1);
+                        i -= 1;
+                        t.cb();
+                    }
+                }
+            },
+            lastCall: (method: string): CapturedCall => {
+                const found = [...calls].reverse().find((c) => c.method === method);
+                assert.ok(found !== undefined, `expected ${method}`);
+                return found as CapturedCall;
+            },
+        };
+        // Settle discovery plus the auto observation-only dispatch.
+        const disc = h.lastCall("DiscoverWorld");
+        const discBody = JSON.parse(disc.payload);
+        disc.callback(BOOTSTRAP("gen-1", discBody.req));
+        const auto = h.lastCall("DescribeWorld");
+        const autoBody = JSON.parse(auto.payload);
+        h.rev.count += 1;
+        auto.callback(acceptedReply("gen-1", autoBody.req, autoBody.obs, String(h.rev.count)));
+        return h;
+    }
+
+    const floatRow = (w: FakeWindow, extra: Record<string, unknown> = {}): Record<string, unknown> => ({
+        win: w.internalId, out: "out", ws: w.desktops[0]?.id ?? "ws1",
+        alloc: null, frame: null,
+        frame_auth: "untouched", frame_hold: "",
+        member_auth: "controlled", member_hold: "",
+        frame_op: "",
+        floating: true, float_origin: "",
+        ...extra,
+    });
+
+    const tileRow = (w: FakeWindow, extra: Record<string, unknown> = {}): Record<string, unknown> => ({
+        win: w.internalId, out: "out", ws: w.desktops[0]?.id ?? "ws1",
+        alloc: null, frame: null,
+        frame_auth: "controlled", frame_hold: "",
+        member_auth: "controlled", member_hold: "",
+        frame_op: "",
+        floating: false, float_origin: "",
+        ...extra,
+    });
+
+    function acceptHead(h: FloatHarness, extra: Record<string, unknown> = {}): void {
+        h.handle?.requestWorkspaceRelative(1);
+        h.runTimers();
+        const req = h.lastCall("DescribeWorld");
+        const body = JSON.parse(req.payload);
+        h.rev.count += 1;
+        req.callback(acceptedReply("gen-1", body.req, body.obs, String(h.rev.count), extra));
+    }
+
+    const lastWrite = (h: FloatHarness): Record<string, unknown> =>
+        JSON.parse(h.writes[h.writes.length - 1] as string) as Record<string, unknown>;
+
+    it("untouched floating-false rows never unfloat (overlay shape)", () => {
+        const h = makeFloatHarness();
+        // Fullscreen-overlay tiled shape: floating false with untouched
+        // frame authority and no hold. Must retain the settled float.
+        acceptHead(h, { windows: [tileRow(h.w1, { frame_auth: "untouched", floating: false })] });
+        const members = lastWrite(h)["members"] as Array<string>;
+        assert.ok(members.includes("win-a"), `overlay row must not unfloat: ${JSON.stringify(lastWrite(h))}`);
+        h.handle?.stop();
+    });
+
+    it("explicit successful unfloat clears while noSpace retains", () => {
+        const cleared = makeFloatHarness();
+        acceptHead(cleared, {
+            windows: [],
+            result: { op: "toggle-float", win: "win-a", rect: null },
+        });
+        const done = lastWrite(cleared);
+        assert.ok(!(done["members"] as Array<string>).includes("win-a"), `explicit unfloat clears: ${JSON.stringify(done)}`);
+        assert.ok((done["tile"] as Array<string>).includes("win-a"), `explicit unfloat records tile: ${JSON.stringify(done)}`);
+        cleared.handle?.stop();
+        // No-space retry keeps the float and records no tile override.
+        const held = makeFloatHarness();
+        acceptHead(held, {
+            windows: [],
+            result: { op: "toggle-float", win: "win-a", rect: null, noSpace: true },
+        });
+        const kept = lastWrite(held);
+        assert.ok((kept["members"] as Array<string>).includes("win-a"), `noSpace retains float: ${JSON.stringify(kept)}`);
+        assert.ok(!(kept["tile"] as Array<string>).includes("win-a"), `noSpace records no tile: ${JSON.stringify(kept)}`);
+        held.handle?.stop();
+    });
+
+    it("clean complete departure prunes the settled float", () => {
+        const h = makeFloatHarness();
+        for (const handler of [...(h.signals.windowRemoved as FakeSignal).handlers]) {
+            (handler as (payload?: unknown) => void)(h.w1);
+        }
+        h.live.splice(h.live.indexOf(h.w1), 1);
+        acceptHead(h, { windows: [] });
+        const done = lastWrite(h);
+        assert.ok(!(done["members"] as Array<string>).includes("win-a"), `departed float prunes: ${JSON.stringify(done)}`);
+        assert.ok((done["tile"] as Array<string>).includes("win-b"), `tile override survives departure: ${JSON.stringify(done)}`);
+        h.handle?.stop();
+    });
+
+    it("live-minimized floats survive tiled-classified rows", () => {
+        const h = makeFloatHarness();
+        h.w1.minimized = true;
+        acceptHead(h, { windows: [tileRow(h.w1)] });
+        const members = lastWrite(h)["members"] as Array<string>;
+        assert.ok(members.includes("win-a"), `minimized float holds: ${JSON.stringify(lastWrite(h))}`);
+        h.handle?.stop();
+    });
+
+    it("capacity floats converge without disturbing the tile override", () => {
+        const h = makeFloatHarness();
+        acceptHead(h, {
+            windows: [
+                floatRow(h.w1, { float_origin: "capacity" }),
+                tileRow(h.w2),
+            ],
+        });
+        const done = lastWrite(h);
+        assert.ok((done["members"] as Array<string>).includes("win-a"), `capacity float converges: ${JSON.stringify(done)}`);
+        assert.ok((done["tile"] as Array<string>).includes("win-b"), `tile override survives: ${JSON.stringify(done)}`);
+        assert.ok(!(done["members"] as Array<string>).includes("win-b"), `tile side stays disjoint: ${JSON.stringify(done)}`);
+        h.handle?.stop();
+    });
+
+    it("cross-scope tiled rows never clear (scope isolation)", () => {
+        const h = makeFloatHarness();
+        // Same id named at another scope with full tile proof: not the live
+        // scope, so the settled float holds.
+        acceptHead(h, { windows: [tileRow(h.w1, { ws: "ws2" })] });
+        const members = lastWrite(h)["members"] as Array<string>;
+        assert.ok(members.includes("win-a"), `cross-scope row must not clear: ${JSON.stringify(lastWrite(h))}`);
+        h.handle?.stop();
+    });
+});
+
+describe("world entry adapter incarnation", () => {
+    it("mints a fresh opaque token per script evaluation", () => {
+        const first = mintAdapterIncarnation();
+        const second = mintAdapterIncarnation();
+        for (const minted of [first, second]) {
+            assert.ok(isOpaqueId(minted), `incarnation must stay opaque: ${minted}`);
+            assert.ok(minted.startsWith("kwin-world-adapter-"), `incarnation keeps the production base: ${minted}`);
+            assert.ok(minted.length <= 128, `incarnation stays bounded: ${minted.length}`);
+        }
+        assert.notEqual(first, second, "two evaluations mint different tokens");
     });
 });

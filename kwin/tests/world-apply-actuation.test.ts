@@ -1315,6 +1315,7 @@ describe("world admission focus on settled floats", () => {
         observation: ApplyEnv["observation"];
         reply: Exclude<ReturnType<typeof parseWorldReply>, null>;
         focused: string[];
+        logs: string[];
     }
 
     function admissionSetup(
@@ -1324,6 +1325,9 @@ describe("world admission focus on settled floats", () => {
         opts?: {
             siblings?: Array<{ win: string; floating: boolean; fullscreen: boolean; maximized: boolean; sticky: boolean }>;
             replyFloating?: boolean;
+            observedFixedAuto?: boolean;
+            observedFixedSuppress?: boolean;
+            logs?: string[];
         },
     ): AdmissionSetup {
         const state = new WorldAdapterState("test-adapter", "owner-a");
@@ -1369,7 +1373,7 @@ describe("world admission focus on settled floats", () => {
                     rect: { x: 0, y: 0, w: 100, h: 100 },
                     floating: observed.floating, fitExcluded: observed.fitExcluded ?? true,
                     fullscreen: observed.fullscreen, maximized: observed.maximized,
-                    sticky: observed.sticky, fixedAuto: false, fixedSuppress: false,
+                    sticky: observed.sticky, fixedAuto: opts?.observedFixedAuto === true, fixedSuppress: opts?.observedFixedSuppress === true,
                     hints: { minW: null, minH: null, maxW: null, maxH: null },
                     minimized: false,
                 },
@@ -1391,7 +1395,7 @@ describe("world admission focus on settled floats", () => {
             gesture: false,
             focusedGlobal: "",
         };
-        return { state, observation, reply: parsed, focused: [] };
+        return { state, observation, reply: parsed, focused: [], logs: opts?.logs ?? [] };
     }
 
     function admissionEnv(setup: AdmissionSetup): ApplyEnv {
@@ -1400,7 +1404,7 @@ describe("world admission focus on settled floats", () => {
             state: setup.state,
             observation: setup.observation,
             reply: setup.reply as ApplyEnv["reply"],
-            log: () => undefined,
+            log: (m) => { setup.logs.push(m); },
             isStillListed: () => true,
             isActiveWindow: (ref) => ref === target,
             readLiveRect: () => ({ x: 0, y: 0, w: 100, h: 100 }),
@@ -1533,6 +1537,60 @@ describe("world admission focus on settled floats", () => {
         assert.equal(result.effects, 0);
         assert.equal(setup.state.pendingFeedback.find((f) => f.op === "af-win-b")?.outcome, "unattempted");
         assert.equal(setup.state.pendingFeedback.find((f) => f.op === "af-win-b")?.hold, "refused-target");
+    });
+
+    it("refuses automatic fixed-size float admission with zero focus writes", () => {
+        // Producer-shaped: the live Qt newcomer is an automatic fixed-size
+        // float (fixedAuto, observed floating) and the Engine-shaped reply
+        // carries a floating row plus the af- admission intent. Automatic
+        // floats never take admission activation.
+        const setup = admissionSetup(
+            "af-win-b",
+            { floating: true, fullscreen: false, maximized: false, sticky: false },
+            "",
+            { observedFixedAuto: true, observedFixedSuppress: false },
+        );
+        const env = admissionEnv(setup);
+        let setters = 0;
+        const counting: typeof env = {
+            ...env,
+            setGeometry: () => { setters += 1; return true; },
+            setMembership: () => { setters += 1; return true; },
+            sendToOutput: () => { setters += 1; return true; },
+            switchView: () => { setters += 1; return true; },
+        };
+        const result = applyWorldReply(counting);
+        assert.deepEqual(setup.focused, [], "automatic fixed float takes no focus write");
+        assert.equal(result.effects, 0);
+        assert.equal(setters, 0, "no geometry/membership/view writes around a refused admission");
+        assert.equal(setup.state.pendingFeedback.find((f) => f.op === "af-win-b")?.outcome, "unattempted");
+        assert.equal(setup.state.pendingFeedback.find((f) => f.op === "af-win-b")?.hold, "refused-target");
+        assert.ok(!setup.logs.some((l) => l.includes("automatic-focus-attempt")), "refused admission attempts no setter");
+    });
+
+    it("keeps suppressed-tile admission focus with no geometry writes", () => {
+        // Explicit fixed-suppress tile stays tiled locally and keeps the
+        // ordinary tiled-newcomer one-shot activation.
+        const setup = admissionSetup(
+            "af-win-b",
+            { floating: false, fullscreen: false, maximized: false, sticky: false, fitExcluded: false },
+            "",
+            { replyFloating: false, observedFixedAuto: true, observedFixedSuppress: true },
+        );
+        const env = admissionEnv(setup);
+        let setters = 0;
+        const counting: typeof env = {
+            ...env,
+            setGeometry: () => { setters += 1; throw new Error("tiled newcomer takes no frame write"); },
+            setMembership: () => { setters += 1; throw new Error("no membership here"); },
+            sendToOutput: () => { setters += 1; throw new Error("no send here"); },
+            switchView: () => { setters += 1; throw new Error("no view here"); },
+        };
+        const result = applyWorldReply(counting);
+        assert.deepEqual(setup.focused, ["win-b"], "suppressed tile keeps admission activation");
+        assert.equal(result.effects, 1);
+        assert.equal(setters, 0);
+        assert.equal(setup.state.pendingFeedback.find((f) => f.op === "af-win-b")?.outcome, "applied");
     });
 
     it("reports native denial with proof and zero setter writes", () => {

@@ -1,17 +1,17 @@
-// R-MAX-06 born-maximized admission for the world adapter (legacy
-// plan-adapter parity, adapter-owned). The clear phase runs ONLY after a
+// R-MAX-06 born-maximized admission for the world adapter
+// (adapter-owned). The clear phase runs ONLY after a
 // ready full reply (bootstrap never actuates: `acceptReply` gates
 // `ready:false` to observation-only catchup, and this phase runs solely on
 // the accepted path), with a current tiled/controlled scope proof from the
 // reply (never TS default-policy fallback), BEFORE unsafe geometry
 // application.
 //
-// Two lanes, mirroring `clearMaximizeAtAdmission` plus the held-fullscreen
+// Two lanes: the born-maximized clear plus the held-fullscreen
 // exit:
 // - Born lane: under the `tile-on-launch` default a tiled-first born
 //   maximized window clears once natively so the core-approved allocation
 //   applies; `keep-maximized-overlay` keeps the overlay (no clear).
-// - Held-fullscreen exit lane (legacy exact): a former held fullscreen
+// - Held-fullscreen exit lane: a former held fullscreen
 //   birth whose fullscreen first exits while still maximized clears once
 //   under BOTH settings unless the CURRENT fixed predicate skips it. No
 //   `fullScreen` write ever happens here, only `setMaximize(false,false)`.
@@ -269,8 +269,7 @@ export class WorldBornMaximizedAdmission {
                 this.heldFullscreen.delete(entry.win);
             }
         }
-        // Held-fullscreen birth tracking (legacy `heldInitialFullscreen`
-        // parity, id-keyed): first-seen fullscreen births that are not
+        // Held-fullscreen birth tracking (id-keyed): first-seen fullscreen births that are not
         // admitted wait for their exit. Later fullscreen on reserved
         // (admitted) tiles is not a birth and never enters the set, and
         // floating-first windows never enter it either (the held exit lane

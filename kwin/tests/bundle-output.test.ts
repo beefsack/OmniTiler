@@ -48,9 +48,12 @@ describe("production bundle compatibility", () => {
         assert.match(schema, /<entry name="innerGap" type="Int">[\s\S]*?<default>8<\/default>[\s\S]*?<min>0<\/min>[\s\S]*?<max>64<\/max>/);
         assert.match(schema, /<entry name="outerGap" type="Int">[\s\S]*?<default>8<\/default>[\s\S]*?<min>0<\/min>[\s\S]*?<max>64<\/max>/);
         assert.doesNotMatch(schema, /engineAuthorityMode/);
-        for (const mode of ["per-output-local", "global-unique", "shared"]) {
+        // Aligned KDE offers per-output-local and shared only: no
+        // global-unique choice (core keeps it for other platforms).
+        for (const mode of ["per-output-local", "shared"]) {
             assert.match(schema, new RegExp(`<choice name="${mode}" value="${mode}"\\/>`));
         }
+        assert.doesNotMatch(schema, /<choice name="global-unique" value="global-unique"\/>/);
         for (const profile of ["cosmic", "hyprland", "bspwm"]) {
             assert.match(schema, new RegExp(`<choice name="${profile}" value="${profile}"\\/>`));
         }
@@ -72,6 +75,17 @@ describe("production bundle compatibility", () => {
         const globals = readFileSync("src/kwin-globals.d.ts", "utf8");
         assert.ok(globals.includes("windowActivated"));
         assert.throws(() => readFileSync("src/engine-authority.ts", "utf8"));
+    });
+
+    it("mints a fresh adapter incarnation per evaluation against the retained Planner", () => {
+        const productionEntry = readFileSync("src/entry.ts", "utf8");
+        const bundle = readFileSync("contents/code/main.js", "utf8");
+        // Stable owner with a fresh stream: reset counters open a fresh
+        // sequence namespace instead of fencing as superseded/consumed.
+        assert.match(productionEntry, /owner: "kwin-world-adapter"/);
+        assert.match(productionEntry, /adapter: mintAdapterIncarnation\(\)/);
+        assert.doesNotMatch(productionEntry, /adapter: "kwin-world-adapter"/);
+        assert.match(bundle, /mintAdapterIncarnation/);
     });
 
 });

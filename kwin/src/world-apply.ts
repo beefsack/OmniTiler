@@ -450,6 +450,35 @@ function actuateViewForTransfer(
     return liveViewShowsOn(env, transfer.out, transfer.ws);
 }
 
+// Same-flight view switch for one migration's paired target/refill views
+// (3b): the entry freshness check already passed immediately above, and
+// the sibling switch's own synchronous `currentDesktopChanged` advanced
+// the watermark in between. Rechecking entry freshness here would fail
+// closed on our own actuation: the refill would arm possibly-executed
+// without ever attempting, then never retry, wedging the parent (and the
+// core twin) forever. Single-threaded run-to-completion means no external
+// input interleaves between the two synchronous switches, so the entry
+// check plus exact-output read-back proof is the complete safety case:
+// wrong-output visibility never proves, throws stay ambiguous, and any
+// later external view move settles superseded instead of fighting.
+function actuateViewSameFlight(
+    env: ApplyEnv,
+    transfer: WorldReplyTransfer,
+): boolean {
+    const wsRef = safeResolve(() => env.desktopById(transfer.ws));
+    const outRef = safeResolve(() => env.resolveOutput(transfer.out));
+    if (wsRef === null || outRef === null) {
+        return false;
+    }
+    try {
+        env.switchView(wsRef, outRef);
+    } catch (error) {
+        void error;
+        return liveViewShowsOn(env, transfer.out, transfer.ws);
+    }
+    return liveViewShowsOn(env, transfer.out, transfer.ws);
+}
+
 // Shared follow-view settlement for one window transfer whose membership
 // proof already arrived: already-visible settles with no write counted,
 // a proven switch settles with one view write, anything else holds the
@@ -1089,10 +1118,19 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
     if (result.stoppedMidApply) {
         return result;
     }
+    // Native removal dedup: the aligned grid repeats one native per
+    // output, so several rows can name the same native binding. Every
+    // gate below keys on the native id only, so the first row decides and
+    // repeats skip silently (no duplicate native call, no double hold).
+    const removalSeen = new Set<string>();
     for (const ws of reply.workspaces) {
         if (ws.exist || ws.bind === "" || ws.hold !== "") {
             continue;
         }
+        if (removalSeen.has(ws.bind)) {
+            continue;
+        }
+        removalSeen.add(ws.bind);
         // Desired absence is eligibility only: re-enumerate occupants
         // (including unmanaged/floating/minimized/fullscreen/maximized via
         // the fresh desktop occupant count), visibility, pins, mappings, and
@@ -1280,6 +1318,12 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             : null;
         let members: string[] | null = null;
         if (migrationResult !== null) {
+            // The correlated result names the exact member set, including
+            // an explicitly empty one: an originally-empty migration still
+            // moves both views (core verifies target follow plus the
+            // explicit source refill for it). Only the command reply
+            // carries this proof; later observes without homed rows hold
+            // rather than guess empty versus delayed.
             members = [...migrationResult.members];
         } else {
             const homed = reply.windows
@@ -1287,7 +1331,7 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
                 .map((w) => w.win);
             members = homed.length > 0 ? homed : null;
         }
-        if (members === null || members.length === 0) {
+        if (members === null) {
             result.held += 1;
             continue;
         }
@@ -1590,7 +1634,9 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
         let viewsProven = targetShown && refillShown;
         if (membersProven && !viewsProven && replyFresh(env, reply, entryObs)) {
             if (!targetShown) {
-                if (actuateViewForTransfer(env, reply, entryObs, t)) {
+                // Same-flight switch: the entry check above is the
+                // freshness proof; read-back decides.
+                if (actuateViewSameFlight(env, t)) {
                     result.viewWrites += 1;
                 }
             }
@@ -1603,9 +1649,12 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
                     } else {
                         // Stable child op identity arms possibly-executed
                         // BEFORE the view setter, with proof/refusal
-                        // feedback.
+                        // feedback. Same-flight switch: the entry check
+                        // above already proved freshness, so the target
+                        // switch's own synchronous signal cannot fail this
+                        // attempt closed.
                         state.armPossiblyExecuted(refillOp, "view", `${sourceOut}/${refillWs}`);
-                        if (actuateViewForTransfer(env, reply, entryObs, { ...refillChild, follow: false })) {
+                        if (actuateViewSameFlight(env, { ...refillChild, follow: false })) {
                             result.viewWrites += 1;
                             state.settleAttempt(refillOp, "applied", "");
                             state.noteAppliedViewTarget(sourceOut, refillOp, refillWs);
@@ -1618,7 +1667,7 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
                     // transfer: the refill rides the parent operation with
                     // no separate arming, exactly as before.
                     const refillTransfer = { ...t, out: sourceOut, ws: refillWs };
-                    if (actuateViewForTransfer(env, reply, entryObs, refillTransfer)) {
+                    if (actuateViewSameFlight(env, refillTransfer)) {
                         result.viewWrites += 1;
                     }
                 }
@@ -1680,6 +1729,28 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             result.held += 1;
             continue;
         }
+        // Focused-float preservation: automatic admission intents
+        // (af-<window>; world_report.rs mints fx-<seq> only for executed
+        // explicit focus commands) never activate over a focused
+        // floating subject, which covers automatic fixed-size floats
+        // (observed floating) plus manual/sticky. Explicit fx-*
+        // workspace/send-follow focus always actuates below. No geometry,
+        // stacking, or keep-above change here.
+        const focusedId = observation.focusedGlobal;
+        if (typeof focusedId === "string" && focusedId !== "" && focusedId !== fx.target && fx.id.startsWith("af-")) {
+            const focused = byWin.get(focusedId);
+            if (focused !== undefined && (focused.floating === true || focused.sticky === true)) {
+                const reason = focused.sticky === true
+                    ? "sticky-active"
+                    : focused.fixedAuto === true
+                        ? "automatic-active"
+                        : "floating-active";
+                env.log(`omnitiler:world:focus-skipped kind=effect reason=${reason} window=${focusedId} target=${fx.target} id=${fx.id}`);
+                state.noteFeedback({ op: fx.id, kind: "effect", outcome: "unattempted", hold: "refused-target" });
+                result.held += 1;
+                continue;
+            }
+        }
         // Overlay guard: game/excluded/overlay rows (fit-excluded,
         // fullscreen, sticky, floating, including first-seen fullscreen
         // holds) never take automatic focus/raise/stack writes. The effect
@@ -1690,13 +1761,17 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
         // ordinary is the core's reply classification (a floating reply
         // row, user or capacity alike), never observed floating alone: a
         // game/excluded float the core never classified stays refused.
-        // Fullscreen (game), maximized, and sticky overlays refuse even
-        // there.
+        // Automatic fixed-size floats (observed fixedAuto without
+        // fixedSuppress) never take admission activation: zero
+        // geometry/focus writes by construction. Suppressed tiles stay on
+        // the tiled path below. Fullscreen (game), maximized, and sticky
+        // overlays refuse even there.
         const replyRow = reply.windows.find((w) => w.win === fx.target);
         const admissionFloatTarget =
             fx.id.startsWith("af-") &&
             observed.floating === true &&
-            replyRow?.floating === true;
+            replyRow?.floating === true &&
+            !(observed.fixedAuto === true && observed.fixedSuppress !== true);
         if (admissionFloatTarget) {
             if (observed.fullscreen || observed.maximized || observed.sticky) {
                 state.noteFeedback({ op: fx.id, kind: "effect", outcome: "unattempted", hold: "refused-target" });
@@ -1759,6 +1834,11 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
         }
         let ok = false;
         let threw = false;
+        // Correlated attempt/result for focus setter runs: the outcome
+        // reports synchronous setter acceptance only, with a separate
+        // native active token; accepted-but-not-activated is never
+        // misreported as refused.
+        env.log(`omnitiler:world:automatic-focus-attempt req=${reply.req} rev=${reply.rev} target=${fx.target} reason=planned-focus`);
         try {
             ok = env.focusWindow(observed.ref);
         } catch (error) {
@@ -1772,6 +1852,7 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             void error;
             active = false;
         }
+        env.log(`omnitiler:world:automatic-focus-result req=${reply.req} rev=${reply.rev} target=${fx.target} reason=planned-focus outcome=${threw ? "threw" : ok ? "setter-accepted" : "setter-refused"} active=${active ? "true" : "false"}`);
         if (!threw && ok && active) {
             result.effects += 1;
             state.noteFeedback({ op: fx.id, kind: "effect", outcome: "applied", hold: "" });

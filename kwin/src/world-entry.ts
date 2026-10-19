@@ -1,11 +1,9 @@
 // World production entry (D1-D5): the single active KDE policy path over
-// DiscoverWorld/DescribeWorld. Legacy plan modules remain in-tree
-// for native-only callers and offline fixtures but are NOT called here and
-// are never a fallback. Planner is the SOLE workspace policy: every
-// selection/send/migration shortcut builds a world command; this module
-// never decides trailing reuse/create, history, hotplug mapping, or
-// relative/numbered resolution locally. Native code owns only observation
-// plus safe actuation with no silent fallback.
+// DiscoverWorld/DescribeWorld. The legacy plan route is removed; Planner
+// is the SOLE workspace policy: every selection/send/migration shortcut
+// builds a world command; this module never decides trailing reuse/create,
+// history, hotplug mapping, or relative/numbered resolution locally. Native
+// code owns only observation plus safe actuation with no silent fallback.
 
 import { connectSignal, readSignal } from "./signal-capability";
 import { createWorldDragRoute } from "./world-drag";
@@ -27,6 +25,27 @@ import {
 // membership transport only, never workspace policy.
 const INTENT_READ_METHOD = "ReadFloatIntent";
 const INTENT_WRITE_METHOD = "WriteFloatIntent";
+
+// Compile-time source identity (retired source-rev module inlined here so
+// the installed bundle keeps baking it): the installed KWin bundle build
+// (build:installed) bakes the release archive's OMNITILER_SOURCE_REV into
+// this constant through an esbuild define; ordinary npm builds resolve
+// deterministically to the local-dev fallback. The value is bounded to a
+// git revision (40 or 64 lowercase hex) so the constant can never carry
+// arbitrary data. The world ready log carries it so the release archive's
+// baked-rev grep keeps passing; no transport or behavior effect.
+declare const __OMNITILER_SOURCE_REV__: string | undefined;
+
+const SOURCE_REV_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+
+function resolveSourceRev(): string {
+    const candidate: unknown =
+        typeof __OMNITILER_SOURCE_REV__ === "string" ? __OMNITILER_SOURCE_REV__ : undefined;
+    if (typeof candidate === "string" && SOURCE_REV_PATTERN.test(candidate)) {
+        return candidate;
+    }
+    return "local-dev";
+}
 import {
     WORLD_MAX_REPLY_BYTES,
     WORLD_MAX_REQUEST_BYTES,
@@ -177,6 +196,14 @@ function mintAdapterId(provided: unknown): string | null {
     return null;
 }
 
+// Fresh adapter incarnation per script evaluation: the stable production
+// base plus a Date/random suffix (opaque, bounded). Fresh per evaluation
+// with overwhelming probability, so reset request/command counters open a
+// fresh sequence namespace against the retained Planner.
+export function mintAdapterIncarnation(): string {
+    return `kwin-world-adapter-${Date.now().toString(36)}-${Math.floor(Math.random() * 0x100000000).toString(36)}`;
+}
+
 function isDirection(value: unknown): value is "left" | "right" | "up" | "down" {
     return value === "left" || value === "right" || value === "up" || value === "down";
 }
@@ -275,14 +302,41 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     let reqCounter = 0;
     // Adapter-owned logical<->native mapping snapshot for report bindings,
     // converged from accepted replies (Planner-owned) plus pending tokens.
-    // Only the logical id and output converge here; pin/disp/managed are
-    // derived per report in pinRetained below (never stored constants).
+    // Keyed per (output, native): the aligned shared grid carries a
+    // distinct logical identity per output cell, so one native id maps to
+    // one logical per output. Only the logical id and output converge here;
+    // pin/disp/managed are derived per report in pinRetained below (never
+    // stored constants).
     const logicalOfNative = new Map<string, { logical: string; out: string }>();
+    const bindingKey = (out: string, native: string): string => `${out}\u0000${native}`;
     const detaches: Array<() => void> = [];
     // Explicit close tracking (D5): canonical live-id cache plus
     // event-gated difference (see world-close-tracker). The removal payload
     // is never read; core treats bare absence as minimize, never close.
     const closeTracker = createWorldCloseTracker();
+    // Tentative (user review pending): a persisted `global-unique`
+    // workspaceMode falls back to `per-output-local` on the world route
+    // with one bounded logged reason. KDE cannot present globally unique
+    // numbers (desktop positions/names are global); the core keeps
+    // `global-unique` for other platforms and legacy plan callers keep
+    // their own mode reads untouched.
+    let modeFallbackLogged = false;
+    const readModeAligned = (): unknown => {
+        let raw: unknown = "per-output-local";
+        try {
+            raw = settings.readMode();
+        } catch (error) {
+            void error;
+        }
+        if (raw === "global-unique") {
+            if (!modeFallbackLogged) {
+                modeFallbackLogged = true;
+                log("omnitiler:world:workspace-mode-fallback from=global-unique to=per-output-local reason=kde-aligned-per-output");
+            }
+            return "per-output-local";
+        }
+        return raw;
+    };
     // Adapter-owned intentional-float membership (observation input only):
     // converged from accepted Planner exception rows, pruned to live ids.
     // Seeded once from the Rust-owned runtime store (ReadFloatIntent) when
@@ -321,21 +375,38 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         }
         return captureWorldObservation({
         workspace: surface,
-        readMode: settings.readMode,
+        readMode: readModeAligned,
         readGap: () => settings.readGapLive(),
         readOuterGap: () => settings.readOuterGapLive(),
         gestureActive,
         knownClosed: () => closeTracker.snapshotClosed(),
-        logicalBindingOf: (nativeId) => {
+        logicalBindingOf: (nativeId, out) => {
             // Locally-created but not yet core-acknowledged bindings publish
             // here so core pending consumes them: a bound pending creation
             // overrides only an absent entry or a generic native->native
             // fallback echo (logical === native). A real core mapping stays
-            // authoritative and the pending row is pruned on accept.
-            const pending = state.pendingCreations.find((c) => c.bound === nativeId);
-            const base = logicalOfNative.get(nativeId);
+            // authoritative and the pending row is pruned on accept. The
+            // pending lookup scopes to the requesting output; the snapshot
+            // lookup keys per (output, native) for the aligned grid. An
+            // output-less lookup (shared mode, never replicated) resolves
+            // through the first cell bound to that native.
+            const pending = state.pendingCreations.find((c) =>
+                c.bound === nativeId && c.logical !== "" && c.out !== "" &&
+                (out === undefined || c.out === out),
+            );
+            let base: { logical: string; out: string } | undefined;
+            if (out !== undefined) {
+                base = logicalOfNative.get(bindingKey(out, nativeId));
+            } else {
+                for (const [key, value] of logicalOfNative) {
+                    if (key.endsWith(`\u0000${nativeId}`)) {
+                        base = value;
+                        break;
+                    }
+                }
+            }
             if (
-                pending !== undefined && pending.logical !== "" && pending.out !== "" &&
+                pending !== undefined &&
                 (base === undefined || base.logical === nativeId)
             ) {
                 return {
@@ -351,6 +422,12 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 pin: route.pinRetained(nativeId), disp: false, managed: true,
             };
         },
+        // Binding replication follows the effective workspace mode: the
+        // aligned per-output-local grid binds one native once per output
+        // with a distinct logical each, while shared (unchanged) keeps one
+        // row per native and the nonaligned core would collapse replicates
+        // through a generic native->logical map.
+        replicateBindingsPerOutput: readModeAligned() === "per-output-local",
         isFloating: (win) => floatingIds.has(win),
         isTileOverride: (win) => tileIds.has(win),
         ...(overrides.readFixedPredicateFn !== undefined ? { readFixedPredicate: overrides.readFixedPredicateFn } : {}),
@@ -496,6 +573,33 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         } catch (error) {
             void error;
             return null;
+        }
+    };
+
+    // Per-window homing echo suppression (approach2/5 native
+    // drag/send adoption): the synchronous `outputChanged` /
+    // `desktopsChanged` echo of our own output/membership setters must
+    // not invalidate mid-apply (that would wedge the flight and can
+    // resurrect stalled migrations). While a wrapped setter runs,
+    // `homingSuppressDepth` is nonzero with the actuated ref; that
+    // window's own echo defers to one post-apply observation, while any
+    // other window's signal, and closure/unsafe/disappearance of the
+    // actuated window itself, still invalidates immediately.
+    let homingSuppressDepth = 0;
+    let homingSuppressRef: object | null = null;
+    let deferredOwnHoming = false;
+    const applyHostBase = createWorldApplyHost(surface, readProp);
+    const withHomingSuppression = (ref: object, run: () => boolean): boolean => {
+        homingSuppressDepth += 1;
+        homingSuppressRef = ref;
+        try {
+            return run();
+        } finally {
+            homingSuppressDepth -= 1;
+            if (homingSuppressDepth <= 0) {
+                homingSuppressDepth = 0;
+                homingSuppressRef = null;
+            }
         }
     };
 
@@ -1143,10 +1247,12 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     // Converge the adapter-owned binding snapshot from the
                     // accepted Planner mapping (Planner-owned, D2), then
                     // prune to the current native inventory so stale
-                    // bindings never survive removals/disconnects.
+                    // bindings never survive removals/disconnects. Keyed
+                    // per (output, native): the aligned grid binds the same
+                    // native once per output with a distinct logical each.
                     for (const ws of parsed.workspaces) {
                         if (ws.bind !== "") {
-                            logicalOfNative.set(ws.bind, {
+                            logicalOfNative.set(bindingKey(ws.out, ws.bind), {
                                 logical: ws.logical !== "" ? ws.logical : ws.bind,
                                 out: ws.out,
                             });
@@ -1188,16 +1294,95 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     // held/overlay/minimized rows never read as floats
                     // merely for missing allocation.
                     {
-                        const untouched = new Set<string>();
+                        // Held/unreadable scopes never clear settled intent:
+                        // only a positive tile proof for the same live
+                        // native scope removes it (floating false with
+                        // controlled frame AND membership authority and no
+                        // hold), or an explicit successful unfloat below.
+                        // Missing rows, held rows, untouched rows (the
+                        // fullscreen-overlay tiled shape rides untouched),
+                        // overlay lifetimes, minimized lifetimes, and
+                        // cross-scope rows all retain.
+                        const rowByWin = new Map<string, (typeof parsed.windows)[number]>();
                         for (const row of parsed.windows) {
-                            if (row.frame_auth === "untouched" && row.frame_hold === "") {
-                                untouched.add(row.win);
+                            if (!rowByWin.has(row.win)) {
+                                rowByWin.set(row.win, row);
                             }
                         }
-                        for (const id of [...floatingIds]) {
-                            if (!untouched.has(id)) {
-                                floatingIds.delete(id);
+                        // Reply ws may be logical: resolve (out, ws) to the
+                        // native scope through the reply workspace rows,
+                        // then the adapter logical snapshot. Unbound rows
+                        // resolve to nothing (fail closed); with no mapping
+                        // the reply ws reads as the native id.
+                        const replyNativeOf = (out: string, ws: string): string | null => {
+                            for (const wsRow of parsed.workspaces) {
+                                if (wsRow.out === out && (wsRow.logical === ws || wsRow.id === ws)) {
+                                    return wsRow.bind !== "" ? wsRow.bind : null;
+                                }
                             }
+                            for (const [key, value] of logicalOfNative) {
+                                const split = key.indexOf("\u0000");
+                                if (split >= 0 && key.slice(0, split) === out && value.logical === ws) {
+                                    return key.slice(split + 1);
+                                }
+                            }
+                            return ws;
+                        };
+                        for (const id of [...floatingIds]) {
+                            const row = rowByWin.get(id);
+                            if (row === undefined) {
+                                continue;
+                            }
+                            if (row.floating !== false) {
+                                continue;
+                            }
+                            if (row.frame_auth !== "controlled" || row.member_auth !== "controlled") {
+                                continue;
+                            }
+                            if (row.frame_hold !== "" || row.member_hold !== "") {
+                                continue;
+                            }
+                            // Live overlay/minimized lifetimes retain, as
+                            // does any unreadable live read (fail closed).
+                            let live: object | null = null;
+                            try {
+                                live = liveRefById(id);
+                            } catch (error) {
+                                void error;
+                                live = null;
+                            }
+                            if (live === null) {
+                                continue;
+                            }
+                            let safety: { minimized: boolean | null; fullscreen: boolean | null; maximized: boolean | null; sticky: boolean | null } | null = null;
+                            try {
+                                safety = applyHostBase.readLiveSafety(live);
+                            } catch (error) {
+                                void error;
+                                safety = null;
+                            }
+                            if (
+                                safety === null || safety.minimized !== false ||
+                                safety.fullscreen !== false || safety.maximized !== false ||
+                                safety.sticky !== false
+                            ) {
+                                continue;
+                            }
+                            let home: { out: string; ws: string } | null = null;
+                            try {
+                                home = applyHostBase.readLiveMembership(live);
+                            } catch (error) {
+                                void error;
+                                home = null;
+                            }
+                            if (home === null) {
+                                continue;
+                            }
+                            const nativeWs = replyNativeOf(row.out, row.ws);
+                            if (nativeWs === null || nativeWs !== home.ws || row.out !== home.out) {
+                                continue;
+                            }
+                            floatingIds.delete(id);
                         }
                         try {
                             if (
@@ -1205,6 +1390,17 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                                 parsed.result.rect === null && parsed.result.noSpace !== true
                             ) {
                                 tileIds.add(parsed.result.win);
+                                floatingIds.delete(parsed.result.win);
+                                // Explicit unfloat of an automatic float
+                                // releases owned keepAbove once (the
+                                // suppress pin above holds the tile; never
+                                // a keepBelow write). Never throws into
+                                // the accept path.
+                                try {
+                                    native.releaseAutomaticFloat(parsed.result.win, "explicit-unfloat");
+                                } catch (error) {
+                                    void error;
+                                }
                             } else if (
                                 parsed.result !== null && parsed.result.op === "toggle-float" &&
                                 parsed.result.rect === null && parsed.result.noSpace === true
@@ -1260,14 +1456,14 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         void error;
                     }
                     {
-                        const liveNatives = new Set<string>();
+                        const liveCells = new Set<string>();
                         for (const t of fresh.topology) {
                             for (const id of t.order) {
-                                liveNatives.add(id);
+                                liveCells.add(bindingKey(t.out, id));
                             }
                         }
                         for (const key of [...logicalOfNative.keys()]) {
-                            if (!liveNatives.has(key)) {
+                            if (!liveCells.has(key)) {
                                 logicalOfNative.delete(key);
                             }
                         }
@@ -1295,19 +1491,33 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                                 floatingIds.add(row.win);
                             }
                         }
-                        // Prune departed lifetimes, retaining the same settled
-                        // membership as the accepted rows and live inventory.
-                        for (const id of [...floatingIds]) {
-                            if (!obsWins.has(id)) {
-                                floatingIds.delete(id);
+                        // Prune departed lifetimes only on authoritative
+                        // complete inventory: any held/unreadable scope, an
+                        // incomplete report, or an incomplete topology holds
+                        // ALL intent (held omission never proves departure,
+                        // so this over-retains departed ids on readable
+                        // scopes rather than risk uncommanded loss).
+                        // Positively acked closes are not excepted here:
+                        // absence under hold cannot distinguish departure
+                        // from omission, so they prune on the next complete
+                        // inventory instead. Clean close/departure prunes
+                        // when the same complete inventory omits the id.
+                        const freshHeld = !fresh.complete ||
+                            fresh.domains.some((d) => d.hold !== "" || !d.readable || !d.complete) ||
+                            fresh.topology.some((t) => !t.complete);
+                        if (!freshHeld) {
+                            for (const id of [...floatingIds]) {
+                                if (!obsWins.has(id)) {
+                                    floatingIds.delete(id);
+                                }
                             }
-                        }
-                        // Fixed-window tile overrides persist locally: they
-                        // are disjoint from floats and pruned only when the
-                        // lifetime leaves the inventory.
-                        for (const id of [...tileIds]) {
-                            if (!obsWins.has(id)) {
-                                tileIds.delete(id);
+                            // Fixed-window tile overrides persist locally: they
+                            // are disjoint from floats and pruned only when the
+                            // lifetime leaves the inventory.
+                            for (const id of [...tileIds]) {
+                                if (!obsWins.has(id)) {
+                                    tileIds.delete(id);
+                                }
                             }
                         }
                     }
@@ -1320,6 +1530,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                             parsed.result.rect !== null
                         ) {
                             tileIds.delete(parsed.result.win);
+                            floatingIds.add(parsed.result.win);
                         }
                     } catch (error) {
                         void error;
@@ -1370,8 +1581,28 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         observation: fresh,
                         reply: parsed,
                         log,
-                        ...createWorldApplyHost(surface, readProp),
+                        ...applyHostBase,
+                        setMembership: (ref, wsNativeId, wsRef) =>
+                            withHomingSuppression(ref, () => applyHostBase.setMembership(ref, wsNativeId, wsRef)),
+                        sendToOutput: (ref, outRef) =>
+                            withHomingSuppression(ref, () => applyHostBase.sendToOutput(ref, outRef)),
                     });
+                    // Deferred own-echo observation: synchronous homing
+                    // echoes of the setters above coalesced here into one
+                    // post-apply invalidation (never mid-apply).
+                    if (deferredOwnHoming && !stopped) {
+                        deferredOwnHoming = false;
+                        onNativeInvalidation();
+                    }
+                    // Automatic fixed-size float stacking (option A):
+                    // project-owned keepAbove above tiles from the fresh
+                    // capture, with no geometry, focus, or keepBelow
+                    // writes. Never throws into the accept path.
+                    try {
+                        native.syncAutomaticFloatStacking(fresh);
+                    } catch (error) {
+                        void error;
+                    }
                     // Persist settled intentional-float membership (native
                     // only): the accepted exception rows already converged
                     // floatingIds above; a change writes through.
@@ -1415,8 +1646,113 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         }
     };
 
-    // Subscribe to native signals: every invalidation advances CURRENT obs
-    // synchronously, before debounce. Event-driven only; no polling.
+    // Per-window homing subscriptions (approach2/5 native drag/send
+    // adoption, pin ab7df7cc): `Window::outputChanged` and window
+    // `desktopsChanged` are WINDOW signals; workspace `desktopsChanged`
+    // is only count/order. External native output/membership changes
+    // are invisible to the workspace-only watermark, so every tracked
+    // window subscribes both homing signals; each schedules a full
+    // world observe (never geometry noise, no polling). Own-flight
+    // echoes (synchronous emissions inside the wrapped setters above)
+    // defer to the single post-apply observation instead; the actuated
+    // window's closure/unsafe/disappearance still invalidates
+    // immediately. Legacy workspace routes untouched.
+    const windowHomingDetaches = new Map<object, Array<() => void>>();
+    const onWindowHoming = (ref: object): (() => void) => {
+        return (): void => {
+            if (stopped) {
+                return;
+            }
+            if (homingSuppressDepth > 0 && homingSuppressRef === ref) {
+                // Same-flight own echo: closure/disappearance/unsafe
+                // still invalidates immediately and stops apply; only
+                // the live expected echo defers.
+                let listed = true;
+                try {
+                    listed = applyHostBase.isStillListed(ref);
+                } catch (error) {
+                    void error;
+                    listed = false;
+                }
+                if (!listed) {
+                    onNativeInvalidation();
+                    return;
+                }
+                try {
+                    if (applyHostBase.readLiveSafety(ref) === null) {
+                        onNativeInvalidation();
+                        return;
+                    }
+                } catch (error) {
+                    void error;
+                    onNativeInvalidation();
+                    return;
+                }
+                deferredOwnHoming = true;
+                return;
+            }
+            onNativeInvalidation();
+        };
+    };
+    const attachWindowHoming = (ref: object): void => {
+        if (windowHomingDetaches.has(ref)) {
+            return;
+        }
+        const detachesForWindow: Array<() => void> = [];
+        for (const signalName of ["outputChanged", "desktopsChanged"] as const) {
+            try {
+                const detach = connectSignal(readSignal(ref, signalName), onWindowHoming(ref));
+                if (detach !== null) {
+                    detachesForWindow.push(detach);
+                }
+            } catch (error) {
+                void error;
+            }
+        }
+        if (detachesForWindow.length > 0) {
+            windowHomingDetaches.set(ref, detachesForWindow);
+        }
+    };
+    const detachWindowHoming = (ref: object): void => {
+        const owned = windowHomingDetaches.get(ref);
+        if (owned === undefined) {
+            return;
+        }
+        windowHomingDetaches.delete(ref);
+        for (const detach of owned) {
+            try {
+                detach();
+            } catch (error) {
+                void error;
+            }
+        }
+    };
+    // Safe inventory reconciliation: enumerate the live inventory for
+    // attach only (existing windows plus later additions). Removal
+    // detaches by payload identity only; the removed payload's
+    // properties are never read (its QObject may be dead).
+    const reconcileWindowHomingAttach = (): void => {
+        try {
+            const fn = readProp(surface, "windowList");
+            if (typeof fn !== "function") {
+                return;
+            }
+            const list = decodeList(Reflect.apply(fn as (...a: ReadonlyArray<never>) => unknown, surface, []), 10000);
+            if (list === null) {
+                return;
+            }
+            for (const item of list) {
+                if (typeof item === "object" && item !== null) {
+                    attachWindowHoming(item as object);
+                }
+            }
+        } catch (error) {
+            void error;
+        }
+    };
+    // Subscribe to workspace native signals: every invalidation
+    // advances CURRENT obs synchronously, before debounce.
+    // Event-driven only; no polling.
     const attach = (name: string, handler: () => void): void => {
         try {
             const detach = connectSignal(readSignal(surface, name), handler);
@@ -1437,7 +1773,12 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // (core treats bare absence as minimize, never close). Unreadable
     // inventories still invalidate; they never fabricate ids.
     try {
-        const detach = connectSignal(readSignal(surface, "windowRemoved"), () => {
+        const detach = connectSignal(readSignal(surface, "windowRemoved"), (removed) => {
+            // Detach by object identity only; never read the payload's
+            // properties (its QObject may be dead).
+            if (typeof removed === "object" && removed !== null) {
+                detachWindowHoming(removed as object);
+            }
             try {
                 closeTracker.noteRemovedEvent();
             } catch (error) {
@@ -1451,6 +1792,25 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     } catch (error) {
         void error;
     }
+    // New windows attach homing on arrival (idempotent per object
+    // identity); the workspace windowAdded invalidation above still
+    // schedules the observe. Late inventory additions reconcile here
+    // when the payload is absent.
+    try {
+        const detach = connectSignal(readSignal(surface, "windowAdded"), (added) => {
+            if (typeof added === "object" && added !== null) {
+                attachWindowHoming(added as object);
+            } else {
+                reconcileWindowHomingAttach();
+            }
+        });
+        if (detach !== null) {
+            detaches.push(detach);
+        }
+    } catch (error) {
+        void error;
+    }
+    reconcileWindowHomingAttach();
     try {
         const optionsGlobal: unknown = overrides.options !== undefined ? overrides.options : (() => {
             try {
@@ -1501,14 +1861,17 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         if (scope === "") {
             return { scope: "", tiled: saved, defaultTiled: saved };
         }
+        const out = activeOutputName();
         const last = state.lastReply;
         if (last !== null) {
             for (const ws of last.workspaces) {
-                if (ws.bind === scope) {
+                // The aligned grid repeats one native per output: scope
+                // the match to the active output, never a same-native row
+                // from another output.
+                if (ws.bind === scope && (out === null || ws.out === out)) {
                     return { scope, tiled: ws.mode !== "floating", defaultTiled: saved };
                 }
             }
-            const out = activeOutputName();
             if (out !== null) {
                 for (const o of last.outputs) {
                     if (o.out === out && (o.view === scope || o.view === "")) {
@@ -1537,7 +1900,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     dragRoute.attach();
     seedFloatIntent();
     discover();
-    log(`omnitiler:world:ready ${state.describeForLog()}`);
+    log(`omnitiler:world:ready ${state.describeForLog()} source=${resolveSourceRev()}`);
 
     void WORLD_MAX_REPLY_BYTES;
 
@@ -1632,6 +1995,20 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     return {
         stop: () => {
             stopped = true;
+            // Per-window homing teardown first so no stale window
+            // callback can fire after stop; workspace detaches below
+            // are idempotent and also release the per-window set.
+            for (const owned of windowHomingDetaches.values()) {
+                for (const detach of owned) {
+                    try {
+                        detach();
+                    } catch (error) {
+                        void error;
+                    }
+                }
+            }
+            windowHomingDetaches.clear();
+            deferredOwnHoming = false;
             // Teardown drops unsent queued intents: no post-stop dispatch
             // may carry them, and later presses refuse on `stopped`.
             pendingQueue.length = 0;
@@ -1645,6 +2022,14 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             }
             try {
                 native.cancelPendingUnfloat();
+            } catch (error) {
+                void error;
+            }
+            // Best-effort release of owned automatic keepAbove on
+            // explicit stop only; the actual KWin script unload path is
+            // unharnessed and makes no claim here.
+            try {
+                native.releaseAllAutomaticFloats("stop");
             } catch (error) {
                 void error;
             }

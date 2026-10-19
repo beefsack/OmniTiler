@@ -1,4 +1,4 @@
-import { startWorldAdapterEntry } from "./world-entry";
+import { startWorldAdapterEntry, mintAdapterIncarnation } from "./world-entry";
 import { TrayPublisher } from "./tray-publisher";
 
 // Production entry: the single world-state adapter owns all KWin observation
@@ -10,9 +10,8 @@ import { TrayPublisher } from "./tray-publisher";
 // Directional focus/move and direction-plus-mode resize shortcuts issue
 // parameterized world operation commands, workspace selection/send/migration
 // shortcuts issue Planner-resolved world commands, and window/scope signals
-// feed one debounced fresh-snapshot resync. Legacy plan modules
-// remain in-tree for native-only callers and offline fixtures but are never
-// called on this path and are never a fallback.
+// feed one debounced fresh-snapshot resync. The legacy plan route is
+// removed; only the world route exists on this path.
 
 const trayTimers = new Set<QTimer>();
 
@@ -22,7 +21,10 @@ const trayTimers = new Set<QTimer>();
 const trayHolder: { current: TrayPublisher | null } = { current: null };
 const planHandle = startWorldAdapterEntry({
     owner: "kwin-world-adapter",
-    adapter: "kwin-world-adapter",
+    // Fresh incarnation per evaluation: reset counters open a fresh sequence
+    // namespace against the retained Planner instead of fencing as
+    // superseded/consumed. The owner stays stable so sessions survive.
+    adapter: mintAdapterIncarnation(),
     // Accepted and ignored: the core generation binds through authenticated
     // discovery, and float membership rides the full observation.
     generation: "world-1",
