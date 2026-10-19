@@ -6,7 +6,7 @@
 // planner request so the shared core classifies subsequent admissions
 // identically. Absent/invalid values fall back to `both-axes-fixed`.
 // Entries resolve at startup and re-resolve only on the deliberate Options
-// `configChanged` reload owned by plan-adapter-entry; there is no polling,
+// `configChanged` reload owned by the production entry; there is no polling,
 // reseed, or in-flight mutation. Changing the setting never reclassifies
 // retained windows, only subsequent admissions.
 

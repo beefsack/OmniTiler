@@ -28,14 +28,20 @@ export type WorldShortcutRegisterFn =
 // or losing precision, so a never-reset streak can never exceed the wire.
 export const RESIZE_PRESS_MAX = 4294967295;
 
-// Shared key-repeat press counter with legacy parity (plan-adapter
-// `requestResize`/`noteObservation`): the key is window+direction+mode,
+// Per-workspace tiling toggle action identity. Registered by
+// registerWorldShortcuts below and shared with the native KCM shortcut
+// reconciler expectations asserted in native-kcm-static tests.
+// User decision 2026-10-10: the toggle binds Meta+Y by default. Every
+// other currently-unbound action stays unbound.
+export const WORKSPACE_TILING_TOGGLE_ACTION = "omnitiler-toggle-workspace-tiling";
+export const WORKSPACE_TILING_TOGGLE_SEQUENCE = "Meta+Y";
+
+// Shared key-repeat press counter: the key is window+direction+mode,
 // index 0 is the initial press (12px per the core step schedule), each
 // repeat increments by one. A changed structural signature (membership or
-// focus, never geometry) resets to 0, exactly like the legacy fingerprint
-// gate; the signature reader is the entry's fresh observation. Without a
-// signature reader the counter still keys correctly but cannot see layout
-// changes (offline-test degraded path only).
+// focus, never geometry) resets to 0; the signature reader is the entry's
+// fresh observation. Without a signature reader the counter still keys
+// correctly but cannot see layout changes (offline-test degraded path only).
 export function createResizePressCounter(
     readSignature?: () => string | null,
 ): (win: string, direction: string, mode: string) => number {
@@ -328,7 +334,7 @@ export function registerWorldShortcuts(env: WorldShortcutsEnv): void {
                 });
             }
         }
-        tryRegister("omnitiler-toggle-workspace-tiling", "Toggle tiling for current workspace", "Meta+Y", () => {
+        tryRegister(WORKSPACE_TILING_TOGGLE_ACTION, "Toggle tiling for current workspace", WORKSPACE_TILING_TOGGLE_SEQUENCE, () => {
             // Planner-owned tiling toggle (D2): the source mode is the last
             // ready reply's tiling mode for the current scope, never TS
             // policy. Legacy Meta+Y/tray behavior preserved: toggle and wait

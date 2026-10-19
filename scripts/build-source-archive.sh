@@ -33,8 +33,8 @@
 #         OMNITILER_PREBUILT_BUNDLE=1.
 #   - Build identity: the tag must be vX.Y.Z and match kwin/package.json plus
 #     every workspace crate version. The baked SOURCE_REV is the tag commit
-#     SHA, never the tag name: kwin/src/source-rev.ts only accepts 40/64
-#     lowercase hex and falls back to local-dev otherwise.
+#     SHA, never the tag name: kwin/src/world-entry.ts `resolveSourceRev`
+#     only accepts 40/64 lowercase hex and falls back to local-dev otherwise.
 set -euo pipefail
 
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"

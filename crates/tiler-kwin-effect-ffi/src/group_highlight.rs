@@ -18,12 +18,12 @@
 //   no trailing data; `bounds` has exactly x/y/w/h.
 // - `v` is the integer number 1 written without fraction or exponent.
 //   Fractional versions (e.g. 1.5) and string versions reject. This mirrors
-//   serde integer decoding for the sibling DescribePlan `v: u32` field.
+//   serde integer decoding for a `v: u32` field: fractions and strings fail
+//   closed without coercion.
 // - `revision` is an integer 0..=9007199254740991 (JSON-safe integer range,
 //   matching the bridge `isRevision` gate and the previous native bound).
-//   This is the forwarded engine `base_revision`, NOT the DescribePlan
-//   request `revision` (which carries the separate 1_000_000 request bound).
-//   Fractional/negative/out-of-range/non-numeric revisions reject.
+//   This is the forwarded engine `base_revision`, not a request revision
+//   counter. Fractional/negative/out-of-range/non-numeric revisions reject.
 // - `correlation_id`/`owner`/`group`/`focused_window` are non-empty opaque
 //   ids: 1..128 bytes of ASCII alnum plus `-_.` (matches `ids.rs` owner and
 //   correlation alphabets and `active_group.rs` opaque ids).

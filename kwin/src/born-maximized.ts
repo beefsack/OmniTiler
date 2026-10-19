@@ -8,7 +8,7 @@
 // `fixedSizePredicate` <-> `core.fixed_size_predicate`). Absent/invalid
 // values fall back to `tile-on-launch`. Entries resolve at startup and
 // re-resolve only on the deliberate Options `configChanged` reload owned by
-// plan-adapter-entry; there is no polling, reseed, or in-flight mutation.
+// the production entry; there is no polling, reseed, or in-flight mutation.
 // Changing the setting never rebuilds or reclassifies retained windows, only
 // subsequent admissions.
 

@@ -2,14 +2,14 @@
 //
 // R-WS-12 G-37 global KDE `migrationSourceRefill` with
 // `last-remaining-workspace` default and `most-recently-used-workspace`
-// alternative. The workspace-native map commit owns source-refill selection
-// (`commitWorkspaceMigration`): the remembered item-1.2 per-output previous
-// id refills only when it survives among the remaining source-output scoped
-// backing ids after excluding the migrated one, else the last remaining
-// scoped id refills. Absent/invalid values fall back to
+// alternative. The pure `selectMigrationSourceRefill` selector resolves the
+// refill id from the remembered per-output previous id plus the surviving
+// source-output scoped backing ids: the previous id refills only when it
+// survives among the remaining ids after excluding the migrated one, else
+// the last remaining scoped id refills. Absent/invalid values fall back to
 // `last-remaining-workspace`. Entries resolve at startup and re-resolve only
 // on the deliberate Options `configChanged` reload owned by
-// plan-adapter-entry; there is no polling, reseed, or in-flight mutation.
+// the production entry; there is no polling, reseed, or in-flight mutation.
 // Changing the setting never moves an already-migrated workspace, only
 // subsequent migrations. Destination insertion (D4) is unchanged.
 

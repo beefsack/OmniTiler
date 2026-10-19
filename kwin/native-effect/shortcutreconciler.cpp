@@ -524,14 +524,13 @@ const QList<ShortcutConflictRow> &shortcutConflictTable()
 
 const QList<ShortcutCatalogEntry> &shortcutProjectCatalog()
 {
-    // 37 plan rows then 39 item-1 workspace rows then 36 item-2 workspace
+    // 37 directional/state rows then 39 item-1 workspace rows then 36 item-2 workspace
     // rows (8 bound relative send-and-follow, 20 unbound numbered
     // send-and-stay with symbol aliases plus append rows, 8 unbound
     // relative send-and-stay) then 12 item-5 output rows (8 bound
     // Meta+Ctrl+Alt+H/J/K/L and arrows send-and-follow, 4 unbound
-    // directional send-and-stay in exact planOutputSendShortcutCatalog
-    // order) then 4 R-WS-12 migrate rows (unbound directional follow in
-    // exact planWorkspaceMigrateShortcutCatalog order) then 1
+    // directional send-and-stay in left/down/up/right order) then 4
+    // R-WS-12 migrate rows (unbound directional follow in the same order) then 1
     // workspace-tiling toggle row (Meta+Y bound by user decision
     // 2026-10-10; no known stock KDE holder). Bound canonical
     // keys stay unique across the

@@ -640,7 +640,7 @@ describe("drag-oracle pull entry wiring", () => {
         // The world production path owns the single finished-handler verdict
         // route (strict move-drop/resize operations, cancelled no-op),
         // split coherently into world-drag and driven by world-entry; the
-        // legacy plan path keeps its own route for native-only callers.
+        // legacy plan path (including its own oracle wiring) is retired.
         const worldEntry = readFileSync("src/world-entry.ts", "utf8");
         assert.ok(worldEntry.includes("world-drag"));
         assert.ok(worldEntry.includes("dragRoute.attach()"));
@@ -650,9 +650,10 @@ describe("drag-oracle pull entry wiring", () => {
         assert.ok(worldDrag.includes("routePointer"));
         assert.ok(worldDrag.includes("pointer-resize"));
         assert.ok(worldDrag.includes("drag-drop"));
-        const adapterEntry = readFileSync("src/plan-adapter-entry.ts", "utf8");
-        assert.ok(adapterEntry.includes("drag-oracle-pull"));
-        assert.ok(adapterEntry.includes("requestPointerResize"));
-        assert.ok(adapterEntry.includes("routePointer"));
+        // The legacy plan route (including its own oracle wiring) is
+        // retired: its adapter modules are gone and no production path
+        // references them.
+        assert.throws(() => readFileSync("src/plan-adapter-entry.ts", "utf8"));
+        assert.throws(() => readFileSync("src/plan-adapter.ts", "utf8"));
     });
 });

@@ -40,7 +40,7 @@ fi
 # ---- Part 2: direct 6.7-only use outside the seam is caught ----
 mkdir -p "$WORK/src"
 cp "$REPO_ROOT/kwin/src/"*.ts "$WORK/src/"
-printf '\nconst leak = readProp(surface, "currentDesktopForScreen");\n' >> "$WORK/src/plan-adapter-entry.ts"
+printf '\nconst leak = readProp(surface, "currentDesktopForScreen");\n' >> "$WORK/src/world-entry.ts"
 if bash "$GUARD" "$WORK/src" >"$OUTPUT" 2>&1; then
   fail "confinement-negative" "guard missed an unseamed 6.7-only read"
 else
@@ -56,7 +56,7 @@ fi
 # ---- Part 3: a brand-new API symbol is caught until audited ----
 mkdir -p "$WORK/src2"
 cp "$REPO_ROOT/kwin/src/"*.ts "$WORK/src2/"
-printf '\nconst grid = readProp(surface, "desktopGridSize");\n' >> "$WORK/src2/plan-adapter-entry.ts"
+printf '\nconst grid = readProp(surface, "desktopGridSize");\n' >> "$WORK/src2/world-entry.ts"
 if bash "$GUARD" "$WORK/src2" >"$OUTPUT" 2>&1; then
   fail "allowlist-negative" "guard missed a new unaudited API symbol"
 else
@@ -72,7 +72,7 @@ fi
 # ---- Part 4: a cast receiver with a generic comma must not hide a symbol ----
 mkdir -p "$WORK/src3"
 cp "$REPO_ROOT/kwin/src/"*.ts "$WORK/src3/"
-printf '\nconst hidden = Reflect.get(workspace as Record<string, unknown>, "brandNewApi");\nvoid hidden;\n' >> "$WORK/src3/plan-adapter-entry.ts"
+printf '\nconst hidden = Reflect.get(workspace as Record<string, unknown>, "brandNewApi");\nvoid hidden;\n' >> "$WORK/src3/world-entry.ts"
 if bash "$GUARD" "$WORK/src3" >"$OUTPUT" 2>&1; then
   fail "cast-negative" "guard missed a cast-hidden unaudited API symbol"
 else
@@ -92,7 +92,7 @@ fi
 # unaudited API symbol and must fail.
 mkdir -p "$WORK/src4"
 cp "$REPO_ROOT/kwin/src/"*.ts "$WORK/src4/"
-printf '\nconst legacy = readProp(ref, "fullscreen");\nvoid legacy;\n' >> "$WORK/src4/plan-adapter-entry.ts"
+printf '\nconst legacy = readProp(ref, "fullscreen");\nvoid legacy;\n' >> "$WORK/src4/world-entry.ts"
 if bash "$GUARD" "$WORK/src4" >"$OUTPUT" 2>&1; then
   fail "alias-negative" "guard missed a direct lowercase alias read outside the seam"
 else

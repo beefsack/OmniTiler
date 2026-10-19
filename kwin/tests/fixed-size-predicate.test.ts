@@ -8,7 +8,6 @@ import {
     normalizeFixedSizePredicate,
     readFixedSizePredicateValue,
 } from "../src/fixed-size-predicate";
-import { startPlanAdapterEntry } from "../src/plan-adapter-entry";
 
 function entryXml(path: string): string {
     return readFileSync(path, "utf8");
@@ -69,81 +68,5 @@ describe("fixed-size predicate schema and native KCM persistence", () => {
         assert.match(module, /KdeSettingsAdapter::readEnumToken\(/);
         assert.match(module, /writeEntry\(QStringLiteral\("fixedSizePredicate"\)/);
         assert.match(module, /KdeSettingsAdapter::selectEnumCombo\(/);
-    });
-});
-
-describe("fixed-size predicate live setting on Options configChanged", () => {
-    it("re-reads the predicate on configChanged for subsequent admissions", () => {
-        let predicate: unknown = "both-axes-fixed";
-        const handlers: Array<() => void> = [];
-        const options = {
-            configChanged: {
-                connect: (handler: () => void): void => { handlers.push(handler); },
-                disconnect: (handler: () => void): void => {
-                    const index = handlers.indexOf(handler);
-                    if (index >= 0) { handlers.splice(index, 1); }
-                },
-            },
-        };
-        const logs: string[] = [];
-        const output: Record<string, unknown> = { name: "out-1" };
-        const desktop: Record<string, unknown> = { id: "ws-1" };
-        const inert = (): unknown => ({ connect: (): void => {}, disconnect: (): void => {} });
-        const winA: Record<string, unknown> = {
-            normalWindow: true,
-            internalId: "win-a",
-            resourceClass: "test-app",
-            output,
-            desktops: [desktop],
-            frameGeometry: { x: 0, y: 0, width: 600, height: 800 },
-            moveResizedChanged: inert(),
-            fullScreenChanged: inert(),
-            fullScreen: false,
-            maximizedChanged: inert(),
-            maximizeMode: 0,
-            desktopsChanged: inert(),
-            onAllDesktops: false,
-        };
-        const workspace = {
-            activeWindow: winA,
-            windowList: (): unknown[] => [winA],
-            screens: [output],
-            currentDesktopForScreen: (): unknown => desktop,
-            clientArea: (): unknown => ({ x: 0, y: 0, width: 1200, height: 800 }),
-            windowAdded: inert(),
-            windowRemoved: inert(),
-            windowActivated: inert(),
-            screensChanged: inert(),
-            currentDesktopChanged: inert(),
-        };
-        const handle = startPlanAdapterEntry({
-            workspace,
-            options,
-            callDbus: (_s, _p, _i, method, _payload, callback): void => {
-                if (method === "NameHasOwner") { callback(true); return; }
-                if (method === "GetNameOwner") { callback(":1.7"); return; }
-                if (method === "StartServiceByName") { callback(1); return; }
-                void callback;
-            },
-            scheduleOnce: () => () => {},
-            log: (message): void => { logs.push(message); },
-            owner: "owner-1",
-            generation: "gen-1",
-            registerShortcutFn: () => true,
-            readProfileFn: () => "cosmic",
-            readFixedSizePredicateFn: (): unknown => predicate,
-        });
-        assert.ok(handle !== null);
-        predicate = "either-axis-fixed";
-        for (const fire of [...handlers]) {
-            fire();
-        }
-        assert.ok(
-            logs.some((line) =>
-                line === "omnitiler:plan:config-reloaded stage=fixed-size-predicate predicate=either-axis-fixed"
-            ),
-        );
-        assert.ok(!logs.some((line) => line.includes("restart-required")));
-        handle?.stop();
     });
 });

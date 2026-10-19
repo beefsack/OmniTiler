@@ -818,7 +818,7 @@ cmd_stop() {
   echo "project action records still registered in KGlobalAccel: $count (stale; left untouched)"
   print_records "$records"
   echo "note: KGlobalAccel records do not prove live callbacks and are not unregistered by this command."
-  echo "note: stopping/unloading does not roll back window geometries the single DescribePlan engine already applied."
+  echo "note: stopping/unloading does not roll back window geometries the single world engine already applied."
 }
 
 # Prints one TSV line per unrelated KGlobalAccel record (any component) whose

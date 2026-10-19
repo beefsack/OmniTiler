@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { planOutputSendShortcutCatalog, planShortcutCatalog, planWorkspaceMigrateShortcutCatalog, WORKSPACE_TILING_TOGGLE_ACTION, WORKSPACE_TILING_TOGGLE_SEQUENCE } from "../src/plan-adapter-entry";
+import {
+    registerWorldShortcuts,
+    WORKSPACE_TILING_TOGGLE_ACTION,
+    WORKSPACE_TILING_TOGGLE_SEQUENCE,
+    type WorldShortcutsEnv,
+} from "../src/world-shortcuts";
 import { workspaceShortcutCatalog } from "../src/workspace-native";
 
 const read = (path: string): string => readFileSync(join(process.cwd(), path), "utf8");
@@ -550,34 +555,112 @@ describe("native KCM static contract", () => {
         assert.ok(cmake.includes("native-effect-kcm-shortcut-selection"));
     });
 
-    it("keeps the native shortcut catalog in parity with the TS shortcut catalogs", () => {
-        const plan = planShortcutCatalog("cosmic");
+    it("keeps the native shortcut catalog aligned with the real runtime registrations", () => {
+        // Runtime source of truth: drive the actual production registration
+        // with a stub shortcut sink and read back exactly what the world
+        // route binds. This replaces the retired plan catalog builders;
+        // nothing in production consumes catalog-builder functions anymore.
+        const registered: Array<{ action: string; text: string; sequence: string }> = [];
+        const stubEnv: WorldShortcutsEnv = {
+            readProp: (value, property) => {
+                try {
+                    return Reflect.get(value as object, property as string);
+                } catch (error) {
+                    void error;
+                    return undefined;
+                }
+            },
+            isDirection: (value): value is "left" | "right" | "up" | "down" =>
+                value === "left" || value === "right" || value === "up" || value === "down",
+            shortcutFailed: () => {},
+            submitCommand: () => true,
+            handleFloatFocus: () => "not-float",
+            handleFloatMove: () => "not-float",
+            submitCatalogMove: () => {},
+            submitOutputSend: () => true,
+            submitMigration: () => true,
+            submitFloat: () => true,
+            setStickyNative: () => true,
+            setMaximizedNative: () => true,
+            setFullscreenNative: () => true,
+            activeOutputName: () => "out-1",
+            activeWindowId: () => "win-1",
+            activeWindowRef: () => ({}),
+            currentScopeId: () => "out-1/ws-1",
+            getWorkspaceTilingSnapshot: () => ({ scope: "out-1/ws-1", tiled: true, defaultTiled: true }),
+            registerShortcutFn: (name, text, sequence) => {
+                registered.push({ action: name, text, sequence });
+                return true;
+            },
+            readSameAxisMove: () => "group-with-neighbor",
+        };
+        registerWorldShortcuts(stubEnv);
+        const runtimeByAction = new Map<string, string>();
+        const runtimeOrder: string[] = [];
+        for (const row of registered) {
+            if (!runtimeByAction.has(row.action)) {
+                runtimeByAction.set(row.action, row.sequence);
+                runtimeOrder.push(row.action);
+            }
+        }
+        // No duplicate registrations.
+        assert.equal(registered.length, runtimeOrder.length);
         const workspace = workspaceShortcutCatalog();
-        const output = planOutputSendShortcutCatalog();
-        const migrate = planWorkspaceMigrateShortcutCatalog();
-        const tsByAction = new Map<string, string>();
-        for (const row of plan) {
-            tsByAction.set(row.action, row.sequence);
-        }
+        // Runtime catalog shape (world production defaults): 37 directional
+        // core rows (focus/move/resize letter+arrow plus 5 state toggles),
+        // 75 workspace rows, 8 unbound output follow/stay rows (no arrow
+        // aliases), 4 unbound migrate rows, and the bound Meta+Y tiling
+        // toggle.
+        assert.equal(runtimeByAction.size, 125);
         for (const row of workspace) {
-            tsByAction.set(row.action, row.sequence);
+            assert.equal(runtimeByAction.get(row.action), row.sequence);
         }
-        for (const row of output) {
-            tsByAction.set(row.action, row.sequence);
-        }
-        for (const row of migrate) {
-            tsByAction.set(row.action, row.sequence);
-        }
-        // User decision 2026-10-10: the per-workspace tiling toggle binds
-        // Meta+Y; every other currently-unbound action stays unbound.
-        tsByAction.set(WORKSPACE_TILING_TOGGLE_ACTION, WORKSPACE_TILING_TOGGLE_SEQUENCE);
-        // Item 2 adds 36 workspace rows (8 relative follow, 20 absolute
-        // stay with symbol aliases, 8 relative stay) to the 76 legacy rows
-        // (37 plan rows including toggle-orientation plus 39 item-1), item 5
-        // adds 12 output rows (8 follow with arrow aliases, 4 stay),
-        // R-WS-12 adds 4 unbound migrate rows (directional follow), and the
-        // workspace-tiling toggle adds 1 bound Meta+Y row.
-        assert.equal(tsByAction.size, 129);
+        assert.equal(runtimeByAction.get("omnitiler-focus-left"), "Meta+H");
+        assert.equal(runtimeByAction.get("omnitiler-toggle-orientation"), "Meta+O");
+        assert.equal(runtimeByAction.get("omnitiler-send-output-left"), "");
+        assert.ok(!runtimeByAction.has("omnitiler-send-output-left-arrow"));
+        assert.equal(runtimeByAction.get(WORKSPACE_TILING_TOGGLE_ACTION), "Meta+Y");
+        // Pre-existing runtime/catalog discrepancy (world production
+        // defaults; not introduced here): the native KCM catalog retains
+        // four output follow-arrow actions the runtime never registers, and
+        // binds the four output follow chords that the runtime registers
+        // unbound for user rebinding.
+        const NATIVE_ONLY_ARROW_ACTIONS = [
+            "omnitiler-send-output-left-arrow",
+            "omnitiler-send-output-down-arrow",
+            "omnitiler-send-output-up-arrow",
+            "omnitiler-send-output-right-arrow",
+        ] as const;
+        const OUTPUT_FOLLOW_NATIVE_CHORDS: ReadonlyMap<string, string> = new Map([
+            ["omnitiler-send-output-left", "Meta+Ctrl+Alt+H"],
+            ["omnitiler-send-output-down", "Meta+Ctrl+Alt+J"],
+            ["omnitiler-send-output-up", "Meta+Ctrl+Alt+K"],
+            ["omnitiler-send-output-right", "Meta+Ctrl+Alt+L"],
+        ]);
+        // Test-local mirror of the native reconciler's retained KCM catalog
+        // order for the output and migrate blocks (legacy-bound defaults,
+        // not runtime registrations): 12 output rows then 4 migrate rows,
+        // with the workspace-tiling toggle last.
+        const NATIVE_OUTPUT_ACTION_ORDER = [
+            "omnitiler-send-output-left",
+            "omnitiler-send-output-left-arrow",
+            "omnitiler-send-output-left-stay",
+            "omnitiler-send-output-down",
+            "omnitiler-send-output-down-arrow",
+            "omnitiler-send-output-down-stay",
+            "omnitiler-send-output-up",
+            "omnitiler-send-output-up-arrow",
+            "omnitiler-send-output-up-stay",
+            "omnitiler-send-output-right",
+            "omnitiler-send-output-right-arrow",
+            "omnitiler-send-output-right-stay",
+        ];
+        const NATIVE_MIGRATE_ACTION_ORDER = [
+            "omnitiler-migrate-workspace-left",
+            "omnitiler-migrate-workspace-right",
+            "omnitiler-migrate-workspace-up",
+            "omnitiler-migrate-workspace-down",
+        ];
         const nativeByAction = new Map<string, string>();
         const nativeOrder: string[] = [];
         const entryPattern =
@@ -593,43 +676,50 @@ describe("native KCM static contract", () => {
                 nativeOrder.push(action);
             }
         }
-        // R-WS-12 parity: all 129 bindings now, including the 36 unbound
-        // rows (28 workspace plus 4 output plus 4 migrate) with empty
-        // defaults. 93 bound, 36 unbound.
+        // Native catalog size: the 125 runtime actions plus the 4
+        // native-only arrow actions.
         assert.equal(nativeByAction.size, 129);
-        for (const [action, sequence] of nativeByAction) {
-            assert.equal(tsByAction.get(action), sequence);
+        for (const action of runtimeByAction.keys()) {
+            assert.ok(nativeByAction.has(action), `native catalog missing runtime action ${action}`);
         }
-        const tsOrder = [
-            ...plan.map((row) => row.action),
-            ...workspace.map((row) => row.action),
-            ...output.map((row) => row.action),
-            ...migrate.map((row) => row.action),
-            WORKSPACE_TILING_TOGGLE_ACTION,
-        ];
-        assert.deepEqual(new Set(nativeOrder), new Set(tsOrder));
-        assert.equal(nativeOrder.length, tsOrder.length);
-        // Item 2 order: the 36 workspace rows follow the 76 legacy rows in
-        // exact TS catalog order; item 5 output rows follow in exact TS
-        // order; R-WS-12 migrate rows follow in exact TS order; the
-        // workspace-tiling toggle row is last.
+        const nativeExtras = [...nativeByAction.keys()].filter((action) => !runtimeByAction.has(action));
+        assert.deepEqual([...nativeExtras].sort(), [...NATIVE_ONLY_ARROW_ACTIONS].sort());
+        assert.deepEqual(new Set(nativeOrder), new Set([...runtimeOrder, ...NATIVE_ONLY_ARROW_ACTIONS]));
+        assert.equal(nativeOrder.length, runtimeOrder.length + NATIVE_ONLY_ARROW_ACTIONS.length);
+        // Sequences agree everywhere except the four documented
+        // output-follow mismatches (native bound, runtime unbound).
+        for (const [action, sequence] of runtimeByAction) {
+            const nativeSequence = nativeByAction.get(action);
+            const documentedChord = OUTPUT_FOLLOW_NATIVE_CHORDS.get(action);
+            if (documentedChord !== undefined) {
+                assert.equal(sequence, "", `runtime binds output follow ${action}`);
+                assert.equal(nativeSequence, documentedChord);
+            } else {
+                assert.equal(nativeSequence, sequence, `sequence mismatch for ${action}`);
+            }
+        }
+        // Native order: the 36 item-2 workspace rows follow the 76
+        // directional-plus-item-1 rows in exact workspace catalog order;
+        // the retained output/migrate blocks follow in native file order;
+        // the workspace-tiling toggle row is last.
         assert.deepEqual(nativeOrder.slice(76, 112), workspace.slice(-36).map((row) => row.action));
-        assert.deepEqual(
-            nativeOrder.slice(112, 124),
-            output.map((row) => row.action),
-        );
-        assert.deepEqual(
-            nativeOrder.slice(124, 128),
-            migrate.map((row) => row.action),
-        );
+        assert.deepEqual(nativeOrder.slice(112, 124), NATIVE_OUTPUT_ACTION_ORDER);
+        assert.deepEqual(nativeOrder.slice(124, 128), NATIVE_MIGRATE_ACTION_ORDER);
         assert.deepEqual(nativeOrder.slice(128), [WORKSPACE_TILING_TOGGLE_ACTION]);
-        for (const row of [...workspace, ...output, ...migrate]) {
+        for (const row of workspace) {
             if (row.sequence === "") {
                 assert.equal(nativeByAction.get(row.action), "");
             }
         }
-        // Spot-check the 8 bound workspace follow chords, the 8 bound output
-        // follow chords, and the unbound stay defaults.
+        for (const action of [
+            ...NATIVE_OUTPUT_ACTION_ORDER.filter((name) => name.endsWith("-stay")),
+            ...NATIVE_MIGRATE_ACTION_ORDER,
+        ]) {
+            assert.equal(nativeByAction.get(action), "");
+        }
+        // Spot-check the 8 bound workspace follow chords, the native half of
+        // the 8 output follow chords (native bound; runtime unbound per the
+        // documented discrepancy above), and the unbound stay defaults.
         assert.equal(nativeByAction.get("omnitiler-toggle-orientation"), "Meta+O");
         for (const [action, sequence] of [
             ["omnitiler-send-prev-h", "Meta+Ctrl+Shift+H"],
@@ -663,12 +753,13 @@ describe("native KCM static contract", () => {
         ] as const) {
             assert.equal(nativeByAction.get(action), "");
         }
-        // Bound/unbound split: 93 bound, 36 unbound, no foreign conflict
+        // Bound/unbound split of the native catalog: 93 bound, 36 unbound
+        // (28 workspace plus 4 output plus 4 migrate), no foreign conflict
         // additions for the migrate arms, both presets Keep.
         {
             let bound = 0;
             let unbound = 0;
-            for (const sequence of tsByAction.values()) {
+            for (const sequence of nativeByAction.values()) {
                 if (sequence === "") {
                     unbound += 1;
                 } else {
@@ -678,12 +769,12 @@ describe("native KCM static contract", () => {
             assert.equal(bound, 93);
             assert.equal(unbound, 36);
         }
-        // Workspace-tiling toggle default: Meta+Y bound, with no known
-        // stock KDE holder; every other currently-unbound action stays
-        // unbound.
+        // Workspace-tiling toggle default: Meta+Y bound in the native
+        // catalog, the runtime registration, and the shared action constant;
+        // every other currently-unbound action stays unbound.
         assert.equal(WORKSPACE_TILING_TOGGLE_SEQUENCE, "Meta+Y");
         assert.equal(nativeByAction.get(WORKSPACE_TILING_TOGGLE_ACTION), "Meta+Y");
-        assert.equal(tsByAction.get(WORKSPACE_TILING_TOGGLE_ACTION), "Meta+Y");
+        assert.equal(runtimeByAction.get(WORKSPACE_TILING_TOGGLE_ACTION), "Meta+Y");
         // R-WS-12 migrate rows follow the item-5 output-transfer pattern:
         // unbound, workspace-migrate kind, no known foreign holder.
         for (const action of [

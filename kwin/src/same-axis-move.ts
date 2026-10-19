@@ -4,7 +4,7 @@
 // `swap-with-neighbor` alternative. Rust owns move semantics; KWin only carries the
 // configured token on the move wire command. Absent/invalid values fall back
 // to `group-with-neighbor`. Entries resolve at startup and re-resolve only on the
-// deliberate Options `configChanged` reload owned by plan-adapter-entry;
+// deliberate Options `configChanged` reload owned by the production entry;
 // there is no polling, reseed, or in-flight mutation.
 
 export const SAME_AXIS_MOVE_DEFAULT = "group-with-neighbor" as const;

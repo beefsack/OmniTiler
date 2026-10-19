@@ -1,13 +1,11 @@
-// Startup-consumed shortcut profile setting (legacy parity with
-// plan-adapter-entry `readShortcutProfile`): validated KWin script startup
+// Startup-consumed shortcut profile setting: validated KWin script startup
 // configuration naming the directional shortcut catalog. All three
-// configured profiles share one directional core (legacy
-// `planShortcutCatalog` takes the profile but registers the same rows),
-// so the value is consumed once at startup and never re-read for
-// behavior. A configChanged drift against the startup snapshot logs
-// restart-required and is never adopted here; registration never rewrites
-// active bindings or foreign records (offline only, no KGlobalAccel
-// writes). Absent/invalid values fall back to `cosmic`.
+// configured profiles share one directional core, so the value is consumed
+// once at startup and never re-read for behavior. A configChanged drift
+// against the startup snapshot logs restart-required and is never adopted
+// here; registration never rewrites active bindings or foreign records
+// (offline only, no KGlobalAccel writes). Absent/invalid values fall back
+// to `cosmic`.
 
 export const SHORTCUT_PROFILE_DEFAULT = "cosmic" as const;
 
