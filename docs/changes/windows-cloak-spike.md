@@ -131,7 +131,11 @@ to ordinary application windows are in scope.
   substituted for native cross-platform CI.
 - All ten PowerShell command blocks below passed offline AST parsing and
   CLI/log-contract verification without launching any live executable.
-- CI result: pending push verification.
+- CI passed for `cebd3382`:
+  [run 39241213678](https://github.com/beefsack/OmniTiler/actions/runs/39241213678).
+  All eight jobs passed: Rust workspace, Windows, macOS, KWin, native effect
+  and settings, shell, licenses, and notices. The combined tree's offline
+  gates above also passed after integration. Native evidence remains pending.
 - Native smoke preflight stopped before launching anything because a concurrent
   normal product owner could manage the helper. No helper/controller/observer
   was launched, and no window, setting or product owner was changed. There is
