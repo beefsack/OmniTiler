@@ -2,59 +2,73 @@
 use super::*;
 
 /// REQ-WS-09 departure memory for an explicit workspace select: the
-/// chord-time origin still holds live foreground at dispatch, so the source
-/// workspace remembers it before hiding. Exact member key (HWND/PID/creation)
-/// plus source membership plus stay-mirrored liveness (fresh observed match,
-/// else a verified retained maximized/fullscreen row). Returns the remembered
-/// opaque token for one bounded log line; no windows, geometry, or
+/// source workspace remembers the dispatch-time foreground before hiding.
+/// The foreground HWND resolves directly against verified current source
+/// membership plus stay-mirrored
+/// liveness (fresh observed exact identity/token match, else a verified
+/// retained maximized/fullscreen row). No origin authorizes stale focus and
+/// no missing origin blocks a separately verified foreground. Returns the
+/// remembered opaque token for one bounded log line; no windows, geometry, or
 /// suppression change.
 pub(super) fn remember_select_departure(
     state: &mut TileLoop,
-    origin: &crate::snapkey::SnapOrigin,
     output: &str,
     source_id: &str,
     foreground_hwnd: u64,
     observed: &[ObservedWindow],
     retained: &[RetainedRow],
 ) -> Option<String> {
-    if origin.token.is_empty() || foreground_hwnd != origin.hwnd {
-        return None;
-    }
-    let key = state
-        .member_tokens
-        .iter()
-        .find(|(_, token)| token.as_str() == origin.token.as_str())
-        .map(|(key, _)| key.clone())?;
-    if !crate::workspace_owner::member_matches(&key, origin.hwnd, origin.pid, &origin.creation) {
-        return None;
-    }
-    let in_source = state
-        .workspaces
-        .member_loc(&key)
-        .is_some_and(|loc| loc.output == output && loc.workspace == source_id);
-    if !in_source {
+    if foreground_hwnd == 0 {
         return None;
     }
     let by_hwnd: HashMap<u64, &ObservedWindow> = observed.iter().map(|w| (w.hwnd, w)).collect();
-    let live = match by_hwnd.get(&key.hwnd) {
-        Some(fresh) => {
-            fresh.token == origin.token
-                && crate::workspace_owner::member_matches(
-                    &key,
+    // Dispatch-time foreground against current source membership only: a
+    // nonmember HWND or a member of another workspace never remembers.
+    let members = state.workspaces.workspace_members(output, source_id);
+    for key in members.iter().filter(|k| k.hwnd == foreground_hwnd) {
+        let Some(loc) = state.workspaces.member_loc(key) else {
+            continue;
+        };
+        if loc.output != output || loc.workspace != source_id {
+            continue;
+        }
+        let Some(stored_token) = state.member_tokens.get(key).cloned() else {
+            continue;
+        };
+        if stored_token.is_empty() {
+            continue;
+        }
+        match by_hwnd.get(&key.hwnd) {
+            Some(fresh) => {
+                if fresh.token != stored_token {
+                    continue;
+                }
+                if !crate::workspace_owner::member_matches(
+                    key,
                     fresh.hwnd,
                     fresh.identity.pid,
                     &fresh.identity.process_creation,
-                )
+                ) {
+                    continue;
+                }
+                state.workspaces.note_foreground(key);
+                return Some(stored_token);
+            }
+            None => {
+                let verified = retained.iter().any(|row| {
+                    row.key == *key
+                        && row.token == stored_token
+                        && (row.maximized || row.fullscreen)
+                });
+                if !verified {
+                    continue;
+                }
+                state.workspaces.note_foreground(key);
+                return Some(stored_token);
+            }
         }
-        None => retained
-            .iter()
-            .any(|row| row.key == key && (row.maximized || row.fullscreen)),
-    };
-    if !live {
-        return None;
     }
-    state.workspaces.note_foreground(&key);
-    Some(origin.token.clone())
+    None
 }
 
 /// Switch the visible set from the output's active workspace to `target`:

@@ -43,10 +43,11 @@
 //! - Fullscreen/game suppression is fail-closed: any suspend veto, elevated
 //!   foreground, or unreadable fact hides every strip.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use tiler_core::geometry::Rect;
 
+use crate::active_border::{DEFAULT_COLOR_RGB, SystemAccent, accent_available};
 use crate::tray_pager::SelectScope;
 
 const fn right(rect: Rect) -> i32 {
@@ -95,6 +96,21 @@ pub fn dpi_strip_h_range(dpi: u32) -> (i32, i32) {
         dpi_scale(PAGER_MIN_STRIP_H_96, dpi),
         dpi_scale(PAGER_MAX_STRIP_H_96, dpi),
     )
+}
+
+/// Resolved pager active-cell fill: the live Personalization accent whenever
+/// it is available (present and positively alpha-quantized, the same core
+/// rule the border theme gate uses), independent of the border
+/// `--active-border-theme` flag (the pager has no theme setting and always
+/// follows an available accent). Unavailable queries fall back to the
+/// long-standing pager blue `#2a82da`.
+#[must_use]
+pub fn pager_active_fill(accent: Option<SystemAccent>) -> (u8, u8, u8) {
+    if accent_available(accent) {
+        accent.map(|a| a.color).unwrap_or(DEFAULT_COLOR_RGB)
+    } else {
+        DEFAULT_COLOR_RGB
+    }
 }
 
 /// Portable mirror of one monitor's geometry for pager layout.
@@ -385,12 +401,71 @@ pub fn resolve_member_rect(
         .copied()
 }
 
+/// Retained native stacking order for pager miniatures (portable policy).
+///
+/// `previous` is the last retained order, top-to-bottom in native
+/// `EnumWindows` sequence (first is topmost on screen). `visible` is the
+/// current observation's verified live-frame member sequence in that same
+/// native order: observed eligible members plus retained maximized/fullscreen
+/// rows with fresh frames. Minimized/iconic members without frames, foreign
+/// windows, and unreadable HWNDs never appear there. `members` is the
+/// retention roster: current managed membership plus freshly verified visible
+/// keys (observe runs before assignment, so admission may adopt them right
+/// after; the frame builder still filters to actual membership, and the next
+/// observation prunes candidates that never joined and are now absent).
+///
+/// Returns the next retained order, still top-to-bottom:
+/// 1. visible members in native order, so the active stack is always exact;
+/// 2. still-assigned but currently absent members (hidden, minimized) in
+///    their previous relative order, so a hidden workspace keeps its last
+///    observed stacking;
+/// 3. roster members in neither (never observed) in deterministic
+///    `WindowKey` order as the fallback.
+///
+/// Departed identities (no longer roster members) are pruned, so a recycled
+/// never inherits a stale slot: reuse arrives as a new full identity in step
+/// 3 until its first observation. Duplicate visible entries keep their first
+/// occurrence. Painters draw this sequence reversed per workspace (bottom
+/// first, topmost last); see `build_output_pager`.
+#[must_use]
+pub fn retain_pager_order(
+    previous: &[crate::workspace::WindowKey],
+    members: &BTreeSet<crate::workspace::WindowKey>,
+    visible_top_to_bottom: &[crate::workspace::WindowKey],
+) -> Vec<crate::workspace::WindowKey> {
+    let mut seen: BTreeSet<&crate::workspace::WindowKey> = BTreeSet::new();
+    let mut next: Vec<crate::workspace::WindowKey> = Vec::with_capacity(members.len());
+    for key in visible_top_to_bottom {
+        if members.contains(key) && seen.insert(key) {
+            next.push(key.clone());
+        }
+    }
+    for key in previous {
+        if members.contains(key) && seen.insert(key) {
+            next.push(key.clone());
+        }
+    }
+    // `members` iterates in `WindowKey` order, and every member already in
+    // `seen` (visible or previously retained) is skipped, so the remainder is
+    // the deterministic never-observed fallback.
+    for key in members {
+        if seen.insert(key) {
+            next.push(key.clone());
+        }
+    }
+    next
+}
+
 /// Build one output's pager frame: the strip plus one cell per workspace in
 /// order with one miniature per actual managed window (no cap: every member
 /// renders; ordinary crowding only adds miniatures, never changes cells).
 /// `icons` maps full member identities to worker-owned artwork; members
-/// without artwork render the plain rectangle. Returns the refusal when the
-/// strip cannot anchor safely.
+/// without artwork render the plain rectangle. `zorder` is the retained
+/// native stacking, top-to-bottom (see `retain_pager_order`): miniatures
+/// paint bottom first so the topmost member paints last and occludes lower
+/// ones like the real windows. Never-observed members (absent from `zorder`)
+/// paint first in deterministic key order, never interleaved by HWND value.
+/// Returns the refusal when the strip cannot anchor safely.
 #[allow(clippy::too_many_arguments)]
 pub fn build_output_pager(
     spaces: &crate::workspace::ManagedWorkspaces,
@@ -399,6 +474,7 @@ pub fn build_output_pager(
     member_rects: &HashMap<String, Rect>,
     float_rects: &HashMap<String, Rect>,
     icons: &HashMap<crate::workspace::WindowKey, std::sync::Arc<crate::pager_icons::IconImage>>,
+    zorder: &[crate::workspace::WindowKey],
     output: &str,
     monitor_full: Rect,
     taskbar: &TaskbarFacts,
@@ -414,10 +490,28 @@ pub fn build_output_pager(
     let mut cells = Vec::with_capacity(ids.len());
     for (index, cell_rect) in cell_rects.into_iter().enumerate() {
         let workspace = &ids[index];
+        let present = spaces.workspace_members(output, workspace);
+        let zset: std::collections::HashSet<&crate::workspace::WindowKey> = zorder.iter().collect();
+        // Paint order is bottom first: never-observed members (absent from
+        // the retained native order) in deterministic key order, then known
+        // members reversed from native top-to-bottom so the topmost paints
+        // last. HWND numeric order never decides.
+        let mut ordered: Vec<crate::workspace::WindowKey> = present
+            .iter()
+            .filter(|key| !zset.contains(*key))
+            .cloned()
+            .collect();
+        ordered.extend(
+            zorder
+                .iter()
+                .filter(|key| present.contains(*key))
+                .rev()
+                .cloned(),
+        );
         let mut minis = Vec::new();
         let mut mini_keys = Vec::new();
         let mut mini_icons = Vec::new();
-        for key in spaces.workspace_members(output, workspace) {
+        for key in ordered {
             if let Some(rect) =
                 resolve_member_rect(&key, live, member_tokens, member_rects, float_rects)
             {
@@ -591,6 +685,42 @@ mod tests {
     }
 
     #[test]
+    fn active_fill_follows_accent_regardless_of_border_theme() {
+        use crate::active_border::{ActiveBorderStyle, SystemAccent, effective_color};
+        let accent = SystemAccent {
+            color: (0xaa, 0xbb, 0xcc),
+            alpha: 0xC4,
+        };
+        // The pager always follows an available accent, even when the
+        // border theme is off: there is no pager theme setting to consult.
+        assert_eq!(pager_active_fill(Some(accent)), (0xaa, 0xbb, 0xcc));
+        let plain = ActiveBorderStyle {
+            color: (0x11, 0x22, 0x33),
+            use_theme: false,
+            ..ActiveBorderStyle::default()
+        };
+        assert_eq!(effective_color(&plain, Some(accent)), (0x11, 0x22, 0x33));
+        assert_eq!(pager_active_fill(Some(accent)), (0xaa, 0xbb, 0xcc));
+        // Unavailable queries fall back to the long-standing pager blue.
+        assert_eq!(pager_active_fill(None), (0x2a, 0x82, 0xda));
+        // Zero-alpha accents are unavailable everywhere (same core rule the
+        // border gate uses): the pager falls back instead of painting a
+        // colour the border would refuse. The pager ignores the theme
+        // switch only, not availability.
+        let ghost = SystemAccent {
+            color: (0xaa, 0xbb, 0xcc),
+            alpha: 0,
+        };
+        let themed = ActiveBorderStyle {
+            color: (0x11, 0x22, 0x33),
+            use_theme: true,
+            ..ActiveBorderStyle::default()
+        };
+        assert_eq!(effective_color(&themed, Some(ghost)), (0x11, 0x22, 0x33));
+        assert_eq!(pager_active_fill(Some(ghost)), (0x2a, 0x82, 0xda));
+    }
+
+    #[test]
     fn strip_anchors_left_of_tray_with_gap() {
         let strip = strip_for_taskbar(full(), &bottom_bar(), 3).expect("fits");
         assert_eq!(strip.w, 3 * dpi_cell_w(PAGER_BASE_DPI));
@@ -724,6 +854,7 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
+            &[],
             "mon-a",
             new_full,
             &bar,
@@ -749,6 +880,7 @@ mod tests {
                 &HashMap::new(),
                 &HashMap::new(),
                 &HashMap::new(),
+                &[],
                 "mon-a",
                 full(),
                 &bar,
@@ -978,6 +1110,7 @@ mod tests {
             &rects,
             &rects,
             &HashMap::new(),
+            &[],
             "mon-a",
             full(),
             &bottom_bar(),
@@ -990,6 +1123,7 @@ mod tests {
             &rects,
             &rects,
             &HashMap::new(),
+            &[],
             "mon-a",
             full(),
             &bottom_bar(),
@@ -1007,6 +1141,7 @@ mod tests {
             &rects,
             &rects,
             &HashMap::new(),
+            &[],
             "mon-a",
             full(),
             &bottom_bar(),
@@ -1038,6 +1173,7 @@ mod tests {
                 &HashMap::new(),
                 &HashMap::new(),
                 &HashMap::new(),
+                &[],
                 "mon-a",
                 full(),
                 &bar,
@@ -1162,6 +1298,7 @@ mod tests {
             &slots,
             &HashMap::new(),
             &HashMap::new(),
+            &[],
             "mon-a",
             full(),
             &bottom_bar(),
@@ -1212,6 +1349,7 @@ mod tests {
             &slots,
             &HashMap::new(),
             &HashMap::new(),
+            &[],
             "mon-a",
             full(),
             &bottom_bar(),
@@ -1229,6 +1367,7 @@ mod tests {
             &slots,
             &HashMap::new(),
             &artwork,
+            &[],
             "mon-a",
             full(),
             &bottom_bar(),
@@ -1267,5 +1406,217 @@ mod tests {
         assert!(pager_covering(true, false));
         assert!(pager_covering(false, true));
         assert!(pager_covering(true, true));
+    }
+
+    fn stack_key(hwnd: u64, tag: &str) -> crate::workspace::WindowKey {
+        crate::workspace::WindowKey {
+            hwnd,
+            pid: 7,
+            creation: tag.to_owned(),
+        }
+    }
+
+    fn stack_frame(x: i32, y: i32) -> Rect {
+        Rect {
+            x,
+            y,
+            w: 960,
+            h: 540,
+        }
+    }
+
+    #[test]
+    fn stacking_paints_topmost_last_not_hwnd_order() {
+        use crate::workspace::WindowKey;
+        let mut spaces = spaces_with_output();
+        let active = spaces.active_id("mon-a").expect("active");
+        // HWND numeric order is the inverse of the native stacking here: the
+        // topmost window carries the smallest HWND, so painting in HWND
+        // order would put it at the bottom instead of on top.
+        let top = WindowKey {
+            hwnd: 10,
+            pid: 7,
+            creation: "stack-top".to_owned(),
+        };
+        let middle = WindowKey {
+            hwnd: 20,
+            pid: 7,
+            creation: "stack-middle".to_owned(),
+        };
+        let bottom = WindowKey {
+            hwnd: 30,
+            pid: 7,
+            creation: "stack-bottom".to_owned(),
+        };
+        for key in [&bottom, &middle, &top] {
+            assert!(spaces.assign(key.clone(), "mon-a", &active, false));
+        }
+        let mut live = HashMap::new();
+        live.insert(bottom.clone(), stack_frame(0, 540));
+        live.insert(middle.clone(), stack_frame(960, 0));
+        live.insert(top.clone(), stack_frame(0, 0));
+        // Native top-to-bottom: top first, bottom last.
+        let zorder = vec![top.clone(), middle.clone(), bottom.clone()];
+        let pager = build_output_pager(
+            &spaces,
+            &live,
+            &BTreeMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &zorder,
+            "mon-a",
+            full(),
+            &bottom_bar(),
+        )
+        .expect("fits");
+        // Paint order is bottom first so the topmost paints last (occludes).
+        // HWND ascending would paint the topmost first: that old order must
+        // fail here.
+        assert_eq!(
+            pager.cells[0].mini_keys,
+            vec![bottom.clone(), middle.clone(), top.clone()]
+        );
+        assert_ne!(
+            pager.cells[0].mini_keys,
+            vec![top, middle, bottom],
+            "HWND order must not decide stacking"
+        );
+        let cell = pager.cells[0].rect;
+        assert_eq!(
+            pager.cells[0].minis,
+            vec![
+                miniature(cell, full(), stack_frame(0, 540), PAGER_BASE_DPI),
+                miniature(cell, full(), stack_frame(960, 0), PAGER_BASE_DPI),
+                miniature(cell, full(), stack_frame(0, 0), PAGER_BASE_DPI),
+            ]
+        );
+    }
+
+    #[test]
+    fn retained_overlay_keeps_native_mixed_order() {
+        // A kept maximized/fullscreen overlay rides the live map with a fresh
+        // frame like an ordinary member; the retained order must interleave
+        // it with ordinary windows in native sequence, not group it apart.
+        let mut spaces = spaces_with_output();
+        let active = spaces.active_id("mon-a").expect("active");
+        let plain = stack_key(40, "overlay-plain");
+        let overlay = stack_key(50, "overlay-kept");
+        let tiled = stack_key(60, "overlay-tiled");
+        for key in [&plain, &overlay, &tiled] {
+            assert!(spaces.assign(key.clone(), "mon-a", &active, false));
+        }
+        let mut live = HashMap::new();
+        live.insert(plain.clone(), stack_frame(0, 0));
+        live.insert(overlay.clone(), stack_frame(0, 0));
+        live.insert(tiled.clone(), stack_frame(960, 540));
+        // Native top-to-bottom: the retained overlay covers both ordinary
+        // windows even though its HWND sits between theirs.
+        let zorder = vec![overlay.clone(), tiled.clone(), plain.clone()];
+        let pager = build_output_pager(
+            &spaces,
+            &live,
+            &BTreeMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &zorder,
+            "mon-a",
+            full(),
+            &bottom_bar(),
+        )
+        .expect("fits");
+        assert_eq!(pager.cells[0].mini_keys, vec![plain, tiled, overlay]);
+    }
+
+    #[test]
+    fn retain_keeps_hidden_relative_order_prunes_and_sorts_new() {
+        use std::collections::BTreeSet;
+        let a = stack_key(11, "retain-a");
+        let b = stack_key(12, "retain-b");
+        let c = stack_key(13, "retain-c");
+        let all: BTreeSet<crate::workspace::WindowKey> =
+            [a.clone(), b.clone(), c.clone()].into_iter().collect();
+        // Fully hidden: nothing visible, so the last observed order stands.
+        let previous = vec![a.clone(), b.clone(), c.clone()];
+        assert_eq!(retain_pager_order(&previous, &all, &[]), previous);
+        // Partial return: visible members take the fresh native order first,
+        // the still-hidden member keeps its retained slot after them.
+        assert_eq!(
+            retain_pager_order(&previous, &all, &[c.clone(), a.clone()]),
+            vec![c.clone(), a.clone(), b.clone()]
+        );
+        // Departed members prune; a recycled HWND is a new full identity and
+        // lands in the deterministic fallback until first observed.
+        let b2 = stack_key(12, "retain-b2");
+        let members: BTreeSet<crate::workspace::WindowKey> =
+            [a.clone(), b.clone(), b2.clone()].into_iter().collect();
+        assert_eq!(
+            retain_pager_order(&previous, &members, &[b.clone(), a.clone()]),
+            vec![b.clone(), a.clone(), b2.clone()]
+        );
+        // Duplicate visible entries keep their first occurrence only.
+        assert_eq!(
+            retain_pager_order(&[], &all, &[a.clone(), a.clone(), b.clone(), c.clone()]),
+            vec![a.clone(), b.clone(), c.clone()]
+        );
+        // Visible non-members never enter the retained order.
+        let foreign = stack_key(99, "retain-foreign");
+        assert_eq!(
+            retain_pager_order(&previous, &all, &[foreign, b.clone()]),
+            vec![b.clone(), a.clone(), c.clone()]
+        );
+    }
+
+    #[test]
+    fn never_observed_members_fall_back_to_key_order() {
+        // Empty retained order (nothing observed yet): miniatures paint in
+        // deterministic full-identity order, never HWND-guessed stacking.
+        let mut spaces = spaces_with_output();
+        let active = spaces.active_id("mon-a").expect("active");
+        let first = stack_key(30, "fallback-b");
+        let second = stack_key(10, "fallback-a");
+        assert!(spaces.assign(first.clone(), "mon-a", &active, false));
+        assert!(spaces.assign(second.clone(), "mon-a", &active, false));
+        let mut tokens = BTreeMap::new();
+        tokens.insert(first.clone(), "tok-first".to_owned());
+        tokens.insert(second.clone(), "tok-second".to_owned());
+        let mut slots = HashMap::new();
+        slots.insert("tok-first".to_owned(), stack_frame(0, 0));
+        slots.insert("tok-second".to_owned(), stack_frame(960, 0));
+        let pager = build_output_pager(
+            &spaces,
+            &HashMap::new(),
+            &tokens,
+            &slots,
+            &HashMap::new(),
+            &HashMap::new(),
+            &[],
+            "mon-a",
+            full(),
+            &bottom_bar(),
+        )
+        .expect("fits");
+        // `WindowKey` orders by HWND first here, so hwnd 10 paints before 30.
+        assert_eq!(
+            pager.cells[0].mini_keys,
+            vec![second.clone(), first.clone()]
+        );
+        // A partially observed workspace paints the known stack on top of
+        // the never-observed fallback, in native order.
+        let pager = build_output_pager(
+            &spaces,
+            &HashMap::new(),
+            &tokens,
+            &slots,
+            &HashMap::new(),
+            &HashMap::new(),
+            std::slice::from_ref(&first),
+            "mon-a",
+            full(),
+            &bottom_bar(),
+        )
+        .expect("fits");
+        assert_eq!(pager.cells[0].mini_keys, vec![second, first]);
     }
 }

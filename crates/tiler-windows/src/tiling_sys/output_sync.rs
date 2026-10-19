@@ -1,29 +1,330 @@
 #![forbid(unsafe_code)]
 use super::*;
 
+/// Honest foreground-elevation probe: the suppression bool plus the separate
+/// sub-outcomes the bool conflates. The bool preserves the existing
+/// fail-closed gate exactly (process-open failure, integrity-read failure,
+/// and non-medium all suppress); the detail names which leg fired so logs
+/// never imply more certainty than is known. `captured` is false only when a
+/// test seam short-circuits the native reads (honest `skipped-injected`).
+pub(super) struct ElevatedFacts {
+    pub(super) elevated: bool,
+    pub(super) detail: &'static str,
+    pub(super) open: &'static str,
+    pub(super) integrity_read: &'static str,
+    pub(super) integrity: &'static str,
+    pub(super) foreground: u64,
+    pub(super) captured: bool,
+}
+
+/// Bounded OS integrity level for a successfully read RID, independent of the
+/// suppression verdict: exact SDK anchor values name their level
+/// (`untrusted`, `low`, `medium`, `medium-plus`, `high`, `system`,
+/// `protected`); gaps and out-of-band values report `unknown` rather than
+/// asserting a level, and no numeric RID ever leaves this function. The
+/// legacy gate still uses exactly [`is_medium_rid`]: in particular a
+/// `medium-plus` read stays non-elevated while a `high` read suppresses.
+fn integrity_category(rid: u32) -> &'static str {
+    const UNTRUSTED: u32 = 0x0000;
+    const LOW: u32 = 0x1000;
+    const MEDIUM: u32 = 0x2000;
+    const MEDIUM_PLUS: u32 = 0x2100;
+    const HIGH: u32 = 0x3000;
+    const SYSTEM: u32 = 0x4000;
+    const PROTECTED: u32 = 0x5000;
+    if rid == UNTRUSTED {
+        "untrusted"
+    } else if (LOW..MEDIUM).contains(&rid) {
+        "low"
+    } else if (MEDIUM..MEDIUM_PLUS).contains(&rid) {
+        "medium"
+    } else if rid == MEDIUM_PLUS {
+        "medium-plus"
+    } else if (HIGH..SYSTEM).contains(&rid) {
+        "high"
+    } else if (SYSTEM..PROTECTED).contains(&rid) {
+        "system"
+    } else if rid == PROTECTED {
+        "protected"
+    } else {
+        "unknown"
+    }
+}
+
+/// Pager suppression threshold: only at-or-above HIGH suppresses. Medium,
+/// medium-plus, low (including AppContainer low), untrusted, and below-high
+/// gaps stay non-elevated for the pager; open/read failures stay fail-closed
+/// elevated. Tiling admission and dispatch keep the medium-only
+/// [`is_medium_rid`] gate deliberately (conservative security); only the
+/// pager relaxes to this threshold.
+pub(super) const PAGER_ELEVATED_RID_MIN: u32 = 0x3000;
+
+/// True when one successfully read RID suppresses the pager: at-or-above
+/// HIGH. Never touches native state, so unit tests prove the table offline.
+#[must_use]
+pub(super) const fn is_pager_elevated_rid(rid: u32) -> bool {
+    rid >= PAGER_ELEVATED_RID_MIN
+}
+
+/// Pure classifier over already-captured native inputs: the single place the
+/// elevation bool and its honest detail are decided together. `open_ok` is
+/// the process-open verdict; `integrity` is read only when the open
+/// succeeded (`None` reads as a read failure). The bool follows exactly
+/// [`is_medium_rid`]; the category names the OS level independently, so a
+/// `medium-plus` read stays non-elevated. Never touches native state, so unit
+/// tests prove the bool table offline.
+fn classify_elevated(
+    own_pid: u32,
+    foreground: u64,
+    pid: u32,
+    open_ok: bool,
+    integrity: Option<std::result::Result<u32, ()>>,
+) -> ElevatedFacts {
+    let facts = |elevated: bool,
+                 detail: &'static str,
+                 open: &'static str,
+                 integrity_read: &'static str,
+                 integrity: &'static str| ElevatedFacts {
+        elevated,
+        detail,
+        open,
+        integrity_read,
+        integrity,
+        foreground,
+        captured: true,
+    };
+    if foreground == 0 {
+        return facts(false, "no-foreground", "skipped", "skipped", "unknown");
+    }
+    if pid == 0 {
+        return facts(false, "no-pid", "skipped", "skipped", "unknown");
+    }
+    if pid == own_pid {
+        return facts(false, "own-process", "skipped", "skipped", "unknown");
+    }
+    if !open_ok {
+        return facts(
+            true,
+            "process-open-failed",
+            "open-failed",
+            "skipped",
+            "unknown",
+        );
+    }
+    match integrity {
+        None => facts(
+            true,
+            "integrity-read-failed",
+            "opened",
+            "read-failed",
+            "unknown",
+        ),
+        Some(Ok(rid)) if is_medium_rid(rid) => {
+            facts(false, "medium", "opened", "ok", integrity_category(rid))
+        }
+        Some(Ok(rid)) => facts(true, "non-medium", "opened", "ok", integrity_category(rid)),
+        Some(Err(())) => facts(
+            true,
+            "integrity-read-failed",
+            "opened",
+            "read-failed",
+            "unknown",
+        ),
+    }
+}
+
+/// Pure pager classifier over the same captured inputs as
+/// [`classify_elevated`]: the single place the pager suppression bool and
+/// its honest detail are decided together. Skip legs (`no-foreground`,
+/// `no-pid`, `own-process`) and fail-closed legs (`process-open-failed`,
+/// `integrity-read-failed`) match the shared table exactly; only the
+/// successfully read RID leg differs: `true` only at-or-above HIGH
+/// (`>= 0x3000`, so high/system/protected suppress), `false` for
+/// medium-or-below (medium, medium-plus, low/AppContainer, untrusted, and
+/// below-high gaps). The Explorer/shell surface is not an exemption here:
+/// the class/surface labels stay diagnostic-only. Never touches native
+/// state, so unit tests prove the bool table offline.
+fn classify_pager_elevated(
+    own_pid: u32,
+    foreground: u64,
+    pid: u32,
+    open_ok: bool,
+    integrity: Option<std::result::Result<u32, ()>>,
+) -> ElevatedFacts {
+    let facts = |elevated: bool,
+                 detail: &'static str,
+                 open: &'static str,
+                 integrity_read: &'static str,
+                 integrity: &'static str| ElevatedFacts {
+        elevated,
+        detail,
+        open,
+        integrity_read,
+        integrity,
+        foreground,
+        captured: true,
+    };
+    if foreground == 0 {
+        return facts(false, "no-foreground", "skipped", "skipped", "unknown");
+    }
+    if pid == 0 {
+        return facts(false, "no-pid", "skipped", "skipped", "unknown");
+    }
+    if pid == own_pid {
+        return facts(false, "own-process", "skipped", "skipped", "unknown");
+    }
+    if !open_ok {
+        return facts(
+            true,
+            "process-open-failed",
+            "open-failed",
+            "skipped",
+            "unknown",
+        );
+    }
+    match integrity {
+        None => facts(
+            true,
+            "integrity-read-failed",
+            "opened",
+            "read-failed",
+            "unknown",
+        ),
+        Some(Ok(rid)) if is_pager_elevated_rid(rid) => facts(
+            true,
+            "above-medium",
+            "opened",
+            "ok",
+            integrity_category(rid),
+        ),
+        Some(Ok(rid)) => facts(
+            false,
+            "medium-or-below",
+            "opened",
+            "ok",
+            integrity_category(rid),
+        ),
+        Some(Err(())) => facts(
+            true,
+            "integrity-read-failed",
+            "opened",
+            "read-failed",
+            "unknown",
+        ),
+    }
+}
+
 /// True when the foreground window's process is not medium integrity:
-/// elevated foreground gates workspace dispatch.
+/// elevated foreground gates workspace dispatch. Bool behavior is exactly
+/// the legacy table (fail closed on unreadable facts); pair with
+/// [`foreground_elevated_detailed`] for the honest sub-outcomes.
 pub(super) fn foreground_elevated(me: &ProcessIdentity) -> bool {
+    foreground_elevated_detailed(me).elevated
+}
+
+/// Elevation bool plus honest sub-outcomes over one native capture. The
+/// returned bool is exactly [`foreground_elevated`]; the detail splits the
+/// conflated legs (process-open failure vs integrity-read failure vs
+/// non-medium) without changing any skip case or product policy.
+pub(super) fn foreground_elevated_detailed(me: &ProcessIdentity) -> ElevatedFacts {
     #[cfg(test)]
     if let Some(elevated) = INJECTED_ELEVATED.with(|slot| slot.get()) {
         let _ = me;
-        return elevated;
+        return ElevatedFacts {
+            elevated,
+            detail: "skipped-injected",
+            open: "skipped",
+            integrity_read: "skipped",
+            integrity: "unknown",
+            foreground: 0,
+            captured: false,
+        };
+    }
+    #[cfg(test)]
+    if let Some(script) = INJECTED_ELEV_PROBE.with(|slot| slot.borrow().clone()) {
+        return classify_elevated(
+            me.pid,
+            script.foreground,
+            script.pid,
+            script.open_ok,
+            script.integrity,
+        );
     }
     let foreground = crate::ffi::foreground_window();
     if foreground == 0 {
-        return false;
+        return classify_elevated(me.pid, foreground, 0, false, None);
     }
     let pid = crate::ffi::window_pid(foreground);
     if pid == 0 || pid == me.pid {
-        return false;
+        return classify_elevated(me.pid, foreground, pid, false, None);
     }
     let Ok(held) = HeldProcess::open(pid) else {
-        return true;
+        return classify_elevated(me.pid, foreground, pid, false, None);
     };
-    match held.integrity() {
-        Ok(rid) => !is_medium_rid(rid),
-        Err(_) => true,
+    classify_elevated(
+        me.pid,
+        foreground,
+        pid,
+        true,
+        Some(held.integrity().map_err(|_| ())),
+    )
+}
+
+/// Pager-only elevation bool: true only for an above-medium (at-or-above
+/// HIGH) foreground plus the unchanged fail-closed open/read failures.
+/// Low/AppContainer never suppress the pager. Pair with
+/// [`foreground_pager_elevated_detailed`] for the honest sub-outcomes.
+/// Tiling dispatch keeps [`foreground_elevated`] (medium-only) deliberately.
+#[cfg(test)]
+pub(super) fn foreground_pager_elevated(me: &ProcessIdentity) -> bool {
+    foreground_pager_elevated_detailed(me).elevated
+}
+
+/// Pager elevation bool plus honest sub-outcomes over one native capture.
+/// Same skip/fail-closed legs as [`foreground_elevated_detailed`]; only the
+/// read-RID leg uses [`is_pager_elevated_rid`].
+pub(super) fn foreground_pager_elevated_detailed(me: &ProcessIdentity) -> ElevatedFacts {
+    #[cfg(test)]
+    if let Some(elevated) = INJECTED_ELEVATED.with(|slot| slot.get()) {
+        let _ = me;
+        return ElevatedFacts {
+            elevated,
+            detail: "skipped-injected",
+            open: "skipped",
+            integrity_read: "skipped",
+            integrity: "unknown",
+            foreground: 0,
+            captured: false,
+        };
     }
+    #[cfg(test)]
+    if let Some(script) = INJECTED_ELEV_PROBE.with(|slot| slot.borrow().clone()) {
+        return classify_pager_elevated(
+            me.pid,
+            script.foreground,
+            script.pid,
+            script.open_ok,
+            script.integrity,
+        );
+    }
+    let foreground = crate::ffi::foreground_window();
+    if foreground == 0 {
+        return classify_pager_elevated(me.pid, foreground, 0, false, None);
+    }
+    let pid = crate::ffi::window_pid(foreground);
+    if pid == 0 || pid == me.pid {
+        return classify_pager_elevated(me.pid, foreground, pid, false, None);
+    }
+    let Ok(held) = HeldProcess::open(pid) else {
+        return classify_pager_elevated(me.pid, foreground, pid, false, None);
+    };
+    classify_pager_elevated(
+        me.pid,
+        foreground,
+        pid,
+        true,
+        Some(held.integrity().map_err(|_| ())),
+    )
 }
 
 /// Actual-foreground hidden member selects its workspace. Only a real

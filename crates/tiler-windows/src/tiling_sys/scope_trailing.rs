@@ -1731,6 +1731,7 @@ mod tests {
                 &state.member_rects,
                 &state.float_rects,
                 &std::collections::HashMap::new(),
+                &state.pager_z,
                 "mon-a",
                 BOUNDS,
                 &taskbar,

@@ -12,8 +12,9 @@
 //! highlight colour - `KColorScheme(QPalette::Active, KColorScheme::Selection,
 //! kdeglobals).background()` gated on `isColorSetSupported(..., Selection)`
 //! (`kwin/native-effect/activewindowborder.cpp:373-380`) - with the
-//! configured `BorderColor` as fallback. The Windows analogue is the system
-//! accent from `DwmGetColorizationColor` (0xAARRGGBB): theme wins only when
+//! configured `BorderColor` as fallback. The Windows analogue is the
+//! Personalization accent from WinRT
+//! `UISettings::GetColorValue(UIColorType::Accent)`: theme wins only when
 //! requested (`--active-border-theme` on), available, and positively
 //! alpha-quantized per the shared `tiler-core::visual` gate.
 
@@ -165,9 +166,10 @@ pub fn scale_style(style: &ActiveBorderStyle, dpi: u32) -> Option<(i32, i32, i32
     ))
 }
 
-/// Live Windows system accent: the `DwmGetColorizationColor` theme colour in
-/// RGB plus its quantized alpha byte. `None` (query unavailable or failed)
-/// always falls back to the configured colour. Mirrors the KDE theme source
+/// Live Windows system accent: the Personalization theme colour from WinRT
+/// `UISettings::GetColorValue(UIColorType::Accent)`, as RGB plus its alpha
+/// byte. `None` (query unavailable or failed) always falls back to the
+/// configured colour. Mirrors the KDE theme source
 /// (`KColorScheme` Selection background, `activewindowborder.cpp:373-380`):
 /// an accent analogue, not a button-face or highlight-selection metric.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -177,17 +179,474 @@ pub struct SystemAccent {
 }
 
 impl SystemAccent {
-    /// Split a `DwmGetColorizationColor` `0xAARRGGBB` value into RGB plus the
-    /// quantized alpha byte the core theme gate (`theme_alpha > 0`) consumes.
+    /// Split a WinRT `Color` (`A`, `R`, `G`, `B` bytes) into RGB plus the
+    /// alpha byte the core theme gate (`theme_alpha > 0`) consumes.
     #[must_use]
-    pub const fn from_colorization_dword(dword: u32) -> Self {
+    pub const fn from_winrt_color(alpha: u8, red: u8, green: u8, blue: u8) -> Self {
         Self {
-            color: ((dword >> 16) as u8, (dword >> 8) as u8, dword as u8),
-            alpha: (dword >> 24) as u8,
+            color: (red, green, blue),
+            alpha,
         }
     }
 }
 
+/// Raw result of one owner accent resolve: the scope-lifetime WinRT init
+/// result plus the activation/query HRESULTs and the returned accent, if
+/// any. Produced only by an actual native resolve (startup or a broadcast
+/// version move); steady-state cache hits produce nothing, so one raw
+/// result always means one resolve ran. The init policy lives in
+/// `crate::ffi::accent`; this struct only carries the observed values for
+/// the diagnostic record below.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AccentRaw {
+    /// Cached scope-lifetime `RoInitialize` HRESULT (`S_OK`, `S_FALSE`,
+    /// `RPC_E_CHANGED_MODE`, or another error). Reported on every record,
+    /// but `RoInitialize` itself ran at most once per scope: later
+    /// resolves reuse the cached result without re-initializing.
+    pub init_hr: i32,
+    /// `UISettings` activation HRESULT (`Some(0)` on success); `None` when
+    /// the apartment was unusable and activation never ran. Success is a
+    /// safe projection through the `windows` `Result` mapping (ok to `0`,
+    /// i.e. `S_OK`), not an exact raw code: a non-zero success (such as
+    /// `S_FALSE`) would read as `0` here. Only init keeps the exact raw
+    /// HRESULT; activation/query keep ok-vs-error-code.
+    pub activate_hr: Option<i32>,
+    /// `GetColorValue` HRESULT (`Some(0)` on success); `None` when
+    /// activation failed or never ran. Same ok-to-`0` projection as
+    /// `activate_hr`: success reads `0`, never an exact non-zero code.
+    pub query_hr: Option<i32>,
+    /// The returned accent, if the query ran to completion.
+    pub accent: Option<SystemAccent>,
+}
+
+/// Closed init-result vocabulary for the diagnostic record. Mirrors the
+/// `crate::ffi::accent` policy constants (`windows_sys::Win32::Foundation`
+/// `S_OK`/`S_FALSE`/`RPC_E_CHANGED_MODE`, log labels only): `Ok` created a
+/// new apartment, `Already` found one present, `ChangedMode` refused a
+/// foreign apartment, `Failed` is any other error. Both successes own their
+/// matching `RoUninitialize`; neither failure does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccentInit {
+    Ok,
+    Already,
+    ChangedMode,
+    Failed,
+}
+
+impl AccentInit {
+    /// Classify one raw `RoInitialize` HRESULT for the log record. The
+    /// query policy itself lives in `crate::ffi::accent`; this mapping only
+    /// names the observed value.
+    #[must_use]
+    pub const fn classify(hr: i32) -> Self {
+        if hr == S_OK_HR {
+            Self::Ok
+        } else if hr == S_FALSE_HR {
+            Self::Already
+        } else if hr == RPC_E_CHANGED_MODE_HR {
+            Self::ChangedMode
+        } else {
+            Self::Failed
+        }
+    }
+
+    /// Closed log vocabulary for the init result.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Already => "already",
+            Self::ChangedMode => "changed-mode",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+/// Raw WinRT HRESULT values mirrored from
+/// `windows_sys::Win32::Foundation` (consumed by `crate::ffi::accent`).
+/// Duplicated here so the portable diagnostic record can name the observed
+/// init result without a native import; the init policy itself is not
+/// duplicated.
+const S_OK_HR: i32 = 0;
+const S_FALSE_HR: i32 = 1;
+const RPC_E_CHANGED_MODE_HR: i32 = 0x8001_0106u32 as i32;
+
+/// Which surface the accent diagnostic names. Exactly one production
+/// source exists: the owner-thread resolve (`Shared`, role `Owner`). The
+/// `Border`/`Pager` variants name only historical per-surface records kept
+/// by offline tests and the diagnostic FIFO; production never
+/// fabricates a per-surface query record on a cache read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccentQuerySurface {
+    Border,
+    Pager,
+    Shared,
+}
+
+impl AccentQuerySurface {
+    /// Closed log vocabulary for the querying surface.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Border => "border",
+            Self::Pager => "pager",
+            Self::Shared => "shared",
+        }
+    }
+}
+
+/// Which thread ran the native accent query. Production uses only `Owner`;
+/// historical renderer/same-thread vocabulary remains for diagnostic tests.
+/// No thread id is recorded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccentQueryRole {
+    /// Historical renderer-thread query, retained for diagnostic fixtures.
+    Renderer,
+    /// Shared source: the owner/loop thread queries for both surfaces.
+    Owner,
+    /// Historical same-thread border query, retained for diagnostic fixtures.
+    SameThread,
+}
+
+impl AccentQueryRole {
+    /// Closed log vocabulary for the querying thread role.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Renderer => "renderer",
+            Self::Owner => "owner",
+            Self::SameThread => "same-thread",
+        }
+    }
+}
+
+/// What triggered the native accent query: the empty cache (first query of
+/// the owner scope) or a broadcast version move. Steady state never queries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccentQueryTrigger {
+    Startup,
+    Broadcast,
+}
+
+impl AccentQueryTrigger {
+    /// Closed log vocabulary for the query trigger.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Startup => "startup",
+            Self::Broadcast => "broadcast",
+        }
+    }
+}
+
+/// Resolved query outcome. `Accent` means the raw accent was usable and the
+/// consumer paints it; `Invalid` means the query returned but the value was
+/// unusable (zero alpha under the shared availability rule) so the fallback
+/// paints; `Fallback` means the query never produced a value (init,
+/// activation, or query failure) or the consumer is theme-off, so the
+/// fallback paints. A successful black accent (`#ff000000`) is `Accent`,
+/// never `Invalid`: black is legitimate, only zero alpha is unusable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccentQueryOutcome {
+    Accent,
+    Fallback,
+    Invalid,
+}
+
+impl AccentQueryOutcome {
+    /// Closed log vocabulary for the resolved outcome.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Accent => "accent",
+            Self::Fallback => "fallback",
+            Self::Invalid => "invalid",
+        }
+    }
+}
+
+/// Why the fallback paints instead of the live accent. `Unavailable` covers
+/// init/activation/query failures (no value returned); `ZeroAlpha` covers a
+/// returned but unusable value; `ThemeOff` covers a usable value the border
+/// consumer declined (`--no-active-border-theme`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccentFallbackReason {
+    Unavailable,
+    ZeroAlpha,
+    ThemeOff,
+}
+
+impl AccentFallbackReason {
+    /// Closed log vocabulary for the fallback reason.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Unavailable => "unavailable",
+            Self::ZeroAlpha => "zero-alpha",
+            Self::ThemeOff => "theme-off",
+        }
+    }
+}
+
+/// One per-query diagnostic record: the raw native result plus the consumer
+/// resolution it produced. Emitted once per actual query (startup or
+/// broadcast re-query, even when the resolved pixels match the previous
+/// state); steady-state cache hits emit nothing. Raw source validity
+/// (`raw_valid`) is what the API returned; `outcome`/`resolved` applies the
+/// supplied policy. Shared-source records use pager policy, not border pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AccentQueryReport {
+    pub surface: AccentQuerySurface,
+    pub role: AccentQueryRole,
+    pub trigger: AccentQueryTrigger,
+    /// Shared broadcast version the query ran against.
+    pub version: u64,
+    pub init: AccentInit,
+    pub init_hr: i32,
+    pub activate_hr: Option<i32>,
+    pub query_hr: Option<i32>,
+    /// The returned accent, if the query ran to completion (`None` when
+    /// init/activation/query failed or never ran).
+    pub raw: Option<SystemAccent>,
+    pub outcome: AccentQueryOutcome,
+    pub fallback_reason: Option<AccentFallbackReason>,
+    /// RGB under the report's policy (shared-source records use pager policy).
+    pub resolved: (u8, u8, u8),
+}
+
+impl AccentQueryReport {
+    /// Raw source validity: the query returned a present, positively
+    /// alpha-quantized accent under the shared availability rule. Black
+    /// with full alpha is valid; only zero alpha (or no value) is not.
+    #[must_use]
+    pub fn raw_valid(self) -> bool {
+        accent_available(self.raw)
+    }
+}
+
+/// Build one diagnostic record from a raw native result plus the consumer
+/// policy. `use_theme` is true for the pager (it always follows the accent)
+/// and the border theme switch otherwise; `fallback` is the consumer
+/// fallback colour. The resolution reuses the shared availability rule and
+/// `effective_color` policy exactly: `outcome`/`resolved` agree with that
+/// policy, independently of whether a native surface was presented.
+///
+/// The single shared owner resolve passes the pager policy (`use_theme`
+/// true, default-blue fallback), so its `resolved` names the shared-source
+/// fallback, not any one consumer's pixels: a theme-off border with a
+/// custom configured colour paints its own fallback; the shared record uses
+/// the accent, or default blue when unavailable. Each appearance log carries its
+/// actual painted pixels and source.
+#[must_use]
+pub fn accent_query_report(
+    surface: AccentQuerySurface,
+    role: AccentQueryRole,
+    trigger: AccentQueryTrigger,
+    version: u64,
+    raw: &AccentRaw,
+    use_theme: bool,
+    fallback: (u8, u8, u8),
+) -> AccentQueryReport {
+    let (outcome, fallback_reason, resolved) = match raw.accent {
+        None => (
+            AccentQueryOutcome::Fallback,
+            Some(AccentFallbackReason::Unavailable),
+            fallback,
+        ),
+        Some(accent) if !accent_available(Some(accent)) => (
+            AccentQueryOutcome::Invalid,
+            Some(AccentFallbackReason::ZeroAlpha),
+            fallback,
+        ),
+        Some(_) if !use_theme => (
+            AccentQueryOutcome::Fallback,
+            Some(AccentFallbackReason::ThemeOff),
+            fallback,
+        ),
+        Some(accent) => (AccentQueryOutcome::Accent, None, accent.color),
+    };
+    AccentQueryReport {
+        surface,
+        role,
+        trigger,
+        version,
+        init: AccentInit::classify(raw.init_hr),
+        init_hr: raw.init_hr,
+        activate_hr: raw.activate_hr,
+        query_hr: raw.query_hr,
+        raw: raw.accent,
+        outcome,
+        fallback_reason,
+        resolved,
+    }
+}
+
+/// Render a returned accent as `#aarrggbb` (alpha included). Only used for
+/// the diagnostic record, and only when the query actually returned a value.
+#[must_use]
+pub fn render_argb(accent: SystemAccent) -> String {
+    format!(
+        "#{:02x}{:02x}{:02x}{:02x}",
+        accent.alpha, accent.color.0, accent.color.1, accent.color.2
+    )
+}
+
+/// Normal-level log line for one accent query. Only closed-vocabulary
+/// strings, numeric HRESULTs, versions, and colours: no thread ids, window
+/// handles, paths, executable names, or error payloads. Skipped
+/// activation/query stages serialize as `null`, never a fabricated error;
+/// `argb` is present only when the query actually returned a value.
+#[must_use]
+pub fn accent_query_event(report: &AccentQueryReport) -> serde_json::Value {
+    serde_json::json!({
+        "event": "accent-query",
+        "surface": report.surface.name(),
+        "role": report.role.name(),
+        "trigger": report.trigger.name(),
+        "version": report.version,
+        "init": report.init.label(),
+        "init_hr": report.init_hr,
+        "activate_hr": report.activate_hr,
+        "query_hr": report.query_hr,
+        "argb": report.raw.map(render_argb),
+        "raw_valid": report.raw_valid(),
+        "outcome": report.outcome.name(),
+        "fallback_reason": report.fallback_reason.map(AccentFallbackReason::name),
+        "resolved": render_color(report.resolved),
+    })
+}
+
+/// Trace-only log line for one stage within an actual native accent query.
+/// Only closed-vocabulary strings plus the shared broadcast version: no
+/// HRESULTs, no colours, no thread ids, no paths. Emitted synchronously by
+/// the querying owner thread (never the renderer, which never file-logs);
+/// the normal completion record ([`accent_query_event`]) is unchanged.
+#[cfg(windows)]
+#[must_use]
+pub fn accent_query_stage_event(
+    surface: AccentQuerySurface,
+    role: AccentQueryRole,
+    trigger: AccentQueryTrigger,
+    version: u64,
+    stage: crate::ffi::AccentStage,
+) -> serde_json::Value {
+    serde_json::json!({
+        "event": "accent-query-stage",
+        "surface": surface.name(),
+        "role": role.name(),
+        "trigger": trigger.name(),
+        "version": version,
+        "stage": stage.name(),
+    })
+}
+
+/// One scope's shared cached accent plus the broadcast version it was taken
+/// at. Exactly one instance lives in the owner state and both surfaces (the
+/// border and the pager) consume the same snapshot: the owner resolves once
+/// per version and every consumer paints from that single read. Refresh only
+/// when the shared version moved since the last resolve attempt:
+/// steady state performs no native resolve, and a failed resolve sticks to
+/// its fallback until the next broadcast (no per-pump retry spam). The
+/// pre-query version is recorded, so a broadcast landing mid-query
+/// re-triggers the next refresh instead of being lost.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct AccentCache {
+    accent: Option<SystemAccent>,
+    version: Option<u64>,
+}
+
+impl AccentCache {
+    /// Currently cached accent (`None` until the first successful refresh or
+    /// while the query is unavailable).
+    #[must_use]
+    pub const fn get(&self) -> Option<SystemAccent> {
+        self.accent
+    }
+
+    /// Last broadcast version a query ran against (`None` until the first
+    /// query). Lets callers name the query trigger (`startup` for the first
+    /// query, `broadcast` afterwards) without re-querying.
+    #[must_use]
+    pub const fn last_version(&self) -> Option<u64> {
+        self.version
+    }
+
+    /// Refresh the cache against the shared broadcast version, running
+    /// `query` only when it moved since the last attempt. Returns the raw
+    /// native result when a resolve ran (`None` on steady-state hits, which
+    /// perform no native resolve and emit no diagnostic). The cached
+    /// accent/version update is identical to [`AccentCache::refresh`].
+    pub fn refresh_detailed(
+        &mut self,
+        current_version: u64,
+        query: impl FnOnce() -> AccentRaw,
+    ) -> Option<AccentRaw> {
+        if self.version == Some(current_version) {
+            return None;
+        }
+        let raw = query();
+        self.accent = raw.accent;
+        self.version = Some(current_version);
+        Some(raw)
+    }
+
+    /// Refresh the cache against the shared broadcast version. Returns true
+    /// when a query ran (`current_version` moved since the last attempt).
+    pub fn refresh(
+        &mut self,
+        current_version: u64,
+        query: impl FnOnce() -> Option<SystemAccent>,
+    ) -> bool {
+        if self.version == Some(current_version) {
+            return false;
+        }
+        self.accent = query();
+        self.version = Some(current_version);
+        true
+    }
+}
+
+/// Availability of a queried accent under the shared core rule: present
+/// and positively alpha-quantized (`active_border_use_theme` with the theme
+/// switch forced on and the theme valid, so only the alpha gate decides).
+/// The pager ignores the theme on/off switch but obeys this availability,
+/// so a zero-alpha accent is unavailable everywhere - never a new
+/// pager/border divergence.
+#[must_use]
+pub fn accent_available(accent: Option<SystemAccent>) -> bool {
+    accent.is_some_and(|a| {
+        tiler_core::visual::active_border_use_theme(true, true, i32::from(a.alpha))
+    })
+}
+
+/// Closed log vocabulary for an accent-resolved fill source: `accent` when
+/// the colour resolved from an available live accent, `fallback` otherwise.
+/// Never claims the accent when the query was unavailable.
+#[must_use]
+pub const fn accent_source_label(sourced: bool) -> &'static str {
+    if sourced { "accent" } else { "fallback" }
+}
+
+/// Whether the effective border colour resolves from the live accent.
+/// Mirrors `effective_color`'s condition exactly (availability plus the
+/// theme switch), so source reporting can never diverge from the painted
+/// colour.
+#[must_use]
+pub fn effective_uses_accent(style: &ActiveBorderStyle, accent: Option<SystemAccent>) -> bool {
+    accent_available(accent) && style.use_theme
+}
+
+/// Observe one accent broadcast version without querying: true once per
+/// movement, for wake fanout. Steady versions stay silent, so idle
+/// ack-only turns are never promoted by an unchanged version.
+#[must_use]
+pub fn accent_version_moved(seen: &mut u64, current: u64) -> bool {
+    if *seen == current {
+        return false;
+    }
+    *seen = current;
+    true
+}
 /// Effective border colour with the live system accent. Mirrors KDE
 /// `activeBorderColor` (`activeborderlogic.h:23-32`): the accent wins only
 /// when requested (`use_theme`, i.e. `--active-border-theme`), present,
@@ -195,14 +654,8 @@ impl SystemAccent {
 /// the configured fallback (`--active-border-color`, default `#2a82da`) wins.
 #[must_use]
 pub fn effective_color(style: &ActiveBorderStyle, accent: Option<SystemAccent>) -> (u8, u8, u8) {
-    if let Some(theme) = accent
-        && tiler_core::visual::active_border_use_theme(
-            style.use_theme,
-            /* theme_valid = */ true,
-            i32::from(theme.alpha),
-        )
-    {
-        theme.color
+    if effective_uses_accent(style, accent) {
+        accent.map(|theme| theme.color).unwrap_or(style.color)
     } else {
         style.color
     }
@@ -649,16 +1102,16 @@ mod tests {
     }
 
     #[test]
-    fn accent_dword_splits_argb_channels() {
-        // `DwmGetColorizationColor` format is 0xAARRGGBB.
-        let accent = SystemAccent::from_colorization_dword(0xC4_2A82DA);
+    fn accent_winrt_color_splits_argb_channels() {
+        // WinRT `Color` arrives as separate `A`/`R`/`G`/`B` bytes.
+        let accent = SystemAccent::from_winrt_color(0xC4, 0x2A, 0x82, 0xDA);
         assert_eq!(accent.color, (0x2a, 0x82, 0xda));
         assert_eq!(accent.alpha, 0xC4);
         assert_eq!(render_color(accent.color), "#2a82da");
-        let opaque_red = SystemAccent::from_colorization_dword(0xFF_FF0000);
+        let opaque_red = SystemAccent::from_winrt_color(0xFF, 0xFF, 0x00, 0x00);
         assert_eq!(opaque_red.color, (0xff, 0x00, 0x00));
         assert_eq!(opaque_red.alpha, 0xff);
-        let transparent = SystemAccent::from_colorization_dword(0x00_112233);
+        let transparent = SystemAccent::from_winrt_color(0x00, 0x11, 0x22, 0x33);
         assert_eq!(transparent.color, (0x11, 0x22, 0x33));
         assert_eq!(transparent.alpha, 0);
     }
@@ -698,6 +1151,445 @@ mod tests {
         // when a valid accent is present.
         assert_eq!(effective_color(&explicit, Some(accent)), (0x11, 0x22, 0x33));
         assert_eq!(effective_color(&explicit, None), (0x11, 0x22, 0x33));
+    }
+
+    #[test]
+    fn accent_cache_queries_once_until_version_moves() {
+        let live = SystemAccent {
+            color: (0xaa, 0xbb, 0xcc),
+            alpha: 0xC4,
+        };
+        let mut cache = AccentCache::default();
+        let mut calls = 0;
+        // Empty cache queries even at the initial version.
+        assert!(cache.refresh(7, || {
+            calls += 1;
+            Some(live)
+        }));
+        assert_eq!(calls, 1);
+        assert_eq!(cache.get(), Some(live));
+        // Steady state performs no native query.
+        assert!(!cache.refresh(7, || {
+            calls += 1;
+            Some(live)
+        }));
+        assert_eq!(calls, 1);
+        // One broadcast needs exactly one re-query, even across consumers.
+        let mut sibling = AccentCache::default();
+        assert!(cache.refresh(8, || {
+            calls += 1;
+            Some(live)
+        }));
+        assert!(sibling.refresh(8, || {
+            calls += 1;
+            Some(live)
+        }));
+        assert_eq!(calls, 3, "each consumer re-queries, none is starved");
+        assert!(!cache.refresh(8, || {
+            calls += 1;
+            None
+        }));
+        assert_eq!(calls, 3);
+    }
+
+    #[test]
+    fn accent_cache_failed_query_falls_back_without_sticking() {
+        // An unavailable query caches `None` (callers fall back) but keeps
+        // the taken version, so the next broadcast retries instead of
+        // pinning the fallback forever.
+        let mut cache = AccentCache::default();
+        assert!(cache.refresh(1, || None));
+        assert_eq!(cache.get(), None);
+        assert!(
+            !cache.refresh(1, || None),
+            "no retry without a new broadcast"
+        );
+        let live = SystemAccent {
+            color: (0xaa, 0xbb, 0xcc),
+            alpha: 0xC4,
+        };
+        assert!(cache.refresh(2, || Some(live)));
+        assert_eq!(cache.get(), Some(live));
+    }
+
+    #[test]
+    fn accent_availability_is_presence_plus_positive_alpha() {
+        // Unavailable means no query result or a zero-alpha result: the
+        // pager and the border theme gate share this exact rule.
+        assert!(!accent_available(None));
+        assert!(!accent_available(Some(SystemAccent {
+            color: (0xaa, 0xbb, 0xcc),
+            alpha: 0,
+        })));
+        assert!(accent_available(Some(SystemAccent {
+            color: (0xaa, 0xbb, 0xcc),
+            alpha: 1,
+        })));
+        assert!(accent_available(Some(SystemAccent {
+            color: (0xaa, 0xbb, 0xcc),
+            alpha: 0xC4,
+        })));
+    }
+
+    #[test]
+    fn effective_source_agrees_with_effective_color() {
+        // Source reporting mirrors the painted colour exactly: the source
+        // claims the accent iff the effective colour is the accent colour
+        // (and the accent is available), for every flag combination. A
+        // configured colour coincidentally equal to the accent still
+        // reports the accent source - the pixels match either way.
+        let styles = [
+            ActiveBorderStyle {
+                color: (0x11, 0x22, 0x33),
+                use_theme: true,
+                ..ActiveBorderStyle::default()
+            },
+            ActiveBorderStyle {
+                color: (0x11, 0x22, 0x33),
+                use_theme: false,
+                ..ActiveBorderStyle::default()
+            },
+            ActiveBorderStyle {
+                color: (0xaa, 0xbb, 0xcc),
+                use_theme: true,
+                ..ActiveBorderStyle::default()
+            },
+        ];
+        let accents = [
+            None,
+            Some(SystemAccent {
+                color: (0xaa, 0xbb, 0xcc),
+                alpha: 0xC4,
+            }),
+            Some(SystemAccent {
+                color: (0xaa, 0xbb, 0xcc),
+                alpha: 0,
+            }),
+        ];
+        for style in styles {
+            for accent in accents {
+                let uses = effective_uses_accent(&style, accent);
+                let painted = effective_color(&style, accent);
+                assert_eq!(uses, accent_available(accent) && style.use_theme);
+                if uses {
+                    assert_eq!(painted, accent.map(|a| a.color).expect("used accent"));
+                } else {
+                    assert_eq!(painted, style.color);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn accent_version_move_promotes_once_then_silent() {
+        // Wake fanout observation: one promotion per movement, steady
+        // versions never promote (idle ack-only turns stay untouched).
+        let mut seen = 7;
+        assert!(!accent_version_moved(&mut seen, 7));
+        assert_eq!(seen, 7);
+        assert!(accent_version_moved(&mut seen, 8));
+        assert_eq!(seen, 8);
+        assert!(!accent_version_moved(&mut seen, 8));
+        assert!(accent_version_moved(&mut seen, 9));
+        assert_eq!(seen, 9);
+    }
+
+    fn fake_raw(init_hr: i32, accent: Option<SystemAccent>) -> AccentRaw {
+        let ran = accent.is_some();
+        AccentRaw {
+            init_hr,
+            activate_hr: ran.then_some(0),
+            query_hr: ran.then_some(0),
+            accent,
+        }
+    }
+
+    #[test]
+    fn accent_init_labels_name_the_observed_result() {
+        assert_eq!(AccentInit::classify(0), AccentInit::Ok);
+        assert_eq!(AccentInit::classify(1), AccentInit::Already);
+        assert_eq!(
+            AccentInit::classify(0x8001_0106u32 as i32),
+            AccentInit::ChangedMode
+        );
+        assert_eq!(AccentInit::classify(-1), AccentInit::Failed);
+        assert_eq!(AccentInit::Ok.label(), "ok");
+        assert_eq!(AccentInit::Already.label(), "already");
+        assert_eq!(AccentInit::ChangedMode.label(), "changed-mode");
+        assert_eq!(AccentInit::Failed.label(), "failed");
+    }
+
+    /// Portable HRESULT mirrors must equal the native constants: the labels
+    /// above are only names for observed values, so a wrong mirror would
+    /// mislabel a real result. The init policy itself stays solely in
+    /// `crate::ffi::accent`; this test only pins the vocabulary.
+    #[cfg(windows)]
+    #[test]
+    fn accent_init_constants_match_native() {
+        assert_eq!(S_OK_HR, windows_sys::Win32::Foundation::S_OK);
+        assert_eq!(S_FALSE_HR, windows_sys::Win32::Foundation::S_FALSE);
+        assert_eq!(
+            RPC_E_CHANGED_MODE_HR,
+            windows_sys::Win32::Foundation::RPC_E_CHANGED_MODE
+        );
+    }
+
+    #[test]
+    fn accent_report_resolves_raw_vs_consumer_outcome() {
+        let live = SystemAccent {
+            color: (0xaa, 0xbb, 0xcc),
+            alpha: 0xC4,
+        };
+        let raw = fake_raw(0, Some(live));
+        // Usable accent with the theme on: accent paints.
+        let themed = accent_query_report(
+            AccentQuerySurface::Border,
+            AccentQueryRole::Renderer,
+            AccentQueryTrigger::Startup,
+            7,
+            &raw,
+            true,
+            (0x11, 0x22, 0x33),
+        );
+        assert_eq!(themed.outcome, AccentQueryOutcome::Accent);
+        assert_eq!(themed.fallback_reason, None);
+        assert_eq!(themed.resolved, (0xaa, 0xbb, 0xcc));
+        assert!(themed.raw_valid());
+        // Same raw value with the theme off: fallback paints, honestly named.
+        let explicit = accent_query_report(
+            AccentQuerySurface::Border,
+            AccentQueryRole::SameThread,
+            AccentQueryTrigger::Broadcast,
+            8,
+            &raw,
+            false,
+            (0x11, 0x22, 0x33),
+        );
+        assert_eq!(explicit.outcome, AccentQueryOutcome::Fallback);
+        assert_eq!(
+            explicit.fallback_reason,
+            Some(AccentFallbackReason::ThemeOff)
+        );
+        assert_eq!(explicit.resolved, (0x11, 0x22, 0x33));
+        assert!(explicit.raw_valid(), "raw stays valid under theme-off");
+        // Zero alpha is the only invalid source: fallback paints.
+        let ghost = fake_raw(
+            0,
+            Some(SystemAccent {
+                color: (0xaa, 0xbb, 0xcc),
+                alpha: 0,
+            }),
+        );
+        let invalid = accent_query_report(
+            AccentQuerySurface::Pager,
+            AccentQueryRole::Owner,
+            AccentQueryTrigger::Broadcast,
+            9,
+            &ghost,
+            true,
+            (0x2a, 0x82, 0xda),
+        );
+        assert_eq!(invalid.outcome, AccentQueryOutcome::Invalid);
+        assert_eq!(
+            invalid.fallback_reason,
+            Some(AccentFallbackReason::ZeroAlpha)
+        );
+        assert_eq!(invalid.resolved, (0x2a, 0x82, 0xda));
+        assert!(!invalid.raw_valid());
+        // Failed init: nothing ran, fallback paints, stages read null.
+        let failed = accent_query_report(
+            AccentQuerySurface::Border,
+            AccentQueryRole::Renderer,
+            AccentQueryTrigger::Broadcast,
+            10,
+            &AccentRaw {
+                init_hr: 0x8001_0106u32 as i32,
+                activate_hr: None,
+                query_hr: None,
+                accent: None,
+            },
+            true,
+            (0x11, 0x22, 0x33),
+        );
+        assert_eq!(failed.init, AccentInit::ChangedMode);
+        assert_eq!(failed.outcome, AccentQueryOutcome::Fallback);
+        assert_eq!(
+            failed.fallback_reason,
+            Some(AccentFallbackReason::Unavailable)
+        );
+        assert_eq!(failed.resolved, (0x11, 0x22, 0x33));
+        assert!(!failed.raw_valid());
+    }
+
+    #[test]
+    fn accent_report_treats_black_as_legitimate() {
+        // Opaque black is a successful accent, never invalid: only zero
+        // alpha is diagnostically unusable.
+        let black = fake_raw(
+            1,
+            Some(SystemAccent {
+                color: (0, 0, 0),
+                alpha: 0xFF,
+            }),
+        );
+        let report = accent_query_report(
+            AccentQuerySurface::Pager,
+            AccentQueryRole::Owner,
+            AccentQueryTrigger::Startup,
+            1,
+            &black,
+            true,
+            (0x2a, 0x82, 0xda),
+        );
+        assert_eq!(report.init, AccentInit::Already);
+        assert!(report.raw_valid());
+        assert_eq!(report.outcome, AccentQueryOutcome::Accent);
+        assert_eq!(report.resolved, (0, 0, 0));
+    }
+
+    #[test]
+    fn accent_query_event_shape_carries_no_identity_or_paths() {
+        let report = accent_query_report(
+            AccentQuerySurface::Border,
+            AccentQueryRole::Renderer,
+            AccentQueryTrigger::Broadcast,
+            7,
+            &fake_raw(
+                0,
+                Some(SystemAccent {
+                    color: (0x2a, 0x82, 0xda),
+                    alpha: 0xFF,
+                }),
+            ),
+            true,
+            (0x11, 0x22, 0x33),
+        );
+        let event = accent_query_event(&report);
+        assert_eq!(
+            event,
+            serde_json::json!({
+                "event": "accent-query",
+                "surface": "border",
+                "role": "renderer",
+                "trigger": "broadcast",
+                "version": 7,
+                "init": "ok",
+                "init_hr": 0,
+                "activate_hr": 0,
+                "query_hr": 0,
+                "argb": "#ff2a82da",
+                "raw_valid": true,
+                "outcome": "accent",
+                "fallback_reason": null,
+                "resolved": "#2a82da",
+            })
+        );
+        // Skipped stages stay null (never a fabricated error), and no value
+        // means no argb: failed attempts still record the init HRESULT.
+        let failed = accent_query_report(
+            AccentQuerySurface::Pager,
+            AccentQueryRole::Owner,
+            AccentQueryTrigger::Startup,
+            0,
+            &AccentRaw {
+                init_hr: -1,
+                activate_hr: None,
+                query_hr: None,
+                accent: None,
+            },
+            true,
+            (0x2a, 0x82, 0xda),
+        );
+        let event = accent_query_event(&failed);
+        assert_eq!(event["activate_hr"], serde_json::Value::Null);
+        assert_eq!(event["query_hr"], serde_json::Value::Null);
+        assert_eq!(event["argb"], serde_json::Value::Null);
+        assert_eq!(event["init_hr"], serde_json::json!(-1));
+        assert_eq!(event["outcome"], serde_json::json!("fallback"));
+        assert_eq!(event["fallback_reason"], serde_json::json!("unavailable"));
+        // Privacy fence: no thread ids, handles, paths, or messages.
+        for line in [
+            serde_json::to_string(&event).expect("event serializes"),
+            serde_json::to_string(&accent_query_event(&report)).expect("event serializes"),
+        ] {
+            for forbidden in [
+                "thread", "handle", "hwnd", "path", "exe", "pid", "error", "message",
+            ] {
+                assert!(
+                    !line.to_ascii_lowercase().contains(forbidden),
+                    "event leaks {forbidden}: {line}"
+                );
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn accent_query_stage_event_shape_carries_no_identity_or_paths() {
+        let event = accent_query_stage_event(
+            AccentQuerySurface::Pager,
+            AccentQueryRole::Owner,
+            AccentQueryTrigger::Startup,
+            7,
+            crate::ffi::AccentStage::Query,
+        );
+        assert_eq!(event["event"], "accent-query-stage");
+        assert_eq!(event["surface"], "pager");
+        assert_eq!(event["role"], "owner");
+        assert_eq!(event["trigger"], "startup");
+        assert_eq!(event["version"], 7);
+        assert_eq!(event["stage"], "query");
+        let line = serde_json::to_string(&event).expect("event serializes");
+        for forbidden in [
+            "thread", "handle", "hwnd", "path", "exe", "pid", "error", "message", "hr",
+        ] {
+            assert!(
+                !line.to_ascii_lowercase().contains(forbidden),
+                "stage event leaks {forbidden}: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn accent_cache_detailed_queries_once_per_version_move() {
+        let live = SystemAccent {
+            color: (0xaa, 0xbb, 0xcc),
+            alpha: 0xC4,
+        };
+        let mut cache = AccentCache::default();
+        assert_eq!(cache.last_version(), None);
+        let mut calls = 0;
+        // First query runs (startup trigger) and records its version.
+        let raw = cache
+            .refresh_detailed(7, || {
+                calls += 1;
+                fake_raw(0, Some(live))
+            })
+            .expect("startup queries");
+        assert_eq!(calls, 1);
+        assert_eq!(raw.accent, Some(live));
+        assert_eq!(cache.last_version(), Some(7));
+        // Steady state performs no native query and yields no diagnostic.
+        assert_eq!(
+            cache.refresh_detailed(7, || {
+                calls += 1;
+                fake_raw(0, Some(live))
+            }),
+            None
+        );
+        assert_eq!(calls, 1, "repeat silence performs no query");
+        // A version move re-queries even when the colour is identical: the
+        // caller still emits one diagnostic for the actual query.
+        let again = cache
+            .refresh_detailed(8, || {
+                calls += 1;
+                fake_raw(1, Some(live))
+            })
+            .expect("broadcast re-queries");
+        assert_eq!(calls, 2);
+        assert_eq!(again.init_hr, 1, "S_FALSE observed, not collapsed");
+        assert_eq!(cache.get(), Some(live));
+        assert_eq!(cache.last_version(), Some(8));
     }
 
     #[test]

@@ -933,7 +933,8 @@ platform API behavior.
     artwork was deferred until the user saw Calculator physically (now seen);
     User 2026-10-17: keep the pager miniature as implemented (plain gray, no
     packaged artwork) for now; the user reviews dogfooding.
-    native appearance acceptance remains pending
+    icon/number, centered-halo and accent-parity appearance physically
+    user-accepted 2026-10-19; wider native variants remain pending
     ([record](changes/windows-taskbar-pager-icons.md)). Secondary tray anchors and non-bottom
     taskbars refuse unknown geometry rather than guessing; physical
     multi-output, games, actual Explorer restart, DPI/auto-hide changes and
@@ -945,6 +946,37 @@ platform API behavior.
     User-approved 2026-10-16 icon sizing: 16 logical px cap, 8 logical px
     minimum, DPI-scaled, with one physical border pixel plus one padding
     pixel clear per side; omit unavailable or too-small icons.
+    User-requested 2026-10-19 styling: 50% miniature icon opacity (128/255
+    artwork weight over the existing background, preserving source-alpha edges);
+    10pt Segoe UI Bold workspace numbers. Softened icons/bold numbers with offset
+    black shadow physically user-accepted 2026-10-19. The subsequent user request
+    replaces the offset shadow with a centered black halo around the white glyph:
+    eight symmetric surrounding text copies at one DPI-scaled logical pixel
+    radius (1 physical px at 96 DPI, 2 at 144/192 DPI), followed by centered white.
+    Label centering, cells, strip geometry and tray gap are unchanged. Delivered
+    offline; centered halo physically user-accepted 2026-10-19. Native miniature
+    stacking correction physically user-accepted 2026-10-19
+    ([record](changes/windows-single-output-dogfood.md)).
+    User-selected 2026-10-19 active-cell fill: always use the available Windows
+    accent, independent of the border theme switch, with existing `#2a82da`
+    fallback. Share the documented WinRT source and broadcast-driven refresh
+    described in Theme mapping below; no new pager theme setting. Border theme
+    mode and pager highlight physically user-accepted 2026-10-19 with the correct
+    system accent. Subsequent 2026-10-19 intermittent black-accent reports reopened
+    startup reliability; after the owner-lifetime correction, user physical
+    acceptance passed 10/10 starts with correct accent on both surfaces. Wider
+    broadcast/fault-path variants remain separate; source/behavior intent is unchanged.
+    Correction 2026-10-19: the pager's elevated-foreground gate suppresses only
+    successfully read integrity at or above high (`0x3000`), not low/AppContainer
+    or medium integrity. Process-open and integrity-read failures remain
+    fail-closed; existing no-foreground/own-process skips and fullscreen/game
+    suppression remain unchanged. This is integrity classification, not an
+    Explorer, Start or window-class exemption. Tiling admission, dispatch and
+    fullscreen manageability retain their separate medium-only safety policy.
+    Normal transition-only `pager-native` readbacks after actual shows and the
+    existing topmost recovery report visibility, checked topmost state and
+    bounded above/below/unknown order relative to the primary taskbar. No added
+    timer or polling; a successful policy gate is not proof of presentation.
     User-approved 2026-10-16 limits cleanup: fixed five-second overlay and
     icon-worker spawn retries, identity-deduplicated icon queues without
     arbitrary entry caps, and keep only the latest pending click. Positive
@@ -1110,6 +1142,10 @@ platform API behavior.
   CLI departure records verified live foreground, including fullscreen members;
   return restores it without fullscreen geometry writes. Native game check
   pending ([record](changes/archive/windows-workspace-fullscreen-focus.md)).
+  Correction physically user-accepted 2026-10-19: verified live departure
+  foreground, independent of missing/stale snap origin, restores maximized
+  windows on workspace return. Fullscreen/game variants remain pending
+  ([record](changes/windows-single-output-dogfood.md)).
 - R-WS-02: returning B inserts after remembered target anchor A; no before/after setting (User 2026-10-10, 0.1 triage D18).
 - Shared model:
   - Each managed workspace owns a session-local tiled/floating flag. Startup
@@ -2591,17 +2627,42 @@ platform API behavior.
   inputs are unchanged. DWM shadows can tint the composed ring; do not claim
   that DIB RGB equals final screen RGB. Owned-surface creation, alpha drawing,
    placement, hiding and teardown also carry the Windows group underlay below.
-- Theme mapping (selected 2026-10-08, Windows settings slice): KDE uses the active Selection
-  background from `KColorScheme` (desktop highlight). Windows uses the official
-  [`DwmGetColorizationColor`](https://learn.microsoft.com/en-us/windows/win32/api/dwmapi/nf-dwmapi-dwmgetcolorizationcolor)
-  system colourization/accent analogue, with the core availability/positive-
-   alpha gate and configured fallback. The owned window flags a
-   requery on `WM_DWMCOLORIZATIONCOLORCHANGED` or `WM_SETTINGCHANGE`; repaint
-  only if the resolved colour changes. Default theme/accent on with configured
-   `#2a82da` fallback, per the user decision 2026-10-08.
-  `--active-border-theme` selects accent;
-   `--no-active-border-theme` selects configured colour.
-   `--no-active-border` disables the surface.
+- Theme mapping (2026-10-08; Windows source amended by user 2026-10-19): KDE
+  uses the active Selection background from `KColorScheme` (desktop highlight).
+  Windows now uses documented
+  [UISettings.GetColorValue](https://learn.microsoft.com/en-us/uwp/api/windows.ui.viewmanagement.uisettings.getcolorvalue)
+  with [UIColorType.Accent](https://learn.microsoft.com/en-us/uwp/api/windows.ui.viewmanagement.uicolortype),
+  replacing `DwmGetColorizationColor` (glass-composition analogue, not a guarantee
+  of Personalization accent parity). Windows-target-only `windows` provides the
+  safe API with minimal `UI_ViewManagement`/`Win32_System_WinRT` features. Keep
+  the existing availability/positive-alpha gate and configured border fallback;
+  default theme/accent on with configured `#2a82da` fallback remains unchanged.
+  `--active-border-theme` selects accent; `--no-active-border-theme` selects
+  configured color; `--no-active-border` disables the surface. The pager always
+  uses available accent independently of that border setting, or existing blue
+  fallback; no new setting and no saved-settings mutation.
+  Reliability correction 2026-10-19: shared broadcast versions trigger one
+  owner-thread cached resolve for both surfaces on
+  `WM_DWMCOLORIZATIONCOLORCHANGED`/`WM_SETTINGCHANGE`, including hidden reshow
+  and renderer-only idle notifications through the existing owner wake. No
+  polling or new timer. Failed queries remain narrow fallback until the next
+  notification. The owner keeps one thread-confined WinRT apartment alive for
+  its scope and uses `RoActivateInstance` with local interfaces rather than the
+  process-static `UISettings::new` activation-factory cache. The renderer paints
+  a plain posted accent snapshot, never querying WinRT. Successful init results
+  (`S_OK` and `S_FALSE`) each own one same-thread cleanup; failures own none and
+  remain cached without retry until shutdown. Native drawing remains change-gated;
+  normal logs preserve accent/fallback source changes even with identical RGB.
+  Delivered offline; border-theme/pager accent parity physically user-accepted
+  2026-10-19 in one observation. Subsequent intermittent black-accent reports
+  reopen startup reliability. Subsequent native access violations were localized
+  to factory vtable dispatch; cached-factory reuse after apartment teardown is
+  strongly consistent but not pointer-proven, and black-value causality remains
+  unproven. The lifetime/shared-snapshot correction passed offline gates; user
+  physical acceptance 2026-10-19 passed 10/10 starts with the correct accent on
+  active border and pager, closing the reported startup-reliability gap. Idle
+  notification and fallback/fault-path acceptance remain pending
+  ([record](changes/windows-single-output-dogfood.md)).
 - Scoped evidence passed; physical display/input, other DPI/output
   arrangements and topmost/style variants remain bounded follow-up checks.
   Evidence and limitations:
@@ -3655,7 +3716,19 @@ platform API behavior.
   - Fullscreen (Win+F11 matches Meta+F11): managed fullscreen retains
     membership/tree/shares, pauses geometry writes, restores the current
     Engine allocation on exit; precedes maximize; suppresses border and
-    underlay. Unmanaged fullscreen foreground suspends the workspace.
+    underlay. User-approved 2026-10-19: an unmanageable fullscreen foreground
+    permits only non-activating geometry reconciliation of other verified
+    managed windows; the foreground stays excluded and untouched, automatic
+    focus stays blocked, and overlays stay suppressed. An elevated game remains
+    unmanageable by the medium-integrity owner; admission is not a goal.
+    This replaces global tiling suspension to preserve unrelated geometry
+    convergence without game focus/overlay disturbance or writes to the game.
+    Fresh admission and native unmaximize/marker/visibility effects defer until
+    resume; invalid/unreadable foreground facts remain fully blocked. Managed/
+    holdable fullscreen keeps its existing managed-overlay behavior. Delivered
+    offline and physically user-accepted 2026-10-19 as effective. Wider game/
+    performance variants remain unproven; no quantified zero-cost claim
+    ([dogfood record](changes/windows-single-output-dogfood.md)).
     Directional movement, pointer operations and maximize refuse a fullscreen
     subject; Windows same-output single-window fullscreen workspace carry is
     selected with implementation pending (current code refuses: gap).
@@ -3814,6 +3887,21 @@ platform API behavior.
 
 ## Engine Operations and Policy
 
+- <a id="windows-app-hide-close"></a> User decision 2026-10-19: on Windows,
+  treat a managed app-initiated hide as a close only after positively verifying
+  the window is alive, invisible, uncloaked, lifetime-fenced, and has no tiler
+  hide claim or durable ledger entry. Release its allocation and use the existing
+  close/MRU rules; reshow is ordinary fresh admission with no remembered slot.
+  Unknown/unreadable facts and tiler-owned workspace hides retain the safe hold.
+  This avoids an invisible member indefinitely blocking survivor reflow without
+  confusing native minimize with close. Tier 1 basis: COSMIC `unmap_internal`
+  removes the leaf and collapses its group (`S-cos-rem`); sway unmap detaches,
+  reaps and rearranges (`S-sway-close`); Hyprland unmap removes its layout target
+  (`S-hyp-close`). These support allocation removal, not identical native hide
+  detection or focus defaults; the existing selected MRU rule remains ours.
+  [Reference discriminator and pinned citations](spec/reference-outcomes.md#d23-best-effort-restore-and-close-discriminators).
+  Adapter implementation remains blocked on the durable-claim safety finding
+  in the [record](changes/windows-single-output-dogfood.md#external-hide-close-implementation-and-safety-blocker).
 - COSMIC-style tiling and directional movement are MVP. The directional path
   replaces the legacy path; there is no legacy fallback after a path is
   promoted.

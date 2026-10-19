@@ -9,16 +9,15 @@
 //!
 //! Threading: overlay windows are confined to the creating thread (the
 //! procedure runs there). These functions perform no locking and must be
-//! called on that thread. The accent-dirty flag is a process-wide sticky
-//! `AtomicBool`: broadcasts coalesce, the owner consumes exactly once.
-//! The procedure performs no allocation and calls no caller code, so it
-//! cannot unwind.
-
-use std::sync::atomic::{AtomicBool, Ordering};
+//! called on that thread. Accent broadcasts bump a process-wide monotonic
+//! version: the owner observes it against its shared cache and resolves once
+//! per version, so coalesced broadcasts need at most one resolve and no
+//! consumer starves another. The procedure performs no allocation and calls
+//! no caller code,
+//! so it cannot unwind.
 
 use tiler_core::geometry::Rect;
 use windows_sys::Win32::Foundation::{GetLastError, HWND, LPARAM, LRESULT, POINT, SIZE, WPARAM};
-use windows_sys::Win32::Graphics::Dwm::DwmGetColorizationColor;
 use windows_sys::Win32::Graphics::Gdi::{
     AC_SRC_ALPHA, BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION, CreateCompatibleDC,
     CreateDIBSection, DIB_RGB_COLORS, DeleteDC, DeleteObject, HBITMAP, HDC, SelectObject,
@@ -57,20 +56,8 @@ fn class_name(class: OverlayClass) -> &'static str {
     }
 }
 
-static ACCENT_DIRTY: AtomicBool = AtomicBool::new(false);
-
 fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain([0]).collect()
-}
-
-/// Consume one pending system-accent refresh (sticky: coalesced broadcasts
-/// refresh exactly once).
-pub fn take_accent_dirty() -> bool {
-    ACCENT_DIRTY.swap(false, Ordering::SeqCst)
-}
-
-fn mark_accent_dirty() {
-    ACCENT_DIRTY.store(true, Ordering::SeqCst);
 }
 
 unsafe extern "system" fn overlay_wnd_proc(
@@ -80,19 +67,10 @@ unsafe extern "system" fn overlay_wnd_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     if msg == WM_DWMCOLORIZATIONCOLORCHANGED || msg == WM_SETTINGCHANGE {
-        mark_accent_dirty();
+        super::accent::note_accent_changed();
         return 0;
     }
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
-}
-
-/// Live DWM colorization colour (`0xAARRGGBB`); `None` when the query fails
-/// (the caller falls back to its configured colour).
-pub fn dwm_colorization() -> Option<u32> {
-    let mut dword: u32 = 0;
-    let mut opaque: i32 = 0;
-    let hr = unsafe { DwmGetColorizationColor(&mut dword, &mut opaque) };
-    if hr == 0 { Some(dword) } else { None }
 }
 
 /// Register the class for `class` (tolerating a previous registration) and
@@ -419,15 +397,6 @@ mod tests {
             class_name(OverlayClass::Preview),
             crate::active_border_sys::PREVIEW_CLASS
         );
-    }
-
-    #[test]
-    fn accent_dirty_flag_is_sticky_until_consumed() {
-        assert!(!take_accent_dirty());
-        mark_accent_dirty();
-        mark_accent_dirty();
-        assert!(take_accent_dirty());
-        assert!(!take_accent_dirty());
     }
 
     #[test]

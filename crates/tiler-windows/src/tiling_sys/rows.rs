@@ -409,6 +409,7 @@ pub(super) fn drop_member_state(state: &mut TileLoop, key: &crate::workspace::Wi
     state.member_identity.remove(key);
     state.member_tags.remove(key);
     state.hint_last_good.remove(key);
+    state.vis_diag.uncertain_hides.remove(key);
     state.workspaces.remove_window(key);
 }
 
@@ -573,6 +574,137 @@ fn fresh_member_hint(
     }
 }
 
+/// Categorical cause for one viewless member that defers domain assembly.
+/// Read-only native probes (no writes, no membership mutation); unknown and
+/// unreadable evidence maps to hold causes, never to a fabricated row.
+fn deferral_cause(
+    state: &TileLoop,
+    key: &crate::workspace::WindowKey,
+    retained: &[RetainedRow],
+) -> &'static str {
+    if state.hidden_claims.contains_key(key)
+        || state.hidden_claims.keys().any(|k| k.hwnd == key.hwnd)
+    {
+        return "hidden-nosnapshot";
+    }
+    if state.vis_diag.uncertain_hides.contains(key)
+        || state
+            .vis_diag
+            .uncertain_hides
+            .iter()
+            .any(|k| k.hwnd == key.hwnd)
+    {
+        return "uncertain-hide";
+    }
+    if state.minimized_omitted.contains(key) || live_is_iconic(key.hwnd) {
+        return "minimized";
+    }
+    if !state.last_hwnds.contains(&key.hwnd) {
+        return "absent";
+    }
+    match live_cloaked(key.hwnd) {
+        None => return "unreadable-cloak",
+        Some(true) => return "cloaked",
+        Some(false) => {}
+    }
+    if live_is_visible(key.hwnd) {
+        if retained.iter().any(|row| row.key == *key) {
+            return "retained-no-view";
+        }
+        let stored_ok = state.member_tags.get(key).is_some_and(|stored| {
+            !stored.is_empty()
+                && crate::workspace_owner::visible_lifetime_ok(
+                    stored,
+                    live_member_tag(key.hwnd).as_deref(),
+                )
+        });
+        let pid = live_window_pid(key.hwnd);
+        if !stored_ok || pid == 0 || pid != key.pid {
+            return "unreadable-identity";
+        }
+        return "visible-no-view";
+    }
+    let stored_ok = state.member_tags.get(key).is_some_and(|stored| {
+        !stored.is_empty()
+            && crate::workspace_owner::visible_lifetime_ok(
+                stored,
+                live_member_tag(key.hwnd).as_deref(),
+            )
+    });
+    let pid = live_window_pid(key.hwnd);
+    if !stored_ok || pid == 0 || pid != key.pid {
+        return "unreadable-identity";
+    }
+    if !live_is_window(key.hwnd) {
+        return "not-window";
+    }
+    "external-hide-pending"
+}
+
+/// Normal-level transition-only log for one domain deferral or recovery.
+/// Deferrals emit on first sight and on reason change with the actual
+/// categorical causes (`token:cause` sorted); recovery emits once when a
+/// previously deferred domain assembles complete. Identical repeats stay
+/// silent. Opaque tokens only, never HWNDs, pids, paths, or titles.
+fn note_domain_deferral(
+    state: &mut TileLoop,
+    output: &str,
+    workspace: &str,
+    op: &str,
+    correlation: &str,
+    missing: &[(String, &'static str)],
+    deferred: bool,
+) {
+    let domain = (output.to_owned(), workspace.to_owned());
+    if !deferred {
+        if state.vis_diag.defer_last.remove(&domain).is_some() {
+            let output_token = state.workspaces.output_token(output);
+            let workspace_token = state.workspaces.workspace_token(output, workspace);
+            log_json_at(
+                &state.log_path.clone(),
+                serde_json::json!({
+                    "event": "reconcile-recovered",
+                    "tick": state.tick,
+                    "op": op,
+                    "correlation": correlation,
+                    "output": output_token,
+                    "workspace": workspace_token,
+                }),
+            );
+        }
+        return;
+    }
+    let mut parts: Vec<String> = missing
+        .iter()
+        .map(|(token, cause)| format!("{token}:{cause}"))
+        .collect();
+    parts.sort();
+    let reason = parts.join(",");
+    let changed = state
+        .vis_diag
+        .defer_last
+        .get(&domain)
+        .is_none_or(|last| *last != reason);
+    if !changed {
+        return;
+    }
+    state.vis_diag.defer_last.insert(domain, reason.clone());
+    let output_token = state.workspaces.output_token(output);
+    let workspace_token = state.workspaces.workspace_token(output, workspace);
+    log_json_at(
+        &state.log_path.clone(),
+        serde_json::json!({
+            "event": "reconcile-deferred",
+            "tick": state.tick,
+            "op": op,
+            "correlation": correlation,
+            "output": output_token,
+            "workspace": workspace_token,
+            "reason": reason,
+        }),
+    );
+}
+
 /// Assemble complete Engine rows for one `(output, workspace)` domain: the
 /// union of eligible visible members, retained-occupancy members with fresh
 /// frames, frame-less retained members with last-known snapshots, and hidden
@@ -674,6 +806,20 @@ pub(super) fn assemble_domain_rows(
     // a live domain).
     let domain_tiled = workspace_mode_known(state, output, workspace).unwrap_or(true);
     for key in &members {
+        // Uncertain-hide hold: a member whose durable ledger claim may be kept
+        // but whose owner-table entry is missing never takes a row, even when
+        // observed visible. Visibility alone never resolves ownership; only
+        // authoritative ledger absence clears. This defers with the actual
+        // uncertain-hide cause across visible recovery and a second hide.
+        if state.vis_diag.uncertain_hides.contains(key)
+            || state
+                .vis_diag
+                .uncertain_hides
+                .iter()
+                .any(|k| k.hwnd == key.hwnd)
+        {
+            continue;
+        }
         let born = state.born_fullscreen.contains(key);
         if state.workspaces.is_hidden(key) {
             // D23 minimize omission through the hidden lane: a hidden member
@@ -991,7 +1137,26 @@ pub(super) fn assemble_domain_rows(
         })
         .cloned()
         .collect();
-    let mut rows = crate::workspace_owner::domain_rows(&required, &views)?;
+    let Some(mut rows) = crate::workspace_owner::domain_rows(&required, &views) else {
+        let view_keys: std::collections::BTreeSet<&crate::workspace::WindowKey> =
+            views.iter().map(|view| &view.key).collect();
+        let mut missing: Vec<(String, &'static str)> = Vec::new();
+        for key in required.iter() {
+            if view_keys.contains(key) {
+                continue;
+            }
+            let token = state
+                .member_tokens
+                .get(key)
+                .cloned()
+                .unwrap_or_else(|| "unknown".to_owned());
+            missing.push((token, deferral_cause(state, key, retained)));
+        }
+        missing.sort();
+        note_domain_deferral(state, output, workspace, op, correlation, &missing, true);
+        return None;
+    };
+    note_domain_deferral(state, output, workspace, op, correlation, &[], false);
     rows.sort_by(|a, b| a.token.cmp(&b.token));
     let elapsed = query_start.elapsed();
     let output_token = state.workspaces.output_token(output);

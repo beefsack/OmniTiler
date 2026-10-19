@@ -19,10 +19,6 @@ pub struct FakePresent {
     /// HWNDs reading captionless-fullscreen (OR-ed into scripted facts for
     /// non-preview carriers).
     pub fullscreen_hwnds: std::collections::HashSet<u64>,
-    /// Scripted live accent: themed border shows resolve to this instead of
-    /// the fallback, so ack colour evidence covers the renderer-owned
-    /// accent path with exact painter bytes.
-    pub accent: Option<(u8, u8, u8)>,
     /// Scripted per-HWND band reads (`None` entry reads non-topmost).
     pub bands: std::collections::HashMap<u64, bool>,
     /// Candidate frames offered to `resolve_anchor`, in order (evidence).
@@ -61,6 +57,10 @@ pub struct FakePresent {
     pub fail_hides: std::collections::HashSet<RenderCarrier>,
     /// Scripted per-show outcome override (consumed in order).
     pub outcome_script: std::collections::VecDeque<RenderOutcome>,
+    /// Scripted per-query diagnostics attached to border presents in order
+    /// (consumed in order; evidence that every completed query is
+    /// preserved, not just the latest).
+    pub accent_queries: std::collections::VecDeque<crate::active_border::AccentQueryReport>,
 }
 
 impl FakePresent {
@@ -96,26 +96,44 @@ impl FakePresent {
         })
     }
 
-    fn next_outcome(&mut self, checksum: u64, resolved: (u8, u8, u8)) -> PresentOutcome {
+    fn next_outcome(
+        &mut self,
+        checksum: u64,
+        resolved: (u8, u8, u8),
+        accent_sourced: bool,
+    ) -> PresentOutcome {
         match self.outcome_script.pop_front() {
             Some(outcome) => PresentOutcome {
                 outcome,
                 checksum,
                 error: None,
                 resolved: Some(resolved),
+                accent_sourced,
+                accent_query: None,
             },
-            None => PresentOutcome::shown(RenderOutcome::Shown, checksum, resolved),
+            None => PresentOutcome::shown(RenderOutcome::Shown, checksum, resolved, accent_sourced),
         }
     }
 
-    /// Resolve the fake border colour like the native carrier: the live
-    /// accent wins when the frame requests the theme, else the fallback.
-    fn resolve_border_color(&self, frame: &BorderDesired) -> (u8, u8, u8) {
-        if frame.use_theme {
-            self.accent.unwrap_or(frame.color)
-        } else {
-            frame.color
-        }
+    /// Resolve the fake border colour exactly like the native carrier: the
+    /// frame's shared owner snapshot wins when the frame requests the theme
+    /// and the snapshot is available, else the frame fallback. A missing
+    /// snapshot (`None`) always falls back, matching native semantics;
+    /// fixtures stage the snapshot on the frame itself. Source reporting
+    /// mirrors the native carrier exactly.
+    fn resolve_border_color(&self, frame: &BorderDesired) -> ((u8, u8, u8), bool) {
+        use crate::active_border::ActiveBorderStyle;
+        let style = ActiveBorderStyle {
+            width: 0.0,
+            gap: 0.0,
+            radius: 0.0,
+            color: frame.color,
+            use_theme: frame.use_theme,
+        };
+        (
+            crate::active_border::effective_color(&style, frame.accent),
+            crate::active_border::effective_uses_accent(&style, frame.accent),
+        )
     }
 
     /// FNV-1a checksum over the ring predicate walk: byte-identical in shape
@@ -242,7 +260,7 @@ impl Present for FakePresent {
         if let Some(detail) = self.fail_shows.remove(&RenderCarrier::Border) {
             return PresentOutcome::failed(detail);
         }
-        let resolved = self.resolve_border_color(frame);
+        let (resolved, sourced) = self.resolve_border_color(frame);
         let checksum = Self::border_checksum(
             frame.outer.w,
             frame.outer.h,
@@ -250,7 +268,12 @@ impl Present for FakePresent {
             frame.style_px.2,
             resolved,
         );
-        self.next_outcome(checksum, resolved)
+        // The shared snapshot (or the scripted stand-in) decides the
+        // source exactly like the native carrier: a themed frame with an
+        // available snapshot reports the accent source.
+        let mut outcome = self.next_outcome(checksum, resolved, sourced);
+        outcome.accent_query = self.accent_queries.pop_front();
+        outcome
     }
 
     fn show_underlay(
@@ -274,7 +297,7 @@ impl Present for FakePresent {
             frame.color.0,
         );
         let resolved = (frame.color.1, frame.color.2, frame.color.3);
-        self.next_outcome(checksum, resolved)
+        self.next_outcome(checksum, resolved, false)
     }
 
     fn show_preview(&mut self, frame: &PreviewDesired) -> PresentOutcome {
@@ -291,7 +314,7 @@ impl Present for FakePresent {
             frame.color.0,
         );
         let resolved = (frame.color.1, frame.color.2, frame.color.3);
-        self.next_outcome(checksum, resolved)
+        self.next_outcome(checksum, resolved, false)
     }
 
     fn hide(&mut self, carrier: RenderCarrier) -> bool {

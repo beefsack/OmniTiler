@@ -28,6 +28,7 @@ fn test_border(generation: u64, safety: u64) -> DesiredFrame {
         },
         style_px: (3, 0, 6),
         color: (0x2a, 0x82, 0xda),
+        accent: None,
         use_theme: false,
         target_token: "token-7001".to_owned(),
         target_hwnd: 7001,

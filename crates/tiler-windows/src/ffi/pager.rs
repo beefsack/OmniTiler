@@ -38,7 +38,9 @@ use std::sync::{
 };
 
 use tiler_core::geometry::Rect;
-use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows_sys::Win32::Foundation::{
+    GetLastError, HWND, LPARAM, LRESULT, RECT, SetLastError, WPARAM,
+};
 use windows_sys::Win32::Graphics::Gdi::{
     BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BeginPaint, CreateFontW, CreatePen, CreateSolidBrush,
     DIB_RGB_COLORS, DT_CENTER, DT_SINGLELINE, DT_VCENTER, DeleteObject, DrawTextW, EndPaint,
@@ -50,13 +52,13 @@ use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::Shell::{ABM_GETSTATE, ABS_AUTOHIDE, APPBARDATA, SHAppBarMessage};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow,
-    EnumWindows, FindWindowExW, FindWindowW, GWLP_USERDATA, GetClassNameW, GetClientRect,
-    GetWindowLongPtrW, GetWindowRect, HWND_TOPMOST, IDC_ARROW, IsWindowVisible, LoadCursorW,
-    MA_NOACTIVATE, RegisterClassW, RegisterWindowMessageW, SW_HIDE, SW_SHOWNA, SWP_NOACTIVATE,
-    SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SetWindowLongPtrW, SetWindowPos, ShowWindow, WM_CREATE,
-    WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_LBUTTONDOWN, WM_MOUSEACTIVATE, WM_PAINT,
-    WM_SETTINGCHANGE, WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
-    WS_VISIBLE,
+    EnumWindows, FindWindowExW, FindWindowW, GW_HWNDNEXT, GW_HWNDPREV, GWL_EXSTYLE, GWLP_USERDATA,
+    GetClassNameW, GetClientRect, GetWindow, GetWindowLongPtrW, GetWindowLongW, GetWindowRect,
+    HWND_TOPMOST, IDC_ARROW, IsWindow, IsWindowVisible, LoadCursorW, MA_NOACTIVATE, RegisterClassW,
+    RegisterWindowMessageW, SW_HIDE, SW_SHOWNA, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    SWP_SHOWWINDOW, SetWindowLongPtrW, SetWindowPos, ShowWindow, WM_CREATE, WM_DESTROY,
+    WM_DISPLAYCHANGE, WM_DPICHANGED, WM_LBUTTONDOWN, WM_MOUSEACTIVATE, WM_PAINT, WM_SETTINGCHANGE,
+    WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_VISIBLE,
 };
 
 use crate::pager_icons::IconImage;
@@ -69,6 +71,7 @@ use crate::pager_icons::IconImage;
 pub const PAGER_WINDOW_CLASS: &str = "OmniTilerTaskbarPager";
 
 const CLASS_BUSY: u32 = 1410;
+const WM_DWMCOLORIZATIONCOLORCHANGED: u32 = 0x0320;
 /// 64 wide chars: window class names are short (`Shell_SecondaryTrayWnd`
 /// is 22), so this always holds the full name for comparison.
 const CLASS_NAME_CAP: usize = 64;
@@ -132,13 +135,16 @@ pub struct IconBlit {
 }
 
 /// One window's painted frame: workspace ids in cell order, the output key,
-/// cell rects, the active index, and per-cell miniature slots.
+/// cell rects, the active index, the resolved active-cell fill (live accent
+/// or the `#2a82da` fallback, decided by the host), and per-cell miniature
+/// slots.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PagerFrame {
     pub ids: Vec<String>,
     pub output: String,
     pub cells: Vec<Rect>,
     pub active: usize,
+    pub active_fill: (u8, u8, u8),
     pub minis: Vec<Vec<MiniSlot>>,
 }
 
@@ -168,6 +174,7 @@ pub type PagerCalibrationSink = Arc<dyn Fn() + Send + Sync>;
 struct PagerWindowState {
     frame: PagerFrame,
     font: HFONT,
+    dpi: u32,
     sink: PagerClickSink,
     calibration: PagerCalibrationSink,
 }
@@ -255,6 +262,7 @@ impl PagerWindow {
         let mut state = Box::new(PagerWindowState {
             frame,
             font: pager_font(dpi),
+            dpi,
             sink: Arc::clone(sink),
             calibration: Arc::clone(calibration),
         });
@@ -314,12 +322,19 @@ impl PagerWindow {
         }
     }
 
-    /// Show without activation when hidden.
-    pub fn ensure_shown(&self) {
+    /// Show without activation when hidden. Returns true only when an
+    /// actual show effect ran (the window read hidden and `ShowWindow`
+    /// ran); steady-state visible windows return false so the caller
+    /// emits native readback only after real show effects, never on
+    /// every unchanged sync.
+    pub fn ensure_shown(&self) -> bool {
         if unsafe { IsWindowVisible(self.hwnd) } == 0 {
             unsafe {
                 ShowWindow(self.hwnd, SW_SHOWNA);
             }
+            true
+        } else {
+            false
         }
     }
 
@@ -344,6 +359,125 @@ impl PagerWindow {
                 SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
             );
         }
+    }
+
+    /// Native readback for transition-only observability: actual visibility
+    /// plus the topmost-band bit with honest unknown. `GetWindowLongW`
+    /// returns zero both for a style word with no extended bits and for a
+    /// failed read, so the error code discriminates: a zero word with a
+    /// live error reads as unknown (`None`), never fabricated false. No
+    /// HWNDs, PIDs, paths, or content leave this function; the caller logs
+    /// only counts and bounded words.
+    pub fn probe_native(&self) -> (bool, Option<bool>) {
+        let visible = unsafe { IsWindowVisible(self.hwnd) } != 0;
+        (visible, exstyle_topmost_checked(self.hwnd))
+    }
+
+    /// Bounded read-only z-order comparison of this overlay against a
+    /// fresh `Shell_TrayWnd` lookup: whether the overlay sits above the
+    /// taskbar, below it, or unknown (taskbar absent, either handle
+    /// invalid, or no encounter within the walk bound). Both directions
+    /// walk at most [`ZORDER_WALK_BOUND`] entries; anything else is
+    /// honestly unknown, never guessed. Carries the taskbar's own checked
+    /// topmost bit alongside, so a same-band (both topmost) case still
+    /// reports the relative encounter instead of inferring from the band
+    /// bit alone. No handles, classes, titles, or content escape.
+    pub fn taskbar_order(&self) -> TaskbarOrder {
+        taskbar_order_for(self.hwnd)
+    }
+}
+
+/// Read-only z-order verdict of one pager overlay against the live
+/// taskbar: the taskbar's checked topmost bit plus whether this overlay
+/// was encountered above (`Some(true)`), below (`Some(false)`), or
+/// unknown (`None`: taskbar absent, invalid handles, or no encounter
+/// within the walk bound).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TaskbarOrder {
+    pub taskbar_topmost: Option<bool>,
+    pub pager_above_taskbar: Option<bool>,
+}
+
+/// Maximum `GetWindow` z-order steps per direction for the pager/taskbar
+/// relative encounter. Bounded so a pathological chain can never spin;
+/// anything past the bound reads as unknown.
+const ZORDER_WALK_BOUND: usize = 64;
+
+/// Checked extended-style topmost read: `None` only when the word reads
+/// zero with a live error (failed read, never fabricated false).
+fn exstyle_topmost_checked(hwnd: HWND) -> Option<bool> {
+    unsafe {
+        SetLastError(0);
+    }
+    let exstyle = unsafe { GetWindowLongW(hwnd, GWL_EXSTYLE) } as u32;
+    let err = unsafe { GetLastError() };
+    if exstyle == 0 && err != 0 {
+        None
+    } else {
+        Some(exstyle & WS_EX_TOPMOST != 0)
+    }
+}
+
+/// One-directional bounded walk: true when `target` is encountered from
+/// `start` following `cmd` within the bound.
+fn zorder_encounter(start: HWND, target: HWND, cmd: u32) -> bool {
+    let mut cursor = start;
+    for _ in 0..ZORDER_WALK_BOUND {
+        if cursor.is_null() {
+            return false;
+        }
+        let next = unsafe { GetWindow(cursor, cmd) };
+        if next.is_null() {
+            return false;
+        }
+        if next == target {
+            return true;
+        }
+        cursor = next;
+    }
+    false
+}
+
+/// Relative order of `pager` against a fresh `Shell_TrayWnd` handle.
+/// `GW_HWNDNEXT` walks toward the bottom of the z-order and
+/// `GW_HWNDPREV` toward the top, so a `NEXT` encounter means the pager
+/// sits above the taskbar and a `PREV` encounter means below. Both walks
+/// run; an encounter in neither direction (or an absent/invalid taskbar)
+/// is honestly unknown. A same-handle or null pair is inconsistent and
+/// also unknown.
+fn order_vs_taskbar(pager: HWND, taskbar: HWND) -> Option<bool> {
+    if pager.is_null() || taskbar.is_null() || pager == taskbar {
+        return None;
+    }
+    if unsafe { IsWindow(pager) } == 0 || unsafe { IsWindow(taskbar) } == 0 {
+        return None;
+    }
+    if zorder_encounter(pager, taskbar, GW_HWNDNEXT) {
+        return Some(true);
+    }
+    if zorder_encounter(pager, taskbar, GW_HWNDPREV) {
+        return Some(false);
+    }
+    None
+}
+
+/// Fresh taskbar-relative facts for one pager window: a live
+/// `Shell_TrayWnd` lookup per call (callers invoke this only after real
+/// show effects and on the existing topmost-recovery path, never per
+/// unchanged sync), the taskbar's checked topmost bit, and the bounded
+/// above/below encounter. Absent taskbar or any inconsistent read yields
+/// `None` legs, never a guess.
+fn taskbar_order_for(pager: HWND) -> TaskbarOrder {
+    let tray = unsafe { FindWindowW(wide(PRIMARY_TRAY_CLASS).as_ptr(), std::ptr::null()) };
+    if tray.is_null() {
+        return TaskbarOrder {
+            taskbar_topmost: None,
+            pager_above_taskbar: None,
+        };
+    }
+    TaskbarOrder {
+        taskbar_topmost: exstyle_topmost_checked(tray),
+        pager_above_taskbar: order_vs_taskbar(pager, tray),
     }
 }
 
@@ -397,7 +531,7 @@ fn paint_icon(hdc: HDC, dest: RECT, image: &IconImage) {
     }
 }
 
-fn paint_frame(hwnd: HWND, frame: &PagerFrame, font: HFONT) {
+fn paint_frame(hwnd: HWND, frame: &PagerFrame, font: HFONT, dpi: u32) {
     let mut ps: PAINTSTRUCT = unsafe { std::mem::zeroed() };
     let hdc = unsafe { BeginPaint(hwnd, &mut ps) };
     if hdc.is_null() {
@@ -416,8 +550,12 @@ fn paint_frame(hwnd: HWND, frame: &PagerFrame, font: HFONT) {
             bottom: cell.h,
         };
         let active = index == frame.active;
-        let (r, g, b) = if active { (42, 130, 218) } else { (58, 58, 58) };
-        let brush = unsafe { CreateSolidBrush(rgb(r, g, b)) };
+        let (r, g, b) = if active {
+            frame.active_fill
+        } else {
+            (58, 58, 58)
+        };
+        let brush = unsafe { CreateSolidBrush(rgb(u32::from(r), u32::from(g), u32::from(b))) };
         if !brush.is_null() {
             unsafe {
                 FillRect(hdc, &local, brush);
@@ -500,10 +638,16 @@ fn paint_frame(hwnd: HWND, frame: &PagerFrame, font: HFONT) {
             }
         }
         let label = wide(&(index + 1).to_string());
-        let mut text_rect = local;
+        let text_rect = local;
+        // Bold white number over a centered black halo: black copies paint
+        // first at the eight surrounding offsets of `pager_halo_radius`
+        // physical px, then the base number paints at the unchanged
+        // cell-centered rect, so geometry, label placement, and the tray
+        // gap never move.
+        let halo_px = pager_halo_radius(dpi);
+        let mut base_rect = text_rect;
         unsafe {
             SetBkMode(hdc, TRANSPARENT as i32);
-            SetTextColor(hdc, rgb(255, 255, 255));
             // Scalable per-overlay font (created at the overlay DPI, deleted
             // with the window). A failed font falls back to the stock font:
             // numbers stay legible, never missing.
@@ -512,11 +656,27 @@ fn paint_frame(hwnd: HWND, frame: &PagerFrame, font: HFONT) {
             } else {
                 SelectObject(hdc, font as _)
             };
+            SetTextColor(hdc, rgb(0, 0, 0));
+            for (dx, dy) in pager_halo_offsets(halo_px) {
+                let mut halo_rect = text_rect;
+                halo_rect.left += dx;
+                halo_rect.top += dy;
+                halo_rect.right += dx;
+                halo_rect.bottom += dy;
+                DrawTextW(
+                    hdc,
+                    label.as_ptr(),
+                    -1,
+                    &mut halo_rect,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE,
+                );
+            }
+            SetTextColor(hdc, rgb(255, 255, 255));
             DrawTextW(
                 hdc,
                 label.as_ptr(),
                 -1,
-                &mut text_rect,
+                &mut base_rect,
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE,
             );
             if !old_font.is_null() {
@@ -566,17 +726,31 @@ unsafe extern "system" fn pager_wnd_proc(
         want_rediscover();
         return 0;
     }
+    if msg == WM_DWMCOLORIZATIONCOLORCHANGED {
+        // Pure colorization change carries no geometry/DPI impact, so no
+        // stale-hide or revalidation: just bump the shared accent version.
+        // The broadcast itself arrived on this thread's queue (waking the
+        // owner wait with a message), and the shared version check before
+        // the ack-only early continue promotes the turn; no new wake is
+        // registered.
+        super::accent::note_accent_changed();
+        return 0;
+    }
     if msg == WM_DISPLAYCHANGE || msg == WM_SETTINGCHANGE || msg == WM_DPICHANGED {
         // Geometry/DPI calibration may have moved the taskbar: run the
         // calibration hook at broadcast time (the monitor-dirty timing the
         // owner has always relied on), flag the hide plus revalidation for
         // the loop thread, then hide this overlay at once (app-local, no
-        // foreign interaction) so no stale pixels survive the change.
+        // foreign interaction) so no stale pixels survive the change. A
+        // settings broadcast may also carry a new Personalization accent, so
+        // bump the shared accent version too: the owner resolves once per
+        // version into its shared cache, independently of this hide.
         // Every borrow is released before calling out; a panicking hook is
         // swallowed (the flags still land below).
         if let Some(calibration) = with_validated(hwnd, |state| Arc::clone(&state.calibration)) {
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| calibration()));
         }
+        super::accent::note_accent_changed();
         want_stale_hide();
         unsafe {
             ShowWindow(hwnd, SW_HIDE);
@@ -590,9 +764,10 @@ unsafe extern "system" fn pager_wnd_proc(
     if msg == WM_PAINT {
         // Clone the painted snapshot under validation, then paint with no
         // borrow held: nothing aliases the live state during GDI calls.
-        if let Some((frame, font)) = with_validated(hwnd, |state| (state.frame.clone(), state.font))
+        if let Some((frame, font, dpi)) =
+            with_validated(hwnd, |state| (state.frame.clone(), state.font, state.dpi))
         {
-            paint_frame(hwnd, &frame, font);
+            paint_frame(hwnd, &frame, font, dpi);
         }
         return 0;
     }
@@ -619,18 +794,61 @@ unsafe extern "system" fn pager_wnd_proc(
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
 }
 
-/// Scalable per-overlay number font at `dpi` (9pt Segoe UI, like the
-/// first-run dialog). Null when creation fails: paint then falls back to the
-/// stock font instead of skipping numbers.
+/// Workspace number typeface: modest 10pt Segoe UI Bold (up from 9pt
+/// regular) so the cell number stays legible over busier miniatures. Geometry
+/// is unchanged: the base label rect stays cell-centered and only the halo
+/// surrounds it by [`pager_halo_radius`].
+pub const PAGER_NUMBER_PT: i32 = 10;
+/// Bold weight (`FW_BOLD`): readable over both active and idle cell fills.
+pub const PAGER_NUMBER_WEIGHT: i32 = 700;
+
+/// Scalable logical font height at `dpi` (negative, like `CreateFontW`
+/// expects): 10pt scaled, rounded the same way as the old 9pt formula.
+#[must_use]
+pub fn pager_font_height(dpi: u32) -> i32 {
+    -((PAGER_NUMBER_PT * dpi.max(1) as i32 + 36) / 72)
+}
+
+/// Centered black halo radius in physical px: about one physical px,
+/// DPI-scaled (`dpi_scale(1, dpi)` is 1 at 96 DPI, 2 at 144/192 DPI), so the
+/// outline stays a hairline on high-DPI bars without moving label placement.
+#[must_use]
+pub fn pager_halo_radius(dpi: u32) -> i32 {
+    crate::pager::dpi_scale(1, dpi)
+}
+
+/// Eight surrounding halo offsets at `radius` physical px: axis plus
+/// diagonal neighbors, symmetric about zero so the halo stays centered on
+/// the unchanged base glyph rect. Pure geometry (no window reads), so it
+/// unit-tests without a desktop.
+#[must_use]
+pub fn pager_halo_offsets(radius: i32) -> [(i32, i32); 8] {
+    let r = radius.max(1);
+    [
+        (-r, 0),
+        (r, 0),
+        (0, -r),
+        (0, r),
+        (-r, -r),
+        (-r, r),
+        (r, -r),
+        (r, r),
+    ]
+}
+
+/// Scalable per-overlay number font at `dpi` (10pt Segoe UI Bold). Null when
+/// creation fails: paint then falls back to the stock font instead of
+/// skipping numbers. The font handle stays owned by the window state and is
+/// released exactly once by its `Drop`; paint only selects it, never leaks.
 fn pager_font(dpi: u32) -> HFONT {
-    let height = -((9 * dpi.max(1) as i32 + 36) / 72);
+    let height = pager_font_height(dpi);
     unsafe {
         CreateFontW(
             height,
             0,
             0,
             0,
-            0,
+            PAGER_NUMBER_WEIGHT,
             0,
             0,
             0,
@@ -829,8 +1047,20 @@ mod tests {
                 },
             ],
             active: 0,
+            active_fill: (42, 130, 218),
             minis: vec![Vec::new(), Vec::new()],
         }
+    }
+
+    #[test]
+    fn active_fill_rides_the_frame_for_paint() {
+        // The painted active cell carries the resolved frame fill (live
+        // accent or the `#2a82da` fallback), never a hardcoded constant:
+        // an accent change arrives as a new frame and repaints.
+        let mut frame = frame_with_cells();
+        frame.active_fill = (0xaa, 0xbb, 0xcc);
+        assert_eq!(frame.active_fill, (0xaa, 0xbb, 0xcc));
+        assert_ne!(frame, frame_with_cells(), "fill change retires the frame");
     }
 
     #[test]
@@ -885,6 +1115,7 @@ mod tests {
             output: "mon-a".to_owned(),
             cells: Vec::new(),
             active: 0,
+            active_fill: (42, 130, 218),
             minis: Vec::new(),
         };
         assert!(hit_test(&empty, 0, 0).is_none());
@@ -914,6 +1145,7 @@ mod tests {
                 h: 40,
             }],
             active: 0,
+            active_fill: (42, 130, 218),
             minis: vec![vec![MiniSlot {
                 rect: Rect {
                     x: 1,
@@ -935,5 +1167,38 @@ mod tests {
         let painted = frame.clone();
         let slot = painted.minis[0][0].icon.as_ref().expect("slot");
         assert!(Arc::ptr_eq(&slot.image, &image));
+    }
+
+    #[test]
+    fn number_style_stays_bold_larger_with_centered_halo() {
+        assert_eq!(PAGER_NUMBER_PT, 10);
+        assert_eq!(PAGER_NUMBER_WEIGHT, 700);
+        // 10pt is modestly larger than the old 9pt at every DPI.
+        assert_eq!(pager_font_height(96), -13);
+        assert_eq!(pager_font_height(144), -20);
+        assert_eq!(pager_font_height(192), -27);
+        // Halo is about one physical px, DPI-scaled, never zero.
+        assert_eq!(pager_halo_radius(96), 1);
+        assert_eq!(pager_halo_radius(144), 2);
+        assert_eq!(pager_halo_radius(192), 2);
+        assert!(pager_halo_radius(0) >= 1);
+        // Eight distinct nonzero offsets, symmetric about zero (centered).
+        for radius in [pager_halo_radius(96), pager_halo_radius(192)] {
+            let offsets = pager_halo_offsets(radius);
+            assert_eq!(offsets.len(), 8);
+            let mut seen = std::collections::HashSet::new();
+            for (dx, dy) in offsets {
+                assert!((dx, dy) != (0, 0), "halo never repaints the base");
+                assert!(dx.abs() <= radius && dy.abs() <= radius);
+                assert!(dx.abs() == radius || dy.abs() == radius);
+                assert!(seen.insert((dx, dy)), "halo offsets stay distinct");
+            }
+            let (sx, sy) = offsets
+                .iter()
+                .fold((0, 0), |(ax, ay), (dx, dy)| (ax + dx, ay + dy));
+            assert_eq!((sx, sy), (0, 0), "halo stays zero-offset centered");
+        }
+        // Radius clamps instead of collapsing at degenerate input.
+        assert_eq!(pager_halo_offsets(0), pager_halo_offsets(1));
     }
 }

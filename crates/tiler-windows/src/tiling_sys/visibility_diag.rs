@@ -59,6 +59,22 @@ pub(super) struct VisibilityDiagnostics {
     pub(super) rehide_pending:
         std::collections::BTreeMap<(&'static str, &'static str), RehideBucket>,
     pub(super) rehide_last_emit: Option<Instant>,
+    /// Last domain-deferral reason per `(output, workspace)` for
+    /// transition-only `reconcile-deferred` logging: the first deferral,
+    /// reason changes, and recovery (deferred to complete) emit at normal
+    /// level with the actual categorical cause; identical repeats stay
+    /// silent. Pruned by live domains alongside membership.
+    pub(super) defer_last: std::collections::BTreeMap<(String, String), String>,
+    /// Narrow single-path uncertain-hide hold per member key: set when
+    /// `workspace_hide_one` fails with a possibly-kept ledger
+    /// but no registered in-memory claim (rescue re-read failed), so the
+    /// external-hide close fence holds instead of mistaking our own hidden
+    /// window for an app close. Cleared only on authoritative ledger absence,
+    /// real-claim success, or membership removal, never on visibility. Session-only,
+    /// never persisted; restart needs none (ledger-hidden windows cannot
+    /// admit while invisible, and tagged fences already hold). No retry or
+    /// timer: persistence is the hold itself until ownership resolves or drops.
+    pub(super) uncertain_hides: std::collections::BTreeSet<crate::workspace::WindowKey>,
 }
 
 /// One rehide-sweep bucket: honest instance count plus capped opaque sample

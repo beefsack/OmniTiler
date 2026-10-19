@@ -4,23 +4,39 @@ use super::*;
 /// Native present outcome for one carrier: what actually happened plus the
 /// owned-pixel checksum of what was presented (0 when hidden). `resolved`
 /// is the actual presented colour (accent-resolved for the border): the ack
-/// logs this, never the owner fallback.
+/// logs this, never the owner fallback. `accent_sourced` tells whether that
+/// colour resolved from an available live accent (vs the configured
+/// fallback): it rides the change signature so a source flip logs even
+/// when both paints share one RGB. Underlay/preview fills are always
+/// configured, so they report false. `accent_query` carries the per-query
+/// diagnostic when a native accent query ran for this present (`None` on
+/// steady-state cache hits); the owner logs it from the ack.
 pub struct PresentOutcome {
     pub outcome: RenderOutcome,
     pub checksum: u64,
     pub error: Option<String>,
     pub resolved: Option<(u8, u8, u8)>,
+    pub accent_sourced: bool,
+    pub accent_query: Option<crate::active_border::AccentQueryReport>,
 }
 
 impl PresentOutcome {
-    /// Successful present with a checksum and the actual presented colour.
+    /// Successful present with a checksum, the actual presented colour, and
+    /// whether that colour resolved from an available live accent.
     #[must_use]
-    pub fn shown(outcome: RenderOutcome, checksum: u64, resolved: (u8, u8, u8)) -> Self {
+    pub fn shown(
+        outcome: RenderOutcome,
+        checksum: u64,
+        resolved: (u8, u8, u8),
+        accent_sourced: bool,
+    ) -> Self {
         Self {
             outcome,
             checksum,
             error: None,
             resolved: Some(resolved),
+            accent_sourced,
+            accent_query: None,
         }
     }
 
@@ -32,6 +48,8 @@ impl PresentOutcome {
             checksum: 0,
             error: Some(truncate_render_error(&detail)),
             resolved: None,
+            accent_sourced: false,
+            accent_query: None,
         }
     }
 }

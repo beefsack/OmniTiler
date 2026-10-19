@@ -22,6 +22,7 @@ pub mod pager_icons;
 pub mod pager_icons_sys;
 #[cfg(windows)]
 pub mod pager_sys;
+pub mod panic_diag;
 pub mod product_hide;
 pub mod render_handoff;
 pub mod render_pump;

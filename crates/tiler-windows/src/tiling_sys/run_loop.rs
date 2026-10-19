@@ -167,6 +167,7 @@ pub(super) fn run_tile_loop(
         scope_hosts,
         trace,
         suspended: false,
+        suspended_limited: false,
         last_summary: None,
         log_path: log_path.clone(),
         audit_path: audit_path.clone(),
@@ -206,10 +207,12 @@ pub(super) fn run_tile_loop(
         pager_primary: None,
         pager_secondaries: Vec::new(),
         pager_live: HashMap::new(),
+        pager_z: Vec::new(),
         pager_icon_cache: crate::pager_icons::PagerIconCache::new(),
         pager_icon_service: None,
         pager_icon_retry_at: None,
         pager_suppress_last: None,
+        pager_gate_last: None,
         pager_refusals: HashMap::new(),
         workspace_proof: false,
         maximize_admission_attempted: HashSet::new(),
@@ -240,6 +243,9 @@ pub(super) fn run_tile_loop(
         border,
         border_overlay: BorderOverlay::default(),
         border_last: None,
+        accent_seen: 0,
+        accent_shared: crate::active_border::AccentCache::default(),
+        accent_owner: crate::ffi::OwnerAccentSource::new(),
         underlay,
         underlay_overlay: UnderlayOverlay::default(),
         underlay_last: None,
@@ -755,18 +761,30 @@ pub(super) fn run_tile_loop(
         // effect; teardown and crash restore keep the lease-held guarantee.
         let mut snap_primed = false;
         // Fullscreen guard applies before the initial tick as well.
-        // Verified managed overlays bypass like a managed maximize.
-        if suspend_read(&mut state, me, &fulls).veto.block {
+        // Verified managed overlays bypass like a managed maximize. A
+        // limited unmanageable fullscreen still reconciles other windows
+        // (foreground excluded per write, focus off, no admission or
+        // un-maximize) while overlays stay hidden.
+        let (initial_suspend, initial_fg) = suspend_limited(&mut state, me, &fulls);
+        let initial_limited = is_limited_fullscreen(&initial_suspend) && initial_fg != 0;
+        if initial_suspend.veto.block {
             state.suspended = true;
+            state.suspended_limited = initial_limited;
             state.snap_advance = None;
             state.suspend_started = Some(Instant::now());
             log_json_at(
                 &log_path,
-                serde_json::json!({"event":"suspend","tick":state.tick,"cause":"fullscreen-foreground"}),
+                serde_json::json!({"event":"suspend","tick":state.tick,"cause":"fullscreen-foreground","mode":if initial_limited {"limited"} else {"full"}}),
             );
             if snap_want {
                 snap_suspend(dir, me, store);
             }
+            if initial_limited {
+                reconcile_limited_tick(&mut state, me, &fulls, &areas, initial_fg);
+            }
+            hide_border(&mut state, "suspended");
+            hide_underlay(&mut state, "suspended");
+            hide_preview(&mut state, "suspended");
         } else {
             if !areas
                 .iter()
@@ -1009,6 +1027,19 @@ pub(super) fn run_tile_loop(
             drain_render_failures(&mut state);
             poll_render_acks(&mut state, Instant::now());
             service_pending_drop(&mut state, me, &fulls, &areas);
+            // Accent-only wake: a Personalization broadcast reached a
+            // renderer or loop-thread window while the owner slept (no
+            // ack payload, no input, no message on this thread). Promote
+            // to a full refresh turn so `refresh_active_border` reposts
+            // from fresh observation with all foreground/game safety
+            // fences intact; an unchanged version leaves ack-only turns
+            // untouched. Never fakes an ack, never replays a stale frame.
+            if crate::active_border::accent_version_moved(
+                &mut state.accent_seen,
+                crate::ffi::accent_version(),
+            ) {
+                woke = true;
+            }
             // Ack-only turns (renderer ack with no input, message,
             // notification, timeout, or hook-callback event) loop here without
             // reposting frames, reconciling, polling settings, or touching
@@ -1215,6 +1246,10 @@ pub(super) fn run_tile_loop(
         if report.clean {
             bridge.channels.clear_overlay_ids();
         }
+        // Final per-query drain: presents acked before the stop wait may
+        // hold unpolled diagnostics, and their acks are never polled again.
+        // The queue preserves every completed query; the ack slot cannot.
+        super::render_ack::drain_accent_queries(&mut state);
     }
     if let Some(mut snap) = snap_hook {
         // Honest release accounting: process exit releases the hook in any
@@ -1244,6 +1279,9 @@ pub(super) fn run_tile_loop(
     } else {
         state.border_overlay.snapshot()
     };
+    // Same-thread carriers never query: the single shared owner resolve
+    // already logged its one record per version, and cache reads never
+    // fabricate a query record. Bridged owners likewise never query here.
     state.border_overlay.destroy();
     log_json_at(
         &log_path,
@@ -1329,6 +1367,13 @@ pub(super) fn run_tile_loop(
         &log_path,
         serde_json::json!({"event":"tile-end","ticks":state.tick}),
     );
+    // Scope WinRT shutdown last: every resolve in this scope ran against the
+    // one lazily initialized apartment, and all per-resolve `UISettings`
+    // references are already dropped, so this balances exactly the one
+    // `RoUninitialize` the scope owns (including S_FALSE; failed or absent
+    // initialization owns nothing). The next scope in this process
+    // initializes its own pair.
+    state.accent_owner.shutdown();
     // Truthful stop accounting: a missing input-pump or renderer
     // acknowledgement never claims clean. Teardown above still ran (tray,
     // overlays, restore), so this only changes the reported outcome, never

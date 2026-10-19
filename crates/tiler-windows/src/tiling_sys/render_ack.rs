@@ -170,7 +170,7 @@ struct RenderCarrierWin {
     sample: RenderFrameSample,
     window_start: Option<Instant>,
     last_emit: Option<Instant>,
-    /// Last immediate transition key (`shown:{target}:s{safety}:h{proven}:i{proven}`,
+    /// Last immediate transition key (`shown:{target}:s{safety}:h{proven}:i{proven}:a{source}`,
     /// `hidden:{reason}:...`, `refused:{reason}`, `unknown:{reason}`,
     /// `failure:{detail}`). Routine repaints with the same key aggregate; a
     /// changed key logs immediately.
@@ -346,13 +346,13 @@ impl RenderFrameHealth {
 }
 
 /// Transition key for one bridged ack: visibility/outcome/target/reason plus
-/// the safety epoch and proof flags, without geometry. Geometry-only churn
-/// keeps the same key and aggregates, while a target/visibility/reason change
-/// or a safety-epoch/proof-flag change logs immediately. A steady
-/// `identity_proven: false` keeps its key (not a per-frame failure), but any
-/// proof-flag transition is immediate. Failures map to a `failure:{detail}`
-/// key but always log immediately regardless (failures never aggregate,
-/// including repeats).
+/// the safety epoch, proof flags, and accent source, without geometry.
+/// Geometry-only churn keeps the same key and aggregates, while a
+/// target/visibility/reason, safety-epoch/proof-flag, or accent-source
+/// change logs immediately. A steady `identity_proven: false` keeps its key
+/// (not a per-frame failure), but any proof-flag transition is immediate.
+/// Failures map to a `failure:{detail}` key but always log immediately
+/// regardless (failures never aggregate, including repeats).
 fn render_ack_transition_key(
     state: &TileLoop,
     carrier: RenderCarrier,
@@ -378,9 +378,13 @@ fn render_ack_transition_key(
                 .as_ref()
                 .map(|applied| applied.target.clone())
                 .unwrap_or_default();
+            let sourced = ack
+                .applied
+                .as_ref()
+                .is_some_and(|applied| applied.accent_sourced);
             format!(
-                "shown:{target}:s{}:h{}:i{}",
-                ack.safety, ack.hidden_proven, ack.identity_proven
+                "shown:{target}:s{}:h{}:i{}:a{}",
+                ack.safety, ack.hidden_proven, ack.identity_proven, sourced as u8
             )
         }
     }
@@ -464,6 +468,29 @@ pub(super) fn same_thread_sample(
         hidden_proven: false,
         identity_proven: false,
         source: "same-thread",
+    }
+}
+
+/// Drain pending accent-query diagnostics: one normal-level record per
+/// completed native resolve, independent of the change-gated lifecycle lines
+/// (a failed attempt or an equal-RGB re-resolve still logs even when no
+/// lifecycle line fires). The single shared owner resolve logs its own
+/// record directly, so production pushes nothing here; the queue preserves
+/// every completed record pushed through it (offline fixtures) for exactly
+/// one drain. Called on every ack poll and once after the render stop wait,
+/// so every completed record logs exactly once even when acks coalesced or
+/// the renderer already stopped.
+pub(super) fn drain_accent_queries(state: &mut TileLoop) {
+    let Some(bridge) = state.render_bridge.as_ref() else {
+        return;
+    };
+    let reports = bridge.channels.take_accent_queries();
+    if reports.is_empty() {
+        return;
+    }
+    let log_path = state.log_path.clone();
+    for report in &reports {
+        log_json_at(&log_path, crate::active_border::accent_query_event(report));
     }
 }
 
@@ -571,9 +598,13 @@ fn poll_border_ack(
             let style = applied.style_px.unwrap_or([0, 0, 0]);
             // Same change-only signature as the same-thread line: the
             // presented colour rides it so a theme change that repaints
-            // the same geometry still logs once.
+            // the same geometry still logs once. The accent source rides
+            // it too, so a source flip logs even when both paints share
+            // one RGB (never claims the accent when unavailable: the flag
+            // comes from the renderer cache that painted those pixels).
+            let sourced = crate::active_border::accent_source_label(applied.accent_sourced);
             let signature = format!(
-                "shown:{}:{}:{}:{}:{}:{}:{}:{}:{}",
+                "shown:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
                 applied.target,
                 applied.outer[0],
                 applied.outer[1],
@@ -582,7 +613,8 @@ fn poll_border_ack(
                 style[0],
                 style[1],
                 applied.topmost,
-                applied.color_hex
+                applied.color_hex,
+                sourced
             );
             let changed = state.border_last.as_deref() != Some(signature.as_str());
             if changed {
@@ -607,7 +639,10 @@ fn poll_border_ack(
                 return;
             }
             if outcome_name == "unchanged" {
-                if trace && changed {
+                // An unchanged surface with a changed signature is an
+                // equal-RGB source flip: log it in production (normal
+                // trace-silent Unchanged stays silent).
+                if changed {
                     log_json_at(
                         &log_path,
                         serde_json::json!({
@@ -615,6 +650,8 @@ fn poll_border_ack(
                             "tick": tick,
                             "outcome": "unchanged",
                             "target": applied.target,
+                            "color": applied.color_hex,
+                            "source": sourced,
                         }),
                     );
                 }
@@ -633,6 +670,7 @@ fn poll_border_ack(
                     "outer": applied.outer,
                     "style_px": style,
                     "color": applied.color_hex,
+                    "source": sourced,
                     "dib_checksum": checksum_hex,
                     "span_us": ack.span_us,
                     "id_proven": ack.identity_proven,

@@ -36,6 +36,8 @@ use std::time::{Duration, Instant};
 
 use tiler_core::geometry::Rect;
 
+use crate::active_border::AccentQueryReport;
+
 /// Which owned carrier a frame or acknowledgement belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RenderCarrier {
@@ -100,9 +102,11 @@ pub struct UnderlayCandidate {
 
 /// Desired active-border frame: owner-observed geometry/style plus the fresh
 /// target identity the renderer rechecks before presenting. `color` is the
-/// configured fallback only: the renderer owns the live accent query and
-/// resolves the painted colour itself from `use_theme` plus the fallback, so
-/// an accent change repaints with no owner-side query. `foreground` is the
+/// configured fallback and `accent` is the already-observed shared owner
+/// snapshot for the current broadcast version (plain data, never a query):
+/// the renderer resolves the painted colour from `use_theme` plus the
+/// snapshot itself, so an accent change repaints with no renderer-side
+/// query. `foreground` is the
 /// owner-observed foreground identity at post time (normally the target
 /// itself): the renderer refuses when the live foreground identity moved on,
 /// so a late switch (game, suspend) hides instead of presenting. `fulls` are
@@ -118,9 +122,12 @@ pub struct BorderDesired {
     pub safety: u64,
     pub outer: Rect,
     pub style_px: (i32, i32, i32),
-    /// Configured fallback colour (renderer resolves the accent itself).
+    /// Configured fallback colour (renderer applies the posted snapshot).
     pub color: (u8, u8, u8),
-    /// Theme choice: resolve the live system accent when true.
+    /// Already-observed shared owner accent snapshot (plain data for the
+    /// renderer to paint; the renderer never queries WinRT itself).
+    pub accent: Option<crate::active_border::SystemAccent>,
+    /// Theme choice: use the posted available accent when true.
     pub use_theme: bool,
     /// Opaque Engine token (log fence, never a raw handle).
     pub target_token: String,
@@ -265,17 +272,24 @@ impl RenderOutcome {
 }
 
 /// Bounded applied content carried in every show-path acknowledgement: the
-/// geometry, style, actual presented colour, and target the renderer really
-/// presented. Inspection and stop snapshots consume this, never a possibly
-/// stale posted note and never the owner fallback colour (which differs
-/// from the DIB when the theme accent resolved). `target` truncates to 64
-/// chars; multineline/control content never enters (tokens are opaque ids).
+/// geometry, style, actual presented colour, and accent source the renderer
+/// really presented. Inspection and stop snapshots consume this, never a
+/// possibly stale posted note and never the owner fallback colour (which
+/// differs from the DIB when the theme accent resolved). `target` truncates
+/// to 64 chars; multineline/control content never enters (tokens are opaque
+/// ids).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppliedContent {
     pub target: String,
     pub outer: [i32; 4],
     /// Actual presented colour hex (`#rrggbb`), accent-resolved for the border.
     pub color_hex: String,
+    /// Whether that colour resolved from an available live accent (vs the
+    /// configured fallback): rides the change signature so a source flip
+    /// logs even when both paints share one RGB. Never claims the accent
+    /// when the query was unavailable. Underlay/preview fills are always
+    /// configured, so they report false.
+    pub accent_sourced: bool,
     pub style_px: Option<[i32; 3]>,
     /// Placement band actually used (resolved anchor band for the underlay).
     pub topmost: bool,
@@ -284,6 +298,8 @@ pub struct AppliedContent {
 
 impl AppliedContent {
     /// New bounded content, truncating the opaque target to 64 chars.
+    /// `accent_sourced` defaults to false (configured fill); the border
+    /// core sets it from the present outcome.
     #[must_use]
     pub fn new(
         target: &str,
@@ -297,6 +313,7 @@ impl AppliedContent {
             target: target.chars().take(64).collect(),
             outer,
             color_hex,
+            accent_sourced: false,
             style_px,
             topmost,
             members,
@@ -625,6 +642,16 @@ pub struct RenderChannels {
     border_ack: Mutex<Option<CarrierAck>>,
     underlay_ack: Mutex<Option<CarrierAck>>,
     preview_ack: Mutex<Option<CarrierAck>>,
+    /// Completed accent-query diagnostics in completion order, oldest first.
+    /// Acknowledgements are latest-wins single entries: a second present
+    /// before the owner poll overwrites the first ack, so diagnostics cannot
+    /// ride acks without loss. The single shared owner resolve logs its own
+    /// record directly, so production pushes nothing here; entries pushed
+    /// through the queue (offline fixtures) drain on every ack poll plus
+    /// once after the render stop wait. Entries are already sparse, so the
+    /// queue carries no cap, no drops, no re-query, no backpressure, and no
+    /// timers, and every entry is logged exactly once.
+    accent_queries: Mutex<std::collections::VecDeque<AccentQueryReport>>,
     /// Global safety epoch, bumped by every hide/cancel/suspend/reset.
     /// Frames carry the epoch at post time; the renderer refuses frames
     /// older than the carrier watermark.
@@ -684,6 +711,7 @@ impl RenderChannels {
             border_ack: Mutex::new(None),
             underlay_ack: Mutex::new(None),
             preview_ack: Mutex::new(None),
+            accent_queries: Mutex::new(std::collections::VecDeque::new()),
             safety_epoch: AtomicU64::new(0),
             border_hide_mark: AtomicU64::new(0),
             underlay_hide_mark: AtomicU64::new(0),
@@ -861,6 +889,30 @@ impl RenderChannels {
             RenderCarrier::Underlay => self.underlay_ack.lock().expect("underlay ack lock").take(),
             RenderCarrier::Preview => self.preview_ack.lock().expect("preview ack lock").take(),
         }
+    }
+
+    /// Push one completed accent-query diagnostic, oldest last. The existing
+    /// ack post already wakes the owner, so no new wake, no fake ack, and no
+    /// frame behaviour changes. Production pushes nothing (the single shared
+    /// owner resolve logs its own record; cache reads never fabricate one);
+    /// the owner drains and logs whatever the queue holds.
+    pub fn push_accent_query(&self, report: AccentQueryReport) {
+        self.accent_queries
+            .lock()
+            .expect("accent query lock")
+            .push_back(report);
+    }
+
+    /// Drain all pending accent-query diagnostics in completion order,
+    /// oldest first (owner thread). Called on every ack poll and once after
+    /// the render stop wait, so every completed query logs exactly once even
+    /// when acks coalesced or the renderer already stopped.
+    pub fn take_accent_queries(&self) -> Vec<AccentQueryReport> {
+        self.accent_queries
+            .lock()
+            .expect("accent query lock")
+            .drain(..)
+            .collect()
     }
 
     /// Event-driven wait for a *proven hidden* acknowledgement at or past

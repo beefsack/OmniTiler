@@ -18,6 +18,24 @@ decisions of 2026-09-24 are under
   checks; (8) 0.1 packaging/NixOS/Ubuntu/licensing gates; (9) shared core and
   KDE module-size refactoring. Live passes recorded before the full-state
   route (2026-10-17) need repeating where that route changed the path.
+- P0 | Windows single-output dogfood 2026-10-19 | User reports: (1) a
+  fullscreen game run as administrator (unmanageable) suspended all tiling;
+  user-approved: other managed windows keep non-activating geometry
+  reconciliation, game untouched, focus/overlays suppressed (user physically
+  accepted); (2) maximized return focus, (3) pager z-order and pager styling
+  user physically accepted, as are the centered number halo and the shared
+  WinRT system accent for border theme mode and pager highlight. Open: (4)
+  pager disappears when the desktop background is clicked or the Start menu
+  opens (gate diagnostics delivered; user repro pending); (5) intermittent
+  black accent and startup crash (cached WinRT factory across apartments)
+  fixed and user physically accepted over 10 starts; (6) closing W2 in
+  `H[W1 V[W2 W3]]` left W3 unexpanded with a gap: Steam hid its live
+  window and the domain silently deferred. User-approved: a positively
+  verified app-initiated hide is treated as a close (release and reflow,
+  fresh admission on reshow), matching COSMIC/sway/Hyprland unmap; log any
+  domain deferral; add the reference outcome and a functional-spec row.
+  [Record](changes/windows-single-output-dogfood.md). Hidden windows'
+  Alt+Tab/taskbar presence is the separate post-0.1 item below.
 - P1 | Core/platform boundaries and shared acceptance baselines | User
   2026-10-18: discuss with the user before planning. Goal: a consistent test
   process over agreed cases, consistent with Tier 1 input tilers, for high
@@ -552,6 +570,13 @@ decisions of 2026-09-24 are under
   User 2026-10-17 (`SW_HIDE` kept for 0.1): investigate trivial
   configurability (e.g. off-screen parking for shell inclusion);
   switch-versus-pull remains open in post-0.1 research.
+  User 2026-10-19: wants hidden windows kept in taskbar/Alt+Tab, with
+  selection switching to the window's workspace and focusing it, and is
+  exploring configurable `SW_HIDE`/cloak. Next after the 2026-10-19 dogfood
+  item: bounded private ApplicationView cloak spike on one disposable owned
+  helper, user-run per the live guide (cloak/uncloak, taskbar and Alt+Tab
+  listing, selection, stop/crash restoration on the current build). Report
+  feasibility and a scoped design before any product change or 0.1 change.
   [Research](research/windows-port/alt-tab-hidden-workspaces.md),
   [decision](decisions.md#workspaces).
 - P1 | 0.1 triage decisions - batch 1 verification (KDE/shared) | User
@@ -942,6 +967,15 @@ decisions of 2026-09-24 are under
   and DPI/display/Explorer acceptance remain pending.
   [Research](research/windows-port/safe-win32-wrappers.md),
   [evidence](changes/archive/windows-unsafe-ffi-consolidation.md).
+- P2 | Windows: review `windows-sys` unsafe for safe `windows` crate calls |
+  User 2026-10-19, after the `windows` crate was added for the WinRT accent:
+  inventory our `ffi/` unsafe and identify calls the `windows` crate exposes
+  as genuinely safe APIs (WinRT/COM wrappers, owned handles), so correct
+  unsafe usage defers to a high-quality upstream library where possible.
+  Most Win32 functions stay `unsafe fn` in that crate too; expect a small
+  result. Research first, findings and recommendation to the user before any
+  migration. Revisits the 2026-10-17 option A choice in
+  [research](research/windows-port/safe-win32-wrappers.md).
 - P1 | Remove legacy routes and code | User 2026-10-18: pre-0.1, prune legacy
   aggressively. KDE removal delivered 2026-10-19: plan/workspace-send adapters,
   DescribePlan service/protocol, exclusive tests/fixtures and obsolete custom-tile

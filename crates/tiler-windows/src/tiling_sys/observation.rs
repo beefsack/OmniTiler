@@ -92,22 +92,31 @@ impl TileLoop {
             // iconic arm does; hidden members refresh through the owned
             // exact-lifetime gate below (never unconditional). Unreadable
             // HWNDs join the inventory only (production `Unknown`: present,
-            // never a close, never a row). The omission set refreshes every
-            // pass, never leaking across ticks. Fixtures without
-            // iconic/unreadable HWNDs behave exactly as before.
+            // never a close, never a row). Invisible HWNDs join the inventory
+            // only as well (production invisible `Unknown`): the external-hide
+            // close fence decides, never row assembly. The omission set
+            // refreshes every pass, never leaking across ticks. Fixtures
+            // without iconic/unreadable/invisible HWNDs behave exactly as
+            // before.
             self.minimized_omitted.clear();
             let iconic: std::collections::HashSet<u64> =
                 INJECTED_ICONIC.with(|slot| slot.borrow().clone());
             let unreadable: std::collections::HashSet<u64> =
                 INJECTED_UNREADABLE.with(|slot| slot.borrow().clone());
-            self.last_enumerated =
-                observed.len() + retained_injected.len() + iconic.len() + unreadable.len();
+            let invisible: std::collections::HashSet<u64> =
+                INJECTED_INVISIBLE.with(|slot| slot.borrow().clone());
+            self.last_enumerated = observed.len()
+                + retained_injected.len()
+                + iconic.len()
+                + unreadable.len()
+                + invisible.len();
             self.last_hwnds = observed
                 .iter()
                 .map(|window| window.hwnd)
                 .chain(retained_injected.iter().map(|row| row.key.hwnd))
                 .chain(iconic.iter().copied())
                 .chain(unreadable.iter().copied())
+                .chain(invisible.iter().copied())
                 .collect();
             for hwnd in &iconic {
                 if self.hidden_claims.keys().any(|key| key.hwnd == *hwnd) {
@@ -126,7 +135,29 @@ impl TileLoop {
             // the fixture seam instead of native queries.
             self.refresh_hidden_iconic();
             retained.extend(retained_injected);
-            self.record_pager_live(&observed, retained);
+            // The real path derives this sequence from its single
+            // `EnumWindows` enumeration; fixtures either script it
+            // explicitly (retained overlays interleaved in native position)
+            // or fall back to observed-then-retained exactly as before.
+            let visible: Vec<crate::workspace::WindowKey> = INJECTED_ZORDER
+                .with(|slot| slot.borrow().clone())
+                .unwrap_or_else(|| {
+                    let mut fallback = Vec::with_capacity(observed.len() + retained.len());
+                    for window in observed.iter() {
+                        fallback.push(crate::workspace::WindowKey {
+                            hwnd: window.hwnd,
+                            pid: window.identity.pid,
+                            creation: window.identity.process_creation.clone(),
+                        });
+                    }
+                    for row in retained.iter() {
+                        if row.rect.is_some() {
+                            fallback.push(row.key.clone());
+                        }
+                    }
+                    fallback
+                });
+            self.record_pager_live(&observed, retained, &visible);
             let _ = (me, fulls);
             return Some(observed);
         }
@@ -146,6 +177,12 @@ impl TileLoop {
         // them below (eligible, skipped, and frame-failed) so known windows
         // keep stable tokens instead of churning one new token per tick.
         let mut enumerated: Vec<(u64, String)> = Vec::new();
+        // Verified live-frame member sequence in this same enumeration order
+        // (top-to-bottom): observed eligible members plus retained rows with
+        // fresh frames. Frameless rows (minimized, hosted-gate refusals) never
+        // enter: they keep their retained stacking slot instead. This is the
+        // only native order read; the pager never queries z-order itself.
+        let mut zorder: Vec<crate::workspace::WindowKey> = Vec::new();
         for raw in hwnds {
             // The process-owned border overlay is never a tile target, a
             // token source, or an unreadable count: skip it before any query.
@@ -267,6 +304,11 @@ impl TileLoop {
                         });
                         continue;
                     }
+                    zorder.push(crate::workspace::WindowKey {
+                        hwnd: window.hwnd,
+                        pid: window.identity.pid,
+                        creation: window.identity.process_creation.clone(),
+                    });
                     out.push(window);
                 }
                 Err(reason) => {
@@ -276,12 +318,14 @@ impl TileLoop {
                     // inside Engine membership with no geometry writes. The
                     // fresh overlay flags ride along so move/pointer routes
                     // refuse before mutation and admission clears once.
+                    let retained_key = crate::workspace::WindowKey {
+                        hwnd: window.hwnd,
+                        pid: window.identity.pid,
+                        creation: window.identity.process_creation.clone(),
+                    };
+                    zorder.push(retained_key.clone());
                     retained.push(RetainedRow {
-                        key: crate::workspace::WindowKey {
-                            hwnd: window.hwnd,
-                            pid: window.identity.pid,
-                            creation: window.identity.process_creation.clone(),
-                        },
+                        key: retained_key,
                         token: window.token.clone(),
                         rect: Some(window.visible),
                         maximized: window.facts.maximized,
@@ -341,7 +385,7 @@ impl TileLoop {
             .collect();
         self.overlay_now
             .retain(|token, _| live_tokens.contains(token));
-        self.record_pager_live(&out, retained);
+        self.record_pager_live(&out, retained, &zorder);
         Some(out)
     }
 
@@ -351,9 +395,25 @@ impl TileLoop {
     /// Rebuilt per pass and gated on live membership, so recycled identities
     /// and closed windows never linger; hidden members are absent here by
     /// construction and resolve through their saved tile-slot/float
-    /// snapshots in the portable resolver. Read-only: never touches windows
+    /// snapshots in the portable resolver. The retained stacking order
+    /// advances from the same single enumeration order: visible members take
+    /// the fresh native sequence while still-assigned hidden members keep
+    /// their previous relative order and departed identities prune (see
+    /// `crate::pager::retain_pager_order`). Observe runs before workspace
+    /// assignment, so newly verified clients are not members yet: the
+    /// retention roster unions current membership with the fresh visible
+    /// keys, making the native order available to the first paint after
+    /// admission with no second observation. The frame builder still filters
+    /// to actual membership, so unadmitted candidates never render, and the
+    /// next observation prunes candidates that never joined and are now
+    /// absent. Read-only: never touches windows
     /// and never mutates the tiling `member_rects`/`float_rects` tables.
-    fn record_pager_live(&mut self, observed: &[ObservedWindow], retained: &[RetainedRow]) {
+    fn record_pager_live(
+        &mut self,
+        observed: &[ObservedWindow],
+        retained: &[RetainedRow],
+        visible_top_to_bottom: &[crate::workspace::WindowKey],
+    ) {
         let mut live: HashMap<crate::workspace::WindowKey, Rect> = HashMap::new();
         for window in observed {
             let key = crate::workspace::WindowKey {
@@ -373,6 +433,20 @@ impl TileLoop {
             }
         }
         self.pager_live = live;
+        let mut members: BTreeSet<crate::workspace::WindowKey> = BTreeSet::new();
+        for output in self.workspaces.output_keys() {
+            for id in self.workspaces.workspace_ids(&output) {
+                members.extend(self.workspaces.workspace_members(&output, &id));
+            }
+        }
+        // Union the fresh visible keys: observe runs before assignment, so a
+        // newly verified client admitted right after still paints in native
+        // order on its first frame. Unadmitted candidates never render (the
+        // builder filters to membership) and prune on the next observation
+        // once absent.
+        members.extend(visible_top_to_bottom.iter().cloned());
+        self.pager_z =
+            crate::pager::retain_pager_order(&self.pager_z, &members, visible_top_to_bottom);
     }
 
     pub(super) fn focused_token(&self, observed: &[ObservedWindow]) -> Option<WindowId> {

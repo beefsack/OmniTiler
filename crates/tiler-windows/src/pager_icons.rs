@@ -44,6 +44,42 @@ pub const NEG_RETRY: Duration = Duration::from_secs(5);
 /// Positive entries refresh after this age: there is no Windows event for
 /// icon changes, so periodic re-lookup picks up `WM_SETICON` updates.
 pub const POS_REFRESH: Duration = Duration::from_secs(10);
+/// Global icon translucency over the miniature background (128/255, about
+/// 50%): the worker-flattened opaque pixels blend halfway toward the
+/// miniature gray at lookup time, so the painter still blits opaque bytes
+/// with `SRCCOPY`. Fully transparent source regions already read gray, so
+/// they stay gray; opaque artwork reads half-mixed; partial alpha edges
+/// keep their relative gradient because the GDI flattening composes them
+/// first and this blend only fades the result toward gray.
+pub const ICON_GLOBAL_ALPHA: u8 = 128;
+
+/// Blend one flattened channel toward the miniature background: `alpha` is
+/// the kept artwork weight (0-255), the rest is background. Rounded integer
+/// math, no float, so worker and test agree exactly.
+#[must_use]
+pub fn blend_channel(flat: u8, background: u8, alpha: u8) -> u8 {
+    let kept = u32::from(alpha);
+    let back = 255 - kept;
+    ((u32::from(flat) * kept + u32::from(background) * back + 127) / 255) as u8
+}
+
+/// Apply the global translucency to worker-flattened opaque BGRA bytes in
+/// place: every pixel's B/G/R blends toward `gray` by [`ICON_GLOBAL_ALPHA`]
+/// (or `alpha` when given), the alpha lane stays `0xFF`. Transparent source
+/// regions (already `gray`) are fixed points and do not move.
+pub fn blend_flat_toward_gray(bgra: &mut [u8], gray: (u8, u8, u8), alpha: u8) {
+    if !bgra.len().is_multiple_of(4) {
+        return;
+    }
+    let (chunks, _) = bgra.as_chunks_mut::<4>();
+    for px in chunks {
+        // BGRA order: [B, G, R, A]; `gray` is (R, G, B).
+        px[0] = blend_channel(px[0], gray.2, alpha);
+        px[1] = blend_channel(px[1], gray.1, alpha);
+        px[2] = blend_channel(px[2], gray.0, alpha);
+        px[3] = 0xFF;
+    }
+}
 
 /// One worker-rendered icon: opaque top-down BGRA bytes (`width * height *
 /// 4`), artwork alpha already flattened onto [`MINI_GRAY`]. The final blit
@@ -651,5 +687,35 @@ mod tests {
     fn image_validates_shape() {
         assert!(image(0).is_valid());
         assert!(!IconImage::new(32, 32, vec![0; 10]).is_valid());
+    }
+
+    #[test]
+    fn global_alpha_keeps_transparent_moves_opaque_and_orders_edges() {
+        // Fully transparent source regions already read gray: fixed point.
+        let mut transparent = vec![MINI_GRAY.2, MINI_GRAY.1, MINI_GRAY.0, 0xFF];
+        blend_flat_toward_gray(&mut transparent, MINI_GRAY, ICON_GLOBAL_ALPHA);
+        assert_eq!(
+            transparent,
+            vec![MINI_GRAY.2, MINI_GRAY.1, MINI_GRAY.0, 0xFF]
+        );
+        // Fully opaque red flattens to pure red, then fades halfway to gray.
+        let mut opaque = vec![0u8, 0, 255, 0xFF];
+        blend_flat_toward_gray(&mut opaque, MINI_GRAY, ICON_GLOBAL_ALPHA);
+        let expect_r = blend_channel(255, MINI_GRAY.0, ICON_GLOBAL_ALPHA);
+        let expect_g = blend_channel(0, MINI_GRAY.1, ICON_GLOBAL_ALPHA);
+        let expect_b = blend_channel(0, MINI_GRAY.2, ICON_GLOBAL_ALPHA);
+        assert_eq!(opaque, vec![expect_b, expect_g, expect_r, 0xFF]);
+        assert!(expect_r > MINI_GRAY.0 && expect_g < MINI_GRAY.1);
+        // Simulated partial-alpha edge (GDI already composed it to a pinkish
+        // mid-tone): blending preserves the ordering transparent < edge <
+        // opaque per channel toward the same gray.
+        let mut edge = vec![90u8, 100, 210, 0xFF];
+        blend_flat_toward_gray(&mut edge, MINI_GRAY, ICON_GLOBAL_ALPHA);
+        assert!(edge[2] > MINI_GRAY.0 && edge[2] < expect_r);
+        assert!(edge[0] < MINI_GRAY.2 && edge[0] > expect_b);
+        // Non-pixel-aligned input refuses instead of guessing.
+        let mut odd = vec![1u8, 2, 3];
+        blend_flat_toward_gray(&mut odd, MINI_GRAY, ICON_GLOBAL_ALPHA);
+        assert_eq!(odd, vec![1u8, 2, 3]);
     }
 }

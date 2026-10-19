@@ -70,6 +70,159 @@ pub(super) fn writable_tokens(
     )
 }
 
+/// Foreground-excluding writable tokens for the limited lane: the normal
+/// member/eligibility rule minus any token whose live HWND is the
+/// unmanageable fullscreen foreground. Production callers pass the single
+/// captured suspend HWND; unknown (`0`) removes nothing because the lane
+/// itself never runs then (fail closed to full suspension upstream).
+pub(super) fn writable_tokens_limited(
+    state: &TileLoop,
+    output: &str,
+    workspace: &str,
+    observed: &[ObservedWindow],
+    foreground_hw: u64,
+) -> HashSet<String> {
+    let writable = writable_tokens(state, output, workspace, observed);
+    if foreground_hw == 0 {
+        return writable;
+    }
+    let foreground_tokens: HashSet<&str> = observed
+        .iter()
+        .filter(|w| w.hwnd == foreground_hw)
+        .map(|w| w.token.as_str())
+        .collect();
+    writable
+        .into_iter()
+        .filter(|token| !foreground_tokens.contains(token.as_str()))
+        .collect()
+}
+
+/// Shared per-domain geometry planning for one observed snapshot: Engine
+/// row assembly, reconcile event (focusless in the limited lane), Engine
+/// dispatch, then one non-activating geometry pass over the caller-filtered
+/// writable set. Both the normal and the limited lanes run this identical
+/// planning; only the preamble (admission/retire/visibility/close drain)
+/// and the focus/writable policy differ per lane.
+#[allow(clippy::too_many_arguments)]
+fn reconcile_domains_geometry(
+    state: &mut TileLoop,
+    me: &ProcessIdentity,
+    fulls: &[Rect],
+    areas: &[MonitorArea],
+    observed: &[ObservedWindow],
+    retained: &[RetainedRow],
+    tick: u64,
+    correlation: &CorrelationId,
+    skipped: &[(String, String)],
+    limited_fg: Option<u64>,
+) {
+    let mut hint_cx = HintCx::new();
+    for area in areas {
+        let output = area.device.clone();
+        state.workspaces.ensure_output(&output);
+        let Some(active) = state.workspaces.active_id(&output) else {
+            continue;
+        };
+        if !workspace_mode_tiled(state, &output, &active) {
+            continue;
+        }
+        if tiling_domain_bounds_with(area.work, state.outer_gap).is_none() {
+            continue;
+        }
+        let Some(rows) = assemble_domain_rows(
+            state,
+            &output,
+            &active,
+            observed,
+            retained,
+            "reconcile",
+            correlation.as_str(),
+            &mut hint_cx,
+        ) else {
+            continue;
+        };
+        let windows: Vec<(WindowId, Rect, WindowSizeHints, bool)> = rows
+            .iter()
+            .map(|r| (WindowId(r.token.clone()), r.rect, r.hints, r.floating))
+            .collect();
+        let fp = fingerprint(
+            &rows
+                .iter()
+                .map(|r| (r.token.clone(), r.rect))
+                .collect::<Vec<_>>(),
+        );
+        // The limited lane never forwards focus: automatic focus stays
+        // blocked under an unmanageable fullscreen even when the Engine
+        // could plan it. The normal lane keeps the existing foreground
+        // rule untouched.
+        let focused = match limited_fg {
+            Some(_) => None,
+            None => state
+                .focused_token(observed)
+                .filter(|f| windows.iter().any(|(w, _, _, _)| w == f)),
+        };
+        let Some((domain, domain_key)) =
+            workspace_domain_for(&output, &active, areas, state.inner_gap, state.outer_gap)
+        else {
+            continue;
+        };
+        let gaps_adopted = crate::settings::retained_gaps_match(
+            &state.engine,
+            &domain_key,
+            state.inner_gap,
+            state.outer_gap,
+        );
+        let mut event = crate::tiling::build_reconcile_event_for_floating(
+            &state.owner,
+            &state.generation,
+            correlation,
+            revision_for(state, &output, &active),
+            fp,
+            &domain,
+            &domain_key,
+            state.outer_gap,
+            &windows,
+            focused.as_ref(),
+        );
+        if !gaps_adopted {
+            event.command = CoreCommand::UpdateGaps;
+        }
+        let reply = handle_engine_event(state, &mut event);
+        log_engine_placement_trace(state, tick, correlation.as_str(), "reconcile");
+        let writable = match limited_fg {
+            Some(fg) => writable_tokens_limited(state, &output, &active, observed, fg),
+            None => writable_tokens(state, &output, &active, observed),
+        };
+        apply_geometry(
+            state,
+            ApplyInput {
+                me,
+                fulls,
+                reply: &reply,
+                observed,
+                op: "reconcile",
+                tick,
+                correlation: correlation.as_str(),
+                skipped: skipped.to_vec(),
+                writable: &writable,
+                output_token: state.workspaces.output_token(&output),
+                workspace_token: state.workspaces.workspace_token(&output, &active),
+                revision: revision_for(state, &output, &active),
+            },
+        );
+        if limited_fg.is_none() {
+            adopt_tick_capacity_floats(
+                state,
+                me,
+                tick,
+                correlation.as_str(),
+                &reply,
+                observed,
+                &domain_key,
+            );
+        }
+    }
+}
 /// Auto-retire positively restored owned-fullscreen markers on verified
 /// workspace members through the shared exact-lifetime sequence, so no
 /// special clear action is needed to trigger it. Global game/elevated gate
@@ -208,114 +361,82 @@ pub(super) fn reconcile_tick(
         );
     }
     // One shared hint-query budget for the whole tick across all outputs:
-    // no domain independently blows the per-operation bound.
-    let mut hint_cx = HintCx::new();
-    for area in areas {
-        let output = area.device.clone();
-        state.workspaces.ensure_output(&output);
-        let Some(active) = state.workspaces.active_id(&output) else {
-            continue;
-        };
-        // Floating workspaces leave frames untouched: no Engine reconcile
-        // and no geometry writes for that domain. Membership, hide/reveal,
-        // and the independent active border still run.
-        if !workspace_mode_tiled(state, &output, &active) {
-            continue;
-        }
-        if tiling_domain_bounds_with(area.work, state.outer_gap).is_none() {
-            continue;
-        }
-        // Incomplete snapshot defers with retained Engine state: a falsely
-        // complete observation would drop membership and layout.
-        let Some(rows) = assemble_domain_rows(
-            state,
-            &output,
-            &active,
-            &observed,
-            &retained,
-            "reconcile",
-            correlation.as_str(),
-            &mut hint_cx,
-        ) else {
-            continue;
-        };
-        let windows: Vec<(WindowId, Rect, WindowSizeHints, bool)> = rows
-            .iter()
-            .map(|r| (WindowId(r.token.clone()), r.rect, r.hints, r.floating))
-            .collect();
-        let fp = fingerprint(
-            &rows
-                .iter()
-                .map(|r| (r.token.clone(), r.rect))
-                .collect::<Vec<_>>(),
-        );
-        let focused = state
-            .focused_token(&observed)
-            .filter(|f| windows.iter().any(|(w, _, _, _)| w == f));
-        let Some((domain, domain_key)) =
-            workspace_domain_for(&output, &active, areas, state.inner_gap, state.outer_gap)
-        else {
-            continue;
-        };
-        // Retained gap drift adopts through the topology-preserving
-        // update-gaps path: plain reconcile refuses domain-mismatch instead
-        // of adopting it, and fresh domains still seed via reconcile.
-        let gaps_adopted = crate::settings::retained_gaps_match(
-            &state.engine,
-            &domain_key,
-            state.inner_gap,
-            state.outer_gap,
-        );
-        let mut event = crate::tiling::build_reconcile_event_for_floating(
-            &state.owner,
-            &state.generation,
-            &correlation,
-            revision_for(state, &output, &active),
-            fp,
-            &domain,
-            &domain_key,
-            state.outer_gap,
-            &windows,
-            focused.as_ref(),
-        );
-        if !gaps_adopted {
-            event.command = CoreCommand::UpdateGaps;
-        }
-        let reply = handle_engine_event(state, &mut event);
-        log_engine_placement_trace(state, tick, correlation.as_str(), "reconcile");
-        let writable = writable_tokens(state, &output, &active, &observed);
-        apply_geometry(
-            state,
-            ApplyInput {
-                me,
-                fulls,
-                reply: &reply,
-                observed: &observed,
-                op: "reconcile",
-                tick,
-                correlation: correlation.as_str(),
-                skipped: skipped.clone(),
-                writable: &writable,
-                output_token: state.workspaces.output_token(&output),
-                workspace_token: state.workspaces.workspace_token(&output, &active),
-                revision: revision_for(state, &output, &active),
-            },
-        );
-        // Best-effort adoption: committed capacity floats join the
-        // ordinary float lanes through the shared tick helper below.
-        adopt_tick_capacity_floats(
-            state,
-            me,
-            tick,
-            correlation.as_str(),
-            &reply,
-            &observed,
-            &domain_key,
-        );
-    }
+    // no domain independently blows the per-operation bound. The normal
+    // lane runs the identical geometry planning as the limited lane (see
+    // `reconcile_domains_geometry`); only the preamble above and the
+    // close drain below are normal-lane only.
+    reconcile_domains_geometry(
+        state,
+        me,
+        fulls,
+        areas,
+        &observed,
+        &retained,
+        tick,
+        &correlation,
+        &skipped,
+        None,
+    );
     // D23: queued closes homed outside the selected set (hidden/inactive
     // workspaces) drain through ordinary observations here, before any later
     // registry pruning can strand them. Engine commits only; hidden domains
     // take no geometry or focus writes.
     fanout_pending_closed(state, me, areas, &observed, &retained, correlation.as_str());
+}
+
+/// Narrow geometry-only lane for an unmanageable fullscreen foreground:
+/// one observation, then the shared per-domain geometry planning with the
+/// foreground excluded per write, focus forced off, and no other effects.
+///
+/// Deliberately runs none of the normal preamble/postamble, each of which
+/// can natively touch windows or membership:
+/// - no `ensure_workspace_assignments` (fresh roster admits nothing; only
+///   already-member windows are writable through the membership-keyed
+///   `writable_tokens_limited` plus the per-write stored-tag revalidation);
+/// - no `clear_maximize_at_admission` (no `restore_zoom_placement`
+///   un-maximize, which can activate);
+/// - no stale-fullscreen sweep, visibility/exception staging, close drain,
+///   or capacity-float adoption (no marker, hide, Engine-close, or float
+///   moves);
+/// - no `publish_managed`/maintenance/focus/overlay refresh by the caller
+///   (the shared geometry readback still refreshes its in-memory managed
+///   snapshot; that publishes no native writes).
+///
+/// Unknown foreground (`0`) refuses with no planning: fail closed to full
+/// suspension upstream.
+pub(super) fn reconcile_limited_tick(
+    state: &mut TileLoop,
+    me: &ProcessIdentity,
+    fulls: &[Rect],
+    areas: &[MonitorArea],
+    foreground_hw: u64,
+) {
+    if foreground_hw == 0 {
+        return;
+    }
+    state.tick += 1;
+    let tick = state.tick;
+    let correlation = state.correlation();
+    let mut skipped: Vec<(String, String)> = Vec::new();
+    let mut retained: Vec<RetainedRow> = Vec::new();
+    let log_path = state.log_path.clone();
+    let Some(observed) = state.observe(me, fulls, &mut skipped, &mut retained) else {
+        log_json_at(
+            &log_path,
+            serde_json::json!({"event":"tick-skip","tick":tick,"cause":"enum-failed"}),
+        );
+        return;
+    };
+    reconcile_domains_geometry(
+        state,
+        me,
+        fulls,
+        areas,
+        &observed,
+        &retained,
+        tick,
+        &correlation,
+        &skipped,
+        Some(foreground_hw),
+    );
 }

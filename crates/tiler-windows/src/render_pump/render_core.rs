@@ -285,8 +285,17 @@ impl<P: Present> RenderCore<P> {
             ),
             Ok(()) => {
                 let presented = self.present.show_border(desired);
+                // Preserve every completed query: the ack slot below is
+                // latest-wins, so a second present before the owner poll
+                // would overwrite the first ack and its diagnostic. The
+                // queue (drained on every poll plus the stop wait) keeps
+                // each actual query exactly once; the ack post that follows
+                // already wakes the owner, so no new wake is needed.
+                if let Some(report) = presented.accent_query {
+                    self.channels.push_accent_query(report);
+                }
                 let fallback = crate::active_border::render_color(desired.color);
-                let applied = AppliedContent::new(
+                let mut applied = AppliedContent::new(
                     &desired.target_token,
                     [
                         desired.outer.x,
@@ -302,6 +311,7 @@ impl<P: Present> RenderCore<P> {
                     desired.topmost,
                     0,
                 );
+                applied.accent_sourced = presented.accent_sourced;
                 self.post_presented(
                     carrier,
                     desired.generation,
@@ -566,6 +576,10 @@ impl<P: Present> RenderCore<P> {
         identity_proven: bool,
         applied: AppliedContent,
     ) {
+        // Per-query diagnostics travel via the channels queue (pushed in
+        // `present_border`, including failed presents), never the
+        // latest-wins ack: a second present before the owner poll must not
+        // drop the first query's record.
         if matches!(presented.outcome, RenderOutcome::Hidden) {
             if self.hide_verified(carrier) {
                 self.post_ack(
@@ -650,4 +664,98 @@ impl<P: Present> RenderCore<P> {
 /// Elapsed microseconds since `started`, saturating.
 fn span_us_since(started: Instant) -> u64 {
     started.elapsed().as_micros().try_into().unwrap_or(u64::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::active_border::{
+        AccentInit, AccentQueryOutcome, AccentQueryReport, AccentQueryRole, AccentQuerySurface,
+        AccentQueryTrigger, SystemAccent,
+    };
+    use tiler_core::geometry::Rect;
+
+    fn lifetime_for(hwnd: u64) -> WindowLifetime {
+        WindowLifetime {
+            pid: 4000 + hwnd as u32,
+            creation: format!("creation-{hwnd}"),
+            member_tag: Some(format!("tag-{hwnd}")),
+        }
+    }
+
+    fn border_frame(generation: u64, x: i32, hwnd: u64) -> DesiredFrame {
+        DesiredFrame::Border(BorderDesired {
+            generation,
+            safety: 0,
+            outer: Rect {
+                x,
+                y: 0,
+                w: 100,
+                h: 80,
+            },
+            style_px: (3, 0, 6),
+            color: (0x2a, 0x82, 0xda),
+            accent: None,
+            use_theme: true,
+            target_token: format!("token-{hwnd}"),
+            target_hwnd: hwnd,
+            lifetime: lifetime_for(hwnd),
+            foreground: lifetime_for(hwnd),
+            fulls: vec![Rect {
+                x: 0,
+                y: 0,
+                w: 1920,
+                h: 1080,
+            }],
+            fullscreen_bypass: false,
+            topmost: false,
+        })
+    }
+
+    fn report(version: u64) -> AccentQueryReport {
+        AccentQueryReport {
+            surface: AccentQuerySurface::Border,
+            role: AccentQueryRole::Renderer,
+            trigger: AccentQueryTrigger::Broadcast,
+            version,
+            init: AccentInit::Already,
+            init_hr: 1,
+            activate_hr: Some(0),
+            query_hr: Some(0),
+            raw: Some(SystemAccent {
+                color: (0x2a, 0x82, 0xda),
+                alpha: 0xFF,
+            }),
+            outcome: AccentQueryOutcome::Accent,
+            fallback_reason: None,
+            resolved: (0x2a, 0x82, 0xda),
+        }
+    }
+
+    #[test]
+    fn two_query_presents_before_one_poll_keep_both_reports() {
+        // Two border presents complete before the owner polls: the second ack
+        // overwrites the first (latest-wins), but the queue preserves both
+        // completed queries in order for the single owner drain.
+        let channels = Arc::new(RenderChannels::new());
+        let mut present = FakePresent::new();
+        present.accent_queries.push_back(report(3));
+        present.accent_queries.push_back(report(4));
+        let mut core = RenderCore::new(present, Arc::clone(&channels));
+        channels.post(border_frame(1, 10, 1001));
+        core.step();
+        channels.post(border_frame(2, 20, 1001));
+        core.step();
+        // The ack slot holds only the latest present...
+        let ack = channels
+            .take_ack(RenderCarrier::Border)
+            .expect("latest ack");
+        assert_eq!(ack.generation, 2);
+        // ...but both query diagnostics survived for one drain.
+        let queued = channels.take_accent_queries();
+        assert_eq!(queued.len(), 2, "every completed query preserved");
+        assert_eq!(queued[0].version, 3);
+        assert_eq!(queued[1].version, 4);
+        assert!(channels.take_accent_queries().is_empty());
+    }
 }

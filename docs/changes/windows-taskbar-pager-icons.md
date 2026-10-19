@@ -6,6 +6,11 @@
   miniature, preserving the existing pager geometry, labels, selection and
   safety gates. Missing icons leave the existing rectangle unchanged.
 - Extend the existing opaque GDI painter, not the overlay hosting model.
+- User-requested 2026-10-19 styling: icons at 50% opacity; larger bold workspace
+  numbers, followed by centered black outlines instead of offset drop shadows,
+  without changing geometry or label centering.
+- Active-workspace fill follows the Windows accent independently of border
+  theme on/off, falling back to the existing blue when unavailable.
 - Classic Win32 icons are in scope. Exact packaged-app artwork is conditional
   on obtainable window/class icons; package/AUMID shell resolution is deferred.
 
@@ -31,14 +36,55 @@
   not access foreign windows or wait for icon discovery.
 - Native locked four-package build/test/strict all-target clippy, workspace
   format check and diff check. Inspect portable cfg boundaries separately.
-- Physical appearance, alpha-edge quality, icon refresh, DPI changes and native
-  resource stability require user-run acceptance. No live evidence yet.
+- Icon/number appearance and centered halo physically user-accepted 2026-10-19.
+  Wider alpha-edge/icon-refresh/DPI variants and native resource
+  stability retain their separate acceptance scope below.
 
 ## Material decisions and current outcome
 
 - Use the existing opaque miniature background when composing icon pixels.
   Premultiplied alpha for UpdateLayeredWindow is not applicable to this painter;
   changing to layered hosting is out of scope.
+- Styling delivered offline 2026-10-19: after GDI composes source-alpha artwork
+  over miniature gray, blend the flattened RGB toward that same gray with artwork
+  weight 128/255 (about 50%). Transparent regions stay gray and alpha edges keep
+  their gradient; cached bytes remain opaque for the existing SRCCOPY painter.
+  Numbers use 10pt Segoe UI Bold (700), up from 9pt regular. User physically
+  accepted the softened icons/bold numbers with offset shadow on 2026-10-19.
+  The subsequent request replaces that shadow with a zero-offset black halo:
+  eight surrounding text copies at one DPI-scaled logical pixel radius (1 physical
+  px at 96 DPI; 2 at 144/192 DPI), then white at the unchanged center. Base label
+  centering, icon sizing, cells, strip and tray gap stay unchanged. Font handles
+  retain existing window-owned cleanup; halo painting creates no GDI object.
+  The centered halo was physically user-accepted 2026-10-19; wider DPI acceptance
+  remains pending.
+- Accent delivered offline 2026-10-19: the active fill now shares the documented
+  WinRT Personalization-accent resolver with the border, not a hardcoded blue.
+  It ignores the border theme switch but shares the positive-alpha availability
+  guard; unavailable queries fall back to `#2a82da`. Both existing theme/color
+  broadcasts invalidate one owner cache shared by both surfaces without polling; renderer-only
+  notifications wake the owner, and suppressed strips refresh on reshow.
+  Pending fill/source survives creation backoff, and normal logs disclose
+  accent/fallback transitions even at identical RGB. No painter-time query,
+  geometry or saved-settings change. Source/implementation/gate evidence is in
+  the [dogfood record](windows-single-output-dogfood.md). Shared border/pager
+  accent parity was physically user-accepted 2026-10-19; idle notification repaint
+  remains separately unverified. Subsequent same-day black-accent reports reopen
+  startup reliability: one incident reports a black pager accent alongside the
+  correct border accent. Subsequent diagnostic runs localized native startup
+  crashes to activation-factory vtable dispatch; black-value causality remains
+  unproven. The owner-lifetime/shared-snapshot correction bypasses the static
+  factory cache, and the renderer no longer queries WinRT. Corrected startup
+  reliability physically user-accepted 2026-10-19: 10/10 starts succeeded with
+  correct accent on both border and pager. Idle refresh and wider variants remain
+  pending; see the linked investigation.
+- Per-query accent diagnostics and trace-only query/creation stages are now
+  delivered for several user-run starts plus an accent-change discriminator.
+  Cache hits stay silent, prior transition-only pager-gate diagnostics remain
+  unchanged. That diagnostic-only delivery did not alter lifetime/cache behavior;
+  the subsequent reliability correction does. New shared-source records report
+  one owner resolve per observed version, cached scope-init HRESULT and raw ARGB;
+  trace stages remain synchronous and no cache read fabricates a query.
 - Omit unavailable icons rather than introduce a new fallback glyph. Host or
   executable artwork may be less specific than a packaged application's icon.
 - Implemented: `pager_icons.rs` holds portable sizing/cache/channel policy;
@@ -85,8 +131,8 @@
   macOS ([run](https://github.com/beefsack/OmniTiler/actions/runs/38816412355)).
 - Lifecycle/outcome logs contain only bounded source/result counts and retry
   reasons, never window titles, executable paths or other application content.
-- Implementation is ready for native appearance acceptance, not live-accepted.
-  Keep this record active until that evidence exists.
+- Icon/number appearance, centered halo and shared accent parity physically
+  user-accepted 2026-10-19; keep this record active for remaining native variants.
 - Native 2026-10-17 resource samples plateaued over 5.5 minutes (GDI 17, USER
   29, process handles settling to 204). Calculator lookup missed as expected;
   its hosted window paints a plain gray miniature. An earlier missing-miniature
@@ -96,6 +142,17 @@
   [lifecycle evidence](archive/windows-taskbar-pager-lifecycle.md).
 
 ## Pending user-run native acceptance
+
+- Stacking correction physically user-accepted 2026-10-19 in the
+  [single-output dogfood record](windows-single-output-dogfood.md): miniatures
+  now paint back-to-front from the existing native enumeration, including
+  retained overlays. Hidden members retain their last observed relative order;
+  unknown order falls back deterministically. No additional native/paint/icon
+  queries. Native occlusion and icon/number styling passed user physical acceptance;
+  the subsequent centered halo also passed physical acceptance. Post-halo offline
+  gates: Windows library 1,209/0/1; native painter 6/0; pager filter 64/0;
+  locked five-package build/clippy and four-package tests 2,859/0/1 passed, as did
+  workspace format, unsafe guardrail and diff checks (see linked record).
 
 Follow [the live Windows guide](../live-windows-testing.md): bind the tested
 artifact hash and exact owner identity, capture geometry/DPI and affected-window
@@ -107,7 +164,8 @@ ordinary medium-integrity applications, not games or protected windows.
    `mise exec -- just dev trace --no-keyboard-snap-takeover --no-mouse-snap-prevention --scope-exe notepad.exe --scope-exe mspaint.exe --scope-exe CalculatorApp.exe --scope-exe ApplicationFrameHost.exe --scope-host-child ApplicationFrameHost.exe=CalculatorApp.exe`.
    This is a proposed acceptance run, not evidence it has been executed.
 2. Inspect active and hidden-workspace miniatures: centred recognisable icons
-   when available, no black/opaque-alpha fringe, unchanged borders/numbers,
+    when available at half opacity, no black/opaque-alpha fringe, unchanged borders,
+    larger bold white numbers within a centered black outline at the same position,
    unchanged tray gap and no focus change on pager clicks. Calculator may omit
    its icon; do not accept host executable artwork as exact app resolution.
 3. Resize to make a miniature cross the minimum size: icon disappears/reappears

@@ -22,6 +22,7 @@ fn border_frame(generation: u64, safety: u64, x: i32) -> DesiredFrame {
         },
         style_px: (3, 0, 6),
         color: (0x2a, 0x82, 0xda),
+        accent: None,
         use_theme: false,
         target_token: format!("token-{generation}"),
         target_hwnd: 1000 + generation,
@@ -198,6 +199,45 @@ fn wait_ack_ignores_older_generation() {
     let channels = Arc::new(RenderChannels::new());
     channels.post_ack(RenderCarrier::Border, ack_for(3, 3));
     assert!(!channels.wait_ack(RenderCarrier::Border, 9, 3, Duration::from_millis(50)));
+}
+
+#[test]
+fn accent_query_queue_preserves_every_completed_query() {
+    use crate::active_border::{
+        AccentInit, AccentQueryOutcome, AccentQueryReport, AccentQueryRole, AccentQuerySurface,
+        AccentQueryTrigger, SystemAccent,
+    };
+    fn report(version: u64) -> AccentQueryReport {
+        AccentQueryReport {
+            surface: AccentQuerySurface::Border,
+            role: AccentQueryRole::Renderer,
+            trigger: AccentQueryTrigger::Broadcast,
+            version,
+            init: AccentInit::Already,
+            init_hr: 1,
+            activate_hr: Some(0),
+            query_hr: Some(0),
+            raw: Some(SystemAccent {
+                color: (0x2a, 0x82, 0xda),
+                alpha: 0xFF,
+            }),
+            outcome: AccentQueryOutcome::Accent,
+            fallback_reason: None,
+            resolved: (0x2a, 0x82, 0xda),
+        }
+    }
+    // Unlike the latest-wins ack slot, the queue keeps every completed
+    // query in order: overwrite is impossible by construction, so a second
+    // present before the owner poll loses nothing.
+    let channels = RenderChannels::new();
+    assert!(channels.take_accent_queries().is_empty());
+    channels.push_accent_query(report(3));
+    channels.push_accent_query(report(4));
+    let drained = channels.take_accent_queries();
+    assert_eq!(drained.len(), 2);
+    assert_eq!(drained[0].version, 3);
+    assert_eq!(drained[1].version, 4);
+    assert!(channels.take_accent_queries().is_empty());
 }
 
 #[test]

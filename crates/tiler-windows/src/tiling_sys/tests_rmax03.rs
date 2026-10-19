@@ -29,6 +29,7 @@ pub(super) fn test_state() -> TileLoop {
         scope_hosts: Vec::new(),
         trace: false,
         suspended: false,
+        suspended_limited: false,
         last_summary: None,
         // NUL log sink: no test asserts on log bytes, and a relative
         // file would interleave garbage across parallel tests into the
@@ -71,10 +72,12 @@ pub(super) fn test_state() -> TileLoop {
         pager_primary: None,
         pager_secondaries: Vec::new(),
         pager_live: std::collections::HashMap::new(),
+        pager_z: Vec::new(),
         pager_icon_cache: crate::pager_icons::PagerIconCache::new(),
         pager_icon_service: None,
         pager_icon_retry_at: None,
         pager_suppress_last: None,
+        pager_gate_last: None,
         pager_refusals: std::collections::HashMap::new(),
         workspace_proof: false,
         maximize_admission_attempted: std::collections::HashSet::new(),
@@ -105,6 +108,9 @@ pub(super) fn test_state() -> TileLoop {
         border: crate::active_border::ActiveBorderOptions::default(),
         border_overlay: crate::active_border_sys::BorderOverlay::default(),
         border_last: None,
+        accent_seen: 0,
+        accent_shared: crate::active_border::AccentCache::default(),
+        accent_owner: crate::ffi::OwnerAccentSource::new(),
         underlay: crate::group_underlay::GroupUnderlayOptions::default(),
         underlay_overlay: crate::active_border_sys::UnderlayOverlay::default(),
         underlay_last: None,
@@ -351,13 +357,13 @@ fn floating_retained_max_stays_slotless_then_tiled_seeds_and_plans() {
 
 #[test]
 fn select_departure_remembers_live_fullscreen_game_for_return() {
-    // REQ-WS-09: the chord-time game origin still holds live foreground
-    // at dispatch, so the source remembers it before hiding. A slotless
-    // born-fullscreen game carries membership (`admit_born_fullscreen`)
-    // and rides the retained overlay row, so the return `focus_target`
-    // restores it while `writable_tokens` still excludes it. Table
-    // negatives pin exact identity, source membership, and liveness.
-    // Hermetic: fabricated keys/tokens/rows only.
+    // REQ-WS-09: the dispatch-time foreground resolves directly against
+    // verified source membership, so the source remembers it before hiding.
+    // A slotless born-fullscreen game carries membership and rides the
+    // retained overlay row, so the return `focus_target` restores it while
+    // `writable_tokens` still excludes it. Table pins actual-foreground
+    // identity, source membership, and liveness; stale/missing origins never
+    // authorize or block. Hermetic: fabricated keys/tokens/rows only.
     use std::collections::HashSet;
     let output = "mon-9".to_owned();
     let game_key = crate::workspace::WindowKey {
@@ -378,12 +384,6 @@ fn select_departure_remembers_live_fullscreen_game_for_return() {
     let game_token = "tok-game".to_owned();
     let steam_token = "tok-steam".to_owned();
     let other_token = "tok-other".to_owned();
-    let game_origin = crate::snapkey::SnapOrigin {
-        hwnd: 501,
-        token: game_token.clone(),
-        pid: 7,
-        creation: "creation-game".to_owned(),
-    };
     let rect = tiler_core::geometry::Rect {
         x: 0,
         y: 0,
@@ -430,6 +430,14 @@ fn select_departure_remembers_live_fullscreen_game_for_return() {
         rect: None,
         maximized: false,
         fullscreen: true,
+        facts: None,
+    };
+    let mk_max_row = || RetainedRow {
+        key: game_key.clone(),
+        token: game_token.clone(),
+        rect: None,
+        maximized: true,
+        fullscreen: false,
         facts: None,
     };
     // Stale sibling memory on ws1 plus a bystander on ws2.
@@ -483,20 +491,21 @@ fn select_departure_remembers_live_fullscreen_game_for_return() {
             .eligible_focus_set(&members, &state.member_tokens, &fresh);
         state.workspaces.focus_target(&output, ws1, &eligible)
     };
-    // Live game: remembered, restored, and still geometry-exempt.
+    let remember = |state: &mut TileLoop,
+                    ws1: &str,
+                    foreground: u64,
+                    observed: &[super::ObservedWindow],
+                    retained: &[RetainedRow]| {
+        super::remember_select_departure(state, &output, ws1, foreground, observed, retained)
+    };
+    // Live fullscreen game: remembered, restored, and still geometry-exempt,
+    // despite a missing origin entry.
     let (mut state, ws1) = setup();
+    assert!(state.snap_origins.is_empty());
     let observed = [mk_observed(502, steam_token.clone(), 8, "creation-steam")];
     let retained = [mk_game_row()];
     assert_eq!(
-        super::remember_select_departure(
-            &mut state,
-            &game_origin,
-            &output,
-            &ws1,
-            501,
-            &observed,
-            &retained
-        ),
+        remember(&mut state, &ws1, 501, &observed, &retained),
         Some(game_token.clone())
     );
     assert_eq!(
@@ -510,107 +519,130 @@ fn select_departure_remembers_live_fullscreen_game_for_return() {
         !writable.contains(&game_token),
         "fullscreen game takes no geometry writes"
     );
-    // Changed foreground remembers nothing.
+    // Live maximized game: same overlay path with the maximized flag.
     let (mut state, ws1) = setup();
     let observed = [mk_observed(502, steam_token.clone(), 8, "creation-steam")];
+    let retained = [mk_max_row()];
+    assert_eq!(
+        remember(&mut state, &ws1, 501, &observed, &retained),
+        Some(game_token.clone())
+    );
+    assert_eq!(
+        return_target(&state, &ws1, &observed, &retained),
+        Some(game_key.clone())
+    );
+    assert!(!writable_tokens(&state, &output, &ws1, &observed).contains(&game_token));
+    // Stale origin never authorizes: actual fresh steam foreground remembers
+    // steam even when the origins map still points at the game.
+    let (mut state, ws1) = setup();
+    state.snap_origins.insert(
+        501,
+        crate::snapkey::SnapOrigin {
+            hwnd: 501,
+            token: game_token.clone(),
+            pid: 7,
+            creation: "creation-game".to_owned(),
+        },
+    );
+    let observed = [
+        mk_observed(501, game_token.clone(), 7, "creation-game"),
+        mk_observed(502, steam_token.clone(), 8, "creation-steam"),
+    ];
     let retained = [mk_game_row()];
     assert_eq!(
-        super::remember_select_departure(
-            &mut state,
-            &game_origin,
-            &output,
-            &ws1,
-            502,
-            &observed,
-            &retained
-        ),
-        None
+        remember(&mut state, &ws1, 502, &observed, &retained),
+        Some(steam_token.clone())
     );
     assert_eq!(
         return_target(&state, &ws1, &observed, &retained),
         Some(steam_key.clone())
     );
-    // Wrong token: no member maps, nothing remembered.
+    // Ordinary fresh member foreground remembers directly.
     let (mut state, ws1) = setup();
-    let observed = [mk_observed(502, steam_token.clone(), 8, "creation-steam")];
-    let retained = [mk_game_row()];
-    let evil = crate::snapkey::SnapOrigin {
-        hwnd: 501,
-        token: "tok-evil".to_owned(),
-        pid: 7,
-        creation: "creation-game".to_owned(),
-    };
+    let observed = [
+        mk_observed(501, game_token.clone(), 7, "creation-game"),
+        mk_observed(502, steam_token.clone(), 8, "creation-steam"),
+    ];
+    let retained: [RetainedRow; 0] = [];
     assert_eq!(
-        super::remember_select_departure(
-            &mut state, &evil, &output, &ws1, 501, &observed, &retained
-        ),
-        None
+        remember(&mut state, &ws1, 502, &observed, &retained),
+        Some(steam_token.clone())
     );
     assert_eq!(
         return_target(&state, &ws1, &observed, &retained),
         Some(steam_key.clone())
     );
-    // PID mismatch: a recycled identity never matches.
+    // Nonmember HWND remembers nothing.
     let (mut state, ws1) = setup();
     let observed = [mk_observed(502, steam_token.clone(), 8, "creation-steam")];
     let retained = [mk_game_row()];
-    let recycled = crate::snapkey::SnapOrigin {
-        hwnd: 501,
-        token: game_token.clone(),
-        pid: 999,
-        creation: "creation-game".to_owned(),
-    };
-    assert_eq!(
-        super::remember_select_departure(
-            &mut state, &recycled, &output, &ws1, 501, &observed, &retained
-        ),
-        None
-    );
+    assert_eq!(remember(&mut state, &ws1, 999, &observed, &retained), None);
     assert_eq!(
         return_target(&state, &ws1, &observed, &retained),
         Some(steam_key.clone())
     );
-    // Other-workspace origin: source membership required.
+    // Wrong workspace: foreground belongs to ws2, source is ws1.
     let (mut state, ws1) = setup();
     let observed = [
         mk_observed(502, steam_token.clone(), 8, "creation-steam"),
         mk_observed(503, other_token.clone(), 9, "creation-other"),
     ];
     let retained = [mk_game_row()];
-    let elsewhere = crate::snapkey::SnapOrigin {
-        hwnd: 503,
-        token: other_token.clone(),
-        pid: 9,
-        creation: "creation-other".to_owned(),
-    };
-    assert_eq!(
-        super::remember_select_departure(
-            &mut state, &elsewhere, &output, &ws1, 503, &observed, &retained
-        ),
-        None
-    );
+    assert_eq!(remember(&mut state, &ws1, 503, &observed, &retained), None);
     assert_eq!(
         return_target(&state, &ws1, &observed, &retained),
         Some(steam_key.clone())
     );
+    // Recycled identity: same HWND, fresh PID disagrees.
+    let (mut state, ws1) = setup();
+    let observed = [mk_observed(502, steam_token.clone(), 999, "creation-steam")];
+    let retained = [mk_game_row()];
+    assert_eq!(remember(&mut state, &ws1, 502, &observed, &retained), None);
+    assert_eq!(
+        return_target(&state, &ws1, &observed, &retained),
+        Some(steam_key.clone())
+    );
+    // Token mismatch on the fresh read: recycled token never matches.
+    let (mut state, ws1) = setup();
+    let observed = [mk_observed(502, "tok-evil".to_owned(), 8, "creation-steam")];
+    let retained = [mk_game_row()];
+    assert_eq!(remember(&mut state, &ws1, 502, &observed, &retained), None);
+    // Retained token mismatch: overlay row for another token never verifies.
+    let (mut state, ws1) = setup();
+    let observed = [mk_observed(502, steam_token.clone(), 8, "creation-steam")];
+    let retained = [RetainedRow {
+        key: game_key.clone(),
+        token: "tok-evil".to_owned(),
+        rect: None,
+        maximized: false,
+        fullscreen: true,
+        facts: None,
+    }];
+    assert_eq!(remember(&mut state, &ws1, 501, &observed, &retained), None);
     // Vanished: game live nowhere (absent observed, no retained row).
     let (mut state, ws1) = setup();
     let observed = [mk_observed(502, steam_token.clone(), 8, "creation-steam")];
     let retained: [RetainedRow; 0] = [];
-    assert_eq!(
-        super::remember_select_departure(
-            &mut state,
-            &game_origin,
-            &output,
-            &ws1,
-            501,
-            &observed,
-            &retained
-        ),
-        None
-    );
+    assert_eq!(remember(&mut state, &ws1, 501, &observed, &retained), None);
     assert_eq!(
         return_target(&state, &ws1, &observed, &retained),
         Some(steam_key.clone())
     );
+    // Present but ineligible retained row (neither max nor fullscreen).
+    let (mut state, ws1) = setup();
+    let observed = [mk_observed(502, steam_token.clone(), 8, "creation-steam")];
+    let retained = [RetainedRow {
+        key: game_key.clone(),
+        token: game_token.clone(),
+        rect: None,
+        maximized: false,
+        fullscreen: false,
+        facts: None,
+    }];
+    assert_eq!(remember(&mut state, &ws1, 501, &observed, &retained), None);
+    // Zero HWND never remembers.
+    let (mut state, ws1) = setup();
+    let observed = [mk_observed(502, steam_token.clone(), 8, "creation-steam")];
+    let retained = [mk_game_row()];
+    assert_eq!(remember(&mut state, &ws1, 0, &observed, &retained), None);
 }

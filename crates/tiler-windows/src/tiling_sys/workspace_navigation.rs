@@ -165,15 +165,14 @@ pub(super) fn workspace_tick(
                 };
                 match target {
                     Some(id) => {
-                        // REQ-WS-09 departure memory: the chord-time origin
-                        // still holds live foreground, so the source
-                        // remembers it before hiding.
+                        // REQ-WS-09 departure memory: the dispatch-time
+                        // foreground resolves directly against verified
+                        // source membership, so the source remembers it
+                        // before hiding.
                         let foreground_hwnd = crate::ffi::foreground_window();
                         if let Some(source_id) = state.workspaces.active_id(&output)
-                            && let Some(origin) = intent.origin.as_ref()
                             && let Some(token) = remember_select_departure(
                                 state,
-                                origin,
                                 &output,
                                 &source_id,
                                 foreground_hwnd,

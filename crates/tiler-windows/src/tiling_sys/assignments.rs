@@ -32,6 +32,12 @@ pub(super) fn ensure_workspace_assignments(
             pid: window.identity.pid,
             creation: window.identity.process_creation.clone(),
         };
+        // Uncertain-hide ownership persists across visible observations: a
+        // prior single-path hide may have committed a durable ledger claim
+        // while its rescue re-read failed, so visibility alone never proves
+        // absence. Only authoritative durable-ledger evidence (see
+        // `audit_hidden_claims` resolution) clears the hold, never a visible
+        // read. Hidden-claim and HWND-recycle paths below stay authoritative.
         // Never re-admit a claimed HWND nonce into another domain: any
         // same-HWND hidden claim blocks assignment regardless of key.
         if state.hidden_claims.keys().any(|k| k.hwnd == window.hwnd) {
@@ -276,6 +282,35 @@ pub(super) fn audit_hidden_claims(state: &mut TileLoop, me: &ProcessIdentity, st
         drop_member_state(state, &key);
         retired_any = true;
     }
+    // Authoritative uncertain-hide resolution: visibility never clears the
+    // hold; only the durable ledger does. A readable ledger with no product
+    // entry for the HWND proves absence and clears, so a later app hide can
+    // close; a kept entry retains across visible recovery and a second hide;
+    // an unreadable ledger retains. Proven-absent clears drop the marker
+    // only, never membership, so the member still converges on its retained
+    // slot.
+    if !state.vis_diag.uncertain_hides.is_empty() {
+        match store.committed() {
+            Err(_) => {}
+            Ok(record) => {
+                let mut proven_absent = Vec::new();
+                for k in state.vis_diag.uncertain_hides.iter() {
+                    let kept = record.as_ref().is_some_and(|r| {
+                        r.owner == *me
+                            && r.windows.iter().any(|w| {
+                                w.hwnd == k.hwnd && w.kind == crate::model::WindowClaimKind::Product
+                            })
+                    });
+                    if !kept {
+                        proven_absent.push(k.clone());
+                    }
+                }
+                for k in proven_absent {
+                    state.vis_diag.uncertain_hides.remove(&k);
+                }
+            }
+        }
+    }
     if retired_any {
         // Trailing convergence through the shared scope contract (item 12
         // stage B): local keeps the exact legacy per-output loop.
@@ -325,6 +360,115 @@ fn queue_verified_close(state: &mut TileLoop, key: &crate::workspace::WindowKey)
     );
 }
 
+/// App-initiated hide as close (adapter-only, no shared-core change):
+/// a managed, lifetime-fenced, alive, invisible, uncloaked window with no
+/// tiler hide claim queues through the existing `closed_windows` path, so
+/// survivors reflow and MRU resolves under the existing close rules. Reshow
+/// is an ordinary fresh admission with no remembered slot (member state
+/// drops here, the Engine forgets the slot on acceptance).
+///
+/// Fences (all must pass, fail closed to hold with retained membership):
+/// - member with workspace location, token, and non-empty stored tag;
+/// - present in the raw enumeration inventory (`last_hwnds`);
+/// - no tiler hide claim for the key or the HWND (workspace hides hold);
+/// - no single-path uncertain-hide hold for the key or the HWND (a hide
+///   whose ledger may be kept but whose rescue re-read failed holds);
+/// - not minimized-omitted and not natively iconic (minimize holds);
+/// - live window (`IsWindow`), invisible (`IsWindowVisible` false),
+///   readable uncloaked (`DWMWA_CLOAKED` false; `None` or `true` holds as
+///   unknown/unreadable);
+/// - lifetime-fenced alive: stored tag still reads live plus owning PID
+///   still current and non-zero (unknown/unreadable holds).
+///
+/// Ledger-backed hidden retirement stays with the audit path. The joint
+/// batch registers its in-memory claim before posting, but the single-path
+/// rescue re-read is fallible: an uncertain hide whose rescue read fails
+/// leaves a durable ledger claim with no owner-table entry, covered here by
+/// the uncertain-hide hold (never a close). Restart needs no marker:
+/// ledger-hidden windows cannot admit while invisible, and the tagged
+/// lifetime fences already hold.
+fn external_hide_candidate(state: &TileLoop, key: &crate::workspace::WindowKey) -> bool {
+    if state.hidden_claims.contains_key(key)
+        || state.hidden_claims.keys().any(|k| k.hwnd == key.hwnd)
+    {
+        return false;
+    }
+    if state.vis_diag.uncertain_hides.contains(key)
+        || state
+            .vis_diag
+            .uncertain_hides
+            .iter()
+            .any(|k| k.hwnd == key.hwnd)
+    {
+        return false;
+    }
+    if !state.last_hwnds.contains(&key.hwnd) {
+        return false;
+    }
+    if state.minimized_omitted.contains(key) {
+        return false;
+    }
+    if live_is_iconic(key.hwnd) {
+        return false;
+    }
+    if !live_is_window(key.hwnd) {
+        return false;
+    }
+    if live_is_visible(key.hwnd) {
+        return false;
+    }
+    if live_cloaked(key.hwnd) != Some(false) {
+        return false;
+    }
+    let Some(stored) = state.member_tags.get(key) else {
+        return false;
+    };
+    if stored.is_empty() {
+        return false;
+    }
+    if !crate::workspace_owner::visible_lifetime_ok(stored, live_member_tag(key.hwnd).as_deref()) {
+        return false;
+    }
+    let pid = live_window_pid(key.hwnd);
+    if pid == 0 || pid != key.pid {
+        return false;
+    }
+    state.workspaces.member_loc(key).is_some()
+}
+
+/// Queue one app-initiated hide as a verified close through the existing
+/// `pending_closed`/`closed_windows` path. Requires the same token/location/
+/// tag presence as the destroyed path, but requires the tag to still read
+/// live (the window is alive and hidden, not destroyed). Empty ids never
+/// queue.
+fn queue_external_hide_close(state: &mut TileLoop, key: &crate::workspace::WindowKey) {
+    let Some(token) = state.member_tokens.get(key).cloned() else {
+        return;
+    };
+    if token.is_empty() {
+        return;
+    }
+    let Some(loc) = state.workspaces.member_loc(key).cloned() else {
+        return;
+    };
+    let Some(stored) = state.member_tags.get(key).cloned() else {
+        return;
+    };
+    if stored.is_empty() {
+        return;
+    }
+    if !crate::workspace_owner::visible_lifetime_ok(&stored, live_member_tag(key.hwnd).as_deref()) {
+        return;
+    }
+    state.pending_closed.insert(
+        token,
+        PendingClosed {
+            output: loc.output,
+            workspace: loc.workspace,
+        },
+    );
+}
+
 /// Drop membership for windows that vanished from the raw enumeration
 /// inventory. Iconic (minimized) members stay enumerated with identity, as do
 /// maximized/fullscreen/overlaid members, so only a truly absent HWND cleans
@@ -350,6 +494,32 @@ pub(super) fn workspace_close_cleanup(state: &mut TileLoop) {
     let log_path = state.log_path.clone();
     for key in gone {
         queue_verified_close(state, &key);
+        let born = state.born_fullscreen.remove(&key);
+        let token = state.member_tokens.get(&key).cloned();
+        if born && let Some(token) = token {
+            log_json_at(
+                &log_path,
+                serde_json::json!({
+                    "event": "initial-fullscreen-released",
+                    "window": token,
+                }),
+            );
+        }
+        drop_member_state(state, &key);
+    }
+    // App-initiated hide as close: managed, fenced, alive, invisible,
+    // uncloaked members with no tiler claim queue through the same
+    // `closed_windows` path and drop member state, so survivors reflow and
+    // reshow is a fresh admission. Unknown/unreadable (cloak/tag/pid) and
+    // tiler workspace hides hold with retained membership.
+    let hidden_close: Vec<crate::workspace::WindowKey> = state
+        .member_tokens
+        .keys()
+        .filter(|k| external_hide_candidate(state, k))
+        .cloned()
+        .collect();
+    for key in hidden_close {
+        queue_external_hide_close(state, &key);
         let born = state.born_fullscreen.remove(&key);
         let token = state.member_tokens.get(&key).cloned();
         if born && let Some(token) = token {
@@ -390,6 +560,29 @@ pub(super) fn workspace_close_cleanup(state: &mut TileLoop) {
     state
         .seen_nonfullscreen
         .retain(|key| state.last_hwnds.contains(&key.hwnd));
+    // Prune deferred-domain signatures by live domains so removed outputs or
+    // workspaces never leak a stale transition baseline.
+    {
+        let mut live: std::collections::BTreeSet<(String, String)> =
+            std::collections::BTreeSet::new();
+        for output in state.workspaces.output_keys() {
+            for id in state.workspaces.workspace_ids(&output) {
+                live.insert((output.clone(), id));
+            }
+        }
+        state
+            .vis_diag
+            .defer_last
+            .retain(|domain, _| live.contains(domain));
+    }
+    // Uncertain-hide holds never outlive their member and never shadow a
+    // real claim: drop with membership, and resolve where the owner table
+    // now carries the durable claim (joint-path and rescue-success inserts
+    // land between ticks without touching this file).
+    state
+        .vis_diag
+        .uncertain_hides
+        .retain(|k| state.member_tokens.contains_key(k) && !state.hidden_claims.contains_key(k));
     prune_float_state(state);
 }
 
@@ -429,33 +622,58 @@ pub(super) fn workspace_hide_one(
                     iconic,
                 },
             );
+            state.vis_diag.uncertain_hides.remove(key);
             ("hidden", None)
         }
         Err(e) => {
             // Commit-before-hide appends the durable enriched claim BEFORE the
-            // async visibility post: an already-committed claim must register
-            // in the owner table even when the post-hide readback fails, or
-            // the window is lost (hidden with no claim). Re-read the ledger
-            // for the exact key (full identity plus tag); never re-admit the
-            // claimed HWND nonce and never fabricate a rollback.
-            if let Ok(Some(record)) = store.committed()
-                && record.owner == *me
-                && let Some(durable) = record.windows.iter().find(|w| {
-                    w.hwnd == claim.hwnd
-                        && w.tag == claim.tag
-                        && w.process == claim.process
-                        && w.kind == crate::model::WindowClaimKind::Product
-                })
-            {
-                state.hidden_claims.insert(
-                    key.clone(),
-                    HiddenRecord {
-                        claim: durable.clone(),
-                        iconic,
-                    },
-                );
-            }
+            // async visibility post, so an already-committed claim should
+            // register in the owner table even when the post-hide readback
+            // fails. That rescue re-read is fallible, however: when it fails
+            // the window may be hidden with a kept ledger but no owner-table
+            // entry. The uncertain-hide hold marker covers that gap (never a
+            // close); the joint batch path needs none of this because it
+            // registers before posting. Never re-admit the claimed HWND nonce
+            // and never fabricate a rollback. The hold applies to every
+            // post-commit failure with unreadable rescue evidence, not just
+            // the `uncertain:` prefix: `error:` posts, `refuse:` readbacks and
+            // any other kept-ledger error with a failed rescue must also
+            // hold. A readable ledger with no durable entry proves no commit
+            // (pre-commit refusal or an `absent:` post that already removed
+            // its note) and takes no marker; unreadable rescue always holds
+            // until authoritative ledger evidence resolves it.
+            let (rescued, ledger_unreadable) = if rescue_read_failed() {
+                (false, true)
+            } else {
+                match store.committed() {
+                    Ok(Some(record)) if record.owner == *me => {
+                        if let Some(durable) = record.windows.iter().find(|w| {
+                            w.hwnd == claim.hwnd
+                                && w.tag == claim.tag
+                                && w.process == claim.process
+                                && w.kind == crate::model::WindowClaimKind::Product
+                        }) {
+                            state.hidden_claims.insert(
+                                key.clone(),
+                                HiddenRecord {
+                                    claim: durable.clone(),
+                                    iconic,
+                                },
+                            );
+                            state.vis_diag.uncertain_hides.remove(key);
+                            (true, false)
+                        } else {
+                            (false, false)
+                        }
+                    }
+                    Ok(_) => (false, false),
+                    Err(_) => (false, true),
+                }
+            };
             let msg = e.to_string();
+            if !rescued && ledger_unreadable {
+                state.vis_diag.uncertain_hides.insert(key.clone());
+            }
             if msg.starts_with("absent:") {
                 ("origin-vanished", None)
             } else if msg.starts_with("uncertain:") {

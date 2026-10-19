@@ -16,8 +16,9 @@
 
 use tiler_core::geometry::Rect;
 
-use crate::active_border::{ActiveBorderStyle, SystemAccent, effective_color, ring_covers};
-use crate::ffi::{dwm_colorization, take_accent_dirty};
+use crate::active_border::{
+    ActiveBorderStyle, SystemAccent, effective_color, effective_uses_accent, ring_covers,
+};
 
 #[path = "active_border_sys/carrier.rs"]
 mod carrier;
@@ -72,17 +73,10 @@ pub const fn preview_bounds_valid(outer: Rect) -> bool {
     outer.w > 0 && outer.h > 0 && outer.w <= 16384 && outer.h <= 16384
 }
 
-// Stable Win32 broadcast ids (no new dependency): the overlay procedure only
-// flags on these; the loop thread re-queries and repaints.
-
-/// Read-only system accent query: the official DWM colorization colour
-/// (`DwmGetColorizationColor`, `0xAARRGGBB`), the Windows analogue of the KDE
-/// Plasma highlight the KWin effect reads from `KColorScheme`. `None` when
-/// the API fails: callers fall back to the configured colour. No writes, no
-/// settings changes, no parameters consumed.
-fn query_system_accent() -> Option<SystemAccent> {
-    dwm_colorization().map(SystemAccent::from_colorization_dword)
-}
+// Stable Win32 broadcast ids (no new dependency): the overlay procedure
+// bumps the shared accent version on these; the owner resolves once per
+// version into its shared cache and every consumer paints from that single
+// snapshot.
 
 /// Outcome of one overlay update, for bounded logging.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,10 +95,17 @@ pub struct BorderOverlay {
     outer: Option<Rect>,
     style_px: Option<(i32, i32, i32)>,
     color: Option<(u8, u8, u8)>,
-    /// Last queried system accent (`None` until the first show or when the
-    /// query fails): refreshed only on the WndProc dirty flag, compared
-    /// through `effective_color` so an accent change repaints via the
-    /// existing colour comparison with no extra paint path.
+    /// Whether the last resolved ring colour came from an available live
+    /// accent (vs the configured fallback). Rides the change signature so
+    /// a source flip logs even when both paints share one RGB; the repaint
+    /// decision itself stays colour-based.
+    from_accent: bool,
+    /// Last observed shared accent snapshot (`None` until the first owner
+    /// resolve or while the source is unavailable): painted through
+    /// `effective_color` so an accent change repaints via the existing colour
+    /// comparison with no extra paint path. Owned by the single shared
+    /// owner cache; this overlay never queries, it only paints the snapshot
+    /// its caller observed.
     accent: Option<SystemAccent>,
     target_token: Option<String>,
     topmost: bool,
@@ -135,6 +136,14 @@ impl BorderOverlay {
     #[must_use]
     pub fn current_color(&self) -> Option<(u8, u8, u8)> {
         self.color
+    }
+
+    /// Whether the last resolved ring colour came from an available live
+    /// accent (vs the configured fallback). Honest source reporting: never
+    /// claims the accent when the query was unavailable.
+    #[must_use]
+    pub const fn from_accent(&self) -> bool {
+        self.from_accent
     }
 
     /// Opaque target token currently shown, if any. Lets the renderer admit
@@ -213,6 +222,7 @@ impl BorderOverlay {
             self.outer = None;
             self.style_px = None;
             self.color = None;
+            self.from_accent = false;
             self.accent = None;
             self.target_token = None;
             self.topmost = false;
@@ -229,6 +239,7 @@ impl BorderOverlay {
         self.outer = None;
         self.style_px = None;
         self.color = None;
+        self.from_accent = false;
         self.accent = None;
         self.target_token = None;
         self.topmost = false;
@@ -251,6 +262,11 @@ impl BorderOverlay {
     /// never over unrelated topmost or shell UI. No foreign attribute
     /// writes; `target_hwnd` is the refresh's fresh foreground HWND, never
     /// a stale cache.
+    /// `accent` is the already-observed shared owner snapshot for this
+    /// version: the overlay never queries, it only paints the snapshot its
+    /// caller resolved. A changed snapshot repaints through the colour
+    /// comparison below, so the caller must pass the current snapshot on
+    /// every show (including `Unchanged` probes).
     #[allow(clippy::too_many_arguments)]
     pub fn show_at(
         &mut self,
@@ -262,15 +278,11 @@ impl BorderOverlay {
         target_token: &str,
         topmost: bool,
         target_hwnd: u64,
+        accent: Option<SystemAccent>,
     ) -> OverlayOutcome {
-        // Accent first, before the equality check: a theme change must miss
-        // neither the repaint (colour comparison below) nor the first show.
-        // Sticky flag plus first-show query means no broadcast is missed; the
-        // comparison makes an unchanged accent a no-op without repaint.
-        if self.accent.is_none() || take_accent_dirty() {
-            self.accent = query_system_accent();
-        }
+        self.accent = accent;
         let color = effective_color(style, self.accent);
+        self.from_accent = effective_uses_accent(style, self.accent);
         let style_px = (width_px, gap_px, radius_px);
         if self.outer == Some(outer)
             && self.style_px == Some(style_px)

@@ -15,7 +15,7 @@ pub(super) struct ForegroundRead {
     pub(super) cloaked: bool,
 }
 
-fn foreground_read(fulls: &[Rect]) -> ForegroundRead {
+fn foreground_read(foreground: u64, fulls: &[Rect]) -> ForegroundRead {
     use crate::workspace_owner::{ForegroundFacts, ForegroundVetoReason, classify_foreground};
     let settled = |veto: crate::workspace_owner::ForegroundVeto,
                    desktop: bool,
@@ -50,7 +50,6 @@ fn foreground_read(fulls: &[Rect]) -> ForegroundRead {
             cloaked,
         )
     };
-    let foreground = crate::ffi::foreground_window();
     if foreground == 0 {
         // No foreground window: nothing covering.
         return allow(
@@ -144,49 +143,26 @@ fn foreground_read(fulls: &[Rect]) -> ForegroundRead {
 /// is duplicated. Born tracking honors the first-seen gate: a managed
 /// overlay transition (slotted member or lifetime-known non-fullscreen)
 /// never re-enters the hold.
-pub(super) fn suspend_read(
+/// Shared managed verification for one captured foreground HWND: the
+/// single `holdable_key` check (identity, session, medium integrity,
+/// safety gates, scope, hosted child, proof ownership) plus membership and
+/// the live lifetime tag. Callers capture the foreground once per suspend
+/// read and thread it through, so the veto read, this verification, and
+/// the returned HWND never race across separate native captures.
+pub(super) fn suspend_read_inner(
     state: &mut TileLoop,
     me: &ProcessIdentity,
     fulls: &[Rect],
+    foreground: u64,
 ) -> ForegroundRead {
-    #[cfg(test)]
-    if let Some(blocked) = INJECTED_SUSPEND.with(|slot| slot.get()) {
-        use crate::workspace_owner::ForegroundVetoReason;
-        let _ = (state, me, fulls);
-        if blocked {
-            return ForegroundRead {
-                veto: crate::workspace_owner::ForegroundVeto {
-                    block: true,
-                    reason: ForegroundVetoReason::Fullscreen,
-                },
-                desktop: false,
-                visible: true,
-                captioned: false,
-                dwm_readable: true,
-                cloaked: false,
-            };
-        }
-        return ForegroundRead {
-            veto: crate::workspace_owner::ForegroundVeto {
-                block: false,
-                reason: ForegroundVetoReason::None,
-            },
-            desktop: false,
-            visible: false,
-            captioned: false,
-            dwm_readable: false,
-            cloaked: false,
-        };
-    }
     use crate::workspace_owner::ForegroundVetoReason;
-    let raw = foreground_read(fulls);
+    let raw = foreground_read(foreground, fulls);
     if !raw.veto.block {
         return raw;
     }
     if raw.veto.reason != ForegroundVetoReason::Fullscreen {
         return raw;
     }
-    let foreground = crate::ffi::foreground_window();
     if foreground == 0 {
         return raw;
     }
@@ -228,6 +204,106 @@ pub(super) fn suspend_read(
         return raw;
     }
     managed()
+}
+
+pub(super) fn suspend_read(
+    state: &mut TileLoop,
+    me: &ProcessIdentity,
+    fulls: &[Rect],
+) -> ForegroundRead {
+    #[cfg(test)]
+    if let Some(blocked) = INJECTED_SUSPEND.with(|slot| slot.get()) {
+        use crate::workspace_owner::ForegroundVetoReason;
+        let _ = (state, me, fulls);
+        if blocked {
+            return ForegroundRead {
+                veto: crate::workspace_owner::ForegroundVeto {
+                    block: true,
+                    reason: ForegroundVetoReason::Fullscreen,
+                },
+                desktop: false,
+                visible: true,
+                captioned: false,
+                dwm_readable: true,
+                cloaked: false,
+            };
+        }
+        return ForegroundRead {
+            veto: crate::workspace_owner::ForegroundVeto {
+                block: false,
+                reason: ForegroundVetoReason::None,
+            },
+            desktop: false,
+            visible: false,
+            captioned: false,
+            dwm_readable: false,
+            cloaked: false,
+        };
+    }
+    suspend_read_inner(state, me, fulls, crate::ffi::foreground_window())
+}
+
+/// True when the suspend read is an unmanageable fullscreen foreground:
+/// a blocking veto with the `Fullscreen` reason. Managed overlays report
+/// `ManagedOverlay` (non-blocking) and every other blocking shape
+/// (`Invalid`/`Unreadable`) stays a full suspension. Only this shape may
+/// take the limited lane (geometry for other windows, focus/overlays off).
+pub(super) fn is_limited_fullscreen(read: &ForegroundRead) -> bool {
+    read.veto.block && read.veto.reason == crate::workspace_owner::ForegroundVetoReason::Fullscreen
+}
+
+/// Non-activating geometry gate for one window under a suspend read: when
+/// not suspended everything writes through revalidation; under a full
+/// suspension nothing writes; under a limited unmanageable fullscreen only
+/// windows other than the foreground write. An unknown foreground (`0`)
+/// fails closed to no writes.
+pub(super) fn geometry_write_allowed(
+    read: &ForegroundRead,
+    window_hw: u64,
+    foreground_hw: u64,
+) -> bool {
+    if !read.veto.block {
+        return true;
+    }
+    if !is_limited_fullscreen(read) {
+        return false;
+    }
+    if foreground_hw == 0 {
+        return false;
+    }
+    window_hw != foreground_hw
+}
+
+/// One suspend read plus its limited-mode foreground from the same native
+/// capture: the veto read, the managed holdable verification, and the
+/// returned HWND share one `foreground_window` value, so a foreground
+/// change mid-read cannot mix verdicts. (Per-write resnapshots in the
+/// geometry pass stay fresh by design: each write re-reads.) The HWND is
+/// nonzero only for a limited unmanageable fullscreen; every other shape
+/// returns 0 and stays fully suspended.
+pub(super) fn suspend_limited(
+    state: &mut TileLoop,
+    me: &ProcessIdentity,
+    fulls: &[Rect],
+) -> (ForegroundRead, u64) {
+    #[cfg(test)]
+    if INJECTED_SUSPEND.with(|slot| slot.get()).is_some() {
+        let read = suspend_read(state, me, fulls);
+        let fg = if is_limited_fullscreen(&read) {
+            INJECTED_LIMITED_FG.with(|slot| slot.borrow().unwrap_or(0))
+        } else {
+            0
+        };
+        return (read, fg);
+    }
+    let foreground = crate::ffi::foreground_window();
+    let read = suspend_read_inner(state, me, fulls, foreground);
+    let fg = if is_limited_fullscreen(&read) {
+        foreground
+    } else {
+        0
+    };
+    (read, fg)
 }
 
 /// Owned inputs for one `run_tile_loop` invocation. Bundled so the loop

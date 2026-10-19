@@ -193,22 +193,48 @@ impl NativePresent {
         checksum: u64,
         error: Option<String>,
         resolved: (u8, u8, u8),
+        accent_sourced: bool,
+        accent_query: Option<crate::active_border::AccentQueryReport>,
     ) -> PresentOutcome {
         match outcome {
-            OverlayOutcome::Hidden => PresentOutcome::failed(
-                error.unwrap_or_else(|| "error: renderer present failed".to_owned()),
-            ),
+            OverlayOutcome::Hidden => {
+                let mut failed = PresentOutcome::failed(
+                    error.unwrap_or_else(|| "error: renderer present failed".to_owned()),
+                );
+                failed.accent_query = accent_query;
+                failed
+            }
             OverlayOutcome::Shown => {
-                PresentOutcome::shown(RenderOutcome::Shown, checksum, resolved)
+                let mut shown =
+                    PresentOutcome::shown(RenderOutcome::Shown, checksum, resolved, accent_sourced);
+                shown.accent_query = accent_query;
+                shown
             }
             OverlayOutcome::Moved => {
-                PresentOutcome::shown(RenderOutcome::Moved, checksum, resolved)
+                let mut shown =
+                    PresentOutcome::shown(RenderOutcome::Moved, checksum, resolved, accent_sourced);
+                shown.accent_query = accent_query;
+                shown
             }
             OverlayOutcome::Redrew => {
-                PresentOutcome::shown(RenderOutcome::Redrew, checksum, resolved)
+                let mut shown = PresentOutcome::shown(
+                    RenderOutcome::Redrew,
+                    checksum,
+                    resolved,
+                    accent_sourced,
+                );
+                shown.accent_query = accent_query;
+                shown
             }
             OverlayOutcome::Unchanged => {
-                PresentOutcome::shown(RenderOutcome::Unchanged, checksum, resolved)
+                let mut shown = PresentOutcome::shown(
+                    RenderOutcome::Unchanged,
+                    checksum,
+                    resolved,
+                    accent_sourced,
+                );
+                shown.accent_query = accent_query;
+                shown
             }
         }
     }
@@ -387,12 +413,12 @@ impl Present for NativePresent {
     }
 
     fn show_border(&mut self, frame: &BorderDesired) -> PresentOutcome {
-        // The renderer owns the accent: the frame carries the configured
-        // fallback plus the theme choice, and the carrier resolves the
-        // live system accent itself (same query/broadcast cache as the
-        // same-thread path), so an accent change repaints with no
-        // owner-side query. Geometry and style scale stay owner-resolved
-        // physical pixels in the frame.
+        // The renderer paints the posted shared snapshot: the frame carries
+        // the configured fallback plus the theme choice and the
+        // already-observed owner accent for the current broadcast version
+        // (plain data), so an accent change repaints with no renderer-side
+        // query. Geometry and style scale stay owner-resolved physical
+        // pixels in the frame.
         let outcome = self.border.show_at(
             frame.outer,
             frame.style_px.0,
@@ -408,17 +434,23 @@ impl Present for NativePresent {
             &frame.target_token,
             frame.topmost,
             frame.target_hwnd,
+            frame.accent,
         );
-        let _ = &frame;
-        // Actual presented colour read back from the carrier (accent
+        // Actual presented colour read back from the carrier (snapshot
         // resolved or fallback): the ack logs this, never the owner
-        // fallback, so themed presents report honest pixels.
+        // fallback, so themed presents report honest pixels. The source
+        // flag rides alongside so a source flip logs even at equal RGB.
+        // No per-query diagnostic rides the ack: the single shared owner
+        // resolve already logged its one record, and cache reads never
+        // fabricate a query record.
         let resolved = self.border.current_color().unwrap_or(frame.color);
         Self::map_outcome(
             outcome,
             self.border.dib_checksum(),
             self.border.last_error().map(str::to_owned),
             resolved,
+            self.border.from_accent(),
+            None,
         )
     }
 
@@ -445,6 +477,8 @@ impl Present for NativePresent {
             self.underlay.dib_checksum(),
             self.underlay.last_error().map(str::to_owned),
             resolved,
+            false,
+            None,
         )
     }
 
@@ -465,6 +499,8 @@ impl Present for NativePresent {
             self.preview.dib_checksum(),
             self.preview.last_error().map(str::to_owned),
             resolved,
+            false,
+            None,
         )
     }
 
@@ -954,6 +990,10 @@ fn run_renderer(
         // wake on real ack traffic only (tracked by sequence, never a
         // busy loop); owner work breaks the wait early through its wake.
         let mut last_seq = channels.ack_seq();
+        // Accent-only fanout baseline: the overlay procedure on this
+        // thread bumps the shared version when an accent/theme broadcast
+        // lands here while the owner sleeps.
+        let mut last_accent = crate::ffi::accent_version();
         loop {
             let timeout_ms = match core.next_timer() {
                 Some(due) => due
@@ -983,6 +1023,18 @@ fn run_renderer(
             let seq = channels.ack_seq();
             if seq != last_seq {
                 last_seq = seq;
+                signal_owned(&ack_wake);
+            }
+            // Accent-only fanout: a broadcast reached this thread's
+            // overlay windows while the owner slept (no desired frame was
+            // posted, so the step above presents nothing and posts no
+            // ack). Signal the existing ack wake so the owner promotes to
+            // a full refresh turn and reposts from fresh observation; no
+            // ack payload is faked and no stale frame replays.
+            if crate::active_border::accent_version_moved(
+                &mut last_accent,
+                crate::ffi::accent_version(),
+            ) {
                 signal_owned(&ack_wake);
             }
         }

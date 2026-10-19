@@ -17,7 +17,30 @@ thread_local! {
         std::cell::RefCell::new(std::collections::HashMap::new());
     static INJECTED_TAGS_ACTIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     pub(super) static INJECTED_SUSPEND: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+    /// Foreground HWND for the limited-fullscreen seam (test-only): the
+    /// unmanageable fullscreen window excluded from geometry while other
+    /// managed windows still reconcile. Read only when `INJECTED_SUSPEND`
+    /// is `Some(true)`; `None` (unset) reads as 0 (unknown, fail closed to
+    /// full suspension). Cleared by [`clear_pending_seams`].
+    pub(super) static INJECTED_LIMITED_FG: std::cell::RefCell<Option<u64>> =
+        const { std::cell::RefCell::new(None) };
     pub(super) static INJECTED_ELEVATED: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+    /// Scripted native inputs for the elevation probe (test-only, offline):
+    /// the captured foreground HWND, its PID, the process-open verdict, and
+    /// the integrity read (read only when the open succeeds; `None` reads as
+    /// a read failure). Runs the production classifier without touching
+    /// windows or processes. Coarse `INJECTED_ELEVATED` still wins when set
+    /// (honest `skipped-injected`). Cleared by [`clear_pending_seams`].
+    pub(super) static INJECTED_ELEV_PROBE: std::cell::RefCell<Option<InjectedElevProbe>> =
+        const { std::cell::RefCell::new(None) };
+    /// Scripted window-class reads by HWND (test-only, offline): stands in
+    /// for the native class query when activated. Unscripted HWNDs read as
+    /// `None` (honest unknown) without a native call. Otherwise the
+    /// production read runs. Cleared by [`clear_pending_seams`].
+    #[allow(clippy::missing_const_for_thread_local)]
+    static INJECTED_FG_CLASS: std::cell::RefCell<std::collections::HashMap<u64, Option<String>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    static INJECTED_FG_CLASS_ACTIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     pub(super) static INJECTED_FOCUS: std::cell::RefCell<Option<&'static str>> =
         const { std::cell::RefCell::new(None) };
     pub(super) static INJECTED_STOP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -63,6 +86,47 @@ thread_local! {
     /// them for closes and assembly defers instead of fabricating rows.
     pub(super) static INJECTED_UNREADABLE: std::cell::RefCell<std::collections::HashSet<u64>> =
         std::cell::RefCell::new(std::collections::HashSet::new());
+    /// Enumerated-but-invisible HWNDs for the injected observation fixture:
+    /// production app-initiated hides stay in the raw `EnumWindows`
+    /// inventory but resolve to `Unknown` (invisible gate before identity).
+    /// The injected path joins them into the inventory only, so the
+    /// external-hide close path can fence them (alive, uncloaked, tagged)
+    /// while unknown/unreadable evidence still holds. Cleared by
+    /// [`clear_pending_seams`].
+    pub(super) static INJECTED_INVISIBLE: std::cell::RefCell<std::collections::HashSet<u64>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+    static INJECTED_INVISIBLE_ACTIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Scripted cloaked HWNDs for the external-hide fence (test-only):
+    /// `cloaked=true` must hold (never a close), mirroring the production
+    /// `DwmGetWindowAttribute(DWMWA_CLOAKED)` read. Only meaningful for
+    /// HWNDs also in `INJECTED_INVISIBLE`. Cleared by [`clear_pending_seams`].
+    pub(super) static INJECTED_CLOAKED: std::cell::RefCell<std::collections::HashSet<u64>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+    /// Scripted cloak-query failures for the external-hide fence (test-only):
+    /// `None` (unreadable) must hold, mirroring a failed production cloak
+    /// read. Only meaningful for HWNDs also in `INJECTED_INVISIBLE`.
+    /// Cleared by [`clear_pending_seams`].
+    pub(super) static INJECTED_CLOAK_UNREADABLE: std::cell::RefCell<std::collections::HashSet<u64>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+    static INJECTED_CLOAK_ACTIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Scripted owning PIDs for the external-hide lifetime fence (test-only):
+    /// stands in for `GetWindowThreadProcessId` without native windows.
+    /// When active, unscripted HWNDs read as `0` (unreadable, fail closed).
+    /// Cleared by [`clear_pending_seams`].
+    static INJECTED_PIDS: std::cell::RefCell<std::collections::HashMap<u64, u32>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    static INJECTED_PIDS_ACTIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Scripted visible stacking sequence (top-to-bottom native order) for
+    /// the next injected observation (test-only): the authoritative verified
+    /// live-frame member sequence the real path derives from its single
+    /// `EnumWindows` enumeration. Unset behaves as observed-then-retained,
+    /// so existing fixtures without an explicit order read exactly as before.
+    /// Entries must use full member identities already present in the
+    /// injected observed/retained frames; non-members are ignored by the same
+    /// retain rule as production. Cleared by [`clear_pending_seams`].
+    pub(super) static INJECTED_ZORDER: std::cell::RefCell<
+        Option<Vec<crate::workspace::WindowKey>>,
+    > = const { std::cell::RefCell::new(None) };
     /// Scripted hidden-claim recovery verdicts per HWND: `Ok` snapshots
     /// flow through the real audit classification (process/nonce compared
     /// against the stored claim); `Err` strings use the production
@@ -76,6 +140,12 @@ thread_local! {
         >,
     > = std::cell::RefCell::new(std::collections::HashMap::new());
     static INJECTED_RECOVERY_ACTIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Forced single-path hide rescue-read failure (test-only): when set,
+    /// `workspace_hide_one` skips its ledger re-read after an uncertain hide
+    /// error, simulating `store.committed()` failing while the ledger keeps
+    /// the durable claim. The uncertain-hide hold marker must cover the gap.
+    /// Cleared by [`clear_pending_seams`].
+    static INJECTED_RESCUE_FAIL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Fresh native arrival readback per HWND (test-only): the post-setter
     /// physical frame distinctly from the pre-move `stable` cache. Visible
     /// members (tiled plain, float, overlay) stage their post-move visible
@@ -179,9 +249,60 @@ pub(super) fn inject_pending_suspend(blocked: Option<bool>) {
     INJECTED_SUSPEND.with(|slot| slot.set(blocked));
 }
 
+/// Script the unmanageable-fullscreen foreground HWND for limited-mode tails
+/// (test-only). `Some(hwnd)` is the game window excluded from geometry while
+/// other managed windows reconcile; `None` clears the script (unknown
+/// foreground, fail closed to full suspension).
+#[cfg(test)]
+pub(super) fn inject_pending_foreground(hwnd: Option<u64>) {
+    INJECTED_LIMITED_FG.with(|slot| {
+        *slot.borrow_mut() = hwnd;
+    });
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone)]
+pub(super) struct InjectedElevProbe {
+    pub(super) foreground: u64,
+    pub(super) pid: u32,
+    pub(super) open_ok: bool,
+    pub(super) integrity: Option<std::result::Result<u32, ()>>,
+}
+
 #[cfg(test)]
 pub(super) fn inject_pending_elevated(elevated: Option<bool>) {
     INJECTED_ELEVATED.with(|slot| slot.set(elevated));
+}
+
+/// Script the elevation probe's native inputs (test-only, offline): the
+/// captured foreground HWND, its PID, the process-open verdict, and the
+/// integrity read. Cleared by [`clear_pending_seams`].
+#[cfg(test)]
+pub(super) fn inject_pending_elev_probe(
+    foreground: u64,
+    pid: u32,
+    open_ok: bool,
+    integrity: Option<std::result::Result<u32, ()>>,
+) {
+    INJECTED_ELEV_PROBE.with(|slot| {
+        *slot.borrow_mut() = Some(InjectedElevProbe {
+            foreground,
+            pid,
+            open_ok,
+            integrity,
+        });
+    });
+}
+
+/// Script one window-class read (test-only, offline): `None` is an honest
+/// unreadable class. Activates the class seam like [`inject_pending_tag`].
+/// Cleared by [`clear_pending_seams`].
+#[cfg(test)]
+pub(super) fn inject_pending_fg_class(hwnd: u64, class: Option<String>) {
+    INJECTED_FG_CLASS.with(|map| {
+        map.borrow_mut().insert(hwnd, class);
+    });
+    INJECTED_FG_CLASS_ACTIVE.with(|active| active.set(true));
 }
 
 #[cfg(test)]
@@ -249,6 +370,56 @@ pub(super) fn inject_pending_unreadable(hwnds: Vec<u64>) {
     });
 }
 
+/// Declare enumerated-but-invisible HWNDs for the next injected observation
+/// (test-only): app-initiated hides that stay inventoried as `Unknown`.
+/// Cleared by [`clear_pending_seams`].
+#[cfg(test)]
+pub(super) fn inject_pending_invisible(hwnds: Vec<u64>) {
+    INJECTED_INVISIBLE.with(|slot| {
+        *slot.borrow_mut() = hwnds.into_iter().collect();
+    });
+    INJECTED_INVISIBLE_ACTIVE.with(|active| active.set(true));
+}
+
+/// Script cloaked HWNDs for the external-hide fence (test-only).
+/// Cleared by [`clear_pending_seams`].
+#[cfg(test)]
+pub(super) fn inject_pending_cloaked(hwnds: Vec<u64>) {
+    INJECTED_CLOAKED.with(|slot| {
+        *slot.borrow_mut() = hwnds.into_iter().collect();
+    });
+    INJECTED_CLOAK_ACTIVE.with(|active| active.set(true));
+}
+
+/// Script cloak-query failures for the external-hide fence (test-only).
+/// Cleared by [`clear_pending_seams`].
+#[cfg(test)]
+pub(super) fn inject_pending_cloak_unreadable(hwnds: Vec<u64>) {
+    INJECTED_CLOAK_UNREADABLE.with(|slot| {
+        *slot.borrow_mut() = hwnds.into_iter().collect();
+    });
+    INJECTED_CLOAK_ACTIVE.with(|active| active.set(true));
+}
+
+/// Script owning PIDs for the external-hide lifetime fence (test-only).
+/// Cleared by [`clear_pending_seams`].
+#[cfg(test)]
+pub(super) fn inject_pending_pids(pids: Vec<(u64, u32)>) {
+    INJECTED_PIDS.with(|map| {
+        *map.borrow_mut() = pids.into_iter().collect();
+    });
+    INJECTED_PIDS_ACTIVE.with(|active| active.set(true));
+}
+
+/// Script the visible stacking sequence (top-to-bottom) for the next
+/// injected observation (test-only). Cleared by [`clear_pending_seams`].
+#[cfg(test)]
+pub(super) fn inject_pending_zorder(order: Vec<crate::workspace::WindowKey>) {
+    INJECTED_ZORDER.with(|slot| {
+        *slot.borrow_mut() = Some(order);
+    });
+}
+
 /// Script one hidden-claim recovery verdict (test-only). `Ok` snapshots run
 /// the real audit comparison; `Err` strings must use the production
 /// vocabulary. Activates the recovery seam like [`inject_pending_tag`].
@@ -261,6 +432,26 @@ pub(super) fn inject_pending_recovery(
         map.borrow_mut().insert(hwnd, verdict);
     });
     INJECTED_RECOVERY_ACTIVE.with(|active| active.set(true));
+}
+
+/// Force the single-path hide rescue re-read to fail (test-only): simulates
+/// `store.committed()` erroring after an uncertain hide while the ledger
+/// keeps the durable claim. Cleared by [`clear_pending_seams`].
+#[cfg(test)]
+pub(super) fn inject_pending_rescue_fail(fail: bool) {
+    INJECTED_RESCUE_FAIL.with(|slot| slot.set(fail));
+}
+
+/// Forced rescue-read failure probe for `workspace_hide_one` (test-only).
+/// Production always reads the ledger; the seam only fires in tests.
+pub(super) fn rescue_read_failed() -> bool {
+    #[cfg(test)]
+    {
+        if INJECTED_RESCUE_FAIL.with(|slot| slot.get()) {
+            return true;
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -351,7 +542,17 @@ pub(super) fn clear_pending_seams() {
     });
     INJECTED_TAGS_ACTIVE.with(|active| active.set(false));
     INJECTED_SUSPEND.with(|slot| slot.set(None));
+    INJECTED_LIMITED_FG.with(|slot| {
+        *slot.borrow_mut() = None;
+    });
     INJECTED_ELEVATED.with(|slot| slot.set(None));
+    INJECTED_ELEV_PROBE.with(|slot| {
+        *slot.borrow_mut() = None;
+    });
+    INJECTED_FG_CLASS.with(|map| {
+        map.borrow_mut().clear();
+    });
+    INJECTED_FG_CLASS_ACTIVE.with(|active| active.set(false));
     INJECTED_FOCUS.with(|slot| {
         *slot.borrow_mut() = None;
     });
@@ -372,10 +573,29 @@ pub(super) fn clear_pending_seams() {
     INJECTED_UNREADABLE.with(|slot| {
         slot.borrow_mut().clear();
     });
+    INJECTED_INVISIBLE.with(|slot| {
+        slot.borrow_mut().clear();
+    });
+    INJECTED_INVISIBLE_ACTIVE.with(|active| active.set(false));
+    INJECTED_CLOAKED.with(|slot| {
+        slot.borrow_mut().clear();
+    });
+    INJECTED_CLOAK_UNREADABLE.with(|slot| {
+        slot.borrow_mut().clear();
+    });
+    INJECTED_CLOAK_ACTIVE.with(|active| active.set(false));
+    INJECTED_PIDS.with(|map| {
+        map.borrow_mut().clear();
+    });
+    INJECTED_PIDS_ACTIVE.with(|active| active.set(false));
+    INJECTED_ZORDER.with(|slot| {
+        *slot.borrow_mut() = None;
+    });
     INJECTED_RECOVERY.with(|map| {
         map.borrow_mut().clear();
     });
     INJECTED_RECOVERY_ACTIVE.with(|active| active.set(false));
+    INJECTED_RESCUE_FAIL.with(|slot| slot.set(false));
     INJECTED_FLOAT_MOVES.with(|slot| {
         slot.borrow_mut().clear();
     });
@@ -414,18 +634,130 @@ pub(super) fn live_member_tag(hwnd: u64) -> Option<String> {
     crate::product_hide::sys::read_member_tag(hwnd)
 }
 
-/// Test-aware iconic-state read: injected iconic HWNDs stand in for the
-/// native `IsIconic` query when the fixture activated them (unit tests only;
-/// compiled out of production builds). Otherwise the production read runs
-/// (fail-closed `false` on invalid HWNDs, so dead evidence never refreshes).
+/// Test-aware iconic-state read: fake-backend windows read their scripted
+/// iconic flag first (offline hide effects); injected iconic HWNDs stand in
+/// for the native `IsIconic` query when the fixture activated them (unit
+/// tests only; compiled out of production builds). Otherwise the production
+/// read runs (fail-closed `false` on invalid HWNDs, so dead evidence never
+/// refreshes).
 pub(super) fn live_is_iconic(hwnd: u64) -> bool {
     #[cfg(test)]
     {
+        if crate::product_hide::sys::fake::active(hwnd) {
+            return crate::product_hide::sys::fake::with(hwnd, |w| w.iconic).unwrap_or(false);
+        }
         if INJECTED_ICONIC_ACTIVE.with(|active| active.get()) {
             return INJECTED_ICONIC.with(|slot| slot.borrow().contains(&hwnd));
         }
     }
     crate::ffi::is_iconic(hwnd)
+}
+
+/// Test-aware liveness read for the external-hide close fence: an invisible
+/// member must still be a live window (`IsWindow`). Fake-backend windows
+/// read their scripted liveness first (offline hide effects); injected
+/// invisible, cloaked, cloak-unreadable, and unreadable HWNDs read alive
+/// without native calls; otherwise the production read runs. Compiled out
+/// differences only affect tests.
+pub(super) fn live_is_window(hwnd: u64) -> bool {
+    #[cfg(test)]
+    {
+        if crate::product_hide::sys::fake::active(hwnd) {
+            return crate::product_hide::sys::fake::with(hwnd, |w| w.alive).unwrap_or(false);
+        }
+        let injected_alive = INJECTED_INVISIBLE.with(|slot| slot.borrow().contains(&hwnd))
+            || INJECTED_CLOAKED.with(|slot| slot.borrow().contains(&hwnd))
+            || INJECTED_CLOAK_UNREADABLE.with(|slot| slot.borrow().contains(&hwnd))
+            || INJECTED_UNREADABLE.with(|slot| slot.borrow().contains(&hwnd));
+        if injected_alive {
+            return true;
+        }
+    }
+    crate::ffi::is_window(hwnd)
+}
+
+/// Test-aware visibility read for the external-hide close fence: an
+/// app-initiated hide reads invisible. Fake-backend windows read their
+/// scripted visibility first (offline hide effects); injected invisible
+/// HWNDs read false without native calls; when the invisible seam is active
+/// every other HWND reads true without a native call so fixtures stay
+/// native-free. Otherwise the production read runs.
+pub(super) fn live_is_visible(hwnd: u64) -> bool {
+    #[cfg(test)]
+    {
+        if crate::product_hide::sys::fake::active(hwnd) {
+            return crate::product_hide::sys::fake::with(hwnd, |w| w.visible).unwrap_or(false);
+        }
+        if INJECTED_INVISIBLE_ACTIVE.with(|active| active.get()) {
+            return !INJECTED_INVISIBLE.with(|slot| slot.borrow().contains(&hwnd));
+        }
+    }
+    crate::ffi::is_visible(hwnd)
+}
+
+/// Test-aware cloak read for the external-hide close fence: only a readable
+/// uncloaked window may close (`Some(false)`). Fake-backend windows read
+/// `Some(false)` while alive (hidden fakes are uncloaked, just hidden) and
+/// `None` while dead; cloak-unreadable reads `None`, cloaked reads
+/// `Some(true)`, invisible reads `Some(false)`; when any cloak seam is
+/// active unscripted HWNDs read `Some(false)` without a native call except
+/// cloak-unreadable which stays `None`-only when scripted. Otherwise the
+/// production read runs.
+pub(super) fn live_cloaked(hwnd: u64) -> Option<bool> {
+    #[cfg(test)]
+    {
+        if crate::product_hide::sys::fake::active(hwnd) {
+            return crate::product_hide::sys::fake::with(hwnd, |w| w.alive.then_some(false))
+                .flatten();
+        }
+        if INJECTED_CLOAK_UNREADABLE.with(|slot| slot.borrow().contains(&hwnd)) {
+            return None;
+        }
+        if INJECTED_CLOAKED.with(|slot| slot.borrow().contains(&hwnd)) {
+            return Some(true);
+        }
+        if INJECTED_INVISIBLE.with(|slot| slot.borrow().contains(&hwnd)) {
+            return Some(false);
+        }
+        if INJECTED_CLOAK_ACTIVE.with(|active| active.get())
+            || INJECTED_INVISIBLE_ACTIVE.with(|active| active.get())
+        {
+            return Some(false);
+        }
+    }
+    crate::ffi::cloaked(hwnd)
+}
+
+/// Test-aware owning-PID read for the external-hide lifetime fence: when the
+/// PID seam is active unscripted HWNDs read `0` (unreadable, fail closed)
+/// without a native call. Otherwise the production read runs.
+pub(super) fn live_window_pid(hwnd: u64) -> u32 {
+    #[cfg(test)]
+    {
+        if INJECTED_PIDS_ACTIVE.with(|active| active.get()) {
+            return INJECTED_PIDS.with(|map| map.borrow().get(&hwnd).copied().unwrap_or(0));
+        }
+        if crate::product_hide::sys::fake::active(hwnd) {
+            return crate::product_hide::sys::fake::with(hwnd, |w| w.pid).unwrap_or(0);
+        }
+    }
+    crate::ffi::window_pid(hwnd)
+}
+
+/// Test-aware window-class read: injected classes stand in for the native
+/// `GetClassNameW` query when the fixture activated them (unit tests only;
+/// compiled out of production builds). When active but unscripted for an
+/// HWND, returns `None` without a native call so fixtures stay native-free.
+/// Otherwise the production read runs (fail-closed `None` on unreadable
+/// handles, never titles or paths).
+pub(super) fn live_fg_class(hwnd: u64) -> Option<String> {
+    #[cfg(test)]
+    {
+        if INJECTED_FG_CLASS_ACTIVE.with(|active| active.get()) {
+            return INJECTED_FG_CLASS.with(|map| map.borrow().get(&hwnd).cloned().unwrap_or(None));
+        }
+    }
+    crate::ffi::try_class_name(hwnd)
 }
 
 /// Test-aware hidden-claim recovery read: injected verdicts stand in for the

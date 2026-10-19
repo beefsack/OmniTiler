@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 use super::*;
 
+use super::render_ack::drain_accent_queries;
 use super::render_ack::poll_render_carrier;
 
 /// Owner-side dedicated-render bridge (product path only). The renderer
@@ -143,8 +144,9 @@ fn signal_render_work(state: &TileLoop) {
 /// exactly like the same-thread cached-equality probe. A refused or
 /// present-failed frame therefore retries on the next refresh with no
 /// separate backoff. Colour carries the configured fallback plus the theme
-/// choice; the renderer owns the live accent query and resolves the painted
-/// colour itself, so no owner-side accent FFI runs per tick.
+/// choice and the already-observed shared accent snapshot (plain data); the
+/// renderer resolves the painted colour itself from that snapshot, so no
+/// renderer-side accent query runs per tick.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn post_border_frame(
     state: &mut TileLoop,
@@ -152,6 +154,7 @@ pub(super) fn post_border_frame(
     style_px: (i32, i32, i32),
     fallback: (u8, u8, u8),
     use_theme: bool,
+    accent: Option<crate::active_border::SystemAccent>,
     token: &str,
     target_hwnd: u64,
     lifetime: WindowLifetime,
@@ -173,6 +176,7 @@ pub(super) fn post_border_frame(
         outer,
         style_px,
         color: fallback,
+        accent,
         use_theme,
         target_token: token.to_owned(),
         target_hwnd,
@@ -463,6 +467,9 @@ pub(super) fn poll_render_acks(state: &mut TileLoop, now: Instant) {
     for carrier in RenderCarrier::all() {
         poll_render_carrier(state, carrier, now);
     }
+    // Per-query diagnostics drain on every poll: the queue (not the
+    // latest-wins ack) preserves every completed renderer query.
+    drain_accent_queries(state);
     let log_path = state.log_path.clone();
     for line in state.render_frames.take_due(now) {
         log_json_at(&log_path, line);

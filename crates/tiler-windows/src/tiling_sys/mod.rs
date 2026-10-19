@@ -172,25 +172,33 @@ use self::output_send::{resolve_output_send_target, run_output_send};
 #[cfg(test)]
 use self::output_sync::poll_foreground_workspace;
 use self::output_sync::{
-    foreground_elevated, sync_monitor_outputs, sync_monitor_outputs_local, workspace_maintenance,
+    foreground_elevated, foreground_pager_elevated_detailed, sync_monitor_outputs,
+    sync_monitor_outputs_local, workspace_maintenance,
 };
+#[cfg(test)]
+use self::output_sync::{foreground_elevated_detailed, foreground_pager_elevated};
 use self::owner_work::OwnerWorkGuard;
 use self::pending_drop::{PendingCrossDest, PendingDrop, queue_pending_drop, service_pending_drop};
 #[cfg(test)]
 use self::pending_seams::{
-    APPLY_WRITABLES, INJECTED_APPLY, INJECTED_AREAS, INJECTED_ELEVATED, INJECTED_FLOAT_MOVE_OK,
-    INJECTED_FLOAT_MOVES, INJECTED_FOCUS, INJECTED_ICONIC, INJECTED_NATIVE_MOVE_OK,
-    INJECTED_NATIVE_TRANSFERS, INJECTED_OBSERVE, INJECTED_OVERLAY, INJECTED_STOP, INJECTED_SUSPEND,
-    INJECTED_UNREADABLE, PENDING_COUNTERS, PendingCounters, clear_pending_seams,
-    inject_monitor_areas, inject_pending_apply, inject_pending_apply_seq, inject_pending_arrival,
-    inject_pending_arrival_placement, inject_pending_elevated, inject_pending_float_move_ok,
-    inject_pending_focus, inject_pending_iconic, inject_pending_native_move_ok,
-    inject_pending_observe, inject_pending_overlay_seq, inject_pending_placement_normal,
-    inject_pending_recovery, inject_pending_stop, inject_pending_suspend, inject_pending_tag,
-    inject_pending_unreadable, pending_apply_writables, pending_counters, pending_native_transfers,
+    APPLY_WRITABLES, INJECTED_APPLY, INJECTED_AREAS, INJECTED_ELEV_PROBE, INJECTED_ELEVATED,
+    INJECTED_FLOAT_MOVE_OK, INJECTED_FLOAT_MOVES, INJECTED_FOCUS, INJECTED_ICONIC,
+    INJECTED_INVISIBLE, INJECTED_LIMITED_FG, INJECTED_NATIVE_MOVE_OK, INJECTED_NATIVE_TRANSFERS,
+    INJECTED_OBSERVE, INJECTED_OVERLAY, INJECTED_STOP, INJECTED_SUSPEND, INJECTED_UNREADABLE,
+    INJECTED_ZORDER, PENDING_COUNTERS, PendingCounters, clear_pending_seams, inject_monitor_areas,
+    inject_pending_apply, inject_pending_apply_seq, inject_pending_arrival,
+    inject_pending_arrival_placement, inject_pending_cloak_unreadable, inject_pending_cloaked,
+    inject_pending_elev_probe, inject_pending_elevated, inject_pending_fg_class,
+    inject_pending_float_move_ok, inject_pending_focus, inject_pending_foreground,
+    inject_pending_iconic, inject_pending_invisible, inject_pending_native_move_ok,
+    inject_pending_observe, inject_pending_overlay_seq, inject_pending_pids,
+    inject_pending_placement_normal, inject_pending_recovery, inject_pending_rescue_fail,
+    inject_pending_stop, inject_pending_suspend, inject_pending_tag, inject_pending_unreadable,
+    inject_pending_zorder, pending_apply_writables, pending_counters, pending_native_transfers,
 };
 use self::pending_seams::{
-    fresh_arrival_rect, live_is_iconic, live_member_tag, live_query_recovery,
+    fresh_arrival_rect, live_cloaked, live_fg_class, live_is_iconic, live_is_visible,
+    live_is_window, live_member_tag, live_query_recovery, live_window_pid, rescue_read_failed,
 };
 #[cfg(not(test))]
 use self::placement::placement_is_workspace_coords;
@@ -214,7 +222,7 @@ pub use self::proof_commands::{
 };
 #[cfg(test)]
 use self::reconcile::sweep_retire_stale_fullscreen;
-use self::reconcile::{reconcile_tick, writable_tokens};
+use self::reconcile::{reconcile_limited_tick, reconcile_tick, writable_tokens};
 #[cfg(test)]
 use self::render_ack::{RENDER_FRAME_SCOPE, RENDER_SUMMARY_WINDOW, RenderFrameSample};
 use self::render_ack::{
@@ -253,7 +261,10 @@ use self::send_stay::workspace_send_stay;
 use self::sends::workspace_do_send;
 #[cfg(test)]
 use self::settings::apply_live_settings;
-use self::settings::{TileRun, poll_live_settings, suspend_read};
+use self::settings::{
+    TileRun, geometry_write_allowed, is_limited_fullscreen, poll_live_settings, suspend_limited,
+    suspend_read, suspend_read_inner,
+};
 use self::shell::{exe_file_name, is_border_shell_popup, is_shell_class, rect_from_win};
 use self::trace::{log_engine_placement_trace, log_json_at, log_mono_ms, refresh_border_timed};
 use self::visibility_batch::{
@@ -397,6 +408,11 @@ struct TileLoop {
     scope_hosts: Vec<ScopeHostChild>,
     trace: bool,
     suspended: bool,
+    /// True while the current suspension is the limited unmanageable-
+    /// fullscreen lane (geometry for other windows continues). False for
+    /// full suspension and when active. Lets the resume/transition logs
+    /// name the mode that is ending without re-reading the foreground.
+    suspended_limited: bool,
     last_summary: Option<String>,
     log_path: std::path::PathBuf,
     audit_path: Option<std::path::PathBuf>,
@@ -528,6 +544,16 @@ struct TileLoop {
     /// tile-slot/float snapshots in the portable resolver). Rebuilt per pass,
     /// so stale entries never survive their observation.
     pager_live: HashMap<crate::workspace::WindowKey, Rect>,
+    /// Retained native stacking order for pager miniatures, top-to-bottom in
+    /// the single `EnumWindows` sequence (first is topmost). Refreshed on
+    /// every observation from that same enumeration (observed eligible
+    /// members plus retained maximized/fullscreen rows with fresh frames);
+    /// still-assigned hidden or minimized members keep their previous
+    /// relative order and departed identities prune, so hidden workspaces
+    /// repaint their last observed stacking. Painters draw it reversed per
+    /// workspace (topmost last); see `crate::pager::retain_pager_order`.
+    /// Full identity keys only, never HWND alone.
+    pager_z: Vec<crate::workspace::WindowKey>,
     /// Identity-keyed pager icon cache (worker-owned artwork bytes). Pruned
     /// to live membership every pump; never queried or waited on in the
     /// tile loop or the painter.
@@ -540,8 +566,15 @@ struct TileLoop {
     /// stays icon-less meanwhile.
     pager_icon_retry_at: Option<Instant>,
     /// Last pager suppression outcome (`None` while showing): change-only
-    /// `pager-suppress` logging.
+    /// `pager-suppress` logging. Reason strings only; read by the
+    /// maintenance scheduler, so the diagnostic signature must never land
+    /// here.
     pager_suppress_last: Option<String>,
+    /// Last full pager-gate diagnostic signature (`None` until the first
+    /// pump): change-only `pager-gate` logging, including the first allowed
+    /// baseline and allowed-to-allowed fact changes. Independent of
+    /// `pager_suppress_last`; taskbar-fact resets never touch it.
+    pager_gate_last: Option<String>,
     /// Last per-output pager refusal reason by device key: change-only
     /// `pager-refused` logging, never guessed positions.
     pager_refusals: HashMap<String, String>,
@@ -680,9 +713,25 @@ struct TileLoop {
     /// foreground target's fresh frame and paints the process-owned overlay.
     border: ActiveBorderOptions,
     /// Process-owned border overlay plus the last logged border signature
-    /// (visibility/rect/style/target) for change-only logging.
+    /// (visibility/rect/style/target/colour/source) for change-only logging.
     border_overlay: BorderOverlay,
     border_last: Option<String>,
+    /// Last observed shared accent broadcast version. The renderer (or a
+    /// loop-thread window) bumps the version on accent broadcasts while the
+    /// owner sleeps; a move observed before the ack-only early continue
+    /// promotes to a full refresh turn so `refresh_active_border` reposts
+    /// from fresh observation. Never fakes an ack or replays a frame.
+    accent_seen: u64,
+    /// Single shared versioned accent cache for this scope: the owner
+    /// resolves once per broadcast version and the border plus the pager
+    /// both paint from the same snapshot (plain data, never a second
+    /// native call per consumer).
+    accent_shared: crate::active_border::AccentCache,
+    /// Owner-thread-only WinRT accent source with a scope-lifetime
+    /// apartment. Lazy: construction performs no WinRT call, so offline
+    /// fixtures never touch WinRT; the first resolve initializes and
+    /// shutdown (at scope end) balances it.
+    accent_owner: crate::ffi::OwnerAccentSource,
     /// Group-underlay configuration for this run (default on with an explicit
     /// off flag). Like the border it never takes geometry writes: it resolves
     /// the focused window's immediate-parent group through the retained
@@ -940,6 +989,8 @@ mod input;
 mod render_bridge;
 
 mod render_ack;
+
+mod accent_owner;
 
 mod retained;
 
@@ -1246,3 +1297,7 @@ mod cross_drag_adapter_tests;
 #[cfg(test)]
 #[path = "tests_workspace_migrate.rs"]
 mod workspace_migrate_adapter_tests;
+
+#[cfg(test)]
+#[path = "tests_limited_fullscreen.rs"]
+mod limited_fullscreen_tests;

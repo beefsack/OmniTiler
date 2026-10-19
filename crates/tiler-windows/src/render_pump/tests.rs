@@ -33,6 +33,7 @@ fn border_frame(generation: u64, safety: u64, x: i32, hwnd: u64) -> DesiredFrame
         outer: rect(x, 0, 100, 80),
         style_px: (3, 0, 6),
         color: (0x2a, 0x82, 0xda),
+        accent: None,
         use_theme: false,
         target_token: format!("token-{hwnd}"),
         target_hwnd: hwnd,
@@ -614,18 +615,24 @@ fn underlay_follows_resolved_anchor_band() {
 
 #[test]
 fn themed_border_ack_carries_resolved_accent_not_fallback() {
-    // Renderer-owned accent: a themed frame with a live accent
-    // acknowledges the resolved accent colour and checksum, never the
-    // owner fallback the note still carries.
+    // Owner-posted snapshot: a themed frame carrying the shared accent
+    // snapshot acknowledges the resolved accent colour and checksum, never
+    // the fallback the note still carries. The renderer runs no query: the
+    // snapshot staged on the frame is the only accent it can paint.
+    use crate::active_border::SystemAccent;
+    let snapshot = SystemAccent {
+        color: (0xaa, 0xbb, 0xcc),
+        alpha: 0xC4,
+    };
     let channels = Arc::new(RenderChannels::new());
-    let mut fake = FakePresent::new();
-    fake.accent = Some((0xaa, 0xbb, 0xcc));
+    let fake = FakePresent::new();
     let mut core = RenderCore::new(fake, Arc::clone(&channels));
     let mut frame = border_frame(1, 0, 10, 1001);
     let DesiredFrame::Border(ref mut inner) = frame else {
         panic!("border frame");
     };
     inner.use_theme = true;
+    inner.accent = Some(snapshot);
     channels.post(frame);
     core.step();
     let ack = channels
@@ -635,6 +642,71 @@ fn themed_border_ack_carries_resolved_accent_not_fallback() {
     let applied = ack.applied.expect("applied content");
     assert_eq!(applied.color_hex, "#aabbcc");
     assert_ne!(applied.color_hex, "#2a82da");
+    assert!(
+        applied.accent_sourced,
+        "themed present with a live accent reports the accent source"
+    );
+    // Unthemed frame with the same live accent: fallback pixels, fallback
+    // source - never claims the accent it did not paint.
+    let mut frame = border_frame(2, 0, 10, 1001);
+    let DesiredFrame::Border(ref mut inner) = frame else {
+        panic!("border frame");
+    };
+    inner.use_theme = false;
+    inner.accent = Some(snapshot);
+    channels.post(frame);
+    core.step();
+    let ack = channels
+        .take_ack(RenderCarrier::Border)
+        .expect("applied ack");
+    let applied = ack.applied.expect("applied content");
+    assert_eq!(applied.color_hex, "#2a82da");
+    assert!(
+        !applied.accent_sourced,
+        "unthemed present must not claim the accent source"
+    );
+}
+
+#[test]
+fn unavailable_snapshot_falls_back_without_claiming_accent() {
+    // Native-policy parity for unusable snapshots: a missing snapshot
+    // (`None`, source unavailable) and a zero-alpha snapshot both paint
+    // the frame fallback and never report the accent source, even themed.
+    use crate::active_border::SystemAccent;
+    let channels = Arc::new(RenderChannels::new());
+    let fake = FakePresent::new();
+    let mut core = RenderCore::new(fake, Arc::clone(&channels));
+    for (generation, snapshot) in [
+        (1, None),
+        (
+            2,
+            Some(SystemAccent {
+                color: (0xaa, 0xbb, 0xcc),
+                alpha: 0,
+            }),
+        ),
+    ] {
+        let mut frame = border_frame(generation, 0, 10, 1001);
+        let DesiredFrame::Border(ref mut inner) = frame else {
+            panic!("border frame");
+        };
+        inner.use_theme = true;
+        inner.accent = snapshot;
+        channels.post(frame);
+        core.step();
+        let ack = channels
+            .take_ack(RenderCarrier::Border)
+            .expect("applied ack");
+        let applied = ack.applied.expect("applied content");
+        assert_eq!(
+            applied.color_hex, "#2a82da",
+            "unavailable snapshot must paint the fallback"
+        );
+        assert!(
+            !applied.accent_sourced,
+            "unavailable snapshot must not claim the accent source"
+        );
+    }
 }
 
 #[test]

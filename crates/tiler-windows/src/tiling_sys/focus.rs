@@ -314,13 +314,19 @@ pub(super) fn refresh_active_border(state: &mut TileLoop, me: &ProcessIdentity, 
         hide_border(state, "geometry");
         return;
     };
+    // Shared owner resolve first: the first consumer to observe a moved
+    // version runs the single WinRT resolve, and the border plus the pager
+    // both paint from that same snapshot (plain data, no second query).
+    let accent = super::accent_owner::refresh_shared_accent(state);
     // Bridged present: post the owner-resolved frame (geometry, physical
-    // style, configured fallback colour plus theme choice, fresh target
+    // style, configured fallback colour plus theme choice and the shared
+    // accent snapshot, fresh target
     // lifetime identity, foreground identity, and monitor fulls) and return.
     // The target is the live foreground here, so the foreground proof
     // clones the target lifetime: any later switch refuses renderer-side.
-    // The renderer owns the live accent query and the fullscreen predicate,
-    // so neither runs owner-side per tick. The applied outcome logs on the
+    // The renderer paints the posted snapshot and owns the fullscreen
+    // predicate, so neither queries nor the predicate runs owner-side per
+    // tick. The applied outcome logs on the
     // renderer acknowledgement in `poll_render_acks`.
     if state.render_bridge.is_some() {
         // Unmanaged foregrounds carry no member tag by construction (tags
@@ -341,6 +347,7 @@ pub(super) fn refresh_active_border(state: &mut TileLoop, me: &ProcessIdentity, 
             (width_px, gap_px, radius_px),
             state.border.style.color,
             state.border.style.use_theme,
+            accent,
             &window.token,
             window.hwnd,
             lifetime.clone(),
@@ -350,15 +357,17 @@ pub(super) fn refresh_active_border(state: &mut TileLoop, me: &ProcessIdentity, 
         );
         return;
     }
+    let style = state.border.style;
     let outcome = state.border_overlay.show_at(
         outer,
         width_px,
         gap_px,
         radius_px,
-        &state.border.style,
+        &style,
         &window.token,
         topmost,
         window.hwnd,
+        accent,
     );
     match outcome {
         OverlayOutcome::Hidden => {
@@ -401,14 +410,20 @@ pub(super) fn refresh_active_border(state: &mut TileLoop, me: &ProcessIdentity, 
         }
         OverlayOutcome::Unchanged => {
             // Resolved accent-or-fallback colour rides the signature so a
-            // theme change that repaints the same geometry still logs once.
+            // theme change that repaints the same geometry still logs once;
+            // the accent source rides it too so a source flip logs even
+            // when both paints share one RGB. An unchanged surface with a
+            // changed signature is exactly that flip: log it in
+            // production (normal trace-silent Unchanged stays silent).
             let color_hex = state
                 .border_overlay
                 .current_color()
                 .map(crate::active_border::render_color)
                 .unwrap_or_else(|| crate::active_border::render_color(state.border.style.color));
+            let sourced =
+                crate::active_border::accent_source_label(state.border_overlay.from_accent());
             let signature = format!(
-                "shown:{}:{}:{}:{}:{}:{}:{}:{}:{}",
+                "shown:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
                 window.token,
                 outer.x,
                 outer.y,
@@ -417,13 +432,14 @@ pub(super) fn refresh_active_border(state: &mut TileLoop, me: &ProcessIdentity, 
                 width_px,
                 gap_px,
                 topmost,
-                color_hex
+                color_hex,
+                sourced
             );
             let changed = state.border_last.as_deref() != Some(signature.as_str());
             if changed {
                 state.border_last = Some(signature);
             }
-            if state.trace && changed {
+            if changed {
                 log_json_at(
                     &state.log_path,
                     serde_json::json!({
@@ -431,6 +447,8 @@ pub(super) fn refresh_active_border(state: &mut TileLoop, me: &ProcessIdentity, 
                         "tick": state.tick,
                         "outcome": "unchanged",
                         "target": window.token,
+                        "color": color_hex,
+                        "source": sourced,
                     }),
                 );
             }
@@ -476,8 +494,10 @@ pub(super) fn refresh_active_border(state: &mut TileLoop, me: &ProcessIdentity, 
                 .current_color()
                 .map(crate::active_border::render_color)
                 .unwrap_or_else(|| crate::active_border::render_color(state.border.style.color));
+            let sourced =
+                crate::active_border::accent_source_label(state.border_overlay.from_accent());
             let signature = format!(
-                "shown:{}:{}:{}:{}:{}:{}:{}:{}:{}",
+                "shown:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
                 window.token,
                 outer.x,
                 outer.y,
@@ -486,7 +506,8 @@ pub(super) fn refresh_active_border(state: &mut TileLoop, me: &ProcessIdentity, 
                 width_px,
                 gap_px,
                 topmost,
-                color_hex
+                color_hex,
+                sourced
             );
             let changed = state.border_last.as_deref() != Some(signature.as_str());
             if changed {
@@ -536,6 +557,7 @@ pub(super) fn refresh_active_border(state: &mut TileLoop, me: &ProcessIdentity, 
                     "outer": [outer.x, outer.y, outer.w, outer.h],
                     "style_px": [width_px, gap_px, radius_px],
                     "color": color_hex,
+                    "source": sourced,
                     "dib_checksum": state.border_overlay.snapshot()["dib_checksum"],
                 }),
             );

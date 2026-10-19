@@ -261,11 +261,12 @@ pub(super) fn apply_geometry(state: &mut TileLoop, input: ApplyInput<'_>) -> Opt
             continue;
         };
         // User safety across the tick: a vetoing foreground that arrived
-        // after the loop guard must veto this write, not ride along. The
-        // first veto pins the bounded diagnostic for the action summary.
+        // after the loop guard must veto this write, not ride along. Under
+        // an unmanageable fullscreen only the foreground itself vetoes;
+        // other verified managed windows still reconcile non-activatingly.
         // Verified managed overlays bypass like a managed maximize.
-        let read = suspend_read(state, me, fulls);
-        if read.veto.block {
+        let (read, limited_fg) = suspend_limited(state, me, fulls);
+        if read.veto.block && !geometry_write_allowed(&read, expected.hwnd, limited_fg) {
             if veto_diag.is_none() {
                 veto_diag = Some(VetoDiag {
                     reason: read.veto.reason.as_str(),

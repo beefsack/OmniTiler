@@ -401,10 +401,8 @@ pub(super) fn workspace_history_tick(
                 // REQ-WS-09 departure memory, same as the numbered select.
                 let foreground_hwnd = crate::ffi::foreground_window();
                 if let Some(source_id) = state.workspaces.active_id(&output)
-                    && let Some(origin) = intent.origin.as_ref()
                     && let Some(token) = remember_select_departure(
                         state,
-                        origin,
                         &output,
                         &source_id,
                         foreground_hwnd,

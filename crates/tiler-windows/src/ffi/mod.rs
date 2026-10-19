@@ -37,13 +37,14 @@
 //! - [`test_window`]: message-only and owned overlapped test windows (test
 //!   support only).
 //! - [`overlay`]: owned layered-overlay carrier (active border, group
-//!   underlay, drop preview): class registration, the accent-flag window
+//!   underlay, drop preview): class registration, the accent-version window
 //!   procedure, DIB presentation with caller painters, and placement.
 //! - [`pager`]: owned per-output taskbar pager overlays: class, window
 //!   procedure, GDI paint, per-window frames, click delivery, taskbar
 //!   probes, and calibration flags.
 //! - [`icons`]: icon-handle ownership plus worker-rendered pixel buffers.
 
+pub mod accent;
 pub mod dpi;
 pub mod enumeration;
 pub mod fs;
@@ -66,6 +67,7 @@ pub mod test_window;
 pub mod tray;
 pub mod window;
 
+pub use accent::{AccentStage, OwnerAccentSource, accent_version};
 pub use dpi::{set_process_pm_v2, system_metric, system_metric_for_dpi, thread_pm_v2_active};
 pub use enumeration::{
     MonitorInfo, enumerate_child_windows, enumerate_monitors, enumerate_windows,
@@ -88,8 +90,8 @@ pub use llhook::{
     uninstall_snapkey_hook, uninstall_winarrow_hook,
 };
 pub use overlay::{
-    OverlayClass, create_overlay_window, destroy_overlay, dwm_colorization, hide_overlay,
-    overlay_alive, place_above, place_below, present_layered, present_preview, take_accent_dirty,
+    OverlayClass, create_overlay_window, destroy_overlay, hide_overlay, overlay_alive, place_above,
+    place_below, present_layered, present_preview,
 };
 pub use pager::{
     IconBlit, MiniSlot, PAGER_WINDOW_CLASS, PagerCalibrationSink, PagerClick, PagerClickSink,

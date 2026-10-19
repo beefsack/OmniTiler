@@ -798,6 +798,11 @@ pub mod sys {
                 false,
             )?;
         }
+        // Sanitized panic hook: installed after the owner log exists (the
+        // hook captures the path internally, never logs it) and before
+        // worker threads/native startup below. Restored on normal scope
+        // end when the guard drops; unwind/abort/exit policy unchanged.
+        let _panic_diag = crate::panic_diag::PanicDiagGuard::install(log_file.clone());
         point_current(dir, &me.process_creation)?;
         let record = RecoveryLedger {
             v: LEDGER_SCHEMA_VERSION,
@@ -840,6 +845,18 @@ pub mod sys {
         // It only restores while the live value is still ours and never
         // overwrites the body's result; uncertain reads retain the ledger.
         let body_result = body(dir, me, &store);
+        // Ordinary callback-return marker: distinguishes a returned `Err`
+        // from no return at all (abrupt termination leaves no marker, and
+        // the existing `run-end` below is skipped on `Err`). Outcome only,
+        // never the error content.
+        let callback_outcome = if body_result.is_ok() { "ok" } else { "err" };
+        let _ = write_log_at(
+            &log_file,
+            &format!(
+                "{{\"event\":\"owner-exit\",\"phase\":\"callback-returned\",\"outcome\":\"{callback_outcome}\"}}"
+            ),
+            false,
+        );
         // The request queue never outlives its owner: drop our own pending
         // marker (exact creation match) on every teardown path so stop and
         // restore observe no residue.

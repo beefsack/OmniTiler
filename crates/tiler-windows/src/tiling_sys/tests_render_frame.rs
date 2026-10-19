@@ -556,6 +556,213 @@ fn file_sink_coalesced_unchanged_changing_geometry_bounded() {
     let _ = std::fs::remove_file(&log_path);
 }
 
+/// Test ack wrapper with an explicit accent source: `AppliedContent::new`
+/// defaults to the configured fill, so the source rides on top.
+fn sourced_ack(mut base: CarrierAck, accent_sourced: bool) -> CarrierAck {
+    if let Some(applied) = base.applied.as_mut() {
+        applied.accent_sourced = accent_sourced;
+    }
+    base
+}
+
+/// Test report for the per-query diagnostic: a renderer-thread broadcast
+/// re-query that returned the live accent. `version` distinguishes
+/// successive queries; the resolved colour is intentionally identical
+/// across versions to prove equal-RGB re-queries still log.
+fn query_report(version: u64) -> crate::active_border::AccentQueryReport {
+    use crate::active_border::{
+        AccentInit, AccentQueryOutcome, AccentQueryReport, AccentQueryRole, AccentQuerySurface,
+        AccentQueryTrigger, SystemAccent,
+    };
+    AccentQueryReport {
+        surface: AccentQuerySurface::Border,
+        role: AccentQueryRole::Renderer,
+        trigger: AccentQueryTrigger::Broadcast,
+        version,
+        init: AccentInit::Already,
+        init_hr: 1,
+        activate_hr: Some(0),
+        query_hr: Some(0),
+        raw: Some(SystemAccent {
+            color: (0x2a, 0x82, 0xda),
+            alpha: 0xFF,
+        }),
+        outcome: AccentQueryOutcome::Accent,
+        fallback_reason: None,
+        resolved: (0x2a, 0x82, 0xda),
+    }
+}
+
+fn push_query(state: &super::TileLoop, version: u64) {
+    state
+        .render_bridge
+        .as_ref()
+        .expect("bridge")
+        .channels
+        .push_accent_query(query_report(version));
+}
+
+#[test]
+fn file_sink_accent_query_logs_every_completed_query_once() {
+    // Two completed queries before one poll both log exactly once, in
+    // completion order - even though the second ack overwrote the first
+    // (latest-wins) and both resolved the identical RGB. The queue, not the
+    // ack, preserves every completed query; steady state pushes nothing.
+    let log_path = temp_log("accent-query");
+    let mut state = bridged_state(&log_path, false);
+    let start = Instant::now();
+    push_query(&state, 3);
+    push_query(&state, 4);
+    post_ack(
+        &state,
+        RenderCarrier::Border,
+        ack_ex(1, "win-a", 0, RenderOutcome::Shown, (1, true), 10, 2),
+    );
+    post_ack(
+        &state,
+        RenderCarrier::Border,
+        ack_ex(2, "win-a", 0, RenderOutcome::Unchanged, (1, true), 10, 2),
+    );
+    super::poll_render_acks(&mut state, start);
+    // Repeat poll with no new query: nothing re-logs (the drain consumed
+    // the queue, and steady state pushes nothing).
+    super::poll_render_acks(&mut state, start);
+    let lines = log_values(&log_path);
+    let queries: Vec<&serde_json::Value> = lines
+        .iter()
+        .filter(|l| l["event"] == "accent-query")
+        .collect();
+    assert_eq!(
+        queries.len(),
+        2,
+        "both completed queries log once: {lines:?}"
+    );
+    assert_eq!(queries[0]["surface"], "border");
+    assert_eq!(queries[0]["role"], "renderer");
+    assert_eq!(queries[0]["trigger"], "broadcast");
+    assert_eq!(queries[0]["version"], 3);
+    assert_eq!(queries[0]["init"], "already");
+    assert_eq!(queries[0]["init_hr"], 1);
+    assert_eq!(queries[0]["argb"], "#ff2a82da");
+    assert_eq!(queries[0]["outcome"], "accent");
+    assert_eq!(queries[0]["resolved"], "#2a82da");
+    assert_eq!(
+        queries[1]["version"], 4,
+        "same-RGB re-query still logs: {lines:?}"
+    );
+    assert_eq!(queries[1]["resolved"], "#2a82da");
+    let _ = std::fs::remove_file(&log_path);
+}
+
+#[test]
+fn file_sink_accent_query_stop_drain_logs_pending_queries() {
+    // The stop path drains through the same shared helper the poll path
+    // uses: a query completed after the last poll still logs instead of
+    // being cleared with the teardown. The bridge handle is absent
+    // (renderer already joined), but the channels queue survives it.
+    let log_path = temp_log("accent-query-stop");
+    let mut state = bridged_state(&log_path, false);
+    push_query(&state, 5);
+    super::render_ack::drain_accent_queries(&mut state);
+    let lines = log_values(&log_path);
+    let queries: Vec<&serde_json::Value> = lines
+        .iter()
+        .filter(|l| l["event"] == "accent-query")
+        .collect();
+    assert_eq!(queries.len(), 1, "stop drain logs pending query: {lines:?}");
+    assert_eq!(queries[0]["version"], 5);
+    // The drain consumed the queue: a second drain logs nothing.
+    super::render_ack::drain_accent_queries(&mut state);
+    assert_eq!(
+        log_values(&log_path).len(),
+        lines.len(),
+        "drain consumes the queue"
+    );
+    let _ = std::fs::remove_file(&log_path);
+}
+
+#[test]
+fn file_sink_accent_source_flip_logs_even_at_equal_rgb() {
+    // Equal-RGB source flips must log: identical pixels from a different
+    // source are different states (one must retry on broadcast, the other
+    // must not claim success). A fallback and a live accent sharing one
+    // RGB never compare equal silently.
+    let log_path = temp_log("source-flip");
+    let mut state = bridged_state(&log_path, true);
+    let start = Instant::now();
+    // Fallback present first (unavailable query): transition plus status.
+    post_ack(
+        &state,
+        RenderCarrier::Border,
+        sourced_ack(
+            ack_ex(1, "win-a", 0, RenderOutcome::Shown, (1, true), 10, 2),
+            false,
+        ),
+    );
+    super::poll_render_acks(&mut state, start);
+    // Same pixels, live accent source, no geometry change: the transition
+    // key and the state signature both move, so the Unchanged ack logs.
+    post_ack(
+        &state,
+        RenderCarrier::Border,
+        sourced_ack(
+            ack_ex(2, "win-a", 0, RenderOutcome::Unchanged, (1, true), 10, 2),
+            true,
+        ),
+    );
+    super::poll_render_acks(&mut state, start);
+    let lines = log_values(&log_path);
+    let status: Vec<&serde_json::Value> = lines
+        .iter()
+        .filter(|l| l["event"] == "active-border")
+        .collect();
+    assert_eq!(status.len(), 2, "both source states log: {lines:?}");
+    assert_eq!(status[0]["outcome"], "shown");
+    assert_eq!(status[0]["source"], "fallback");
+    assert_eq!(status[1]["outcome"], "unchanged");
+    assert_eq!(status[1]["source"], "accent");
+    assert_eq!(status[0]["color"], status[1]["color"]);
+    let _ = std::fs::remove_file(&log_path);
+}
+
+#[test]
+fn file_sink_same_source_repeats_stay_silent_at_equal_rgb() {
+    // Control for the flip above: same RGB with the same source is one
+    // state - the first Unchanged is the visibility transition, repeats
+    // aggregate silently instead of logging per ack.
+    let log_path = temp_log("source-same");
+    let mut state = bridged_state(&log_path, true);
+    let start = Instant::now();
+    for i in 0..3u64 {
+        post_ack(
+            &state,
+            RenderCarrier::Border,
+            sourced_ack(
+                ack_ex(
+                    i + 1,
+                    "win-a",
+                    0,
+                    RenderOutcome::Unchanged,
+                    (1, true),
+                    10,
+                    2,
+                ),
+                false,
+            ),
+        );
+        super::poll_render_acks(&mut state, start);
+    }
+    let lines = log_values(&log_path);
+    let status: Vec<&serde_json::Value> = lines
+        .iter()
+        .filter(|l| l["event"] == "active-border")
+        .collect();
+    assert_eq!(status.len(), 1, "one transition, then silence: {lines:?}");
+    assert_eq!(status[0]["outcome"], "unchanged");
+    assert_eq!(status[0]["source"], "fallback");
+    let _ = std::fs::remove_file(&log_path);
+}
+
 #[test]
 fn file_sink_alternating_routine_outcomes_aggregate() {
     // Alternating Shown/Redrew/Moved/Unchanged under one target, safety,

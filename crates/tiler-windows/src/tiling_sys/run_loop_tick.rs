@@ -16,6 +16,167 @@ pub(super) enum TickFlow {
     Done,
 }
 
+/// Name the suspension mode honestly in logs: `limited` keeps
+/// geometry for other windows running, `full` suspends everything.
+fn suspend_mode(limited: bool) -> &'static str {
+    if limited { "limited" } else { "full" }
+}
+
+/// Enter or continue a suspension, logging the entry and any mode
+/// transition while suspended (full <-> limited) so an ongoing mode
+/// change is visible without per-tick noise. Geometry outcomes keep
+/// flowing through the existing per-window/tick diagnostics; the
+/// suspend line itself never claims all tiling stopped in limited mode.
+#[allow(clippy::too_many_arguments)]
+fn enter_suspend(
+    state: &mut TileLoop,
+    dir: &Path,
+    me: &ProcessIdentity,
+    store: &LedgerStore,
+    snap_want: bool,
+    now: Instant,
+    log_path: &Path,
+    limited: bool,
+) {
+    if !state.suspended {
+        state.suspended = true;
+        state.suspended_limited = limited;
+        state.snap_advance = None;
+        // Monotonic suspend start for the resume elapsed timing below;
+        // logging only, never a deadline or behavior change.
+        state.suspend_started = Some(now);
+        log_json_at(
+            log_path,
+            serde_json::json!({"event":"suspend","tick":state.tick,"cause":"fullscreen-foreground","mode":suspend_mode(limited)}),
+        );
+        if snap_want {
+            snap_suspend(dir, me, store);
+        }
+    } else {
+        state.snap_advance = None;
+        if state.suspended_limited != limited {
+            state.suspended_limited = limited;
+            log_json_at(
+                log_path,
+                serde_json::json!({"event":"suspend-mode","tick":state.tick,"cause":"fullscreen-foreground","mode":suspend_mode(limited)}),
+            );
+        }
+    }
+}
+
+/// Drop one batch of intents on a blocked turn with the shared suspended
+/// outcome (never dispatched under a covering foreground), then consume
+/// the out-of-hook select/resize polls the same way. Used by both the
+/// full and the limited lanes so the two never drift.
+#[allow(clippy::too_many_arguments)]
+fn drop_blocked_intents(
+    state: &mut TileLoop,
+    me: &ProcessIdentity,
+    store: &LedgerStore,
+    dir: &Path,
+    fulls: &[Rect],
+    areas: &[MonitorArea],
+    snap_events: Vec<QueuedSnapEvent>,
+    workspace_events: Vec<crate::snapkey::QueuedWorkspaceIntent>,
+    send_events: Vec<QueuedWorkspaceSendIntent>,
+    output_events: Vec<QueuedWorkspaceOutputIntent>,
+    migrate_events: Vec<QueuedWorkspaceMigrateIntent>,
+    history_events: Vec<QueuedWorkspaceHistoryIntent>,
+    tray: &mut Option<crate::tray_sys::TrayOwner>,
+) {
+    if !snap_events.is_empty() {
+        keyboard_tick(state, me, fulls, areas, snap_events, Some("suspended"));
+    }
+    if !workspace_events.is_empty() {
+        workspace_tick(
+            state,
+            me,
+            store,
+            dir,
+            fulls,
+            areas,
+            workspace_events,
+            Some("suspended"),
+        );
+    }
+    if !send_events.is_empty() {
+        workspace_relative_send_tick(
+            state,
+            me,
+            store,
+            dir,
+            fulls,
+            areas,
+            send_events,
+            Some("suspended"),
+        );
+    }
+    if !output_events.is_empty() {
+        workspace_output_send_tick(state, me, fulls, areas, output_events, Some("suspended"));
+    }
+    if !migrate_events.is_empty() {
+        workspace_migrate_tick(
+            state,
+            me,
+            store,
+            dir,
+            fulls,
+            areas,
+            migrate_events,
+            Some("suspended"),
+        );
+    }
+    if !history_events.is_empty() {
+        workspace_history_tick(
+            state,
+            me,
+            store,
+            dir,
+            fulls,
+            areas,
+            history_events,
+            Some("suspended"),
+        );
+    }
+    // Out-of-hook select observes the same suspension: consumed
+    // once with a suspended outcome, never applied while a
+    // fullscreen foreground holds the session. The test-needed
+    // resize poll carries its own suspend fence and refuses the
+    // same way.
+    poll_workspace_cli_request(state, me, store, dir, fulls, areas);
+    tray_select::poll_tray_select(state, me, store, dir, fulls, areas, tray);
+    poll_pager_select(state, me, store, dir, fulls, areas);
+    poll_resize_cli_request(state, me, dir, fulls, areas);
+}
+
+/// Clear held-gesture and preview state on a blocked turn plus the
+/// process-global Esc edge (ordered FIFO through the input bridge, pump
+/// order on proof paths), so a stale pre-suspend edge never cancels a
+/// later gesture. Ordering, not atomicity, carries the guarantee: the
+/// edge drains here before any later START can observe it.
+fn clear_blocked_gesture(state: &mut TileLoop) {
+    state.gesture_before.clear();
+    state.active.clear();
+    state.move_kind.clear();
+    state.esc_latched.clear();
+    state.gesture_esc_seq.clear();
+    state.gesture_end_seq.clear();
+    state.gesture_end_cursor.clear();
+    state.gesture_start_key.clear();
+    state.gesture_start_tag.clear();
+    state.preview_bound.clear();
+    state.preview_dead.clear();
+    state.gesture_preview_start.clear();
+    state.gesture_start_cursor.clear();
+    // A stale Esc edge must not leak into the next gesture.
+    // Routes through the input bridge on the product path
+    // (ordered FIFO with snapshots; held pairs keep their stored
+    // verdicts until hook release) and clears the process-global
+    // edge flags in pump order via the ClearEsc apply; direct
+    // sys calls on proof paths.
+    offer_input_control(state, InboxItem::ClearEsc);
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_active_tick(
     state: &mut TileLoop,
@@ -206,107 +367,40 @@ pub(super) fn run_active_tick(
         return Ok(TickFlow::Idle);
     }
     let fulls = monitor_fulls(areas);
-    if suspend_read(state, me, &fulls).veto.block {
-        if !state.suspended {
-            state.suspended = true;
-            state.snap_advance = None;
-            // Monotonic suspend start for the resume elapsed timing below;
-            // logging only, never a deadline or behavior change.
-            state.suspend_started = Some(now);
-            log_json_at(
-                log_path,
-                serde_json::json!({"event":"suspend","tick":state.tick,"cause":"fullscreen-foreground"}),
-            );
-            if snap_want {
-                snap_suspend(dir, me, store);
-            }
-        } else {
-            state.snap_advance = None;
+    let (suspend_read_cached, suspend_fg) = suspend_limited(state, me, &fulls);
+    // Limited unmanageable fullscreen: the game/EAC window stays excluded
+    // and untouched, automatic focus stays blocked, and overlays stay
+    // hidden, but other verified managed windows still reconcile
+    // non-activatingly through the shared geometry gate (which excludes the
+    // foreground HWND per write). Any other blocking shape, or an unknown
+    // foreground, keeps the existing full suspension with no reconcile.
+    let limited = is_limited_fullscreen(&suspend_read_cached) && suspend_fg != 0;
+    if suspend_read_cached.veto.block {
+        enter_suspend(state, dir, me, store, snap_want, now, log_path, limited);
+        drop_blocked_intents(
+            state,
+            me,
+            store,
+            dir,
+            &fulls,
+            areas,
+            snap_events,
+            workspace_events,
+            send_events,
+            output_events,
+            migrate_events,
+            history_events,
+            tray,
+        );
+        clear_blocked_gesture(state);
+        if limited {
+            // Narrow geometry-only lane for other windows: the single
+            // captured foreground HWND is excluded per write, focus is
+            // forced off in planning, and no admission, un-maximize,
+            // marker, visibility, close, or overlay effect runs. Intents
+            // above already dropped; overlays below stay hidden.
+            reconcile_limited_tick(state, me, &fulls, areas, suspend_fg);
         }
-        if !snap_events.is_empty() {
-            keyboard_tick(state, me, &fulls, areas, snap_events, Some("suspended"));
-        }
-        if !workspace_events.is_empty() {
-            workspace_tick(
-                state,
-                me,
-                store,
-                dir,
-                &fulls,
-                areas,
-                workspace_events,
-                Some("suspended"),
-            );
-        }
-        if !send_events.is_empty() {
-            workspace_relative_send_tick(
-                state,
-                me,
-                store,
-                dir,
-                &fulls,
-                areas,
-                send_events,
-                Some("suspended"),
-            );
-        }
-        if !output_events.is_empty() {
-            workspace_output_send_tick(state, me, &fulls, areas, output_events, Some("suspended"));
-        }
-        if !migrate_events.is_empty() {
-            workspace_migrate_tick(
-                state,
-                me,
-                store,
-                dir,
-                &fulls,
-                areas,
-                migrate_events,
-                Some("suspended"),
-            );
-        }
-        if !history_events.is_empty() {
-            workspace_history_tick(
-                state,
-                me,
-                store,
-                dir,
-                &fulls,
-                areas,
-                history_events,
-                Some("suspended"),
-            );
-        }
-        // Out-of-hook select observes the same suspension: consumed
-        // once with a suspended outcome, never applied while a
-        // fullscreen foreground holds the session. The test-needed
-        // resize poll carries its own suspend fence and refuses the
-        // same way.
-        poll_workspace_cli_request(state, me, store, dir, &fulls, areas);
-        tray_select::poll_tray_select(state, me, store, dir, &fulls, areas, tray);
-        poll_pager_select(state, me, store, dir, &fulls, areas);
-        poll_resize_cli_request(state, me, dir, &fulls, areas);
-        state.gesture_before.clear();
-        state.active.clear();
-        state.move_kind.clear();
-        state.esc_latched.clear();
-        state.gesture_esc_seq.clear();
-        state.gesture_end_seq.clear();
-        state.gesture_end_cursor.clear();
-        state.gesture_start_key.clear();
-        state.gesture_start_tag.clear();
-        state.preview_bound.clear();
-        state.preview_dead.clear();
-        state.gesture_preview_start.clear();
-        state.gesture_start_cursor.clear();
-        // A stale Esc edge must not leak into the next gesture.
-        // Routes through the input bridge on the product path
-        // (ordered FIFO with snapshots; held pairs keep their stored
-        // verdicts until hook release) and clears the process-global
-        // edge flags in pump order via the ClearEsc apply; direct
-        // sys calls on proof paths. Atomic sequencing guarantees a
-        // pre-gesture edge never cancels a later gesture.
-        offer_input_control(state, InboxItem::ClearEsc);
         hide_border(state, "suspended");
         hide_underlay(state, "suspended");
         hide_preview(state, "suspended");
@@ -319,7 +413,9 @@ pub(super) fn run_active_tick(
         return Ok(TickFlow::Suspended);
     }
     if state.suspended {
+        let was_limited = state.suspended_limited;
         state.suspended = false;
+        state.suspended_limited = false;
         // Monotonic suspended duration from the suspend start above, so a
         // later incident row can measure the reported delay from normal logs
         // alone. `None` (suspend predates this process snapshot) reads null.
@@ -330,7 +426,7 @@ pub(super) fn run_active_tick(
         });
         log_json_at(
             log_path,
-            serde_json::json!({"event":"resume","tick":state.tick,"suspended_ms":suspended_ms}),
+            serde_json::json!({"event":"resume","tick":state.tick,"suspended_ms":suspended_ms,"mode":suspend_mode(was_limited)}),
         );
         // A fresh foreground may accept the hook now: retry soon.
         *snap_retry_at = None;

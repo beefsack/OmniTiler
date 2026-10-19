@@ -8,8 +8,10 @@
 //!
 //! Alpha semantics, stated honestly: `DrawIconEx(DI_NORMAL)` blends the
 //! artwork over a caller-supplied gray-filled 32-bit top-down DIB at lookup
-//! time. The returned buffer is opaque (alpha bytes forced to `0xFF`); the
-//! painter blits it with `StretchDIBits(SRCCOPY)`, which ignores alpha.
+//! time, then the bytes fade halfway toward that same gray
+//! (`ICON_GLOBAL_ALPHA`, about 50%). The returned buffer stays opaque (alpha
+//! bytes forced to `0xFF`); the painter blits it with
+//! `StretchDIBits(SRCCOPY)`, which ignores alpha.
 //!
 //! The lookup chain policy (identity verification, source order, miss
 //! vocabulary) stays with the caller; this module only resolves one window
@@ -26,6 +28,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 
 use super::hwnd_of;
+
+use crate::pager_icons::{ICON_GLOBAL_ALPHA, blend_flat_toward_gray};
 
 const WM_GETICON: u32 = 0x007F;
 const ICON_SMALL: usize = 0;
@@ -260,10 +264,11 @@ pub fn render_icon(icon: &AppIcon, size: u32, gray: (u8, u8, u8)) -> Option<Icon
         bgra.copy_from_slice(std::slice::from_raw_parts(bits as *const u8, total));
     }
     // `SRCCOPY` ignores the alpha byte, but keep the buffer honestly
-    // opaque: icon blending may leave the alpha lane untouched.
-    for i in 0..total / 4 {
-        bgra[i * 4 + 3] = 0xFF;
-    }
+    // opaque: icon blending may leave the alpha lane untouched. Flattened
+    // artwork then fades halfway toward the miniature gray (transparent
+    // regions already read gray and stay put; opaque centers go translucent;
+    // partial-alpha edges keep their GDI-composed gradient, only faded).
+    blend_flat_toward_gray(&mut bgra, gray, ICON_GLOBAL_ALPHA);
     restore(hdc, old);
     Some(IconPixels { size, bgra })
 }

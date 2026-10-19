@@ -741,15 +741,12 @@ pub(super) fn poll_workspace_cli_request(
         return;
     };
     // REQ-WS-09 departure memory for the CLI select/previous/relative path:
-    // the live foreground resolves through the same `snap_origins` map the
-    // hook binds chords against (never a carried HWND).
+    // the dispatch-time foreground resolves directly against verified
+    // source membership.
     let foreground_hwnd = crate::ffi::foreground_window();
     if let Some(source_id) = state.workspaces.active_id(&output)
-        && let Some(origin) = state.snap_origins.get(&foreground_hwnd).cloned()
-        && !origin.token.is_empty()
         && let Some(token) = remember_select_departure(
             state,
-            &origin,
             &output,
             &source_id,
             foreground_hwnd,

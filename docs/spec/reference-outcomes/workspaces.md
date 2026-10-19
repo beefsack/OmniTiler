@@ -585,6 +585,13 @@ verb inventory); selected intent and doc assertions are never evidence.
   retained fullscreen members, before numbered/history/CLI selects; offline
   return-target and no-fullscreen-geometry coverage passed. Native game/fixture
   outcome remains pending ([record](../../changes/archive/windows-workspace-fullscreen-focus.md)).
+  Correction 2026-10-19: departure memory resolves the verified dispatch-time
+  foreground directly, not a snap origin; missing/stale origins cannot leave
+  stale focus memory. Retained maximized/fullscreen identity/token and ordinary
+  member cases pass offline. User physical acceptance 2026-10-19: maximized
+  windows regain focus on workspace return; fullscreen and wider route variants
+  remain pending
+  ([discriminators](../reference-outcomes.md#windows-single-output-dogfood-discriminators)).
 - Variant hook: provisional/TBD (return-focus hook, to discuss).
 
 ### R-WS-10: send B away; empty middle retained vs removed

@@ -37,7 +37,7 @@ Table A predicate rows carry literal status `OPEN (Table A R-xxx)`, unless a
 recorded user selection for that predicate is normative (then Status is
 NORMATIVE and Source cites the selection).
 
-Draft totals: 148 NORMATIVE, 28 OPEN, 0 PROVISIONAL (176 requirement rows);
+Draft totals: 149 NORMATIVE, 28 OPEN, 0 PROVISIONAL (177 requirement rows);
 all nine prior PROVISIONAL rows ratified NORMATIVE User 2026-10-08
 (REQ-FLT-06, REQ-START-01/02, REQ-MIN-01b, REQ-CTL-01/02/03b/05/06).
 Selected additions carry remaining KDE/Windows implementation gaps; KDE
@@ -344,6 +344,7 @@ Hooks: V-CLOSE-FOCUS. PROVISIONAL indexing, not chosen configuration.
 | REQ-CLOSE-03 | [R-CLOSE-03](reference-outcomes/close.md#r-close-03-close-the-sole-window-on-the-shown-workspace) close sole window | Retain the shown workspace empty after its sole window closes, with no focused client | current: shared empty collapse/desired-focus-none; shown workspace/native focus pending, verification-only | current: shared empty collapse; native shown-workspace/focus journey pending | same target; implementation gap (adapter absent) | NORMATIVE | [decisions](../decisions.md#workspaces) User 2026-10-10, 0.1 triage D08 |
 | REQ-CLOSE-04 | [R-CLOSE-04](reference-outcomes/close.md#r-close-04-close-a-focused-ordinary-float-over-tiles) close focused float | Closing the focused ordinary float leaves tiles untouched and refocuses MRU survivor (B in fixture) | current: shared exception-drop/retained B focus sourced; native journey pending, verification-only | current: same shared exception-drop/focus path; native journey pending | same target; implementation gap (adapter absent) | NORMATIVE | [decisions](../decisions.md#window-state-float-sticky-maximize-fullscreen) User 2026-10-10, 0.1 triage D24 |
 | REQ-CLOSE-05 | [R-CLOSE-05](reference-outcomes/close.md#r-close-05-close-a-maximized-or-fullscreen-window) close maximized/fullscreen | Removal plus survivor refill and focus; joint native-cleanup live leg | delivered offline: removal/refill/focus with exact full-domain survivor geometry plus focus; native overlay cleanup TBD, user-owned ([record](../changes/archive/kde-fullscreen-activation-and-send.md)) | current: TBD | same target; implementation gap (adapter absent) | NORMATIVE | [decisions](../decisions.md#placement-minimums-and-startup-adoption) User 2026-10-12, D01 (a) |
+| REQ-CLOSE-06 | [External-hide discriminator](reference-outcomes.md#d23-best-effort-restore-and-close-discriminators) live window hides on close | Windows: positively verified alive, invisible, uncloaked, lifetime-fenced managed window with no tiler hide claim or ledger entry closes its allocation under existing MRU rules; reshow admits fresh with no remembered slot. Unknown/unreadable facts and tiler-owned hides hold | applicability OPEN | delivered offline: adapter close/reflow and durable-claim regressions independently accepted; native journey TBD | applicability OPEN | NORMATIVE | [decisions](../decisions.md#windows-app-hide-close) User 2026-10-19 |
 
 <a id="groups"></a>
 ## 12. Groups and stacks ([R-GRP](reference-outcomes/groups-stacks.md#groups--stacks-reference-outcomes))

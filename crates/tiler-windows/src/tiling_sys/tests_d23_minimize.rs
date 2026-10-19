@@ -11,10 +11,13 @@ use super::rmax03_adapter_tests::test_state;
 use super::{
     HintCx, MonitorArea, ObservedWindow, RetainedRow, assemble_domain_rows, audit_hidden_claims,
     clear_pending_seams, dispatch_workspace_release, ensure_workspace_assignments,
-    fanout_pending_closed, handle_engine_event, inject_pending_focus, inject_pending_iconic,
-    inject_pending_observe, inject_pending_recovery, inject_pending_tag, inject_pending_unreadable,
-    pending_counters, workspace_close_cleanup, writable_tokens,
+    fanout_pending_closed, handle_engine_event, inject_pending_cloak_unreadable,
+    inject_pending_cloaked, inject_pending_focus, inject_pending_iconic, inject_pending_invisible,
+    inject_pending_observe, inject_pending_pids, inject_pending_recovery,
+    inject_pending_rescue_fail, inject_pending_tag, inject_pending_unreadable, pending_counters,
+    workspace_close_cleanup, writable_tokens,
 };
+use crate::product_hide::sys::fake;
 
 fn key(hwnd: u64) -> crate::workspace::WindowKey {
     crate::workspace::WindowKey {
@@ -143,6 +146,7 @@ fn hide_member(state: &mut super::TileLoop, hwnd: u64, claim_tag: &str, iconic: 
     state
         .hidden_claims
         .insert(member.clone(), super::HiddenRecord { claim, iconic });
+    state.vis_diag.uncertain_hides.remove(&member);
     state.workspaces.set_hidden(&member, true);
 }
 
@@ -2056,6 +2060,1418 @@ fn production_tick_journey_minimize_restore_close_fanout_with_hidden() {
     assert!(state.pending_closed.is_empty());
     assert_eq!(focused_token(&state, &domain1.1).as_deref(), Some("wC"));
     let _ = std::fs::remove_dir_all(&tmp);
+    clear_pending_seams();
+}
+
+fn live_pids(members: &[(u64, u32)]) {
+    inject_pending_pids(members.to_vec());
+}
+
+#[test]
+fn external_hide_closes_reflows_and_forgets_slot() {
+    clear_pending_seams();
+    let (mut state, ws, domain) = setup("mon-1");
+    let output = "mon-1".to_owned();
+    let _ = seed_abc(&mut state, &output, &ws, &domain);
+    let me = me();
+    let (fulls, areas) = solo_topology(&output);
+    let before_observed = vec![
+        mk_observed(101, "wA", 0, 0),
+        mk_observed(102, "wB", 0, 0),
+        mk_observed(103, "wC", 0, 0),
+    ];
+    let before_reply = dispatch(
+        &mut state,
+        &output,
+        &ws,
+        &domain,
+        &before_observed,
+        &[],
+        Some("wC"),
+        "ext-before",
+    );
+    let before_xs = geometry_x(&before_reply);
+    assert_eq!(before_xs.len(), 3, "H[W1 V[W2 W3]] seeds three tiles");
+    assert_eq!(
+        leaf_window_order(&state, &domain.1),
+        vec!["wA".to_owned(), "wB".to_owned(), "wC".to_owned()],
+        "seed keeps H[W1 V[W2 W3]] leaf order"
+    );
+    let (a_before, b_before, c_before) = (before_xs["wA"], before_xs["wB"], before_xs["wC"]);
+    assert!(
+        b_before.x == c_before.x && b_before.w == c_before.w,
+        "W2/W3 share right column"
+    );
+    assert!(b_before.y < c_before.y, "W2 top-right, W3 bottom-right");
+    assert!(a_before.x < b_before.x, "W1 left, W2/W3 right");
+    live_tags(&[(101, Some("wA")), (102, Some("wB")), (103, Some("wC"))]);
+    live_pids(&[(101, 1101), (102, 1102), (103, 1103)]);
+    inject_pending_invisible(vec![102]);
+    let (survivors, retained) = tick_leg(
+        &mut state,
+        &me,
+        &fulls,
+        &areas,
+        vec![mk_observed(101, "wA", 0, 0), mk_observed(103, "wC", 0, 0)],
+        Vec::new(),
+        Vec::new(),
+    );
+    assert_eq!(
+        survivors.len(),
+        2,
+        "hidden W2 leaves two eligible survivors"
+    );
+    assert!(
+        state.pending_closed.contains_key("wB"),
+        "fenced invisible uncloaked alive hide queues close"
+    );
+    assert!(
+        !state.member_tokens.contains_key(&key(102)),
+        "hidden member state drops for fresh reshow"
+    );
+    let reply = dispatch(
+        &mut state,
+        &output,
+        &ws,
+        &domain,
+        &survivors,
+        &retained,
+        Some("wC"),
+        "ext-close",
+    );
+    let xs = geometry_x(&reply);
+    assert_eq!(xs.len(), 2, "survivors reflow without W2");
+    assert_eq!(
+        leaf_window_order(&state, &domain.1),
+        vec!["wA".to_owned(), "wC".to_owned()],
+        "survivors converge after external-hide close"
+    );
+    let (a_after, c_after) = (xs["wA"], xs["wC"]);
+    assert_eq!(c_after.x, b_before.x, "W3 keeps right-column x");
+    assert_eq!(c_after.w, b_before.w, "W3 keeps right-column width");
+    assert_eq!(c_after.y, a_after.y, "W3 fills full right-column top");
+    assert_eq!(c_after.h, a_after.h, "W3 fills full right-column height");
+    assert_eq!(
+        (a_after.x, a_after.w),
+        (a_before.x, a_before.w),
+        "W1 keeps left column"
+    );
+    assert!(
+        !slot_present(&state, &domain.1, "wB"),
+        "reported external-hide forgets the slot"
+    );
+    assert!(state.pending_closed.is_empty(), "delivered close drains");
+    assert_eq!(
+        focused_token(&state, &domain.1).as_deref(),
+        Some("wC"),
+        "MRU focus survives non-focused external-hide close"
+    );
+    assert!(
+        state.vis_diag.defer_last.is_empty(),
+        "fenced close converges with no domain deferral"
+    );
+    clear_pending_seams();
+}
+
+#[test]
+fn external_hide_reshow_fresh_admission_no_slot() {
+    clear_pending_seams();
+    let (mut state, ws, domain) = setup("mon-1");
+    let output = "mon-1".to_owned();
+    let _ = seed_abc(&mut state, &output, &ws, &domain);
+    let me = me();
+    let (fulls, areas) = solo_topology(&output);
+    live_tags(&[(101, Some("wA")), (102, Some("wB")), (103, Some("wC"))]);
+    live_pids(&[(101, 1101), (102, 1102), (103, 1103)]);
+    inject_pending_invisible(vec![102]);
+    let (survivors, retained) = tick_leg(
+        &mut state,
+        &me,
+        &fulls,
+        &areas,
+        vec![mk_observed(101, "wA", 0, 0), mk_observed(103, "wC", 0, 0)],
+        Vec::new(),
+        Vec::new(),
+    );
+    assert!(state.pending_closed.contains_key("wB"));
+    let _ = dispatch(
+        &mut state,
+        &output,
+        &ws,
+        &domain,
+        &survivors,
+        &retained,
+        Some("wC"),
+        "ext-close",
+    );
+    assert!(state.pending_closed.is_empty());
+    assert!(!slot_present(&state, &domain.1, "wB"));
+    clear_pending_seams();
+    wire_member(&mut state, &output, &ws, 102, "wB", bounds());
+    live_tags(&[(101, Some("wA")), (102, Some("wB")), (103, Some("wC"))]);
+    let (readmit, retained) = tick_leg(
+        &mut state,
+        &me,
+        &fulls,
+        &areas,
+        vec![
+            mk_observed(101, "wA", 0, 0),
+            mk_observed(102, "wB", 0, 0),
+            mk_observed(103, "wC", 0, 0),
+        ],
+        Vec::new(),
+        Vec::new(),
+    );
+    let reply = dispatch(
+        &mut state,
+        &output,
+        &ws,
+        &domain,
+        &readmit,
+        &retained,
+        Some("wC"),
+        "ext-readmit",
+    );
+    let xs = geometry_x(&reply);
+    assert_eq!(xs.len(), 3, "same token reshows fresh");
+    assert!(
+        !slot_present(&state, &domain.1, "wB"),
+        "no remembered slot for reshow"
+    );
+    assert_eq!(
+        focused_token(&state, &domain.1).as_deref(),
+        Some("wC"),
+        "reshow keeps MRU without focus steal"
+    );
+    clear_pending_seams();
+}
+
+#[test]
+fn external_hide_tiler_claim_and_minimize_hold() {
+    clear_pending_seams();
+    let (mut state, ws, domain) = setup("mon-1");
+    let output = "mon-1".to_owned();
+    let _ = seed_abc(&mut state, &output, &ws, &domain);
+    let me = me();
+    let (fulls, areas) = solo_topology(&output);
+    hide_member(&mut state, 102, "claim-wB", false);
+    live_tags(&[(101, Some("wA")), (102, Some("wB")), (103, Some("wC"))]);
+    live_pids(&[(101, 1101), (102, 1102), (103, 1103)]);
+    inject_pending_invisible(vec![102]);
+    let (observed, retained) = tick_leg(
+        &mut state,
+        &me,
+        &fulls,
+        &areas,
+        vec![mk_observed(101, "wA", 0, 0), mk_observed(103, "wC", 0, 0)],
+        Vec::new(),
+        Vec::new(),
+    );
+    assert!(
+        state.member_tokens.contains_key(&key(102)),
+        "tiler hide claim retains membership"
+    );
+    assert!(
+        state.pending_closed.is_empty(),
+        "tiler hide never queues external-hide close"
+    );
+    let mut hint_cx = HintCx::new();
+    let rows = assemble_domain_rows(
+        &mut state,
+        &output,
+        &ws,
+        &observed,
+        &retained,
+        "reconcile",
+        "ext-claim",
+        &mut hint_cx,
+    );
+    assert!(
+        rows.is_some(),
+        "hidden snapshot stays complete, never defers"
+    );
+    clear_pending_seams();
+    let (mut state, ws, domain) = setup("mon-1");
+    let output = "mon-1".to_owned();
+    let _ = seed_abc(&mut state, &output, &ws, &domain);
+    let me2 = self::me();
+    let (fulls, areas) = solo_topology(&output);
+    live_tags(&[(101, Some("wA")), (102, Some("wB")), (103, Some("wC"))]);
+    let (minimized, retained) = tick_leg(
+        &mut state,
+        &me2,
+        &fulls,
+        &areas,
+        vec![mk_observed(101, "wA", 0, 0), mk_observed(103, "wC", 0, 0)],
+        vec![102],
+        Vec::new(),
+    );
+    assert!(
+        state.member_tokens.contains_key(&key(102)),
+        "minimize retains"
+    );
+    assert!(state.pending_closed.is_empty(), "minimize never closes");
+    assert!(
+        state.minimized_omitted.contains(&key(102)),
+        "iconic derives omission"
+    );
+    let mut hint_cx = HintCx::new();
+    let rows = assemble_domain_rows(
+        &mut state,
+        &output,
+        &ws,
+        &minimized,
+        &retained,
+        "reconcile",
+        "ext-min",
+        &mut hint_cx,
+    )
+    .expect("minimized omission stays complete");
+    assert_eq!(rows.len(), 2, "minimized omits, survivors stay");
+    assert!(
+        slot_present(&state, &domain.1, "wB") || {
+            let _ = dispatch(
+                &mut state,
+                &output,
+                &ws,
+                &domain,
+                &minimized,
+                &retained,
+                Some("wC"),
+                "ext-min-dispatch",
+            );
+            slot_present(&state, &domain.1, "wB")
+        },
+        "minimize stores its slot, never forgets"
+    );
+    clear_pending_seams();
+}
+
+#[test]
+fn external_hide_unknown_holds_and_defers_with_reason() {
+    clear_pending_seams();
+    let (mut state, ws, domain) = setup("mon-1");
+    let output = "mon-1".to_owned();
+    let _ = seed_abc(&mut state, &output, &ws, &domain);
+    let me = me();
+    let (fulls, areas) = solo_topology(&output);
+    live_tags(&[(101, Some("wA")), (102, Some("wB")), (103, Some("wC"))]);
+    live_pids(&[(101, 1101), (102, 1102), (103, 1103)]);
+    inject_pending_invisible(vec![102]);
+    inject_pending_cloaked(vec![102]);
+    let (observed, retained) = tick_leg(
+        &mut state,
+        &me,
+        &fulls,
+        &areas,
+        vec![mk_observed(101, "wA", 0, 0), mk_observed(103, "wC", 0, 0)],
+        Vec::new(),
+        Vec::new(),
+    );
+    assert!(state.member_tokens.contains_key(&key(102)), "cloaked holds");
+    assert!(state.pending_closed.is_empty(), "cloaked never closes");
+    let mut hint_cx = HintCx::new();
+    let rows = assemble_domain_rows(
+        &mut state,
+        &output,
+        &ws,
+        &observed,
+        &retained,
+        "reconcile",
+        "ext-cloaked",
+        &mut hint_cx,
+    );
+    assert!(rows.is_none(), "cloaked defers with retained state");
+    let reason = state
+        .vis_diag
+        .defer_last
+        .get(&(output.clone(), ws.clone()))
+        .cloned()
+        .unwrap_or_default();
+    assert!(reason.contains("wB"), "deferral names the viewless member");
+    assert!(
+        reason.contains("cloaked"),
+        "deferral reports actual cloaked cause"
+    );
+    clear_pending_seams();
+    let (mut state, ws, domain) = setup("mon-1");
+    let output = "mon-1".to_owned();
+    let _ = seed_abc(&mut state, &output, &ws, &domain);
+    let me2 = self::me();
+    let (fulls, areas) = solo_topology(&output);
+    live_tags(&[(101, Some("wA")), (102, Some("wB")), (103, Some("wC"))]);
+    live_pids(&[(101, 1101), (102, 1102), (103, 1103)]);
+    inject_pending_invisible(vec![102]);
+    inject_pending_cloak_unreadable(vec![102]);
+    let (observed, retained) = tick_leg(
+        &mut state,
+        &me2,
+        &fulls,
+        &areas,
+        vec![mk_observed(101, "wA", 0, 0), mk_observed(103, "wC", 0, 0)],
+        Vec::new(),
+        Vec::new(),
+    );
+    assert!(
+        state.member_tokens.contains_key(&key(102)),
+        "cloak-unreadable holds"
+    );
+    assert!(
+        state.pending_closed.is_empty(),
+        "cloak-unreadable never closes"
+    );
+    let mut hint_cx = HintCx::new();
+    let rows = assemble_domain_rows(
+        &mut state,
+        &output,
+        &ws,
+        &observed,
+        &retained,
+        "reconcile",
+        "ext-cloak-unread",
+        &mut hint_cx,
+    );
+    assert!(rows.is_none(), "cloak-unreadable defers");
+    let reason = state
+        .vis_diag
+        .defer_last
+        .get(&(output.clone(), ws.clone()))
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        reason.contains("unreadable-cloak"),
+        "actual unreadable-cloak cause"
+    );
+    clear_pending_seams();
+    let (mut state, ws, domain) = setup("mon-1");
+    let output = "mon-1".to_owned();
+    let _ = seed_abc(&mut state, &output, &ws, &domain);
+    let me3 = self::me();
+    let (fulls, areas) = solo_topology(&output);
+    live_tags(&[(101, Some("wA")), (102, None), (103, Some("wC"))]);
+    live_pids(&[(101, 1101), (102, 1102), (103, 1103)]);
+    inject_pending_invisible(vec![102]);
+    let (observed, retained) = tick_leg(
+        &mut state,
+        &me3,
+        &fulls,
+        &areas,
+        vec![mk_observed(101, "wA", 0, 0), mk_observed(103, "wC", 0, 0)],
+        Vec::new(),
+        Vec::new(),
+    );
+    assert!(
+        state.member_tokens.contains_key(&key(102)),
+        "tag-dead holds"
+    );
+    assert!(
+        state.pending_closed.is_empty(),
+        "identity failure never closes"
+    );
+    let mut hint_cx = HintCx::new();
+    let rows = assemble_domain_rows(
+        &mut state,
+        &output,
+        &ws,
+        &observed,
+        &retained,
+        "reconcile",
+        "ext-tag",
+        &mut hint_cx,
+    );
+    assert!(rows.is_none(), "identity failure defers");
+    let reason = state
+        .vis_diag
+        .defer_last
+        .get(&(output.clone(), ws.clone()))
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        reason.contains("unreadable-identity"),
+        "actual identity cause"
+    );
+    clear_pending_seams();
+    let (mut state, ws, domain) = setup("mon-1");
+    let output = "mon-1".to_owned();
+    let _ = seed_abc(&mut state, &output, &ws, &domain);
+    let me4 = self::me();
+    let (fulls, areas) = solo_topology(&output);
+    live_tags(&[(101, Some("wA")), (102, Some("wB")), (103, Some("wC"))]);
+    live_pids(&[(101, 1101), (103, 1103)]);
+    inject_pending_invisible(vec![102]);
+    let (observed, retained) = tick_leg(
+        &mut state,
+        &me4,
+        &fulls,
+        &areas,
+        vec![mk_observed(101, "wA", 0, 0), mk_observed(103, "wC", 0, 0)],
+        Vec::new(),
+        Vec::new(),
+    );
+    assert!(
+        state.member_tokens.contains_key(&key(102)),
+        "pid-zero holds"
+    );
+    assert!(state.pending_closed.is_empty(), "pid failure never closes");
+    let mut hint_cx = HintCx::new();
+    let rows = assemble_domain_rows(
+        &mut state,
+        &output,
+        &ws,
+        &observed,
+        &retained,
+        "reconcile",
+        "ext-pid",
+        &mut hint_cx,
+    );
+    assert!(rows.is_none(), "pid failure defers");
+    clear_pending_seams();
+    let (mut state, ws, domain) = setup("mon-1");
+    let output = "mon-1".to_owned();
+    let _ = seed_abc(&mut state, &output, &ws, &domain);
+    let me5 = self::me();
+    let (fulls, areas) = solo_topology(&output);
+    live_tags(&[(101, Some("wA")), (102, Some("wB")), (103, Some("wC"))]);
+    let (observed, retained) = tick_leg(
+        &mut state,
+        &me5,
+        &fulls,
+        &areas,
+        vec![mk_observed(101, "wA", 0, 0), mk_observed(103, "wC", 0, 0)],
+        Vec::new(),
+        vec![102],
+    );
+    assert!(
+        state.member_tokens.contains_key(&key(102)),
+        "unreadable holds"
+    );
+    assert!(state.pending_closed.is_empty(), "unreadable never closes");
+    let mut hint_cx = HintCx::new();
+    let rows = assemble_domain_rows(
+        &mut state,
+        &output,
+        &ws,
+        &observed,
+        &retained,
+        "reconcile",
+        "ext-unread",
+        &mut hint_cx,
+    );
+    assert!(rows.is_none(), "unreadable defers");
+    clear_pending_seams();
+}
+
+#[test]
+fn external_hide_deferral_transitions_and_recovers() {
+    // Transition-only deferral log with exact events: first deferral emits
+    // one `reconcile-deferred` line with the actual reason, an identical
+    // repeat stays silent, a reason change emits a second line, and recovery
+    // emits one `reconcile-recovered` line and clears the baseline. Opaque
+    // tokens only; `min-hints` lines on the recovery leg are ignored.
+    fn relevant_events(path: &std::path::Path) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(path)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .filter(|row: &serde_json::Value| {
+                row["event"] == "reconcile-deferred" || row["event"] == "reconcile-recovered"
+            })
+            .collect()
+    }
+    clear_pending_seams();
+    let (mut state, ws, domain) = setup("mon-1");
+    let output = "mon-1".to_owned();
+    let _ = seed_abc(&mut state, &output, &ws, &domain);
+    let me = me();
+    let (_, tmp) = tmp_store("ext-defer-log");
+    state.log_path = tmp.join("t.log");
+    let (fulls, areas) = solo_topology(&output);
+    live_tags(&[(101, Some("wA")), (102, Some("wB")), (103, Some("wC"))]);
+    live_pids(&[(101, 1101), (102, 1102), (103, 1103)]);
+    inject_pending_invisible(vec![102]);
+    inject_pending_cloaked(vec![102]);
+    let (observed, retained) = tick_leg(
+        &mut state,
+        &me,
+        &fulls,
+        &areas,
+        vec![mk_observed(101, "wA", 0, 0), mk_observed(103, "wC", 0, 0)],
+        Vec::new(),
+        Vec::new(),
+    );
+    let mut hint_cx = HintCx::new();
+    let rows = assemble_domain_rows(
+        &mut state,
+        &output,
+        &ws,
+        &observed,
+        &retained,
+        "reconcile",
+        "tick-8",
+        &mut hint_cx,
+    );
+    assert!(rows.is_none(), "first unknown defers");
+    let first = state
+        .vis_diag
+        .defer_last
+        .get(&(output.clone(), ws.clone()))
+        .cloned()
+        .expect("first deferral stores transition");
+    assert!(first.contains("cloaked"), "first reason is actual");
+    let logged = relevant_events(&state.log_path);
+    assert_eq!(logged.len(), 1, "first deferral emits exactly one line");
+    assert_eq!(logged[0]["event"], "reconcile-deferred");
+    assert_eq!(logged[0]["reason"], serde_json::json!("wB:cloaked"));
+    assert_eq!(logged[0]["op"], serde_json::json!("reconcile"));
+    assert_eq!(logged[0]["correlation"], serde_json::json!("tick-8"));
+    let mut hint_cx = HintCx::new();
+    let rows = assemble_domain_rows(
+        &mut state,
+        &output,
+        &ws,
+        &observed,
+        &retained,
+        "reconcile",
+        "tick-9",
+        &mut hint_cx,
+    );
+    assert!(rows.is_none(), "repeat unknown still defers");
+    let second = state
+        .vis_diag
+        .defer_last
+        .get(&(output.clone(), ws.clone()))
+        .cloned()
+        .expect("repeat keeps baseline");
+    assert_eq!(
+        first, second,
+        "identical repeat stays silent (same transition)"
+    );
+    assert_eq!(
+        relevant_events(&state.log_path).len(),
+        1,
+        "identical repeat emits no new line"
+    );
+    inject_pending_cloak_unreadable(vec![102]);
+    let mut hint_cx = HintCx::new();
+    let rows = assemble_domain_rows(
+        &mut state,
+        &output,
+        &ws,
+        &observed,
+        &retained,
+        "reconcile",
+        "tick-9b",
+        &mut hint_cx,
+    );
+    assert!(rows.is_none(), "changed cause still defers");
+    let third = state
+        .vis_diag
+        .defer_last
+        .get(&(output.clone(), ws.clone()))
+        .cloned()
+        .expect("reason change stores new transition");
+    assert!(
+        third.contains("unreadable-cloak"),
+        "changed reason is actual"
+    );
+    let logged = relevant_events(&state.log_path);
+    assert_eq!(logged.len(), 2, "reason change emits a second line");
+    assert_eq!(logged[1]["event"], "reconcile-deferred");
+    assert_eq!(
+        logged[1]["reason"],
+        serde_json::json!("wB:unreadable-cloak")
+    );
+    assert_eq!(logged[1]["correlation"], serde_json::json!("tick-9b"));
+    clear_pending_seams();
+    live_tags(&[(101, Some("wA")), (102, Some("wB")), (103, Some("wC"))]);
+    let (observed, retained) = tick_leg(
+        &mut state,
+        &me,
+        &fulls,
+        &areas,
+        vec![
+            mk_observed(101, "wA", 0, 0),
+            mk_observed(102, "wB", 0, 0),
+            mk_observed(103, "wC", 0, 0),
+        ],
+        Vec::new(),
+        Vec::new(),
+    );
+    let mut hint_cx = HintCx::new();
+    let rows = assemble_domain_rows(
+        &mut state,
+        &output,
+        &ws,
+        &observed,
+        &retained,
+        "reconcile",
+        "tick-10",
+        &mut hint_cx,
+    )
+    .expect("recovery assembles complete");
+    assert_eq!(rows.len(), 3, "recovery restores three rows");
+    assert!(
+        state.vis_diag.defer_last.is_empty(),
+        "recovery clears transition baseline"
+    );
+    let logged = relevant_events(&state.log_path);
+    assert_eq!(logged.len(), 3, "recovery emits exactly one recovered line");
+    assert_eq!(logged[2]["event"], "reconcile-recovered");
+    assert_eq!(logged[2]["correlation"], serde_json::json!("tick-10"));
+    let _ = std::fs::remove_dir_all(&tmp);
+    clear_pending_seams();
+}
+
+#[test]
+fn external_hide_uncertain_rescue_failure_holds_and_recovers() {
+    // M1: the single-path hide commits the ledger before posting, but its
+    // rescue re-read is fallible. When an uncertain hide keeps the ledger
+    // yet registers no owner-table claim, the narrow uncertain-hide hold
+    // must cover the gap: the tiler-hidden window holds (never closes as
+    // external), keeps its slot, defers with the actual cause, and recovers
+    // once visible again instead of being permanently abandoned. Graceful
+    // stop still restores via the kept ledger independently.
+    use crate::model::{LEDGER_SCHEMA_VERSION, RecoveryLedger};
+    clear_pending_seams();
+    fake::clear();
+    let (mut state, ws, domain) = setup("mon-1");
+    let output = "mon-1".to_owned();
+    let _ = seed_abc(&mut state, &output, &ws, &domain);
+    let me = me();
+    let (store, tmp) = tmp_store("ext-uncertain-rescue");
+    store
+        .commit(&RecoveryLedger {
+            v: LEDGER_SCHEMA_VERSION,
+            owner: me.clone(),
+            windows: Vec::new(),
+            mouse_snap: None,
+        })
+        .expect("seed empty ledger");
+    let (fulls, areas) = solo_topology(&output);
+    let b = key(102);
+    let expected = crate::model::ProcessIdentity {
+        pid: b.pid,
+        process_creation: b.creation.clone(),
+        user_sid: "S-1-5-test".to_owned(),
+        session_id: 1,
+        exe_path: "app.exe".to_owned(),
+    };
+    live_tags(&[(101, Some("wA")), (102, Some("wB")), (103, Some("wC"))]);
+    live_pids(&[(101, 1101), (102, 1102), (103, 1103)]);
+    // Admittable fake: visible, alive, unclaimed, matching pid/process/tag.
+    // `defer` keeps the post from landing so the single-path wait reports
+    // uncertain with the ledger kept (real commit, real post attempt).
+    fake::register(
+        b.hwnd,
+        fake::FakeWindow {
+            pid: b.pid,
+            process: expected.clone(),
+            integrity_rid: crate::lifecycle::MEDIUM_RID_MIN,
+            nonce: None,
+            member_tag: Some("tag-wB".to_owned()),
+            visible: true,
+            iconic: false,
+            maximized: false,
+            alive: true,
+            post_ok: true,
+            defer: true,
+        },
+    );
+    // Control: rescue succeeds, so the uncertain hide still registers its
+    // claim and needs no hold marker.
+    let (outcome, _) =
+        super::workspace_hide_one(&mut state, &me, &store, &tmp, &b, &expected, false);
+    assert_eq!(outcome, "uncertain", "deferred post reports uncertain");
+    assert!(
+        state.hidden_claims.contains_key(&b),
+        "rescue registers the kept ledger claim"
+    );
+    assert!(
+        !state.vis_diag.uncertain_hides.contains(&b),
+        "rescued claim needs no hold marker"
+    );
+    assert_eq!(
+        store
+            .committed()
+            .expect("ledger readable")
+            .map(|r| r.windows.len())
+            .unwrap_or(0),
+        1,
+        "commit kept the durable claim"
+    );
+    // Reset for the blocker leg: fresh member state, fresh ledger, forced
+    // rescue-read failure on the same uncertain hide shape.
+    state.hidden_claims.remove(&b);
+    state.vis_diag.uncertain_hides.remove(&b);
+    fake::clear();
+    clear_pending_seams();
+    let (store, tmp2) = tmp_store("ext-uncertain-gap");
+    store
+        .commit(&RecoveryLedger {
+            v: LEDGER_SCHEMA_VERSION,
+            owner: me.clone(),
+            windows: Vec::new(),
+            mouse_snap: None,
+        })
+        .expect("seed empty ledger");
+    live_tags(&[(101, Some("wA")), (102, Some("wB")), (103, Some("wC"))]);
+    live_pids(&[(101, 1101), (102, 1102), (103, 1103)]);
+    fake::register(
+        b.hwnd,
+        fake::FakeWindow {
+            pid: b.pid,
+            process: expected.clone(),
+            integrity_rid: crate::lifecycle::MEDIUM_RID_MIN,
+            nonce: None,
+            member_tag: Some("tag-wB".to_owned()),
+            visible: true,
+            iconic: false,
+            maximized: false,
+            alive: true,
+            post_ok: true,
+            defer: true,
+        },
+    );
+    inject_pending_rescue_fail(true);
+    let (outcome, _) =
+        super::workspace_hide_one(&mut state, &me, &store, &tmp2, &b, &expected, false);
+    assert_eq!(
+        outcome, "uncertain",
+        "rescue failure still reports uncertain"
+    );
+    assert!(
+        !state.hidden_claims.contains_key(&b),
+        "failed rescue registers no claim"
+    );
+    assert!(
+        state.vis_diag.uncertain_hides.contains(&b),
+        "failed rescue sets the narrow hold marker"
+    );
+    assert_eq!(
+        store
+            .committed()
+            .expect("ledger readable")
+            .map(|r| r.windows.len())
+            .unwrap_or(0),
+        1,
+        "durable claim kept despite missing owner-table entry"
+    );
+    // The async post lands late: the window is now hidden, alive, fenced,
+    // and ledger-kept, but claimless. The candidate must hold via the
+    // marker instead of closing our own hidden window as external.
+    fake::with_mut(b.hwnd, |w| w.visible = false);
+    inject_pending_invisible(vec![102]);
+    let (survivors, retained) = tick_leg(
+        &mut state,
+        &me,
+        &fulls,
+        &areas,
+        vec![mk_observed(101, "wA", 0, 0), mk_observed(103, "wC", 0, 0)],
+        Vec::new(),
+        Vec::new(),
+    );
+    assert_eq!(survivors.len(), 2, "gap window stays out of observation");
+    assert!(
+        state.member_tokens.contains_key(&b),
+        "gap member retained, never dropped"
+    );
+    assert!(
+        state.member_rects.contains_key("wB"),
+        "gap slot retained, never forgotten"
+    );
+    assert!(
+        state.pending_closed.is_empty(),
+        "marked window never queues an external close"
+    );
+    let mut hint_cx = HintCx::new();
+    let rows = assemble_domain_rows(
+        &mut state,
+        &output,
+        &ws,
+        &survivors,
+        &retained,
+        "reconcile",
+        "ext-gap",
+        &mut hint_cx,
+    );
+    assert!(rows.is_none(), "gap defers with retained state");
+    let reason = state
+        .vis_diag
+        .defer_last
+        .get(&(output.clone(), ws.clone()))
+        .cloned()
+        .unwrap_or_default();
+    assert!(reason.contains("wB"), "deferral names the held member");
+    assert!(
+        reason.contains("uncertain-hide"),
+        "deferral reports the actual uncertain-hide cause"
+    );
+    // Visible recovery with the durable ledger still present retains the
+    // hold: visibility alone never proves absence. The member still defers
+    // with the actual uncertain-hide cause instead of converging, and a
+    // second app hide with the ledger still present still holds (never a
+    // close). Only authoritative ledger absence clears.
+    fake::with_mut(b.hwnd, |w| w.visible = true);
+    inject_pending_rescue_fail(false);
+    clear_pending_seams();
+    live_tags(&[(101, Some("wA")), (102, Some("wB")), (103, Some("wC"))]);
+    let (observed, retained) = tick_leg(
+        &mut state,
+        &me,
+        &fulls,
+        &areas,
+        vec![
+            mk_observed(101, "wA", 0, 0),
+            mk_observed(102, "wB", 0, 0),
+            mk_observed(103, "wC", 0, 0),
+        ],
+        Vec::new(),
+        Vec::new(),
+    );
+    assert_eq!(observed.len(), 3, "recovered window re-observes");
+    assert!(
+        state.vis_diag.uncertain_hides.contains(&b),
+        "visible recovery retains the hold while the ledger is kept"
+    );
+    assert!(
+        state.member_tokens.contains_key(&b),
+        "member never abandoned"
+    );
+    assert!(
+        state.member_rects.contains_key("wB"),
+        "retained slot survives the hold"
+    );
+    assert!(state.pending_closed.is_empty(), "recovery queues no close");
+    let mut hint_cx = HintCx::new();
+    let rows = assemble_domain_rows(
+        &mut state,
+        &output,
+        &ws,
+        &observed,
+        &retained,
+        "reconcile",
+        "ext-gap-recover",
+        &mut hint_cx,
+    );
+    assert!(
+        rows.is_none(),
+        "kept ledger still defers after visible recovery"
+    );
+    let reason = state
+        .vis_diag
+        .defer_last
+        .get(&(output.clone(), ws.clone()))
+        .cloned()
+        .unwrap_or_default();
+    assert!(reason.contains("wB"), "deferral names the held member");
+    assert!(
+        reason.contains("uncertain-hide"),
+        "visible recovery still reports uncertain-hide"
+    );
+    // Second app hide with the ledger still present: still holds, never a
+    // close, still defers with the same cause.
+    fake::with_mut(b.hwnd, |w| w.visible = false);
+    inject_pending_invisible(vec![102]);
+    let (survivors, retained) = tick_leg(
+        &mut state,
+        &me,
+        &fulls,
+        &areas,
+        vec![mk_observed(101, "wA", 0, 0), mk_observed(103, "wC", 0, 0)],
+        Vec::new(),
+        Vec::new(),
+    );
+    assert_eq!(survivors.len(), 2, "second hide leaves two survivors");
+    assert!(
+        state.member_tokens.contains_key(&b),
+        "second hide retains the held member"
+    );
+    assert!(
+        state.pending_closed.is_empty(),
+        "second hide with kept ledger never closes"
+    );
+    let mut hint_cx = HintCx::new();
+    assert!(
+        assemble_domain_rows(
+            &mut state,
+            &output,
+            &ws,
+            &survivors,
+            &retained,
+            "reconcile",
+            "ext-gap-second-hide",
+            &mut hint_cx,
+        )
+        .is_none(),
+        "second hide still defers"
+    );
+    // Tiler workspace hide/reveal cycle coexists: hide C through the ledger
+    // while B is held, prove C never closes, then reveal C and prove B still
+    // defers on its own hold.
+    let c = key(103);
+    hide_member(&mut state, 103, "claim-wC", false);
+    live_tags(&[(101, Some("wA")), (102, Some("wB")), (103, Some("wC"))]);
+    live_pids(&[(101, 1101), (102, 1102), (103, 1103)]);
+    let (_observed, _retained) = tick_leg(
+        &mut state,
+        &me,
+        &fulls,
+        &areas,
+        vec![mk_observed(101, "wA", 0, 0)],
+        Vec::new(),
+        Vec::new(),
+    );
+    assert!(
+        state.member_tokens.contains_key(&c),
+        "tiler hide retains while uncertain holds elsewhere"
+    );
+    assert!(
+        state.pending_closed.is_empty(),
+        "tiler hide never queues external close"
+    );
+    state.hidden_claims.remove(&c);
+    state.workspaces.set_hidden(&c, false);
+    live_tags(&[(101, Some("wA")), (102, Some("wB")), (103, Some("wC"))]);
+    let (observed, retained) = tick_leg(
+        &mut state,
+        &me,
+        &fulls,
+        &areas,
+        vec![mk_observed(101, "wA", 0, 0), mk_observed(103, "wC", 0, 0)],
+        Vec::new(),
+        Vec::new(),
+    );
+    assert!(
+        state.vis_diag.uncertain_hides.contains(&b),
+        "tiler reveal keeps the unrelated uncertain hold"
+    );
+    assert!(
+        state.pending_closed.is_empty(),
+        "tiler cycle queues no close"
+    );
+    let mut hint_cx = HintCx::new();
+    assert!(
+        assemble_domain_rows(
+            &mut state,
+            &output,
+            &ws,
+            &observed,
+            &retained,
+            "reconcile",
+            "ext-gap-tiler-cycle",
+            &mut hint_cx,
+        )
+        .is_none(),
+        "uncertain hold still defers after tiler cycle"
+    );
+    // Authoritative absence resolution: the durable entry leaves, so the
+    // audit clears the hold without dropping membership. The next visible
+    // observation then converges with the retained slot.
+    store
+        .commit(&RecoveryLedger {
+            v: LEDGER_SCHEMA_VERSION,
+            owner: me.clone(),
+            windows: Vec::new(),
+            mouse_snap: None,
+        })
+        .expect("clear durable entry");
+    audit_hidden_claims(&mut state, &me, &store);
+    assert!(
+        !state.vis_diag.uncertain_hides.contains(&b),
+        "proven ledger absence clears the hold"
+    );
+    assert!(
+        state.member_tokens.contains_key(&b),
+        "resolution drops the marker only, never membership"
+    );
+    fake::with_mut(b.hwnd, |w| w.visible = true);
+    clear_pending_seams();
+    live_tags(&[(101, Some("wA")), (102, Some("wB")), (103, Some("wC"))]);
+    let (observed, retained) = tick_leg(
+        &mut state,
+        &me,
+        &fulls,
+        &areas,
+        vec![
+            mk_observed(101, "wA", 0, 0),
+            mk_observed(102, "wB", 0, 0),
+            mk_observed(103, "wC", 0, 0),
+        ],
+        Vec::new(),
+        Vec::new(),
+    );
+    let mut hint_cx = HintCx::new();
+    let rows = assemble_domain_rows(
+        &mut state,
+        &output,
+        &ws,
+        &observed,
+        &retained,
+        "reconcile",
+        "ext-gap-resolved",
+        &mut hint_cx,
+    )
+    .expect("resolved hold assembles complete");
+    assert_eq!(rows.len(), 3, "resolution restores three rows");
+    assert!(
+        state.vis_diag.defer_last.is_empty(),
+        "resolution clears the deferral baseline"
+    );
+    // True external hide after resolution closes: no tiler claim, no ledger
+    // entry, alive/invisible/uncloaked/tagged. Survivors reflow and forget
+    // the slot; fresh-token reshow (production `tokens.reissue` route)
+    // rejoins with no remembered slot and keeps MRU focus.
+    fake::with_mut(b.hwnd, |w| w.visible = false);
+    live_tags(&[(101, Some("wA")), (102, Some("wB")), (103, Some("wC"))]);
+    live_pids(&[(101, 1101), (102, 1102), (103, 1103)]);
+    inject_pending_invisible(vec![102]);
+    let (survivors, retained) = tick_leg(
+        &mut state,
+        &me,
+        &fulls,
+        &areas,
+        vec![mk_observed(101, "wA", 0, 0), mk_observed(103, "wC", 0, 0)],
+        Vec::new(),
+        Vec::new(),
+    );
+    assert!(
+        state.pending_closed.contains_key("wB"),
+        "resolved hide closes as external"
+    );
+    assert!(
+        !state.member_tokens.contains_key(&b),
+        "true close drops member state for fresh reshow"
+    );
+    let reply = dispatch(
+        &mut state,
+        &output,
+        &ws,
+        &domain,
+        &survivors,
+        &retained,
+        Some("wC"),
+        "ext-gap-true-close",
+    );
+    assert_eq!(geometry_x(&reply).len(), 2, "survivors reflow");
+    assert!(
+        !slot_present(&state, &domain.1, "wB"),
+        "true close forgets the slot"
+    );
+    assert!(state.pending_closed.is_empty(), "delivered close drains");
+    clear_pending_seams();
+    fake::with_mut(102, |w| w.visible = true);
+    wire_member(&mut state, &output, &ws, 102, "wB2", bounds());
+    live_tags(&[(101, Some("wA")), (102, Some("wB2")), (103, Some("wC"))]);
+    let (readmit, retained) = tick_leg(
+        &mut state,
+        &me,
+        &fulls,
+        &areas,
+        vec![
+            mk_observed(101, "wA", 0, 0),
+            mk_observed(102, "wB2", 0, 0),
+            mk_observed(103, "wC", 0, 0),
+        ],
+        Vec::new(),
+        Vec::new(),
+    );
+    let reply = dispatch(
+        &mut state,
+        &output,
+        &ws,
+        &domain,
+        &readmit,
+        &retained,
+        Some("wC"),
+        "ext-gap-fresh-reshow",
+    );
+    assert_eq!(geometry_x(&reply).len(), 3, "fresh token reshows");
+    assert!(
+        !slot_present(&state, &domain.1, "wB"),
+        "no remembered slot for fresh reshow"
+    );
+    assert!(
+        !slot_present(&state, &domain.1, "wB2")
+            || leaf_window_order(&state, &domain.1).contains(&"wB2".to_owned()),
+        "fresh token joins without stale slot"
+    );
+    assert_eq!(
+        focused_token(&state, &domain.1).as_deref(),
+        Some("wC"),
+        "reshow keeps MRU without focus steal"
+    );
+    assert_eq!(
+        store
+            .committed()
+            .expect("ledger readable")
+            .map(|r| r.windows.len())
+            .unwrap_or(0),
+        0,
+        "resolved ledger stays empty"
+    );
+    let _ = std::fs::remove_dir_all(&tmp);
+    let _ = std::fs::remove_dir_all(&tmp2);
+    fake::clear();
+    clear_pending_seams();
+}
+
+#[test]
+fn external_hide_post_commit_error_holds_and_resolves() {
+    // Post-commit non-uncertain error with unreadable rescue: the single-path
+    // hide commits the durable claim before a refused post
+    // (`error: visibility post failed`, reported as `refused`), while the
+    // rescue re-read fails. The hold must still cover the gap (never a
+    // close), defer with the actual cause, and clear only on authoritative
+    // ledger absence, after which a true app hide closes.
+    use crate::model::{LEDGER_SCHEMA_VERSION, RecoveryLedger};
+    clear_pending_seams();
+    fake::clear();
+    let (mut state, ws, domain) = setup("mon-1");
+    let output = "mon-1".to_owned();
+    let _ = seed_abc(&mut state, &output, &ws, &domain);
+    let me = me();
+    let (store, tmp) = tmp_store("ext-postcommit-error");
+    store
+        .commit(&RecoveryLedger {
+            v: LEDGER_SCHEMA_VERSION,
+            owner: me.clone(),
+            windows: Vec::new(),
+            mouse_snap: None,
+        })
+        .expect("seed empty ledger");
+    let (fulls, areas) = solo_topology(&output);
+    let b = key(102);
+    let expected = crate::model::ProcessIdentity {
+        pid: b.pid,
+        process_creation: b.creation.clone(),
+        user_sid: "S-1-5-test".to_owned(),
+        session_id: 1,
+        exe_path: "app.exe".to_owned(),
+    };
+    live_tags(&[(101, Some("wA")), (102, Some("wB")), (103, Some("wC"))]);
+    live_pids(&[(101, 1101), (102, 1102), (103, 1103)]);
+    fake::register(
+        b.hwnd,
+        fake::FakeWindow {
+            pid: b.pid,
+            process: expected.clone(),
+            integrity_rid: crate::lifecycle::MEDIUM_RID_MIN,
+            nonce: None,
+            member_tag: Some("tag-wB".to_owned()),
+            visible: true,
+            iconic: false,
+            maximized: false,
+            alive: true,
+            post_ok: false,
+            defer: false,
+        },
+    );
+    inject_pending_rescue_fail(true);
+    let (outcome, _) =
+        super::workspace_hide_one(&mut state, &me, &store, &tmp, &b, &expected, false);
+    assert_eq!(outcome, "refused", "refused post keeps its outcome");
+    assert!(
+        !state.hidden_claims.contains_key(&b),
+        "failed rescue registers no claim"
+    );
+    assert!(
+        state.vis_diag.uncertain_hides.contains(&b),
+        "non-uncertain post-commit failure with unreadable rescue still holds"
+    );
+    assert_eq!(
+        store
+            .committed()
+            .expect("ledger readable")
+            .map(|r| r.windows.len())
+            .unwrap_or(0),
+        1,
+        "durable claim kept despite refused post"
+    );
+    fake::with_mut(b.hwnd, |w| w.visible = false);
+    inject_pending_invisible(vec![102]);
+    let (survivors, retained) = tick_leg(
+        &mut state,
+        &me,
+        &fulls,
+        &areas,
+        vec![mk_observed(101, "wA", 0, 0), mk_observed(103, "wC", 0, 0)],
+        Vec::new(),
+        Vec::new(),
+    );
+    assert_eq!(survivors.len(), 2, "held window stays out of observation");
+    assert!(
+        state.member_tokens.contains_key(&b),
+        "held member retained, never dropped"
+    );
+    assert!(
+        state.pending_closed.is_empty(),
+        "held window never queues an external close"
+    );
+    let mut hint_cx = HintCx::new();
+    assert!(
+        assemble_domain_rows(
+            &mut state,
+            &output,
+            &ws,
+            &survivors,
+            &retained,
+            "reconcile",
+            "ext-error-hold",
+            &mut hint_cx,
+        )
+        .is_none(),
+        "kept ledger defers with retained state"
+    );
+    let reason = state
+        .vis_diag
+        .defer_last
+        .get(&(output.clone(), ws.clone()))
+        .cloned()
+        .unwrap_or_default();
+    assert!(reason.contains("wB"), "deferral names the held member");
+    assert!(
+        reason.contains("uncertain-hide"),
+        "deferral reports the actual uncertain-hide cause"
+    );
+    store
+        .commit(&RecoveryLedger {
+            v: LEDGER_SCHEMA_VERSION,
+            owner: me.clone(),
+            windows: Vec::new(),
+            mouse_snap: None,
+        })
+        .expect("clear durable entry");
+    audit_hidden_claims(&mut state, &me, &store);
+    assert!(
+        !state.vis_diag.uncertain_hides.contains(&b),
+        "proven ledger absence clears the hold"
+    );
+    clear_pending_seams();
+    fake::with_mut(b.hwnd, |w| w.visible = false);
+    live_tags(&[(101, Some("wA")), (102, Some("wB")), (103, Some("wC"))]);
+    live_pids(&[(101, 1101), (102, 1102), (103, 1103)]);
+    inject_pending_invisible(vec![102]);
+    let (survivors, retained) = tick_leg(
+        &mut state,
+        &me,
+        &fulls,
+        &areas,
+        vec![mk_observed(101, "wA", 0, 0), mk_observed(103, "wC", 0, 0)],
+        Vec::new(),
+        Vec::new(),
+    );
+    assert!(
+        state.pending_closed.contains_key("wB"),
+        "resolved hide closes as external"
+    );
+    assert!(
+        !state.member_tokens.contains_key(&b),
+        "true close drops member state"
+    );
+    let reply = dispatch(
+        &mut state,
+        &output,
+        &ws,
+        &domain,
+        &survivors,
+        &retained,
+        Some("wC"),
+        "ext-error-true-close",
+    );
+    assert_eq!(geometry_x(&reply).len(), 2, "survivors reflow");
+    assert!(
+        !slot_present(&state, &domain.1, "wB"),
+        "true close forgets the slot"
+    );
+    assert!(state.pending_closed.is_empty(), "delivered close drains");
+    let _ = std::fs::remove_dir_all(&tmp);
+    fake::clear();
+    clear_pending_seams();
+}
+
+#[test]
+fn external_hide_predrain_resight_drops_stale_close() {
+    // Pre-drain discriminator for the reshow path: after an external-hide
+    // close queues but before it delivers, the window returns visible with
+    // the same Engine id. Stamping must drop the stale close so no
+    // contradictory live+closed row dispatches; the member rejoins its kept
+    // slot. Post-drain reshow (covered separately) is a fresh admission with
+    // no remembered slot instead. Same-token wiring is the test shorthand
+    // for post-admission state (mirroring the existing hidden live-resight
+    // test); production fresh admission mints via `tokens.reissue` after its
+    // native tag stamp, which stays non-coverable offline like all admission.
+    clear_pending_seams();
+    let (mut state, ws, domain) = setup("mon-1");
+    let output = "mon-1".to_owned();
+    let _ = seed_abc(&mut state, &output, &ws, &domain);
+    let me = me();
+    let (fulls, areas) = solo_topology(&output);
+    live_tags(&[(101, Some("wA")), (102, Some("wB")), (103, Some("wC"))]);
+    live_pids(&[(101, 1101), (102, 1102), (103, 1103)]);
+    inject_pending_invisible(vec![102]);
+    let (survivors, _) = tick_leg(
+        &mut state,
+        &me,
+        &fulls,
+        &areas,
+        vec![mk_observed(101, "wA", 0, 0), mk_observed(103, "wC", 0, 0)],
+        Vec::new(),
+        Vec::new(),
+    );
+    assert_eq!(survivors.len(), 2);
+    assert!(
+        state.pending_closed.contains_key("wB"),
+        "external hide queues before delivery"
+    );
+    assert!(
+        !state.member_tokens.contains_key(&key(102)),
+        "queued close drops member state"
+    );
+    // Resight before delivery: the same id is live again, so the queued
+    // close is stale and must drop without dispatching live+closed together.
+    clear_pending_seams();
+    wire_member(&mut state, &output, &ws, 102, "wB", bounds());
+    live_tags(&[(101, Some("wA")), (102, Some("wB")), (103, Some("wC"))]);
+    let (resighted, retained) = tick_leg(
+        &mut state,
+        &me,
+        &fulls,
+        &areas,
+        vec![
+            mk_observed(101, "wA", 0, 0),
+            mk_observed(102, "wB", 0, 0),
+            mk_observed(103, "wC", 0, 0),
+        ],
+        Vec::new(),
+        Vec::new(),
+    );
+    assert_eq!(resighted.len(), 3, "resighted window re-observes");
+    let reply = dispatch(
+        &mut state,
+        &output,
+        &ws,
+        &domain,
+        &resighted,
+        &retained,
+        Some("wC"),
+        "ext-predrain",
+    );
+    let xs = geometry_x(&reply);
+    assert_eq!(xs.len(), 3, "stale close never shrinks the plan");
+    assert!(
+        state.pending_closed.is_empty(),
+        "live resight drops the stale queued close"
+    );
+    assert_eq!(
+        leaf_window_order(&state, &domain.1),
+        vec!["wA".to_owned(), "wB".to_owned(), "wC".to_owned()],
+        "predrain resight rejoins its kept slot"
+    );
+    assert_eq!(
+        focused_token(&state, &domain.1).as_deref(),
+        Some("wC"),
+        "MRU focus undisturbed by the dropped stale close"
+    );
     clear_pending_seams();
 }
 
