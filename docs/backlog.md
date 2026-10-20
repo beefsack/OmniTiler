@@ -148,11 +148,11 @@ decisions of 2026-09-24 are under
     Cases may also assert responsiveness, so they may be time-bound with
     deadlines (a stated reason for a limit under
     [Simplicity](principles.md#simplicity)).
-- P1 | Live fixture first use on Windows (2026-10-20) |
+- P1 | Live fixture first use on macOS (2026-10-20) |
   `crates/tiler-live-fixture` is the standard agent live-test window
-  (KDE live-verified, KDE `--scope-class`, Windows named pipe CI-green).
-  Windows: first-use live verification per the
-  [fixture-first checklist](live-windows-testing.md#fixture-first-live-tests).
+  (KDE live-verified, KDE `--scope-class`). Windows first use and
+  fixture-scoped tiler smoke passed 2026-10-21 on two outputs
+  ([evidence](changes/archive/windows-live-fixture-first-use.md)).
   macOS: standalone first use, the two `deadline_reader_*` test races and
   the bundle-scoping gap (signed regular-policy bundle
   `io.github.omnitiler.live-fixture`) resolved 2026-10-20
@@ -165,7 +165,8 @@ decisions of 2026-09-24 are under
   existing owned controls/stay/trailing injections remain legacy-helper/TextEdit
   only ([checklist](live-macos-testing.md#fixture-first-live-tests)).
   [Reference](../crates/tiler-live-fixture/README.md).
-- P2 | Live fixture follow-ups | Fixture/native identity correlation, Windows
+- P2 | Live fixture follow-ups | Structured native outer-frame readback,
+  clearable size constraints, fixture/native identity correlation, Windows
   elevated instance for UAC/unmanageable cases (physical approval), safe
   exclusive-mode selection, z-order query where hosts allow, then a bounded
   request-correlated change history. Add pragmatically as tests need them.
