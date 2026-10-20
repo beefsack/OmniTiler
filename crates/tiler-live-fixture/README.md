@@ -134,7 +134,7 @@ io.github.omnitiler.live-fixture` verified a real bundle/launch date and
 `AXWindow`/`AXStandardWindow` windows classified `Tile`, including a
 borderless/non-resizable window. Future integrated tests must explicitly
 scope this bundle and follow the [macOS live guide](../../docs/live-macos-testing.md#fixture-first-live-tests).
-Integrated tiling itself was not exercised by this standalone smoke.
+Integrated coverage is listed below.
 
 ### macOS standalone evidence (2026-10-20)
 
@@ -172,7 +172,49 @@ The two formerly failing oversized-frame tests now keep their writer alive
 until the reader finishes; macOS timeout changes after peer closure returned
 `EINVAL` and masked `TooLong`. The reader's size-cap assertions are unchanged.
 Protected-window geometry stayed unchanged and owned live resources were
-cleaned. Minimum-OS runtime coverage and integrated tiling remain separate checks.
+cleaned. Minimum-OS runtime coverage remains a separate check.
+
+### macOS with OmniTiler active (2026-10-20)
+
+After the live guide's preflight and ownership gates, launch the signed fixture
+bundle above, then use the bounded, exact-scope tiler route:
+
+```sh
+mise exec -- just tile --user-start --scope io.github.omnitiler.live-fixture --seconds 90 --input tap
+```
+
+Native desktop integration passed with the tap running. Source revision,
+artifact hashes/signatures, process lifetimes and scoped raw readbacks were
+retained outside the repository. Fixture caller IDs were joined through their
+native sentinel titles to CG/AX window IDs before comparing geometry.
+
+| Check | Observed result |
+| --- | --- |
+| Admission and layout | One full tile, two side-by-side tiles, then three tiles (one full-height plus two stacked); all standard windows classified `Tile` |
+| Socket versus native geometry | Physical outer position divided by scale matched CG/AX position; content width matched outer width, and the measured content-to-outer height difference was 32 logical points for these decorated windows, not a universal constant |
+| Socket focus on two windows | `observed.focused:true`, exact native `AXFocusedWindow` ID and active fixture PID agreed |
+| Socket resize while tiled | Readbacks reconverged to the prior tiled layout; the transient client size was not captured, so no claim about its visible duration |
+| Close/reflow | Three to two to one windows re-tiled; full socket, AX and CG readbacks agreed after each close |
+| Tap and shutdown | Completed with `shutdown_clean:true`, clean joins and no retained workers, input refusals or disable events; zero chord deliveries, so lifecycle only, not hotkey-effect proof |
+| Teardown | Owned fixture/tiler processes, windows, sockets and awake helpers removed; protected-window records, display topology and native Space row/current matched their preimages |
+
+One transient backend observation failed, then a later snapshot published
+successfully; no topology failure or shutdown shortfall was reported.
+
+AppKit can retain auxiliary offscreen CG entries that are not caller windows.
+Count and compare the fixture's joined AX windows, not every process-owned CG
+entry. Tiler stop leaves fixture geometry in place; shut down owned fixture
+windows afterwards rather than assuming stop restores them.
+
+Remaining input/workspace gap: `owned-post`/`owned-focus` authenticate legacy
+probe/helper spawn records, not fixture socket announcements or this bundle.
+The stay/trailing diagnostic injections accept only a TextEdit scope. No such
+guard was bypassed and no native Space/settings mutation was exercised here.
+Product focus/move chords and managed select/send/trailing therefore remain
+unverified with this fixture; use physical keys on identified fixture windows,
+or port the guarded diagnostic harness with an explicit fixture ownership
+contract before automating them. Socket focus/resize is not evidence for those
+product actions. See the [integration record](../../docs/changes/archive/macos-fixture-tiler-integration.md).
 
 Expected backend differences (not failures):
 
@@ -540,8 +582,11 @@ it as fixture cloak coverage or as game-behavior evidence.
 - macOS: native standalone socket/window smoke passed, with 121 offline
   tests and strict clippy/fmt. The signed regular-policy fixture bundle now
   supplies bundle identity and launch date; read-only scope inspection
-  classified its standard windows `Tile`. Direct launch still lacks bundle
-  identity. See the macOS evidence above and the
+  classified its standard windows `Tile`. Fixture-scoped live tiling with
+  the tap passed one-to-three admission, socket/native geometry, exact native
+  focus, close/reflow and clean teardown. Chord-driven and managed-workspace
+  coverage remains open. Direct launch still lacks bundle identity.
+  See the macOS evidence above and the
   [macOS guide](../../docs/live-macos-testing.md#fixture-first-live-tests).
 - Linux Rust `tiler-macos` failures (`AX_ATTRIBUTE_UNSUPPORTED`,
   `take_trailing_proof`) predate these changes; no action here.

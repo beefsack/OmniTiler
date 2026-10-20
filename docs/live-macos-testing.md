@@ -204,13 +204,24 @@ experiment.
   scopes in fixture-only legs. See the [bundle launch procedure and native
   evidence](../crates/tiler-live-fixture/README.md#macos-bundle-launch-and-scope).
   Native read-only scope inspection proved bundle identity, launch date and
-  standard-window `Tile` classification. Integrated live tiling remains a
-  separate check, not evidence supplied by that inspection.
+  standard-window `Tile` classification. A subsequent fixture-scoped tap run
+  verified one-to-three tiling, socket/native geometry, exact native focus,
+  close/reflow and clean teardown; see the [integration evidence](../crates/tiler-live-fixture/README.md#macos-with-omnitiler-active-2026-10-20).
 - Direct `cargo run`/binary launch still has no LaunchServices bundle entry
   (`APP_ID` is Linux-only) and cannot match a bundle allowlist. Keep the
   fixture bundle's regular activation policy: an accessory/`LSUIElement`
   bundle is excluded by classification. Do not weaken bundle or lifetime
   checks to admit directly spawned fixture processes.
+- Compare socket physical inner size and outer position against native logical
+  outer frames using the observed scale and measured chrome difference. Join
+  caller IDs through native fixture sentinel titles and AX/CG window IDs;
+  exclude auxiliary offscreen AppKit CG entries from caller-window counts.
+- The existing `owned-post`/`owned-focus` diagnostic controls still authenticate
+  legacy probe/helper records only; stay/trailing injections are TextEdit-only.
+  They are not fixture input routes. Product focus/move chords and managed
+  select/send/trailing need physical fixture checks or a separately verified
+  fixture-aware ownership contract in the diagnostic harness. Socket focus and
+  resize, or a clean tap lifetime without deliveries, do not prove those actions.
 - Foreign (non-fixture) applications are only for application-specific
   investigations after first trying the fixture, with the approved scope
   naming them explicitly. Rationale: fixture windows are predictable,
