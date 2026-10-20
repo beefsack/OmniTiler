@@ -1815,6 +1815,17 @@ mod tests {
         test_cleanup(&dir, &socket_path);
     }
 
+    // Hold the writer open until the reader closes: on macOS a closed
+    // peer makes timeout changes fail with EINVAL, masking TooLong.
+    #[cfg(any(unix, windows))]
+    fn hold_open_for_reader(writer: &mut crate::transport::Stream) {
+        use std::io::Read as _;
+        let _ =
+            crate::transport::set_read_timeout(writer, Some(std::time::Duration::from_secs(10)));
+        let mut one = [0u8; 1];
+        let _ = writer.read(&mut one);
+    }
+
     /// Unit tests for the deadline reader: coalesced full frames split
     /// exactly like the transport reader, the 1 MiB cap is preserved, and
     /// a byte trickle without a newline hits the absolute deadline. Unix
@@ -1850,7 +1861,8 @@ mod tests {
         // Oversize frame without a newline is rejected, not buffered forever.
         // The writer runs on its own thread: 1 MiB exceeds the pipe/socket
         // buffer, so a single-threaded write would block forever waiting for
-        // the reader to drain.
+        // the reader to drain. The writer holds its side open until the
+        // reader is done (macOS FIN race, see above).
         #[cfg(unix)]
         let (reader_stream, mut writer) = UnixStream::pair().expect("pair");
         #[cfg(windows)]
@@ -1858,6 +1870,7 @@ mod tests {
         let big_writer = std::thread::spawn(move || {
             let big = "x".repeat(MAX_LINE_BYTES + 16);
             let _ = writer.write_all(big.as_bytes());
+            hold_open_for_reader(&mut writer);
         });
         let mut reader = DeadlineReader::new(reader_stream);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -1865,6 +1878,7 @@ mod tests {
             reader.read_frame(deadline),
             WaitRead::Err(crate::transport::FrameError::TooLong)
         ));
+        drop(reader);
         big_writer.join().expect("writer");
         #[cfg(windows)]
         test_cleanup(&pair_dir, &pair_socket);
@@ -2045,6 +2059,8 @@ mod tests {
             payload.extend(std::iter::repeat_n(b'x', MAX_LINE_BYTES + 1));
             payload.push(b'\n');
             let _ = writer.write_all(&payload);
+            // Hold the writer open until the reader is done (macOS FIN race).
+            hold_open_for_reader(&mut writer);
         });
         let mut reader = DeadlineReader::new(reader_stream);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -2056,6 +2072,7 @@ mod tests {
             reader.read_frame(deadline),
             WaitRead::Err(crate::transport::FrameError::TooLong)
         ));
+        drop(reader);
         sender.join().expect("sender");
         #[cfg(windows)]
         test_cleanup(&pair_dir, &pair_socket);

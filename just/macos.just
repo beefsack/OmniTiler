@@ -66,6 +66,18 @@ app identity:
 verify:
     bash scripts/macos-app.sh --verify
 
+# Stable signed fixture .app: fixed bundle ID
+# (io.github.omnitiler.live-fixture) and fixed output path
+# (target/macos/OmniTilerLiveFixture.app), persistent named identity only.
+# Fails closed without the identity (no ad-hoc fallback). Artifact path is
+# resolved from cargo JSON (honors CARGO_TARGET_DIR; never assumes target/).
+fixture-app identity:
+    @if [ -z "{{identity}}" ]; then echo "error: just fixture-app 'NAME' (persistent dev identity required)" >&2; exit 2; fi
+    bash scripts/macos-fixture-app.sh --identity "{{identity}}"
+
+fixture-verify:
+    bash scripts/macos-fixture-app.sh --verify
+
 # Foreground dogfood session: unscoped ordinary-app tiling by default
 # (Ghostty is an ordinary candidate there; scoped `--scope` verification
 # stays available for bounded checks).

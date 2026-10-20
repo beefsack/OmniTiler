@@ -100,8 +100,12 @@ decisions of 2026-09-24 are under
   (KDE live-verified, KDE `--scope-class`, Windows named pipe CI-green).
   Windows: first-use live verification per the
   [fixture-first checklist](live-windows-testing.md#fixture-first-live-tests).
-  macOS: first-use verification, two `deadline_reader_*` oversized-frame
-  test failures (CI run 39393279249), and fixture bundle-scoping gap
+  macOS: standalone first use, the two `deadline_reader_*` test races and
+  the bundle-scoping gap (signed regular-policy bundle
+  `io.github.omnitiler.live-fixture`) resolved 2026-10-20
+  ([evidence](changes/archive/macos-live-fixture-smoke.md)); remaining:
+  fixture-only integrated tiler smoke with `--scope
+  io.github.omnitiler.live-fixture`
   ([checklist](live-macos-testing.md#fixture-first-live-tests)).
   [Reference](../crates/tiler-live-fixture/README.md).
 - P2 | Live fixture follow-ups | Fixture/native identity correlation, Windows

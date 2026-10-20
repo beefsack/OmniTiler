@@ -197,15 +197,20 @@ experiment.
   (`tiler-live-fixture serve`, Unix-socket announcement) and drive it over
   its control socket. Full protocol, flags, fields and limits are in the
   [fixture README](../crates/tiler-live-fixture/README.md).
-- Honest gap, no scoped integrated fixture run until solved: the fixture
-  carries no macOS bundle allowlist entry (fixture `APP_ID` is Linux-only;
-  directly spawned helpers have no LaunchServices bundle entry and bind via
-  `ProcessIdentity` instead, which matches no bundle allowlist), so no
-  `--scope` value covers fixture windows today. Standalone fixture first-use
-  (fixture alone, no tiler management) may verify separately; do not run an
-  integrated scoped tiler leg against fixture windows until a scoped admission
-  path is proven live. `scope-inspect --scope BUNDLE` stays read-only
-  metadata for named apps, not a fixture scoping route.
+- For scoped tests build with `mise exec -- just fixture-app 'OmniTiler Mac Dev'`
+  (the existing persistent signer), verify with `fixture-verify`, and launch
+  `target/macos/OmniTilerLiveFixture.app` through LaunchServices. The exact
+  allowlist is `--scope io.github.omnitiler.live-fixture`; use no other app
+  scopes in fixture-only legs. See the [bundle launch procedure and native
+  evidence](../crates/tiler-live-fixture/README.md#macos-bundle-launch-and-scope).
+  Native read-only scope inspection proved bundle identity, launch date and
+  standard-window `Tile` classification. Integrated live tiling remains a
+  separate check, not evidence supplied by that inspection.
+- Direct `cargo run`/binary launch still has no LaunchServices bundle entry
+  (`APP_ID` is Linux-only) and cannot match a bundle allowlist. Keep the
+  fixture bundle's regular activation policy: an accessory/`LSUIElement`
+  bundle is excluded by classification. Do not weaken bundle or lifetime
+  checks to admit directly spawned fixture processes.
 - Foreign (non-fixture) applications are only for application-specific
   investigations after first trying the fixture, with the approved scope
   naming them explicitly. Rationale: fixture windows are predictable,
@@ -213,8 +218,8 @@ experiment.
   outcomes), and fixture-only scope protects the operator desktop.
 - The macOS probe target is retained only for proofs explicitly bound to it
   until ported; it is not the default for new agent legs.
-- Short first-use checklist: isolate (private run dir, no tiler management
-  until a scoped admission path is proven, `caffeinate -d` bounded leg,
+- Short first-use checklist: isolate (private run dir, explicit fixture-only
+  scope for any integrated leg, `caffeinate -d` bounded leg,
   user hand-over per leg); prove identity
   (announced socket path plus per-run nonce, fixture caller ids, fresh CG
   owner-PID join; never the hosting terminal); read back (AX/CG/Space membership,

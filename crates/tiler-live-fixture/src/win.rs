@@ -1045,6 +1045,28 @@ fn apply_mode(
     }
 }
 
+/// Mode from zoom/minimize state where the zoom bit may be unreadable.
+///
+/// `zoom_known` is false on macOS for borderless or non-resizable windows,
+/// where reading the zoom bit would mutate the style mask and re-emit the
+/// geometry events being read. Maximized needs a known zoom bit; minimized
+/// stands alone; windowed needs a known zoom bit plus an explicit
+/// not-minimized readback, never an unknown zoom.
+fn mode_from_zoom_state(
+    zoom_known: bool,
+    maximized: bool,
+    minimized: Option<bool>,
+) -> Option<WindowMode> {
+    if zoom_known && maximized {
+        return Some(WindowMode::Maximized);
+    }
+    match minimized {
+        Some(true) => Some(WindowMode::Minimized),
+        Some(false) if zoom_known => Some(WindowMode::Windowed),
+        _ => None,
+    }
+}
+
 /// Read back only what the host offers, never the request echoed.
 ///
 /// Focus comes from the real `has_focus` readback on every backend, so
@@ -1054,7 +1076,9 @@ fn apply_mode(
 /// getter is a setter cache (winit only writes it on the request path, never
 /// from window-manager events), so a set fullscreen there stays null
 /// (unknown) in `observed` while `configured` keeps the sent value.
-/// Maximized comes from [`Window::is_maximized`]; minimized and visible are
+/// Maximized comes from [`Window::is_maximized`], except on macOS for
+/// borderless or non-resizable windows where that getter mutates the style
+/// mask (then unknown unless minimized); minimized and visible are
 /// `Option` readbacks where `None` means unknown and stays null on the wire.
 /// Decorations, resizable and min/max hints have no trustworthy
 /// cross-backend readback, so they stay out of `observed` and live in
@@ -1078,17 +1102,18 @@ fn read_observed(window: &Window, backend: &str) -> Observed {
         }
         Some(_) => None,
         None => {
-            if window.is_maximized() {
-                Some(WindowMode::Maximized)
-            } else {
-                match window.is_minimized() {
-                    Some(true) => Some(WindowMode::Minimized),
-                    Some(false) => Some(WindowMode::Windowed),
-                    // Wayland reports no minimize state: unknown, not an
-                    // echo of the request.
-                    None => None,
-                }
-            }
+            // macOS `is_maximized` calls `is_zoomed`, which temporarily
+            // sets Titled|Resizable and restores the mask for borderless
+            // or non-resizable windows, re-emitting the geometry events
+            // being read here and starving dispatch. Skip the call unless
+            // the zoom bit is readable; the mode then stays unknown
+            // unless the window is minimized.
+            #[cfg(target_os = "macos")]
+            let zoom_known = window.is_decorated() && window.is_resizable();
+            #[cfg(not(target_os = "macos"))]
+            let zoom_known = true;
+            let maximized = zoom_known && window.is_maximized();
+            mode_from_zoom_state(zoom_known, maximized, window.is_minimized())
         }
     };
     Observed {
@@ -1288,6 +1313,33 @@ mod tests {
         assert!(renderer_gate(&None).is_ok());
         let err = renderer_gate(&Some("no display".to_string())).unwrap_err();
         assert!(err.contains("spawn refused"));
+    }
+
+    #[test]
+    fn zoom_gate_never_reports_windowed_when_unknown() {
+        // Readable zoom bit: the long-standing mapping, unchanged.
+        assert_eq!(
+            mode_from_zoom_state(true, true, Some(false)),
+            Some(WindowMode::Maximized)
+        );
+        assert_eq!(
+            mode_from_zoom_state(true, false, Some(true)),
+            Some(WindowMode::Minimized)
+        );
+        assert_eq!(
+            mode_from_zoom_state(true, false, Some(false)),
+            Some(WindowMode::Windowed)
+        );
+        assert_eq!(mode_from_zoom_state(true, false, None), None);
+        // Unreadable zoom bit (macOS borderless or fixed-size): minimized
+        // still reports, everything else stays unknown, never windowed.
+        assert_eq!(
+            mode_from_zoom_state(false, false, Some(true)),
+            Some(WindowMode::Minimized)
+        );
+        assert_eq!(mode_from_zoom_state(false, false, Some(false)), None);
+        assert_eq!(mode_from_zoom_state(false, false, None), None);
+        assert_eq!(mode_from_zoom_state(false, true, Some(false)), None);
     }
 
     #[test]

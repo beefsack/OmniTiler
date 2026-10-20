@@ -93,6 +93,87 @@ Send-Fixture '{"v":1,"request_id":"bye","op":"shutdown"}'
 # --dir, remove only that run dir afterwards.
 ```
 
+### macOS bundle launch and scope
+
+Standalone Cargo/direct-executable launch works, but has no LaunchServices
+bundle identity and cannot match a bundle-scoped tiler run. For scoped tests,
+build the development-only, regular-policy fixture bundle instead:
+
+```sh
+mise exec -- just fixture-app 'OmniTiler Mac Dev'
+mise exec -- just fixture-verify
+```
+
+Use the existing persistent development signing identity (replace the example
+name if needed); the builder refuses ad-hoc fallback, builds locked/offline,
+honors `CARGO_TARGET_DIR` for the source binary, and assembles the fixed output
+`target/macos/OmniTilerLiveFixture.app`. It targets macOS 15 on Apple Silicon.
+No permission grants or settings changes are performed.
+
+Launch a fresh instance through LaunchServices, not its inner executable.
+The following is a template: replace each `/ABSOLUTE/PRIVATE/RUN` with the
+same newly created, owned `0700` directory and `/ABSOLUTE/REPO` with the repo
+root. The socket path must fit the platform's Unix-socket path limit.
+
+```sh
+open -n --stdout /ABSOLUTE/PRIVATE/RUN/announcement.json --stderr /ABSOLUTE/PRIVATE/RUN/stderr.log /ABSOLUTE/REPO/target/macos/OmniTilerLiveFixture.app --args serve --dir /ABSOLUTE/PRIVATE/RUN
+```
+
+Read the single announcement JSON line for `socket`, `pid` and `nonce`, then
+use the same `send` protocol above (prefix Cargo with `mise exec --` and add
+`--offline`). Bind ownership to that announcement, native executable and
+launch lifetime, and a fresh CG/AX window join before effects. After
+`shutdown`, verify process/window/socket absence; remove only the owned log
+files and now-empty private directory. `open` does not report the fixture's
+exit status: verify teardown rather than treating its success as server success.
+
+The bundle ID is **`io.github.omnitiler.live-fixture`**. Keep regular activation
+policy: `LSUIElement=true` makes the current classifier exclude fixture windows
+as `AccessoryPolicy`. Read-only `scope-inspect --scope
+io.github.omnitiler.live-fixture` verified a real bundle/launch date and
+`AXWindow`/`AXStandardWindow` windows classified `Tile`, including a
+borderless/non-resizable window. Future integrated tests must explicitly
+scope this bundle and follow the [macOS live guide](../../docs/live-macos-testing.md#fixture-first-live-tests).
+Integrated tiling itself was not exercised by this standalone smoke.
+
+### macOS standalone evidence (2026-10-20)
+
+Native desktop checks used CG owner-PID/window joins, fixture-only AX window
+IDs/roles/frames and LaunchServices identity, not socket replies alone.
+
+| Operation / field | Observed result |
+| --- | --- |
+| `spawn`, `get`, `list`, ordered `batch` | Passed; multiple native windows and independent AX/CG joins |
+| `set` geometry, min/max, title/description | Accepted; resize wait matched, native frames corroborated geometry; min/max enforcement and rendered text not independently proved |
+| `subscribe`, `unsubscribe` | Same connection received exactly one created and one closed event; final list reply completed |
+| Decorations, non-resizable windows | Creation and runtime decoration toggles plus subsequent socket dispatch passed after the readback fix below |
+| Focus | `focus:true` accepted, fixture focused readback true and native application active; physical focus/shortcut behavior not tested |
+| Hide/show, minimize/restore, maximize/windowed | Passed; native visibility/minimized/frame changes observed |
+| Level, cursor, buttons, increments, theme, transparency, blur | Accepted hints; no visual, input-passthrough or enforcement claim (CG topmost layer observed) |
+| X11-only type/override-redirect | Unsupported on macOS, without fake native effects |
+| `close` | Removed owned windows without exiting server; empty list then respawn worked |
+| `shutdown` | Direct child exited 0; bundled process exited; owned windows/socket cleaned |
+| Compact output / observation deadlines | Resize matched; deliberate mismatch timed out with nonzero exit |
+
+Fixture sizes/positions are physical pixels; CG/AX frames are logical points
+and include outer chrome. Convert by `scale_factor`, distinguish inner size
+from outer bounds, and allow for native decoration/transition differences.
+
+macOS winit 0.30.13's `is_maximized()` temporarily changes style masks on
+borderless or non-resizable windows. Calling it from geometry feedback caused
+an event storm and socket starvation. The fixture now skips that getter for
+those windows: `observed.mode` is unknown (`null`) unless minimized, never a
+cached request presented as windowed/maximized. Normal decorated/resizable
+windows retain zoom readback. Fullscreen modes were not exercised: native
+fullscreen can create a Space and exclusive mode can change the display mode.
+
+Offline crate gates passed: 121 tests, strict all-target clippy and fmt.
+The two formerly failing oversized-frame tests now keep their writer alive
+until the reader finishes; macOS timeout changes after peer closure returned
+`EINVAL` and masked `TooLong`. The reader's size-cap assertions are unchanged.
+Protected-window geometry stayed unchanged and owned live resources were
+cleaned. Minimum-OS runtime coverage and integrated tiling remain separate checks.
+
 Expected backend differences (not failures):
 
 - On X11, `"x11_window_type":"dialog"` creates a dialog-typed window
@@ -328,8 +409,8 @@ compositor support and valid activation-token/input context.
 - macOS follow-ups: titlebar/full-size-content variants, shadow, first-mouse,
   tabbing/document-edited, simple fullscreen/Space behavior and borderless-game
   policy. They need native live coverage. Common controls use safe
-  winit APIs; the fixture transport compiles on both native targets in CI, with
-  headless transport tests only and never live window coverage.
+  winit APIs; CI transport checks remain headless. Native macOS standalone
+  coverage is listed above.
 - Change history, elevated Windows instances and exclusive-mode selection stay
   deferred. Existing exclusive fullscreen still risks display-mode changes.
 
@@ -376,7 +457,8 @@ history is implemented. See the [integration results and limits](../../docs/chan
 - Titles retain `OmniTilerTestWindow:<id>:<run-tag>`; optional `title` text
   is appended after a space, never substituted for identity.
 - X11 `WM_CLASS` and Wayland `app_id` are both `OmniTilerTestWindow`.
-  (`APP_ID` is Linux-only; other backends carry no fixture app identity.)
+  `APP_ID` is Linux-only; the macOS LaunchServices bundle above supplies
+  `io.github.omnitiler.live-fixture` separately (direct executable launch does not).
 - Snapshots identify each window with `id` (caller id), `pid` (server pid),
   `backend` (`x11`, `wayland`, `windows` or `macos`), `native_handle`
   (debug handle description), `title` (constructed full string) and
@@ -455,17 +537,11 @@ it as fixture cloak coverage or as game-behavior evidence.
   [Windows guide](../../docs/live-windows-testing.md#fixture-first-live-tests).
   The Windows job in that run later failed on the preexisting `tiler-macos`
   target; that failure predates this crate's changes and needs no action here.
-- macOS: fixture build passed; 118 tests pass with 2 failures named
-  `client::tests::deadline_reader_splits_coalesced_and_enforces_cap` and
-  `client::tests::deadline_reader_rejects_oversize_coalesced_second_line`.
-  In CI run `39393279249`, both oversized-frame assertions failed to observe
-  `TooLong`; the actual alternative result was not printed. The unverified hypothesis is
-  that the test sender's giant write fails on macOS socket-pair buffer
-  behavior before delivering more than 1 MiB. Open for native macOS
-  investigation; do not mark these tests green and do not claim native
-  live verification. macOS fixture scoping also has no bundle allowlist entry
-  yet (no `APP_ID` outside Linux), so macOS live use is verify-on-first-use
-  with the honest gap recorded in the
+- macOS: native standalone socket/window smoke passed, with 121 offline
+  tests and strict clippy/fmt. The signed regular-policy fixture bundle now
+  supplies bundle identity and launch date; read-only scope inspection
+  classified its standard windows `Tile`. Direct launch still lacks bundle
+  identity. See the macOS evidence above and the
   [macOS guide](../../docs/live-macos-testing.md#fixture-first-live-tests).
 - Linux Rust `tiler-macos` failures (`AX_ATTRIBUTE_UNSUPPORTED`,
   `take_trailing_proof`) predate these changes; no action here.
@@ -514,8 +590,8 @@ it as fixture cloak coverage or as game-behavior evidence.
   The per-run nonce requires OS entropy (`getrandom`): startup fails clearly
   rather than falling back to a weak secret. Non-Windows/Unix socket
   platforms fail with an explicit unsupported error; macOS uses the Unix
-  socket path (same as Linux) and compiles in CI, with headless transport
-  tests only and never live window coverage.
+   socket path (same as Linux). CI tests remain headless; native macOS
+   standalone window coverage is listed above.
 - If the pixel context fails, spawns are refused with an explicit error
   instead of producing blank windows.
 - Runtime display libraries must be installed for live use (see `devenv.nix`);

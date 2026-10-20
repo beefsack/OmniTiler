@@ -39,10 +39,10 @@
   forced-crash recovery probes), read and follow
   [docs/live-macos-testing.md](docs/live-macos-testing.md).
   It does not grant mutation authorization.
-- Agent live legs use the live fixture; macOS fixture scoping has a bundle
-  gap, so see the [fixture reference](crates/tiler-live-fixture/README.md)
-  and the [macOS fixture-first rules](docs/live-macos-testing.md#fixture-first-live-tests)
-  before assuming any scope covers fixture windows.
+- Agent live legs use the live fixture's signed macOS bundle for fixture-only
+  scoping; direct executable launch has no bundle identity. See the
+  [fixture reference](crates/tiler-live-fixture/README.md) and the
+  [macOS fixture-first rules](docs/live-macos-testing.md#fixture-first-live-tests).
 
 ## Local-System Information
 
