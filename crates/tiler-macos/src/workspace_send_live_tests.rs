@@ -39,6 +39,10 @@ use crate::workspace_send_native::{
 const PID: u32 = 4242;
 const WID: u32 = 7;
 const WINDOW: &str = "4242_7";
+// Foreign front for the post-select focus tests (the retained incident
+// shape: the destination front stayed on Finder after the move+select).
+const FINDER_PID: u32 = 1111;
+const FINDER_WID: u32 = 99;
 const GENERATION: u64 = 1;
 const TARGET_SID: u64 = 3;
 const REVISION: u64 = 9;
@@ -257,6 +261,41 @@ struct FakeReaders {
     current: Option<u64>,
     effect_goal: u64,
     carried: bool,
+    arrival_notes: usize,
+    /// Fast bridged scripting: availability plus direct-move log. The
+    /// membership effect lands on the destination while the view stays on
+    /// the source until the destination select follows.
+    bridged_enabled: bool,
+    bridged_calls: Vec<(u64, u32)>,
+    bridged_fail: Option<String>,
+    bridged_goal: Option<u64>,
+    /// Scripted membership reads (popped front per `subject_spaces` while
+    /// non-empty). Models async completion landing late.
+    spaces_script: VecDeque<Option<Vec<u64>>>,
+    /// Sticky membership override (wins over the bridged-goal effect while
+    /// set). Models a completion that never lands.
+    spaces_sticky: Option<Vec<u64>>,
+    /// Front-pin capability half of the scripted availability conjunction:
+    /// the fake reports bridged only when BOTH the move dispatcher
+    /// (`bridged_enabled`) and the front pin plus PSN mapping
+    /// (`front_enabled`) resolve - mirroring the production conjunction.
+    /// Clear exactly one half to preselect the drag before any effect.
+    front_enabled: bool,
+    /// Native command ordering log: dispatch pushes `dispatch`, front pin
+    /// pushes `front`, select pushes `select`, membership reads push
+    /// `membership`.
+    order: Vec<String>,
+    /// Destination front-pin scripting: call log plus explicit refusal.
+    /// `front_gates_open` / `front_identity_ok` mirror the production
+    /// pre-touch fences (fresh session gates, fresh CG owner join); when
+    /// false the fake refuses before any (fake) SLS touch, like production.
+    front_calls: Vec<(u64, u32, u32)>,
+    front_fail: Option<String>,
+    front_gates_open: bool,
+    front_identity_ok: bool,
+    /// Post-select focus override: while `None` the focus reads static;
+    /// set to model the view landing on a foreign front after the select.
+    focus_after_select: Option<(u32, Option<u32>)>,
 }
 
 impl FakeReaders {
@@ -312,6 +351,20 @@ impl FakeReaders {
             current: Some(20),
             effect_goal: TARGET_SID,
             carried: false,
+            arrival_notes: 0,
+            bridged_enabled: false,
+            bridged_calls: Vec::new(),
+            bridged_fail: None,
+            bridged_goal: None,
+            front_calls: Vec::new(),
+            front_fail: None,
+            front_gates_open: true,
+            front_identity_ok: true,
+            focus_after_select: None,
+            spaces_script: VecDeque::new(),
+            spaces_sticky: None,
+            front_enabled: true,
+            order: Vec::new(),
         }
     }
 
@@ -378,6 +431,18 @@ impl SendNativeReaders for FakeReaders {
         if self.fail_spaces.contains(&wid) {
             return Err(format!("injected membership unreadable for wid {wid}"));
         }
+        self.order.push("membership".to_owned());
+        if let Some(next) = self.spaces_script.pop_front() {
+            return next.ok_or_else(|| {
+                format!("fake spaces for wid {wid} unscripted; refusing rather than guessing")
+            });
+        }
+        if let Some(sticky) = self.spaces_sticky.clone() {
+            return Ok(sticky);
+        }
+        if let Some(goal) = self.bridged_goal {
+            return Ok(vec![goal]);
+        }
         if self.carried {
             return Ok(vec![self.effect_goal]);
         }
@@ -423,6 +488,13 @@ impl SendNativeReaders for FakeReaders {
         EngineFactsRead::Unmanaged
     }
     fn selected_focus(&mut self) -> Option<(u32, Option<u32>)> {
+        // Post-select override models the view landing on a foreign front
+        // after the select; the proof (pre-select) always reads static.
+        if !self.select_calls.is_empty()
+            && let Some(after) = self.focus_after_select
+        {
+            return Some(after);
+        }
         self.focus
     }
     fn focus_agrees(&mut self, _pid: u32, _wid: u32) -> bool {
@@ -498,10 +570,48 @@ impl SendNativeReaders for FakeReaders {
         }
         self.current
     }
+    fn note_verified_arrival(&mut self) {
+        self.arrival_notes += 1;
+    }
+    fn bridged_available(&mut self) -> bool {
+        self.bridged_enabled && self.front_enabled
+    }
+    fn bridged_move_window(&mut self, sid: u64, wid: u32) -> Result<(), String> {
+        self.bridged_calls.push((sid, wid));
+        self.order.push("dispatch".to_owned());
+        if let Some(reason) = self.bridged_fail.clone() {
+            return Err(reason);
+        }
+        // Inactive-destination move: membership names the goal while the
+        // view stays on the source until the destination select follows.
+        self.bridged_goal = Some(sid);
+        Ok(())
+    }
+    fn set_destination_front(&mut self, sid: u64, pid: u32, wid: u32) -> Result<(), String> {
+        self.front_calls.push((sid, pid, wid));
+        self.order.push("front".to_owned());
+        if let Some(reason) = self.front_fail.clone() {
+            return Err(reason);
+        }
+        // Scriptable mirrors of the production pre-touch fences: a locked
+        // session or a disagreeing CG join refuses before any SLS touch.
+        if !self.front_gates_open {
+            return Err(
+                "injected front-gate refusal: session not admissible at front touch".to_owned(),
+            );
+        }
+        if !self.front_identity_ok {
+            return Err(
+                "injected front-identity refusal: CG join disagrees at front touch".to_owned(),
+            );
+        }
+        Ok(())
+    }
     fn select_space(&mut self, sid: u64) -> Result<(), String> {
-        // Ordinary return select: the mover stays on the goal, the view
-        // returns to the source.
+        // Ordinary select (destination follow or stay return): the mover
+        // stays on the goal, the view moves to the selected SID.
         self.select_calls.push(sid);
+        self.order.push("select".to_owned());
         if let Some(reason) = self.select_fail.clone() {
             return Err(reason);
         }
@@ -557,6 +667,37 @@ fn live_applied_path_posts_exact_point_chord_and_reads_back() {
     assert_eq!(key_count(&log.key_posts, true), 1);
     assert_eq!(key_count(&log.key_posts, false), 1);
     assert!(backend.counts().balanced());
+}
+
+#[test]
+fn verified_arrival_requests_exactly_one_owner_reread() {
+    // The effect owner proves arrival by exact native readback (membership
+    // plus current both name the goal) and requests the tile owners'
+    // reread there - once per arrival, even though the revision never
+    // moved. A stable repeat poll replays nothing.
+    let target = pinned_target();
+    let lane = handoff();
+    let mut backend = LiveManagedSendBackend::new(FakeReaders::new());
+    let (outcome, leg) = execute_managed_send(&target, &mut backend, &lane);
+    assert_eq!(outcome, SendEffectOutcome::Applied);
+    assert_eq!(leg.map(|leg| leg.membership), Some(vec![TARGET_SID]));
+    assert_eq!(backend.test_readers().arrival_notes, 1);
+    // Stable settle polls stay quiet: the change-only readback gate never
+    // re-fires the request without a new arrival.
+    let _ = backend.read_membership();
+    let _ = backend.read_current();
+    let _ = backend.read_membership();
+    let _ = backend.read_current();
+    assert_eq!(backend.test_readers().arrival_notes, 1);
+}
+
+#[test]
+fn no_arrival_requests_no_owner_reread() {
+    // No proven subject, no arrival: the current stays off-goal and the
+    // membership is unknown, so the effect owner requests nothing.
+    let mut backend = LiveManagedSendBackend::new(FakeReaders::new());
+    assert_eq!(backend.read_current(), Some(20));
+    assert_eq!(backend.test_readers().arrival_notes, 0);
 }
 
 #[test]
@@ -1813,4 +1954,385 @@ fn off_main_send_backend_never_touches_main_only_display_reads() {
         source.contains("mc_add_space_pinned(") && source.contains("pinned_cgid"),
         "the pinned (cgid, UUID) legs stay the off-main display route"
     );
+}
+
+// -- Fast bridged follow over the production assembly (offline) --------------
+
+fn fast_live_backend() -> LiveManagedSendBackend<FakeReaders> {
+    let mut readers = FakeReaders::new();
+    readers.bridged_enabled = true;
+    LiveManagedSendBackend::new(readers)
+}
+
+#[test]
+fn live_bridged_fast_posts_no_hid_and_requests_one_reread() {
+    let target = pinned_target();
+    let lane = handoff();
+    let mut backend = fast_live_backend();
+    let (outcome, leg) = execute_managed_send(&target, &mut backend, &lane);
+    assert_eq!(outcome, SendEffectOutcome::Applied);
+    let leg = leg.expect("fast applied carries readback");
+    assert_eq!(leg.membership, vec![TARGET_SID]);
+    assert_eq!(leg.current, TARGET_SID);
+    let readers = backend.test_readers();
+    assert_eq!(readers.bridged_calls, vec![(TARGET_SID, WID)]);
+    assert_eq!(readers.select_calls, vec![TARGET_SID]);
+    let log = readers.log.lock().expect("post log");
+    assert!(log.mouse_posts.is_empty(), "fast route posts no mouse");
+    assert!(log.key_posts.is_empty(), "fast route posts no key");
+    assert_eq!(
+        readers.arrival_notes, 1,
+        "verified arrival rereads even at same revision"
+    );
+}
+
+#[test]
+fn live_bridged_unavailable_stays_on_drag_with_posts() {
+    let target = pinned_target();
+    let lane = handoff();
+    let mut backend = LiveManagedSendBackend::new(FakeReaders::new());
+    let (outcome, _) = execute_managed_send(&target, &mut backend, &lane);
+    assert_eq!(outcome, SendEffectOutcome::Applied);
+    assert!(backend.test_readers().bridged_calls.is_empty());
+    let log = backend.test_readers().log();
+    let log = log.lock().expect("post log");
+    assert!(!log.key_posts.is_empty());
+}
+
+#[test]
+fn live_bridged_anchor_drift_refuses_before_dispatch() {
+    let target = pinned_target();
+    let lane = handoff();
+    let mut readers = FakeReaders::new();
+    readers.bridged_enabled = true;
+    // Second topology read (the dispatch-time anchor re-fence) moves the
+    // revision: the fast dispatch refuses before any OS touch.
+    readers
+        .topo_script
+        .push_back(topo(vec![20, 3, 7], 20, REVISION + 1));
+    let mut backend = LiveManagedSendBackend::new(readers);
+    let (outcome, _) = execute_managed_send(&target, &mut backend, &lane);
+    assert_eq!(outcome, SendEffectOutcome::RefusedProven);
+    assert!(backend.test_readers().bridged_calls.is_empty());
+    assert!(backend.test_readers().select_calls.is_empty());
+}
+
+#[test]
+fn live_bridged_wrong_focus_holds_without_raise() {
+    let target = pinned_target();
+    let lane = handoff();
+    let mut readers = FakeReaders::new();
+    readers.bridged_enabled = true;
+    readers.focus = Some((PID, Some(9)));
+    readers.agree = false;
+    let mut backend = LiveManagedSendBackend::new(readers);
+    let (outcome, _) = execute_managed_send(&target, &mut backend, &lane);
+    assert_eq!(
+        outcome,
+        SendEffectOutcome::RefusedProven,
+        "proof focus mismatch refuses pre-dispatch"
+    );
+    assert!(backend.test_readers().bridged_calls.is_empty());
+}
+
+#[test]
+fn live_bridged_selector_starts_before_settle_membership_poll() {
+    let target = pinned_target();
+    let lane = handoff();
+    let mut backend = fast_live_backend();
+    let (outcome, _) = execute_managed_send(&target, &mut backend, &lane);
+    assert_eq!(outcome, SendEffectOutcome::Applied);
+    let readers = backend.test_readers();
+    let dispatch_at = readers
+        .order
+        .iter()
+        .position(|e| e == "dispatch")
+        .expect("dispatch logged");
+    let select_at = readers
+        .order
+        .iter()
+        .position(|e| e == "select")
+        .expect("select logged");
+    assert!(select_at > dispatch_at, "order={:?}", readers.order);
+    assert!(
+        !readers.order[dispatch_at + 1..select_at].contains(&"membership".to_owned()),
+        "no serial membership gate between dispatch and selector, order={:?}",
+        readers.order
+    );
+    assert_eq!(readers.select_calls.len(), 1, "exactly one select");
+}
+
+#[test]
+fn live_bridged_late_completion_applies_after_select() {
+    let target = pinned_target();
+    let lane = handoff();
+    let mut readers = FakeReaders::new();
+    readers.bridged_enabled = true;
+    // Async completion lands late: the first settle reads miss, then the
+    // exact arrival names the goal.
+    readers.spaces_script = VecDeque::from([
+        Some(vec![20]),
+        Some(vec![20]),
+        Some(vec![TARGET_SID]),
+        Some(vec![TARGET_SID]),
+    ]);
+    let mut backend = LiveManagedSendBackend::new(readers);
+    let (outcome, leg) = execute_managed_send(&target, &mut backend, &lane);
+    assert_eq!(outcome, SendEffectOutcome::Applied);
+    let leg = leg.expect("late arrival carries readback");
+    assert_eq!(leg.membership, vec![TARGET_SID]);
+    assert_eq!(leg.current, TARGET_SID);
+    assert_eq!(backend.test_readers().select_calls.len(), 1);
+}
+
+#[test]
+fn live_bridged_missing_completion_holds_without_false_applied() {
+    let target = pinned_target();
+    let lane = handoff();
+    let mut readers = FakeReaders::new();
+    readers.bridged_enabled = true;
+    // The async completion never lands: membership stays on the source.
+    readers.spaces_sticky = Some(vec![20]);
+    let mut backend = LiveManagedSendBackend::new(readers);
+    let (outcome, _) = execute_managed_send(&target, &mut backend, &lane);
+    assert_eq!(outcome, SendEffectOutcome::PossiblyExecuted);
+    assert_eq!(
+        backend.test_readers().select_calls.len(),
+        1,
+        "no select replay"
+    );
+}
+
+#[test]
+fn native_reader_factory_hooks_real_bridged_seam() {
+    // The production readers must call the real FFI seam (never a fake):
+    // availability reads the move triple PLUS the front-pin symbol PLUS
+    // the PSN mapping, dispatch calls the exact bridged mover, and the
+    // follow pins the destination front before the select. Pinned at the
+    // source (no live touch).
+    let source = include_str!("workspace_send_native.rs");
+    assert!(
+        source.contains("sls_bridged_availability().available"),
+        "production availability hooks the real move-triple seam"
+    );
+    assert!(
+        source.contains("sls_space_front_available()"),
+        "production availability requires the front-pin symbol"
+    );
+    assert!(
+        source.contains("slps_available()"),
+        "production availability requires the PSN mapping"
+    );
+    assert!(
+        source.contains("sls_move_windows_bridged(sid"),
+        "production dispatch hooks the real bridged mover"
+    );
+    assert!(
+        source.contains("sls_space_set_front_psn(sid, psn)"),
+        "production follow pins the destination front through the real seam"
+    );
+    assert!(
+        source.contains("set_destination_front(sid, pid, wid)"),
+        "follow pins the already-proven subject before the destination select"
+    );
+    // The trait defaults keep every offline fake on drag.
+    let trait_source = include_str!("workspace_send_native.rs");
+    assert!(
+        trait_source.contains("fn bridged_available(&mut self) -> bool"),
+        "readers seam exposes availability"
+    );
+}
+
+// -- Bridged follow destination front pin (offline, no live touch) ----------
+//
+// yabai `window_manager_send_window_to_space` tail
+// (`src/window_manager.c:2116`): the async move dispatches, then exactly one
+// `SLSSpaceSetFrontPSN` pins the destination front to the moved subject,
+// then the view select follows. Offline shape of the retained incident: a
+// sole-window send emptied the source (membership names the goal) while the
+// destination front stayed foreign (Finder) with exact membership/current -
+// the pin restores the existing follow semantics, and the final exact
+// subject focus still gates Applied (no AX raise anywhere).
+
+#[test]
+fn live_bridged_follow_pins_front_once_before_single_select() {
+    let target = pinned_target();
+    let lane = handoff();
+    let mut backend = fast_live_backend();
+    let (outcome, leg) = execute_managed_send(&target, &mut backend, &lane);
+    assert_eq!(outcome, SendEffectOutcome::Applied);
+    let leg = leg.expect("front-pinned follow carries readback");
+    assert_eq!(leg.membership, vec![TARGET_SID]);
+    assert_eq!(leg.current, TARGET_SID);
+    let readers = backend.test_readers();
+    assert_eq!(readers.bridged_calls, vec![(TARGET_SID, WID)]);
+    assert_eq!(
+        readers.front_calls,
+        vec![(TARGET_SID, PID, WID)],
+        "exactly one front pin to the proven subject on the destination"
+    );
+    assert_eq!(readers.select_calls, vec![TARGET_SID], "exactly one select");
+    let order = &readers.order;
+    let dispatch_at = order
+        .iter()
+        .position(|e| e == "dispatch")
+        .expect("dispatch logged");
+    let front_at = order
+        .iter()
+        .position(|e| e == "front")
+        .expect("front logged");
+    let select_at = order
+        .iter()
+        .position(|e| e == "select")
+        .expect("select logged");
+    assert!(
+        dispatch_at < front_at && front_at < select_at,
+        "move->front->select, order={order:?}"
+    );
+    assert!(
+        !order[dispatch_at + 1..select_at].contains(&"membership".to_owned()),
+        "no serial membership gate between dispatch and selector, order={order:?}"
+    );
+    let log = readers.log.lock().expect("post log");
+    assert!(log.mouse_posts.is_empty(), "fast route posts no mouse");
+    assert!(log.key_posts.is_empty(), "fast route posts no key");
+}
+
+#[test]
+fn live_bridged_front_capability_missing_preselects_drag() {
+    // The move dispatcher resolves but the front pin (or PSN mapping) does
+    // not: the operation preselects the drag before any effect - never a
+    // partial bridged dispatch.
+    let target = pinned_target();
+    let lane = handoff();
+    let mut readers = FakeReaders::new();
+    readers.bridged_enabled = true;
+    readers.front_enabled = false;
+    let mut backend = LiveManagedSendBackend::new(readers);
+    let (outcome, _) = execute_managed_send(&target, &mut backend, &lane);
+    assert_eq!(outcome, SendEffectOutcome::Applied);
+    let readers = backend.test_readers();
+    assert!(
+        readers.bridged_calls.is_empty(),
+        "no bridged dispatch without the pin"
+    );
+    assert!(readers.front_calls.is_empty());
+    assert!(readers.select_calls.is_empty());
+    let log = readers.log.lock().expect("post log");
+    assert!(!log.key_posts.is_empty(), "drag preselected before effects");
+}
+
+#[test]
+fn live_bridged_front_failure_holds_without_select_or_replay() {
+    // Front-pin refusal lands after the dispatched move: PossiblyExecuted,
+    // no select, no replay, no second move, no drag posts.
+    let target = pinned_target();
+    let lane = handoff();
+    let mut readers = FakeReaders::new();
+    readers.bridged_enabled = true;
+    readers.front_fail = Some("injected front-pin refusal".to_owned());
+    let mut backend = LiveManagedSendBackend::new(readers);
+    let (outcome, _) = execute_managed_send(&target, &mut backend, &lane);
+    assert_eq!(outcome, SendEffectOutcome::PossiblyExecuted);
+    let readers = backend.test_readers();
+    assert_eq!(
+        readers.bridged_calls.len(),
+        1,
+        "exactly one dispatch, no replay"
+    );
+    assert_eq!(readers.front_calls, vec![(TARGET_SID, PID, WID)]);
+    assert!(
+        readers.select_calls.is_empty(),
+        "refused front pin selects nothing"
+    );
+    assert_eq!(
+        backend.counts().total(),
+        0,
+        "no drag fallback after dispatch"
+    );
+}
+
+#[test]
+fn live_bridged_stale_anchor_withholds_front_pin() {
+    // The revision moves between the dispatch-time and select-time fences:
+    // the front pin never runs and the selector never starts.
+    let target = pinned_target();
+    let lane = handoff();
+    let mut readers = FakeReaders::new();
+    readers.bridged_enabled = true;
+    // Topology reads: snapshot, proof, and the dispatch fence agree; the
+    // select-time fence sees the moved revision.
+    for _ in 0..3 {
+        readers.topo_script.push_back(base_topo());
+    }
+    readers
+        .topo_script
+        .push_back(topo(vec![20, 3, 7], 20, REVISION + 1));
+    let mut backend = LiveManagedSendBackend::new(readers);
+    let (outcome, _) = execute_managed_send(&target, &mut backend, &lane);
+    assert_eq!(outcome, SendEffectOutcome::PossiblyExecuted);
+    let readers = backend.test_readers();
+    assert_eq!(readers.bridged_calls.len(), 1);
+    assert!(
+        readers.front_calls.is_empty(),
+        "stale anchor runs no front pin"
+    );
+    assert!(readers.select_calls.is_empty());
+}
+
+#[test]
+fn live_bridged_locked_session_and_stale_identity_withhold_front_touch() {
+    // Fresh pre-touch fences fail post-dispatch: a locked session and a
+    // disagreeing CG join each refuse before any SLS touch, so the selector
+    // never runs. Both hold PossiblyExecuted (the dispatch executed).
+    for (gates_open, identity_ok, what) in [
+        (false, true, "locked session"),
+        (true, false, "stale CG identity"),
+    ] {
+        let target = pinned_target();
+        let lane = handoff();
+        let mut readers = FakeReaders::new();
+        readers.bridged_enabled = true;
+        readers.front_gates_open = gates_open;
+        readers.front_identity_ok = identity_ok;
+        let mut backend = LiveManagedSendBackend::new(readers);
+        let (outcome, _) = execute_managed_send(&target, &mut backend, &lane);
+        assert_eq!(outcome, SendEffectOutcome::PossiblyExecuted, "{what}");
+        let readers = backend.test_readers();
+        assert_eq!(readers.bridged_calls.len(), 1, "{what}");
+        assert_eq!(
+            readers.front_calls.len(),
+            1,
+            "{what}: one pin attempt, refused pre-touch"
+        );
+        assert!(
+            readers.select_calls.is_empty(),
+            "{what}: no select after refused pin"
+        );
+        assert_eq!(backend.counts().total(), 0, "{what}: no drag fallback");
+    }
+}
+
+#[test]
+fn live_bridged_foreign_focus_after_pin_holds_without_raise() {
+    // The destination view lands on a foreign front after the pin+select
+    // (Finder in the retained incident): the final exact-subject focus gate
+    // holds PossiblyExecuted - never an AX raise, never a replay.
+    let target = pinned_target();
+    let lane = handoff();
+    let mut readers = FakeReaders::new();
+    readers.bridged_enabled = true;
+    readers.focus_after_select = Some((FINDER_PID, Some(FINDER_WID)));
+    let mut backend = LiveManagedSendBackend::new(readers);
+    let (outcome, _) = execute_managed_send(&target, &mut backend, &lane);
+    assert_eq!(outcome, SendEffectOutcome::PossiblyExecuted);
+    let readers = backend.test_readers();
+    assert_eq!(readers.bridged_calls.len(), 1);
+    assert_eq!(readers.front_calls, vec![(TARGET_SID, PID, WID)]);
+    assert_eq!(
+        readers.select_calls,
+        vec![TARGET_SID],
+        "one select, no replay"
+    );
+    assert_eq!(backend.counts().total(), 0, "no raise, no drag fallback");
 }

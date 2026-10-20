@@ -160,6 +160,32 @@ struct FakeManaged {
     /// backend, never serves trailing).
     trailing_prep: Option<Result<TrailingPrepProof, String>>,
     prep_calls: usize,
+    /// Fast bridged-route scripting: availability chosen once per op,
+    /// consumed-permit dispatch log, destination-select log, and anchor
+    /// drift injection. Defaults keep every existing regression on drag
+    /// (`bridged_enabled=false`).
+    bridged_enabled: bool,
+    bridged_calls: Vec<u64>,
+    bridged_fail: Option<String>,
+    bridged_drift_row: Option<SelectionSnapshot>,
+    destination_calls: Vec<u64>,
+    destination_fail: Option<String>,
+    destination_hold_current: bool,
+    use_route_calls: usize,
+    /// Follow-leg focus read (target subject) vs stay return-leg source
+    /// focus. The fast follow checks the target; the stay return checks
+    /// the source. Separate fields keep both honest in one fake.
+    focused_follow: Option<String>,
+    /// Native command ordering log for the fast path: `bridged_move`
+    /// pushes `bridged`, `select_destination` pushes `select`,
+    /// `read_membership` pushes `membership`. Tests assert the selector
+    /// starts before any post-dispatch membership poll.
+    order: Vec<String>,
+    /// Scripted settle membership reads (popped front per
+    /// `read_membership` call while non-empty, before the canned
+    /// `membership`). Models async completion landing late: script wrong
+    /// values first, then the exact arrival.
+    settle_script: VecDeque<Option<Vec<u64>>>,
 }
 
 impl FakeManaged {
@@ -215,6 +241,17 @@ impl FakeManaged {
             block_prep: None,
             trailing_prep: None,
             prep_calls: 0,
+            bridged_enabled: false,
+            bridged_calls: Vec::new(),
+            bridged_fail: None,
+            bridged_drift_row: None,
+            destination_calls: Vec::new(),
+            destination_fail: None,
+            destination_hold_current: false,
+            use_route_calls: 0,
+            focused_follow: Some("4242_7".to_owned()),
+            order: Vec::new(),
+            settle_script: VecDeque::new(),
         }
     }
 
@@ -226,6 +263,13 @@ impl FakeManaged {
             "post uses exactly the backend-selected fresh grab point"
         );
     }
+
+    fn forwarded(&self) -> bool {
+        // Forward actuation posted: the drag chord or exactly one fast
+        // bridged dispatch plus destination select. Drives the stay
+        // return-leg overrides (the live view then sits on the goal).
+        self.counts.key_down > 0 || !self.bridged_calls.is_empty()
+    }
 }
 
 impl ManagedSendBackend for FakeManaged {
@@ -233,7 +277,7 @@ impl ManagedSendBackend for FakeManaged {
         // Post-forward override (the forward chord posted): the stay return
         // re-fences gates here, while the forward leg's own admission read
         // the canned gates.
-        if self.counts.key_down > 0
+        if self.forwarded()
             && let Some(gates) = self.gates_after_forward
         {
             return gates;
@@ -241,26 +285,26 @@ impl ManagedSendBackend for FakeManaged {
         self.gates
     }
     fn snapshot(&mut self) -> Result<SelectionSnapshot, String> {
-        // Post-forward override (same key-down discriminator): the
+        // Post-forward override (same forwarded discriminator): the
         // pre-forward pin and the forward leg's own snapshot both read the
         // canned row; only the return-leg fresh row scripts drift.
-        if self.counts.key_down > 0
+        if self.forwarded()
             && let Some(next) = self.snapshot_script.pop_front()
         {
             return next;
         }
         let mut row = self.snapshot.clone()?;
-        if self.counts.key_down > 0 {
-            // The forward chord posted, so the live view sits on the goal:
+        if self.forwarded() {
+            // The forward leg posted, so the live view sits on the goal:
             // the return-leg row carries the arrival current.
             row.current = self.goal;
         }
         Ok(row)
     }
     fn display_count(&mut self) -> Result<usize, String> {
-        // Post-forward override (same key-down discriminator as gates):
+        // Post-forward override (same forwarded discriminator as gates):
         // the return leg re-fences the single-display rule here.
-        if self.counts.key_down > 0
+        if self.forwarded()
             && let Some(next) = self.displays_after_forward.clone()
         {
             return next;
@@ -405,6 +449,14 @@ impl ManagedSendBackend for FakeManaged {
         if self.fail_return_reads && !self.select_back_calls.is_empty() {
             return None;
         }
+        // Fast-path ordering log plus late-completion scripting: scripted
+        // settle reads win while non-empty, otherwise the canned value.
+        if !self.bridged_calls.is_empty() || !self.destination_calls.is_empty() {
+            self.order.push("membership".to_owned());
+        }
+        if let Some(next) = self.settle_script.pop_front() {
+            return next;
+        }
         Some(self.membership.clone())
     }
     fn read_current(&mut self) -> Option<u64> {
@@ -429,7 +481,13 @@ impl ManagedSendBackend for FakeManaged {
         Ok(())
     }
     fn read_focused(&mut self) -> Option<String> {
-        self.focused.clone()
+        // Follow leg (no return select yet) reads the target subject;
+        // the stay return leg reads the source fallback.
+        if self.select_back_calls.is_empty() {
+            self.focused_follow.clone()
+        } else {
+            self.focused.clone()
+        }
     }
     fn prepare_trailing_target(
         &mut self,
@@ -458,6 +516,46 @@ impl ManagedSendBackend for FakeManaged {
     }
     fn counts(&self) -> PostCounts {
         self.counts
+    }
+    fn bridged_available(&mut self) -> bool {
+        self.bridged_enabled
+    }
+    fn use_bridged_route(&mut self) {
+        self.use_route_calls += 1;
+    }
+    fn bridged_move(&mut self, permit: ManagedPostPermit, goal: u64) -> Result<(), String> {
+        // Consumed single-use permit plus fresh-anchor gate: the bound
+        // point must equal the backend-selected grab, and the goal must
+        // still sit in the fresh row (drift refuses pre-dispatch).
+        self.check_permit(&permit);
+        if let Some(reason) = self.bridged_fail.clone() {
+            return Err(reason);
+        }
+        let row = self
+            .bridged_drift_row
+            .clone()
+            .unwrap_or_else(|| self.snapshot.clone().expect("fake row readable"));
+        if !row.spaces.contains(&goal) {
+            return Err("fake anchor drift: target SID left the row mid-leg; refusing".to_owned());
+        }
+        self.bridged_calls.push(goal);
+        self.goal = goal;
+        // Inactive-destination move: membership names the goal, the view
+        // stays on the source until the destination select follows.
+        self.membership = vec![goal];
+        self.order.push("bridged".to_owned());
+        Ok(())
+    }
+    fn select_destination(&mut self, sid: u64) -> Result<(), String> {
+        self.destination_calls.push(sid);
+        self.order.push("select".to_owned());
+        if let Some(reason) = self.destination_fail.clone() {
+            return Err(reason);
+        }
+        if !self.destination_hold_current {
+            self.current = Some(sid);
+        }
+        Ok(())
     }
 }
 
@@ -2769,4 +2867,293 @@ fn trailing_controller_busy_and_unpinned_refuse_before_submit() {
         other => panic!("blocked trailing shuts down as refusal, got {other:?}"),
     }
     let _ = release_tx.send(());
+}
+
+// -- Fast bridged follow regressions (offline, no live touch) --------------
+
+fn fast_backend() -> FakeManaged {
+    let mut backend = FakeManaged::new();
+    backend.bridged_enabled = true;
+    // Follow arrival needs the subject focus on the target; stay tests
+    // override `focused` (source) while this stays the target.
+    backend.focused_follow = Some("4242_7".to_owned());
+    backend.focused = Some("4242_7".to_owned());
+    backend
+}
+
+#[test]
+fn bridged_fast_applies_without_mouse_or_key_posts() {
+    let target = target();
+    let lane = SendEffectHandoff::new();
+    let mut backend = fast_backend();
+    let (outcome, leg) = execute(&target, &mut backend, &lane);
+    assert_eq!(outcome, SendEffectOutcome::Applied);
+    let leg = leg.expect("fast applied carries readback");
+    assert_eq!(leg.membership, vec![3]);
+    assert_eq!(leg.current, 3);
+    assert!(!leg.pending_recovered);
+    // Exactly one direct native move, one destination select, zero HID.
+    assert_eq!(backend.bridged_calls, vec![3]);
+    assert_eq!(backend.destination_calls, vec![3]);
+    assert_eq!(backend.use_route_calls, 1);
+    assert_eq!(backend.counts.total(), 0, "fast route posts no mouse/key");
+    assert!(backend.mouse_points.is_empty());
+    assert!(backend.key_posts.is_empty());
+    assert!(backend.key_chords.is_empty());
+}
+
+#[test]
+fn bridged_unavailable_falls_back_to_drag_before_dispatch() {
+    // Default fake reports unavailable: the existing drag posts.
+    let target = target();
+    let lane = SendEffectHandoff::new();
+    let mut backend = FakeManaged::new();
+    backend.focused = Some("4242_7".to_owned());
+    let (outcome, _) = execute(&target, &mut backend, &lane);
+    assert_eq!(outcome, SendEffectOutcome::Applied);
+    assert!(backend.bridged_calls.is_empty());
+    assert!(backend.destination_calls.is_empty());
+    assert!(backend.counts.key_down > 0);
+}
+
+#[test]
+fn bridged_proof_refusal_posts_nothing_and_never_selects() {
+    let target = target();
+    let lane = SendEffectHandoff::new();
+    let mut backend = fast_backend();
+    backend.evidence_base.focused_window = Some("4242_9".to_owned());
+    let (outcome, _) = execute(&target, &mut backend, &lane);
+    assert_eq!(outcome, SendEffectOutcome::RefusedProven);
+    assert!(backend.bridged_calls.is_empty());
+    assert!(backend.destination_calls.is_empty());
+    assert_eq!(backend.counts.total(), 0);
+}
+
+#[test]
+fn bridged_anchor_drift_refuses_pre_dispatch_without_select() {
+    let target = target();
+    let lane = SendEffectHandoff::new();
+    let mut backend = fast_backend();
+    backend.bridged_drift_row = Some(SelectionSnapshot {
+        display: "display-a".to_owned(),
+        spaces: vec![20, 7],
+        current: 20,
+    });
+    let (outcome, _) = execute(&target, &mut backend, &lane);
+    assert_eq!(outcome, SendEffectOutcome::RefusedProven);
+    assert!(
+        backend.bridged_calls.is_empty(),
+        "drift refuses before dispatch"
+    );
+    assert!(backend.destination_calls.is_empty());
+    assert_eq!(backend.counts.total(), 0);
+}
+
+#[test]
+fn bridged_dispatch_failure_is_proven_and_never_falls_back_to_drag() {
+    let target = target();
+    let lane = SendEffectHandoff::new();
+    let mut backend = fast_backend();
+    backend.bridged_fail = Some("injected bridged dispatch refusal".to_owned());
+    let (outcome, _) = execute(&target, &mut backend, &lane);
+    assert_eq!(outcome, SendEffectOutcome::RefusedProven);
+    assert!(backend.destination_calls.is_empty());
+    assert_eq!(
+        backend.counts.key_down, 0,
+        "no drag fallback after pre-dispatch failure"
+    );
+    assert_eq!(backend.counts.mouse_down, 0);
+}
+
+#[test]
+fn bridged_uncertain_arrival_holds_without_replay_or_second_dispatch() {
+    let target = target();
+    let lane = SendEffectHandoff::new();
+    let mut backend = fast_backend();
+    // Async completion never lands: the settle deadline holds after the
+    // selector already ran (select-first, settle-after).
+    backend.membership = vec![20];
+    // Keep the dispatched membership write from fixing it.
+    backend.unreadable = true;
+    let (outcome, _) = execute(&target, &mut backend, &lane);
+    assert_eq!(outcome, SendEffectOutcome::PossiblyExecuted);
+    assert_eq!(
+        backend.bridged_calls.len(),
+        1,
+        "exactly one dispatch, no replay"
+    );
+    assert_eq!(
+        backend.destination_calls,
+        vec![3],
+        "selector runs before the settle await, even when arrival never lands"
+    );
+    assert_eq!(backend.counts.total(), 0, "no drag fallback after dispatch");
+}
+
+#[test]
+fn bridged_selector_starts_before_any_post_dispatch_membership_poll() {
+    let target = target();
+    let lane = SendEffectHandoff::new();
+    let mut backend = fast_backend();
+    let (outcome, _) = execute(&target, &mut backend, &lane);
+    assert_eq!(outcome, SendEffectOutcome::Applied);
+    let bridged_at = backend
+        .order
+        .iter()
+        .position(|e| e == "bridged")
+        .expect("dispatch logged");
+    let select_at = backend
+        .order
+        .iter()
+        .position(|e| e == "select")
+        .expect("select logged");
+    assert!(
+        select_at > bridged_at,
+        "selector starts after dispatch, order={:?}",
+        backend.order
+    );
+    assert!(
+        !backend.order[bridged_at + 1..select_at].contains(&"membership".to_owned()),
+        "no serial membership gate between dispatch and selector, order={:?}",
+        backend.order
+    );
+    assert_eq!(backend.destination_calls.len(), 1, "exactly one select");
+}
+
+#[test]
+fn bridged_late_membership_still_applies_after_select() {
+    let target = target();
+    let lane = SendEffectHandoff::new();
+    let mut backend = fast_backend();
+    // Async completion lands late: the first settle reads miss, then the
+    // exact arrival names the goal.
+    backend.settle_script =
+        VecDeque::from([Some(vec![20]), Some(vec![20]), Some(vec![3]), Some(vec![3])]);
+    let (outcome, leg) = execute(&target, &mut backend, &lane);
+    assert_eq!(outcome, SendEffectOutcome::Applied);
+    let leg = leg.expect("late arrival still carries readback");
+    assert_eq!(leg.membership, vec![3]);
+    assert_eq!(leg.current, 3);
+    assert_eq!(backend.bridged_calls.len(), 1);
+    assert_eq!(backend.destination_calls, vec![3], "no select replay");
+}
+
+#[test]
+fn bridged_missing_membership_after_select_holds() {
+    let target = target();
+    let lane = SendEffectHandoff::new();
+    let mut backend = fast_backend();
+    // Selector ran fine but the async completion never lands.
+    backend.settle_script = VecDeque::from([Some(vec![20]), Some(vec![20]), None]);
+    backend.unreadable = true;
+    let (outcome, _) = execute(&target, &mut backend, &lane);
+    assert_eq!(outcome, SendEffectOutcome::PossiblyExecuted);
+    assert_eq!(backend.bridged_calls.len(), 1);
+    assert_eq!(backend.destination_calls, vec![3], "one select, no replay");
+}
+
+#[test]
+fn bridged_wrong_current_after_select_holds() {
+    let target = target();
+    let lane = SendEffectHandoff::new();
+    let mut backend = fast_backend();
+    // Membership lands but the view never follows: the final exact
+    // membership/current gate holds.
+    backend.destination_hold_current = true;
+    let (outcome, _) = execute(&target, &mut backend, &lane);
+    assert_eq!(outcome, SendEffectOutcome::PossiblyExecuted);
+    assert_eq!(backend.bridged_calls.len(), 1);
+    assert_eq!(backend.destination_calls, vec![3], "one select, no replay");
+}
+
+#[test]
+fn bridged_cancel_during_settle_stops_promptly_without_replay() {
+    let target = target();
+    let lane = Arc::new(SendEffectHandoff::new());
+    lane.submit(target.clone()).expect("idle submits");
+    lane.take_for_owner().expect("owner takes");
+    let mut backend = fast_backend();
+    // The first settle membership read requests stop: the read-only await
+    // honors cancel for a prompt stop (still possibly-executed - dispatch
+    // and select both already executed).
+    backend.cancel_on_membership_read = Some(Arc::clone(&lane));
+    backend.settle_script = VecDeque::from([Some(vec![20]), Some(vec![3])]);
+    let (outcome, _) = execute_managed_send(&target, &mut backend, &lane);
+    assert_eq!(outcome, SendEffectOutcome::PossiblyExecuted);
+    assert_eq!(backend.bridged_calls.len(), 1);
+    assert_eq!(backend.destination_calls, vec![3], "one select, no replay");
+}
+
+#[test]
+fn bridged_uncertain_select_holds_without_replay() {
+    let target = target();
+    let lane = SendEffectHandoff::new();
+    let mut backend = fast_backend();
+    backend.destination_fail = Some("injected destination select refusal".to_owned());
+    let (outcome, _) = execute(&target, &mut backend, &lane);
+    assert_eq!(outcome, SendEffectOutcome::PossiblyExecuted);
+    assert_eq!(backend.bridged_calls.len(), 1);
+    assert_eq!(backend.destination_calls, vec![3]);
+    // No drag posts even though the select failed.
+    assert_eq!(backend.counts.total(), 0);
+}
+
+#[test]
+fn bridged_wrong_membership_current_or_focus_holds() {
+    // Foreign focus after an otherwise exact arrival holds (no AX raise).
+    let target = target();
+    let lane = SendEffectHandoff::new();
+    let mut backend = fast_backend();
+    backend.focused_follow = Some("4242_9".to_owned());
+    let (outcome, _) = execute(&target, &mut backend, &lane);
+    assert_eq!(
+        outcome,
+        SendEffectOutcome::PossiblyExecuted,
+        "foreign focus holds"
+    );
+    assert_eq!(backend.bridged_calls.len(), 1);
+}
+
+#[test]
+fn bridged_cancel_before_dispatch_refuses_proven() {
+    let target = target();
+    let lane = SendEffectHandoff::new();
+    lane.submit(target.clone()).expect("idle submits");
+    lane.take_for_owner().expect("owner takes");
+    lane.cancel();
+    let mut backend = fast_backend();
+    let (outcome, _) = execute_managed_send(&target, &mut backend, &lane);
+    assert_eq!(outcome, SendEffectOutcome::RefusedProven);
+    assert!(backend.bridged_calls.is_empty());
+}
+
+#[test]
+fn bridged_stay_reuses_fast_follow_then_released_return_with_source_focus() {
+    let stay = ManagedSendTarget::bind_stay(
+        4242,
+        7,
+        1,
+        source_domain(),
+        3,
+        9,
+        "op-3",
+        20,
+        Some("4242_9"),
+    )
+    .expect("stay binds");
+    let lane = SendEffectHandoff::new();
+    let mut backend = fast_backend();
+    // Fast follow moves membership to the target; the destination select
+    // follows the view; the stay return selects back to the source.
+    backend.focused = Some("4242_9".to_owned());
+    // The stay return-leg focus read names the source resident.
+    let (outcome, leg) = execute_managed_send_stay(&stay, 20, Some("4242_9"), &mut backend, &lane);
+    assert_eq!(outcome, SendEffectOutcome::Applied);
+    let leg = leg.expect("stay applied carries return readback");
+    assert_eq!(leg.membership, vec![3]);
+    assert_eq!(leg.current, 20);
+    assert_eq!(backend.bridged_calls, vec![3]);
+    assert_eq!(backend.destination_calls, vec![3]);
+    assert_eq!(backend.select_back_calls, vec![20]);
+    assert_eq!(backend.counts.total(), 0);
 }

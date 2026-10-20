@@ -17,8 +17,11 @@
 //! Product route: the 10 send-follow shapes (`Ctrl+Shift+0..9` under the
 //! default Ctrl role, see [`crate::workspace_input::is_armed_send`]) move
 //! the focused managed window to the target Desktop-N ordinal and follow it
-//! there, through the synthetic titlebar-drag plus tagged Desktop-N route:
-//! hold a titlebar drag on the subject window, post the target ordinal's
+//! there, bridged-first with drag fallback: the owner runs exactly one
+//! direct native bridged move plus the existing Dock-swipe exact-SID
+//! selection when the bridged seam is fully available, otherwise the
+//! synthetic titlebar-drag plus tagged Desktop-N route below. The drag
+//! fallback holds a titlebar drag on the subject window, posts the target
 //! enabled standard `Ctrl+digit` chord with the own-switch provenance tag
 //! (so the tap passes our own switch chords while still consuming the
 //! user's identical chords, see
@@ -657,8 +660,9 @@ impl LiveSendController {
     /// fresh by the caller at submit; stays never note history). Refuses
     /// busy while a target is inflight - concurrent presses
     /// serialize/refuse instead of overlapping, and a sent press is never
-    /// replayed. The owner routes on the pinned intent (forward drag for
-    /// follows, forward drag plus released return select for stays).
+    /// replayed. The owner routes on the pinned intent (forward bridged move
+    /// plus destination select with drag fallback for follows, plus the
+    /// released return select for stays).
     pub fn submit<B, F>(
         &mut self,
         claim: &ClaimedSelect,
@@ -971,9 +975,17 @@ pub const fn send_armed_chords(input_is_tap: bool, catalogue_len: usize) -> usiz
 /// One bounded metadata-only admission line for an engine-admitted send
 /// claim at submit time: the pinned `"<pid>_<wid>"` subject, the target
 /// SID, the source Space the send follows away from, the display, and the
-/// operation identity. IDs only (never titles, content, or paths). Pure
-/// (the caller emits on the submitted path only); streams live under
-/// `--stream` like every stderr line, before any teardown.
+/// operation identity, plus the route (`unselected` here - the owner
+/// chooses bridged-first with drag fallback later), the `admission` phase
+/// token, the pinned topology revision, and the process-common monotonic
+/// clock (`now_ms` from the eligibility origin - comparable across the
+/// effect-owner leg lines, unlike leg-relative `t_ms`). IDs only (never
+/// titles, content, or paths). Pure (the caller emits on the submitted path
+/// only); streams live under `--stream` like every stderr line, before any
+/// teardown.
+// The admission join needs subject, target, source, display, op, revision,
+// and both clocks together; callers pass IDs, never user text.
+#[allow(clippy::too_many_arguments)]
 #[must_use]
 pub fn format_send_admitted_line(
     action: &str,
@@ -982,8 +994,10 @@ pub fn format_send_admitted_line(
     from: u64,
     display: &str,
     op: &str,
+    revision: Option<u64>,
+    now_ms: u64,
 ) -> String {
     format!(
-        "tiler-macos send admitted action={action} subject={subject} target={target} from={from} display={display} op={op} submitted complete=false"
+        "tiler-macos send admitted action={action} subject={subject} target={target} from={from} display={display} op={op} route=unselected phase=admission revision={revision:?} now_ms={now_ms} submitted complete=false"
     )
 }

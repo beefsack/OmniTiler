@@ -12,11 +12,13 @@
 //!
 //! Write route determination (source-derived surveyed route, experimental
 //! live standing — see below):
-//! - move: Tier-2 direct SLS routes exist in surveyed source (async bridged
-//!   op, direct `SLSMoveWindowsToManagedSpace`, compat-ID fallback); the
-//!   probe omits SA entirely and executes direct-only (compat disabled: no
-//!   exact restoration; bridged detected, never executed), with preimage
-//!   capture, effect readback and a separate independent restore command.
+//! - move: Tier-2 SLS routes exist in surveyed source (async bridged op,
+//!   direct `SLSMoveWindowsToManagedSpace`, compat-ID fallback); the probe
+//!   omits SA entirely and executes exactly one selected route
+//!   (`--route direct`, the default, or `--route bridged`, each gated by
+//!   `--allow-untested`; compat disabled: no exact restoration; the
+//!   non-selected route is never a fallback), with preimage capture, effect
+//!   readback and a separate independent restore command.
 //!   Upstream bypasses the direct leg on macOS 12.7+/13.6+/14.5+/15+ via
 //!   `workspace_use_macos_space_workaround` (SA first, then compat-ID), so
 //!   the direct leg is source-derived and experimental live: one gated
@@ -185,6 +187,39 @@ pub struct SpaceMoveReport {
     pub effect_verified: bool,
 }
 
+/// Tier-2 move route: direct `SLSMoveWindowsToManagedSpace` (default,
+/// preserves the existing single-shot behavior) or the async bridged
+/// operation (`SLSBridgedMoveWindowsToManagedSpaceOperation` plus the
+/// internal dispatcher, yabai `src/space_manager.c:667-673`). Compat stays
+/// blocked on every route (no exact restoration); SA is omitted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SpaceMoveRoute {
+    Direct,
+    Bridged,
+}
+
+impl SpaceMoveRoute {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Direct => "direct",
+            Self::Bridged => "bridged",
+        }
+    }
+
+    /// Pure argv parse for `spaces-move --route <direct|bridged>`: unknown
+    /// routes refuse before any live touch (no fallback to the other route).
+    pub fn parse(s: &str) -> Result<Self, String> {
+        match s {
+            "direct" => Ok(Self::Direct),
+            "bridged" => Ok(Self::Bridged),
+            other => Err(format!(
+                "unknown --route '{other}' (expected direct|bridged); refusing without a fallback"
+            )),
+        }
+    }
+}
+
 /// Guarded owned-window Space move. Direct-`SLSMoveWindowsToManagedSpace`
 /// probe only (compat route disabled: no exact restoration; SA omitted):
 /// authenticate the full spawn record (pid/nonce, expected helper, live
@@ -206,7 +241,39 @@ pub fn move_owned_window_to_space(
     target: u64,
     allow_untested: bool,
 ) -> Result<SpaceMoveReport, SpacesError> {
-    move_owned_window_core(owned, pid, nonce, wid, target, "move", allow_untested)
+    move_owned_window_to_space_routed(
+        owned,
+        pid,
+        nonce,
+        wid,
+        target,
+        SpaceMoveRoute::Direct,
+        allow_untested,
+    )
+}
+
+/// Routed owned-window Space move: same identity/topology/session/preimage
+/// gates on every route, then the selected dispatch (direct or the async
+/// bridged operation). The report's `route` names the dispatch taken.
+pub fn move_owned_window_to_space_routed(
+    owned: &crate::ownership::OwnedIdentity,
+    pid: u32,
+    nonce: &str,
+    wid: u32,
+    target: u64,
+    route: SpaceMoveRoute,
+    allow_untested: bool,
+) -> Result<SpaceMoveReport, SpacesError> {
+    move_owned_window_core(
+        owned,
+        pid,
+        nonce,
+        wid,
+        target,
+        route,
+        "move",
+        allow_untested,
+    )
 }
 
 /// Independent restore: moves the owned window back to `space` with the same
@@ -223,7 +290,16 @@ pub fn restore_owned_window_to_space(
     space: u64,
     allow_untested: bool,
 ) -> Result<SpaceMoveReport, SpacesError> {
-    move_owned_window_core(owned, pid, nonce, wid, space, "restore", allow_untested)
+    move_owned_window_core(
+        owned,
+        pid,
+        nonce,
+        wid,
+        space,
+        SpaceMoveRoute::Direct,
+        "restore",
+        allow_untested,
+    )
 }
 
 /// Pure user-type gate for the Tier-2 move/restore path. Both the target
@@ -341,12 +417,14 @@ fn require_unlocked_session(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn move_owned_window_core(
     owned: &crate::ownership::OwnedIdentity,
     pid: u32,
     nonce: &str,
     wid: u32,
     target: u64,
+    route: SpaceMoveRoute,
     purpose: &str,
     allow_untested: bool,
 ) -> Result<SpaceMoveReport, SpacesError> {
@@ -360,14 +438,20 @@ fn move_owned_window_core(
     }
     // Explicit prerequisite gate before any live touch: the direct route is
     // source-derived and experimental (one gated dispatch observed no
-    // effect), and the single-shot inverse is unverified — the separate
+    // effect), the bridged route likewise (async dispatch, efficacy
+    // unproven), and the single-shot inverse is unverified - the separate
     // public held-Child recovery is proven per run, never assumed. A
     // separate restore command existing is not proof; the operator must opt
     // in per invocation.
     if !allow_untested {
-        return Err(SpacesError::Blocked(format!(
-            "{purpose} requires --allow-untested (direct SLS route experimental, observed no-effect on one owned fixture; single-shot inverse unverified)"
-        )));
+        return match route {
+            SpaceMoveRoute::Direct => Err(SpacesError::Blocked(format!(
+                "{purpose} requires --allow-untested (direct SLS route experimental, observed no-effect on one owned fixture; single-shot inverse unverified)"
+            ))),
+            SpaceMoveRoute::Bridged => Err(SpacesError::Blocked(format!(
+                "{purpose} requires --allow-untested (bridged SLS route experimental, async dispatch efficacy unproven; single-shot inverse unverified)"
+            ))),
+        };
     }
     // Full spawn-record proof at core entry (pid/nonce/exe plus CURRENT live
     // window nonce) — never
@@ -453,13 +537,28 @@ fn move_owned_window_core(
     // `SLSSpaceSetCompatID` mutates global Space metadata with only a setter
     // covered locally, no exact preimage, and a yabai-colliding tag — reset
     // to zero on that baseline is not restoration, so compat is blocked, not
-    // attempted. The bridged async op is detected, never executed.
+    // attempted. The non-selected SLS route is never attempted as a fallback:
+    // a bridged request with an absent dispatcher fails here, never by
+    // silently running the direct call (and vice versa).
     let symbols = crate::ffi::sls_move_symbols();
-    if !symbols.direct {
-        return Err(SpacesError::Unsupported(
-            "SLSMoveWindowsToManagedSpace unavailable; compat route blocked (no exact restoration); refusing rather than guessing SLS writes"
-                .to_owned(),
-        ));
+    let bridged = crate::ffi::sls_bridged_availability();
+    match route {
+        SpaceMoveRoute::Direct => {
+            if !symbols.direct {
+                return Err(SpacesError::Unsupported(
+                    "SLSMoveWindowsToManagedSpace unavailable; compat route blocked (no exact restoration); refusing rather than guessing SLS writes"
+                        .to_owned(),
+                ));
+            }
+        }
+        SpaceMoveRoute::Bridged => {
+            if !bridged.available {
+                return Err(SpacesError::Unsupported(format!(
+                    "bridged route unavailable (dispatcher={} class={} selector={}); refusing without a fallback - this is not a SIP failure",
+                    bridged.fn_present, bridged.class_present, bridged.selector_present
+                )));
+            }
+        }
     }
     // Revalidate the record unchanged immediately before the private write:
     // compare entry snapshot to current instead of refreshing the baseline.
@@ -479,7 +578,10 @@ fn move_owned_window_core(
         crate::ffi::frontmost_app(),
         pid,
     )?;
-    if let Err(e) = crate::ffi::sls_move_windows_direct(target, &[wid]) {
+    if let Err(e) = match route {
+        SpaceMoveRoute::Direct => crate::ffi::sls_move_windows_direct(target, &[wid]),
+        SpaceMoveRoute::Bridged => crate::ffi::sls_move_windows_bridged(target, &[wid]),
+    } {
         return Err(SpacesError::Unsupported(e));
     }
     // After dispatch every path preserves the preimage: revalidation or
@@ -519,7 +621,7 @@ fn move_owned_window_core(
         preimage_spaces: preimage,
         cg_baseline: Some(cg_baseline),
         target_space: target,
-        route: "direct".to_owned(),
+        route: route.as_str().to_owned(),
         symbols,
         effect_spaces,
         effect_error,
@@ -931,6 +1033,22 @@ mod tests {
                 .source
                 .contains("23e387e2805a9890066366e0ac96c71b27f0cfd5")
         );
+    }
+
+    #[test]
+    fn move_route_parses_explicitly_with_no_fallback() {
+        // The default call path stays direct; bridged is explicit-only, and
+        // unknown routes refuse (never a silent fallback to either route).
+        assert_eq!(SpaceMoveRoute::parse("direct"), Ok(SpaceMoveRoute::Direct));
+        assert_eq!(
+            SpaceMoveRoute::parse("bridged"),
+            Ok(SpaceMoveRoute::Bridged)
+        );
+        assert_eq!(SpaceMoveRoute::Direct.as_str(), "direct");
+        assert_eq!(SpaceMoveRoute::Bridged.as_str(), "bridged");
+        assert!(SpaceMoveRoute::parse("").is_err());
+        assert!(SpaceMoveRoute::parse("auto").is_err());
+        assert!(SpaceMoveRoute::parse("DIRECT").is_err());
     }
 
     #[test]

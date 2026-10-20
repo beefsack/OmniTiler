@@ -1389,8 +1389,13 @@ fn armed_chords_are_honest_per_input_route() {
 #[test]
 fn admitted_line_pins_subject_target_source_and_op() {
     assert_eq!(
-        format_send_admitted_line("send-2", "4242_7", 277, 1, "main", "op-9"),
-        "tiler-macos send admitted action=send-2 subject=4242_7 target=277 from=1 display=main op=op-9 submitted complete=false",
+        format_send_admitted_line("send-2", "4242_7", 277, 1, "main", "op-9", Some(77), 9100),
+        "tiler-macos send admitted action=send-2 subject=4242_7 target=277 from=1 display=main op=op-9 route=unselected phase=admission revision=Some(77) now_ms=9100 submitted complete=false",
+    );
+    // Unknown revision renders explicit (never guessed).
+    assert_eq!(
+        format_send_admitted_line("send-2", "4242_7", 277, 1, "main", "op-9", None, 9100),
+        "tiler-macos send admitted action=send-2 subject=4242_7 target=277 from=1 display=main op=op-9 route=unselected phase=admission revision=None now_ms=9100 submitted complete=false",
     );
 }
 

@@ -43,8 +43,10 @@
 //!   stops further down-edges but never skips a held-input release.
 //! - [`execute_managed_send`]: one pinned-target effect on the calling
 //!   (effect-owner) thread: gates, single-display rule, per-edge proof, fresh
-//!   holder resolve, one [`run_drag_leg`](crate::space_drag_transfer::run_drag_leg)
-//!   with bounded post-release settle polling, exact membership-plus-current
+//!   holder resolve, then bridged-first with drag fallback (one direct native
+//!   bridged move plus the Dock-swipe exact-SID selection when the bridged
+//!   seam is fully available, otherwise one [`run_drag_leg`](crate::space_drag_transfer::run_drag_leg)
+//!   with bounded post-release settle polling), exact membership-plus-current
 //!   readback. Pre-actuation refusals (gates, display, proof, holder, setup,
 //!   grab, chord-down, cancel-before-chord) report
 //!   [`SendEffectOutcome::RefusedProven`]; completed chords without exact
@@ -151,6 +153,39 @@ pub trait ManagedSendBackend: Send {
     }
     fn read_membership(&mut self) -> Option<Vec<u64>>;
     fn read_current(&mut self) -> Option<u64>;
+    /// Fast bridged-route availability, chosen once per operation before any
+    /// post: true only when the internal dispatcher, the operation class,
+    /// and the pinned init selector all resolve. Default false keeps every
+    /// existing regression on the drag route; the live backend overrides with
+    /// the real seam. Never consulted after dispatch (no fallback, no retry).
+    fn bridged_available(&mut self) -> bool {
+        false
+    }
+    /// Mark this operation as the fast bridged route for phase attribution
+    /// (logging only; never a gate). Default no-op; the live backend flips
+    /// its route token so dispatch/proof/select/arrival lines join on
+    /// `bridged`.
+    fn use_bridged_route(&mut self) {}
+    /// Exactly one direct native bridged move to `goal`, consuming one
+    /// single-use proof permit. The backend re-fences the topology anchor
+    /// immediately at dispatch and refuses stale ordinals before any OS
+    /// touch (pre-dispatch failure). `Ok` means dispatched (possibly
+    /// executed); the caller settles membership afterwards. Never a drag
+    /// fallback or replay after this call. Default refuses honestly.
+    fn bridged_move(&mut self, permit: ManagedPostPermit, goal: u64) -> Result<(), String> {
+        let _ = (permit, goal);
+        Err("bridged route unavailable on this backend; refusing without fallback".to_owned())
+    }
+    /// Follow-only destination select after a dispatched bridged move (the
+    /// mover stays on the destination; the view follows). The production
+    /// backend pins the destination front to the already-proven subject
+    /// first (exactly one `SLSSpaceSetFrontPSN`), then runs the same proven
+    /// SID-accepting Dock-swipe selector as [`ManagedSendBackend::select_back`].
+    /// Only the target differs. Default refuses honestly.
+    fn select_destination(&mut self, sid: u64) -> Result<(), String> {
+        let _ = sid;
+        Err("destination select unimplemented on this backend; refusing".to_owned())
+    }
     /// Stay-only ordinary select-back to the source SID after a released
     /// forward leg (the follow path never calls this). The production
     /// backend runs the proven SID-accepting native select with
@@ -725,6 +760,21 @@ pub(crate) fn execute_managed_send<B: ManagedSendBackend>(
         }
     };
     let goal = target.target_sid();
+    // Fast-route selector, chosen once per operation before any post:
+    // when the backend reports full bridged availability, the fast
+    // bridged follow runs; otherwise the existing drag runs unchanged.
+    // Availability is never re-consulted after dispatch (no fallback, no
+    // replay after an attempted or uncertain native move).
+    if backend.bridged_available() {
+        return execute_bridged_follow(
+            target,
+            backend,
+            handoff,
+            goal,
+            (keycode, flags),
+            start_counts,
+        );
+    }
     let mut adapter = ProvingWithChords::with_chord(backend, target, handoff, (keycode, flags));
     let mut notes = Vec::new();
     match crate::space_drag_transfer::run_drag_leg(&mut adapter, goal, goal, "send", &mut notes) {
@@ -764,12 +814,215 @@ pub(crate) fn execute_managed_send<B: ManagedSendBackend>(
     }
 }
 
+/// Fast bridged follow: the managed proof (identity/focus/hit/revision/
+/// current fences, including the backend-selected grab point and holder
+/// chord) runs once up front, then exactly ONE async native bridged move
+/// dispatches under a fresh anchor, then exactly one destination front pin
+/// to the already-proven subject, then the existing Dock-swipe exact-SID
+/// selector starts immediately - no serial post-dispatch membership gate
+/// (the dispatch is async and may complete after the selector starts, same
+/// shape as the pinned yabai async move plus separate focus, and the old
+/// drag likewise view-switches before its final move readback). The final
+/// exact membership/current readback gates `Applied`: after the selector,
+/// one immediate read plus the existing poll interval until the genuine
+/// effect deadline settles the async completion. No mouse/key posts on this
+/// route; no drag fallback or replay after dispatch.
+///
+/// Sequencing: cancel before dispatch refuses proven (nothing dispatched);
+/// pre-dispatch refusal (proof, anchor, or dispatch error before the OS
+/// touch) refuses proven; `Ok` from [`ManagedSendBackend::bridged_move`]
+/// means dispatched (possibly executed) - every later failure (destination
+/// select, late/unreadable/wrong membership/current, subject focus) holds
+/// as [`SendEffectOutcome::PossiblyExecuted`], never replayed, never a
+/// second select. Cancel before the selector withholds the selector; the
+/// read-only settle await honors cancel for a prompt stop (still
+/// `PossiblyExecuted` - the dispatch already executed). If the native
+/// destination activation does not naturally focus the subject, the follow
+/// holds unproven (no speculative AX raise). Verified arrival requests the
+/// owner reread through the backend's exact-readback path (live: even at an
+/// unchanged revision, before main completion).
+pub(crate) fn execute_bridged_follow<B: ManagedSendBackend>(
+    target: &ManagedSendTarget,
+    backend: &mut B,
+    handoff: &SendEffectHandoff,
+    goal: u64,
+    chord: (u32, u64),
+    start_counts: PostCounts,
+) -> (SendEffectOutcome, Option<LegOk>) {
+    if handoff.cancel_requested() {
+        return refuse_proven(
+            target,
+            "cancel",
+            "managed send cancel requested before bridged dispatch",
+            start_counts,
+            backend.counts(),
+        );
+    }
+    // Route attribution for phase logs before the proof read.
+    backend.use_bridged_route();
+    let fresh = backend.fresh_evidence(target);
+    let root = backend.blind_root();
+    let permit = match authorize_managed_edge(target, &fresh, chord) {
+        Ok(permit) => permit,
+        Err(refusal) => {
+            return refuse_proven(
+                target,
+                "bridged-proof",
+                &format_proof_refusal_reason("bridged-proof", refusal, root),
+                start_counts,
+                backend.counts(),
+            );
+        }
+    };
+    // Fresh anchor immediately at dispatch inside `bridged_move`; a stale
+    // ordinal or moved revision refuses before any OS touch.
+    if let Err(detail) = backend.bridged_move(permit, goal) {
+        return refuse_proven(
+            target,
+            "bridged-dispatch",
+            &format!("bridged dispatch refused pre-actuation ({detail})"),
+            start_counts,
+            backend.counts(),
+        );
+    }
+    // The async dispatch may still be completing: start the exact-SID
+    // selector immediately (no serial membership gate here). Cancel before
+    // the selector withholds it; the dispatch already executed so the
+    // outcome stays possibly-executed either way.
+    if handoff.cancel_requested() {
+        let reason =
+            "bridged select stopped: cancel requested after dispatch (already executed; no replay)";
+        log_effect_refusal(
+            target,
+            SendEffectOutcome::PossiblyExecuted,
+            "bridged-select",
+            reason,
+            start_counts,
+            backend.counts(),
+        );
+        return (SendEffectOutcome::PossiblyExecuted, None);
+    }
+    if let Err(detail) = backend.select_destination(goal) {
+        let reason =
+            format!("bridged select unproven ({detail}; dispatch already executed; no replay)");
+        log_effect_refusal(
+            target,
+            SendEffectOutcome::PossiblyExecuted,
+            "bridged-select",
+            &reason,
+            start_counts,
+            backend.counts(),
+        );
+        return (SendEffectOutcome::PossiblyExecuted, None);
+    }
+    // Settle the async completion: one immediate exact readback, then the
+    // existing poll interval until the genuine effect deadline. The dispatch
+    // is async so late membership is expected, not a failure of the
+    // selector; the deadline names the async-completion reason. No faster
+    // global poll is introduced, no invented event - the selector above
+    // already settled through its own event latch. The read-only await
+    // honors cancel for a prompt stop (still possibly-executed: the
+    // dispatch and the selector both already executed).
+    let deadline_ms = backend.effect_deadline_ms();
+    let poll_ms = backend.effect_poll_ms().max(1);
+    let start = std::time::Instant::now();
+    loop {
+        if handoff.cancel_requested() {
+            let reason = "bridged arrival stopped: cancel requested during settle await (dispatch and select already executed; no replay)";
+            log_effect_refusal(
+                target,
+                SendEffectOutcome::PossiblyExecuted,
+                "bridged-arrival",
+                reason,
+                start_counts,
+                backend.counts(),
+            );
+            return (SendEffectOutcome::PossiblyExecuted, None);
+        }
+        match (backend.read_membership(), backend.read_current()) {
+            (Some(membership), Some(current))
+                if crate::space_recovery::membership_is_exact(&membership, goal)
+                    && current == goal =>
+            {
+                break;
+            }
+            _ => {}
+        }
+        if start.elapsed() >= std::time::Duration::from_millis(deadline_ms) {
+            let reason = format!(
+                "bridged arrival unproven: membership/current not exactly [{goal}] on {goal} within {deadline_ms}ms async-completion settle after select (dispatch and select already executed; no replay)"
+            );
+            log_effect_refusal(
+                target,
+                SendEffectOutcome::PossiblyExecuted,
+                "bridged-arrival",
+                &reason,
+                start_counts,
+                backend.counts(),
+            );
+            return (SendEffectOutcome::PossiblyExecuted, None);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(poll_ms));
+    }
+    let (membership, current) = match (backend.read_membership(), backend.read_current()) {
+        (Some(membership), Some(current)) => (membership, current),
+        _ => {
+            let reason = "bridged arrival unproven: membership/current unreadable after select (dispatch already executed; no replay)";
+            log_effect_refusal(
+                target,
+                SendEffectOutcome::PossiblyExecuted,
+                "bridged-arrival",
+                reason,
+                start_counts,
+                backend.counts(),
+            );
+            return (SendEffectOutcome::PossiblyExecuted, None);
+        }
+    };
+    if !crate::space_recovery::membership_is_exact(&membership, goal) || current != goal {
+        let reason = "bridged arrival unproven: membership/current not exactly target-on-target after select (dispatch already executed; no replay)";
+        log_effect_refusal(
+            target,
+            SendEffectOutcome::PossiblyExecuted,
+            "bridged-arrival",
+            reason,
+            start_counts,
+            backend.counts(),
+        );
+        return (SendEffectOutcome::PossiblyExecuted, None);
+    }
+    match backend.read_focused() {
+        Some(actual) if actual == target.window() => {}
+        _ => {
+            let reason = "bridged arrival unproven: subject focus fallback unproven after select (no AX raise; dispatch already executed; no replay)";
+            log_effect_refusal(
+                target,
+                SendEffectOutcome::PossiblyExecuted,
+                "bridged-focus",
+                reason,
+                start_counts,
+                backend.counts(),
+            );
+            return (SendEffectOutcome::PossiblyExecuted, None);
+        }
+    }
+    (
+        SendEffectOutcome::Applied,
+        Some(LegOk {
+            membership,
+            current,
+            pending_recovered: false,
+            counts: backend.counts(),
+        }),
+    )
+}
+
 /// Numbered send-stay effect (product stays are unarmed in
 /// [`crate::workspace_input::is_armed_send`] and refused at engine admission,
 /// so no product caller reaches here until a reviewed arming change; the
 /// world-command mapping already preserves the stay intent): the forward
-/// native drag through [`execute_managed_send`], then a released ordinary
-/// select-back to the exact admission source SID.
+/// bridged-first effect through [`execute_managed_send`], then a released
+/// ordinary select-back to the exact admission source SID.
 ///
 /// Stay protocol (single-flight through the caller's handoff lane with
 /// release-first, session/lock gates, and every forward per-edge
@@ -1277,8 +1530,8 @@ impl ManagedSendThread {
                         match request {
                             SendRequest::Pinned(target) => {
                                 // Single-flight owner routes on the pinned intent:
-                                // follows run the forward drag, stays run the
-                                // forward drag plus the released return select.
+                                // follows run the forward effect, stays run the
+                                // forward effect plus the released return select.
                                 // Stay source pins travel in the target (explicit
                                 // `bind_stay` pins or core-proven `from_claim` pins,
                                 // never re-sampled). A stay without a pinned source SID selects back to

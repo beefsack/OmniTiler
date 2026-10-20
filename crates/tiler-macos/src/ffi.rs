@@ -880,6 +880,272 @@ impl std::fmt::Display for TapSetupError {
 
 impl std::error::Error for TapSetupError {}
 
+// -- Loaded Mach-O symtab lookup for the internal bridged dispatcher --
+//
+// Pinned against yabai `src/yabai.c:149` (via `src/misc/macho_dlsym.h:55-80`):
+// the async bridged dispatcher is looked up in the loaded SkyLight image's
+// symbol table for the exact internal C++ name below. That symbol is not
+// exported, so `dlsym` on the unmangled name misses it while the ObjC
+// operation class still resolves. The macOS path mirrors yabai: find the
+// loaded SkyLight image via dyld, read `__LINKEDIT` plus `LC_SYMTAB`, scan
+// `nlist_64` for the exact name, return `n_value + slide`. Dependency-free,
+// every bound checked: malformed metadata fails closed (`None`).
+//
+// Numeric/layout pins verified against the local CLT SDK
+// (`mach-o/loader.h`, `mach-o/nlist.h`, `mach-o/dyld.h`): `MH_MAGIC_64`
+// `0xfeedfacf`, `LC_SEGMENT_64` `0x19`, `LC_SYMTAB` `0x2`; `nlist_64` is
+// `u32 strx, u8 type, u8 sect, u16 desc, u64 value` (16 bytes, little-endian
+// on Apple Silicon); dyld getters are `_dyld_image_count`,
+// `_dyld_get_image_name`, `_dyld_get_image_header`,
+// `_dyld_get_image_vmaddr_slide`.
+///
+/// Live code plus portable unit tests share this parser, so it is gated to
+/// macOS-or-test (never dead code on other platforms).
+/// Exact internal bridged-dispatcher symbol (yabai `src/yabai.c:149`).
+#[cfg(any(target_os = "macos", test))]
+const BRIDGED_DISPATCHER_SYMBOL: &[u8] = b"__ZL54SLSPerformAsynchronousBridgedWindowManagementOperationP47SLSAsynchronousBridgedWindowManagementOperation";
+
+/// Loaded-image path the dispatcher is resolved from (yabai `src/yabai.c:149`).
+#[cfg(any(target_os = "macos", test))]
+const BRIDGED_SKYLIGHT_IMAGE: &[u8] =
+    b"/System/Library/PrivateFrameworks/SkyLight.framework/Versions/A/SkyLight";
+
+#[cfg(any(target_os = "macos", test))]
+const MH_MAGIC_64: u32 = 0xfeedfacf;
+#[cfg(any(target_os = "macos", test))]
+const LC_SEGMENT_64: u32 = 0x19;
+#[cfg(any(target_os = "macos", test))]
+const LC_SYMTAB: u32 = 0x2;
+#[cfg(any(target_os = "macos", test))]
+const MACHO_HEADER_LEN: usize = 32;
+#[cfg(any(target_os = "macos", test))]
+const MACHO_MAX_NCMDS: u32 = 512;
+#[cfg(any(target_os = "macos", test))]
+const MACHO_MAX_SIZEOFCMDS: u32 = 1 << 20;
+#[cfg(any(target_os = "macos", test))]
+const MACHO_MAX_NSYMS: u32 = 2_000_000;
+#[cfg(any(target_os = "macos", test))]
+const MACHO_MAX_SYMBOL_LEN: usize = 512;
+#[cfg(any(target_os = "macos", test))]
+const MACHO_MAX_IMAGE_NAME_LEN: usize = 4096;
+#[cfg(any(target_os = "macos", test))]
+const MACHO_MAX_IMAGES: u32 = 4096;
+
+#[cfg(any(target_os = "macos", test))]
+fn macho_le_u32(bytes: &[u8], off: usize) -> Option<u32> {
+    bytes
+        .get(off..off.checked_add(4)?)?
+        .try_into()
+        .ok()
+        .map(u32::from_le_bytes)
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn macho_le_u64(bytes: &[u8], off: usize) -> Option<u64> {
+    bytes
+        .get(off..off.checked_add(8)?)?
+        .try_into()
+        .ok()
+        .map(u64::from_le_bytes)
+}
+
+/// Validated 64-bit Mach-O header prefix: magic plus bounded load-command
+/// geometry. Anything else is `None` (fail closed, never guessed).
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MachoHeaderView {
+    ncmds: u32,
+    sizeofcmds: u32,
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn macho_header_view(prefix: &[u8]) -> Option<MachoHeaderView> {
+    if prefix.len() < MACHO_HEADER_LEN {
+        return None;
+    }
+    if macho_le_u32(prefix, 0)? != MH_MAGIC_64 {
+        return None;
+    }
+    let ncmds = macho_le_u32(prefix, 16)?;
+    let sizeofcmds = macho_le_u32(prefix, 20)?;
+    if ncmds > MACHO_MAX_NCMDS || sizeofcmds > MACHO_MAX_SIZEOFCMDS {
+        return None;
+    }
+    Some(MachoHeaderView { ncmds, sizeofcmds })
+}
+
+/// Validated `__LINKEDIT` base plus `LC_SYMTAB` geometry out of exactly the
+/// load-command bytes (`sizeofcmds` long). A missing command, a short
+/// `cmdsize`, an overrun, an over-cap symbol count, or tables escaping the
+/// mapped `__LINKEDIT` range is `None`. The string table has no absolute size
+/// cap (a loaded framework string table can be hundreds of megabytes); it is
+/// contained in the mapped segment instead, and the scan below never
+/// materializes it. Containment is checked against `vmsize` (the mapped
+/// range), not `filesize`: shared-cache string tables can extend slightly
+/// past the file size into the zero-filled page tail, which is still mapped
+/// and readable.
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MachoSymtabParams {
+    linkedit_vmaddr: u64,
+    linkedit_fileoff: u64,
+    linkedit_vmsize: u64,
+    symoff: u32,
+    nsyms: u32,
+    stroff: u32,
+    strsize: u32,
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn macho_symtab_params(loads: &[u8], ncmds: u32) -> Option<MachoSymtabParams> {
+    if ncmds > MACHO_MAX_NCMDS {
+        return None;
+    }
+    let mut off = 0usize;
+    let mut linkedit: Option<(u64, u64, u64)> = None;
+    let mut symtab: Option<(u32, u32, u32, u32)> = None;
+    for _ in 0..ncmds {
+        let cmd = macho_le_u32(loads, off)?;
+        let cmdsize = macho_le_u32(loads, off.checked_add(4)?)?;
+        if cmdsize < 8 {
+            return None;
+        }
+        let end = off.checked_add(cmdsize as usize)?;
+        if end > loads.len() {
+            return None;
+        }
+        if cmd == LC_SEGMENT_64 {
+            if cmdsize < 72 {
+                return None;
+            }
+            if loads.get(off.checked_add(8)?..off.checked_add(24)?)? == b"__LINKEDIT\0\0\0\0\0\0" {
+                let vmaddr = macho_le_u64(loads, off.checked_add(24)?)?;
+                let vmsize = macho_le_u64(loads, off.checked_add(32)?)?;
+                let fileoff = macho_le_u64(loads, off.checked_add(40)?)?;
+                linkedit = Some((vmaddr, vmsize, fileoff));
+            }
+        } else if cmd == LC_SYMTAB {
+            if cmdsize < 24 {
+                return None;
+            }
+            let symoff = macho_le_u32(loads, off.checked_add(8)?)?;
+            let nsyms = macho_le_u32(loads, off.checked_add(12)?)?;
+            let stroff = macho_le_u32(loads, off.checked_add(16)?)?;
+            let strsize = macho_le_u32(loads, off.checked_add(20)?)?;
+            if nsyms > MACHO_MAX_NSYMS {
+                return None;
+            }
+            symtab = Some((symoff, nsyms, stroff, strsize));
+        }
+        off = end;
+    }
+    let (linkedit_vmaddr, linkedit_vmsize, linkedit_fileoff) = linkedit?;
+    let (symoff, nsyms, stroff, strsize) = symtab?;
+    if linkedit_vmsize == 0 {
+        return None;
+    }
+    // Both tables must sit inside the mapped `__LINKEDIT` range (file offsets
+    // rebased by `vmaddr - fileoff`, as in yabai's `macho_find_symbol`):
+    // anything escaping it is corrupt, never read.
+    let base = linkedit_vmaddr.checked_sub(linkedit_fileoff)?;
+    let seg_end = linkedit_vmaddr.checked_add(linkedit_vmsize)?;
+    let sym_start = base.checked_add(u64::from(symoff))?;
+    if sym_start < linkedit_vmaddr {
+        return None;
+    }
+    let sym_len = (nsyms as u64).checked_mul(16)?;
+    if sym_start.checked_add(sym_len)? > seg_end {
+        return None;
+    }
+    let str_start = base.checked_add(u64::from(stroff))?;
+    if str_start < linkedit_vmaddr {
+        return None;
+    }
+    if str_start.checked_add(u64::from(strsize))? > seg_end {
+        return None;
+    }
+    Some(MachoSymtabParams {
+        linkedit_vmaddr,
+        linkedit_fileoff,
+        linkedit_vmsize,
+        symoff,
+        nsyms,
+        stroff,
+        strsize,
+    })
+}
+
+/// Exact-name scan over one `nlist_64` table (`sym_bytes` must hold exactly
+/// `nsyms` 16-byte entries) with the string table viewed as a raw
+/// `[str_base, str_base + strsize)` window: every string read is
+/// range-checked against `strsize` before the copy, so an out-of-range `strx`
+/// fails the whole scan closed (corrupt tables) while a short or
+/// non-terminated tail simply cannot equal the target and is skipped. Returns
+/// `n_value + slide` on the one exact NUL-terminated match. A zero result
+/// address is refused, never returned.
+///
+/// The window form avoids materializing huge tables: a loaded framework
+/// string table can be hundreds of megabytes (shared-cache `__LINKEDIT`), so
+/// only the few target-length bytes per entry are ever copied out.
+///
+/// SAFETY: the caller must guarantee the full `[str_base, str_base + strsize)`
+/// window stays mapped for the call (live: inside the loaded `__LINKEDIT`
+/// mapping; tests: a live fixture array) and that `strsize` is the
+/// containment-checked table length. Every read is confined to the window.
+#[cfg(any(target_os = "macos", test))]
+unsafe fn macho_scan_symtab(
+    sym_bytes: &[u8],
+    str_base: *const u8,
+    strsize: u64,
+    slide: u64,
+    target: &[u8],
+) -> Option<u64> {
+    if target.is_empty() || target.len() > MACHO_MAX_SYMBOL_LEN || target.contains(&0) {
+        return None;
+    }
+    if !sym_bytes.len().is_multiple_of(16) {
+        return None;
+    }
+    if (sym_bytes.len() / 16) as u64 > u64::from(MACHO_MAX_NSYMS) {
+        return None;
+    }
+    let need = target.len().checked_add(1)? as u64;
+    let mut window = [0u8; MACHO_MAX_SYMBOL_LEN + 1];
+    let mut off = 0usize;
+    while off < sym_bytes.len() {
+        let strx = macho_le_u32(sym_bytes, off)? as u64;
+        let n_value = macho_le_u64(sym_bytes, off.checked_add(8)?)?;
+        if strx >= strsize {
+            return None;
+        }
+        let end = strx.checked_add(need)?;
+        if end > strsize {
+            // Short tail: cannot hold the target plus its NUL, so it can
+            // never match - skip without guessing.
+            off = off.checked_add(16)?;
+            continue;
+        }
+        // SAFETY: `end <= strsize` checked above confines the copy to the
+        // caller-guaranteed window; `need <= MACHO_MAX_SYMBOL_LEN + 1` fits
+        // the stack buffer by construction.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                str_base.add(strx as usize),
+                window.as_mut_ptr(),
+                need as usize,
+            );
+        }
+        if window[..target.len()] == *target && window[target.len()] == 0 {
+            let addr = n_value.checked_add(slide)?;
+            if addr != 0 {
+                return Some(addr);
+            }
+        }
+        off = off.checked_add(16)?;
+    }
+    None
+}
+
 #[cfg(target_os = "macos")]
 mod macos {
     use super::*;
@@ -1302,12 +1568,11 @@ mod macos {
             let count = array.len().min(crate::config::MAX_WINDOWS);
             let mut out = Vec::with_capacity(count);
             for i in 0..count {
-                if let Some(elem) = array.get(i) {
-                    out.push(AxElement {
-                        inner: elem,
-                        _not_send: std::marker::PhantomData,
-                    });
-                }
+                let elem = array.get(i).ok_or(AX_NOT_IMPLEMENTED)?;
+                out.push(AxElement {
+                    inner: elem,
+                    _not_send: std::marker::PhantomData,
+                });
             }
             Ok(out)
         }
@@ -4098,13 +4363,251 @@ mod macos {
         }
     }
 
-    // -- Tier-2 Space-move writes (direct SLS only; SA and compat DISABLED) --
+    // -- Bridged dispatcher via the loaded Mach-O symtab (pinned yabai shape) --
+    //
+    // yabai `src/yabai.c:149` binds the async bridged dispatcher with
+    // `macho_find_symbol(<SkyLight>, "<mangled>")`
+    // (`src/misc/macho_dlsym.h:55-80`): the symbol is internal (not
+    // exported), so `dlsym` on the unmangled name misses it. The lookup below
+    // mirrors yabai exactly: find the loaded SkyLight image via dyld, read
+    // its `__LINKEDIT` plus `LC_SYMTAB` commands, and scan `nlist_64` for the
+    // exact mangled name (`n_value + slide`). The cached address is called
+    // only by the gated bridged probe dispatch below, never by diagnostics.
+    // Handles are intentionally never closed (process-lifetime retention).
+
+    mod dyld_raw {
+        unsafe extern "C" {
+            pub fn _dyld_image_count() -> u32;
+            pub fn _dyld_get_image_name(image_index: u32) -> *const std::ffi::c_char;
+            pub fn _dyld_get_image_header(image_index: u32) -> *const std::ffi::c_void;
+            pub fn _dyld_get_image_vmaddr_slide(image_index: u32) -> isize;
+        }
+    }
+
+    static BRIDGED_DISPATCHER: OnceLock<Option<usize>> = OnceLock::new();
+
+    /// Non-null bridged-dispatcher address from the loaded Mach-O symtab, or
+    /// `None` (image/symtab/symbol missing or malformed - fail closed, never
+    /// guessed). Called only by the gated bridged dispatch below.
+    fn bridged_dispatcher_address() -> Option<usize> {
+        *BRIDGED_DISPATCHER.get_or_init(|| {
+            // SAFETY: dyld getters only read loader state; derived lengths
+            // are capped before copying into owned `Vec`s, which the safe
+            // checked parser validates before any scan. The header extents
+            // themselves are loader-trusted (see
+            // `macho_find_bridged_dispatcher`); the resolved address is
+            // returned as an integer and only called through the pinned
+            // yabai signature in `sls_move_windows_bridged`.
+            unsafe { macho_find_bridged_dispatcher() }
+        })
+    }
+
+    /// Whether the internal bridged dispatcher resolved. Read-only lookup,
+    /// no dispatcher call.
+    fn bridged_dispatcher_present() -> bool {
+        bridged_dispatcher_address().is_some()
+    }
+
+    // -- Destination front pin (yabai `send_window_to_space` follow shape) --
+    //
+    // Source pins (local checkouts, no web fetch):
+    //   yabai `src/window_manager.c:2116`
+    //   (`space_manager_move_window_to_space(dst_sid, window);` then
+    //   `SLSSpaceSetFrontPSN(g_connection, dst_sid,
+    //   window->application->psn);`) inside
+    //   `window_manager_send_window_to_space` - the front pin lands
+    //   immediately after the async move dispatch, never after a membership
+    //   wait, and the gesture/view select follows it (same pair order in
+    //   `src/event_loop.c:371,666`: front pin then
+    //   `space_manager_focus_space_using_gesture`).
+    //   yabai `src/misc/extern.h:55`:
+    //   `extern CGError SLSSpaceSetFrontPSN(int cid, uint64_t sid,
+    //   ProcessSerialNumber psn);` - the PSN travels BY VALUE (Carbon
+    //   8-byte `ProcessSerialNumber`, our existing `#[repr(C)] SlpsPsn`),
+    //   never by pointer (unlike the SLPS front pointer shape above). The
+    //   PSN comes from the existing `GetProcessForPID` mapping
+    //   (`slps_psn_for_pid`); no new PID source is introduced. `Ok` means
+    //   dispatched, never effected - the caller still reads back exact
+    //   membership/current/focus.
+
+    struct SlsSpaceFrontTable {
+        set_front_psn: unsafe extern "C" fn(i32, u64, SlpsPsn) -> i32,
+    }
+
+    static SLS_SPACE_FRONT_TABLE: OnceLock<Option<SlsSpaceFrontTable>> = OnceLock::new();
+
+    fn sls_space_front_table() -> Option<&'static SlsSpaceFrontTable> {
+        SLS_SPACE_FRONT_TABLE
+            .get_or_init(|| {
+                // SAFETY: symbol null-checked before transmuting to the exact
+                // yabai-pinned `SLSSpaceSetFrontPSN` signature above (by-value
+                // PSN); missing fails closed.
+                unsafe {
+                    let handle = libc::dlopen(SKYLIGHT.as_ptr().cast(), 0x1);
+                    if handle.is_null() {
+                        return None;
+                    }
+                    let name = CString::new("SLSSpaceSetFrontPSN").expect("static");
+                    let sym = libc::dlsym(handle, name.as_ptr());
+                    if sym.is_null() {
+                        return None;
+                    }
+                    Some(SlsSpaceFrontTable {
+                        set_front_psn: std::mem::transmute::<
+                            *mut std::ffi::c_void,
+                            unsafe extern "C" fn(i32, u64, SlpsPsn) -> i32,
+                        >(sym),
+                    })
+                }
+            })
+            .as_ref()
+    }
+
+    /// Whether `SLSSpaceSetFrontPSN` resolved. Read-only lookup, no call.
+    pub fn sls_space_front_available() -> bool {
+        sls_space_front_table().is_some()
+    }
+
+    /// Pin the destination Space's front process to `psn` (by value).
+    /// `Ok` means dispatched (CGError 0), never effected - the caller must
+    /// read back exact membership/current/focus. Nonzero status is `Err`.
+    pub fn sls_space_set_front_psn(sid: u64, psn: SlpsPsn) -> Result<(), i32> {
+        let table = sls_space_front_table().ok_or(-25200)?;
+        let cid = sls_main_connection_id().ok_or(-25200)?;
+        // SAFETY: resolved non-null symbol with the pinned by-value-PSN
+        // signature; the connection ID and SID are plain data; the `SlpsPsn`
+        // argument is a caller-owned 8-byte copy (no borrow escapes the
+        // call); status is the only effect read.
+        let status = unsafe { (table.set_front_psn)(cid, sid, psn) };
+        if status == 0 { Ok(()) } else { Err(status) }
+    }
+
+    /// Pinned ObjC operation selector (yabai `src/space_manager.c:670,691`):
+    /// `initWithWindows:spaceID:`. Presence is resolved read-only through the
+    /// maintained `objc2` runtime and reported in availability; dispatch
+    /// resolves it again at the call site.
+    fn bridged_operation_selector() -> objc2::runtime::Sel {
+        objc2::runtime::Sel::register(c"initWithWindows:spaceID:")
+    }
+
+    /// Whether the operation class answers the pinned init selector. Read-only
+    /// (no instance created); `false` when the class itself is absent.
+    fn bridged_selector_present() -> bool {
+        static PRESENT: OnceLock<bool> = OnceLock::new();
+        *PRESENT.get_or_init(|| {
+            let Some(cls) =
+                objc2::runtime::AnyClass::get(c"SLSBridgedMoveWindowsToManagedSpaceOperation")
+            else {
+                return false;
+            };
+            cls.instance_method(bridged_operation_selector()).is_some()
+        })
+    }
+
+    /// Bounded NUL-terminated comparison of one dyld image name against the
+    /// pinned SkyLight path: at most `MACHO_MAX_IMAGE_NAME_LEN` bytes are
+    /// read, and an unterminated name never matches.
+    unsafe fn dyld_image_name_matches(name: *const std::ffi::c_char, want: &[u8]) -> bool {
+        // SAFETY: caller guarantees a live dyld image-name pointer; reads
+        // stop at the first NUL or the cap, whichever comes first.
+        unsafe {
+            let mut len = 0usize;
+            while len < super::MACHO_MAX_IMAGE_NAME_LEN {
+                if *name.cast::<u8>().add(len) == 0 {
+                    break;
+                }
+                len += 1;
+            }
+            if len >= super::MACHO_MAX_IMAGE_NAME_LEN {
+                return false;
+            }
+            std::slice::from_raw_parts(name.cast::<u8>(), len) == want
+        }
+    }
+
+    unsafe fn macho_find_bridged_dispatcher() -> Option<usize> {
+        // SAFETY: the dyld header pointer and the load-command extents it
+        // describes are loader-trusted (dyld mapped the image; the mapping
+        // itself is not re-proved here). Derived lengths are capped before
+        // copying into owned `Vec`s and all offsets use checked arithmetic;
+        // the copied content is then validated by the checked parser
+        // (malformed content fails closed) and the string table is only
+        // read through the containment-checked scan window.
+        unsafe {
+            use dyld_raw::{
+                _dyld_get_image_header, _dyld_get_image_name, _dyld_get_image_vmaddr_slide,
+                _dyld_image_count,
+            };
+            let count = _dyld_image_count().min(super::MACHO_MAX_IMAGES);
+            for index in 0..count {
+                let name = _dyld_get_image_name(index);
+                if name.is_null() || !dyld_image_name_matches(name, super::BRIDGED_SKYLIGHT_IMAGE) {
+                    continue;
+                }
+                let header = _dyld_get_image_header(index).cast::<u8>();
+                if header.is_null() {
+                    return None;
+                }
+                let slide = u64::try_from(_dyld_get_image_vmaddr_slide(index)).ok()?;
+                let mut hdr = [0u8; super::MACHO_HEADER_LEN];
+                std::ptr::copy_nonoverlapping(header, hdr.as_mut_ptr(), hdr.len());
+                let view = super::macho_header_view(&hdr)?;
+                let mut loads = vec![0u8; view.sizeofcmds as usize];
+                std::ptr::copy_nonoverlapping(
+                    header.add(super::MACHO_HEADER_LEN),
+                    loads.as_mut_ptr(),
+                    loads.len(),
+                );
+                let params = super::macho_symtab_params(&loads, view.ncmds)?;
+                if params.nsyms == 0 || params.strsize == 0 {
+                    return None;
+                }
+                let base = params
+                    .linkedit_vmaddr
+                    .checked_sub(params.linkedit_fileoff)?;
+                let sym_addr = base
+                    .checked_add(u64::from(params.symoff))?
+                    .checked_add(slide)?;
+                let str_addr = base
+                    .checked_add(u64::from(params.stroff))?
+                    .checked_add(slide)?;
+                let sym_len = (params.nsyms as usize).checked_mul(16)?;
+                let mut sym_bytes = vec![0u8; sym_len];
+                std::ptr::copy_nonoverlapping(
+                    sym_addr as *const u8,
+                    sym_bytes.as_mut_ptr(),
+                    sym_len,
+                );
+                // The string table stays mapped (never copied): the scan below
+                // copies at most target-length bytes per entry, each
+                // range-checked against the containment-checked `strsize`.
+                // SAFETY: `str_addr` is inside the loaded `__LINKEDIT` mapping
+                // by the containment check in `macho_symtab_params` (both
+                // tables sit in the `__LINKEDIT` file range) plus the live
+                // slide, so the full `[str_addr, str_addr + strsize)` window
+                // stays mapped for this call; the scan never reads outside it.
+                let addr = super::macho_scan_symtab(
+                    &sym_bytes,
+                    str_addr as *const u8,
+                    u64::from(params.strsize),
+                    slide,
+                    super::BRIDGED_DISPATCHER_SYMBOL,
+                )?;
+                return Some(addr as usize);
+            }
+            None
+        }
+    }
+
+    // -- Tier-2 Space-move writes (direct + gated bridged; SA and compat DISABLED) --
     //
     // Route determination pinned against yabai `src/space_manager.c`:
     // `space_manager_move_window_list_to_space` /
     // `space_manager_move_window_to_space` try (1) the async bridged operation
-    // when `SLSPerformAsynchronousBridgedWindowManagementOperation` resolves
-    // (bound in yabai `src/yabai.c`), else (2) direct
+    // when the internal dispatcher resolves via the loaded Mach-O symtab
+    // (yabai `src/yabai.c:149` through `src/misc/macho_dlsym.h:55-80`; plain
+    // `dlsym` on the unmangled name misses the non-exported symbol, so a
+    // `dlsym`-only check is a false negative), else (2) direct
     // `SLSMoveWindowsToManagedSpace` when `workspace_use_macos_space_workaround()`
     // is false, else (3) an SA attempt first and then the compat-ID fallback
     // (`SLSSpaceSetCompatID(sid, 0x79616265)` +
@@ -4123,20 +4626,12 @@ mod macos {
     // preimage), the `0x79616265` workspace tag collides with yabai, and a
     // reset-to-zero on an unproven baseline is not restoration — so compat
     // stays symbol-availability diagnostics only, never a callable write.
-    // The bridged async operation is likewise detected but NOT executed
-    // (async ObjC API with no synchronous effect readback in surveyed
-    // source). The sole callable write is direct
-    // `SLSMoveWindowsToManagedSpace`: source-derived surveyed route,
-    // experimental live (one gated dispatch on an owned fixture observed no
-    // effect; single-shot inverse unverified), and
-    // bypassed upstream on macOS 12.7+/13.6+/14.5+/15+ via
-    // `workspace_use_macos_space_workaround` (yabai `src/workspace.m`),
-    // which forces the SA-first branch with the compat-ID fallback after SA
-    // failure. It returns void: dispatch is never effect
+    // Both SLS writes below return void: dispatch is never effect
     // evidence — callers must read back `SLSCopySpacesForWindows`
-    // membership afterwards. Live behavior of the path below is experimental
-    // (observed no-effect on one owned fixture);
-    // dispatch plus readbacks are the evidence.
+    // membership afterwards. Live behavior of either path is experimental
+    // (the direct leg observed no-effect on one owned fixture; the bridged
+    // leg is gated behind its own probe flag); dispatch plus readbacks are
+    // the evidence.
 
     struct SlsMoveTable {
         move_direct: Option<unsafe extern "C" fn(i32, RawConstRef, u64)>,
@@ -4151,9 +4646,13 @@ mod macos {
         SLS_MOVE_TABLE
             .get_or_init(|| {
                 // SAFETY: the one transmuted symbol is null-checked before
-                // transmuting to its pinned yabai declaration; compat/bridged
-                // symbols are presence-checked only and never transmuted to a
-                // callable type.
+                // transmuting to its pinned yabai declaration; compat symbols
+                // are presence-checked only and never transmuted to a callable
+                // type; the bridged dispatcher is an internal (non-exported)
+                // symbol resolved via the loaded Mach-O symtab above - plain
+                // `dlsym` on the unmangled name misses it - and is called
+                // only through its pinned signature in
+                // `sls_move_windows_bridged`.
                 unsafe {
                     let handle = libc::dlopen(SKYLIGHT.as_ptr().cast(), 0x1);
                     if handle.is_null() {
@@ -4166,7 +4665,6 @@ mod macos {
                     let direct = sym("SLSMoveWindowsToManagedSpace");
                     let set_id = sym("SLSSpaceSetCompatID");
                     let set_ws = sym("SLSSetWindowListWorkspace");
-                    let bridged = sym("SLSPerformAsynchronousBridgedWindowManagementOperation");
                     Some(SlsMoveTable {
                         move_direct: if direct.is_null() {
                             None
@@ -4177,7 +4675,7 @@ mod macos {
                             >(direct))
                         },
                         compat_pair_present: !set_id.is_null() && !set_ws.is_null(),
-                        bridged_async: !bridged.is_null(),
+                        bridged_async: bridged_dispatcher_present(),
                     })
                 }
             })
@@ -4239,17 +4737,19 @@ mod macos {
         }
     }
 
-    /// Bridged-route availability: the async dispatcher presence plus the
-    /// ObjC operation-class presence, diagnosed separately and never
-    /// dispatched here. `available` is true only when BOTH resolve; a newer
-    /// runtime may lack either, and an absent dispatcher is never called.
+    /// Bridged-route availability: the async dispatcher presence (resolved via
+    /// the loaded Mach-O symtab for the exact internal symbol, never `dlsym` -
+    /// see the note above) plus the ObjC operation-class presence plus the
+    /// pinned init-selector presence, each diagnosed separately.
+    /// `available` is true only when ALL THREE resolve; a newer runtime may
+    /// lack any of them, and an absent dispatcher is never called.
     /// Pinned against yabai `src/space_manager.c`
     /// `space_manager_move_window_list_to_space` (bridged first branch):
     /// https://github.com/asmvik/yabai/blob/dd845723416f5fe92af49fad5ebab00369e07edd/src/space_manager.c#L665-L705
-    /// which resolves `SLSPerformAsynchronousBridgedWindowManagementOperation`
-    /// (bound in yabai `src/yabai.c`) and looks up ObjC class
-    /// `SLSBridgedMoveWindowsToManagedSpaceOperation` with selector
-    /// `initWithWindows:spaceID:`. Compat stays diagnostics-only elsewhere:
+    /// whose dispatcher address yabai binds via `src/yabai.c` through
+    /// `src/misc/macho_dlsym.h` (loaded symtab, not `dlsym`) and whose
+    /// operation class is `SLSBridgedMoveWindowsToManagedSpaceOperation` with
+    /// selector `initWithWindows:spaceID:`. Compat stays diagnostics-only elsewhere:
     /// no exact compat-tag preimage exists (setter-only locally, yabai tag
     /// collision), so no tag getter is added and compat is never a callable
     /// write.
@@ -4257,19 +4757,80 @@ mod macos {
     pub struct SlsBridgedAvailability {
         pub fn_present: bool,
         pub class_present: bool,
+        pub selector_present: bool,
         pub available: bool,
     }
 
     /// Diagnose bridged availability without dispatching: dispatcher-symbol
-    /// presence from the move table plus a null-checked ObjC class lookup.
-    /// Never calls the dispatcher, never instantiates the operation.
+    /// presence from the move table plus a null-checked ObjC class lookup
+    /// plus the pinned init-selector check. Never calls the dispatcher,
+    /// never instantiates the operation.
     pub fn sls_bridged_availability() -> SlsBridgedAvailability {
         let fn_present = sls_move_table().map(|t| t.bridged_async).unwrap_or(false);
         let class_present = bridged_operation_class_present();
+        let selector_present = bridged_selector_present();
         SlsBridgedAvailability {
             fn_present,
             class_present,
-            available: fn_present && class_present,
+            selector_present,
+            available: fn_present && class_present && selector_present,
+        }
+    }
+
+    /// Bridged dispatch, pinned to yabai
+    /// `space_manager_move_window_list_to_space`'s first branch
+    /// (`src/space_manager.c:667-673`): `[cls alloc]` plus
+    /// `initWithWindows:spaceID:` through the maintained `objc2` runtime,
+    /// then the internal `void`-shaped dispatcher
+    /// (yabai `src/misc/extern.h`: `int64_t (*)(void *)`), then `release`.
+    /// The API is async: `Ok` means dispatched, never effected - the caller
+    /// must read back membership. Every pre-dispatch absence (dispatcher,
+    /// class, selector) fails closed before any allocation.
+    pub fn sls_move_windows_bridged(sid: u64, wids: &[u32]) -> Result<(), String> {
+        use objc2::runtime::{AnyClass, AnyObject};
+        if wids.is_empty() || wids.len() > MAX_MEMBERSHIP_WINDOWS {
+            return Err(format!(
+                "window count out of bound 1..={MAX_MEMBERSHIP_WINDOWS}"
+            ));
+        }
+        let dispatcher = bridged_dispatcher_address()
+            .ok_or_else(|| "bridged dispatcher unavailable".to_owned())?;
+        let cls = AnyClass::get(c"SLSBridgedMoveWindowsToManagedSpaceOperation")
+            .ok_or_else(|| "bridged operation class unavailable".to_owned())?;
+        if cls.instance_method(bridged_operation_selector()).is_none() {
+            return Err("bridged init selector unavailable".to_owned());
+        }
+        // SAFETY: class, selector, and dispatcher are all resolved above;
+        // the window list is built with maintained wrappers and the operation
+        // is released on every non-null path. The dispatcher keeps the yabai
+        // `int64_t (*)(void *)` shape; its return is ignored like upstream.
+        unsafe {
+            let numbers: Vec<CFRetained<CFNumber>> = wids
+                .iter()
+                .map(|wid| CFNumber::new_i32(*wid as i32))
+                .collect();
+            let window_list: CFRetained<CFArray<CFNumber>> =
+                CFArray::from_retained_objects(&numbers);
+            let list_ptr = CFRetained::as_ptr(&window_list).as_ptr() as *mut AnyObject;
+            let alloc: *mut AnyObject = objc2::msg_send![cls, alloc];
+            if alloc.is_null() {
+                return Err("bridged operation alloc returned null".to_owned());
+            }
+            let operation: *mut AnyObject =
+                objc2::msg_send![alloc, initWithWindows: list_ptr, spaceID: sid];
+            if operation.is_null() {
+                // No release: `init` consumes the receiver and may release
+                // it before returning nil, so the receiver must not be
+                // touched again (the maintained binding models this as
+                // `init(this: Allocated<Self>)` by value for exactly this
+                // reason). Releasing here would double-release.
+                return Err("bridged operation init returned null".to_owned());
+            }
+            let dispatch: unsafe extern "C" fn(*mut AnyObject) -> i64 =
+                std::mem::transmute(dispatcher as *mut std::ffi::c_void);
+            dispatch(operation);
+            let _: () = objc2::msg_send![operation, release];
+            Ok(())
         }
     }
 
@@ -8860,9 +9421,10 @@ pub use macos::{
     secure_input_known, session_state, slps_available, slps_front_available, slps_front_pid,
     slps_post_event, slps_psn_for_pid, slps_set_front, sls_bridged_availability,
     sls_connection_available, sls_display_rows, sls_display_spaces, sls_main_connection_id,
-    sls_move_symbols, sls_move_windows_direct, sls_order_available, sls_order_below,
-    sls_order_below_txn, sls_order_txn_available, sls_space_type, sls_spaces_for_window,
-    sls_spaces_for_windows, sls_window_at_point, terminate_process, warp_cursor_position,
+    sls_move_symbols, sls_move_windows_bridged, sls_move_windows_direct, sls_order_available,
+    sls_order_below, sls_order_below_txn, sls_order_txn_available, sls_space_front_available,
+    sls_space_set_front_psn, sls_space_type, sls_spaces_for_window, sls_spaces_for_windows,
+    sls_window_at_point, terminate_process, warp_cursor_position,
 };
 
 #[cfg(not(target_os = "macos"))]
@@ -9247,6 +9809,7 @@ mod stub {
     pub struct SlsBridgedAvailability {
         pub fn_present: bool,
         pub class_present: bool,
+        pub selector_present: bool,
         pub available: bool,
     }
 
@@ -9254,6 +9817,7 @@ mod stub {
         SlsBridgedAvailability {
             fn_present: false,
             class_present: false,
+            selector_present: false,
             available: false,
         }
     }
@@ -9272,6 +9836,19 @@ mod stub {
 
     pub fn sls_move_windows_direct(_sid: u64, _wids: &[u32]) -> Result<(), String> {
         Err("macOS-only".to_owned())
+    }
+
+    pub fn sls_move_windows_bridged(_sid: u64, _wids: &[u32]) -> Result<(), String> {
+        Err("macOS-only".to_owned())
+    }
+
+    /// Destination front pin off-macOS: never present, never dispatched.
+    pub fn sls_space_front_available() -> bool {
+        false
+    }
+
+    pub fn sls_space_set_front_psn(_sid: u64, _psn: SlpsPsn) -> Result<(), i32> {
+        Err(AX_NOT_IMPLEMENTED)
     }
 
     pub fn sls_space_type(_sid: u64) -> Result<super::SlsSpaceType, String> {
@@ -9929,9 +10506,10 @@ pub use stub::{
     secure_input_known, session_state, slps_available, slps_front_available, slps_front_pid,
     slps_post_event, slps_psn_for_pid, slps_set_front, sls_bridged_availability,
     sls_connection_available, sls_display_rows, sls_display_spaces, sls_main_connection_id,
-    sls_move_symbols, sls_move_windows_direct, sls_order_available, sls_order_below,
-    sls_order_below_txn, sls_order_txn_available, sls_space_type, sls_spaces_for_window,
-    sls_spaces_for_windows, sls_window_at_point, terminate_process, warp_cursor_position,
+    sls_move_symbols, sls_move_windows_bridged, sls_move_windows_direct, sls_order_available,
+    sls_order_below, sls_order_below_txn, sls_order_txn_available, sls_space_front_available,
+    sls_space_set_front_psn, sls_space_type, sls_spaces_for_window, sls_spaces_for_windows,
+    sls_window_at_point, terminate_process, warp_cursor_position,
 };
 
 #[cfg(test)]
@@ -10453,6 +11031,226 @@ mod tests {
         assert_eq!(classify_space_type(2), SlsSpaceType::System);
         assert_eq!(classify_space_type(7), SlsSpaceType::Other(7));
         assert_eq!(classify_space_type(-1), SlsSpaceType::Other(-1));
+    }
+
+    // Producer-shaped synthetic Mach-O fixtures for the bridged-dispatcher
+    // symtab parser: a `__LINKEDIT` segment command plus an `LC_SYMTAB`
+    // command (yabai `src/misc/macho_dlsym.h` walk order), then one `nlist_64`
+    // table plus string table. Malformed variants must fail closed (`None`).
+
+    fn fixture_segment_linkedit(vmaddr: u64, fileoff: u64, filesize: u64) -> Vec<u8> {
+        let mut cmd = Vec::new();
+        cmd.extend_from_slice(&0x19u32.to_le_bytes());
+        cmd.extend_from_slice(&72u32.to_le_bytes());
+        let mut segname = [0u8; 16];
+        segname[..10].copy_from_slice(b"__LINKEDIT");
+        cmd.extend_from_slice(&segname);
+        cmd.extend_from_slice(&vmaddr.to_le_bytes());
+        cmd.extend_from_slice(&filesize.to_le_bytes());
+        cmd.extend_from_slice(&fileoff.to_le_bytes());
+        cmd.extend_from_slice(&filesize.to_le_bytes());
+        cmd.extend_from_slice(&0i32.to_le_bytes());
+        cmd.extend_from_slice(&0i32.to_le_bytes());
+        cmd.extend_from_slice(&0u32.to_le_bytes());
+        cmd.extend_from_slice(&0u32.to_le_bytes());
+        cmd
+    }
+
+    fn fixture_symtab(symoff: u32, nsyms: u32, stroff: u32, strsize: u32) -> Vec<u8> {
+        let mut cmd = Vec::new();
+        cmd.extend_from_slice(&0x2u32.to_le_bytes());
+        cmd.extend_from_slice(&24u32.to_le_bytes());
+        cmd.extend_from_slice(&symoff.to_le_bytes());
+        cmd.extend_from_slice(&nsyms.to_le_bytes());
+        cmd.extend_from_slice(&stroff.to_le_bytes());
+        cmd.extend_from_slice(&strsize.to_le_bytes());
+        cmd
+    }
+
+    fn fixture_nlist(strx: u32, value: u64) -> Vec<u8> {
+        let mut entry = Vec::new();
+        entry.extend_from_slice(&strx.to_le_bytes());
+        entry.push(0x0f);
+        entry.push(0x01);
+        entry.extend_from_slice(&0u16.to_le_bytes());
+        entry.extend_from_slice(&value.to_le_bytes());
+        entry
+    }
+
+    fn fixture_loads_with(sym_bytes: &[u8], str_bytes: &[u8]) -> Vec<u8> {
+        let symoff = 96u32;
+        let stroff = symoff + sym_bytes.len() as u32;
+        let filesize = stroff as u64 + str_bytes.len() as u64;
+        let mut loads = fixture_segment_linkedit(0x1_0000, 0x0, filesize);
+        loads.extend_from_slice(&fixture_symtab(
+            symoff,
+            (sym_bytes.len() / 16) as u32,
+            stroff,
+            str_bytes.len() as u32,
+        ));
+        loads
+    }
+
+    /// Windowed scan over a live fixture string table: the `unsafe` only
+    /// borrows the fixture array for the call (same contract as the live
+    /// `__LINKEDIT` window).
+    fn fixture_scan(sym_bytes: &[u8], str_bytes: &[u8], slide: u64, target: &[u8]) -> Option<u64> {
+        // SAFETY: the fixture array outlives the call and `strsize` is its
+        // exact length, so the full window stays mapped.
+        unsafe {
+            super::macho_scan_symtab(
+                sym_bytes,
+                str_bytes.as_ptr(),
+                str_bytes.len() as u64,
+                slide,
+                target,
+            )
+        }
+    }
+
+    #[test]
+    fn bridged_symtab_params_find_linkedit_and_symtab() {
+        let loads = fixture_loads_with(&[0u8; 16], b"\0");
+        let params = super::macho_symtab_params(&loads, 2).expect("valid fixture parses");
+        assert_eq!(
+            (
+                params.linkedit_vmaddr,
+                params.linkedit_vmsize,
+                params.linkedit_fileoff
+            ),
+            (0x1_0000, 113, 0x0)
+        );
+        assert_eq!((params.symoff, params.nsyms), (96, 1));
+        assert_eq!((params.stroff, params.strsize), (112, 1));
+    }
+
+    #[test]
+    fn bridged_symtab_params_contain_tables_in_linkedit() {
+        // Symbol table escaping the `__LINKEDIT` file range fails closed.
+        let mut escaping_sym = fixture_segment_linkedit(0x1_0000, 0, 100);
+        escaping_sym.extend_from_slice(&fixture_symtab(96, 1, 112, 1));
+        assert_eq!(super::macho_symtab_params(&escaping_sym, 2), None);
+        // String table escaping the `__LINKEDIT` file range fails closed.
+        let mut escaping_str = fixture_segment_linkedit(0x1_0000, 0, 112);
+        escaping_str.extend_from_slice(&fixture_symtab(96, 1, 112, 1));
+        assert_eq!(super::macho_symtab_params(&escaping_str, 2), None);
+        // No absolute string-table size cap: a large but contained table
+        // parses (loaded framework string tables can be hundreds of
+        // megabytes; the scan never materializes them).
+        let mut big = fixture_segment_linkedit(0x1_0000, 0, u64::from(u32::MAX));
+        big.extend_from_slice(&fixture_symtab(96, 1, 112, u32::MAX - 112));
+        assert!(super::macho_symtab_params(&big, 2).is_some());
+    }
+
+    #[test]
+    fn bridged_scan_finds_exact_mangled_symbol() {
+        let target = super::BRIDGED_DISPATCHER_SYMBOL;
+        let mut str_bytes = vec![0u8];
+        let target_off = str_bytes.len() as u32;
+        str_bytes.extend_from_slice(target);
+        str_bytes.push(0);
+        let other_off = str_bytes.len() as u32;
+        str_bytes.extend_from_slice(b"other\0");
+        let mut sym_bytes = fixture_nlist(other_off, 0x3000);
+        sym_bytes.extend_from_slice(&fixture_nlist(target_off, 0x1234));
+        let addr = fixture_scan(&sym_bytes, &str_bytes, 0x1_0000, target).expect("exact hit");
+        assert_eq!(addr, 0x1_1234);
+    }
+
+    #[test]
+    fn bridged_scan_rejects_unmangled_and_prefix_names() {
+        // The old `dlsym` probe name (unmangled) and any near-miss must never
+        // match the mangled entry: the false negative is corrected by the
+        // exact-name scan, never by fuzzy matching.
+        let target = super::BRIDGED_DISPATCHER_SYMBOL;
+        let mut str_bytes = vec![0u8];
+        str_bytes.extend_from_slice(target);
+        str_bytes.push(0);
+        let sym_bytes = fixture_nlist(1, 0x1234);
+        assert_eq!(
+            fixture_scan(
+                &sym_bytes,
+                &str_bytes,
+                0,
+                b"SLSPerformAsynchronousBridgedWindowManagementOperation"
+            ),
+            None
+        );
+        let mut prefixed = target.to_vec();
+        prefixed.push(b'X');
+        assert_eq!(fixture_scan(&sym_bytes, &str_bytes, 0, &prefixed), None);
+        let truncated = &target[..target.len() - 1];
+        assert_eq!(fixture_scan(&sym_bytes, &str_bytes, 0, truncated), None);
+    }
+
+    #[test]
+    fn bridged_parser_fails_closed_on_malformed_metadata() {
+        let target = super::BRIDGED_DISPATCHER_SYMBOL;
+        // Bad magic.
+        let mut bad_magic = [0u8; 32];
+        bad_magic[0] = 0xce;
+        assert_eq!(super::macho_header_view(&bad_magic), None);
+        // Short prefix.
+        assert_eq!(super::macho_header_view(&[0u8; 31]), None);
+        // Over-cap command counts.
+        assert_eq!(
+            super::macho_symtab_params(&[0u8; 64], super::MACHO_MAX_NCMDS + 1),
+            None
+        );
+        // Truncated load command.
+        let loads = fixture_loads_with(&[0u8; 16], b"\0");
+        assert_eq!(
+            super::macho_symtab_params(&loads[..loads.len() - 1], 2),
+            None
+        );
+        // Short cmdsize.
+        let mut short_cmd = vec![0x19u8, 0, 0, 0, 7, 0, 0, 0];
+        short_cmd.extend_from_slice(&[0u8; 8]);
+        assert_eq!(super::macho_symtab_params(&short_cmd, 1), None);
+        // Missing symtab command (segment only).
+        assert_eq!(
+            super::macho_symtab_params(&fixture_segment_linkedit(0x1_0000, 0, 512), 1),
+            None
+        );
+        // Out-of-range strx fails the whole scan closed.
+        let mut sym_bytes = fixture_nlist(99, 0x1234);
+        sym_bytes.extend_from_slice(&[0u8; 16]);
+        assert_eq!(fixture_scan(&sym_bytes, b"\0", 0, target), None);
+        // Ragged symbol table.
+        assert_eq!(fixture_scan(&[0u8; 17], b"\0", 0, target), None);
+        // Zero result address refused.
+        let sym_zero = fixture_nlist(1, 0);
+        let mut str_zero = vec![0u8];
+        str_zero.extend_from_slice(target);
+        str_zero.push(0);
+        assert_eq!(fixture_scan(&sym_zero, &str_zero, 0, target), None);
+        // Empty or NUL-bearing target refused.
+        assert_eq!(fixture_scan(&sym_zero, &str_zero, 0, b""), None);
+        assert_eq!(fixture_scan(&sym_zero, &str_zero, 0, b"a\0b"), None);
+        // Slide overflow refused.
+        let sym_overflow = fixture_nlist(1, 1);
+        assert_eq!(
+            fixture_scan(&sym_overflow, &str_zero, u64::MAX, target),
+            None
+        );
+    }
+
+    #[test]
+    fn bridged_availability_is_conjunction_of_all_three_legs() {
+        // `available` must never claim more than every leg resolves:
+        // dispatcher symbol, operation class, and pinned init selector.
+        let a = super::sls_bridged_availability();
+        assert_eq!(
+            a.available,
+            a.fn_present && a.class_present && a.selector_present
+        );
+    }
+
+    #[test]
+    fn bridged_dispatch_refuses_empty_window_list_before_any_touch() {
+        // The bounds gate fires before dispatcher/class/selector resolution
+        // on every platform: no allocation, no dispatch, no live effect.
+        assert!(super::sls_move_windows_bridged(1, &[]).is_err());
     }
 
     #[test]

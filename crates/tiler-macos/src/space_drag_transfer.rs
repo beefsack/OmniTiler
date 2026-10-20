@@ -49,11 +49,13 @@ const MIN_GRAB_H: f64 = 24.0;
 /// origin).
 const TITLEBAR_OFFSET: f64 = 8.0;
 
-/// Grab settle after the dragged event before the chord (Silica parity:
-/// 50 ms to make sure the window is grabbed).
+/// Grab settle after the dragged event before the chord. Reference reason:
+/// Silica (`SIWindow moveToSpaceWithEvent:`) producer timing (50 ms to make
+/// sure the window is grabbed) - not an OS minimum, never reduced on guess.
 pub const GRAB_SETTLE_MS: u64 = 50;
-/// Animation hold after the chord while the mouse is still held (Silica
-/// parity: 400 ms to finish the Space transition before release).
+/// Animation hold after the chord while the mouse is still held. Reference
+/// reason: Silica producer timing (400 ms to finish the Space transition
+/// before release) - not an OS minimum, never reduced on guess.
 pub const ANIMATION_HOLD_MS: u64 = 400;
 /// Post-release effect settle: exact membership + current readback poll
 /// window (parity with the switch-probe and recovery settles).

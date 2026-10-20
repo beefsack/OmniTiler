@@ -124,6 +124,36 @@ pub trait SendNativeReaders: Send {
     fn hid_key(&mut self, keycode: u32, flags: u64, down: bool) -> Result<(), String>;
     /// Fresh current Space for the single display (`None` = unknown).
     fn read_current(&mut self) -> Option<u64>;
+    /// Bridged-route availability for the fast send path: true only when
+    /// the internal dispatcher, the operation class, and the pinned init
+    /// selector all resolve. Default false (offline fakes stay on the
+    /// drag route; production overrides with the real seam).
+    fn bridged_available(&mut self) -> bool {
+        false
+    }
+    /// One direct native bridged move of exactly `wid` to `sid` (async
+    /// dispatch; `Ok` means dispatched, never effected - the caller must
+    /// read back membership). Pre-dispatch absence refuses before any
+    /// allocation; the default refuses honestly.
+    fn bridged_move_window(&mut self, sid: u64, wid: u32) -> Result<(), String> {
+        let _ = (sid, wid);
+        Err("bridged route unavailable on this backend; refusing without fallback".to_owned())
+    }
+    /// Pin the destination Space's front process to exactly `(pid, wid)`
+    /// (yabai `SLSSpaceSetFrontPSN` after the async move, before the view
+    /// select). `Ok` means dispatched, never effected. Default refuses
+    /// honestly (offline fakes stay on drag unless they script this).
+    fn set_destination_front(&mut self, sid: u64, pid: u32, wid: u32) -> Result<(), String> {
+        let _ = (sid, pid, wid);
+        Err("destination front unavailable on this backend; refusing".to_owned())
+    }
+    /// Request one whole-owner tile reread after this owner verified an
+    /// exact native arrival (membership plus current both name the goal).
+    /// The production override bumps the shared owner invalidation
+    /// generation, so every per-app tile owner rereads on its next pump
+    /// even at an unchanged revision; the default (scripted fakes) records
+    /// nothing. Coalesced with topology bumps - never a retry loop.
+    fn note_verified_arrival(&mut self) {}
     /// Ordinary native select of one existing SID (stay return only). The
     /// production override runs the proven SID-accepting goto with
     /// exact-current readback on this thread; the default refuses honestly.
@@ -278,6 +308,62 @@ impl SendNativeReaders for OsSendReaders {
     }
     fn read_current(&mut self) -> Option<u64> {
         self.fresh_topology().ok().map(|topo| topo.row.current)
+    }
+    fn note_verified_arrival(&mut self) {
+        // Exact native readback proved arrival on this effect owner (the
+        // same thread that posted): request the tile owners' reread now -
+        // not solely on the main-thread settle one cadence later - so the
+        // first tile admission follows the arrival instead of the backstop.
+        self.handle.request_owner_reread();
+    }
+    fn bridged_available(&mut self) -> bool {
+        // Fast route needs the move dispatcher triple PLUS the destination
+        // front pin (symbol) PLUS the PSN mapping: without the front pin the
+        // follow leaves a foreign front on the destination. Any missing leg
+        // preselects the drag before any effect. The diagnostic
+        // `sls_bridged_availability()` stays the pure move probe.
+        crate::ffi::sls_bridged_availability().available
+            && crate::ffi::sls_space_front_available()
+            && crate::ffi::slps_available()
+    }
+    fn bridged_move_window(&mut self, sid: u64, wid: u32) -> Result<(), String> {
+        crate::ffi::sls_move_windows_bridged(sid, &[wid])
+    }
+    fn set_destination_front(&mut self, sid: u64, pid: u32, wid: u32) -> Result<(), String> {
+        // yabai `window_manager_send_window_to_space` tail: the front pin
+        // lands after the async move dispatch, before the view select.
+        // Fresh gates, a fresh CG owner join, and the PID mapping all fence
+        // the dispatch; any refusal stops the pin (never guessed).
+        use crate::dock_swipe_select::{GateReads, LiveGateReads};
+        if sid == 0 || wid == 0 || pid <= 1 {
+            return Err("destination front refused: unpinned subject; refusing".to_owned());
+        }
+        let mut gate_reads = LiveGateReads;
+        let gates = gate_reads.read_gates();
+        if !gates.session_unlocked {
+            return Err("destination front refused: session not unlocked pre-dispatch".to_owned());
+        }
+        if gates.secure_active {
+            return Err("destination front refused: Secure Input active pre-dispatch".to_owned());
+        }
+        if gates.lock_screen {
+            return Err("destination front refused: lock screen pre-dispatch".to_owned());
+        }
+        let owned = crate::ffi::cg_window_list_basic()
+            .map_err(|e| format!("destination front refused: CG owner unreadable ({e})"))?;
+        if !owned.iter().any(|w| w.wid == wid && w.pid == pid) {
+            return Err(
+                "destination front refused: CG join disagrees on subject owner; refusing"
+                    .to_owned(),
+            );
+        }
+        let pid_i32 = i32::try_from(pid)
+            .map_err(|_| "destination front refused: subject PID unrepresentable".to_owned())?;
+        let psn = crate::ffi::slps_psn_for_pid(pid_i32)
+            .map_err(|e| format!("destination front refused: PSN unmapped ({e})"))?;
+        crate::ffi::sls_space_set_front_psn(sid, psn)
+            .map_err(|code| format!("destination front dispatch refused: CGError {code}"))?;
+        Ok(())
     }
     fn select_space(&mut self, sid: u64) -> Result<(), String> {
         // Released ordinary return select on the effect owner: the
@@ -636,6 +722,17 @@ pub struct LiveManagedSendBackend<R: SendNativeReaders> {
     /// stays quiet while the outcome is stable.
     settle_m: Option<Vec<u64>>,
     settle_prev: Option<(Option<Vec<u64>>, Option<u64>)>,
+    /// Phase-attribution identity (logging only): the admission-pinned
+    /// operation id plus the pinned topology revision, bound in
+    /// `fresh_evidence` from the admitted target and cleared per operation
+    /// in `snapshot`. Every native phase/ev/readback line joins on these
+    /// plus both clocks - never content, titles, or paths.
+    phase_op: Option<String>,
+    phase_revision: Option<u64>,
+    /// Active product route for phase lines (`drag` default; `bridged`
+    /// after the fast-path selector runs on this operation). Logging only;
+    /// never a gate. Reset per operation in `snapshot`.
+    route: &'static str,
 }
 
 #[derive(Debug, Clone)]
@@ -658,18 +755,65 @@ pub(crate) const fn native_step_name(step: DragStep) -> &'static str {
     }
 }
 
+/// Process-common monotonic milliseconds for send-phase attribution:
+/// the eligibility origin (one `OnceLock<Instant>` per process), so
+/// admission (main thread), effect-owner legs, and tile reread/frame-set
+/// lines share one comparable clock. Leg-relative `t_ms` stays on every
+/// line for down->drag->chord->up comparison with the diagnostic series;
+/// `now_ms` joins phases across threads. Logging only; never a gate.
+#[must_use]
+pub(crate) fn send_now_ms() -> u64 {
+    crate::input_eligibility::now_ms()
+}
+
+/// Product send route token for the legacy drag path. The fast path uses
+/// [`SEND_ROUTE_BRIDGED`]. One literal per route so log joins never guess.
+pub(crate) const SEND_ROUTE_DRAG: &str = "drag";
+/// Preselection route token: the topology snapshot is read before the owner
+/// chooses a route, so it never claims drag or bridged.
+pub(crate) const SEND_ROUTE_UNSELECTED: &str = "unselected";
+/// Product send route token for the fast bridged path: exactly one direct
+/// native `sls_move_windows_bridged` dispatch, exactly one destination
+/// front pin, plus the existing Dock-swipe exact-SID selection (no
+/// mouse/key posts on this route).
+pub(crate) const SEND_ROUTE_BRIDGED: &str = "bridged";
+
+/// One bounded metadata-only native phase line: fixed route, phase token,
+/// operation identity, pinned revision, leg-relative plus process-common
+/// clocks. Token-only (never content/titles/paths). Pure; owners emit at
+/// admission-adjacent topology, fresh-proof, reread, reconcile, and
+/// arrival boundaries while the existing ev/readback lines keep the
+/// per-edge detail.
+#[must_use]
+pub(crate) fn format_native_phase_line(
+    route: &str,
+    phase: &str,
+    op: &str,
+    revision: Option<u64>,
+    t_ms: u64,
+    now_ms: u64,
+) -> String {
+    format!(
+        "tiler-macos send route={route} phase={phase} op={op} revision={revision:?} t_ms={t_ms} now_ms={now_ms}"
+    )
+}
+
 /// One bounded metadata-only native leg-begin line: goal SID plus the
 /// backend-selected grab point relative to the proven subject frame
-/// (whole points; IDs and geometry only). Pure (the owner emits once per
-/// leg in `begin_leg`).
+/// (whole points; IDs and geometry only), joined by operation, revision,
+/// and both clocks. Pure (the owner emits once per leg in `begin_leg`).
 #[must_use]
 pub(crate) fn format_native_leg_begin_line(
     goal: u64,
     grab: (f64, f64),
     frame: crate::ffi::AxFrame,
+    op: &str,
+    revision: Option<u64>,
+    t_ms: u64,
+    now_ms: u64,
 ) -> String {
     format!(
-        "tiler-macos send native leg-begin goal={goal} grab=({:.0},{:.0}) frame=({:.0},{:.0},{:.0},{:.0}) rel=({:.0},{:.0})",
+        "tiler-macos send native route=drag phase=drag-start op={op} revision={revision:?} goal={goal} grab=({:.0},{:.0}) frame=({:.0},{:.0},{:.0},{:.0}) rel=({:.0},{:.0}) t_ms={t_ms} now_ms={now_ms}",
         grab.0,
         grab.1,
         frame.x,
@@ -682,52 +826,70 @@ pub(crate) fn format_native_leg_begin_line(
 }
 
 /// One bounded metadata-only native mouse-event line at the actual post
-/// site: elapsed milliseconds against the leg clock, the posted point, and
-/// the point relative to the proven frame when known. Pure.
+/// site: elapsed milliseconds against the leg clock plus the process-common
+/// clock, operation identity, the posted point, and the point relative to
+/// the proven frame when known. Pure.
 #[must_use]
 pub(crate) fn format_native_mouse_line(
     ev: &str,
     t_ms: u64,
     point: (f64, f64),
     frame: Option<crate::ffi::AxFrame>,
+    op: &str,
+    now_ms: u64,
 ) -> String {
     match frame {
         Some(frame) => format!(
-            "tiler-macos send native ev={ev} t_ms={t_ms} pt=({:.0},{:.0}) rel=({:.0},{:.0})",
+            "tiler-macos send native route=drag phase=drag ev={ev} op={op} t_ms={t_ms} now_ms={now_ms} pt=({:.0},{:.0}) rel=({:.0},{:.0})",
             point.0,
             point.1,
             point.0 - frame.x,
             point.1 - frame.y,
         ),
         None => format!(
-            "tiler-macos send native ev={ev} t_ms={t_ms} pt=({:.0},{:.0})",
+            "tiler-macos send native route=drag phase=drag ev={ev} op={op} t_ms={t_ms} now_ms={now_ms} pt=({:.0},{:.0})",
             point.0, point.1,
         ),
     }
 }
 
 /// One bounded metadata-only native key-event line at the actual post
-/// site: elapsed milliseconds, keycode, and flags (hex, like the
-/// diagnostic chord notes). Pure.
+/// site: elapsed milliseconds against both clocks, operation identity,
+/// keycode, and flags (hex, like the diagnostic chord notes). Pure.
 #[must_use]
-pub(crate) fn format_native_key_line(ev: &str, t_ms: u64, keycode: u32, flags: u64) -> String {
-    format!("tiler-macos send native ev={ev} t_ms={t_ms} key={keycode:#x} flags={flags:#x}")
+pub(crate) fn format_native_key_line(
+    ev: &str,
+    t_ms: u64,
+    keycode: u32,
+    flags: u64,
+    op: &str,
+    now_ms: u64,
+) -> String {
+    format!(
+        "tiler-macos send native route=drag phase=chord ev={ev} op={op} t_ms={t_ms} now_ms={now_ms} key={keycode:#x} flags={flags:#x}"
+    )
 }
 
-/// One bounded metadata-only native settle-readback line: elapsed
-/// milliseconds, the freshly read membership/current pair, and whether
-/// it changed since the last logged pair. The owner emits the first pair
-/// (`changed=false` baseline) and each changed pair only, so a stable
-/// poll stays quiet. Pure.
+/// One bounded metadata-only native settle-readback line: the product
+/// route, elapsed milliseconds on both clocks, operation plus pinned
+/// revision, the freshly read membership/current pair, and whether it
+/// changed since the last logged pair. The owner emits the first pair
+/// (`changed=false` baseline) and each changed pair only, so a stable poll
+/// stays quiet. Pure.
+#[allow(clippy::too_many_arguments)]
 #[must_use]
 pub(crate) fn format_native_readback_line(
+    route: &str,
     t_ms: u64,
     membership: &Option<Vec<u64>>,
     current: &Option<u64>,
     changed: bool,
+    op: &str,
+    revision: Option<u64>,
+    now_ms: u64,
 ) -> String {
     format!(
-        "tiler-macos send native readback t_ms={t_ms} membership={membership:?} current={current:?} changed={changed}"
+        "tiler-macos send native route={route} phase=settle op={op} revision={revision:?} t_ms={t_ms} now_ms={now_ms} membership={membership:?} current={current:?} changed={changed}"
     )
 }
 
@@ -750,7 +912,48 @@ impl<R: SendNativeReaders> LiveManagedSendBackend<R> {
             leg_grab: None,
             settle_m: None,
             settle_prev: None,
+            phase_op: None,
+            phase_revision: None,
+            route: SEND_ROUTE_DRAG,
         }
+    }
+
+    /// Operation token for phase lines (`"none"` before any proof bound
+    /// one). Logging only.
+    fn phase_op(&self) -> &str {
+        self.phase_op.as_deref().unwrap_or("none")
+    }
+
+    /// Test-only readers access: scripted fakes record arrival requests
+    /// behind the backend, and tests assert the count without live touch.
+    #[cfg(test)]
+    pub(crate) fn test_readers(&mut self) -> &mut R {
+        &mut self.readers
+    }
+
+    /// Pinned revision for phase lines (anchor when a snapshot fenced one,
+    /// else the admission pin). Logging only.
+    fn phase_revision(&self) -> Option<u64> {
+        self.anchor
+            .as_ref()
+            .map(|a| a.revision)
+            .or(self.phase_revision)
+    }
+
+    /// One phase-boundary line with both clocks on the active route.
+    /// Logging only.
+    fn emit_phase(&self, phase: &'static str) {
+        eprintln!(
+            "{}",
+            format_native_phase_line(
+                self.route,
+                phase,
+                self.phase_op(),
+                self.phase_revision(),
+                self.leg_elapsed_ms(),
+                send_now_ms(),
+            )
+        );
     }
 
     /// Elapsed milliseconds against the leg clock (0 before `begin_leg`).
@@ -781,7 +984,13 @@ impl<R: SendNativeReaders> LiveManagedSendBackend<R> {
         let before = anchor.spaces.iter().position(|s| *s == goal);
         let now = topo.row.spaces.iter().position(|s| *s == goal);
         match (before, now) {
-            (Some(a), Some(b)) if a == b => Ok(()),
+            (Some(a), Some(b)) if a == b => {
+                // Fresh-topology reread held: ordinal and revision cohere
+                // under the anchor. One phase line per successful down-edge
+                // fence (bounded: one drag holds a handful of edges).
+                self.emit_phase("reread");
+                Ok(())
+            }
             (Some(_), Some(_)) => Err(
                 "send leg refused: target ordinal moved mid-leg; refusing rather than posting a stale chord"
                     .to_owned(),
@@ -818,6 +1027,23 @@ impl<R: SendNativeReaders> ManagedSendBackend for LiveManagedSendBackend<R> {
         self.leg_grab = None;
         self.settle_m = None;
         self.settle_prev = None;
+        self.phase_op = None;
+        self.phase_revision = None;
+        self.route = SEND_ROUTE_DRAG;
+        // Topology boundary: the joined fresh row plus fingerprint that
+        // every down-edge re-fences. `op=none` and route `unselected` - the
+        // owner chooses bridged-first with drag fallback only later.
+        eprintln!(
+            "{}",
+            format_native_phase_line(
+                SEND_ROUTE_UNSELECTED,
+                "topology",
+                "none",
+                Some(topo.revision),
+                0,
+                send_now_ms(),
+            )
+        );
         Ok(topo.row)
     }
     fn display_count(&mut self) -> Result<usize, String> {
@@ -828,6 +1054,10 @@ impl<R: SendNativeReaders> ManagedSendBackend for LiveManagedSendBackend<R> {
     }
     fn fresh_evidence(&mut self, target: &ManagedSendTarget) -> SendFreshEvidence {
         self.subject = Some((target.pid(), target.wid()));
+        // Bind phase attribution before the reads: every later line in
+        // this operation joins on the admitted op plus pinned revision.
+        self.phase_op = Some(target.operation_id().to_owned());
+        self.phase_revision = Some(target.revision());
         let (evidence, root, frame) = assemble_evidence(&mut self.readers, target);
         self.blind_root = root;
         // Retain the proven geometry for the native event trace: the
@@ -840,6 +1070,11 @@ impl<R: SendNativeReaders> ManagedSendBackend for LiveManagedSendBackend<R> {
         if evidence.grab_point.is_some() {
             self.leg_grab = evidence.grab_point;
         }
+        // Fresh-proof boundary: one line per per-edge proof read (the
+        // adapter calls this before every down-edge). Joins the admitted
+        // op plus pinned revision with both clocks; the verdict itself
+        // stays in the permit/proof path - never inferred from this line.
+        self.emit_phase("proof");
         evidence
     }
     fn blind_root(&self) -> Option<BlindRoot> {
@@ -860,7 +1095,16 @@ impl<R: SendNativeReaders> ManagedSendBackend for LiveManagedSendBackend<R> {
         self.settle_m = None;
         self.settle_prev = None;
         if let (Some(grab), Some(frame)) = (self.leg_grab, self.leg_frame) {
-            eprintln!("{}", format_native_leg_begin_line(goal, grab, frame));
+            let line = format_native_leg_begin_line(
+                goal,
+                grab,
+                frame,
+                self.phase_op(),
+                self.phase_revision(),
+                self.leg_elapsed_ms(),
+                send_now_ms(),
+            );
+            eprintln!("{line}");
         }
         Ok(())
     }
@@ -893,6 +1137,8 @@ impl<R: SendNativeReaders> ManagedSendBackend for LiveManagedSendBackend<R> {
                 self.leg_elapsed_ms(),
                 permit.point(),
                 self.leg_frame,
+                self.phase_op(),
+                send_now_ms(),
             )
         );
         Ok(())
@@ -910,7 +1156,14 @@ impl<R: SendNativeReaders> ManagedSendBackend for LiveManagedSendBackend<R> {
         self.counts.key_down += 1;
         eprintln!(
             "{}",
-            format_native_key_line("chord-down", self.leg_elapsed_ms(), chord.0, chord.1)
+            format_native_key_line(
+                "chord-down",
+                self.leg_elapsed_ms(),
+                chord.0,
+                chord.1,
+                self.phase_op(),
+                send_now_ms(),
+            )
         );
         Ok(())
     }
@@ -927,8 +1180,16 @@ impl<R: SendNativeReaders> ManagedSendBackend for LiveManagedSendBackend<R> {
         self.counts.mouse_up += 1;
         eprintln!(
             "{}",
-            format_native_mouse_line("mouse-up", self.leg_elapsed_ms(), point, self.leg_frame)
+            format_native_mouse_line(
+                "mouse-up",
+                self.leg_elapsed_ms(),
+                point,
+                self.leg_frame,
+                self.phase_op(),
+                send_now_ms(),
+            )
         );
+        self.emit_phase("release");
         Ok(())
     }
     fn release_key(&mut self) -> Result<(), String> {
@@ -941,8 +1202,16 @@ impl<R: SendNativeReaders> ManagedSendBackend for LiveManagedSendBackend<R> {
         self.counts.key_up += 1;
         eprintln!(
             "{}",
-            format_native_key_line("key-up", self.leg_elapsed_ms(), keycode, flags)
+            format_native_key_line(
+                "key-up",
+                self.leg_elapsed_ms(),
+                keycode,
+                flags,
+                self.phase_op(),
+                send_now_ms(),
+            )
         );
+        self.emit_phase("release");
         Ok(())
     }
     fn read_membership(&mut self) -> Option<Vec<u64>> {
@@ -962,9 +1231,39 @@ impl<R: SendNativeReaders> ManagedSendBackend for LiveManagedSendBackend<R> {
             let changed = self.settle_prev.is_some();
             eprintln!(
                 "{}",
-                format_native_readback_line(self.leg_elapsed_ms(), &pair.0, &pair.1, changed)
+                format_native_readback_line(
+                    self.route,
+                    self.leg_elapsed_ms(),
+                    &pair.0,
+                    &pair.1,
+                    changed,
+                    self.phase_op(),
+                    self.phase_revision(),
+                    send_now_ms(),
+                )
             );
-            self.settle_prev = Some(pair);
+            self.settle_prev = Some(pair.clone());
+            // Reconcile boundary: the first readback whose membership names
+            // exactly the goal with current on the goal marks arrival under
+            // the pinned op. Later polls stay quiet (the readback above is
+            // already change-only). Logging only - the leg verdict still
+            // reads the returned values.
+            if let Some(goal) = self.goal
+                && pair.0.as_deref() == Some([goal].as_slice())
+                && pair.1 == Some(goal)
+            {
+                if self.route == SEND_ROUTE_BRIDGED {
+                    self.emit_phase("arrival");
+                } else {
+                    self.emit_phase("reconcile");
+                }
+                // Verified arrival on the effect owner: the exact readback
+                // above proved it, so request the tile owners' reread now
+                // (even at an unchanged revision) rather than waiting for
+                // the main-thread settle a cadence later. Fires once per
+                // arrival - the change-only gate above never replays it.
+                self.readers.note_verified_arrival();
+            }
         }
         current
     }
@@ -977,6 +1276,61 @@ impl<R: SendNativeReaders> ManagedSendBackend for LiveManagedSendBackend<R> {
         // gates, and cancellation are fenced by the stay caller; this only
         // actuates the native select and reports its verdict honestly.
         self.readers.select_space(source_sid)
+    }
+    fn bridged_available(&mut self) -> bool {
+        self.readers.bridged_available()
+    }
+    fn use_bridged_route(&mut self) {
+        self.route = SEND_ROUTE_BRIDGED;
+    }
+    fn bridged_move(&mut self, permit: ManagedPostPermit, goal: u64) -> Result<(), String> {
+        // Fast-route dispatch: exactly one direct native move under a fresh
+        // anchor. The single-use permit is consumed (dropped) - one proof
+        // never authorizes two dispatches. No mouse/key posts on this route.
+        let wid = permit.wid();
+        let _ = permit;
+        // Fresh anchor immediately at dispatch: a moved revision or shifted
+        // ordinal refuses before any OS touch (pre-dispatch failure).
+        self.check_anchor(goal)?;
+        let Some((pid, subject_wid)) = self.subject else {
+            return Err("bridged dispatch refused: no proven subject; refusing".to_owned());
+        };
+        if subject_wid != wid {
+            return Err("bridged dispatch refused: permit subject moved; refusing".to_owned());
+        }
+        self.goal = Some(goal);
+        self.leg_t0 = Some(std::time::Instant::now());
+        self.settle_m = None;
+        self.settle_prev = None;
+        self.route = SEND_ROUTE_BRIDGED;
+        self.emit_phase("dispatch");
+        self.readers
+            .bridged_move_window(goal, wid)
+            .map_err(|e| format!("bridged dispatch refused: {e}"))?;
+        let _ = pid;
+        Ok(())
+    }
+    fn select_destination(&mut self, sid: u64) -> Result<(), String> {
+        // yabai follow shape: exactly one destination front pin to the
+        // already-proven subject, then the existing one Dock-swipe select
+        // (never the MC press, never an AX raise). The anchor re-fences
+        // ordinal/revision before the front touch; every failure here lands
+        // after the dispatched move, so the caller holds PossiblyExecuted
+        // (never a proven refusal, never a replay).
+        self.emit_phase("select");
+        let Some((pid, wid)) = self.subject else {
+            return Err(
+                "bridged destination front refused: no proven subject; refusing".to_owned(),
+            );
+        };
+        self.check_anchor(sid)
+            .map_err(|e| format!("bridged destination front refused: {e}"))?;
+        self.readers
+            .set_destination_front(sid, pid, wid)
+            .map_err(|e| format!("bridged destination front refused: {e}"))?;
+        self.readers
+            .select_space(sid)
+            .map_err(|e| format!("bridged destination select refused: {e}"))
     }
     fn read_focused(&mut self) -> Option<String> {
         // Honest oracle (the same selected-focus read as the forward

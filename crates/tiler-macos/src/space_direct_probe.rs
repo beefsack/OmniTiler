@@ -1,20 +1,25 @@
 #![forbid(unsafe_code)]
 
-//! Gated direct-SLS window-move probe, run AFTER the public O→T→O battery.
+//! Gated direct/bridged-SLS window-move probe, run AFTER the public O->T->O battery.
 //!
 //! The public battery in [`crate::space_recovery`] stays the default: spawn
 //! one regular-policy helper, prove O→T→O with exact membership plus exact
 //! frame restoration through the public `MoveToActiveSpace` self-action, stop
 //! exactly that helper. `--probe-direct` opts into ONE additional direct
-//! `SLSMoveWindowsToManagedSpace` dispatch on the SAME helper after leg B has
-//! proven exact `[original]` plus the exact frame, with delayed membership
-//! and current readbacks (max 3 s each), void-dispatch/no-effect versus
-//! rejection classification, and an independent public self-restore once the
-//! primary mover process has exited.
+//! `SLSMoveWindowsToManagedSpace` dispatch on the SAME helper after leg B;
+//! `--probe-bridged` opts into ONE additional bridged dispatch instead
+//! (yabai `src/space_manager.c:667-673`: `alloc` plus
+//! `initWithWindows:spaceID:` plus the internal dispatcher). The two flags
+//! are mutually exclusive (never both: no fallback, no replay) and each
+//! additionally requires `--allow-untested`; either probe runs with delayed
+//! membership and current readbacks (max 3 s each), void-dispatch/no-effect
+//! versus rejection classification, and an independent public self-restore
+//! once the primary mover process exits.
 //!
-//! Primary-mover separation: the direct dispatch runs in a SEPARATE
+//! Primary-mover separation: either dispatch runs in a SEPARATE
 //! short-lived owned child process (the current executable re-invoked as
-//! `spaces-move --pid --nonce --wid --space --allow-untested`), owned by its
+//! `spaces-move --pid --nonce --wid --space [--route bridged]
+//! --allow-untested`), owned by its
 //! exact `Child` handle and reaped boundedly here. The fixture holder keeps
 //! owning the helper `Child` throughout; the worker only writes the passed,
 //! already-verified helper WID (no broadened target). No new general process
@@ -34,14 +39,17 @@
 //! itself is tri-state ([`DispatchState`]): a parsed structured report is
 //! `Yes`; a clean exit carrying a named pre-dispatch gate refusal is `No`;
 //! timeouts, signal exits, unparsable output, and harness-side identity
-//! failures are `Unknown` — never misreported as rejection. An unchanged
+//! failures are `Unknown` - never misreported as rejection. A report naming
+//! the wrong route likewise downgrades attribution to `Unknown` (never an
+//! early return - the delayed readbacks and restoration below run as
+//! normal, so a moved window is never stranded by an attribution failure). An unchanged
 //! exact `[original]` after a verified dispatch is OBSERVED NO-EFFECT (not a
 //! SIP finding). Membership is always read back regardless of dispatch
 //! state, and any changed membership is restored through the independent
 //! public path even when dispatch is unknown. No retries, no no-op inverse
 //! on no effect. On effect, the independent public self-restore (held-Child
 //! `space_join` to the current original) runs FIRST after the mover exits;
-//! an inverse direct move is never attempted here. An ambiguous
+//! an inverse SLS move is never attempted here. An ambiguous
 //! changed-but-not-exact membership is restored the same way BEFORE the
 //! error verdict and cleanup — the helper is never killed as a surrogate
 //! for restoration (process exit does not restore Space assignment).
@@ -62,12 +70,11 @@
 //! (https://github.com/asmvik/yabai/blob/dd845723416f5fe92af49fad5ebab00369e07edd/src/space_manager.c#L665-L705),
 //! bypassed upstream on newer families via `workspace_use_macos_space_workaround`
 //! (https://github.com/asmvik/yabai/blob/dd845723416f5fe92af49fad5ebab00369e07edd/src/workspace.m#L17-L26),
-//! so it is source-derived and experimental live here (one gated dispatch
-//! on an owned fixture observed no effect; single-shot inverse unverified).
-//! The bridged async
-//! operation is diagnosed only (dispatcher symbol plus ObjC class
-//! `SLSBridgedMoveWindowsToManagedSpaceOperation`, never dispatched); the
-//! compat-ID pair stays blocked (setter-only locally, no exact tag preimage,
+//! so it is source-derived and experimental live here (one gated direct
+//! dispatch on an owned fixture observed no effect; single-shot inverse
+//! unverified; the bridged async operation dispatches only inside its own
+//! gated probe flag, efficacy unproven).
+//! The compat-ID pair stays blocked (setter-only locally, no exact tag preimage,
 //! yabai-tag collision — no tag getter is added, reset-to-zero is not
 //! restoration). Membership reads use the pinned yabai shape
 //! (https://github.com/asmvik/yabai/blob/dd845723416f5fe92af49fad5ebab00369e07edd/src/space_manager.c#L665-L705
@@ -152,10 +159,51 @@ pub fn validate_probe_direct_args(
     Ok(probe_direct)
 }
 
+/// Pure gate for the bridged opt-in flag: `--probe-bridged` preserves the
+/// default battery when absent and additionally requires `--allow-untested`
+/// when present (the bridged route is experimental - async dispatch with
+/// unproven efficacy - while the separate public held-Child recovery is
+/// proven per run, never assumed). No live touch - unit-tested.
+pub fn validate_probe_bridged_args(
+    probe_bridged: bool,
+    allow_untested: bool,
+) -> Result<bool, String> {
+    if probe_bridged && !allow_untested {
+        return Err(
+            "spaces-owned-recovery --probe-bridged requires --allow-untested (bridged SLS route experimental, async dispatch efficacy unproven; single-shot inverse unverified, effect observer-verified per run, never assumed)"
+                .to_owned(),
+        );
+    }
+    Ok(probe_bridged)
+}
+
+/// Pure route-selection gate: at most one probe route per run. Both flags
+/// together refuse before any spawn - the harness never falls back to the
+/// other route and never replays the battery. No live touch - unit-tested.
+pub fn validate_probe_selection(probe_direct: bool, probe_bridged: bool) -> Result<(), String> {
+    if probe_direct && probe_bridged {
+        return Err(
+            "spaces-owned-recovery refuses --probe-direct with --probe-bridged: select exactly one probe route per run (no fallback, no replay)"
+                .to_owned(),
+        );
+    }
+    Ok(())
+}
+
+/// Pure leg-name helper so every latency entry carries its probe route
+/// (`direct-mover`, `bridged-settle`, ...). No live touch - unit-tested.
+#[must_use]
+pub fn probe_leg_name(route: crate::spaces::SpaceMoveRoute, phase: &str) -> String {
+    format!("{}-{phase}", route.as_str())
+}
+
 /// Pure argv builder for the separate short-lived mover child: the current
 /// executable re-invoked as the existing `spaces-move` command against the
 /// already-verified fixture identity. No new subcommand, no broadened
-/// target — the worker only writes this passed verified WID.
+/// target - the worker only writes this passed verified WID. The direct
+/// route takes the command default (no `--route` flag, preserving the
+/// existing shape byte-for-byte); the bridged route appends
+/// `--route bridged` explicitly.
 pub fn mover_argv(pid: u32, nonce: &str, wid: u32, space: u64) -> Vec<String> {
     vec![
         "spaces-move".to_owned(),
@@ -169,6 +217,14 @@ pub fn mover_argv(pid: u32, nonce: &str, wid: u32, space: u64) -> Vec<String> {
         space.to_string(),
         "--allow-untested".to_owned(),
     ]
+}
+
+/// Pure argv builder for the bridged mover child: the direct argv plus the
+/// explicit `--route bridged` selection (never a silent default).
+pub fn mover_argv_bridged(pid: u32, nonce: &str, wid: u32, space: u64) -> Vec<String> {
+    let mut argv = mover_argv(pid, nonce, wid, space);
+    argv.extend(["--route".to_owned(), "bridged".to_owned()]);
+    argv
 }
 
 /// Whether the direct SLS dispatch happened. Tri-state by construction: a
@@ -223,6 +279,31 @@ const PREDISPATCH_GATE_MARKERS: &[&str] = &[
 pub fn positive_predispatch_refusal(exit_code: Option<i32>, text: &str) -> bool {
     matches!(exit_code, Some(1) | Some(2))
         && PREDISPATCH_GATE_MARKERS.iter().any(|m| text.contains(m))
+}
+
+/// Pure route-agreement gate: the mover's structured report must name the
+/// requested route. A mismatch (wrong binary, stale argv, substituted
+/// worker) downgrades dispatch attribution to [`DispatchState::Unknown`]
+/// with a named mismatch error - never an early return, never an efficacy
+/// claim either way. The caller still runs its delayed membership readbacks
+/// and the normal aftermath (including the independent public restore on
+/// changed membership), so a moved window is never stranded by an
+/// attribution failure. Agreement (or no report at all) passes dispatch
+/// through untouched. No live touch - unit-tested.
+pub fn reconcile_report_route(
+    requested: &str,
+    dispatch: DispatchState,
+    report_route: Option<&str>,
+) -> (DispatchState, Option<String>) {
+    match report_route {
+        Some(actual) if actual != requested => (
+            DispatchState::Unknown,
+            Some(format!(
+                "route mismatch: requested {requested}, mover reported {actual}; dispatch attribution Unknown, no efficacy claimed"
+            )),
+        ),
+        _ => (dispatch, None),
+    }
 }
 
 /// Mover executable identity: the worker must be the same current
@@ -458,6 +539,9 @@ pub fn current_unchanged(before: Option<u64>, after: Option<u64>) -> bool {
 #[derive(Debug, Clone, Serialize)]
 pub struct DirectProbeReport {
     pub attempted: bool,
+    /// The SLS dispatch taken: `direct` or `bridged` (never a fallback -
+    /// the mover argv selects it explicitly and the mover reports it back).
+    pub route: String,
     pub outcome: String,
     pub target: u64,
     pub preimage: u64,
@@ -577,7 +661,13 @@ fn drain_mover_output(
 /// report is `Yes`; only a never-spawned child or a clean exit with a named
 /// pre-dispatch gate refusal is `No`; timeouts, crashes, garbles, and wait
 /// failures are `Unknown`. Returns the classified [`MoverResult`].
-fn run_mover_child(pid: u32, nonce: &str, wid: u32, space: u64) -> MoverResult {
+fn run_mover_child(
+    route: crate::spaces::SpaceMoveRoute,
+    pid: u32,
+    nonce: &str,
+    wid: u32,
+    space: u64,
+) -> MoverResult {
     let exe = current_exe_identity();
     let failed = |error: String| MoverResult {
         exited: false,
@@ -592,7 +682,10 @@ fn run_mover_child(pid: u32, nonce: &str, wid: u32, space: u64) -> MoverResult {
     if exe.path.is_empty() {
         return failed("mover exe unresolved; refusing spawn".to_owned());
     }
-    let args = mover_argv(pid, nonce, wid, space);
+    let args = match route {
+        crate::spaces::SpaceMoveRoute::Direct => mover_argv(pid, nonce, wid, space),
+        crate::spaces::SpaceMoveRoute::Bridged => mover_argv_bridged(pid, nonce, wid, space),
+    };
     let mut child = match std::process::Command::new(&exe.path)
         .args(&args)
         .stdin(std::process::Stdio::null())
@@ -828,20 +921,22 @@ fn settle_current(display: usize, want: Option<u64>, deadline_ms: u64) -> Option
 /// outcome-poll as the battery legs, authenticated by the exact held Child
 /// instead of the cross-command title proof). Single attempt, no retry.
 fn run_public_restore_leg(
+    route: crate::spaces::SpaceMoveRoute,
     child: &mut std::process::Child,
     pid: u32,
     nonce: &str,
     helper_path: &str,
     wid: u32,
 ) -> Result<crate::space_join::JoinEvidence, McError> {
+    let r = route.as_str();
     let proof = crate::space_join::prove_held_child(child, pid, nonce, helper_path, wid)
-        .map_err(|e| McError::Ownership(format!("direct-restore held proof: {e}")))?;
+        .map_err(|e| McError::Ownership(format!("{r}-restore held proof: {e}")))?;
     let request_id = crate::space_join::publish_join_trigger_held(&proof)
-        .map_err(|e| McError::Blocked(format!("direct-restore publish: {e}")))?;
+        .map_err(|e| McError::Blocked(format!("{r}-restore publish: {e}")))?;
     let our_body = crate::probe_target::space_join_request_body(nonce, &request_id)
-        .map_err(|e| McError::Blocked(format!("direct-restore body: {e}")))?;
+        .map_err(|e| McError::Blocked(format!("{r}-restore body: {e}")))?;
     let evidence = crate::space_join::await_join_result(pid, nonce, &request_id, &our_body)
-        .map_err(|e| McError::Blocked(format!("direct-restore outcome: {e}")))?;
+        .map_err(|e| McError::Blocked(format!("{r}-restore outcome: {e}")))?;
     if !evidence.restored_verified
         || !crate::probe_target::space_join_restored_ok(
             evidence.preimage_bits,
@@ -849,24 +944,25 @@ fn run_public_restore_leg(
         )
     {
         return Err(McError::Blocked(format!(
-            "direct-restore behavior not exactly restored (preimage {} restored {} verified {})",
+            "{r}-restore behavior not exactly restored (preimage {} restored {} verified {})",
             evidence.preimage_bits, evidence.restored_bits, evidence.restored_verified
         )));
     }
     Ok(evidence)
 }
 
-/// Gated direct-SLS experiment, called AFTER the public O→T→O battery has
+/// Gated SLS experiment, called AFTER the public O->T->O battery has
 /// proven exact `[original]` plus the exact frame on the same helper.
-/// Single dispatch, bounded mover, delayed readbacks, independent public
-/// restore after the mover exits. No retries on any path.
+/// Single dispatch of the selected route, bounded mover, delayed readbacks,
+/// independent public restore after the mover exits. No retries on any path.
 ///
 /// The caller lends the exact helper `Child` (taken back before any context
 /// use, so cleanup always owns it) plus the baseline identity and the
 /// spawn-tracked helper deadline. Ghostty, currents, and synthetic posts
 /// are untouched here beyond readbacks.
 #[allow(clippy::too_many_arguments)]
-pub fn run_direct_probe_after_recovery(
+fn run_probe_after_recovery(
+    route: crate::spaces::SpaceMoveRoute,
     child: &mut std::process::Child,
     owned: &crate::ownership::OwnedIdentity,
     helper_pid: u32,
@@ -881,6 +977,7 @@ pub fn run_direct_probe_after_recovery(
     notes: &mut Vec<String>,
     latencies: &mut Vec<LegLatency>,
 ) -> Result<DirectProbeReport, McError> {
+    let r = route.as_str();
     // Worst-case budget gate BEFORE any spawn: the remaining helper
     // lifetime must cover mover + settle + restore + resettle + cleanup
     // reserve. A narrow window refuses with no dispatch on any path.
@@ -889,7 +986,7 @@ pub fn run_direct_probe_after_recovery(
         .as_millis()
         .min(u128::from(u64::MAX)) as u64;
     if let Err(e) = probe_budget_sufficient(remaining_ms) {
-        notes.push(format!("direct-probe budget refusal: {e}"));
+        notes.push(format!("{r}-probe budget refusal: {e}"));
         return Err(McError::Blocked(e));
     }
     let bridged = crate::ffi::sls_bridged_availability();
@@ -900,28 +997,30 @@ pub fn run_direct_probe_after_recovery(
     let parent_ax_trusted = crate::ffi::ax_is_process_trusted();
     let session_lock_before = crate::ffi::session_state().lock;
     notes.push(format!(
-        "direct-probe diagnose: direct={} compat_pair={} (blocked, never dispatched) bridged_fn={} bridged_class={} bridged_available={} (diagnosed, never dispatched) parent_ax_trusted={parent_ax_trusted:?} session_lock={session_lock_before:?}",
+        "{r}-probe diagnose: direct={} compat_pair={} (blocked, never dispatched) bridged_fn={} bridged_class={} bridged_selector={} bridged_available={} parent_ax_trusted={parent_ax_trusted:?} session_lock={session_lock_before:?}",
         move_symbols.direct,
         move_symbols.compat_pair,
         bridged.fn_present,
         bridged.class_present,
+        bridged.selector_present,
         bridged.available
     ));
 
     let current_before = display_current(display);
-    let pre_direct = held_membership_read(child, helper_pid, helper_path, wid);
+    let preimage = held_membership_read(child, helper_pid, helper_path, wid);
     notes.push(format!(
-        "direct-probe preimage: membership={pre_direct:?} current={current_before:?} (goal: dispatch toward [{temp}], current stays {current_before:?})"
+        "{r}-probe preimage: membership={preimage:?} current={current_before:?} (goal: dispatch toward [{temp}], current stays {current_before:?})"
     ));
 
-    // Separate short-lived mover: one direct dispatch, then it exits. The
-    // harness polls the effect itself below; the mover's immediate report
-    // is dispatch evidence only. A locked/unreadable session refuses the
-    // spawn up front (defense in depth — the mover core rechecks at its own
-    // write boundary): modeled as dispatch `No`, since nothing could run.
+    // Separate short-lived mover: one dispatch of the selected route, then
+    // it exits. The harness polls the effect itself below; the mover's
+    // immediate report is dispatch evidence only. A locked/unreadable
+    // session refuses the spawn up front (defense in depth - the mover core
+    // rechecks at its own write boundary): modeled as dispatch `No`, since
+    // nothing could run.
     let t_mover = std::time::Instant::now();
-    let mover = if matches!(session_lock_before, crate::ffi::SessionLock::Unlocked) {
-        run_mover_child(helper_pid, helper_nonce, wid, temp)
+    let mut mover = if matches!(session_lock_before, crate::ffi::SessionLock::Unlocked) {
+        run_mover_child(route, helper_pid, helper_nonce, wid, temp)
     } else {
         MoverResult {
             exited: false,
@@ -936,12 +1035,27 @@ pub fn run_direct_probe_after_recovery(
             stderr_kept: String::new(),
         }
     };
+    // Route agreement BEFORE any attribution: a report naming the wrong
+    // route downgrades to Unknown with a named error but never returns
+    // early - the delayed readbacks and restoration below run as normal.
+    {
+        let reported = mover.report.as_ref().map(|rep| rep.route.as_str());
+        let (dispatch, mismatch) = reconcile_report_route(r, mover.dispatch, reported);
+        mover.dispatch = dispatch;
+        if let Some(err) = mismatch {
+            notes.push(format!("{r} route agreement: {err}"));
+            mover.error = Some(match mover.error.take() {
+                Some(prev) => format!("{prev}; {err}"),
+                None => err,
+            });
+        }
+    }
     latencies.push(LegLatency {
-        leg: "direct-mover".to_owned(),
+        leg: probe_leg_name(route, "mover"),
         ms: t_mover.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
     });
     notes.push(format!(
-        "direct mover: exited={} code={:?} dispatch={} exe={} fp={:?} error={:?}",
+        "{r} mover: exited={} code={:?} dispatch={} exe={} fp={:?} error={:?}",
         mover.exited,
         mover.exit_code,
         mover.dispatch.as_str(),
@@ -967,14 +1081,14 @@ pub fn run_direct_probe_after_recovery(
     let delayed = settle_membership(&mut read, DIRECT_SETTLE_MS, DIRECT_POLL_MS);
     let delayed_spaces = delayed.or(last_poll);
     latencies.push(LegLatency {
-        leg: "direct-settle".to_owned(),
+        leg: probe_leg_name(route, "settle"),
         ms: t_settle.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
     });
     let current_after = settle_current(display, current_before, DIRECT_SETTLE_MS);
     let session_lock_after = crate::ffi::session_state().lock;
     let unchanged = current_unchanged(current_before, current_after);
     notes.push(format!(
-        "direct readbacks: dispatch={} immediate={immediate_spaces:?} (verified={immediate_verified:?}) delayed={delayed_spaces:?} current_before={current_before:?} current_after={current_after:?} unchanged={unchanged} session_lock_after={session_lock_after:?}",
+        "{r} readbacks: dispatch={} immediate={immediate_spaces:?} (verified={immediate_verified:?}) delayed={delayed_spaces:?} current_before={current_before:?} current_after={current_after:?} unchanged={unchanged} session_lock_after={session_lock_after:?}",
         mover.dispatch.as_str()
     ));
 
@@ -987,7 +1101,7 @@ pub fn run_direct_probe_after_recovery(
     let outcome = classify_direct(&inputs, original, temp);
     let aftermath = plan_aftermath(outcome, &delayed_spaces);
     notes.push(format!(
-        "direct classification: {} aftermath={aftermath:?} ({})",
+        "{r} classification: {} aftermath={aftermath:?} ({})",
         outcome.as_str(),
         DIRECT_CAUSAL_NOTE
     ));
@@ -1011,17 +1125,18 @@ pub fn run_direct_probe_after_recovery(
             let frame = read_frame_now();
             let frame_ok = frame.is_some() && frame == baseline_frame_ax;
             notes.push(format!(
-                "direct {}: no inverse dispatched; membership still {check:?} frame_matches_baseline={frame_ok}",
+                "{r} {}: no inverse dispatched; membership still {check:?} frame_matches_baseline={frame_ok}",
                 outcome.as_str()
             ));
             if !frame_ok {
                 return Err(McError::Blocked(format!(
-                    "direct {} left membership home but the baseline frame drifted (baseline {baseline_frame_ax:?} vs now {frame:?}); refusing to call this clean",
+                    "{r} {} left membership home but the baseline frame drifted (baseline {baseline_frame_ax:?} vs now {frame:?}); refusing to call this clean",
                     outcome.as_str()
                 )));
             }
             Ok(DirectProbeReport {
                 attempted: true,
+                route: r.to_owned(),
                 outcome: outcome.as_str().to_owned(),
                 target: temp,
                 preimage: original,
@@ -1060,13 +1175,14 @@ pub fn run_direct_probe_after_recovery(
             // is exactly on [temp]). The primary mover has already exited
             // (reaped above), so the independent public self-restore runs
             // now through the held Child — usable after the mover's exit by
-            // construction. An inverse DIRECT move is never attempted here.
+            // construction. An inverse SLS move is never attempted here.
             if !unchanged {
                 notes.push(format!(
-                    "direct moved current {current_before:?} -> {current_after:?}; public restore still targets membership [{original}] first"
+                    "{r} moved current {current_before:?} -> {current_after:?}; public restore still targets membership [{original}] first"
                 ));
             }
             let (restored, exact, frame_ok) = restore_and_resettle(
+                route,
                 child,
                 owned,
                 helper_pid,
@@ -1080,23 +1196,28 @@ pub fn run_direct_probe_after_recovery(
             )?;
             if !exact {
                 return Err(McError::Blocked(format!(
-                    "direct public restore membership is {restored:?}, not exactly [{original}]; preserving for cleanup"
+                    "{r} public restore membership is {restored:?}, not exactly [{original}]; preserving for cleanup"
                 )));
             }
             if !frame_ok {
-                return Err(McError::Blocked(
-                    "direct public restore frame not exactly restored".to_owned(),
-                ));
+                return Err(McError::Blocked(format!(
+                    "{r} public restore frame not exactly restored"
+                )));
             }
             Ok(DirectProbeReport {
                 attempted: true,
+                route: r.to_owned(),
                 outcome: outcome.as_str().to_owned(),
                 target: temp,
                 preimage: original,
                 mover_exited: mover.exited,
                 mover_exit_code: mover.exit_code,
                 mover_dispatch: mover.dispatch,
-                mover_error: None,
+                // Normally `None` here (a parsed report carries no error);
+                // a route mismatch downgrades attribution above and its
+                // named error travels in this field instead of being
+                // dropped. Never an efficacy claim either way.
+                mover_error: mover.error.clone(),
                 mover_stdout: mover.stdout_kept.clone(),
                 mover_stderr: mover.stderr_kept.clone(),
                 mover_exe: mover.exe.clone(),
@@ -1127,6 +1248,7 @@ pub fn run_direct_probe_after_recovery(
             // Space assignment) — then still fail with the restore evidence
             // attached, never a silent Ok.
             let restore_evidence = match restore_and_resettle(
+                route,
                 child,
                 owned,
                 helper_pid,
@@ -1143,17 +1265,91 @@ pub fn run_direct_probe_after_recovery(
                 ),
                 Err(e) => format!("restore leg itself failed before verification: {e}"),
             };
-            notes.push(format!("direct ambiguous restore: {restore_evidence}"));
+            notes.push(format!("{r} ambiguous restore: {restore_evidence}"));
             Err(McError::Blocked(format!(
-                "direct outcome {} with changed membership {delayed_spaces:?} (dispatch {}); independent public restore attempted BEFORE this error verdict (never helper kill): {restore_evidence}; preserving for cleanup",
+                "{r} outcome {} with changed membership {delayed_spaces:?} (dispatch {}); independent public restore attempted BEFORE this error verdict (never helper kill): {restore_evidence}; preserving for cleanup",
                 outcome.as_str(),
                 mover.dispatch.as_str()
             )))
         }
         ProbeAftermath::FailNoRestore => Err(McError::Blocked(format!(
-            "direct outcome ambiguous with unreadable delayed membership (immediate={immediate_spaces:?} delayed={delayed_spaces:?}); no verifiable restore target, so no blind restore is claimed — preserving for cleanup"
+            "{r} outcome ambiguous with unreadable delayed membership (immediate={immediate_spaces:?} delayed={delayed_spaces:?}); no verifiable restore target, so no blind restore is claimed - preserving for cleanup"
         ))),
     }
+}
+
+/// Direct entrypoint: preserves the existing `--probe-direct` behavior
+/// exactly (route `direct`, default mover argv).
+#[allow(clippy::too_many_arguments)]
+pub fn run_direct_probe_after_recovery(
+    child: &mut std::process::Child,
+    owned: &crate::ownership::OwnedIdentity,
+    helper_pid: u32,
+    helper_nonce: &str,
+    helper_path: &str,
+    wid: u32,
+    baseline_frame_ax: Option<crate::ffi::AxFrame>,
+    original: u64,
+    temp: u64,
+    display: usize,
+    helper_deadline: std::time::Instant,
+    notes: &mut Vec<String>,
+    latencies: &mut Vec<LegLatency>,
+) -> Result<DirectProbeReport, McError> {
+    run_probe_after_recovery(
+        crate::spaces::SpaceMoveRoute::Direct,
+        child,
+        owned,
+        helper_pid,
+        helper_nonce,
+        helper_path,
+        wid,
+        baseline_frame_ax,
+        original,
+        temp,
+        display,
+        helper_deadline,
+        notes,
+        latencies,
+    )
+}
+
+/// Bridged entrypoint: one bridged dispatch in the mover child with the
+/// same ownership/topology/session/preimage checks, delayed readbacks, and
+/// independent public self-restore once the mover exits. Same no-retry,
+/// no-fallback rules as the direct probe.
+#[allow(clippy::too_many_arguments)]
+pub fn run_bridged_probe_after_recovery(
+    child: &mut std::process::Child,
+    owned: &crate::ownership::OwnedIdentity,
+    helper_pid: u32,
+    helper_nonce: &str,
+    helper_path: &str,
+    wid: u32,
+    baseline_frame_ax: Option<crate::ffi::AxFrame>,
+    original: u64,
+    temp: u64,
+    display: usize,
+    helper_deadline: std::time::Instant,
+    notes: &mut Vec<String>,
+    latencies: &mut Vec<LegLatency>,
+) -> Result<DirectProbeReport, McError> {
+    run_probe_after_recovery(
+        crate::spaces::SpaceMoveRoute::Bridged,
+        child,
+        owned,
+        helper_pid,
+        helper_nonce,
+        helper_path,
+        wid,
+        baseline_frame_ax,
+        original,
+        temp,
+        display,
+        helper_deadline,
+        notes,
+        latencies,
+    )
 }
 
 /// One independent public restore leg through the held Child plus the
@@ -1162,6 +1358,7 @@ pub fn run_direct_probe_after_recovery(
 /// `[original]`, and the frame match. Callers decide the verdict.
 #[allow(clippy::too_many_arguments)]
 fn restore_and_resettle(
+    route: crate::spaces::SpaceMoveRoute,
     child: &mut std::process::Child,
     owned: &crate::ownership::OwnedIdentity,
     helper_pid: u32,
@@ -1173,10 +1370,12 @@ fn restore_and_resettle(
     latencies: &mut Vec<LegLatency>,
     notes: &mut Vec<String>,
 ) -> Result<(Option<Vec<u64>>, bool, bool), McError> {
+    let r = route.as_str();
     let t_restore = std::time::Instant::now();
-    let evidence = run_public_restore_leg(child, helper_pid, helper_nonce, helper_path, wid)?;
+    let evidence =
+        run_public_restore_leg(route, child, helper_pid, helper_nonce, helper_path, wid)?;
     latencies.push(LegLatency {
-        leg: "direct-public-restore".to_owned(),
+        leg: probe_leg_name(route, "public-restore"),
         ms: t_restore.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
     });
     let _ = evidence;
@@ -1198,7 +1397,7 @@ fn restore_and_resettle(
         .unwrap_or(None);
     let frame_ok = frame.is_some() && frame == baseline_frame_ax;
     notes.push(format!(
-        "direct public restore: membership={restored:?} exact={exact} frame_matches_baseline={frame_ok}"
+        "{r} public restore: membership={restored:?} exact={exact} frame_matches_baseline={frame_ok}"
     ));
     Ok((restored, exact, frame_ok))
 }
@@ -1228,6 +1427,137 @@ mod tests {
         // Opt-in without --allow-untested refuses before any live touch.
         assert!(validate_probe_direct_args(true, false).is_err());
         assert!(validate_probe_direct_args(true, true).unwrap());
+    }
+
+    #[test]
+    fn probe_bridged_flag_preserves_default_and_requires_opt_in() {
+        // Default absent: old fixture unchanged (false passes through).
+        assert!(!validate_probe_bridged_args(false, true).unwrap());
+        assert!(!validate_probe_bridged_args(false, false).unwrap());
+        // Opt-in without --allow-untested refuses before any live touch.
+        assert!(validate_probe_bridged_args(true, false).is_err());
+        assert!(validate_probe_bridged_args(true, true).unwrap());
+    }
+
+    #[test]
+    fn probe_selection_refuses_both_routes_before_any_spawn() {
+        // Exactly one probe route per run: both flags together refuse with
+        // no fallback and no replay.
+        assert!(validate_probe_selection(false, false).is_ok());
+        assert!(validate_probe_selection(true, false).is_ok());
+        assert!(validate_probe_selection(false, true).is_ok());
+        let err = validate_probe_selection(true, true).unwrap_err();
+        assert!(err.contains("exactly one probe route"));
+        assert!(err.contains("no fallback"));
+    }
+
+    #[test]
+    fn probe_leg_names_carry_the_selected_route() {
+        // Every latency entry names its route: the report's timing is
+        // attributable to direct or bridged, never ambiguous.
+        assert_eq!(
+            probe_leg_name(crate::spaces::SpaceMoveRoute::Direct, "mover"),
+            "direct-mover"
+        );
+        assert_eq!(
+            probe_leg_name(crate::spaces::SpaceMoveRoute::Bridged, "mover"),
+            "bridged-mover"
+        );
+        assert_eq!(
+            probe_leg_name(crate::spaces::SpaceMoveRoute::Bridged, "settle"),
+            "bridged-settle"
+        );
+        assert_eq!(
+            probe_leg_name(crate::spaces::SpaceMoveRoute::Bridged, "public-restore"),
+            "bridged-public-restore"
+        );
+    }
+
+    #[test]
+    fn bridged_mover_argv_selects_route_explicitly() {
+        // The direct argv is unchanged (the command default is direct, no
+        // flag); the bridged argv appends the explicit selection. Neither
+        // shape broadens the target: only the verified WID is written.
+        assert_eq!(
+            mover_argv_bridged(4242, "0123456789abcdef", 7, 66),
+            vec![
+                "spaces-move",
+                "--pid",
+                "4242",
+                "--nonce",
+                "0123456789abcdef",
+                "--wid",
+                "7",
+                "--space",
+                "66",
+                "--allow-untested",
+                "--route",
+                "bridged",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+        );
+        assert!(
+            !mover_argv(4242, "0123456789abcdef", 7, 66)
+                .iter()
+                .any(|a| a == "--route")
+        );
+    }
+
+    #[test]
+    fn bridged_effect_and_ambiguity_restore_through_public_path() {
+        // The shared classify/aftermath pipeline serves the bridged probe:
+        // an exact [target] effect (verified or unknown provenance)
+        // restores through the independent public path, and a
+        // changed-but-not-exact readback restores BEFORE the error verdict.
+        let effect = inputs(DispatchState::Yes, Some(vec![66]), Some(vec![66]));
+        assert_eq!(
+            classify_direct(&effect, 1, 66),
+            DirectOutcome::DispatchedEffect
+        );
+        assert_eq!(
+            plan_aftermath(DirectOutcome::DispatchedEffect, &effect.delayed),
+            ProbeAftermath::RestoreExpectOk
+        );
+        let unknown = inputs(DispatchState::Unknown, None, Some(vec![66]));
+        assert_eq!(
+            classify_direct(&unknown, 1, 66),
+            DirectOutcome::UnknownEffect
+        );
+        assert_eq!(
+            plan_aftermath(DirectOutcome::UnknownEffect, &unknown.delayed),
+            ProbeAftermath::RestoreExpectOk
+        );
+        let ambiguous = inputs(DispatchState::Yes, Some(vec![1]), Some(vec![1, 66]));
+        assert_eq!(classify_direct(&ambiguous, 1, 66), DirectOutcome::Ambiguous);
+        assert_eq!(
+            plan_aftermath(DirectOutcome::Ambiguous, &ambiguous.delayed),
+            ProbeAftermath::RestoreExpectErr
+        );
+    }
+
+    #[test]
+    fn bridged_unavailable_refusal_is_rejection_not_no_effect() {
+        // The mover core refuses an unavailable bridged route with an
+        // `unsupported:` gate before dispatch; the harness classifies that
+        // clean refusal (membership home) as Rejected with no inverse - never
+        // as observed no-effect, never as an effect.
+        assert!(positive_predispatch_refusal(
+            Some(1),
+            "unsupported: bridged route unavailable (dispatcher=false class=false selector=false); refusing without a fallback - this is not a SIP failure"
+        ));
+        let refused = DirectInputs {
+            dispatched: DispatchState::No,
+            mover_error: Some("unsupported: bridged route unavailable".to_owned()),
+            immediate: None,
+            delayed: Some(vec![1]),
+        };
+        assert_eq!(classify_direct(&refused, 1, 66), DirectOutcome::Rejected);
+        assert_eq!(
+            plan_aftermath(DirectOutcome::Rejected, &refused.delayed),
+            ProbeAftermath::VerifyNoInverse
+        );
     }
 
     #[test]
@@ -1434,6 +1764,60 @@ mod tests {
         assert!(report.effect_verified);
         // Pure chatter with no report parses to nothing (Unknown, never No).
         assert!(extract_mover_report("helper snapshot line\nmore chatter\n").is_none());
+    }
+
+    #[test]
+    fn mover_report_route_names_the_dispatched_route() {
+        // The mover's structured report carries the dispatch it took, so the
+        // harness can prove the selected route ran (no silent substitution).
+        let body = |route: &str| {
+            format!(
+                "{{\"report\":{{\"purpose\":\"move\",\"pid\":9,\"wid\":7,\"preimage_spaces\":[1],\"cg_baseline\":null,\"target_space\":66,\"route\":\"{route}\",\"symbols\":{{\"direct\":true,\"compat_pair\":false,\"bridged_async\":false}},\"effect_spaces\":[1],\"effect_error\":null,\"effect_verified\":false}}}}"
+            )
+        };
+        let direct = extract_mover_report(&body("direct")).expect("direct report parses");
+        assert_eq!(direct.route, "direct");
+        let bridged = extract_mover_report(&body("bridged")).expect("bridged report parses");
+        assert_eq!(bridged.route, "bridged");
+    }
+
+    #[test]
+    fn route_mismatch_downgrades_attribution_but_still_restores() {
+        // Requested bridged, mover reports direct: attribution downgrades to
+        // Unknown with both routes named - never an efficacy claim for
+        // either route. With delayed exact [target] the shared pipeline
+        // still plans the independent public restore (no early return, no
+        // stranded window).
+        let (dispatch, mismatch) =
+            reconcile_report_route("bridged", DispatchState::Yes, Some("direct"));
+        assert_eq!(dispatch, DispatchState::Unknown);
+        let err = mismatch.expect("mismatch names both routes");
+        assert!(err.contains("bridged"), "unexpected: {err}");
+        assert!(err.contains("direct"), "unexpected: {err}");
+        assert!(err.contains("no efficacy claimed"), "unexpected: {err}");
+        let changed = DirectInputs {
+            dispatched: dispatch,
+            mover_error: Some(err),
+            immediate: None,
+            delayed: Some(vec![66]),
+        };
+        assert_eq!(
+            classify_direct(&changed, 1, 66),
+            DirectOutcome::UnknownEffect
+        );
+        assert_eq!(
+            plan_aftermath(DirectOutcome::UnknownEffect, &changed.delayed),
+            ProbeAftermath::RestoreExpectOk
+        );
+        // Agreement passes dispatch through untouched (no error, no
+        // downgrade); no report (refusal path) is not a mismatch either.
+        let (dispatch, mismatch) =
+            reconcile_report_route("bridged", DispatchState::Yes, Some("bridged"));
+        assert_eq!(dispatch, DispatchState::Yes);
+        assert!(mismatch.is_none());
+        let (dispatch, mismatch) = reconcile_report_route("bridged", DispatchState::No, None);
+        assert_eq!(dispatch, DispatchState::No);
+        assert!(mismatch.is_none());
     }
 
     #[test]

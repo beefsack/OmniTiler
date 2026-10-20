@@ -61,8 +61,24 @@ pub struct PublishedDisplayInputs {
 // the worker rebind path, and the engine read on every fence. Replaced
 // wholesale per snapshot, never mutated in place, so readers always see
 // one consistent revision. Plain data only.
+//
+// The cell also carries a coalesced invalidation generation: every
+// revision-changing publication (a new fingerprint, a clear, or a
+// clear-then-republish even at an identical revision) plus every verified
+// arrival request bumps it exactly once. Bursts coalesce (many bumps, one
+// pending mark). Each per-app owner consumes the generation once per pump:
+// a bump requests one whole-owner reread on the next owner pump even when
+// the backstop is silent and the revision is unchanged (arrival). The
+// generation is consumed even when the reread fails (no stale retry
+// loops); the backstop recovers and only a new bump rereads again.
 #[derive(Debug, Clone, Default)]
-pub struct NativeContextCell(Arc<Mutex<Option<Arc<NativeContext>>>>);
+pub struct NativeContextCell(Arc<Mutex<CellState>>);
+
+#[derive(Debug, Clone, Default)]
+struct CellState {
+    ctx: Option<Arc<NativeContext>>,
+    generation: u64,
+}
 
 impl NativeContextCell {
     #[must_use]
@@ -70,18 +86,56 @@ impl NativeContextCell {
         Self::default()
     }
 
-    /// Publish a freshly derived context (or clear it with `None`).
+    /// Publish a freshly derived context (or clear it with `None`). The
+    /// generation bumps exactly when the effective publication changes: a
+    /// `None`-to-`Some`/`Some`-to-`None` transition or a revision move. A
+    /// same-revision republish (including a recovered snapshot after a
+    /// clear, which transitions `None`-to-`Some` and therefore bumps)
+    /// never double-counts steady state.
     pub fn store(&self, ctx: Option<Arc<NativeContext>>) {
-        *self.0.lock().unwrap_or_else(|poison| poison.into_inner()) = ctx;
+        let mut state = self.0.lock().unwrap_or_else(|poison| poison.into_inner());
+        let changed = match (&state.ctx, &ctx) {
+            (None, None) => false,
+            (None, Some(_)) | (Some(_), None) => true,
+            (Some(current), Some(next)) => current.revision != next.revision,
+        };
+        state.ctx = ctx;
+        if changed {
+            state.generation = state.generation.wrapping_add(1);
+        }
+    }
+
+    /// Request one whole-owner reread without a topology change (verified
+    /// native arrival): unconditionally bumps the generation once. Bursts
+    /// coalesce into the single pending mark the owners consume once.
+    pub fn request_reread(&self) {
+        let mut state = self.0.lock().unwrap_or_else(|poison| poison.into_inner());
+        state.generation = state.generation.wrapping_add(1);
     }
 
     /// Load the current context, if any.
     #[must_use]
     pub fn load(&self) -> Option<Arc<NativeContext>> {
+        self.load_versioned().0
+    }
+
+    /// Load the current context plus its invalidation generation under one
+    /// lock, so an owner never pairs a context with a newer generation
+    /// than the one it consumed.
+    #[must_use]
+    pub fn load_versioned(&self) -> (Option<Arc<NativeContext>>, u64) {
+        let state = self.0.lock().unwrap_or_else(|poison| poison.into_inner());
+        (state.ctx.clone(), state.generation)
+    }
+
+    /// Current invalidation generation (brief lock; owners prefer
+    /// [`NativeContextCell::load_versioned`] to pair it with the context).
+    #[must_use]
+    pub fn generation(&self) -> u64 {
         self.0
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
-            .clone()
+            .generation
     }
 }
 
@@ -335,4 +389,64 @@ pub(crate) fn engine_alive(shared: &Mutex<Shared>) -> bool {
         .engine_handle
         .as_ref()
         .is_none_or(|h| !h.is_finished())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ctx(revision: u64) -> Arc<NativeContext> {
+        Arc::new(NativeContext {
+            revision,
+            domains: Vec::new(),
+            skipped: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn generation_bumps_only_on_effective_publication_change() {
+        let cell = NativeContextCell::new();
+        assert_eq!(cell.generation(), 0);
+        assert_eq!(cell.load_versioned().1, 0);
+        // Clearing an empty cell never bumps (no spurious reread).
+        cell.store(None);
+        assert_eq!(cell.generation(), 0);
+        // Initial publication bumps once.
+        cell.store(Some(ctx(7)));
+        assert_eq!(cell.generation(), 1);
+        // A same-revision republish never bumps (steady state stays quiet).
+        cell.store(Some(ctx(7)));
+        assert_eq!(cell.generation(), 1);
+        // A revision move bumps.
+        cell.store(Some(ctx(8)));
+        assert_eq!(cell.generation(), 2);
+        // A clear bumps (Some-to-None): the loss is consumable once.
+        cell.store(None);
+        assert_eq!(cell.generation(), 3);
+        // Clearing an already-cleared cell never bumps.
+        cell.store(None);
+        assert_eq!(cell.generation(), 3);
+        // A recovered snapshot republishes even at the pre-failure
+        // revision (None-to-Some): the owners reread the restored truth.
+        cell.store(Some(ctx(8)));
+        assert_eq!(cell.generation(), 4);
+    }
+
+    #[test]
+    fn arrival_request_bumps_and_pairs_with_the_context() {
+        let cell = NativeContextCell::new();
+        cell.store(Some(ctx(7)));
+        let base = cell.generation();
+        // Bursts bump once each and the owner consumes the run as one
+        // pending reread; the paired load never splits the context from
+        // its generation.
+        cell.request_reread();
+        cell.request_reread();
+        cell.request_reread();
+        assert_eq!(cell.generation(), base + 3);
+        let (loaded, generation) = cell.load_versioned();
+        assert_eq!(loaded.map(|c| c.revision), Some(7));
+        assert_eq!(generation, base + 3);
+        assert_eq!(cell.load().map(|c| c.revision), Some(7));
+    }
 }

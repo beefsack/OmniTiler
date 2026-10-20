@@ -1136,6 +1136,7 @@ fn spaces_owned_recovery_parses_existing_sids_with_opt_in() {
             seconds: crate::config::MAX_PROBE_SECONDS,
             allow_untested: true,
             probe_direct: false,
+            probe_bridged: false,
         }
     ));
     let r = parse_args(&argv(&[
@@ -1185,6 +1186,7 @@ fn spaces_owned_recovery_probe_direct_is_opt_in_only() {
         r.command,
         Command::SpacesOwnedRecovery {
             probe_direct: false,
+            probe_bridged: false,
             ..
         }
     ));
@@ -1207,10 +1209,160 @@ fn spaces_owned_recovery_probe_direct_is_opt_in_only() {
             original: 1,
             temp: 66,
             probe_direct: true,
+            probe_bridged: false,
             allow_untested: true,
             ..
         }
     ));
+}
+
+#[test]
+fn spaces_owned_recovery_probe_bridged_is_opt_in_only() {
+    // Default absent: the public O->T->O fixture is unchanged.
+    let r = parse_args(&argv(&[
+        "spaces-owned-recovery",
+        "--original",
+        "1",
+        "--temp",
+        "66",
+        "--allow-untested",
+    ]))
+    .unwrap();
+    assert!(matches!(
+        r.command,
+        Command::SpacesOwnedRecovery {
+            probe_bridged: false,
+            ..
+        }
+    ));
+    // Explicit opt-in rides along; the runner gates require --allow-untested
+    // and refuse both probe flags together (selection is explicit, never a
+    // fallback - enforced in the runner, not the parser).
+    let r = parse_args(&argv(&[
+        "spaces-owned-recovery",
+        "--original",
+        "1",
+        "--temp",
+        "66",
+        "--allow-untested",
+        "--probe-bridged",
+    ]))
+    .unwrap();
+    assert!(r.may_mutate);
+    assert!(matches!(
+        r.command,
+        Command::SpacesOwnedRecovery {
+            original: 1,
+            temp: 66,
+            probe_direct: false,
+            probe_bridged: true,
+            allow_untested: true,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn spaces_move_route_defaults_direct_and_parses_bridged() {
+    use crate::spaces::SpaceMoveRoute;
+    // Default absent: the existing direct behavior is unchanged.
+    let r = parse_args(&argv(&[
+        "spaces-move",
+        "--pid",
+        "9",
+        "--nonce",
+        "0123456789abcdef",
+        "--wid",
+        "3",
+        "--space",
+        "5",
+    ]))
+    .unwrap();
+    assert!(r.may_mutate);
+    assert!(matches!(
+        r.command,
+        Command::SpacesMove {
+            pid: 9,
+            wid: 3,
+            space: 5,
+            route: SpaceMoveRoute::Direct,
+            allow_untested: false,
+            ..
+        }
+    ));
+    // Explicit bridged selection rides along with the opt-in.
+    let r = parse_args(&argv(&[
+        "spaces-move",
+        "--pid",
+        "9",
+        "--nonce",
+        "0123456789abcdef",
+        "--wid",
+        "3",
+        "--space",
+        "5",
+        "--route",
+        "bridged",
+        "--allow-untested",
+    ]))
+    .unwrap();
+    assert!(matches!(
+        r.command,
+        Command::SpacesMove {
+            route: SpaceMoveRoute::Bridged,
+            allow_untested: true,
+            ..
+        }
+    ));
+    // Unknown routes refuse (no fallback); a missing value refuses;
+    // spaces-restore takes no --route (independent restore is direct-only).
+    assert!(
+        parse_args(&argv(&[
+            "spaces-move",
+            "--pid",
+            "9",
+            "--nonce",
+            "0123456789abcdef",
+            "--wid",
+            "3",
+            "--space",
+            "5",
+            "--route",
+            "auto",
+        ]))
+        .is_err()
+    );
+    assert!(
+        parse_args(&argv(&[
+            "spaces-move",
+            "--pid",
+            "9",
+            "--nonce",
+            "0123456789abcdef",
+            "--wid",
+            "3",
+            "--space",
+            "5",
+            "--route",
+        ]))
+        .is_err()
+    );
+    assert!(
+        parse_args(&argv(&[
+            "spaces-restore",
+            "--pid",
+            "9",
+            "--nonce",
+            "0123456789abcdef",
+            "--wid",
+            "3",
+            "--space",
+            "5",
+            "--route",
+            "bridged",
+        ]))
+        .is_err()
+    );
 }
 
 #[test]

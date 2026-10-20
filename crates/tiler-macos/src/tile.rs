@@ -1534,6 +1534,17 @@ mod native {
         display_notified || !slot_populated
     }
 
+    /// Main-thread cadence gate over explicit inputs (pure, testable): the
+    /// 250 ms cadence stays the idle backstop, but a pending display/Space
+    /// notification (stashed before the gate, so the 50 ms app pump never
+    /// loses it) runs the cadence body early - topology and the
+    /// send/select completion polls settle on the event instead of the next
+    /// cadence. The early run resets the cadence clock, so idle polling
+    /// never permanently quickens.
+    fn cadence_due(elapsed: Duration, display_pending: bool) -> bool {
+        elapsed >= CADENCE || display_pending
+    }
+
     /// Current visible work areas in CG top-left points for the zoom
     /// heuristic (one entry per display with converted geometry).
     fn visibles_of(
@@ -2092,6 +2103,13 @@ mod native {
         let mut last_cadence = Instant::now()
             .checked_sub(CADENCE)
             .unwrap_or_else(Instant::now);
+        // Pending display/Space notification stashed before the cadence
+        // gate: the 50 ms app pump takes the guard flag every iteration so
+        // no event waits for the 250 ms cadence, and the stash (never the
+        // raw flag) drives the early run below - a skipped early run keeps
+        // its wakeup instead of losing it. Cleared when the cadence body
+        // consumes it.
+        let mut display_pending = false;
         // Last publisher-woken border-only join (fast path below throttles
         // against this; starts at first-pump so an early burst joins).
         let mut last_border_fast = Instant::now();
@@ -2156,6 +2174,14 @@ mod native {
                 crate::ffi::drain_app_events(&app);
                 crate::ffi::pump_runloop_once(50);
             });
+            // Event stash for the cadence gate below: take the guard flag
+            // on every 50 ms pump so a display/Space notification never
+            // waits for the 250 ms cadence, and stash it (never act here)
+            // so a skipped early run keeps its wakeup. The cadence body
+            // consumes the stash with the same lock/secure gates as ever.
+            if display_flag.take_changed() {
+                display_pending = true;
+            }
             // Border-only fast path: a publisher publish/invalidation sets
             // the wakeup flag, and this re-runs ONLY the border join (no
             // topology, no tiling, no AX) — throttled so AX-frequency
@@ -2183,10 +2209,19 @@ mod native {
                     &handle,
                 );
             }
-            if last_cadence.elapsed() < CADENCE {
+            if cadence_due(last_cadence.elapsed(), display_pending) {
+                last_cadence = Instant::now();
+            } else {
+                // The app pump still took the guard flag above (stashed in
+                // `display_pending`), so an early run skipped here keeps its
+                // wakeup for the next pump - nothing is lost by waiting.
                 continue;
             }
-            last_cadence = Instant::now();
+            // Consume the stashed notification at the topology site below
+            // (after the lock/secure gates, which `continue` without
+            // consuming): a concurrent flag set between the pre-gate take
+            // and that poll joins via a second take, so no event is lost
+            // either way.
             cadence_count += 1;
             // Foreground verbosity: lifecycle/recovery lines always stream;
             // verbose adds a counter heartbeat, trace shortens it and adds
@@ -2359,8 +2394,12 @@ mod native {
             // plus startup above, plus recovery when the slot stands empty
             // (a transient unreadable read clears it — the next good
             // snapshot restores it without waiting for a notification), so
-            // a quiet poll with a populated slot never moves it.
-            let display_notified = display_flag.take_changed();
+            // a quiet poll with a populated slot never moves it. The stash
+            // take below runs after the lock/secure gates (which `continue`
+            // without consuming), and joins a concurrent flag set racing
+            // the gate, so no event is lost either way.
+            let display_notified =
+                std::mem::replace(&mut display_pending, false) || display_flag.take_changed();
             if display_notified {
                 display_events += 1;
             }
@@ -2729,6 +2768,8 @@ mod native {
                                 row.current,
                                 &row.display,
                                 claim.operation_id.as_deref().unwrap_or("none"),
+                                claim.topology_revision,
+                                crate::input_eligibility::now_ms(),
                             )
                         });
                         let submit =
@@ -3412,6 +3453,23 @@ mod native {
             assert!(!border_fast_due(true, true, Duration::from_millis(32)));
             assert!(border_fast_due(true, true, Duration::from_millis(33)));
             assert!(border_fast_due(true, true, Duration::from_secs(10)));
+        }
+
+        #[test]
+        fn cadence_gate_runs_early_only_on_a_stashed_event() {
+            // Idle pumps stay quiet: a fresh elapsed time with no stashed
+            // event never runs the body, so the 250 ms cadence stays the
+            // idle backstop.
+            assert!(!cadence_due(Duration::from_millis(0), false));
+            assert!(!cadence_due(Duration::from_millis(50), false));
+            assert!(!cadence_due(Duration::from_millis(249), false));
+            // A stashed display/Space notification runs the body early
+            // (topology plus the completion polls settle on the event).
+            assert!(cadence_due(Duration::from_millis(0), true));
+            assert!(cadence_due(Duration::from_millis(50), true));
+            // The cadence itself still fires with no event.
+            assert!(cadence_due(Duration::from_millis(250), false));
+            assert!(cadence_due(Duration::from_secs(10), false));
         }
     }
 }

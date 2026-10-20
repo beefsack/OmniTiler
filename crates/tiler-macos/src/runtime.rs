@@ -734,6 +734,12 @@ impl RuntimeHandle {
     /// (legacy fixtures keep revision 0); native mode requires them before
     /// scoped observations admit.
     ///
+    /// The shared cell publication bumps the owner invalidation generation
+    /// exactly when the effective revision changes (see
+    /// [`NativeContextCell::store`]): a changed revision requests one
+    /// whole-owner reread on every owner's next pump; a same-revision
+    /// republish requests nothing new.
+    ///
     /// In native mode this also derives the shared tile context with the
     /// live read-only Space-type read (main thread): skipped displays are
     /// emitted with reasons and tile nothing. See
@@ -851,7 +857,10 @@ impl RuntimeHandle {
 
     /// Invalidate the published native context after an unreadable topology
     /// snapshot read: clears the live cell and the stored snapshot alike so
-    /// no stale revision keeps authorizing effects. Scoped submissions
+    /// no stale revision keeps authorizing effects. The clear bumps the
+    /// owner invalidation generation (a `Some`-to-`None` transition), so
+    /// owners consume the loss once instead of rereading a cleared cell on
+    /// retry. Scoped submissions
     /// refuse (`StaleGeneration`), the engine fences (`no-context`), and
     /// bound backends fail every scoped call closed until the next
     /// successful [`RuntimeHandle::update_topology`]. Supplied for the main
@@ -870,6 +879,18 @@ impl RuntimeHandle {
         // under it; the next dispatch refuses no-context instead.
         invalidate_clock(&self.shared);
         emit(&self.shared, 0, 0, 0, "topology", "invalidated", 0);
+    }
+
+    /// Request one whole-owner reread without a topology change. The
+    /// verified-arrival path calls this from the effect owner upon exact
+    /// native readback (see [`crate::workspace_send_native`]): the bump
+    /// requests a reread on every owner's next pump even at an unchanged
+    /// revision. Coalesced (bursts merge into one pending mark), consumed
+    /// once per owner even on a failed reread, and never a retry loop - the
+    /// backstop recovers and only a new bump rereads again. Brief lock
+    /// only; never AX, never a fence move.
+    pub fn request_owner_reread(&self) {
+        lock_shared(&self.shared).native_cell.request_reread();
     }
 
     /// Current topology revision fence (`None` until the first snapshot).

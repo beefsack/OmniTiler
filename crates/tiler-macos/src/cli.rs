@@ -72,6 +72,7 @@ pub enum Command {
         nonce: String,
         wid: u32,
         space: u64,
+        route: crate::spaces::SpaceMoveRoute,
         allow_untested: bool,
     },
     SpacesRestore {
@@ -185,6 +186,7 @@ pub enum Command {
         seconds: u64,
         allow_untested: bool,
         probe_direct: bool,
+        probe_bridged: bool,
     },
     SpacesBindings,
     SpacesDesktopApply {
@@ -435,10 +437,10 @@ pub fn help_text() -> String {
            \x20 \x20 DIR/outcome.json);\n\
            \x20 \x20 no native-setting writes on any path; stop leaves windows in\n\
            \x20 \x20 place, never restores)\n\
-            \x20 spaces-move --pid PID --nonce HEX --wid WID --space ID --allow-untested\n\
-            \x20 \x20 (direct-SLS owned move with preimage + effect readback; experimental:\n\
-            \x20 \x20 one gated dispatch observed no-effect on an owned fixture;\n\
-            \x20 \x20 explicit opt-in per invocation; never auto-restores — run spaces-restore\n\
+            \x20 spaces-move --pid PID --nonce HEX --wid WID --space ID [--route direct|bridged] --allow-untested\n\
+            \x20 \x20 (owned SLS move with preimage + effect readback; experimental:\n\
+            \x20 \x20 one gated dispatch observed no-effect on an owned fixture (direct);\n\
+            \x20 \x20 explicit route (default direct, no fallback) plus opt-in per invocation; never auto-restores - run spaces-restore\n\
             \x20 \x20 separately; the single-shot inverse is unverified, the separate\n\
             \x20 \x20 public held-Child recovery is proven per run)\n\
            \x20 spaces-restore --pid PID --nonce HEX --wid WID --space ID --allow-untested\n\
@@ -535,13 +537,13 @@ pub fn help_text() -> String {
               \x20 \x20 to the current Space via MoveToActiveSpace + self-activate\n\
               \x20 \x20 with exact collectionBehavior restore; no WID, no SLS,\n\
               \x20 \x20 no synthetic events; needs --space-join helper)\n\
-            \x20 spaces-owned-recovery --original SID --temp SID [--seconds N] --allow-untested [--probe-direct]\n\
+            \x20 spaces-owned-recovery --original SID --temp SID [--seconds N] --allow-untested [--probe-direct|--probe-bridged]\n\
             \x20 \x20 (bounded owned public recovery battery, default 120s, minimum 60s:\n\
             \x20 \x20 spawn one regular-policy helper, prove O->T->O with exact\n\
             \x20 \x20 membership plus exact frame restoration, stop exactly that\n\
             \x20 \x20 helper; creates/destroys no Space, attempts no SLS move,\n\
             \x20 \x20 posts no synthetic events; explicit opt-in per invocation;\n\
-            \x20 \x20 --probe-direct additionally runs ONE gated direct-SLS move\n\
+            \x20 \x20 --probe-direct additionally runs ONE gated direct-SLS move (or --probe-bridged ONE gated bridged move; never both)\n\
             \x20 \x20 after O->T->O in a separate short-lived mover child with\n\
             \x20 \x20 delayed readbacks plus independent public restore)\n\
             \x20 spaces-bindings\n\
@@ -1040,6 +1042,8 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
             let mut nonce: Option<String> = None;
             let mut wid: Option<u32> = None;
             let mut space: Option<u64> = None;
+            let mut route = crate::spaces::SpaceMoveRoute::Direct;
+            let mut route_seen = false;
             let mut allow_untested = false;
             let mut j = 0;
             while j < args.len() {
@@ -1069,6 +1073,13 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                             "--space",
                         )?);
                     }
+                    "--route" => {
+                        j += 1;
+                        route = crate::spaces::SpaceMoveRoute::parse(
+                            args.get(j).ok_or("--route needs a value")?,
+                        )?;
+                        route_seen = true;
+                    }
                     "--allow-untested" => {
                         allow_untested = true;
                     }
@@ -1086,9 +1097,16 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                     nonce,
                     wid,
                     space,
+                    route,
                     allow_untested,
                 }
             } else {
+                if route_seen {
+                    return Err(
+                        "spaces-restore takes no --route (independent restore is always direct)"
+                            .to_owned(),
+                    );
+                }
                 Command::SpacesRestore {
                     pid,
                     nonce,
@@ -1752,6 +1770,7 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
             let mut seconds = crate::config::MAX_PROBE_SECONDS;
             let mut allow_untested = false;
             let mut probe_direct = false;
+            let mut probe_bridged = false;
             let mut j = 0;
             while j < args.len() {
                 match args[j].as_str() {
@@ -1780,6 +1799,9 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                     "--probe-direct" => {
                         probe_direct = true;
                     }
+                    "--probe-bridged" => {
+                        probe_bridged = true;
+                    }
                     other => return Err(format!("spaces-owned-recovery: unknown arg '{other}'")),
                 }
                 j += 1;
@@ -1790,6 +1812,7 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                 seconds,
                 allow_untested,
                 probe_direct,
+                probe_bridged,
             }
         }
         "spaces-bindings" => {

@@ -246,6 +246,8 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
                 "connection": diagnosis.connection,
                 "displays": diagnosis.displays,
                 "space_count": diagnosis.space_count(),
+                "symbols": tiler_macos::ffi::sls_move_symbols(),
+                "bridged": tiler_macos::ffi::sls_bridged_availability(),
                 "window_membership": membership,
             })
             .to_string())
@@ -270,24 +272,27 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
             nonce,
             wid,
             space,
+            route,
             allow_untested,
         } => {
-            // Direct-SLS owned move probe (compat disabled, SA omitted).
-            // Experimental live (one gated dispatch observed no-effect on an
-            // owned fixture; single-shot inverse unverified): the report
-            // separates void dispatch from the
+            // Owned SLS move probe (compat disabled, SA omitted).
+            // Experimental live (one gated direct dispatch observed no-effect
+            // on an owned fixture; bridged efficacy unproven; single-shot
+            // inverse unverified): the report separates dispatch from the
             // effect (exact-equality membership readback). Never
             // auto-restores: run spaces-restore separately so the independent
             // restore path is proven on its own (usable after this process
-            // exits). Ownership refusals exit 2 like other identity gates.
+            // exits). The non-selected route is never a fallback.
+            // Ownership refusals exit 2 like other identity gates.
             let owned = tiler_macos::ax::authorize_owned_action(pid, &nonce)
                 .map_err(|e| (2, e.to_string()))?;
-            let report = tiler_macos::spaces::move_owned_window_to_space(
+            let report = tiler_macos::spaces::move_owned_window_to_space_routed(
                 &owned,
                 pid,
                 &nonce,
                 wid,
                 space,
+                route,
                 allow_untested,
             )
             .map_err(|e| match e {
@@ -768,6 +773,7 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
             seconds,
             allow_untested,
             probe_direct,
+            probe_bridged,
         } => {
             // Bounded owned public recovery battery over two existing SIDs:
             // spawns one regular-policy helper, proves O->T->O with exact
@@ -775,13 +781,16 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
             // helper. Creates/destroys no Space, posts no synthetic events.
             // `--probe-direct` additionally runs ONE gated direct-SLS move
             // after O->T->O in a separate short-lived mover child with
-            // delayed readbacks plus independent public restore.
+            // delayed readbacks plus independent public restore;
+            // `--probe-bridged` runs ONE gated bridged move instead (never
+            // both).
             tiler_macos::space_recovery::run_spaces_owned_recovery(
                 original,
                 temp,
                 seconds,
                 allow_untested,
                 probe_direct,
+                probe_bridged,
             )
         }
         Command::SpacesBindings => {

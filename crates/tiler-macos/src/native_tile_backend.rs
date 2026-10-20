@@ -613,6 +613,101 @@ pub fn build_scoped_snapshot(
     })
 }
 
+/// Scoped-reread trigger token for one bounded metadata-only reread line:
+/// `notification` (an observer event woke the owner), `topology` (a
+/// revision-changing publication landed since the owner's last consumed
+/// generation), `arrival` (a verified native arrival requested a reread at
+/// an unchanged revision), `backstop` (silence past one interval forced the
+/// reread for a lost/unsupported notification), or `initial` (first
+/// snapshot through the poll path with no observer yet). `now_ms` is the
+/// process-common clock (comparable across owner threads); the owner-local
+/// backstop clock never reaches this line. Pure.
+#[must_use]
+pub fn format_scoped_reread_line(pid: u32, trigger: &str, now_ms: u64) -> String {
+    format!("tiler-macos tile reread pid={pid} trigger={trigger} now_ms={now_ms}")
+}
+
+/// One bounded metadata-only native frame-set line: the requested rect,
+/// the actual exact AX readback rect (`None` when unreadable, never
+/// guessed), and whether the readback names the request exactly. A posted
+/// dispatch is never read as arrival: `outcome` is the dispatch truth
+/// (`applied` only when every leg reported success) while `exact` is the
+/// observed truth (readback equals request). IDs and geometry only -
+/// never titles, content, or paths. Pure.
+// The attribution join needs request, readback, outcome, exact, clocks,
+// and identity together; callers pass literals, never user text.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn format_frame_set_line(
+    pid: u32,
+    wid: u32,
+    revision: u64,
+    requested_xywh: (i32, i32, i32, i32),
+    readback_xywh: Option<(i32, i32, i32, i32)>,
+    outcome: &str,
+    exact: bool,
+    elapsed_ms: u64,
+    now_ms: u64,
+) -> String {
+    format!(
+        "tiler-macos tile frame-set pid={pid} wid={wid} revision={revision} requested={requested_xywh:?} readback={readback_xywh:?} outcome={outcome} exact={exact} elapsed_ms={elapsed_ms} now_ms={now_ms}"
+    )
+}
+
+/// Consume one owner-side invalidation generation (pure over explicit
+/// inputs; the live side pairs both reads under one cell lock via
+/// [`crate::runtime::NativeContextCell::load_versioned`]). Returns the
+/// pending mark plus the generation to retain: a bump since the last
+/// consumed generation requests exactly one whole-owner reread (`true`),
+/// and the caller adopts the current generation even when the reread then
+/// fails - so bursts coalesce into one reread, a failed reread never
+/// replays, and only a new bump rereads again. `None` (never consumed)
+/// adopts without requesting: startup already published, so the first pump
+/// must not manufacture a reread.
+#[must_use]
+pub fn consume_reread_generation(seen: Option<u64>, current: u64) -> (bool, u64) {
+    match seen {
+        None => (false, current),
+        Some(last) => (last != current, current),
+    }
+}
+
+/// Select one scoped-reread trigger for the next owner pump (pure):
+/// a delivered notification rereads immediately; otherwise a consumed
+/// invalidation bump rereads immediately - attributed `topology` when the
+/// publication revision moved since the owner's last reread, `arrival`
+/// when a verified arrival requested the reread at an unchanged revision.
+/// Silence past the interval rereads on the backstop; a never-read owner
+/// reads immediately (`initial`). Returns `None` when nothing is due, so
+/// the owner stays quiet. Stop withholds everything (checked by the
+/// caller; a stopped owner never reaches this selection).
+#[must_use]
+pub fn select_scoped_reread_trigger(
+    notified: bool,
+    generation_changed: bool,
+    revision_changed: bool,
+    backstop_due: bool,
+    never_read: bool,
+) -> Option<&'static str> {
+    if notified {
+        return Some("notification");
+    }
+    if generation_changed {
+        return Some(if revision_changed {
+            "topology"
+        } else {
+            "arrival"
+        });
+    }
+    if never_read {
+        return Some("initial");
+    }
+    if backstop_due {
+        return Some("backstop");
+    }
+    None
+}
+
 /// Interval between autonomous complete re-reads when no observer
 /// notification arrived (missed/lost/unsupported-notification backstop).
 /// Native observer events stay primary: a delivered notification rereads
@@ -803,6 +898,15 @@ pub struct ScopedAxBackend {
     /// backoff; cleared on success).
     #[cfg(target_os = "macos")]
     backstop_last_failure_ms: Option<u64>,
+    /// Last consumed owner invalidation generation (`None` until the first
+    /// pump adopts without requesting; startup already published).
+    #[cfg(target_os = "macos")]
+    reread_seen_generation: Option<u64>,
+    /// Revision of the owner's last performed poll reread (`None` until
+    /// the first one): attributes a consumed generation bump as `topology`
+    /// (revision moved) or `arrival` (same revision, verified arrival).
+    #[cfg(target_os = "macos")]
+    last_poll_revision: Option<u64>,
 }
 
 impl ScopedAxBackend {
@@ -828,6 +932,10 @@ impl ScopedAxBackend {
             backstop_last_read_ms: None,
             #[cfg(target_os = "macos")]
             backstop_last_failure_ms: None,
+            #[cfg(target_os = "macos")]
+            reread_seen_generation: None,
+            #[cfg(target_os = "macos")]
+            last_poll_revision: None,
         }
     }
 
@@ -888,7 +996,7 @@ impl AxBackend for ScopedAxBackend {
                 self.scope.is_unscoped(),
             );
             let mut setter = native::NativeSetter::new(self.pid, cmd.wid);
-            let (completion, _) = apply_scoped_frame(
+            let (completion, report) = apply_scoped_frame(
                 &self.scope,
                 &self.identity,
                 &gates,
@@ -900,6 +1008,37 @@ impl AxBackend for ScopedAxBackend {
                 elapsed_ms(),
             );
             let _ = ctx;
+            // Frame-set boundary: the log carries the ACTUAL exact AX
+            // readback, never the request alone. `outcome` is dispatch
+            // truth (every leg reported success); `exact` is observed
+            // truth (readback equals the request). A dispatch success with
+            // `exact=false` (or an unreadable readback) is not arrival -
+            // arrival is proven only by a later owned-snapshot join.
+            // Token-only: IDs, revision, geometry, static outcome.
+            let requested_xywh = (cmd.x, cmd.y, cmd.w, cmd.h);
+            let readback_xywh = report
+                .readback
+                .map(|f| (f.x as i32, f.y as i32, f.w as i32, f.h as i32));
+            let outcome = match &completion {
+                AxCompletion::Applied { .. } => "applied",
+                AxCompletion::PartialApplied { .. } => "partial-applied",
+                AxCompletion::Failed { .. } => "failed",
+                AxCompletion::Timeout { .. } => "timeout",
+            };
+            eprintln!(
+                "{}",
+                format_frame_set_line(
+                    self.pid,
+                    cmd.wid,
+                    cmd.topology_revision,
+                    requested_xywh,
+                    readback_xywh,
+                    outcome,
+                    readback_xywh == Some(requested_xywh),
+                    elapsed_ms(),
+                    crate::input_eligibility::now_ms(),
+                )
+            );
             completion
         }
         #[cfg(not(target_os = "macos"))]
@@ -1160,7 +1299,18 @@ mod native {
                 Ok(hook) => hook,
                 Err(reason) => return Some(Err(reason)),
             };
-            let Some(ctx) = hook.cell.load() else {
+            // Pair the context with its invalidation generation under one
+            // cell lock (brief; no AX): a revision-changing publication or
+            // a verified arrival since the last consumed generation
+            // requests one whole-owner reread on this pump, even when the
+            // backstop is silent and the revision is unchanged.
+            let (ctx, generation) = hook.cell.load_versioned();
+            let (generation_changed, seen) =
+                super::consume_reread_generation(self.reread_seen_generation, generation);
+            let Some(ctx) = ctx else {
+                // A cleared cell refuses (existing fence); the loss is
+                // still consumed once so it never re-requests on retry.
+                self.reread_seen_generation = Some(seen);
                 return Some(Err(format!(
                     "pid {}: native context cleared; refusing poll",
                     self.pid
@@ -1183,11 +1333,31 @@ mod native {
                         // window sets need subscriptions now, not on the
                         // next app-level event (which may never come). The
                         // snapshot path syncs the window-level watches.
+                        eprintln!(
+                            "{}",
+                            super::format_scoped_reread_line(
+                                self.pid,
+                                "initial",
+                                crate::input_eligibility::now_ms()
+                            )
+                        );
+                        // The initial read settles both marks: the
+                        // generation is adopted (startup already published)
+                        // and the revision anchors arrival attribution.
+                        self.reread_seen_generation = Some(seen);
+                        self.last_poll_revision = Some(ctx.revision);
                         let result = self.snapshot_scoped_native(&ctx);
                         self.note_backstop_read(now_ms, result.is_err());
                         return Some(result);
                     }
-                    Err(reason) => return Some(Err(reason)),
+                    Err(reason) => {
+                        // Creation failure reports honestly (fail closed)
+                        // rather than claiming an empty stream, and still
+                        // consumes the bump - no stacking; the backstop
+                        // retries on its cadence and a new bump rereads.
+                        self.reread_seen_generation = Some(seen);
+                        return Some(Err(reason));
+                    }
                 }
             }
             let observer = self.observer.as_mut().expect("created above");
@@ -1197,13 +1367,15 @@ mod native {
             }
             let notified = observer.take_notified() > 0;
             // Observer notifications trigger rereads (the notification
-            // itself carries no window data, only the wake to re-read);
-            // silence past one interval rereads anyway (bounded backstop
-            // for lost/unsupported notifications), with the same cadence
-            // of backoff after a failed reread. Unchanged rereads never
-            // republish: the worker drops equal snapshots, so this cannot
-            // storm. Stop withholds everything.
-            if !super::scoped_backstop_due(
+            // itself carries no window data, only the wake to re-read); a
+            // consumed invalidation bump rereads too - a changed topology
+            // revision immediately, or a verified arrival even at an
+            // unchanged revision. Silence past one interval rereads anyway
+            // (bounded backstop for lost/unsupported notifications), with
+            // the same cadence of backoff after a failed reread. Unchanged
+            // rereads never republish: the worker drops equal snapshots, so
+            // this cannot storm. Stop withholds everything.
+            let backstop_due = super::scoped_backstop_due(
                 stop.load(Ordering::SeqCst),
                 notified,
                 now_ms,
@@ -1212,9 +1384,39 @@ mod native {
                 super::SCOPED_BACKSTOP_INTERVAL
                     .as_millis()
                     .min(u128::from(u64::MAX)) as u64,
-            ) {
-                return None;
-            }
+            );
+            let never_read =
+                self.backstop_last_read_ms.is_none() && self.backstop_last_failure_ms.is_none();
+            let revision_changed = self
+                .last_poll_revision
+                .is_none_or(|last| last != ctx.revision);
+            let trigger = super::select_scoped_reread_trigger(
+                notified,
+                generation_changed,
+                revision_changed,
+                backstop_due,
+                never_read,
+            )?;
+            // Scoped reread boundary: name the trigger so a baseline can
+            // tell a notification-driven reread from the silence backstop,
+            // a topology publication, or a verified arrival.
+            // Token-only (pid plus trigger plus the process-common clock,
+            // comparable across the send-effect owner lines; the owner-local
+            // backstop clock stays on the backstop arithmetic above, never
+            // on this line).
+            eprintln!(
+                "{}",
+                super::format_scoped_reread_line(
+                    self.pid,
+                    trigger,
+                    crate::input_eligibility::now_ms()
+                )
+            );
+            // Consume the bump with the reread: a burst rereads once and a
+            // failed reread never replays - the backstop recovers and only
+            // a new bump rereads again.
+            self.reread_seen_generation = Some(seen);
+            self.last_poll_revision = Some(ctx.revision);
             let result = self.snapshot_scoped_native(&ctx);
             self.note_backstop_read(now_ms, result.is_err());
             Some(result)

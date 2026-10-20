@@ -153,6 +153,10 @@ struct SpacesOwnedRecoveryReport {
     /// after O→T→O (separate mover child, delayed readbacks, independent
     /// public restore). Absent (`None`) preserves the default battery shape.
     direct_probe: Option<crate::space_direct_probe::DirectProbeReport>,
+    /// Present only with `--probe-bridged`: the gated bridged-SLS experiment
+    /// after O->T->O (same harness shape, `bridged` route). Never set together
+    /// with `direct_probe` (exactly one probe route per run).
+    bridged_probe: Option<crate::space_direct_probe::DirectProbeReport>,
     currents_restored: bool,
     helper_stopped_exact: bool,
     helper_windows_absent: bool,
@@ -442,19 +446,27 @@ pub(crate) fn run_join_leg_held(
 /// plus exact frame restoration, then stops exactly that helper. With
 /// `probe_direct`, one additional gated direct-SLS move runs AFTER leg B on
 /// the same helper (separate short-lived mover child, delayed readbacks,
-/// independent public restore once the mover exits). Exit
+/// independent public restore once the mover exits); with `probe_bridged`,
+/// the same battery runs ONE gated bridged move instead. The two flags are
+/// mutually exclusive. Exit
 /// codes: 2 usage/validation (nothing mutated), 1 gate/effect/restoration
 /// failure with structured evidence and residue. The default battery
-/// (`probe_direct == false`) never attempts a private SLS move on any path.
+/// (`probe_direct == false && probe_bridged == false`) never attempts a
+/// private SLS move on any path.
 pub fn run_spaces_owned_recovery(
     original: u64,
     temp: u64,
     seconds: u64,
     allow_untested: bool,
     probe_direct: bool,
+    probe_bridged: bool,
 ) -> Result<String, (i32, String)> {
     validate_recovery_args(original, temp, seconds, allow_untested).map_err(|e| (2, e))?;
     crate::space_direct_probe::validate_probe_direct_args(probe_direct, allow_untested)
+        .map_err(|e| (2, e))?;
+    crate::space_direct_probe::validate_probe_bridged_args(probe_bridged, allow_untested)
+        .map_err(|e| (2, e))?;
+    crate::space_direct_probe::validate_probe_selection(probe_direct, probe_bridged)
         .map_err(|e| (2, e))?;
 
     if let Err(e) = crate::mc_lifecycle::live::action_gates() {
@@ -780,13 +792,15 @@ pub fn run_spaces_owned_recovery(
         self_action_ms: action_ms_b,
     };
 
-    // Gated direct-SLS experiment AFTER the public O→T→O is proven on this
-    // same helper: one direct dispatch in a separate short-lived mover child
-    // (reaped boundedly inside), delayed harness readbacks (max 3 s each),
-    // and the independent public self-restore after the mover exits. The
-    // exact helper Child is lent out and restored before any context use, so
-    // cleanup always owns it; failures funnel through `fail` with the Child
-    // back in the context. No retries on any path.
+    // Gated SLS experiment AFTER the public O->T->O is proven on this
+    // same helper: one dispatch of the selected route in a separate
+    // short-lived mover child (reaped boundedly inside), delayed harness
+    // readbacks (max 3 s each), and the independent public self-restore
+    // after the mover exits. The exact helper Child is lent out and restored
+    // before any context use, so cleanup always owns it; failures funnel
+    // through `fail` with the Child back in the context. No retries on any
+    // path. At most one route runs: the selection gate above already refused
+    // both flags together, so there is no fallback and no replay.
     let direct_probe = if probe_direct {
         let mut child_c = ctx
             .child
@@ -811,6 +825,34 @@ pub fn run_spaces_owned_recovery(
         match probe_outcome {
             Ok(report) => Some(report),
             Err(e) => return Err(ctx.fail("direct-probe", e)),
+        }
+    } else {
+        None
+    };
+    let bridged_probe = if probe_bridged {
+        let mut child_c = ctx
+            .child
+            .take()
+            .expect("harness holds the exact helper Child");
+        let probe_outcome = crate::space_direct_probe::run_bridged_probe_after_recovery(
+            &mut child_c,
+            &owned,
+            helper_pid,
+            &helper_nonce,
+            &helper_path,
+            wid,
+            ctx.baseline_frame_ax,
+            original,
+            temp,
+            display,
+            ctx.helper_deadline,
+            &mut ctx.notes,
+            &mut ctx.latencies,
+        );
+        ctx.child = Some(child_c);
+        match probe_outcome {
+            Ok(report) => Some(report),
+            Err(e) => return Err(ctx.fail("bridged-probe", e)),
         }
     } else {
         None
@@ -904,6 +946,7 @@ pub fn run_spaces_owned_recovery(
         legs: vec![leg_a, leg_b],
         baseline_frame_ax: ctx.baseline_frame_ax,
         direct_probe,
+        bridged_probe,
         currents_restored,
         helper_stopped_exact: helper_stopped,
         helper_windows_absent: helper_absent,
