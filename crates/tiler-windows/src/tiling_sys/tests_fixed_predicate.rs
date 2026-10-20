@@ -1662,6 +1662,58 @@ fn slotless_nonfixed_max_plans_clear_and_defers_slot() {
 }
 
 #[test]
+fn admission_clear_safety_exhaustive_matches_focus_gate() {
+    // Stage-1 duplicate removal: the deleted `admission_clear_eligible`
+    // nine-fact gate now routes through the shared `classify_focus`
+    // normalization. For every safety combination crossed with both overlay
+    // flags, the production admission seam must agree exactly with the
+    // native focus gate; absolute tokens stay pinned by the named fixture
+    // cases, so no formula is restated here.
+    let mut state = super::rmax03_adapter_tests::test_state();
+    let output = "mon-a";
+    state.workspaces.ensure_output(output);
+    let ws = state.workspaces.active_id(output).expect("active");
+    assert!(state.workspaces.set_tiled(output, &ws, true));
+    let key = d5_member(&mut state, output, &ws, "wexhaust");
+    for bits in 0..512u32 {
+        for overlay in 0..4u32 {
+            let facts = crate::tiling::WindowFacts {
+                visible: bits & 1 != 0,
+                minimized: bits & 2 != 0,
+                maximized: overlay & 1 != 0,
+                cloaked: bits & 4 != 0,
+                elevated: bits & 8 != 0,
+                shell: bits & 16 != 0,
+                tool_window: bits & 32 != 0,
+                owned: bits & 64 != 0,
+                captionless_fullscreen: overlay & 2 != 0,
+                no_activate: bits & 256 != 0,
+                dialog: bits & 128 != 0,
+            };
+            let row = super::RetainedRow {
+                key: key.clone(),
+                token: "wexhaust".to_owned(),
+                rect: Some(Rect {
+                    x: 0,
+                    y: 0,
+                    w: 800,
+                    h: 600,
+                }),
+                maximized: true,
+                fullscreen: false,
+                facts: Some(facts),
+            };
+            let cx = super::HintCx::new();
+            assert_eq!(
+                super::admission_clear_planned(&state, &row, &cx),
+                crate::tiling::classify_focus(&facts).is_ok(),
+                "bits={bits:09b} overlay={overlay:02b}"
+            );
+        }
+    }
+}
+
+#[test]
 fn committed_ordinary_pin_survives_later_fixed_hints() {
     // D2 admission-only: a nonfixed commit tiles ordinary; when current
     // hints turn fixed before the required clear lands, the Engine
@@ -1915,7 +1967,7 @@ fn startup_fullscreen_exit_tiles_like_new() {
         "startup carries no lifetime-known non-fullscreen identity"
     );
     assert!(
-        crate::tiling::should_hold_born_fullscreen(true, false, false),
+        tiler_core::window_policy::should_hold_born_fullscreen(true, false, false),
         "slotless first-seen fullscreen holds"
     );
     state.born_fullscreen.insert(key.clone());
@@ -1983,7 +2035,7 @@ fn born_after_startup_exit_tiles_like_new() {
         "new fullscreen key is not lifetime-known"
     );
     assert!(
-        crate::tiling::should_hold_born_fullscreen(true, false, false),
+        tiler_core::window_policy::should_hold_born_fullscreen(true, false, false),
         "new slotless fullscreen holds"
     );
     state.born_fullscreen.insert(key.clone());
@@ -2205,7 +2257,7 @@ fn borderless_exit_tiles_like_new() {
     let w1key = d5_member(&mut state, output, &ws, "w1");
     d5_hold(&mut state, &domain, "wbl", "w1");
     // Predicate-derived hold flag feeds the production hold gate.
-    let hold = crate::tiling::should_hold_born_fullscreen(
+    let hold = tiler_core::window_policy::should_hold_born_fullscreen(
         crate::tiling::is_borderless_fullscreen(true, full, &[full]),
         false,
         state.seen_nonfullscreen.contains(&key),

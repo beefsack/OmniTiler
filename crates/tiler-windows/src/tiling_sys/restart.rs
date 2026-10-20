@@ -73,7 +73,7 @@ pub(super) fn admit_born_fullscreen(
             continue;
         }
         let known_slot = state.member_rects.contains_key(&row.token);
-        if !should_hold_born_fullscreen(
+        if !tiler_core::window_policy::should_hold_born_fullscreen(
             true,
             known_slot,
             state.seen_nonfullscreen.contains(&row.key),
@@ -172,7 +172,7 @@ pub(super) fn admit_slotless_maximized(
         let is_member = state.workspaces.member_loc(&row.key).is_some()
             || state.member_tokens.contains_key(&row.key)
             || state.hidden_claims.keys().any(|k| k.hwnd == row.key.hwnd);
-        if !crate::tiling::should_admit_slotless_maximized(
+        if !tiler_core::window_policy::should_admit_slotless_maximized(
             row.maximized,
             row.fullscreen,
             is_member,
@@ -283,7 +283,7 @@ pub(super) fn admit_slotless_maximized(
             // values with no one-shot clear.
             if !fixed_birth && !hydrated_override {
                 let tiled_first = state.workspaces.is_tiled(&output, &active);
-                if crate::tiling::born_keep_latch(
+                if tiler_core::window_policy::born_keep_latch(
                     tiled_first,
                     born_maximized_keep_overlay_for(state.settings_live.as_ref()),
                 ) {

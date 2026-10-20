@@ -160,15 +160,6 @@ fn bounded_i32(value: i64) -> Option<i32> {
     }
 }
 
-/// G-06 maximized directional focus fence (REQ-MAX-08): directional focus is
-/// fenced while the focused window is maximized (no-op; leave via unmaximize
-/// or Alt+Tab). Fullscreen stays exempt: it carries no geometry write. Pure
-/// so both tile-origin and float-origin focus arms pin without native calls.
-#[must_use]
-pub const fn maximized_focus_fence(maximized: bool, fullscreen: bool) -> bool {
-    maximized && !fullscreen
-}
-
 /// Post-clear routing cause for G-06 unmaximize-before-move (REQ-MAX-08, KDE
 /// `requestMove` clear discipline parity): exactly one nonactivating native
 /// clear attempt precedes eligible-origin routing, and only an observed clear
@@ -440,92 +431,6 @@ pub const fn restore_wake_step(
     (true, false)
 }
 
-/// One-shot maximize-clear gate for first admission (KDE
-/// `maximize-admission-clear` parity): the first non-fullscreen admission of
-/// a maximized window without a retained tiled slot restores the native
-/// maximize exactly once with no automatic retry. Fullscreen never clears,
-/// already-slotted members never re-clear, and an attempted identity never
-/// retries. Floating workspaces never clear (KDE floating-gate parity): the
-/// maximum is preserved until the first tiled admission.
-#[must_use]
-pub const fn should_clear_maximize_at_admission(
-    fullscreen: bool,
-    maximized: bool,
-    known_slot: bool,
-    attempted: bool,
-    tiled: bool,
-) -> bool {
-    should_clear_maximize_at_admission_with_mode(
-        fullscreen, maximized, known_slot, attempted, tiled, false,
-    )
-}
-
-/// R-MAX-06 mode-aware form of [`should_clear_maximize_at_admission`]:
-/// `keep_overlay` (latched at first-seen tiled admission) keeps
-/// the native maximize over the reserved tile slot instead of clearing once,
-/// so first-seen maximized tiled admission converges through the existing
-/// retained-slot overlay machinery with no native clear. Every other gate is
-/// unchanged: fullscreen still never clears, slotted members never re-clear,
-/// attempts never retry, and floating domains still defer.
-#[must_use]
-pub const fn should_clear_maximize_at_admission_with_mode(
-    fullscreen: bool,
-    maximized: bool,
-    known_slot: bool,
-    attempted: bool,
-    tiled: bool,
-    keep_overlay: bool,
-) -> bool {
-    !keep_overlay && tiled && !fullscreen && maximized && !known_slot && !attempted
-}
-
-/// R-MAX-06 born-maximized mode predicate over the raw wire value: true only
-/// for the exact `keep-maximized-overlay` token. Unknown hand-built values
-/// tile (fail-closed to the default); only validated live settings reach the
-/// production gate, where anything invalid keeps last-good instead.
-#[must_use]
-pub fn born_maximized_keep_overlay(value: &str) -> bool {
-    tiler_core::born_maximized::BornMaximized::parse_wire(value)
-        .is_some_and(|mode| !mode.should_clear_at_admission())
-}
-
-/// R-MAX-06 latch decision at slotless admission: bind keep-overlay to the
-/// exact fresh lifetime only for tiled-first admissions under the live
-/// overlay value. Floating-first (R-MAX-03 lane), pre-existing, and
-/// born-fullscreen lifetimes never latch, so their later tiled admission
-/// keeps the existing one-shot clear regardless of the live setting. A later
-/// live flip cannot move an already-bound lifetime: the stored binding, not
-/// the live value, gates its clear.
-#[must_use]
-pub const fn born_keep_latch(tiled_first: bool, keep_setting: bool) -> bool {
-    tiled_first && keep_setting
-}
-
-/// Slotless maximized admission rule (R-MAX-03): a first-seen maximized,
-/// non-fullscreen retained window without workspace membership and without a
-/// retained tile slot joins its workspace slotless (membership for
-/// hide/reveal and focus, no tile slot, no Engine exception), so a floating
-/// workspace preserves its native frame until the first tiled admission
-/// clears it once.
-#[must_use]
-pub const fn should_admit_slotless_maximized(
-    maximized: bool,
-    fullscreen: bool,
-    is_member: bool,
-    has_slot: bool,
-) -> bool {
-    maximized && !fullscreen && !is_member && !has_slot
-}
-
-/// Retained-slot seed rule for row assembly: a slotless maximized row on a
-/// floating domain keeps no tile slot, so the deferred admission clear still
-/// sees it slotless on retile. Every other combination seeds or refreshes
-/// the last-known rectangle as before.
-#[must_use]
-pub const fn should_seed_member_slot(domain_tiled: bool, maximized: bool, has_slot: bool) -> bool {
-    domain_tiled || !maximized || has_slot
-}
-
 /// Flag-stability gate before a workspace-send membership transfer (KDE
 /// `flagsStillMatch` parity): the mover's live overlay flags must still
 /// equal the dispatch snapshot, or the transfer refuses with no writes.
@@ -539,41 +444,14 @@ pub const fn send_flags_stable(
     snapshot_fullscreen == fresh_fullscreen && snapshot_maximized == fresh_maximized
 }
 
-/// Focus eligibility gate (KDE `requestFocus` parity for overlays): focus
-/// carries no geometry write, so a maximized or fullscreen member stays
-/// focusable while every other ineligible state still refuses; geometry
-/// classification is untouched. Every gate except the two overlays is
-/// checked, so an overlay window that is also minimized/no-activate/etc
-/// still refuses for that other reason.
+/// Focus eligibility gate over host facts. Thin normalization over the shared
+/// core ordered focus classification
+/// ([`tiler_core::window_policy::classify_focus`]): focus carries no geometry
+/// write, so both overlays are ignored while every other gate keeps its
+/// geometry priority, including `no_activate` last.
 pub fn classify_focus(facts: &WindowFacts) -> Result<(), SkipReason> {
-    if !facts.visible {
-        return Err(SkipReason::Hidden);
-    }
-    if facts.minimized {
-        return Err(SkipReason::Minimized);
-    }
-    if facts.cloaked {
-        return Err(SkipReason::Cloaked);
-    }
-    if facts.elevated {
-        return Err(SkipReason::Elevated);
-    }
-    if facts.shell {
-        return Err(SkipReason::Shell);
-    }
-    if facts.tool_window {
-        return Err(SkipReason::Tool);
-    }
-    if facts.owned {
-        return Err(SkipReason::OwnedDialog);
-    }
-    if facts.dialog {
-        return Err(SkipReason::Dialog);
-    }
-    if facts.no_activate {
-        return Err(SkipReason::NoActivate);
-    }
-    Ok(())
+    tiler_core::window_policy::classify_focus(&super::classification::safety_facts_of(facts))
+        .map_err(SkipReason::from)
 }
 
 /// Project-owned fullscreen toggle decision for one verified managed window.
@@ -637,20 +515,6 @@ pub const fn toggle_gate_outcome(suspended: bool, elevated: bool) -> Option<&'st
     } else {
         None
     }
-}
-
-/// Born-fullscreen hold gate (KDE initial-fullscreen-hold parity): a
-/// first-seen fullscreen window without a retained tile slot is tracked as a
-/// slotless planner-only exception until its first exit, never admitted. A
-/// window with a retained slot is a managed overlay transition, and a window
-/// already seen non-fullscreen in this lifetime never becomes born again.
-#[must_use]
-pub const fn should_hold_born_fullscreen(
-    fullscreen: bool,
-    known_slot: bool,
-    seen_nonfullscreen: bool,
-) -> bool {
-    fullscreen && !known_slot && !seen_nonfullscreen
 }
 
 /// Stateless pre-frame verdict for one allowlisted entry: frozen-identity

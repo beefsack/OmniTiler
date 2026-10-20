@@ -529,31 +529,37 @@ fn sticky_toggle_refusals_match_float_overlays_with_sticky_vocabulary() {
     // Fullscreen wins, then maximize; normal proceeds. Sticky uses its
     // own outcome strings so logs distinguish the arm.
     assert_eq!(
-        crate::tiling::sticky_toggle_refusal(true, false),
+        tiler_core::window_policy::sticky_toggle_refusal(true, false),
         Some("sticky-refused-fullscreen")
     );
     assert_eq!(
-        crate::tiling::sticky_toggle_refusal(false, true),
+        tiler_core::window_policy::sticky_toggle_refusal(false, true),
         Some("sticky-refused-maximize")
     );
     assert_eq!(
-        crate::tiling::sticky_toggle_refusal(true, true),
+        tiler_core::window_policy::sticky_toggle_refusal(true, true),
         Some("sticky-refused-fullscreen")
     );
-    assert_eq!(crate::tiling::sticky_toggle_refusal(false, false), None);
     assert_eq!(
-        crate::tiling::sticky_directional_refusal(true, false),
+        tiler_core::window_policy::sticky_toggle_refusal(false, false),
+        None
+    );
+    assert_eq!(
+        tiler_core::window_policy::sticky_directional_refusal(true, false),
         Some("focus-refused-sticky")
     );
     assert_eq!(
-        crate::tiling::sticky_directional_refusal(true, true),
+        tiler_core::window_policy::sticky_directional_refusal(true, true),
         Some("move-refused-sticky")
     );
     assert_eq!(
-        crate::tiling::sticky_directional_refusal(false, false),
+        tiler_core::window_policy::sticky_directional_refusal(false, false),
         None
     );
-    assert_eq!(crate::tiling::sticky_directional_refusal(false, true), None);
+    assert_eq!(
+        tiler_core::window_policy::sticky_directional_refusal(false, true),
+        None
+    );
 }
 
 #[test]
@@ -562,19 +568,19 @@ fn orientation_toggle_refusals_carry_orientation_vocabulary() {
     // orientation path calls this before any Engine mutation, so a
     // focused overlay keeps its native state and reserved slot.
     assert_eq!(
-        crate::tiling::orientation_toggle_refusal(true, false),
+        tiler_core::window_policy::orientation_toggle_refusal(true, false),
         Some("orientation-refused-fullscreen")
     );
     assert_eq!(
-        crate::tiling::orientation_toggle_refusal(false, true),
+        tiler_core::window_policy::orientation_toggle_refusal(false, true),
         Some("orientation-refused-maximize")
     );
     assert_eq!(
-        crate::tiling::orientation_toggle_refusal(true, true),
+        tiler_core::window_policy::orientation_toggle_refusal(true, true),
         Some("orientation-refused-fullscreen")
     );
     assert_eq!(
-        crate::tiling::orientation_toggle_refusal(false, false),
+        tiler_core::window_policy::orientation_toggle_refusal(false, false),
         None
     );
 }

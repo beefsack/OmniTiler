@@ -74,7 +74,7 @@ fn admit_slotless(
     state.member_tokens.insert(key.clone(), token.to_owned());
     assert!(!state.member_rects.contains_key(token));
     let tiled_first = state.workspaces.is_tiled(output, active);
-    if crate::tiling::born_keep_latch(
+    if tiler_core::window_policy::born_keep_latch(
         tiled_first,
         born_maximized_keep_overlay_for(state.settings_live.as_ref()),
     ) {
@@ -174,11 +174,16 @@ fn reconcile(
 
 #[test]
 fn latch_binds_tiled_first_overlay_only() {
-    use crate::tiling::{born_keep_latch, born_maximized_keep_overlay};
+    use tiler_core::born_maximized::BornMaximized;
+    use tiler_core::window_policy::born_keep_latch;
+    // Only the exact overlay wire token preserves maximize at admission.
+    let keep_overlay = |value: &str| {
+        BornMaximized::parse_wire(value).is_some_and(|mode| !mode.should_clear_at_admission())
+    };
     // Exact wire values first: only the overlay token keeps; hand-built
     // near-misses tile, and proof owners (no live settings) read default.
-    assert!(born_maximized_keep_overlay(BORN_MAXIMIZED_OVERLAY));
-    assert!(!born_maximized_keep_overlay(BORN_MAXIMIZED_TILE));
+    assert!(keep_overlay(BORN_MAXIMIZED_OVERLAY));
+    assert!(!keep_overlay(BORN_MAXIMIZED_TILE));
     for bad in [
         "",
         "tile",
@@ -187,7 +192,7 @@ fn latch_binds_tiled_first_overlay_only() {
         "KEEP-MAXIMIZED-OVERLAY",
         "group-with-neighbor",
     ] {
-        assert!(!born_maximized_keep_overlay(bad), "{bad}");
+        assert!(!keep_overlay(bad), "{bad}");
     }
     assert!(!born_maximized_keep_overlay_for(None));
     assert!(!born_keep_latch(
@@ -205,7 +210,7 @@ fn latch_binds_tiled_first_overlay_only() {
 
 #[test]
 fn gate_honors_latch_with_legacy_gates_intact() {
-    use crate::tiling::should_clear_maximize_at_admission_with_mode as gate;
+    use tiler_core::window_policy::should_clear_maximize_at_admission_with_mode as gate;
     // The latched first tiled sighting keeps; the unlatched one clears.
     assert!(gate(false, true, false, false, true, false));
     assert!(!gate(false, true, false, false, true, true));
@@ -238,7 +243,7 @@ fn gate_honors_latch_with_legacy_gates_intact() {
         (false, false, false, false, true),
     ] {
         assert_eq!(
-            crate::tiling::should_clear_maximize_at_admission(
+            tiler_core::window_policy::should_clear_maximize_at_admission(
                 fullscreen, maximized, known_slot, attempted, tiled
             ),
             gate(fullscreen, maximized, known_slot, attempted, tiled, false),
@@ -258,7 +263,7 @@ fn tile_bound_lifetime_clears_despite_overlay_flip() {
     state.settings_live = Some(live_with(BORN_MAXIMIZED_OVERLAY));
     assert!(!state.born_keep_overlay.contains(&max));
     assert!(
-        crate::tiling::should_clear_maximize_at_admission_with_mode(
+        tiler_core::window_policy::should_clear_maximize_at_admission_with_mode(
             false, true, false, false, true, false
         ),
         "earlier tile-bound admission still clears after the flip"
@@ -358,7 +363,7 @@ fn overlay_born_reserves_slot_and_restore_lands_exact() {
     state.settings_live = Some(live_with(BORN_MAXIMIZED_TILE));
     assert!(state.born_keep_overlay.contains(&max));
     assert!(
-        !crate::tiling::should_clear_maximize_at_admission_with_mode(
+        !tiler_core::window_policy::should_clear_maximize_at_admission_with_mode(
             false, true, false, false, true, true
         )
     );
@@ -716,7 +721,7 @@ fn overlay_hwmd_reuse_stays_lifetime_safe() {
 
 #[test]
 fn born_fullscreen_exit_and_later_maxima_stay_independent() {
-    use crate::tiling::should_clear_maximize_at_admission_with_mode as gate;
+    use tiler_core::window_policy::should_clear_maximize_at_admission_with_mode as gate;
     // Later maxima (retained slot) never clear under either latch state.
     for keep in [false, true] {
         assert!(!gate(false, true, true, false, true, keep));

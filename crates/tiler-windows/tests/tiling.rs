@@ -2,27 +2,29 @@
 use tiler_core::directional::WindowId;
 use tiler_core::geometry::Rect;
 use tiler_core::ids::{CorrelationId, GenerationId, OwnerId};
+use tiler_core::window_policy::{
+    born_keep_latch, float_toggle_refusal, overlay_refusal, should_clear_maximize_at_admission,
+    should_clear_maximize_at_admission_with_mode, should_hold_born_fullscreen,
+};
 use tiler_windows::tiling::{
     CaptureOptions, DirectionalOp, DirectionalRequest, FrameInsets, FullscreenToggle,
     GestureIntent, INNER_GAP, OUTER_GAP, OWN_SETTINGS_WINDOW_CLASS, ObservedTarget,
     ObservedTargetRef, ReadbackOutcome, RefusedTracker, ResizeOptions, ResizeRepeat, ResizeRequest,
     ScopeHostChild, SendOutputRequest, SkipReason, StatelessVerdict, TokenMap, WindowFacts,
-    WorkspaceAction, WorkspaceRequest, allow_match, allowlist_digest, born_keep_latch,
-    born_maximized_keep_overlay, build_reconcile_event, build_reconcile_event_for,
-    build_reconcile_event_for_floating, canonical_retained_rect, classify, classify_focus,
-    classify_gesture, fingerprint, float_toggle_refusal, float_topmost_restore_needed,
+    WorkspaceAction, WorkspaceRequest, allow_match, allowlist_digest, build_reconcile_event,
+    build_reconcile_event_for, build_reconcile_event_for_floating, canonical_retained_rect,
+    classify, classify_focus, classify_gesture, fingerprint, float_topmost_restore_needed,
     fullscreen_toggle_decision, hosted_child_allows, inspect_stateless_verdict,
     is_borderless_fullscreen, is_own_settings_window, min_hints_from_outer, normalize_min_track,
-    overlay_refusal, parse_allowlist, parse_capture_args, parse_children_args,
-    parse_directional_args, parse_directional_request, parse_hide_proof_args, parse_inspect_args,
-    parse_resize_args, parse_resize_request, parse_scope_host_child, parse_send_output_args,
+    parse_allowlist, parse_capture_args, parse_children_args, parse_directional_args,
+    parse_directional_request, parse_hide_proof_args, parse_inspect_args, parse_resize_args,
+    parse_resize_request, parse_scope_host_child, parse_send_output_args,
     parse_send_output_request, parse_shortcut_proof_args, parse_tile_args, parse_tile_proof_args,
     parse_workspace_args, parse_workspace_proof_args, parse_workspace_request, prefer_modal_move,
     readback_outcome, render_directional_request, render_resize_request,
     render_send_output_request, render_workspace_request, resize_direction_valid,
     resize_mode_valid, resize_repeat_next, scope_allows, scope_exe_basename, send_flags_stable,
-    should_clear_maximize_at_admission, should_clear_maximize_at_admission_with_mode,
-    should_hold_born_fullscreen, tick_summary_signature, tiling_domain_bounds, toggle_gate_outcome,
+    tick_summary_signature, tiling_domain_bounds, toggle_gate_outcome,
     verify_directional_argv_consistency, verify_hide_proof_argv_consistency,
     verify_proof_argv_consistency, verify_resize_argv_consistency,
     verify_send_output_argv_consistency, verify_shortcut_proof_argv_consistency,
@@ -48,6 +50,12 @@ fn eligible_facts() -> WindowFacts {
         no_activate: false,
         dialog: false,
     }
+}
+
+/// Only the exact overlay wire token preserves maximize at admission.
+fn keep_overlay(value: &str) -> bool {
+    tiler_core::born_maximized::BornMaximized::parse_wire(value)
+        .is_some_and(|mode| !mode.should_clear_at_admission())
 }
 
 #[test]
@@ -436,8 +444,8 @@ fn born_maximized_overlay_keeps_first_sighting_other_gates_unchanged() {
         }
     }
     // Exact wire values only: the overlay token keeps, everything else tiles.
-    assert!(born_maximized_keep_overlay("keep-maximized-overlay"));
-    assert!(!born_maximized_keep_overlay("tile-on-launch"));
+    assert!(keep_overlay("keep-maximized-overlay"));
+    assert!(!keep_overlay("tile-on-launch"));
     for bad in [
         "",
         "tile",
@@ -445,7 +453,7 @@ fn born_maximized_overlay_keeps_first_sighting_other_gates_unchanged() {
         "TILE-ON-LAUNCH",
         "group-with-neighbor",
     ] {
-        assert!(!born_maximized_keep_overlay(bad), "{bad}");
+        assert!(!keep_overlay(bad), "{bad}");
     }
     // Production binding helper: only tiled-first under the overlay value
     // latches; floating-first (R-MAX-03) never latches under either value.
@@ -490,13 +498,13 @@ fn born_maximized_shared_fixture_conformance() {
         assert_eq!(mode.should_clear_at_admission(), should_clear, "{name}");
         let keep = !should_clear;
         if let Some(raw_str) = raw {
-            assert_eq!(born_maximized_keep_overlay(raw_str), keep, "{name}");
+            assert_eq!(keep_overlay(raw_str), keep, "{name}");
         } else {
             // Missing/non-string raws fall back to the tile default lane.
             assert!(should_clear, "{name}");
             assert!(!keep, "{name}");
             assert!(
-                !born_maximized_keep_overlay(BornMaximized::default().as_wire_str()),
+                !keep_overlay(BornMaximized::default().as_wire_str()),
                 "{name}"
             );
         }
@@ -630,6 +638,76 @@ fn focus_allows_managed_overlays_never_geometry() {
     base = eligible_facts();
     base.no_activate = true;
     check(base, SkipReason::NoActivate);
+}
+
+/// Neutral token for one native skip: only `elevated` renames the core
+/// `privileged` refusal; every other log token already matches the fixture.
+fn neutral_skip(reason: SkipReason) -> &'static str {
+    match reason {
+        SkipReason::Elevated => "privileged",
+        other => other.as_str(),
+    }
+}
+
+#[test]
+fn shared_window_policy_fixture_projection_matches_core_order() {
+    // Host-fact projection over the shared ordered-classification cases:
+    // native-vocabulary `WindowFacts` (elevated/tool_window/owned/
+    // captionless_fullscreen) enter the production `classify` /
+    // `classify_focus` normalization and must report the core order, priority
+    // conflicts included. This pins the normalization itself, not a
+    // core-to-core reexport.
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("../../../test-fixtures/window-policy.json"))
+            .expect("shared window-policy fixture parses");
+    let cases = fixture
+        .get("cases")
+        .and_then(serde_json::Value::as_array)
+        .expect("fixture carries a case table");
+    let mut covered = 0;
+    for case in cases {
+        let name = case
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("<unnamed>");
+        let gate = case
+            .get("gate")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("<missing gate>");
+        if gate != "geometry_classification" && gate != "focus_classification" {
+            continue;
+        }
+        covered += 1;
+        let bit = |key: &str| {
+            case.get(key)
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or_else(|| panic!("{name} carries `{key}`"))
+        };
+        let facts = WindowFacts {
+            visible: bit("visible"),
+            minimized: bit("minimized"),
+            maximized: bit("maximized"),
+            cloaked: bit("cloaked"),
+            elevated: bit("privileged"),
+            shell: bit("shell"),
+            tool_window: bit("tool"),
+            owned: bit("owned_dialog"),
+            captionless_fullscreen: bit("fullscreen"),
+            no_activate: bit("no_activate"),
+            dialog: bit("dialog"),
+        };
+        let expected = case.get("refusal").and_then(serde_json::Value::as_str);
+        if gate == "geometry_classification" {
+            assert_eq!(classify(&facts).err().map(neutral_skip), expected, "{name}");
+        } else {
+            assert_eq!(
+                classify_focus(&facts).err().map(neutral_skip),
+                expected,
+                "{name}"
+            );
+        }
+    }
+    assert!(covered > 0, "fixture carries classification cases");
 }
 
 #[test]
@@ -3055,10 +3133,12 @@ fn r_max_03_floating_first_seen_max_defers_clear_then_tiles_on_retile() {
     use tiler_core::directional::WindowId;
     use tiler_core::engine::Engine;
     use tiler_core::ids::{CorrelationId, GenerationId, OwnerId};
-    use tiler_windows::tiling::{
-        INNER_GAP, OUTER_GAP, build_reconcile_event_for_floating, fingerprint,
+    use tiler_core::window_policy::{
         should_admit_slotless_maximized, should_clear_maximize_at_admission,
         should_clear_maximize_at_admission_with_mode,
+    };
+    use tiler_windows::tiling::{
+        INNER_GAP, OUTER_GAP, build_reconcile_event_for_floating, fingerprint,
     };
     use tiler_windows::workspace::{ManagedWorkspaces, WindowKey};
     use tiler_windows::workspace_owner::{
@@ -4112,10 +4192,12 @@ fn plan_focus_leaf(rig: &ResizeRig) -> tiler_core::directional::NodeId {
 }
 
 use tiler_core::size_hints::WindowSizeHints;
+use tiler_core::window_policy::{
+    maximized_focus_fence, sticky_toggle_refusal, unfloat_maximize_clear_eligible,
+};
 use tiler_windows::tiling::{
     FloatFocusCandidate, authorize_maximize_clear, float_half_snap_rect, half_snap_constraints_ok,
-    maximize_clear_refusal, maximized_focus_fence, postclear_fullscreen_now,
-    select_float_focus_target, sticky_toggle_refusal, unfloat_maximize_clear_eligible,
+    maximize_clear_refusal, postclear_fullscreen_now, select_float_focus_target,
 };
 
 fn float_candidate(token: &str, x: i32, y: i32, sticky: bool) -> FloatFocusCandidate {
@@ -4612,7 +4694,7 @@ fn retile_overlay_stays_independent_of_born_setting() {
     // reads that setting. Portable pin of the pure gate both lanes share:
     // the latched (overlay) form never clears, the unlatched (tile) form
     // clears exactly once for a slotless maximized tiled admission.
-    use tiler_windows::tiling::should_clear_maximize_at_admission_with_mode as gate;
+    use tiler_core::window_policy::should_clear_maximize_at_admission_with_mode as gate;
     for keep in [false, true] {
         assert!(!gate(false, true, true, false, true, keep));
         assert!(!gate(true, true, false, false, true, keep));

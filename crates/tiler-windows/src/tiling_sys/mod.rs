@@ -41,10 +41,10 @@ use self::action_context::{ActionCtx, ActionLine, ActionTimings, SelectEffect, S
 #[cfg(test)]
 use self::admission::admission_clear_planned;
 use self::admission::{
-    admission_clear_eligible, anchor_fallback_for, clear_maximize_at_admission,
-    committed_ordinary_pin, engine_is_automatic_fixed, engine_is_float, fanout_pending_closed,
-    fixed_origin_provenance, fixed_predicate_for, float_focus_candidates, float_send_admits,
-    handle_engine_event, is_automatic_in, no_space_for, overlay_refusal_for, stamp_engine_event,
+    anchor_fallback_for, clear_maximize_at_admission, committed_ordinary_pin,
+    engine_is_automatic_fixed, engine_is_float, fanout_pending_closed, fixed_origin_provenance,
+    fixed_predicate_for, float_focus_candidates, float_send_admits, handle_engine_event,
+    is_automatic_in, no_space_for, overlay_refusal_for, stamp_engine_event,
 };
 use self::assignments::{
     MAX_HIDE_DIAG_PER_SELECT, audit_hidden_claims, ensure_workspace_assignments,
@@ -345,12 +345,12 @@ use crate::tiling::{
     ObservedTarget, ObservedTargetRef, RESIZE_REQUEST_FILE, ReadbackOutcome, RefusedTracker,
     ResizeOptions, SEND_OUTPUT_REQUEST_FILE, ScopeHostChild, SendOutputOptions, SkipReason,
     StatelessVerdict, TileOptions, TileProofOptions, TokenMap, WindowFacts, WorkspaceAction,
-    WorkspaceOptions, allow_match, allowlist_digest, classify, classify_gesture,
+    WorkspaceOptions, allow_match, allowlist_digest, classify, classify_focus, classify_gesture,
     drop_point_in_domain, fingerprint, fullscreen_toggle_decision, hosted_child_allows,
     inspect_stateless_verdict, is_borderless_fullscreen, parse_allowlist,
     parse_directional_request, parse_resize_request, parse_send_output_request,
     parse_workspace_request, readback_outcome, scope_allows, scope_exe_basename,
-    should_hold_born_fullscreen, tick_summary_signature, tiling_domain_bounds_with,
+    tick_summary_signature, tiling_domain_bounds_with,
 };
 use crate::workspace::ManagedWorkspaces;
 type DynError = Box<dyn std::error::Error>;

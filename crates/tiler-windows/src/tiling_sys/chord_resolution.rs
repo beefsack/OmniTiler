@@ -162,15 +162,21 @@ pub(super) fn chord_overlay_refusal(
     let zoomed = is_zoomed_now(member_key.hwnd);
     if let Some(window) = by_hwnd.get(&member_key.hwnd) {
         if sticky_vocab {
-            crate::tiling::sticky_toggle_refusal(window.facts.captionless_fullscreen, zoomed)
+            tiler_core::window_policy::sticky_toggle_refusal(
+                window.facts.captionless_fullscreen,
+                zoomed,
+            )
         } else {
-            crate::tiling::float_toggle_refusal(window.facts.captionless_fullscreen, zoomed)
+            tiler_core::window_policy::float_toggle_refusal(
+                window.facts.captionless_fullscreen,
+                zoomed,
+            )
         }
     } else if let Some(row) = retained.iter().find(|r| r.key == *member_key) {
         if sticky_vocab {
-            crate::tiling::sticky_toggle_refusal(row.fullscreen, zoomed)
+            tiler_core::window_policy::sticky_toggle_refusal(row.fullscreen, zoomed)
         } else {
-            crate::tiling::float_toggle_refusal(row.fullscreen, zoomed)
+            tiler_core::window_policy::float_toggle_refusal(row.fullscreen, zoomed)
         }
     } else {
         None
@@ -189,9 +195,12 @@ pub(super) fn orientation_overlay_refusal(
     let by_hwnd: HashMap<u64, &ObservedWindow> = observed.iter().map(|w| (w.hwnd, w)).collect();
     let zoomed = is_zoomed_now(member_key.hwnd);
     if let Some(window) = by_hwnd.get(&member_key.hwnd) {
-        crate::tiling::orientation_toggle_refusal(window.facts.captionless_fullscreen, zoomed)
+        tiler_core::window_policy::orientation_toggle_refusal(
+            window.facts.captionless_fullscreen,
+            zoomed,
+        )
     } else if let Some(row) = retained.iter().find(|r| r.key == *member_key) {
-        crate::tiling::orientation_toggle_refusal(row.fullscreen, zoomed)
+        tiler_core::window_policy::orientation_toggle_refusal(row.fullscreen, zoomed)
     } else {
         None
     }

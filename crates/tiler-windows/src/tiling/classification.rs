@@ -185,154 +185,57 @@ pub fn workspace_dialog_refuses(
     !owned && class == GENERIC_DIALOG_CLASS
 }
 
-/// Eligibility gate. Terminal windows are ordinary tile targets (KDE
-/// parity): no ancestry Schrödinger here. Dimensions alone never classify
-/// fullscreen: `captionless_fullscreen` requires a captionless style covering
-/// the monitor.
+/// Eligibility gate over host facts. Thin normalization over the shared
+/// core ordered classification ([`tiler_core::window_policy::classify_geometry`]):
+/// terminal windows are ordinary tile targets (KDE parity) and dimensions
+/// alone never classify fullscreen (`captionless_fullscreen` requires a
+/// captionless style covering the monitor). Priority is the core order:
+/// safety gates, overlays (fullscreen before maximized), then `no_activate`.
 pub fn classify(facts: &WindowFacts) -> Result<(), SkipReason> {
-    if !facts.visible {
-        return Err(SkipReason::Hidden);
-    }
-    if facts.minimized {
-        return Err(SkipReason::Minimized);
-    }
-    if facts.cloaked {
-        return Err(SkipReason::Cloaked);
-    }
-    if facts.elevated {
-        return Err(SkipReason::Elevated);
-    }
-    if facts.shell {
-        return Err(SkipReason::Shell);
-    }
-    if facts.tool_window {
-        return Err(SkipReason::Tool);
-    }
-    if facts.owned {
-        return Err(SkipReason::OwnedDialog);
-    }
-    if facts.dialog {
-        return Err(SkipReason::Dialog);
-    }
-    // Overlay states last, fullscreen first: matches `overlay_refusal` so a
-    // window holding both reports fullscreen everywhere. Safety skips above
-    // keep their relative order.
-    if facts.captionless_fullscreen {
-        return Err(SkipReason::Fullscreen);
-    }
-    if facts.maximized {
-        return Err(SkipReason::Maximized);
-    }
-    if facts.no_activate {
-        return Err(SkipReason::NoActivate);
-    }
-    Ok(())
+    tiler_core::window_policy::classify_geometry(
+        &safety_facts_of(facts),
+        facts.captionless_fullscreen,
+        facts.maximized,
+    )
+    .map_err(SkipReason::from)
 }
 
-/// Maximized-overlay refusal for directional and pointer routes (KDE
-/// `move-refused-maximize` / `pointer-refused-maximize` parity): a
-/// maximized focused window keeps its tile slot but directional move/resize
-/// on it would change its retained position/share, so it is refused
-/// fail-closed before any Engine mutation. Focus carries no geometry write
-/// and stays allowed. Fullscreen wins when both overlay states hold (item 4
-/// owns the fullscreen toggle; this only orders the refusal vocabulary).
-#[must_use]
-pub const fn overlay_refusal(fullscreen: bool, maximized: bool) -> Option<&'static str> {
-    if fullscreen {
-        Some("fullscreen")
-    } else if maximized {
-        Some("maximize")
-    } else {
-        None
+/// Normalize host facts into neutral core facts. Field mapping:
+/// `elevated` to `privileged`, `tool_window` to `tool`, `owned` to
+/// `owned_dialog`; `captionless_fullscreen` and `maximized` ride separately
+/// so the core orders the overlays after the safety gates.
+pub(super) fn safety_facts_of(facts: &WindowFacts) -> tiler_core::window_policy::SafetyFacts {
+    tiler_core::window_policy::SafetyFacts {
+        visible: facts.visible,
+        minimized: facts.minimized,
+        cloaked: facts.cloaked,
+        privileged: facts.elevated,
+        shell: facts.shell,
+        tool: facts.tool_window,
+        owned_dialog: facts.owned,
+        dialog: facts.dialog,
+        no_activate: facts.no_activate,
     }
 }
 
-/// Intentional-float toggle refusal for an overlay target (KDE
-/// `float-refused-fullscreen` / `float-refused-maximize` parity): a
-/// fullscreen or maximized focused window never floats, and a focused float
-/// that the user maximized or fullscreened natively never unfloats until it
-/// reads normal again. Fullscreen wins when both hold. `None` when the route
-/// may proceed.
-///
-/// B9 exception (R-FLT-06): an ordinary maximized float being explicitly
-/// tiled takes the adapter one-shot nonactivating clear plus observed-clear
-/// route (see [`unfloat_maximize_clear_eligible`]) instead of ending here;
-/// this snapshot vocabulary still reports that lane.
-#[must_use]
-pub const fn float_toggle_refusal(fullscreen: bool, maximized: bool) -> Option<&'static str> {
-    if fullscreen {
-        Some("float-refused-fullscreen")
-    } else if maximized {
-        Some("float-refused-maximize")
-    } else {
-        None
-    }
-}
-
-/// Sticky-toggle refusal for an overlay target (KDE `sticky-refused-fullscreen`
-/// / `sticky-refused-maximize` parity): a fullscreen or maximized focused
-/// window never sticks, and a sticky window that the user maximized or
-/// fullscreened natively never unsticks until it reads normal again.
-/// Fullscreen wins when both hold. `None` when the route may proceed.
-#[must_use]
-pub const fn sticky_toggle_refusal(fullscreen: bool, maximized: bool) -> Option<&'static str> {
-    if fullscreen {
-        Some("sticky-refused-fullscreen")
-    } else if maximized {
-        Some("sticky-refused-maximize")
-    } else {
-        None
-    }
-}
-
-/// B9 unfloat lane definition (R-FLT-06, COSMIC unmaximize-then-fresh-admit
-/// parity): only an ordinary currently-floating target being explicitly tiled
-/// takes the one-shot nonactivating clear plus observed-clear route before
-/// fresh Engine admission. Fullscreen floats, sticky origins, tiled targets,
-/// and non-maximized floats keep their existing refusal or admission paths;
-/// the snapshot vocabulary ([`float_toggle_refusal`] /
-/// [`sticky_toggle_refusal`]) still reports those. `is_float` is the Engine
-/// exception state at dispatch. Production selects the lane off that live
-/// vocabulary plus Engine/sticky state; this pure predicate pins the lane
-/// definition for offline regressions without native windows.
-#[must_use]
-pub const fn unfloat_maximize_clear_eligible(
-    fullscreen: bool,
-    maximized: bool,
-    is_float: bool,
-    is_sticky_origin: bool,
-) -> bool {
-    is_float && !is_sticky_origin && maximized && !fullscreen
-}
-
-/// Orientation-toggle refusal for an overlay target (item 4, R-LAY-01): a
-/// fullscreen or maximized focused window never toggles its parent axis,
-/// matching the move/float/sticky overlay isolation. Fullscreen wins when
-/// both hold. `None` when the route may proceed.
-#[must_use]
-pub const fn orientation_toggle_refusal(fullscreen: bool, maximized: bool) -> Option<&'static str> {
-    if fullscreen {
-        Some("orientation-refused-fullscreen")
-    } else if maximized {
-        Some("orientation-refused-maximize")
-    } else {
-        None
-    }
-}
-
-/// Directional refusal for a sticky subject window (KDE sticky isolation
-/// parity): a sticky focused window never starts directional focus/move, and
-/// sticky windows are never directional targets (they ride slotless floats).
-/// Focus and move share the sticky subject gate; targets exclude via the
-/// floating Engine observation. `None` when the route may proceed.
-#[must_use]
-pub const fn sticky_directional_refusal(is_sticky: bool, is_move: bool) -> Option<&'static str> {
-    if !is_sticky {
-        return None;
-    }
-    if is_move {
-        Some("move-refused-sticky")
-    } else {
-        Some("focus-refused-sticky")
+impl From<tiler_core::window_policy::EligibilityRefusal> for SkipReason {
+    /// Map the neutral core refusal to the existing native diagnostic
+    /// vocabulary. Only `privileged` renames (to `elevated`); every other
+    /// token is already the log vocabulary.
+    fn from(refusal: tiler_core::window_policy::EligibilityRefusal) -> Self {
+        use tiler_core::window_policy::EligibilityRefusal as Core;
+        match refusal {
+            Core::Hidden => Self::Hidden,
+            Core::Minimized => Self::Minimized,
+            Core::Cloaked => Self::Cloaked,
+            Core::Privileged => Self::Elevated,
+            Core::Shell => Self::Shell,
+            Core::Tool => Self::Tool,
+            Core::OwnedDialog => Self::OwnedDialog,
+            Core::Dialog => Self::Dialog,
+            Core::Fullscreen => Self::Fullscreen,
+            Core::Maximized => Self::Maximized,
+            Core::NoActivate => Self::NoActivate,
+        }
     }
 }

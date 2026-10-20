@@ -508,7 +508,7 @@ fn fullscreen_and_sticky_lanes_stay_plain_refusals() {
     );
     // Pure lane matrix beside the seam: only the ordinary maximized
     // float proceeds to the clear route.
-    use crate::tiling::unfloat_maximize_clear_eligible as lane;
+    use tiler_core::window_policy::unfloat_maximize_clear_eligible as lane;
     assert!(
         lane(false, true, true, false),
         "ordinary maximized float clears"
@@ -528,7 +528,8 @@ fn fullscreen_and_sticky_lanes_stay_plain_refusals() {
         "normal floats admit directly"
     );
     assert!(
-        crate::tiling::float_toggle_refusal(false, true) == Some("float-refused-maximize")
+        tiler_core::window_policy::float_toggle_refusal(false, true)
+            == Some("float-refused-maximize")
             && lane(false, true, true, false),
         "lane matches the snapshot vocabulary it replaces"
     );

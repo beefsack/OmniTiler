@@ -1,11 +1,14 @@
 #![forbid(unsafe_code)]
 //! Tiling-only Windows runtime over the retained portable Engine.
 //!
-//! Portable policy lives here and compiles everywhere; native enumeration,
+//! Shared policy lives in the core (`tiler_core::window_policy`); this crate
+//! keeps only host fact collection and the thin `classify` / `classify_focus`
+//! normalization plus its native log vocabulary. Native enumeration,
 //! actuation, and the event loop live in [`crate::tiling_sys`] (`cfg(windows)`
 //! only). The Engine is the layout authority: this crate builds complete
 //! `Reconcile` observations, applies `CoreReply` geometry verbatim, and never
-//! adopts observed rectangles into retained state.
+//! adopts observed rectangles into retained state. The remaining runtime here
+//! is still per-domain pending later migration stages.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -26,9 +29,7 @@ mod workspace;
 
 pub use classification::{
     GENERIC_DIALOG_CLASS, OWN_SETTINGS_WINDOW_CLASS, ObservedTargetRef, SkipReason, TokenMap,
-    WindowFacts, classify, fingerprint, float_toggle_refusal, is_own_settings_window,
-    orientation_toggle_refusal, overlay_refusal, sticky_directional_refusal, sticky_toggle_refusal,
-    unfloat_maximize_clear_eligible, workspace_dialog_refuses,
+    WindowFacts, classify, fingerprint, is_own_settings_window, workspace_dialog_refuses,
 };
 pub use cli::{
     CaptureOptions, CliOverrides, HideProofOptions, ScopeHostChild, ShortcutProofOptions,
@@ -42,15 +43,12 @@ pub use cli::{
 };
 pub use float::{
     FloatFocusCandidate, FullscreenToggle, RESTORE_WAKE_MS, StatelessVerdict,
-    authorize_maximize_clear, born_keep_latch, born_maximized_keep_overlay,
-    canonical_retained_rect, classify_focus, float_half_snap_rect, float_intent_marker_value,
-    float_topmost_restore_needed, fullscreen_toggle_decision, half_snap_constraints_ok,
-    inspect_stateless_verdict, maximize_clear_refusal, maximized_focus_fence,
+    authorize_maximize_clear, canonical_retained_rect, classify_focus, float_half_snap_rect,
+    float_intent_marker_value, float_topmost_restore_needed, fullscreen_toggle_decision,
+    half_snap_constraints_ok, inspect_stateless_verdict, maximize_clear_refusal,
     parse_float_intent_marker, parse_sticky_marker, parse_tile_override_marker,
     postclear_fullscreen_now, restore_wake_arm, restore_wake_step, retained_overlay_hint,
-    select_float_focus_target, send_flags_stable, should_admit_slotless_maximized,
-    should_clear_maximize_at_admission, should_clear_maximize_at_admission_with_mode,
-    should_hold_born_fullscreen, should_seed_member_slot, stale_fullscreen_retire_eligible,
+    select_float_focus_target, send_flags_stable, stale_fullscreen_retire_eligible,
     sticky_marker_value, target_rect_valid, tile_override_marker_value, toggle_gate_outcome,
 };
 pub use geometry::{

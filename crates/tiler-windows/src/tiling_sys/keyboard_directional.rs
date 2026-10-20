@@ -315,7 +315,7 @@ pub(super) fn dispatch_directional_intent(
     // tile-origin and float-origin subjects; fullscreen stays
     // exempt above.
     if intent.op == SnapOp::Focus
-        && crate::tiling::maximized_focus_fence(subject_maximized, subject_fullscreen)
+        && tiler_core::window_policy::maximized_focus_fence(subject_maximized, subject_fullscreen)
     {
         state.snap_advance = None;
         log_json_at(
@@ -344,7 +344,7 @@ pub(super) fn dispatch_directional_intent(
     // and no structural move; a later press retries. Fullscreen
     // precedence is handled above.
     if intent.op == SnapOp::Move
-        && crate::tiling::maximized_focus_fence(subject_maximized, subject_fullscreen)
+        && tiler_core::window_policy::maximized_focus_fence(subject_maximized, subject_fullscreen)
     {
         // Exact subject with retained-overlay support:
         // chord-time membership alone never authorizes the

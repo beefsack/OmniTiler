@@ -745,7 +745,8 @@ fn born_maximized_shared_fixture_conformance() {
             "{name}"
         );
         assert_eq!(
-            crate::tiling::born_maximized_keep_overlay(mode.as_wire_str()),
+            BornMaximized::parse_wire(mode.as_wire_str())
+                .is_some_and(|mode| !mode.should_clear_at_admission()),
             !should_clear,
             "{name}"
         );
@@ -764,7 +765,8 @@ fn born_maximized_shared_fixture_conformance() {
                 "{name}"
             );
             assert!(
-                !crate::tiling::born_maximized_keep_overlay(raw_str),
+                !BornMaximized::parse_wire(raw_str)
+                    .is_some_and(|mode| !mode.should_clear_at_admission()),
                 "{name}"
             );
         }

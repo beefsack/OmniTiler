@@ -1,100 +1,36 @@
 #![forbid(unsafe_code)]
-//! Normalized pure window policy over adapter-normalized boolean facts.
+//! Shared pure window policy over adapter-normalized boolean facts.
 //!
-//! Additive slice of the post-Windows-audit row-73 candidate
-//! (`docs/research/cross-platform-core/post-windows-audit.md`): overlay
-//! refusal precedence, born-fullscreen hold, admission-clear eligibility, and
-//! the minimal normalized eligibility/admission/geometry vocabulary a macOS
-//! adapter needs. No universal window state machine, no sticky/native
-//! lifetimes, no K2 catalog.
-//!
-//! Current-behavior pins (read 2026-10-15, behavior preserved, no adapter
-//! edits), proven by actual calls on both sides in
-//! `crates/tiler-macos/tests/window_policy_conformance.rs`:
-//! - Windows pure predicates in `crates/tiler-windows/src/tiling.rs`:
-//!   `overlay_refusal`, `float_toggle_refusal`, `sticky_toggle_refusal`,
-//!   `unfloat_maximize_clear_eligible`, `orientation_toggle_refusal`,
-//!   `sticky_directional_refusal`, `maximized_focus_fence`,
-//!   `should_clear_maximize_at_admission[_with_mode]`, `born_keep_latch`,
-//!   `should_admit_slotless_maximized`, `should_seed_member_slot`,
-//!   `should_hold_born_fullscreen`, `classify` vs `classify_focus`.
-//!   Admission safety formula in `crates/tiler-windows/src/tiling_sys.rs`:
-//!   `admission_clear_eligible` is private and `cfg(windows)`-gated, so it is
-//!   never invoked directly; its boolean formula is proven through the public
-//!   `classify` (overlay-free facts) and `classify_focus`, which share it.
-//! - KDE lanes in `kwin/src/plan-adapter.ts`: overlay order
-//!   move `move-refused-fullscreen` before `move-refused-maximize`,
-//!   float and sticky fullscreen-before-maximize gates, pointer
-//!   fullscreen-before-maximize, orientation `toggle-orient-refused-*`
-//!   (vocabulary differs from Windows `orientation-refused-*`; same gate),
-//!   G-06 focus fence (tile and float origins), B9 lane
-//!   (`floating && maximized && !fullscreen`), born hold
-//!   `withInitialFullscreenHold` over `seenNonFullscreen` /
-//!   `heldInitialFullscreen` / `appliedById`, admission clear
-//!   `clearMaximizeAtAdmission`. KDE equivalence is source-read, not
-//!   test-proven: no KDE test boundary was touched.
+//! Adapters map host facts into [`SafetyFacts`] (plus separate fullscreen /
+//! maximized flags); the core never reads native state and reports neutral
+//! [`EligibilityRefusal`] tokens. [`classify_geometry`] pins the full refusal
+//! order: safety gates, then overlays (fullscreen before maximized), then
+//! `no_activate`. [`classify_focus`] is the same gate with both overlays
+//! clear, since focus carries no geometry write. The overlay snapshot
+//! vocabulary ([`overlay_refusal`] reports `"maximize"`) predates this gate
+//! and is unchanged.
 //!
 //! Membership vs reserved slot vs fresh writes:
-//! - Membership: overlays keep membership (hide/reveal, focus). A retained
-//!   fullscreen/maximized member keeps its RESERVED slot/allocation (the
-//!   canonical retained rect rides instead of the native frame); born-
-//!   fullscreen rides slotless; R-MAX-03 slotless maximized joins for
-//!   hide/reveal and focus with no tile slot yet.
-//! - Fresh writes: while overlaid, geometry writes refuse
-//!   ([`geometry_eligible`], [`geometry_write_allowed`]). Membership/slot
-//!   admission is a separate policy: keep-maximized can reserve a new slot.
-//!   A retained reserved allocation is never disturbed by this module.
-//! - Focus actuation carries no geometry write, so overlays stay focusable
-//!   ([`focus_actuation_eligible`]); directional focus *commands* are still
-//!   fenced while maximized ([`maximized_focus_fence`], G-06, fullscreen
-//!   exempt).
-//!
-//! Ordering scope: these predicates assert boolean eligibility only, never
-//! refusal-token order. Windows `classify` orders `no_activate` after the
-//! overlays (a no-activate maximized window reports `Maximized`), which this
-//! module does not model.
-//!
-//! B9 parity (R-FLT-06): both adapters clear-then-fresh-admit an ordinary
-//! maximized float on explicit unfloat (Windows
-//! `unfloat_maximize_clear_eligible` plus observed-clear route; KDE B9 lane
-//! plus refetch fall-through). There is no undecided overlaid-unfloat
-//! mismatch on this lane; sticky origins keep their own path on both sides.
-//!
-//! R-MAX-03 current rule: a floating-first maximized window keeps its native
-//! frame, and its later tiled admission keeps the maximize over the reserved
-//! slot (retile overlay lane, under both born modes). No second clear fires.
-//!
-//! Origin policy: the B9 sticky-vs-ordinary lane input (`is_sticky_origin`)
-//! is sufficient; no new sticky system is added. Adapters resolve that
-//! boolean from their own lifetime state.
-//!
-//! Deliberately excluded (adapter-owned, see row 73 boundary):
-//! geometry arithmetic (`overconstrained_effective`, half-snap rects,
-//! float-focus target search live in `geometry`/`tiler-windows` and KDE
-//! `selectFloatFocusTarget`); native actuation/verification
-//! (`maximize_clear_refusal`, `authorize_maximize_clear`,
-//! `fullscreen_toggle_decision`, toggle/suspend/elevation gates, retained
-//! rects/hints, restore wakes); transfer/identity proof (`send_flags_stable`,
-//! stateless/allowlist verdicts); and every lifetime map behind the boolean
-//! inputs here (KDE `appliedById`/`floatingFirstSeen`/`stickyPreviousFloating`
-//! /`seenNonFullscreen`/`heldInitialFullscreen`; Windows `member_rects`,
-//! `born_first_exit`, `born_keep_overlay`/`retile_keep_overlay`,
-//! `fixed_auto_seen`/`fixed_origin_overrides`, sticky maps).
-//!
-//! Production consumers: macOS wire normalization uses the born-fullscreen
-//! hold gate and frame emission uses the geometry-write gate; fixed admission
-//! reuses `size_hints`. Other gates are conformance-pinned for later adoption.
-//! Callable Windows counterparts are compared directly in
-//! `crates/tiler-macos/tests/window_policy_conformance.rs`; first-exit
-//! classification reuses the shared hint predicate rather than invoking
-//! Windows' inline native exit path. The thin aliases
-//! (`admission_clear_eligible`, `should_clear_maximize_at_admission`,
-//! `should_clear_maximize_at_admission_with_born_mode`) add no new gates.
+//! - Overlays keep membership (hide/reveal, focus). A retained
+//!   fullscreen/maximized member keeps its RESERVED slot/allocation while
+//!   fresh geometry writes refuse ([`geometry_eligible`],
+//!   [`geometry_write_allowed`]); born-fullscreen rides slotless until its
+//!   first exit, and slotless maximized joins without a tile slot yet.
+//! - Slot admission is separate: the one-shot maximize clear
+//!   ([`should_clear_maximize_at_admission_with_mode`]) and the slot rules
+//!   ([`should_admit_slotless_maximized`], [`should_seed_member_slot`],
+//!   [`born_keep_latch`], [`should_hold_born_fullscreen`]) decide reservation
+//!   without disturbing retained allocations.
+//! - Directional focus commands stay fenced while maximized
+//!   ([`maximized_focus_fence`], fullscreen exempt); the unfloat lane admits
+//!   only ordinary maximized floats ([`unfloat_maximize_clear_eligible`]).
 //!
 //! Fixed-size and born-maximized reuse (no new policy): fixed admission is
-//! [`is_fixed_size_with`] (`BothAxes` default, `EitherAxis` alternate;
-//! D5 born-fullscreen first exit, D6 workspace enable, D7 startup all
-//! classify through it); born mode is [`BornMaximized`].
+//! [`is_fixed_size_with`]; born mode is [`BornMaximized`].
+//!
+//! These stateless predicates do not retain the world or lifetime history.
+//! Native fact collection, setters and identity proofs remain outside core;
+//! world reconciliation supplies the retained policy context.
 
 use crate::born_maximized::BornMaximized;
 use crate::size_hints::{FixedSizePredicate, WindowSizeHints, is_fixed_size_with};
@@ -102,11 +38,10 @@ use crate::size_hints::{FixedSizePredicate, WindowSizeHints, is_fixed_size_with}
 /// Normalized safety facts for one observed window.
 ///
 /// Adapters map host facts into these booleans; the core never reads native
-/// state. Field mapping to Windows `WindowFacts` (`tiling.rs:344-360`):
-/// `visible`, `minimized`, `cloaked`, `privileged` (= elevated),
-/// `shell`, `tool` (= tool_window), `owned_dialog` (= owned),
-/// `dialog`, `no_activate`. Fullscreen/maximized ride separately so the
-/// clear gate can order them after safety.
+/// state. Windows `WindowFacts` mapping: `visible`, `minimized`, `cloaked`,
+/// `privileged` (= elevated), `shell`, `tool` (= tool_window),
+/// `owned_dialog` (= owned), `dialog`, `no_activate`. Fullscreen/maximized
+/// ride separately so the clear gate can order them after safety.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct SafetyFacts {
     pub visible: bool,
@@ -122,9 +57,8 @@ pub struct SafetyFacts {
 
 /// Safety eligibility: every host safety gate passes. Overlays are NOT
 /// checked here; callers order them after this (fullscreen first). Boolean
-/// output only: equivalent to the safety formula inside Windows
-/// `admission_clear_eligible` and the non-overlay prefix shared by `classify`
-/// / `classify_focus`, with no refusal-token-order claim.
+/// output only: the ordered refusal form is [`classify_geometry`] (geometry)
+/// and [`classify_focus`] (focus).
 #[must_use]
 pub const fn safety_eligible(facts: &SafetyFacts) -> bool {
     facts.visible
@@ -138,14 +72,105 @@ pub const fn safety_eligible(facts: &SafetyFacts) -> bool {
         && !facts.no_activate
 }
 
-/// Admission-clear safety: same safety gates as [`safety_eligible`], kept
-/// under the Windows name. Fullscreen/maximized are handled by the clear gate
-/// itself, never here. The private `cfg(windows)` Windows function of the
-/// same name is never invoked; equivalence is proven through the public
-/// `classify` / `classify_focus` in the macOS conformance test.
+/// Admission-clear safety: same safety gates as [`safety_eligible`].
+/// Fullscreen/maximized are handled by the clear gate itself, never here.
 #[must_use]
 pub const fn admission_clear_eligible(facts: &SafetyFacts) -> bool {
     safety_eligible(facts)
+}
+
+/// Ordered eligibility refusal over normalized facts, neutral vocabulary.
+///
+/// Adapters map these to native diagnostics; Windows reports `privileged` as
+/// `elevated` and keeps every other token verbatim. The overlay snapshot
+/// vocabulary differs on purpose: [`overlay_refusal`] reports `"maximize"`
+/// while this gate reports [`EligibilityRefusal::Maximized`] as `"maximized"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EligibilityRefusal {
+    Hidden,
+    Minimized,
+    Cloaked,
+    Privileged,
+    Shell,
+    Tool,
+    OwnedDialog,
+    Dialog,
+    Fullscreen,
+    Maximized,
+    NoActivate,
+}
+
+impl EligibilityRefusal {
+    /// Neutral refusal token for fixtures and logs.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Hidden => "hidden",
+            Self::Minimized => "minimized",
+            Self::Cloaked => "cloaked",
+            Self::Privileged => "privileged",
+            Self::Shell => "shell",
+            Self::Tool => "tool",
+            Self::OwnedDialog => "owned-dialog",
+            Self::Dialog => "dialog",
+            Self::Fullscreen => "fullscreen",
+            Self::Maximized => "maximized",
+            Self::NoActivate => "no-activate",
+        }
+    }
+}
+
+/// Ordered geometry classification over normalized facts: the first held
+/// refusal wins, safety gates first, then overlays (fullscreen before
+/// maximized), then `no_activate`. A no-activate maximized window therefore
+/// reports [`EligibilityRefusal::Maximized`], never `NoActivate`.
+pub const fn classify_geometry(
+    facts: &SafetyFacts,
+    fullscreen: bool,
+    maximized: bool,
+) -> Result<(), EligibilityRefusal> {
+    if !facts.visible {
+        return Err(EligibilityRefusal::Hidden);
+    }
+    if facts.minimized {
+        return Err(EligibilityRefusal::Minimized);
+    }
+    if facts.cloaked {
+        return Err(EligibilityRefusal::Cloaked);
+    }
+    if facts.privileged {
+        return Err(EligibilityRefusal::Privileged);
+    }
+    if facts.shell {
+        return Err(EligibilityRefusal::Shell);
+    }
+    if facts.tool {
+        return Err(EligibilityRefusal::Tool);
+    }
+    if facts.owned_dialog {
+        return Err(EligibilityRefusal::OwnedDialog);
+    }
+    if facts.dialog {
+        return Err(EligibilityRefusal::Dialog);
+    }
+    if fullscreen {
+        return Err(EligibilityRefusal::Fullscreen);
+    }
+    if maximized {
+        return Err(EligibilityRefusal::Maximized);
+    }
+    if facts.no_activate {
+        return Err(EligibilityRefusal::NoActivate);
+    }
+    Ok(())
+}
+
+/// Ordered focus classification over normalized facts: focus carries no
+/// geometry write, so both overlays are ignored while every other gate keeps
+/// its geometry priority, including `no_activate` last. Single ordered
+/// implementation: this is [`classify_geometry`] with both overlays clear.
+pub const fn classify_focus(facts: &SafetyFacts) -> Result<(), EligibilityRefusal> {
+    classify_geometry(facts, false, false)
 }
 
 /// Geometry eligibility for fresh writes: safe AND
@@ -677,6 +702,138 @@ mod tests {
     }
 
     #[test]
+    fn ordered_classification_priority_is_exhaustive() {
+        // Every safety combination crossed with both overlays: geometry
+        // reports the first held refusal in priority order, focus reports the
+        // same order minus the overlays.
+        for bits in 0..512u32 {
+            let facts = SafetyFacts {
+                visible: bits & 1 != 0,
+                minimized: bits & 2 != 0,
+                cloaked: bits & 4 != 0,
+                privileged: bits & 8 != 0,
+                shell: bits & 16 != 0,
+                tool: bits & 32 != 0,
+                owned_dialog: bits & 64 != 0,
+                dialog: bits & 128 != 0,
+                no_activate: bits & 256 != 0,
+            };
+            let safety = if !facts.visible {
+                Some(EligibilityRefusal::Hidden)
+            } else if facts.minimized {
+                Some(EligibilityRefusal::Minimized)
+            } else if facts.cloaked {
+                Some(EligibilityRefusal::Cloaked)
+            } else if facts.privileged {
+                Some(EligibilityRefusal::Privileged)
+            } else if facts.shell {
+                Some(EligibilityRefusal::Shell)
+            } else if facts.tool {
+                Some(EligibilityRefusal::Tool)
+            } else if facts.owned_dialog {
+                Some(EligibilityRefusal::OwnedDialog)
+            } else if facts.dialog {
+                Some(EligibilityRefusal::Dialog)
+            } else {
+                None
+            };
+            let focus_expected = safety.or(if facts.no_activate {
+                Some(EligibilityRefusal::NoActivate)
+            } else {
+                None
+            });
+            assert_eq!(
+                classify_focus(&facts).err(),
+                focus_expected,
+                "bits={bits:09b}"
+            );
+            for fullscreen in [false, true] {
+                for maximized in [false, true] {
+                    let geometry_expected = safety
+                        .or(if fullscreen {
+                            Some(EligibilityRefusal::Fullscreen)
+                        } else if maximized {
+                            Some(EligibilityRefusal::Maximized)
+                        } else {
+                            None
+                        })
+                        .or(if facts.no_activate {
+                            Some(EligibilityRefusal::NoActivate)
+                        } else {
+                            None
+                        });
+                    assert_eq!(
+                        classify_geometry(&facts, fullscreen, maximized).err(),
+                        geometry_expected,
+                        "bits={bits:09b} fs={fullscreen} max={maximized}"
+                    );
+                    // Boolean gates agree with the ordered gate on every combo.
+                    assert_eq!(
+                        geometry_eligible(&facts, fullscreen, maximized),
+                        geometry_expected.is_none()
+                    );
+                }
+            }
+            assert_eq!(focus_actuation_eligible(&facts), focus_expected.is_none());
+            assert_eq!(
+                safety_eligible(&facts),
+                safety.is_none() && !facts.no_activate
+            );
+        }
+        // Priority conflicts pin the order, not just the single causes.
+        let conflict = |facts: SafetyFacts, fullscreen: bool, maximized: bool| {
+            classify_geometry(&facts, fullscreen, maximized).err()
+        };
+        let all_set = SafetyFacts {
+            visible: false,
+            minimized: true,
+            cloaked: true,
+            privileged: true,
+            shell: true,
+            tool: true,
+            owned_dialog: true,
+            dialog: true,
+            no_activate: true,
+        };
+        assert_eq!(
+            conflict(all_set, true, true),
+            Some(EligibilityRefusal::Hidden)
+        );
+        assert_eq!(
+            conflict(safety_all_clear(), true, true),
+            Some(EligibilityRefusal::Fullscreen)
+        );
+        // no_activate orders after the overlays: an overlaid no-activate
+        // window reports the overlay, never NoActivate.
+        assert_eq!(
+            conflict(safety_all_clear(), false, true),
+            Some(EligibilityRefusal::Maximized)
+        );
+        let no_activate_only = SafetyFacts {
+            no_activate: true,
+            ..safety_all_clear()
+        };
+        assert_eq!(
+            conflict(no_activate_only, false, true),
+            Some(EligibilityRefusal::Maximized)
+        );
+        assert_eq!(
+            conflict(no_activate_only, true, false),
+            Some(EligibilityRefusal::Fullscreen)
+        );
+        assert_eq!(
+            conflict(no_activate_only, false, false),
+            Some(EligibilityRefusal::NoActivate)
+        );
+        // Focus ignores both overlays but keeps no_activate.
+        assert!(classify_focus(&safety_all_clear()).is_ok());
+        assert_eq!(
+            classify_focus(&no_activate_only).err(),
+            Some(EligibilityRefusal::NoActivate)
+        );
+    }
+
+    #[test]
     fn first_exit_reuses_fixed_size_predicate() {
         let fixed = WindowSizeHints {
             min_w: Some(640),
@@ -899,6 +1056,48 @@ mod tests {
                     {
                         assert_eq!(geometry_write_allowed(false, true), write, "{name}");
                     }
+                }
+                "geometry_classification" => {
+                    let facts = SafetyFacts {
+                        visible: bit("visible"),
+                        minimized: bit("minimized"),
+                        cloaked: bit("cloaked"),
+                        privileged: bit("privileged"),
+                        shell: bit("shell"),
+                        tool: bit("tool"),
+                        owned_dialog: bit("owned_dialog"),
+                        dialog: bit("dialog"),
+                        no_activate: bit("no_activate"),
+                    };
+                    let expected = case.get("refusal").and_then(serde_json::Value::as_str);
+                    assert_eq!(
+                        classify_geometry(&facts, bit("fullscreen"), bit("maximized"))
+                            .err()
+                            .map(EligibilityRefusal::as_str),
+                        expected,
+                        "{name}"
+                    );
+                }
+                "focus_classification" => {
+                    let facts = SafetyFacts {
+                        visible: bit("visible"),
+                        minimized: bit("minimized"),
+                        cloaked: bit("cloaked"),
+                        privileged: bit("privileged"),
+                        shell: bit("shell"),
+                        tool: bit("tool"),
+                        owned_dialog: bit("owned_dialog"),
+                        dialog: bit("dialog"),
+                        no_activate: bit("no_activate"),
+                    };
+                    // Focus takes no overlay input: cases may carry held
+                    // overlays and still expect the non-overlay verdict.
+                    let expected = case.get("refusal").and_then(serde_json::Value::as_str);
+                    assert_eq!(
+                        classify_focus(&facts).err().map(EligibilityRefusal::as_str),
+                        expected,
+                        "{name}"
+                    );
                 }
                 "first_exit" => {
                     let bound = |key: &str| match case.get(key) {

@@ -1082,7 +1082,9 @@ pub(super) fn assemble_domain_rows(
                     && domain_tiled
                     && !state.born_keep_overlay.contains(key)
                     && !state.retile_keep_overlay.contains(key)
-                    && row.facts.is_some_and(admission_clear_eligible)
+                    && row
+                        .facts
+                        .is_some_and(|facts| classify_focus(&facts).is_ok())
                     && {
                         let prefix =
                             format!("{}:{}:{}:", row.key.hwnd, row.key.creation, row.key.pid);
@@ -1096,7 +1098,7 @@ pub(super) fn assemble_domain_rows(
                             hints,
                             fixed_predicate_for(state.settings_live.as_ref()),
                         ));
-                if crate::tiling::should_seed_member_slot(
+                if tiler_core::window_policy::should_seed_member_slot(
                     domain_tiled,
                     row.maximized,
                     state.member_rects.contains_key(&row.token),

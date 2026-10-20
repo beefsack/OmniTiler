@@ -2617,6 +2617,15 @@ platform API behavior.
   contains-focused, and per-workspace window lists if icons need them.
   Platforms own placement/anchoring, host-styled drawing and click-to-command;
   KDE's native pager maps from core's per-screen model.
+- Boundary extraction, 2026-10-21: ordered geometry/focus eligibility is shared
+  core policy over normalized safety and overlay facts. Windows maps native
+  facts and preserves its diagnostic vocabulary, not a second refusal-order
+  implementation; focus reuses the classifier with overlays ignored. Windows
+  also calls shared overlay/born/slot predicates directly, including admission
+  safety. This changes no behavior and does not yet migrate the retained
+  workspace/world owner. Core-only shared cases, Windows projection/admission
+  regressions and fixture-only checks on both outputs pass.
+  [Scope and evidence](changes/core-world-model-rearchitecture.md#stage-1-accepted-outcome-2026-10-21).
 - User 2026-10-16, full-state replies D1: retain the stateful, side-effect-free
   `Engine` behind a world-level report/reply boundary. Deterministic typed
   replay remains explicit. No caller-owned or serialized core state crosses

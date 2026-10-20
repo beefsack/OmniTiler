@@ -196,7 +196,7 @@ pub(super) fn suspend_read_inner(
         .member_tokens
         .get(&held_key)
         .is_some_and(|token| state.member_rects.contains_key(token));
-    if !should_hold_born_fullscreen(
+    if !tiler_core::window_policy::should_hold_born_fullscreen(
         true,
         known_slot,
         state.seen_nonfullscreen.contains(&held_key),

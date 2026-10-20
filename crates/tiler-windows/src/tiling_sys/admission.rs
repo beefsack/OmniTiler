@@ -1,22 +1,6 @@
 #![forbid(unsafe_code)]
 use super::*;
 
-/// Otherwise-eligible check for an admission-clear candidate: every safety
-/// gate must already pass, so the clear never mutates an elevated, shell,
-/// tool, owned, dialog, cloaked, or no-activate window. Maximized is the only
-/// permitted overlay state here (fullscreen never clears, checked separately).
-pub(super) fn admission_clear_eligible(facts: WindowFacts) -> bool {
-    facts.visible
-        && !facts.minimized
-        && !facts.cloaked
-        && !facts.elevated
-        && !facts.shell
-        && !facts.tool_window
-        && !facts.owned
-        && !facts.dialog
-        && !facts.no_activate
-}
-
 /// D2 admission pin shared by the clear seam and the slot-deferral mirror:
 /// the live Engine snapshot proves this token was admitted ordinary/tiled
 /// (present, neither an exception nor automatic), so the required clear plans
@@ -97,7 +81,10 @@ pub(super) fn admission_clear_planned(
     if !matches!(tiled, Some(true)) {
         return false;
     }
-    if !row.facts.is_some_and(admission_clear_eligible) {
+    if !row
+        .facts
+        .is_some_and(|facts| classify_focus(&facts).is_ok())
+    {
         return false;
     }
     if state.member_rects.contains_key(&row.token) {
@@ -213,7 +200,10 @@ pub(super) fn clear_maximize_at_admission(
             .member_loc(&row.key)
             .and_then(|loc| workspace_mode_known(state, &loc.output, &loc.workspace));
         let tiled = matches!(domain_tiled, Some(true));
-        if !row.facts.is_some_and(admission_clear_eligible) {
+        if !row
+            .facts
+            .is_some_and(|facts| classify_focus(&facts).is_ok())
+        {
             continue;
         }
         // Truly no retained tile slot: a slotted member keeps its allocation
@@ -268,7 +258,7 @@ pub(super) fn clear_maximize_at_admission(
             live_pid,
             live_tag.as_deref().unwrap_or("")
         );
-        if !crate::tiling::should_clear_maximize_at_admission_with_mode(
+        if !tiler_core::window_policy::should_clear_maximize_at_admission_with_mode(
             row.fullscreen,
             row.maximized,
             false,
@@ -334,7 +324,7 @@ pub(super) fn clear_maximize_at_admission(
 /// move/pointer isolation parity): fullscreen wins, then maximize. Returns
 /// the refusal cause or `None` when the route may proceed.
 pub(super) fn overlay_refusal_for(row: &RetainedRow) -> Option<&'static str> {
-    crate::tiling::overlay_refusal(row.fullscreen, row.maximized)
+    tiler_core::window_policy::overlay_refusal(row.fullscreen, row.maximized)
 }
 
 /// Whether one Engine token is currently an intentional-float exception in

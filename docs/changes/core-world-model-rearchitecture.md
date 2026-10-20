@@ -20,7 +20,7 @@
 ## Inventory and core destinations
 
 Paths below are relative to the named source roots. This inventory describes
-current ownership, not already-completed extraction.
+ownership before stage 1; accepted extractions are recorded below.
 
 ### Windows (`crates/tiler-windows/src`)
 
@@ -128,7 +128,7 @@ remove the code it supersedes before its acceptance.
 ## Verification and accepted evidence
 
 - Stage 0: source and authoritative decision/Windows adoption records inspected;
-  no runtime or live change. Implementation stages remain pending.
+  inventory delivered in `3a4569e1` without runtime or live changes.
 - Per implementation stage: locked build/tests and strict all-target clippy
   for core + Windows through `mise exec --`; include protocol/FFI when their
   contracts are touched. Workspace formatting and `git diff --check`.
@@ -139,3 +139,81 @@ remove the code it supersedes before its acceptance.
 - Promote authorized durable stage decisions to `docs/decisions.md` only after
   stage acceptance; mark tentative choices. Archive this record only after the
   entire boundary and Windows migration are accepted.
+
+## Stage 1 accepted outcome (2026-10-21)
+
+- `tiler-core::window_policy` is the sole implementation of ordered geometry
+  and focus eligibility. The native adapter projects `WindowFacts` into
+  `SafetyFacts` and maps neutral refusal tokens to existing Windows diagnostics;
+  `privileged` still renders as `elevated`. Order is unchanged: hidden,
+  minimized, cloaked, control privilege, shell, tool, owned dialog, dialog,
+  fullscreen, maximized, no-activate. Focus ignores both overlays.
+- Windows production uses existing core overlay/toggle/focus-fence,
+  born-fullscreen/maximized and slot predicates directly. Removed duplicate
+  Windows bodies, public reexports, test-only born-mode wrapper and the private
+  admission-clear safety formula. No compatibility aliases or new owner were
+  added. All three admission/slot-deferral safety call sites use the same
+  normalized core focus classifier, preserving overlay-independent eligibility.
+- Shared `test-fixtures/window-policy.json` now includes 22 ordered geometry
+  and focus cases, including priority conflicts, consumed by core-only tests
+  and Windows production-normalization tests. Exhaustive core coverage crosses
+  512 safety shapes with both overlays; a Windows admission seam regression
+  crosses the same 2,048 combinations. This is the first shared baseline slice,
+  not the later world-action/live-connector case format.
+- Independent source review accepted priority, native normalization, production
+  argument parity and duplicate removal, including the final admission-safety
+  cleanup. Locked core + Windows build/tests and strict all-target clippy pass;
+  tests report **2,829 passed, 0 failed, 1 ignored across 69 suites**. Workspace
+  format and whitespace checks pass. No dependency, unsafe, input-hook,
+  behavior-setting or workspace-owner changes.
+
+### Native fixture evidence
+
+- Final artifact, native Windows 11, fixture-only executable scope: three normal
+  windows tiled on their original outputs and an equal-min/max fixture window
+  floated without tile writes. Fresh caller-ID/native-lifetime/token joins and
+  owner write logs corroborated native physical-frame observations.
+- Both outputs independently passed maximize/work-area coverage and observed
+  unmaximize/slot return, plus borderless-fullscreen/monitor coverage and normal
+  home-layout return. Fullscreen fixture mode remained unknown; native frames,
+  not configured mode, established fullscreen coverage.
+- A primary-output workspace send-follow/select roundtrip hid and revealed the
+  expected members while the other output stayed visible. Closing the tiled
+  sibling expanded the survivor; closing the fixed float preserved the other
+  tile. These are bounded smoke checks, not full workspace-mode acceptance.
+- Final exact-owner stop/independent restore and graceful fixture shutdown left
+  no owner, fixture windows, recovery ledger or pending controls. Settings bytes,
+  relevant SPI/taskbar state and protected-window geometry matched baseline.
+  Final source diff, artifact hashes, gate outputs, process identities and native
+  readbacks were inspected and remain outside the repository.
+- Live test corrections were expectation errors, not product fixes: resizability
+  alone is not the current fixed-size predicate (use equal size hints); numbered
+  workspace send follows the mover. Native chrome-adjusted track hints are not
+  exact client-size clamps. No failed product approach or unresolved restoration
+  issue remains from this stage.
+
+### Remaining scope and next implementation entry
+
+- Stages 2-5 remain pending. Windows still uses its single existing per-domain
+  Engine/ManagedWorkspaces owner; world capture/sequencing/diff modules remain
+  test-only. Cursor-first placement and the dual-output fresh-admission defect
+  are **not** fixed by stage 1.
+- Classification rules, manage/float/ignore state, game handling and retained
+  admission lifetimes still need the full-world model. This stage moved the
+  named stateless predicates only, not those remaining policy owners.
+- KDE/macOS are not updated. In particular, macOS's old cross-crate conformance
+  test still imports removed Windows predicate APIs and lacks the new fixture
+  gate arms; its port must replace these with core/adapter-normalization tests.
+  The KDE TypeScript born-maximized copy is still pending its own port.
+- Tentative choices: predicate-first sequencing; reuse the existing shared
+  window-policy case table; keep native diagnostic vocabulary through mapping
+  rather than creating a new Windows policy API. No product behavior was decided
+  tentatively in stage 1. Three-way placement subsuming launch targeting remains
+  tentative and unimplemented.
+- Next: specify the authoritative logical mapping versus native-observation
+  contract using `world_engine.rs`, `world_publish.rs`, `world_report.rs` and
+  Windows `world_capture.rs`/`world_diff.rs`/`workspace.rs`. Start with a
+  core-only discriminating migration/member/view/refill sequence that currently
+  holds the absent target, then implement stage 2's single-owner cutover and
+  cursor-first policy without an adapter authority bypass. Preserve T2's
+  source-state transaction and hidden/fullscreen/bootstrap distinctions.
