@@ -77,6 +77,7 @@
           ./crates/tiler-windows
           ./crates/tiler-macos
           ./crates/tiler-kde-settings-exporter
+          ./crates/tiler-live-fixture
         ];
       };
 

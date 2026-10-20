@@ -341,8 +341,10 @@ describe("native KCM static contract", () => {
         const flake = read("../flake.nix");
         assert.match(flake, /\.\/kwin\/native-effect/);
         assert.match(flake, /\.\/crates\/tiler-kde-settings-exporter/);
+        assert.match(flake, /\.\/crates\/tiler-live-fixture/);
         const cargoManifest = read("../Cargo.toml");
         assert.match(cargoManifest, /crates\/tiler-kde-settings-exporter/);
+        assert.match(cargoManifest, /crates\/tiler-live-fixture/);
     });
 
     it("does not expose global shortcut mutation APIs", () => {
