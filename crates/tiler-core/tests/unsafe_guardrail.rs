@@ -58,10 +58,16 @@ const APPROVED_ALLOW_ROOTS: &[&str] = &[
     "crates/tiler-kwin-effect-ffi/src/drag_oracle.rs",
     "crates/tiler-kwin-effect-ffi/src/group_highlight.rs",
     "crates/tiler-kwin-effect-ffi/src/visual.rs",
+    "crates/tiler-live-fixture/src/pipe_win.rs",
 ];
 
 /// Crates allowed a standalone `[lints.rust] unsafe_code = "deny"`.
-const DENY_EXCEPTION_CRATES: &[&str] = &["tiler-kwin-effect-ffi", "tiler-macos", "tiler-windows"];
+const DENY_EXCEPTION_CRATES: &[&str] = &[
+    "tiler-kwin-effect-ffi",
+    "tiler-macos",
+    "tiler-windows",
+    "tiler-live-fixture",
+];
 
 /// Lint levels that weaken `unsafe_code`. `deny`/`forbid` strengthen it and
 /// are accepted anywhere. `force_warn` is not stable attribute syntax today;
@@ -1414,7 +1420,7 @@ mod e2e_tests {
         let mut files: Vec<(&str, &str)> = vec![
             (
                 "Cargo.toml",
-                "[workspace]\nmembers = [\"crates/ok\", \"crates/tiler-windows\", \"crates/tiler-macos\", \"crates/tiler-kwin-effect-ffi\"]\nresolver = \"2\"\n\n[workspace.lints.rust]\nunsafe_code = \"forbid\"\n",
+                "[workspace]\nmembers = [\"crates/ok\", \"crates/tiler-windows\", \"crates/tiler-macos\", \"crates/tiler-kwin-effect-ffi\", \"crates/tiler-live-fixture\"]\nresolver = \"2\"\n\n[workspace.lints.rust]\nunsafe_code = \"forbid\"\n",
             ),
             (
                 "crates/ok/Cargo.toml",
@@ -1460,6 +1466,14 @@ mod e2e_tests {
             ),
             (
                 "crates/tiler-kwin-effect-ffi/src/visual.rs",
+                "#![allow(unsafe_code)]\n",
+            ),
+            (
+                "crates/tiler-live-fixture/Cargo.toml",
+                "[package]\nname = \"tiler-live-fixture\"\n\n[lints.rust]\nunsafe_code = \"deny\"\n",
+            ),
+            (
+                "crates/tiler-live-fixture/src/pipe_win.rs",
                 "#![allow(unsafe_code)]\n",
             ),
         ];

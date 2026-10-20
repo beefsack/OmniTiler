@@ -1,10 +1,13 @@
 //! `tiler-live-fixture serve|send`: one binary, two roles.
 //!
 //! `serve` owns the winit event loop on the main thread and accepts JSON-lines
-//! clients on a private Unix socket. `send` is the thin client: it forwards
-//! JSON lines from arguments or stdin and prints reply/event lines.
+//! clients on a private local endpoint (Unix socket on Linux/macOS,
+//! owner-restricted named pipe on Windows). `send` is the thin client: it
+//! forwards JSON lines from arguments or stdin and prints reply/event lines.
 
 mod client;
+#[cfg(windows)]
+mod pipe_win;
 mod platform;
 mod protocol;
 mod render;
@@ -13,7 +16,7 @@ mod transport;
 mod win;
 
 use std::io::BufRead;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::io::BufReader;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock, atomic::AtomicBool, mpsc};
@@ -164,6 +167,8 @@ fn serve(args: &[String]) -> i32 {
 
 /// Remove the socket file this run created, plus the directory when this run
 /// created it. Never touches preexisting user directories beyond our file.
+/// On Windows the endpoint is a kernel pipe name (no file to remove); only
+/// the run directory lifecycle applies.
 fn cleanup_socket(socket_path: &std::path::Path, dir: &std::path::Path, dir_preexisted: bool) {
     let _ = std::fs::remove_file(socket_path);
     if !dir_preexisted {
@@ -173,10 +178,10 @@ fn cleanup_socket(socket_path: &std::path::Path, dir: &std::path::Path, dir_pree
 
 /// Accept connections until shutdown. Each connection gets a reader thread
 /// and a writer thread sharing one event queue, so async subscription events
-/// and request replies serialize onto the socket in arrival order.
+/// and request replies serialize onto the endpoint in arrival order.
 #[cfg(unix)]
 fn accept_loop(
-    listener: std::os::unix::net::UnixListener,
+    listener: transport::Listener,
     sender: win::MainSender,
     shutdown: Arc<AtomicBool>,
     socket_path: PathBuf,
@@ -213,9 +218,43 @@ fn accept_loop(
     }
 }
 
-#[cfg(not(unix))]
+/// Accept connections until shutdown (Windows named-pipe variant).
+/// Same threading shape as Unix: blocking accept, dummy client wakes the
+/// loop after `shutdown`.
+#[cfg(windows)]
 fn accept_loop(
-    _: (),
+    listener: transport::Listener,
+    sender: win::MainSender,
+    shutdown: Arc<AtomicBool>,
+    socket_path: PathBuf,
+    next_conn: Arc<std::sync::atomic::AtomicU64>,
+) {
+    use std::sync::atomic::Ordering;
+    loop {
+        if shutdown.load(Ordering::SeqCst) {
+            break;
+        }
+        match listener.accept() {
+            Ok(stream) => {
+                let sender = sender.clone();
+                let shutdown = Arc::clone(&shutdown);
+                let socket_path = socket_path.clone();
+                let conn = next_conn.fetch_add(1, Ordering::Relaxed);
+                std::thread::spawn(move || {
+                    serve_connection(stream, sender, shutdown, &socket_path, conn);
+                });
+            }
+            Err(e) => {
+                eprintln!("serve: accept failed: {e}");
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn accept_loop(
+    _: transport::Listener,
     _: win::MainSender,
     _: Arc<AtomicBool>,
     _: PathBuf,
@@ -223,16 +262,16 @@ fn accept_loop(
 ) {
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn serve_connection(
-    stream: std::os::unix::net::UnixStream,
+    stream: transport::Stream,
     sender: win::MainSender,
     shutdown: Arc<AtomicBool>,
     socket_path: &std::path::Path,
     conn: u64,
 ) {
     use std::sync::atomic::Ordering;
-    let reader_stream = match stream.try_clone() {
+    let reader_stream = match transport::try_clone_stream(&stream) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("serve: connection setup failed: {e}");
@@ -271,7 +310,7 @@ fn serve_connection(
                     // Wake the accept loop: the main thread already flagged
                     // shutdown and will exit its event loop after replying.
                     sender.wake();
-                    let _ = std::os::unix::net::UnixStream::connect(socket_path);
+                    let _ = transport::connect(socket_path);
                     break;
                 }
             }
@@ -289,8 +328,15 @@ fn serve_connection(
     let _ = writer.join();
 }
 
-#[cfg(not(unix))]
-fn serve_connection(_: (), _: win::MainSender, _: Arc<AtomicBool>, _: &std::path::Path, _: u64) {}
+#[cfg(not(any(unix, windows)))]
+fn serve_connection(
+    _: transport::Stream,
+    _: win::MainSender,
+    _: Arc<AtomicBool>,
+    _: &std::path::Path,
+    _: u64,
+) {
+}
 
 // ---------------------------------------------------------------------------
 // send

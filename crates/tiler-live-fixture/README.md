@@ -2,7 +2,8 @@
 
 Development-only controllable live test windows. One `tiler-live-fixture`
 process owns many native windows (winit + softbuffer CPU text); callers drive
-them by caller id over versioned JSON-lines on a private Unix socket.
+them by caller id over versioned JSON-lines on a private local endpoint
+(Unix socket on Linux/macOS, owner-restricted named pipe on Windows).
 
 Existing helpers stay: the Windows `tiler-test-window` binary and the macOS
 probe target are untouched. This crate is not product code and is never part
@@ -21,6 +22,13 @@ chmod 700 "$RUN_DIR"
 cargo run --locked -p tiler-live-fixture -- serve --dir "$RUN_DIR"
 # Prints exactly one JSON line (the only stdout line, the only nonce source):
 # {"socket":"$RUN_DIR/fixture.sock","nonce":"<64 hex>","pid":1234}
+# On Windows the same announcement carries a pipe name
+# ({"socket":"\\.\pipe\tiler-live-fixture-...","nonce":"...","pid":...});
+# `send --socket` accepts the announced value verbatim on both transports.
+# On Windows `--dir` is lifecycle/naming compat only (created/removed with
+# the run): it is never a filesystem security boundary. The pipe DACL
+# (SYSTEM + owner only, no remote clients) plus the per-run nonce are the
+# Windows security boundary.
 ```
 
 ```sh
@@ -252,8 +260,8 @@ compositor support and valid activation-token/input context.
   coverage rather than a speculative Linux-only extension surface.
 - macOS follow-ups: titlebar/full-size-content variants, shadow, first-mouse,
   tabbing/document-edited, simple fullscreen/Space behavior and borderless-game
-  policy. They need native compile/live coverage. Common controls use safe
-  winit APIs; neither native platform was compile-checked here.
+  policy. They need native live coverage. Common controls use safe
+  winit APIs; the fixture transport compiles on both native targets in CI.
 - Change history, elevated Windows instances and exclusive-mode selection stay
   deferred. Existing exclusive fullscreen still risks display-mode changes.
 
@@ -344,15 +352,22 @@ entry plus one capability flag, no plugin framework.
   was not exercised in desktop-preserving isolation checks. Borderless
   fullscreen was exercised on both backends.
 - Description is local-only: it stays in `requested`, never `configured`.
-- Transport is Unix sockets only (socket file mode `0600`). An existing
-  `--dir` is accepted only when it is already an owned private real
-  directory (mode `0700`, rejected symlinks); it is never chmodded. Fresh
-  run dirs are created non-recursively (parents must exist). Preexisting
-  socket paths are refused, never unlinked. The per-run nonce requires OS
-  entropy: startup fails clearly rather than falling back to a weak
-  secret. On other OSes `serve`/`send` fail with an explicit unsupported
-  error; Windows/macOS live behavior is an explicit limitation (not
-  compile-checked here).
+- Transport is a private local endpoint with the same JSON-lines framing,
+  nonce, request/event and absolute-deadline semantics on both transports:
+  Unix socket files (mode `0600`) on Linux/macOS and owner-restricted
+  named pipes on Windows (protected DACL granting access to the literal
+  current-user SID plus `SYSTEM`, remote clients refused, first instance
+  exclusive so a second server cannot hijack the name).
+  An existing `--dir` is accepted only when it is already an owned private
+  real directory on Unix (mode `0700`, rejected symlinks, never chmodded);
+  on Windows `--dir` is only created/removed for run lifecycle and never
+  enforces filesystem permissions. Fresh run dirs are created non-recursively
+  (parents must exist). Preexisting socket paths are refused, never unlinked.
+  The per-run nonce requires OS entropy (`getrandom`): startup fails clearly
+  rather than falling back to a weak secret. Non-Windows/Unix socket
+  platforms fail with an explicit unsupported error; macOS uses the Unix
+  socket path (same as Linux) and compiles in CI, with live behavior
+  covered by the same headless transport tests where practical.
 - If the pixel context fails, spawns are refused with an explicit error
   instead of producing blank windows.
 - Runtime display libraries must be installed for live use (see `devenv.nix`);

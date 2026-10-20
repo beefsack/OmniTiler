@@ -154,6 +154,12 @@ jobs:
             mise exec -- $tool --version
             if ($LASTEXITCODE -ne 0) { exit 1 }
           }
+      - name: Build live fixture
+        run: mise exec -- cargo build --locked -p tiler-live-fixture
+      - name: Test live fixture
+        run: mise exec -- cargo test --locked -p tiler-live-fixture
+      - name: Live fixture strict Clippy
+        run: mise exec -- cargo clippy --locked -p tiler-live-fixture --all-targets -- -D warnings
       - name: Build portable crates
         run: mise exec -- cargo build --locked -p tiler-core -p tiler-protocol -p tiler-kwin-effect-ffi -p tiler-windows -p tiler-macos
       - name: Test portable crates
@@ -184,6 +190,12 @@ jobs:
           done
           mise exec -- cargo fmt --version
           mise exec -- cargo clippy --version
+      - name: Build live fixture
+        run: mise exec -- cargo build --locked -p tiler-live-fixture
+      - name: Test live fixture
+        run: mise exec -- cargo test --locked -p tiler-live-fixture
+      - name: Live fixture strict Clippy
+        run: mise exec -- cargo clippy --locked -p tiler-live-fixture --all-targets -- -D warnings
       - name: Build macOS probe plus portable crates
         run: mise exec -- cargo build --locked -p tiler-core -p tiler-protocol -p tiler-kwin-effect-ffi -p tiler-macos
       - name: Test macOS probe plus portable crates

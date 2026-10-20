@@ -539,7 +539,7 @@ impl ReplyTracker {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub fn send_lines(
     socket: &Path,
     nonce: &str,
@@ -549,9 +549,9 @@ pub fn send_lines(
     compact: bool,
 ) -> Result<(), String> {
     use std::io::BufReader;
-    use std::os::unix::net::UnixStream;
 
-    let mut stream = UnixStream::connect(socket).map_err(|e| format!("connect failed: {e}"))?;
+    let mut stream =
+        crate::transport::connect(socket).map_err(|e| format!("connect failed: {e}"))?;
     // Inject the nonce into every request that lacks one.
     let mut framed = Vec::with_capacity(payloads.len());
     for payload in payloads {
@@ -574,20 +574,16 @@ pub fn send_lines(
     if follow {
         // A deliberate indefinite subscription: no read deadline. The user
         // ends it with Ctrl-C; EOF ends it from the server side.
-        stream
-            .set_read_timeout(None)
+        crate::transport::set_read_timeout(&stream, None)
             .map_err(|e| format!("timeout setup failed: {e}"))?;
     } else {
         // Request/response deadline: a wedged server must not hang scripts
         // forever. Use --follow for deliberate indefinite idling.
-        stream
-            .set_read_timeout(Some(std::time::Duration::from_secs(30)))
+        crate::transport::set_read_timeout(&stream, Some(std::time::Duration::from_secs(30)))
             .map_err(|e| format!("timeout setup failed: {e}"))?;
     }
     let mut reader = BufReader::new(
-        stream
-            .try_clone()
-            .map_err(|e| format!("clone failed: {e}"))?,
+        crate::transport::try_clone_stream(&stream).map_err(|e| format!("clone failed: {e}"))?,
     );
     let mut scratch = Vec::new();
     // Replies carry request_id; events and markers do not. Replies and events
@@ -631,7 +627,7 @@ pub fn send_lines(
     Ok(())
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 pub fn send_lines(
     _: &Path,
     _: &str,
@@ -640,13 +636,13 @@ pub fn send_lines(
     _: bool,
     _: bool,
 ) -> Result<(), String> {
-    Err("Unix socket transport is not supported on this OS".to_string())
+    Err("local transport is not supported on this OS".to_string())
 }
 
 /// Outcome of one deadline-aware frame read. `Timeout` means the absolute
 /// wait deadline passed with no complete frame; it is distinct from I/O
 /// errors so the caller reports a timeout rather than a read failure.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 enum WaitRead {
     Line(String),
     Eof,
@@ -766,7 +762,7 @@ impl DeadlineReader {
 }
 
 /// Outcome of one deadline-aware frame write.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[derive(Debug)]
 enum WriteError {
     Timeout,
@@ -831,7 +827,7 @@ fn write_line_deadline(
 /// `write`, so a slow-draining peer cannot reset the deadline either. The
 /// deadline exists because hosts may clamp/ignore requests or withhold
 /// state, so scripts must not hang.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[allow(clippy::too_many_arguments)]
 pub fn send_wait(
     socket: &Path,
@@ -841,8 +837,6 @@ pub fn send_wait(
     expect: &ExpectMap,
     compact: bool,
 ) -> Result<(), String> {
-    use std::os::unix::net::UnixStream;
-
     reject_wait_lifecycle(payloads)?;
     if expect.is_empty() {
         return Err("--expect must name at least one window id".to_string());
@@ -909,7 +903,8 @@ pub fn send_wait(
         .collect();
     let mut state = WaitState::new(expect.clone(), pending_ids);
 
-    let mut stream = UnixStream::connect(socket).map_err(|e| format!("connect failed: {e}"))?;
+    let mut stream =
+        crate::transport::connect(socket).map_err(|e| format!("connect failed: {e}"))?;
     // One absolute deadline for the whole wait, not a per-message timeout:
     // every blocking read and write below uses the remaining duration.
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(wait_ms);
@@ -1016,7 +1011,117 @@ pub fn send_wait(
     }
 }
 
-#[cfg(not(unix))]
+/// Windows named-pipe deadline reader: same absolute-deadline framing as
+/// the Unix reader. Each blocking wait is one Tokio IO-readiness wait
+/// bounded by one Tokio timer for the remaining duration: a chatty peer
+/// cannot reset the deadline, and no sleep/poll loop is involved.
+#[cfg(windows)]
+struct DeadlineReader {
+    stream: crate::transport::Stream,
+    buf: Vec<u8>,
+}
+
+#[cfg(windows)]
+impl DeadlineReader {
+    fn new(stream: crate::transport::Stream) -> Self {
+        Self {
+            stream,
+            buf: Vec::new(),
+        }
+    }
+
+    fn read_frame(&mut self, deadline: std::time::Instant) -> WaitRead {
+        loop {
+            if let Some(pos) = self.buf.iter().position(|&b| b == b'\n') {
+                if pos + 1 > MAX_LINE_BYTES {
+                    return WaitRead::Err(crate::transport::FrameError::TooLong);
+                }
+                let mut line: Vec<u8> = self.buf.drain(..pos + 1).collect();
+                line.pop();
+                if line.ends_with(b"\r") {
+                    line.pop();
+                }
+                match String::from_utf8(line) {
+                    Ok(s) => return WaitRead::Line(s),
+                    Err(_) => return WaitRead::Err(crate::transport::FrameError::InvalidUtf8),
+                }
+            }
+            if self.buf.len() > MAX_LINE_BYTES {
+                return WaitRead::Err(crate::transport::FrameError::TooLong);
+            }
+            if deadline
+                .saturating_duration_since(std::time::Instant::now())
+                .is_zero()
+            {
+                return WaitRead::Timeout;
+            }
+            let mut tmp = [0u8; 4096];
+            match crate::transport::read_chunk(&self.stream, &mut tmp, deadline) {
+                Ok(Some(n)) => {
+                    let chunk = &tmp[..n];
+                    match chunk.iter().position(|&b| b == b'\n') {
+                        Some(j) => {
+                            if self.buf.len().saturating_add(j + 1) > MAX_LINE_BYTES {
+                                return WaitRead::Err(crate::transport::FrameError::TooLong);
+                            }
+                            self.buf.extend_from_slice(chunk);
+                        }
+                        None => {
+                            if self.buf.len().saturating_add(n) > MAX_LINE_BYTES {
+                                return WaitRead::Err(crate::transport::FrameError::TooLong);
+                            }
+                            self.buf.extend_from_slice(chunk);
+                        }
+                    }
+                }
+                Ok(None) => {
+                    if self.buf.is_empty() {
+                        return WaitRead::Eof;
+                    }
+                    return WaitRead::Err(crate::transport::FrameError::Io(
+                        "connection closed mid-line".to_string(),
+                    ));
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
+                    return WaitRead::Timeout;
+                }
+                Err(e) => {
+                    return WaitRead::Err(crate::transport::FrameError::Io(e.to_string()));
+                }
+            }
+        }
+    }
+}
+
+/// Windows deadline-aware frame write: same absolute-deadline contract as
+/// Unix. Each partial write is one Tokio writability wait bounded by one
+/// Tokio timer for the remaining duration; no sleep/poll loop.
+#[cfg(windows)]
+fn write_line_deadline(
+    stream: &mut crate::transport::Stream,
+    line: &str,
+    deadline: std::time::Instant,
+) -> Result<(), WriteError> {
+    let mut buf = line.as_bytes().to_vec();
+    buf.push(b'\n');
+    let mut pos = 0;
+    while pos < buf.len() {
+        if std::time::Instant::now() >= deadline {
+            return Err(WriteError::Timeout);
+        }
+        match crate::transport::write_chunk(stream, &buf[pos..], deadline) {
+            Ok(0) => return Err(WriteError::Io("write returned zero".to_string())),
+            Ok(n) => pos += n,
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
+                return Err(WriteError::Timeout);
+            }
+            Err(e) => return Err(WriteError::Io(e.to_string())),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
 pub fn send_wait(
     _: &Path,
     _: &str,
@@ -1025,7 +1130,7 @@ pub fn send_wait(
     _: &ExpectMap,
     _: bool,
 ) -> Result<(), String> {
-    Err("Unix socket transport is not supported on this OS".to_string())
+    Err("local transport is not supported on this OS".to_string())
 }
 
 /// Latest full (or compacted) snapshots for the final wait summary.
@@ -1112,24 +1217,14 @@ mod tests {
 
     /// `send_lines` against a scripted socket server (no windows): one
     /// connection, replies plus one event, `--events 1` completes.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn send_lines_counts_same_connection_events() {
-        use std::os::unix::net::UnixListener;
-
-        let dir = std::env::temp_dir().join(format!(
-            "tiler-live-fixture-send-test-{}-{}",
-            std::process::id(),
-            crate::transport::generate_run_tag()
-        ));
-        crate::transport::prepare_socket_dir(&dir).unwrap();
-        let socket_path = dir.join("fixture.sock");
-        let listener = UnixListener::bind(&socket_path).expect("bind");
+        let (dir, socket_path, listener) = test_bind("send-test");
         let server = std::thread::spawn(move || {
             {
-                let (stream, _) = listener.accept().expect("accept");
-                let mut reader =
-                    std::io::BufReader::new(stream.try_clone().expect("clone server stream"));
+                let stream = test_accept(&listener);
+                let mut reader = std::io::BufReader::new(test_clone(&stream));
                 let mut writer = stream;
                 let mut scratch = Vec::new();
                 // Two requests: subscribe then list.
@@ -1152,7 +1247,7 @@ mod tests {
             }
         });
         let result = send_lines(
-            &dir.join("fixture.sock"),
+            &socket_path,
             "secret",
             &[
                 r#"{"v":1,"request_id":"s1","op":"subscribe"}"#.to_string(),
@@ -1164,28 +1259,17 @@ mod tests {
         );
         assert!(result.is_ok(), "send_lines must complete: {result:?}");
         server.join().expect("server thread");
-        std::fs::remove_file(dir.join("fixture.sock")).unwrap();
-        std::fs::remove_dir(&dir).unwrap();
+        test_cleanup(&dir, &socket_path);
     }
 
     /// `--events 0` returns as soon as the replies are in: no hang.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn send_lines_events_zero_does_not_hang() {
-        use std::os::unix::net::UnixListener;
-
-        let dir = std::env::temp_dir().join(format!(
-            "tiler-live-fixture-send0-test-{}-{}",
-            std::process::id(),
-            crate::transport::generate_run_tag()
-        ));
-        crate::transport::prepare_socket_dir(&dir).unwrap();
-        let socket_path = dir.join("fixture.sock");
-        let listener = UnixListener::bind(&socket_path).expect("bind");
+        let (dir, socket_path, listener) = test_bind("send0-test");
         let server = std::thread::spawn(move || {
-            let (stream, _) = listener.accept().expect("accept");
-            let mut reader =
-                std::io::BufReader::new(stream.try_clone().expect("clone server stream"));
+            let stream = test_accept(&listener);
+            let mut reader = std::io::BufReader::new(test_clone(&stream));
             let mut writer = stream;
             let mut scratch = Vec::new();
             match crate::transport::read_bounded_line(&mut reader, &mut scratch) {
@@ -1199,7 +1283,7 @@ mod tests {
             .expect("write");
         });
         let result = send_lines(
-            &dir.join("fixture.sock"),
+            &socket_path,
             "secret",
             &[r#"{"v":1,"request_id":"l1","op":"list"}"#.to_string()],
             Some(0),
@@ -1208,8 +1292,7 @@ mod tests {
         );
         assert!(result.is_ok(), "events 0 must return: {result:?}");
         server.join().expect("server thread");
-        std::fs::remove_file(dir.join("fixture.sock")).unwrap();
-        std::fs::remove_dir(&dir).unwrap();
+        test_cleanup(&dir, &socket_path);
     }
 
     #[test]
@@ -1342,25 +1425,85 @@ mod tests {
         );
     }
 
-    /// Event-before-reply over a real socket: the mock server emits the
-    /// matching state event before the payload reply, then the baseline. The
-    /// waiter must match without polling.
-    #[cfg(unix)]
-    #[test]
-    fn wait_matches_event_before_reply() {
-        use std::os::unix::net::UnixListener;
-
+    /// Portable bound endpoint for transport-backed client tests: a real
+    /// listener on both platforms (Unix socket file vs. owner-restricted
+    /// named pipe), so the shared `send_lines`/`send_wait`/`DeadlineReader`
+    /// paths run headless on Windows too. No logic is reimplemented here:
+    /// every helper delegates to `transport`.
+    #[cfg(any(unix, windows))]
+    fn test_bind(
+        tag: &str,
+    ) -> (
+        std::path::PathBuf,
+        std::path::PathBuf,
+        crate::transport::Listener,
+    ) {
         let dir = std::env::temp_dir().join(format!(
-            "tiler-live-fixture-wait-test-{}-{}",
+            "tiler-live-fixture-{tag}-{}-{}",
             std::process::id(),
             crate::transport::generate_run_tag()
         ));
         crate::transport::prepare_socket_dir(&dir).unwrap();
-        let socket_path = dir.join("fixture.sock");
-        let listener = UnixListener::bind(&socket_path).expect("bind");
+        let (listener, socket) =
+            crate::transport::bind_private_socket(&dir, "fixture.sock").unwrap();
+        (dir, socket, listener)
+    }
+
+    #[cfg(any(unix, windows))]
+    fn test_accept(listener: &crate::transport::Listener) -> crate::transport::Stream {
+        #[cfg(unix)]
+        {
+            listener.accept().map(|(s, _)| s).expect("accept")
+        }
+        #[cfg(windows)]
+        {
+            listener.accept().expect("accept")
+        }
+    }
+
+    #[cfg(any(unix, windows))]
+    fn test_clone(s: &crate::transport::Stream) -> crate::transport::Stream {
+        crate::transport::try_clone_stream(s).expect("clone")
+    }
+
+    #[cfg(any(unix, windows))]
+    fn test_cleanup(dir: &std::path::Path, socket: &std::path::Path) {
+        // `remove_file` deletes the Unix socket file; on Windows the
+        // endpoint is a kernel pipe name, so it fails silently and only
+        // the run directory lifecycle applies.
+        let _ = std::fs::remove_file(socket);
+        std::fs::remove_dir(dir).unwrap();
+    }
+
+    /// Connected loopback pair on both transports (replaces
+    /// `UnixStream::pair`): the server side is accepted in a helper thread
+    /// while the test thread connects.
+    #[cfg(any(unix, windows))]
+    fn test_pair(
+        tag: &str,
+    ) -> (
+        crate::transport::Stream,
+        crate::transport::Stream,
+        std::path::PathBuf,
+        std::path::PathBuf,
+    ) {
+        let (dir, socket, listener) = test_bind(tag);
+        let server = std::thread::spawn(move || test_accept(&listener));
+        let client = crate::transport::connect(&socket).expect("connect");
+        let accepted = server.join().expect("accept thread");
+        (client, accepted, dir, socket)
+    }
+
+    /// Event-before-reply over a real socket: the mock server emits the
+    /// matching state event before the payload reply, then the baseline. The
+    /// waiter must match without polling.
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn wait_matches_event_before_reply() {
+        let (dir, socket_path, listener) = test_bind("wait-test");
         let server = std::thread::spawn(move || {
-            let (stream, _) = listener.accept().expect("accept");
-            let mut reader = std::io::BufReader::new(stream.try_clone().expect("clone"));
+            let stream = test_accept(&listener);
+            let mut reader = std::io::BufReader::new(test_clone(&stream));
             let mut writer = stream;
             let mut scratch = Vec::new();
             let mut ids = Vec::new();
@@ -1392,7 +1535,7 @@ mod tests {
         });
         let expect = parse_expect(r#"{"a":{"size_px":[640,480],"focused":true}}"#).unwrap();
         let result = send_wait(
-            &dir.join("fixture.sock"),
+            &socket_path,
             "secret",
             &[
                 r#"{"v":1,"request_id":"p1","op":"set","ids":["a"],"patch":{"size_px":[640,480]}}"#
@@ -1404,27 +1547,17 @@ mod tests {
         );
         assert!(result.is_ok(), "event-before-reply must match: {result:?}");
         server.join().expect("server");
-        std::fs::remove_file(dir.join("fixture.sock")).unwrap();
-        std::fs::remove_dir(&dir).unwrap();
+        test_cleanup(&dir, &socket_path);
     }
 
     /// Mismatch times out at the absolute deadline even with chatty events.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn wait_mismatch_times_out_on_absolute_deadline() {
-        use std::os::unix::net::UnixListener;
-
-        let dir = std::env::temp_dir().join(format!(
-            "tiler-live-fixture-wait-timeout-{}-{}",
-            std::process::id(),
-            crate::transport::generate_run_tag()
-        ));
-        crate::transport::prepare_socket_dir(&dir).unwrap();
-        let socket_path = dir.join("fixture.sock");
-        let listener = UnixListener::bind(&socket_path).expect("bind");
+        let (dir, socket_path, listener) = test_bind("wait-timeout");
         let server = std::thread::spawn(move || {
-            let (stream, _) = listener.accept().expect("accept");
-            let mut reader = std::io::BufReader::new(stream.try_clone().expect("clone"));
+            let stream = test_accept(&listener);
+            let mut reader = std::io::BufReader::new(test_clone(&stream));
             let mut writer = stream;
             let mut scratch = Vec::new();
             let mut ids = Vec::new();
@@ -1459,7 +1592,7 @@ mod tests {
         let expect = parse_expect(r#"{"a":{"size_px":[640,480]}}"#).unwrap();
         let start = std::time::Instant::now();
         let result = send_wait(
-            &dir.join("fixture.sock"),
+            &socket_path,
             "secret",
             &[
                 r#"{"v":1,"request_id":"p1","op":"set","ids":["a"],"patch":{"size_px":[640,480]}}"#
@@ -1482,27 +1615,17 @@ mod tests {
             "returned before deadline: {elapsed:?}"
         );
         server.join().expect("server");
-        std::fs::remove_file(dir.join("fixture.sock")).unwrap();
-        std::fs::remove_dir(&dir).unwrap();
+        test_cleanup(&dir, &socket_path);
     }
 
     /// EOF before the match is an error, not a silent success.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn wait_eof_before_match_is_error() {
-        use std::os::unix::net::UnixListener;
-
-        let dir = std::env::temp_dir().join(format!(
-            "tiler-live-fixture-wait-eof-{}-{}",
-            std::process::id(),
-            crate::transport::generate_run_tag()
-        ));
-        crate::transport::prepare_socket_dir(&dir).unwrap();
-        let socket_path = dir.join("fixture.sock");
-        let listener = UnixListener::bind(&socket_path).expect("bind");
+        let (dir, socket_path, listener) = test_bind("wait-eof");
         let server = std::thread::spawn(move || {
-            let (stream, _) = listener.accept().expect("accept");
-            let mut reader = std::io::BufReader::new(stream.try_clone().expect("clone"));
+            let stream = test_accept(&listener);
+            let mut reader = std::io::BufReader::new(test_clone(&stream));
             let mut scratch = Vec::new();
             for _ in 0..3 {
                 let _ = crate::transport::read_bounded_line(&mut reader, &mut scratch);
@@ -1511,7 +1634,7 @@ mod tests {
         });
         let expect = parse_expect(r#"{"a":{"size_px":[640,480]}}"#).unwrap();
         let result = send_wait(
-            &dir.join("fixture.sock"),
+            &socket_path,
             "secret",
             &[r#"{"v":1,"request_id":"p1","op":"list"}"#.to_string()],
             2000,
@@ -1521,16 +1644,13 @@ mod tests {
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("EOF"));
         server.join().expect("server");
-        std::fs::remove_file(dir.join("fixture.sock")).unwrap();
-        std::fs::remove_dir(&dir).unwrap();
+        test_cleanup(&dir, &socket_path);
     }
 
     /// Closed expected windows and error events fail instead of matching.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn wait_closed_and_error_fail_promptly() {
-        use std::os::unix::net::UnixListener;
-
         for (name, extra) in [
             ("closed", serde_json::json!({"event":"closed","id":"a"})),
             (
@@ -1538,17 +1658,10 @@ mod tests {
                 serde_json::json!({"event":"error","id":"a","message":"host down"}),
             ),
         ] {
-            let dir = std::env::temp_dir().join(format!(
-                "tiler-live-fixture-wait-{name}-{}-{}",
-                std::process::id(),
-                crate::transport::generate_run_tag()
-            ));
-            crate::transport::prepare_socket_dir(&dir).unwrap();
-            let socket_path = dir.join("fixture.sock");
-            let listener = UnixListener::bind(&socket_path).expect("bind");
+            let (dir, socket_path, listener) = test_bind(&format!("wait-{name}"));
             let server = std::thread::spawn(move || {
-                let (stream, _) = listener.accept().expect("accept");
-                let mut reader = std::io::BufReader::new(stream.try_clone().expect("clone"));
+                let stream = test_accept(&listener);
+                let mut reader = std::io::BufReader::new(test_clone(&stream));
                 let mut writer = stream;
                 let mut scratch = Vec::new();
                 let mut ids = Vec::new();
@@ -1574,7 +1687,7 @@ mod tests {
             });
             let expect = parse_expect(r#"{"a":{"size_px":[640,480]}}"#).unwrap();
             let result = send_wait(
-                &dir.join("fixture.sock"),
+                &socket_path,
                 "secret",
                 &[r#"{"v":1,"request_id":"p1","op":"list"}"#.to_string()],
                 2000,
@@ -1583,28 +1696,18 @@ mod tests {
             );
             assert!(result.is_err(), "{name} must fail");
             server.join().expect("server");
-            std::fs::remove_file(dir.join("fixture.sock")).unwrap();
-            std::fs::remove_dir(&dir).unwrap();
+            test_cleanup(&dir, &socket_path);
         }
     }
 
     /// Unknown expected windows (failed baseline entry) fail promptly.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn wait_unknown_window_fails_promptly() {
-        use std::os::unix::net::UnixListener;
-
-        let dir = std::env::temp_dir().join(format!(
-            "tiler-live-fixture-wait-unknown-{}-{}",
-            std::process::id(),
-            crate::transport::generate_run_tag()
-        ));
-        crate::transport::prepare_socket_dir(&dir).unwrap();
-        let socket_path = dir.join("fixture.sock");
-        let listener = UnixListener::bind(&socket_path).expect("bind");
+        let (dir, socket_path, listener) = test_bind("wait-unknown");
         let server = std::thread::spawn(move || {
-            let (stream, _) = listener.accept().expect("accept");
-            let mut reader = std::io::BufReader::new(stream.try_clone().expect("clone"));
+            let stream = test_accept(&listener);
+            let mut reader = std::io::BufReader::new(test_clone(&stream));
             let mut writer = stream;
             let mut scratch = Vec::new();
             let mut ids = Vec::new();
@@ -1629,7 +1732,7 @@ mod tests {
         });
         let expect = parse_expect(r#"{"ghost":{"size_px":[640,480]}}"#).unwrap();
         let result = send_wait(
-            &dir.join("fixture.sock"),
+            &socket_path,
             "secret",
             &[r#"{"v":1,"request_id":"p1","op":"list"}"#.to_string()],
             2000,
@@ -1638,8 +1741,7 @@ mod tests {
         );
         assert!(result.is_err());
         server.join().expect("server");
-        std::fs::remove_file(dir.join("fixture.sock")).unwrap();
-        std::fs::remove_dir(&dir).unwrap();
+        test_cleanup(&dir, &socket_path);
     }
 
     /// Partial-frame trickle without a newline must not defeat the absolute
@@ -1647,23 +1749,14 @@ mod tests {
     /// wait hung past the deadline; the deadline-aware reader recomputes the
     /// remaining duration before each blocking read instead. Bounded cleanup:
     /// the server trickles ~1s total and tolerates the client's disconnect.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn wait_partial_trickle_times_out_on_absolute_deadline() {
         use std::io::Write as _;
-        use std::os::unix::net::UnixListener;
-
-        let dir = std::env::temp_dir().join(format!(
-            "tiler-live-fixture-wait-trickle-{}-{}",
-            std::process::id(),
-            crate::transport::generate_run_tag()
-        ));
-        crate::transport::prepare_socket_dir(&dir).unwrap();
-        let socket_path = dir.join("fixture.sock");
-        let listener = UnixListener::bind(&socket_path).expect("bind");
+        let (dir, socket_path, listener) = test_bind("wait-trickle");
         let server = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("accept");
-            let mut reader = std::io::BufReader::new(stream.try_clone().expect("clone"));
+            let mut stream = test_accept(&listener);
+            let mut reader = std::io::BufReader::new(test_clone(&stream));
             let mut scratch = Vec::new();
             let mut ids = Vec::new();
             for _ in 0..3 {
@@ -1694,7 +1787,7 @@ mod tests {
         let expect = parse_expect(r#"{"a":{"size_px":[640,480]}}"#).unwrap();
         let start = std::time::Instant::now();
         let result = send_wait(
-            &dir.join("fixture.sock"),
+            &socket_path,
             "secret",
             &[
                 r#"{"v":1,"request_id":"p1","op":"set","ids":["a"],"patch":{"size_px":[640,480]}}"#
@@ -1719,21 +1812,19 @@ mod tests {
             "deadline not absolute: {elapsed:?}"
         );
         server.join().expect("server");
-        std::fs::remove_file(dir.join("fixture.sock")).unwrap();
-        std::fs::remove_dir(&dir).unwrap();
+        test_cleanup(&dir, &socket_path);
     }
 
-    /// Socket-pair unit tests for the deadline reader: coalesced full frames
-    /// split exactly like the transport reader, the 1 MiB cap is preserved,
-    /// and a byte trickle without a newline hits the absolute deadline.
-    #[cfg(unix)]
+    /// Loopback-pair unit tests for the deadline reader: coalesced full
+    /// frames split exactly like the transport reader, the 1 MiB cap is
+    /// preserved, and a byte trickle without a newline hits the absolute
+    /// deadline.
+    #[cfg(any(unix, windows))]
     #[test]
     fn deadline_reader_splits_coalesced_and_enforces_cap() {
         use std::io::Write as _;
-        use std::os::unix::net::UnixStream;
-
         // Coalesced writes split into separate frames.
-        let (reader_stream, mut writer) = UnixStream::pair().expect("pair");
+        let (reader_stream, mut writer, pair_dir, pair_socket) = test_pair("pair");
         let mut reader = DeadlineReader::new(reader_stream);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         writer.write_all(b"{\"a\":1}\n{\"b\":2}\n").expect("write");
@@ -1745,12 +1836,13 @@ mod tests {
             reader.read_frame(deadline),
             WaitRead::Line(line) if line == r#"{"b":2}"#
         ));
+        test_cleanup(&pair_dir, &pair_socket);
 
         // Oversize frame without a newline is rejected, not buffered forever.
-        // The writer runs on its own thread: 1 MiB exceeds the socket-pair
+        // The writer runs on its own thread: 1 MiB exceeds the pipe/socket
         // buffer, so a single-threaded write would block forever waiting for
         // the reader to drain.
-        let (reader_stream, mut writer) = UnixStream::pair().expect("pair");
+        let (reader_stream, mut writer, pair_dir, pair_socket) = test_pair("pair");
         let big_writer = std::thread::spawn(move || {
             let big = "x".repeat(MAX_LINE_BYTES + 16);
             let _ = writer.write_all(big.as_bytes());
@@ -1762,15 +1854,14 @@ mod tests {
             WaitRead::Err(crate::transport::FrameError::TooLong)
         ));
         big_writer.join().expect("writer");
+        test_cleanup(&pair_dir, &pair_socket);
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn deadline_reader_trickle_times_out() {
         use std::io::Write as _;
-        use std::os::unix::net::UnixStream;
-
-        let (reader_stream, mut writer) = UnixStream::pair().expect("pair");
+        let (reader_stream, mut writer, pair_dir, pair_socket) = test_pair("pair");
         let trickler = std::thread::spawn(move || {
             for _ in 0..30 {
                 std::thread::sleep(std::time::Duration::from_millis(20));
@@ -1800,18 +1891,18 @@ mod tests {
             "deadline not absolute: {elapsed:?}"
         );
         trickler.join().expect("trickler");
+        test_cleanup(&pair_dir, &pair_socket);
     }
 
     /// A slow-draining peer must not defeat the write deadline either:
-    /// `write_all` loops on the once-set timeout, so partial writes reset it.
-    /// Here the peer never reads and the payload (2 MiB) far exceeds the
-    /// socket buffer, so only a per-write remaining duration times out.
-    #[cfg(unix)]
+    /// each partial write honors the remaining absolute duration, so a
+    /// peer that never reads cannot reset it. Here the peer is held and
+    /// never read while a 2 MiB payload far exceeds the pipe/socket
+    /// buffer, forcing the deadline path.
+    #[cfg(any(unix, windows))]
     #[test]
     fn wait_write_hits_absolute_deadline_when_peer_never_reads() {
-        use std::os::unix::net::UnixStream;
-
-        let (mut writer, _peer) = UnixStream::pair().expect("pair");
+        let (mut writer, _peer, pair_dir, pair_socket) = test_pair("pair-write");
         // `_peer` is held, never read: the kernel buffer fills and further
         // writes block instead of failing, exercising the deadline.
         let big = "y".repeat(2 * 1024 * 1024);
@@ -1831,15 +1922,14 @@ mod tests {
             elapsed.as_millis() < 5000,
             "deadline not absolute: {elapsed:?}"
         );
+        test_cleanup(&pair_dir, &pair_socket);
     }
 
     /// The deadline-aware write sends the full line including its newline.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn wait_write_sends_full_line_with_newline() {
-        use std::os::unix::net::UnixStream;
-
-        let (mut writer, reader) = UnixStream::pair().expect("pair");
+        let (mut writer, reader, pair_dir, pair_socket) = test_pair("pair");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         write_line_deadline(&mut writer, r#"{"a":1}"#, deadline).expect("write");
         drop(writer);
@@ -1849,19 +1939,18 @@ mod tests {
             crate::transport::read_bounded_line(&mut reader, &mut scratch),
             Ok(FrameRead::Line(r#"{"a":1}"#.to_string()))
         );
+        test_cleanup(&pair_dir, &pair_socket);
     }
 
     /// Coalesced short first line then an oversize second line: the second
     /// frame is rejected even though the per-read append only validates the
     /// first newline of each chunk. The writer runs on its own thread: the
-    /// 1 MiB payload exceeds the socket-pair buffer.
-    #[cfg(unix)]
+    /// 1 MiB payload exceeds the loopback buffer.
+    #[cfg(any(unix, windows))]
     #[test]
     fn deadline_reader_rejects_oversize_coalesced_second_line() {
         use std::io::Write as _;
-        use std::os::unix::net::UnixStream;
-
-        let (reader_stream, mut writer) = UnixStream::pair().expect("pair");
+        let (reader_stream, mut writer, pair_dir, pair_socket) = test_pair("pair");
         let sender = std::thread::spawn(move || {
             let mut payload = b"{\"a\":1}\n".to_vec();
             payload.extend(std::iter::repeat_n(b'x', MAX_LINE_BYTES + 1));
@@ -1879,5 +1968,6 @@ mod tests {
             WaitRead::Err(crate::transport::FrameError::TooLong)
         ));
         sender.join().expect("sender");
+        test_cleanup(&pair_dir, &pair_socket);
     }
 }

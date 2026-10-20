@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+getrandom = "0.3"
 # Dynamic-loading backend features: compile without X11/Wayland headers.
 # Runtime display libraries are still required for live use (see devenv.nix).
 winit = { version = "0.30", default-features = false, features = ["x11", "wayland", "wayland-dlopen", "wayland-csd-adwaita", "rwh_06"] }
@@ -24,5 +25,12 @@ font8x8 = { version = "0.3", default-features = false }
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1", default-features = true, features = ["process"] }
 
-[lints]
-workspace = true
+# Windows named-pipe transport: popular maintained tokio pipe API plus a
+# minimal reviewed unsafe module (src/pipe_win.rs) for the owner-only
+# security descriptor. windows-sys 0.61 matches the workspace pin.
+[target.'cfg(windows)'.dependencies]
+tokio = { version = "1", default-features = false, features = ["net", "rt", "rt-multi-thread", "time"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Pipes", "Win32_System_Threading"] }
+
+[lints.rust]
+unsafe_code = "deny"
