@@ -89,7 +89,7 @@
 | --- | --- | --- |
 | W1: observation and ordering fixtures | Add complete world capture from topology, managed workspace inventory/bindings, active/hidden/minimized lifetimes, explicit closes, constraints, holds and native flags. Add tested in-process generation/bootstrap, observation/request/command counters, dirty-until-ack and feedback retention. Keep existing actuation active; exercise the new boundary offline only. | Real-shaped Windows fixtures cover unreadable inventories, hidden/iconic omission versus close, generation reset, stale replies, command consumption and observation-only catch-up. Inactive scaffolding cannot mutate the desktop. |
 | W2a: gated host-diff diagnostics, delivered | Reconcile the parked host-diff/feedback facade onto current main; retain offline-only ownership. Cover geometry/property authority, creation/binding recovery, occupied removal, transfer ambiguity, at-most-once effects and actual FULL-topology directional migration ingress. | 55 fixtures and native gates pass; review accepts the diagnostic boundary only. Actual migration remains held; a passing diagnostic reproduces the T2 gap instead of claiming refusal parity. The running legacy owner is unchanged. |
-| W2b: full host-diff acceptance, pending | Resolve shared migration write authority and pre-commit T2 capability gating without adapter policy duplication. | Real W1 capture/core-produced migration/member/target-view/refill/feedback/arrival roundtrip; Windows capacity-float output-send and R4 refusal preserve source Engine and membership. No held-scope override or functional use of diagnostic float origin. |
+| W2b: full host-diff acceptance, pending | Rework migration as core-owned workspace/output mapping plus adapter actuation; retain accepted adapter-only staged-clone T2 refusal without policy duplication. | Real W1 capture/core-produced migration/member/target-view/refill/feedback/arrival roundtrip; Windows capacity-float output-send and R4 refusal preserve source Engine and membership. No held-scope override or functional use of diagnostic float origin. |
 | W3: atomic runtime cutover | Replace the active Engine path with the in-process world boundary for all observation, local/cross-output operations, selection, tiling toggles, history, scope mapping, trailing lifecycle, sends and migration together. Preserve native registry/recovery ownership; mark possibly executed before dispatch and prove membership/view read-back. Reconcile D23/13f additions already delivered by their shared change. | Existing Windows regressions plus world fixtures pass in local/global-unique/shared modes. Cover admission, fixed/float/overlay sends, follow/stay, startup/history/swaps, trailing creation/removal, partial transfer/refusal and shared migration refusal. No competing active legacy Engine or adapter trailing-policy fallback. Independent safety review and bounded owned-window smoke pass before landing. |
 | W4: legacy cutoff and completion | Remove unreachable per-operation application/session policy queries and transitional scaffolding; retain renderer-only presentation, native safety and useful regression fixtures. | No active direct session query remains where a full reply replaces it. Full native gates/CI and any smoke affected by cleanup pass; remaining physical/two-output acceptance is explicitly distinguished. |
 
@@ -422,6 +422,14 @@
 
 ### W2b cross-stream proposals
 
+- **User direction 2026-10-20:** the narrow default-off migration-authority
+  capability below is not approved in that form. Under the
+  [core-owned world model](../decisions.md#core-owned-world-model), a
+  whole-workspace migration changes core's workspace-to-output mapping and the
+  adapter actuates that new world state. Rework the contract with the
+  core/platform boundary inventory and discussion before planning. T2's
+  adapter-only staged-clone direction remains accepted; the original proposals
+  below are historical, not the current implementation plan.
 1. **Migration authority (shared contract; no change made):** source workspace
    exists only on source output before migration. `world_publish.rs` publishes
    missing target sessions as `Hold(IncompleteInventory)` and migration rows
@@ -452,10 +460,211 @@
 
 - Minimal [action-sequence discriminators](../spec/reference-outcomes.md#windows-world-adoption-authority-discriminators)
   preserve the two gaps; unsupported native outcomes remain TBD.
-- Exact next action: review these two shared proposals, deliver their accepted
-  additive contracts in the shared stream, then replace held/current-gap
+- Exact next action: inventory platform-owned policy as input to the
+  core/platform boundary discussion, then rework migration around core-owned
+  mapping and adapter actuation; retain T2's accepted staged-clone direction.
+  Replace held/current-gap
   diagnostics with positive migration/refill and source-preserving T2 refusal
   regressions. Only then accept W2 and resume W3's atomic cutover. Hidden and
   fullscreen liveness, tiling-mode bootstrap, all-mode parity and native
   owned-window acceptance remain separate W3/W4 prerequisites. The active note
   stays open; do not enable the facade.
+
+## W2b assessment, 2026-10-20
+
+- Assessment only. Migration recommendations below are **superseded by the
+  User 2026-10-20 core-owned mapping direction**, not approved in that form;
+  the T2 adapter-only direction is **User 2026-10-20 accepted**.
+  These supersede the assumption above that both blockers require
+  core additions. No runtime or core behavior changed; W2/W3 remain blocked.
+  Apply [Layering](../principles.md#layering): prefer a sensible adapter
+  alternative before adding generic, default-off core support.
+- Fetched history through `0f76c595`: the intervening change concerns macOS
+  native-Space selection, not these migration/topology paths.
+- No live validation: W1/W2 are test-only and the running owner is legacy.
+  Exact-owner `workspace`, `directional` and `send-output` controls cannot
+  exercise world migration authority; there is no migration control. The
+  existing W1-capture migration fixture remains the evidence: real producer
+  types, complete inventories/bindings, FULL geometry and empty adjacency,
+  real core migration/refill, silent target hold, retained re-observation.
+  It is offline ingress/hold evidence, not a capture of a new native journey
+  or positive two-output settlement. No synthetic input or live effects used.
+
+### 1. Migration authority
+
+- **Root cause recap:** after core plans the migration it retains the workspace
+  under the target output, while the adapter still reports it on the source
+  output. Target scope is held (`Hold(IncompleteInventory)`), so members never
+  move. This is a mapping/observation authority mismatch, not permission to
+  invent target observations or bypass holds in the adapter.
+- **Current decision:** core owns workspace-to-screen mapping; migration is a
+  core mapping change actuated by the adapter. Rework publication, observation
+  reconciliation and settlement around that model, coordinated with the
+  core/platform boundary inventory. The following option assessment and narrow
+  capability design are retained as a **superseded proposal**, not an approved
+  plan. Positive convergence and native acceptance remain TBD.
+
+| Option | Assessment and trade-off |
+| --- | --- |
+| Adapter retained-transfer precedence over Hold | Mechanically small, but not a sensible current-contract fix: held scopes forbid writes (`decisions.md`, Engine Architecture), and `CommandResult::Migration.members` is provenance, not authority. A missing destination and genuinely incomplete evidence can both carry `IncompleteInventory`; `TransferTarget.held` fences ambiguous attempts, not scope completeness. Caching the one-command member result adds adapter authority across later replies. This would copy KDE's bypass, not resolve it. |
+| Report an empty target session before arrival | No core edit, but invents native membership/binding facts for a workspace still belonging only to source. Violates W1 truthful observation; reject. |
+| Narrow core publication capability | One shared authority rule using existing scope/member/transfer fields; requires approval and coordinated adapter checks, but no protocol change or second policy owner. Recommend this option. |
+
+- **No-core verdict:** no small, safe, contract-preserving complete solution
+  found. Ordinary output-send and R4 already use readable destination domains
+  and retained Window transfers; they do not need the missing-workspace
+  exception. Whole-workspace migration creates this gap after relocation.
+  Evidence: `world_publish.rs` migration redirects and missing-session lane;
+  `world_report.rs::CommandResult::Migration`; Windows `world_diff.rs` 3b.
+- **Minimal proposed capability:** additive construction flag, provisionally
+  `migration_destination_membership = false`, following T1 and
+  `aligned_per_output_workspaces`, never a host check. When opted in, only a
+  retained migration's exact target may receive Controlled scope and exact
+  member membership authority before target observation. Require complete
+  inventory/topology, readable source evidence, a live native binding and a
+  destination absent because that migration relocates the workspace, not an
+  unreadable/missing observation. Keep frame authority held/untouched, no
+  effective frame, and unrelated scopes/properties held as before. Continue
+  publishing that exact membership-only set on later replies, not just the
+  command result, only while the parent remains retained. Settlement,
+  refusal or supersession removes that authority; explicit closes remove
+  affected lifetimes. Genuine safety/gesture/identity holds still win.
+- Windows migration apply must check every member's membership authority as
+  well as scope; the current loop checks only target scope before enumerating
+  rows. Target view follows all verified arrivals; paired source refill follows
+  verified target view. Refuse shared mode per D2; preserve local/global-unique
+  semantics, float/overlay remaps and at-most-once phases. No `FloatOrigin`
+  logic, new wire field, authority enum or feedback vocabulary.
+- **Settlement is part of acceptance, not implied by member writes:** for
+  disjoint sets require member homing, target view, retained source-refill
+  proof and truthful topology/binding relocation. Current non-aligned
+  `settle_retained` only tests `migration_confirmed` (target lists backing ID,
+  source does not); do not claim it already verifies all phases. Aligned
+  `settle_aligned_migration` already uses member/both-view proof. Explicit
+  closes, partial/unreadable arrivals and external supersession must retain
+  their existing no-replay rules, including empty migrations.
+  Strengthened disjoint settlement belongs to the opted-in contract; existing
+  construction defaults retain their current publication/settlement behavior.
+- **KDE implication:** align `kwin/src/world-apply.ts` 3b to scope plus member
+  authority; stop treating `result.members` as a Hold bypass. Independently,
+  the [parked global-native-inventory mismatch](archive/world-split-edge-selection.md#parked-limitation-and-native-acceptance)
+  makes source-native absence impossible on the replicated ring. Keep scoped
+  inventory confirmation for disjoint sets; use truthful per-output logical
+  binding/member/both-view proof for aligned sets. Never filter a global
+  inventory to fabricate absence. Authority delivery alone cannot close that
+  settlement gap; core/KDE must prove retirement together.
+  Land KDE's authority checks before enabling the new publication capability;
+  KDE must explicitly opt in with the aligned contract. Do not ship the old
+  bypass alongside the enabled capability.
+- **Decision outcome:** the default-off, membership-only migration capability
+  is not approved in that form. Use core-owned mapping and adapter actuation;
+  preserve truthful observations and prove settlement in the reworked contract.
+
+### 2. T2 capacity-float crossing refusal
+
+| Option | Assessment and trade-off |
+| --- | --- |
+| Refuse before sending intent from current float flag or frame/target size | Existing floats are ordinary/D16 sends and must remain allowed. T2 concerns a tiled mover becoming a float at the destination. Size alone cannot predict D2/D3, gaps, hints or exact R4 wrapping; reproducing those rules in Windows duplicates core policy. A blanket crossing refusal is overbroad. |
+| Stage one cloned WorldEngine, adopt or discard | Sensible no-core candidate, mirroring legacy Windows' candidate Engine transaction. Run the exact command report on a fresh clone; adopt only supported results, otherwise discard before native effects. No second retained authority or projection policy. Extra command-time clone above the world's internal staging; observation-only reports need no extra clone. Recommend proving this boundary before considering core additions. |
+| Core pre-commit opt-in | Parked fallback only if the adapter transaction cannot satisfy the remaining discriminators simply. Do not add a capability merely because post-reply refusal on an already-adopted engine is too late. |
+
+- **Path coverage:** the same transaction surrounds output-send and R4; no
+  adapter target selection or local-vs-cross prediction is needed. Inspect
+  only a fresh command's matching cross-output Window transfer and functional
+  tiled-to-floating facts, never diagnostic origin. Local moves and fitting
+  tiled sends pass. Exclude whole-workspace Migration commands/transfers:
+  D7/D8's established native float/overlay remaps are not changed by T2.
+- **Discard contract:** emit local `float-no-remap`, do not adopt/ack the
+  candidate or actuate/report attempted transfer feedback. Release the exact
+  flight with `note_rejected_or_lost`; observation-only catch-up retains dirty
+  facts, feedback and closes. Burned command/request numbers are not reused;
+  the rejected intent is never replayed. Supported results adopt the same
+  evaluated clone, not a second execution or re-capture. This stays inside
+  the future single Windows world owner; it does not retain legacy authority.
+- **Initial offline prototype:** the five-row clone/adopt proof covered
+  output-send/R4 refusal and supported float/tiled/local moves, but not source
+  repair, prior flights or close retention. It has been replaced by the
+  [expanded offline proof](#t2-offline-staged-transaction-2026-10-20) below;
+  existing raw-route current-behavior diagnostics remain unchanged.
+- **No-core verdict/recommendation:** a viable bounded adapter transaction
+  exists; prefer completing its test-only proof. No T2 core capability is
+  justified at this assessment boundary. If robust classification needs
+  duplicated projection policy or growing transaction machinery, return for
+  review rather than silently adding core policy.
+- **User 2026-10-20 accepted:** retain the no-core staged transaction as the T2
+  direction, keeping the core capability parked. This accepts the adapter-only
+  staged-clone refusal direction, not runtime acceptance; it remains test-only
+  and unwired.
+
+### Assessment evidence and next action
+
+- Focused Windows world-diff tests: **56 passed**, including the five-row
+  clone/adopt prototype and unchanged migration-hold/T2-gap diagnostics.
+  `mise exec -- cargo test --locked -p tiler-windows --lib world_diff_tests`
+  and `mise exec -- cargo clippy --locked -p tiler-windows --lib --tests`
+  pass. No full native gate or live acceptance is claimed for this
+  assessment-only increment.
+- Next: use the platform-owned policy inventory for the core/platform boundary
+  discussion, then rework migration under the accepted core-owned world model;
+  T2's adapter-only direction is unchanged. After agreed planning/contracts
+  and remaining offline proofs, replace diagnostics with positive migration
+  convergence and source-preserving refusal regressions; only then resume
+  W2 acceptance and W3 runtime/native planning.
+
+## T2 offline staged transaction, 2026-10-20
+
+- **User 2026-10-20 accepted:** continue the adapter-only staged-clone refusal direction,
+  not runtime acceptance; it remains test-only and unwired.
+  Migration requires rework under the core-owned mapping direction above. No core,
+  protocol, runtime-owner or native behavior change; W2/W3 remain unaccepted.
+- `WorldSequencer::deliver_staged` is an opt-in offline test entry; raw
+  `deliver` and its parity-gap diagnostic stay unchanged. A fresh candidate
+  evaluates the exact report once, then adopts a supported outcome or drops
+  an unsupported crossing before returning local `float-no-remap`. Callers
+  release the refused flight and catch up observation-only without replay.
+- Classification uses a newly Accepted command's exact `op-<command_seq>`
+  Window transfer, source output/floating fact and desired mover floating
+  state. No `FloatOrigin`, target selection or capacity projection rule is
+  duplicated. Rejected candidates drop; Duplicate preserves cached semantics.
+  CommandConsumed must adopt its fresh observation/revision without running
+  the command or T2 classifier. An initial prototype dropped that observation;
+  the corrected regression compares against an independent raw world engine.
+- **Incremental cost:** exactly one explicit candidate-clone call site,
+  reached only by Send/SendDirectional/MoveDirectional and Operation
+  SendToOutput/cross-output Move. A potentially crossing directional command
+  still pays that clone when core ultimately chooses a local move; Windows
+  does not predict core's result. Observation-only, focus, local-only
+  Operation and whole-workspace migration routes add no clone. The world's
+  existing internal staging is unchanged. Both modules remain `#[cfg(test)]`,
+  so this adds no running-owner idle/game code, polling or timer. Counts are
+  structural plus tested branch indicators, not a measured latency budget.
+
+| Offline discriminator | Accepted evidence |
+| --- | --- |
+| Output-send and R4 exhaust target | Directional send, directional move and Operation cross-output Move return local `float-no-remap`; complete retained Engine debug state, revision, desired reply, transfer inventory and real managed membership remain unchanged. Refused candidates expose no applicable reply. Watermark-valid host-diff catch-up proves no membership/remap/view change. |
+| Source repair, not target exhaustion | Shrink source work area to 24x24 while FULL topology stays fixed and D7 selects the mover itself. Same-report and later stale tiled-flag sends reject `focus-mismatch`; R4 rejects `partial-observation`. Observation-only catch-up accepts the ordinary source float with unchanged homing and no transfer. Direct/Operation variants are covered; no second baseline clone was needed for these fixtures. This is not a theorem for every possible future observation shape. |
+| Close/feedback obligations | Actual homed PendingClosed plus feedback survive local decline; only accepted catch-up receipts acknowledge/prune the exact facts. Burned command sequence is not reused. |
+| Prior flight and freshness | Existing transfer fences a new move as `transfer-in-flight`, preserving Engine state and the original transfer. Duplicate, reused and stale request checks retain core semantics; CommandConsumed adopts observation/close/feedback processing without replay. |
+| Supported float/tiled/local operations | Ordinary and automatic-fixed floats complete membership-only facade arrival with identical mover frame and unchanged stay views. Fitting tiled sends and local moves adopt and continue; known local-only Operations skip the extra clone. |
+| Migration and unrelated paths | Observation/focus/local-only/migration fixtures exercise the direct branch with zero extra clone; migration's existing transfer/hold is preserved, not repaired or reinterpreted. |
+
+- **Explicit-target limitation:** `WorldCommand::Send` and Operation
+  SendToOutput use `start_send`, whereas SendDirectional uses
+  `start_output_send`. Explicit cross-output native targets currently return
+  core `cross-domain-mismatch` in these fixtures; staging preserves that
+  refusal and source state. Those rows do not prove accepted explicit-output
+  capacity fallback or API equivalence. Resolving that pre-existing shared
+  contract mismatch is not part of this no-core proof.
+- **Verification:** five executable T2 tables plus the unchanged 55 W2 tests:
+  **60 passed, 0 failed** via `mise exec -- cargo test --locked -p tiler-windows
+  --lib world_diff_tests`. Full Windows library: **1,341 passed, 0 failed,
+  1 ignored** via `mise exec -- cargo test --locked -p tiler-windows --lib`.
+  Strict Windows all-target clippy (`--all-targets -- -D warnings`), changed
+  Rust-fragment formatting, ASCII/LF and whitespace checks pass. Independent
+  review accepted after consumed-observation and fixture corrections. Full-file
+  formatting checks report pre-existing differences outside this
+  increment; no unrelated reformatting was applied. Four-package native gates
+  and physical remap/shortcut/game acceptance are not claimed.
+- **Next:** present this bounded offline proof and the explicit-target
+  limitation alongside the core-owned mapping rework. Keep the staged entry
+  test-only; no runtime cutover or shared-core addition follows implicitly.

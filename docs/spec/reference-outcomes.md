@@ -25,20 +25,52 @@ trivially different start state.
 <a id="cursor-first-output-targeting-discriminators"></a>
 ### Cursor-first output-targeting discriminators
 
-User 2026-10-20 [direction pending evidence](../decisions.md#cursor-first-output-targeting),
-not an approved replacement for R-OUT-05 / REQ-OUT-05. Tier 1 functional-matrix
-evidence is required before override; behavior must be identical across platforms.
+User 2026-10-20 [accepted configurable targeting](../decisions.md#cursor-first-output-targeting)
+on the Tier 1 evidence, replacing R-OUT-05 / REQ-OUT-05's focused-output default
+with cursor output and a focused-output option; not implemented on any platform.
+Workspace-switch and three-way new-window settings are recorded in that decision.
 The user's COSMIC recollection is uncertain; existing
 [R-OUT-05](reference-outcomes/multi-output.md#r-out-05-open-a-window-with-two-occupied-outputs)
-records focused-output admission, not pointer routing. Reuse that row for the
-opposite-output launch leg; distinguish launch targeting from ordinary map admission.
+is a historical map-only tally (static-pointer fixture; keyboard focus vs
+cursor/active-output conflated there), not pointer routing and not undisputed
+focused-output evidence. Tier 1 motion-first evidence now lives in
+[R-OUT-05a](reference-outcomes/multi-output.md#r-out-05a-motion-then-ordinary-open),
+[R-OUT-08](reference-outcomes/multi-output.md#r-out-08-numbered-switch-versus-send-with-opposite-cursor),
+[R-OUT-09](reference-outcomes/multi-output.md#r-out-09-click-on-empty-area-of-the-other-output) and
+[R-OUT-10](reference-outcomes/multi-output.md#r-out-10-focuscursor-coupling-defaults).
+R-OUT-05a separates same-output insertion, opposite-output no-token map, and
+built-in shortcut launch with propagated startup context.
 
-| Variant | Minimal action sequence | Pending direction | Unsupported outcome / evidence |
+| Variant | Minimal action sequence | Direction / decision | Unsupported outcome / evidence |
 | --- | --- | --- | --- |
-| Workspace switch with opposite cursor | Focus A on occupied L; put cursor on occupied R without changing focus; select another workspace | Switch R, not L | Tier 1 outcomes, including COSMIC, and native cross-platform outcomes TBD; Windows interim foreground-first commands remain |
-| Workspace send with opposite cursor | Reset the same fixture; send focused A to another workspace | Act on A's output L regardless of cursor | Tier 1 and native outcomes TBD; no pointer-based send subject inferred |
-| Launch same versus other output | Focus A beside B on L; retain a distinct layout on R; launch C with cursor on L; reset and launch C with cursor on R, retaining A's focus before launch | Same output splits A; other output uses R's standard new-window location | Tier 1 launch/map paths and exact destination anchor/shape TBD; "standard location" undefined until evidenced; no R-OUT-05 override |
-| Optional cursor/focus coupling | With both options off, move cursor L -> R; explicitly focus A on L; repeat each leg with only the corresponding option on | Default-off focus-follows-cursor and cursor-follows-focus | Tier 1 defaults, trigger/warp details and native behavior TBD; no implemented settings claimed |
+| Workspace switch with opposite cursor | Focus A on occupied L; put cursor on occupied R without changing focus; select another workspace | User 2026-10-20 accepted: cursor output default (switch R), focused-output option (switch L) | Tier 1 discriminating fixtures in [R-OUT-08](reference-outcomes/multi-output.md#r-out-08-numbered-switch-versus-send-with-opposite-cursor): fresh number lands R in COSMIC (trailing-empty index on the active output) and Hyprland (created on the focus monitor), L in i3/sway (created on the focused output); per-output relative-next advances R (COSMIC plain NextWorkspace, Hyprland `m+1` to ws 6) vs L (i3/sway `next_on_output` to ws 2). Existing global numbers stay owned (caveat in row). No consensus; Ours/Tier2/3 TBD. Keys `S(S-cos-cursor)`, `S(S-hyp-cursor)`, `S(S-i3-ffmoff)`, `S(S-sway-ffmoff)`; Windows interim foreground-first commands remain |
+| Workspace send with opposite cursor | Reset the same fixture; send focused A to the next/previous workspace | User 2026-10-20 Decision 1c: act on A's output L regardless of cursor; relative targets also count on L, no setting | Tier 1 send-source consensus 4/4 (all act on focused A on L); selected relative-target rule has 3 to 1 support. Target-scope split in [R-OUT-08](reference-outcomes/multi-output.md#r-out-08-numbered-switch-versus-send-with-opposite-cursor): relative +1 targets ws 6 (focus-monitor-relative, R) in Hyprland while the subject stays A from L, versus ws 2 (focused-output-relative, L) in COSMIC/i3/sway. Ours not implemented; no pointer-based send subject inferred |
+| Launch same versus other output | Focus A beside B on L; retain a distinct layout on R; launch C with cursor on L; reset and launch C with cursor on R, retaining A's focus before launch | User 2026-10-20 accepted three-way placement: COSMIC default cursor-output/MRU; Hyprland cursor-output/cursor-closest; i3/sway focused-output/MRU | Tier 1 motion-first evidence supporting the accepted R-OUT-05 override: COSMIC lands R splitting MRU Y; Hyprland lands R splitting the cursor-closest node; i3/sway with FFM off stay on L. Same-output selected-focus anchor holds in all four; split geometry differs; other-output insertion has no universal consensus. Evidence: [R-OUT-05a](reference-outcomes/multi-output.md#r-out-05a-motion-then-ordinary-open) |
+| Optional cursor/focus coupling | With both options off, move cursor L -> R; explicitly focus A on L; repeat each leg with only the corresponding option on | User 2026-10-20 Decision 1d: focus-follows-cursor on/off, default off; cursor-warp setting default off (COSMIC). i3/sway preset enables warp when focus crosses outputs; Hyprland preset leaves warp off pending its own verb-dependent evidence row | Tier 1: FFM configurable in all four, default-off only in COSMIC; all three other Tier 1 defaults are on. Warp configurable in all four, but general cursor-following and cross-output warp are distinct. Selected defaults, not implemented settings. Evidence: [R-OUT-10](reference-outcomes/multi-output.md#r-out-10-focuscursor-coupling-defaults); empty-click split in [R-OUT-09](reference-outcomes/multi-output.md#r-out-09-click-on-empty-area-of-the-other-output) |
+| Hyprland preset warp by verb | Focus A on L with cursor on L; explicitly focus B on R; reset; switch to R's workspace; reset; send A to R with follow | Record each verb's cursor position separately before choosing Hyprland preset warp behavior; leave warp off meanwhile | Hyprland per-verb outcomes TBD; no uniform warp behavior inferred from the other presets or general coupling evidence. Ours not implemented |
+
+<a id="empty-workspace-focus-across-outputs"></a>
+### Empty-workspace focus across outputs
+
+Related to [cursor-first targeting](#cursor-first-output-targeting-discriminators).
+The user is unsure of the desired behavior; gather Tier 1 outcomes before deciding.
+
+| Variant | Minimal action sequence | Discriminator | Unsupported outcome / evidence |
+| --- | --- | --- | --- |
+| Switch to empty, then send | Keep B visible on R; focus A on L with cursor on L; press Win+digit to select an empty workspace on L; record focused output/window; immediately issue a workspace send | Does focus stay on empty L with no focused window (send has no subject), or move to B on R (send moves B)? | User physical 2026-10-20: focus moved to another output's window and the following send moved it. Desired outcome undecided; COSMIC, Hyprland, i3 and sway outcomes TBD. No fix or focus policy selected |
+
+<a id="cross-output-focus-edge-discriminator"></a>
+### Cross-output focus: edge-nearest versus destination MRU
+
+User direction 2026-10-20: last-focused selection applies only to switching
+workspaces on one output; crossing an output boundary should select the window
+nearest the crossed edge. This conflicts with the current Engine last-focused
+tiled-leaf proposal in [R-OUT-03](reference-outcomes/multi-output.md#r-out-03-focus-left-across-outputs),
+whose single destination tile does not distinguish these rules.
+
+| Variant | Minimal action sequence | User direction / discriminator | Unsupported outcome / next evidence |
+| --- | --- | --- | --- |
+| Cross right with destination MRU away from edge | Equal aligned outputs: `O1=W1`, `O2=H[W2 W3]`, W2 nearest O2's left edge. Focus W3, then W1 without changing O2's MRU; press Win+Right once | Edge-nearest chooses W2; destination MRU chooses W3. Keep layouts, membership and current workspaces unchanged | User dogfood trace 2026-10-20 selected W3, expected W2; W3's MRU identity remains unverified. Next: confirm this row and Tier 1 functional-matrix cells (COSMIC, Hyprland, i3, sway outcomes all TBD), then inspect the trace to distinguish MRU behavior from a bug. Likely shared core behavior; any core change needs user approval |
 
 ### Admission and geometric capacity (source audit 2026-10-16)
 
@@ -247,7 +279,11 @@ Variant of [R-OUT-01](reference-outcomes/multi-output.md#r-out-01-move-left-onto
 | Variant | Minimal action sequence | Verified offline distinction / proposal | Reference / native |
 | --- | --- | --- | --- |
 | Migration into a not-yet-observed scope | Two edge-touching FULL outputs, W containing A only on source, different target view; report complete inventories and empty adjacency; issue migrate-right; re-observe unchanged native state | Core emits Migration plus source-refill View, but target W scope and member authority hold as incomplete inventory. Windows facade writes nothing and retains the obligation; KDE's migration path uses result provenance without this scope gate. Shared authority precedence/publication needs explicit resolution before positive Windows migration acceptance; no adapter override | Positive native member/view/refill settlement TBD; [W2b proposal](../changes/windows-full-world-state-replies.md#w2b-cross-stream-proposals) |
-| Capacity-float crossing without a Windows remap | Tile 800px A on source, 9px B on a 25x25 edge-touching target; send A right-stay from a complete world report with empty adjacency | Legacy Windows refuses `float-no-remap`, preserving source Engine/membership (T2). Current world route accepts a capacity float and offline facade moves it; this is a reproduced parity gap, not accepted behavior. Propose pre-commit Windows capability gating; diagnostic float origin must not drive adapter policy | Corrected world refusal and physical native outcomes TBD; offline evidence does not establish runtime acceptance |
+| Capacity-float crossing without a Windows remap | Tile 800px A on source, 9px B on a 25x25 edge-touching target; send A right-stay from a complete world report with empty adjacency | Legacy Windows refuses `float-no-remap`, preserving source Engine/membership (T2). Raw world route accepts a capacity float and offline facade moves it; this remains a parity-gap diagnostic, not accepted behavior. A separate test-only staged entry now refuses before adoption; diagnostic float origin never drives adapter policy | Runtime world refusal and physical native outcomes TBD; offline evidence does not establish runtime acceptance |
+| No-core staged send versus R4 refusal | From the preceding two-output state, separately evaluate send-right and exhausted move-right on a fresh clone of the booted world; discard unsupported candidate; release exact flight and report unchanged observations | Test-only sequencer entry refuses the staged floating cross-output Window transfer as local `float-no-remap`, preserving retained Engine and real managed membership. Operation cross-output Move agrees. Real close/feedback obligations survive until accepted catch-up; sequence gaps do not replay. [Expanded offline proof](../changes/windows-full-world-state-replies.md#t2-offline-staged-transaction-2026-10-20) | Native world refusal TBD; live owner remains legacy |
+| Existing float versus tiled-to-float crossing | Start A already floating on source and send right into a roomy target; repeat with automatic-fixed A; separately send tiled A to a roomy target and move A locally | Ordinary and automatic-fixed float facade arrivals retain frame and stay views. Fitting tiled crossings/local moves adopt and continue. Whole-workspace migration keeps its distinct D7/D8 contract and adds no staging clone; no diagnostic-origin branch | Physical remap/shortcut acceptance TBD; no runtime wiring |
+| Source repair concurrent with crossing | Boot A/B tiled on source; shrink source work to 24x24 so D7 selects A as victim; request send-right or exhausted move-right into a roomy target in that report; catch up observation-only, then repeat with native tiled flag still stale | Fixture outcomes: sends reject `focus-mismatch`, R4 rejects `partial-observation`, including Operation forms; source Engine stays unchanged by rejection. Catch-up accepts floating A at source with no transfer. Later stale tiled-flag commands give the same verdicts. No extra converged-baseline clone needed for these tested shapes | Physical and other untested repair shapes TBD; not a universal classification theorem |
+| Direction-only versus explicit-target send | From identical source/target reports, send A right by SendDirectional; separately name target output/native workspace via Send or Operation SendToOutput | Direction-only uses `start_output_send`, stages supported transfer or T2 capacity fallback. Explicit variants use `start_send` and currently reject `cross-domain-mismatch` in these fixtures; adapter staging preserves that core refusal/source state, not API equivalence | Shared-contract resolution and physical explicit-target outcomes TBD; no core correction selected |
 
 ### KDE dual-output admission and workspace-scope discriminators
 
@@ -302,7 +338,19 @@ native outcomes remain TBD.
 
 | Variant | Minimal action sequence | Ours outcome / evidence | Unsupported outcome |
 | --- | --- | --- | --- |
-| Native focus differs from last selected output | Select a workspace on A; focus an existing ordinary window on B; select ordinal 2 without an explicit output; reverse A/B | Corrected 2026-10-20: genuine foreground monitor beats the stale last-switch cache. Offline both-direction/cache/unknown-output regressions and agent-driven exact-owner CLI selections on both outputs pass. Tentative (user review pending) fallback without readable foreground: pointer, cache, stable output order, matching the existing tray resolver. [Record](../changes/windows-dual-output-live.md) | Physical digit chords and exact reference fallback outcomes TBD; CLI evidence establishes routing, not physical hook delivery |
+| Native focus differs from last selected output | Select a workspace on A; focus an existing ordinary window on B; select ordinal 2 without an explicit output; reverse A/B | Corrected 2026-10-20: genuine foreground monitor beats the stale last-switch cache. Offline both-direction/cache/unknown-output regressions and agent-driven exact-owner CLI selections on both outputs pass. Tentative (user review pending) fallback without readable foreground: pointer, cache, stable output order, matching the existing tray resolver. User physical 2026-10-20: Win+digit on each output passes except the [undecided empty-workspace focus case](#empty-workspace-focus-across-outputs). [Record](../changes/windows-dual-output-live.md) | Exact reference fallback outcomes and a physical stale-cache discrimination fixture remain TBD; the user's passing routing check does not establish every fallback leg |
+
+### Windows dual-output transfer discriminators
+
+Variants of R-OUT-04/07 and R-MOU-03. These are bounded native observations,
+not new reference votes or selected transfer policies.
+[Evidence and limits](../changes/windows-dual-output-live.md#additional-two-output-checks-2026-10-20).
+
+| Variant | Minimal action sequence | Ours observed outcome | Unsupported outcome / next discriminator |
+| --- | --- | --- | --- |
+| Floating membership versus physical source | Float A on L; explicitly send A to R with follow; retain its unchanged physical frame on L; immediately request send-left with follow, separately repeat with stay | Windows 2026-10-20: original return refused `unmanaged` by comparing membership home R with foreground physical L. Narrow admitted-float proof now permits the return; native Paint follow/return-follow both commit, unchanged frame and current views; return-stay passes offline | Native return-stay, reference/KDE and three-output directional ranking remain TBD. Existing membership-source routing is unchanged; exact subject/lifetime/hidden fences remain; no relocation or new source-selection policy is inferred |
+| Empty singleton versus occupied pair drop | Native-title-bar drag tiled A from L onto an occupied R edge; reset, empty R and release A inside R; compare exact release point and replies | Windows 2026-10-20: occupied pair-route preview/plan/arrival agree; empty route reports `cross_output: true, empty_destination: true`, then `unchanged` and source snap-back. One real-Engine producer-shape singleton replay projects and admits, so those facts alone do not reproduce it | Exact adapter event/retained session and reference/corrected native outcome TBD. New refusal-only event diagnostics enable exact replay; no drop policy or core behavior change selected |
+| Cross-DPI native move start | Drag Paint from lower-DPI R to higher-DPI L; correlate native start hit-test, size transition and settle classification; compare reverse direction | Windows 2026-10-20: reverse of the passing occupied leg settled as `PointerResize` after size growth; start `move-kind` was `unknown`, then `malformed-input` refusal | Start hit-test cause, reference behavior and corrected native outcome TBD; no size-change tolerance or forced move classification selected |
 
 ### Windows shared startup discriminator
 
@@ -768,6 +816,39 @@ Legend:
   @3d55cba06c9cf6f27609cdefb520f7857dba20af for compositor paths,
   @3d55cba0 for config
   (shipped hover retains focus; enabled variant focuses after the delay)
+- `S-cos-cursor` cosmic-comp:src/shell/seats.rs:310-332
+  (`active_output` is the cursor output, `focused_output` the keyboard-focus
+  output; the two may differ) + src/input/mod.rs:365-376 (relative motion
+  resolves the containing output) and :450-457 (containing-output motion
+  target) and :715-728 (unconditional `set_active_output` after motion) and
+  :802-812 (absolute motion likewise, `Keep the seat's active output
+  following the pointer`) and :881-900 (press resolves its target via
+  `seat.active_output()`) and :1036-1048 (`set_focus` only inside
+  `if Some(target)`, else overview only: empty click writes no focus) and
+  :494-587 (FFM gates only keyboard focus, delayed) +
+  cosmic-comp-config/src/lib.rs:97-101,144-146
+  (`focus_follows_cursor`/`cursor_follows_focus` both false, delay 250) +
+  src/shell/focus/mod.rs:400-442 (cursor warps to the focused window only
+  when enabled) + src/input/actions.rs:186-210 (numbered/last switches use
+  `active_output`) and :1142-1180 (next/previous use `active_output`) and
+  :292-381 (numbered/last/relative sends use `focused_output`) +
+  cosmic-comp-config/src/workspace.rs:34-42 (shipped `OutputBound` workspace mode) +
+  src/shell/mod.rs:2907-2931 (no-token ordinary map takes
+  `seat.active_output()`, token `Workspace(handle)` selects the workspace)
+  @3d55cba06c9cf6f27609cdefb520f7857dba20af
+  ([seats.rs](https://github.com/pop-os/cosmic-comp/blob/3d55cba06c9cf6f27609cdefb520f7857dba20af/src/shell/seats.rs),
+  [input/mod.rs](https://github.com/pop-os/cosmic-comp/blob/3d55cba06c9cf6f27609cdefb520f7857dba20af/src/input/mod.rs),
+  [actions.rs](https://github.com/pop-os/cosmic-comp/blob/3d55cba06c9cf6f27609cdefb520f7857dba20af/src/input/actions.rs),
+  [shell/mod.rs](https://github.com/pop-os/cosmic-comp/blob/3d55cba06c9cf6f27609cdefb520f7857dba20af/src/shell/mod.rs))
+  (cursor output vs keyboard-focus output split; motion-first routing,
+  switch/send divergence, empty-click and coupling evidence)
+  Launch-context extension at the same pin: src/input/actions.rs:1041,1062-1090
+  (`Spawn` captures the active output's workspace in an activation token,
+  exported as `XDG_ACTIVATION_TOKEN` / `DESKTOP_STARTUP_ID`) +
+  src/wayland/handlers/xdg_activation.rs:119-162,200-219,256-258
+  (workspace-token activation and focus) + cosmic-comp-config/src/lib.rs:325-330
+  (default activation policy `Focus`). This captures launch-time R, distinct
+  from the map-time no-token fallback.
 - `S-cos-ctl-tile` cosmic-comp:cosmic-comp-config/src/lib.rs:88-95
   (`autotile` + `TileBehavior` Global/PerWorkspace) +
   src/shell/mod.rs:1468-1512 (`update_autotile[_behavior]` sets
@@ -877,6 +958,54 @@ Legend:
   takes focus unless no-focus rule/state, layer grab, or workspace/monitor
   silent) and :1553-1559 (silent restores the previous focus)
   @19fb395d45314960e6f79f17994a84094f1cd4f6
+- `S-hyp-cursor`
+  Hyprland:src/config/values/ConfigValues.cpp:380-385
+  (`input:follow_mouse=1` default) and :581
+  (`misc:mouse_move_focuses_monitor=true` default) and :690-695
+  (`cursor:no_warps=false`, `persistent_warps=false`,
+  `warp_on_change_workspace=0`, `warp_on_monitor_change=-1` inherits
+  workspace) and :763-774 (Dwindle shipped defaults incl.
+  `use_active_for_splits=true`, `force_split=0` follow_mouse) +
+  src/managers/input/InputManager.cpp:283 (motion resolves `PMONITOR`
+  from coords) and :354-355 (`rawMonitorFocus` when the pointer monitor
+  differs and the option or refocus applies) and :607-619 (empty motion
+  clears keyboard focus only on refocus or with no focused window) and
+  :671-691 (`FOLLOWMOUSE!=1` without refocus returns early: window focus
+  stays) and :902-913 (button press requires a window for refocus) and
+  :934-935 (button press updates the focus monitor) +
+  src/desktop/state/FocusState.cpp:271-290 (`rawMonitorFocus` swaps the
+  focus monitor, not window focus) +
+  src/config/shared/actions/ConfigActions.cpp:1016-1080
+  (`changeWorkspace` acts against the focus monitor) and :150-198
+  (new numbered targets are created on the focus monitor) and :380-434
+  (`moveToWorkspace` operates on the focused/passed window, silent
+  source-refocus vs follow) and :70-138,1056-1077 (explicit
+  directional/monitor focus warps) +
+  src/state/workspace/Resolver.cpp:126-127
+  (`getWorkspaceTargetFromString` defaults its base to the focus monitor)
+  and :181-201,268-330 (monitor-relative `m+1` and relative `+`/`-` targets
+  resolve from the base monitor's active workspace) +
+  src/pointer/PointerController.cpp:15-28 (`no_warps` gate) +
+  src/layout/algorithm/tiled/dwindle/DwindleAlgorithm.cpp:85-107
+  (same-workspace active-window anchor else cursor `getClosestNode`) and
+  :213-229 (pointer-half newcomer order) and :146-160 (geometry axes)
+  @19fb395d45314960e6f79f17994a84094f1cd4f6
+  ([ConfigValues](https://github.com/hyprwm/Hyprland/blob/19fb395d45314960e6f79f17994a84094f1cd4f6/src/config/values/ConfigValues.cpp),
+  [InputManager](https://github.com/hyprwm/Hyprland/blob/19fb395d45314960e6f79f17994a84094f1cd4f6/src/managers/input/InputManager.cpp),
+  [FocusState](https://github.com/hyprwm/Hyprland/blob/19fb395d45314960e6f79f17994a84094f1cd4f6/src/desktop/state/FocusState.cpp),
+  [ConfigActions](https://github.com/hyprwm/Hyprland/blob/19fb395d45314960e6f79f17994a84094f1cd4f6/src/config/shared/actions/ConfigActions.cpp),
+  [Dwindle](https://github.com/hyprwm/Hyprland/blob/19fb395d45314960e6f79f17994a84094f1cd4f6/src/layout/algorithm/tiled/dwindle/DwindleAlgorithm.cpp))
+  (focus-monitor vs window-focus split; motion-first routing, switch/send
+  divergence, empty-click and coupling evidence; relative-send target
+  identity is fixture-dependent, resolved in R-OUT-08)
+  Launch-context extension at the same pin:
+  src/config/lua/bindings/LuaBindingsDispatchers.cpp:156-176 (shortcut exec) +
+  src/config/supplementary/executor/Executor.cpp:145-171 (capture focus
+  monitor's active workspace in `HL_INITIAL_WORKSPACE_TOKEN`) +
+  src/config/values/ConfigValues.cpp:591 (`initial_workspace_tracking=1`) +
+  src/desktop/view/window/Window.cpp:1173-1199,1360-1399,1507-1512,1553-1559
+  (token-target difference sets silent; unchanged launch/map workspace does
+  not set silent, so ordinary newcomer focus still applies).
 - `S-hyp-group`
   Hyprland:src/desktop/view/window/Window.cpp:1436-1447 (`group:auto_group`
   joins the focused window's existing group on ordinary open, never creates) +
@@ -1038,6 +1167,38 @@ Legend:
   is the independent switch verb, focusing the target's focus-inactive node;
   never called by the move-to-workspace path)
   @1652c54b73f67df17b7b4ab0b0f7048204aa8104
+- `S-sway-ffmoff` sway:sway/config.c:272-273 (defaults
+  `focus_follows_mouse` yes, `mouse_warping` output) +
+  sway/commands/focus_follows_mouse.c:6-18 (no/yes/always) and
+  sway/commands/mouse_warping.c:5-17 (output/container/none) +
+  sway/input/seatop_default.c:602-625,640 (FFM gates at :611-612: disabled
+  motion leaves output focus on L) and :538-600 (default hover-focus
+  checker: window focus :584-599, empty/gap cross focuses R's workspace
+  :543-582) and :372-380 (empty-workspace click sets R workspace focus) +
+  sway/tree/view.c:628-680 (assignments/token first, else
+  seat-focus-inactive fallback to L) and :848-901 (anchor after the seat
+  focus-inactive tiling sibling, else workspace append: flat `H[A,C,B]`)
+  + sway/tree/workspace.c:153-176 (fresh numbers take the focused output
+  absent assignment) and :512-536 (relative next/prev scan from the
+  seat-focused workspace globally) and :731-743 (existing visible targets
+  stay owned) + sway/commands/workspace.c:201-205 (number lookup, create only
+  if missing) + sway/commands/move.c:440-520 (relative/numbered sends
+  resolve from the focused subject/current workspace) and :599-608
+  (source refocus, no follow) + sway/input/seat.c:1531-1549 (warp gate:
+  none returns; output warp skips when the cursor is already on the focus
+  output)
+  @1652c54b73f67df17b7b4ab0b0f7048204aa8104
+  ([seatop_default](https://github.com/swaywm/sway/blob/1652c54b73f67df17b7b4ab0b0f7048204aa8104/sway/input/seatop_default.c),
+  [view](https://github.com/swaywm/sway/blob/1652c54b73f67df17b7b4ab0b0f7048204aa8104/sway/tree/view.c),
+  [workspace](https://github.com/swaywm/sway/blob/1652c54b73f67df17b7b4ab0b0f7048204aa8104/sway/tree/workspace.c),
+  [seat](https://github.com/swaywm/sway/blob/1652c54b73f67df17b7b4ab0b0f7048204aa8104/sway/input/seat.c))
+  (FFM-off motion isolation, focus-inactive admission anchor, send source,
+  empty-click focus and warp defaults)
+  Launch-context extension at the same pin:
+  sway/commands/exec_always.c:28-81 (internal launch context and token env) +
+  sway/desktop/launcher.c:104-140,242-263 (capture/resolve the seat-focused
+  workspace) + sway/tree/view.c:628-670,696-731,822-827,944
+  (launch workspace before map fallback, focus on unchanged active workspace).
 - `S-sway-wsmode` sway:sway/commands/workspace_layout.c:5-18
   (`workspace_layout` values default/stacking/tabbed only, no tiling on/off)
   and sway/tree/container.c:955-965 (`container_set_floating` is per-window)
@@ -1693,6 +1854,39 @@ Legend:
 - `S-i3-admit` i3:src/manage.c:139-143,402-421 and src/con.c:428-474,
   src/x.c:834-864 @903bcd518df32b0e055b17f5da3f988a0187fd3d
   (fullscreen atom admission; maximize flags derived from layout)
+- `S-i3-ffmoff` i3:src/handlers.c:91-125 (`check_crossing_screen_boundary`
+  early-returns when FFM is disabled) and :127-201 (enter-window returns
+  disabled at :175-177) and :203-260 (root motion returns disabled at
+  :219-221: cursor R changes neither focus nor output) +
+  src/config_directives.c:447-448 (`focus_follows_mouse` sets the disable
+  flag; zero-init default is enabled) and :451-455 (`mouse_warping`
+  none/output) + include/data.h:142-143 (`POINTER_WARPING_OUTPUT=0`
+  default) + src/x.c:1549-1555 (warp gate) + src/workspace.c:555-559
+  (cross-output warp on workspace switch) and :131-165 (fresh hidden
+  numbers assigned to the focused output absent a rule) and :752-890
+  (`next_on_output` scans the focused output) and :581-750 (plain
+  next/prev scan global workspaces) + src/commands.c:855-880 (numbered
+  switch shows the existing workspace on its owner) and :227-369 (sends
+  move the focused subject; relative source is the focused workspace) +
+  src/con.c:1569-1585 (`con_move_to_workspace` focused subject, source
+  focus retained) + src/manage.c:344-365 (ordinary admission at focus;
+  token/startup legs :333-343 and assignments :289-332 are distinct) and
+  :661-664 (newcomer activation) + src/tree.c:149-181 and src/con.c:165-205
+  (after-focus sibling attach: flat `H[A,C,B]`, not a leaf wrap) +
+  src/click.c:205-277 (any workspace click focuses it: `workspace_show`
+  plus activate, so empty R selects R)
+  @903bcd518df32b0e055b17f5da3f988a0187fd3d
+  ([handlers.c](https://github.com/i3/i3/blob/903bcd518df32b0e055b17f5da3f988a0187fd3d/src/handlers.c),
+  [workspace.c](https://github.com/i3/i3/blob/903bcd518df32b0e055b17f5da3f988a0187fd3d/src/workspace.c),
+  [manage.c](https://github.com/i3/i3/blob/903bcd518df32b0e055b17f5da3f988a0187fd3d/src/manage.c),
+  [click.c](https://github.com/i3/i3/blob/903bcd518df32b0e055b17f5da3f988a0187fd3d/src/click.c))
+  (FFM-off motion/change isolation, focused-output admission, send
+  source, flat-sibling anchor, empty-click focus and warp defaults)
+  Launch-context extension at the same pin: src/commands.c:1243-1268
+  (`exec` calls `start_application`) + src/startup.c:136-176,195-196
+  (capture `con_get_workspace(focused)` in startup context) +
+  src/manage.c:226,328-340,419-441 (startup workspace before ordinary map
+  fallback; newcomer focus when visible on the focused output).
 - `S-xmo-admit` xmonad:src/XMonad/Operations.hs:90-124,328-335
   @284dd52c9c957cab6b6e5cc7580f2a63dafa00a7
   (core-only ordinary manage/tile path; configured hooks/contrib remain TBD)

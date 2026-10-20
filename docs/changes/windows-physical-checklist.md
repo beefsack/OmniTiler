@@ -1,7 +1,7 @@
 # Windows physical and user-run checklist
 
 - Scope: user-owned physical/native acceptance on a Windows 11 x64 host. Read the [live Windows testing guide](../live-windows-testing.md) before any run. No new implementation is selected by this checklist.
-- Status: pending 2026-10-19. No row is claimed passed. A row citing a gate ID covers that check partially unless the pass criterion says otherwise.
+- Status: partial evidence updated through user physical 2026-10-20. No complete row is claimed passed. A row citing a gate ID covers that check partially unless the pass criterion says otherwise.
 - Gate: approved [Windows 0.1 gate proposal](windows-0.1-gate-proposal.md) D1-D4 (45 base must-pass / 7 known-issue-allowed / 5 excluded + WX1-WX8 must-pass). Excluded base checks 5, 35, 38, 40, 53 are absent below.
 - World route: shipping-route acceptance is BLOCKED pending migration authority / T2 refusal / atomic cutover (see W2M-03, W2M-12 and Blocker note). Other rows retain their stated fixture dependencies. Do not transfer legacy-owner evidence automatically after cutover.
 - Third-output caveat: two-candidate topology discrimination can require three outputs, not merely two (see W2M-01).
@@ -93,25 +93,54 @@
 
 Bounded native evidence 2026-10-20: focused-output workspace CLI routing and
 secondary pager carrier geometry/visibility/message-driven selection pass
-([record](windows-dual-output-live.md)). Physical shortcut/mouse delivery,
-occupied-pager switching, Explorer restart and display changes remain pending;
-no complete W2M row is inferred from these narrower checks.
+([record](windows-dual-output-live.md)). Subsequent guarded mouse selection and
+occupied secondary hide/show passed. A stale-secondary-proof correction now has
+bounded Explorer-restart recovery evidence. Latest event-only recheck also
+recovers from a naturally empty secondary census. User physical 2026-10-20:
+tiling survived Explorer restart, both pager positions were correct, and primary
+anchor churn looked fine once. Display changes and repeated churn remain unproven.
+No complete W2M row is inferred from these narrower checks.
+
+W2M-01 remains partial: agent-driven exact-owner directional-handler checks
+pass for Paint moves both directions into occupied/empty destinations,
+local-before-cross exhaustion both ways, horizontal cross-focus and empty-target
+focus no-ops both ways. Firefox occupied transfers pass both directions and
+empty-destination right-to-left passes. Exact PMv2 arrival, source reflow,
+foreground and unchanged currents were verified. User physical 2026-10-20:
+Win+Shift+arrows cross-output moves pass; Win+digit on each output passes except
+the [undecided empty-workspace focus case](../spec/reference-outcomes.md#empty-workspace-focus-across-outputs).
+Vertical-local focus and output-candidate discrimination remain pending;
+some candidate-discrimination legs require a third output. See the bounded
+[outcome matrix](windows-dual-output-live.md#directional-handler-outcomes-2026-10-20).
+
+Additional agent evidence is in the [bounded row matrix](windows-dual-output-live.md#additional-two-output-checks-2026-10-20):
+W2M-02 tiled horizontal follow/stay passed; W2M-06 occupied one-way drop/cancel
+passed; W2M-10 single-hidden-claim loss plus both-output restart passed.
+Floating follow/return now passes a bounded Paint handler check with unchanged
+frame/current views. User physical 2026-10-20: Win+Ctrl+Alt+arrows explicit
+send-follow works as designed; cross-output title-bar drag with drop overlay
+passed between outputs with different DPI. Empty-singleton and reverse-DPI-start
+legs were not clearly covered; those and complete dual-hidden recovery remain
+open. Task Manager stayed untiled (elevated by default; expected unmanageable
+class, not a defect). W2M-08/04/07 are parked on input/owner or fixture dependencies.
+All rows remain partial or blocked as stated; injected mouse/CLI evidence is
+not physical shortcut or physical-user acceptance.
 
 | ID | Action | Pass criterion | Gate IDs | Source |
 | --- | --- | --- | --- | --- |
-| W2M-01 | Place tiles on both outputs with different currents; Win+Shift+Right/Left to exhaustion and cross, reverse; repeat into empty dest; Win+Right/Left last-focused select and reverse; run one wide source against two outputs on the requested edge with centre-projection, span-overlap and left/top legs | Cross arrives on adjacent output with follow focus, fits work area, leaves source; empty dest switches nothing; vertical focus stays local; correct candidate each discrimination leg; note where a third output is required | 2-M (partial), 43-M (partial), WX3-M (partial) | [foundation](windows-multi-output-foundation.md#remaining-physical-check) |
-| W2M-02 | Send explicit Win+Ctrl+Alt+arrows/HJKL follow, rebind stay from empty defaults; verify CURRENT dest arrival and source MRU stay | Follow arrives/focuses, stay keeps source selected with tiled-side-only reflow, float frames unchanged | 43-M (partial), WX8-M (partial) | [record](archive/windows-explicit-output-send.md) |
+| W2M-01 | Place tiles on both outputs with different currents; Win+Shift+Right/Left to exhaustion and cross, reverse; repeat into empty dest; Win+Right/Left last-focused select and reverse; run one wide source against two outputs on the requested edge with centre-projection, span-overlap and left/top legs | Cross arrives on adjacent output with follow focus, fits work area, leaves source; empty dest switches nothing; vertical focus stays local; correct candidate each discrimination leg; note where a third output is required | 2-M (partial), 43-M (partial), WX3-M (partial); user physical 2026-10-20: Win+Shift+arrows cross-output moves and Win+digit on each output pass except undecided empty-workspace focus; vertical/local-exhaustion/empty/candidate physical matrix not established | [foundation](windows-multi-output-foundation.md#remaining-physical-check), [agent outcomes](windows-dual-output-live.md#directional-handler-outcomes-2026-10-20), [user checks](windows-dual-output-live.md#user-physical-checks-2026-10-20) |
+| W2M-02 | Send explicit Win+Ctrl+Alt+arrows/HJKL follow, rebind stay from empty defaults; verify CURRENT dest arrival and source MRU stay | Follow arrives/focuses, stay keeps source selected with tiled-side-only reflow, float frames unchanged | 43-M (partial), WX8-M (partial); user physical 2026-10-20: Win+Ctrl+Alt+arrows send-follow works as designed; rebound stay and full boundary matrix remain open | [record](archive/windows-explicit-output-send.md), [user checks](windows-dual-output-live.md#user-physical-checks-2026-10-20) |
 | W2M-03 | BLOCKED whole-workspace migration including default vs MRU source-refill, cleared/invalidated history, empty migration and occupied target insertion | BLOCKED on world-route migration authority and atomic cutover; when unblocked: layout/refill/sticky-split/carry correct, dest insertion exact, no recreation | 42-M (blocked), WX8-M (blocked) | [world route](windows-full-world-state-replies.md#w2b-cross-stream-proposals) |
 | W2M-04 | In local/global-unique/shared modes run previous-twice, full relative ring, select-visible-elsewhere swap-back, per-output select/send follow/stay; restart shared mode with stable-key-first differing from primary/focused output | Histories/rings per scope correct, output-focus-alone records nothing, layouts/shares/float/focus survive swap; shared keeps one logical history/ring/spare and occupied cleanup protection; tentative startup anchor discriminated | 14-M (partial), 15-M (partial), WX3-M (partial) | [record](archive/windows-workspace-scope-hotplug.md#remaining-physical-journeys) |
 | W2M-05 | In each scope mode unplug with foreground on removed then survivor output; send explicitly and open new contents while absent; reconnect; repeat mixed-DPI and conditional R-WS-17 second toggle | History discarded/re-primed, reconnect independent of history, then-current local/global displaced return versus shared no displacement mapping; frames/focus continuous; nearest-survivor discrimination needs three outputs, unsupported outcomes stay TBD | 51-M (partial), 14-M (partial), WX3-M (partial) | [record](archive/windows-workspace-scope-hotplug.md#remaining-physical-journeys) |
-| W2M-06 | Drag native title bar into occupied and empty destination layouts on the other output; cancel one with Esc; force one failed arrival | Preview/drop agree, source reflows, failed arrival commits no membership | 47-M (partial), 25-M (partial) | [drag](archive/windows-mouse-drag.md) |
+| W2M-06 | Drag native title bar into occupied and empty destination layouts on the other output; cancel one with Esc; force one failed arrival | Preview/drop agree, source reflows, failed arrival commits no membership | 47-M (partial), 25-M (partial); user physical 2026-10-20: cross-output title-bar drag with drop overlay passed between different-DPI outputs; empty-singleton/reverse-DPI-start not clearly covered, physical cancel/forced failure unproven | [drag](archive/windows-mouse-drag.md), [user checks](windows-dual-output-live.md#user-physical-checks-2026-10-20) |
 | W2M-07 | Run hidden/sticky quiet, unreadable-output, stale-reply, immediate/delayed send and forced-refresh sequences across outputs | No departure ping-pong, no replay, quiet settlement | 49-M (partial) | [gate](windows-0.1-gate-proposal.md#original-checks-1-53) |
 | W2M-08 | Repeat trailing-empty fill/append/close/send/switch cycles on both outputs | No oscillation or tiling stop; only listed cosmetic issues allowed | 52-K (partial) | [backlog](../backlog.md#pending-live-checks) |
 | W2M-09 | Change DPI/resolution/work area across outputs with maximized/fullscreen/fixed-float windows; check border/underlay/preview/pager reanchor and cursor agreement | Fresh conversion, overlays retained, no fullscreen geometry writes | 44-M (partial), N4-M (partial), WX3-M (partial) | [foundation](windows-multi-output-foundation.md) |
 | W2M-10 | Recover from exact-owner loss with both output-local workspaces; refresh identities/topology and restore hidden claims | Tiling restored on both outputs without false-clean stop | 50-M (partial), WX7-M (partial) | [record](archive/windows-managed-workspaces.md) |
 | W2M-11 | Sleep/wake with both output-local workspaces; refresh identities/topology and restore hidden claims | Tiling restored on both outputs, game leg stays in WLC-03 | 50-M (partial), WX4-M (partial) | [backlog](../backlog.md#pending-live-checks) |
 | W2M-12 | BLOCKED T2 capacity-float crossing refusal on two outputs (paired with P1 \| Core + Windows: world migration authority and T2 crossing refusal) | BLOCKED on pre-commit refusal contract; when unblocked: refusal preserves source Engine and membership, no remap guessed | 43-M (blocked), WX8-M (blocked) | [world route](windows-full-world-state-replies.md#w2b-cross-stream-proposals) |
-| W2M-13 | Inspect secondary taskbar tray anchors and per-output pager after actual Explorer restart, mixed-DPI changes and physical selection | Exact tray/clock anchors or the recognized no-notification-area hierarchy serve each output; unreadable/unsupported hierarchies safely refuse with tray fallback. Native carrier/message-selection evidence passes; restart/display-change/physical-input acceptance remains pending | WX2-M (partial), WX3-M (partial) | [live fixes](windows-dual-output-live.md), [pager lifecycle](archive/windows-taskbar-pager-lifecycle.md), [gate](windows-0.1-gate-proposal.md#approved-windows-specific-extras) |
+| W2M-13 | Inspect secondary taskbar tray anchors and per-output pager after actual Explorer restart, mixed-DPI changes and physical selection | Exact tray/clock anchors or the recognized no-notification-area hierarchy serve each output; unreadable/unsupported hierarchies safely refuse with tray fallback. Bounded secondary mouse/occupied/restart evidence passes after stale-proof correction. User physical 2026-10-20: tiling survived Explorer restart, primary/secondary pager positions correct, primary anchor churn looked fine once; display changes, physical pager selection and repeated churn remain unproven | WX2-M (partial), WX3-M (partial) | [user checks](windows-dual-output-live.md#user-physical-checks-2026-10-20), [pager lifecycle](archive/windows-taskbar-pager-lifecycle.md), [gate](windows-0.1-gate-proposal.md#approved-windows-specific-extras) |
 
 ## Blocker note
 

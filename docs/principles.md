@@ -50,19 +50,24 @@ Project principles, approved by the user.
 
 ## Layering
 
+- The core is the single model and decision maker: it owns screens, workspaces and their per-screen mapping, windows, focus and cursor position; the policy for every action; and the resulting desired world state, including the shapes and bounds of borders, underlays and drop overlays.
+- Platform code only captures user input, reports host facts and changes made outside the core (displays, settings, windows changed by apps, users or the OS, facts the core cannot know such as "cannot be controlled"), applies the core's desired state with host mechanisms, and draws what the core describes. Platform code never decides policy.
+- Host limitations reach the core as platform-neutral options (for example, every screen always has the same workspace count), never as platform checks.
+- Logic several platforms share that is not part of the core's role goes into a separate shared library, decided case by case.
 - Push as much logic as is sensible down into the shared, system-agnostic
-  core, so every platform reuses it.
-- System-specific logic sits in a middle layer of platform code. The layer
+  core within its role above, so every platform reuses it.
+- System-specific mechanisms sit in a middle layer of platform code. The layer
   coupled directly to a host (scripts, effects, settings modules, OS hooks)
   stays as thin as reasonably possible.
 - Pushing code down is ongoing work applied with judgement and within reason;
-  it never overrides Simplicity or host-native behavior.
+  it never overrides Simplicity, Gaming Compatibility or host-native
+  behavior, and never transfers core policy to platforms.
 - The core is platform-agnostic and true to the Tier 1 input tilers. When a
   platform needs special core behavior to work around a host limitation,
-  first weigh a no-core alternative in the platform layer; compare the
-  complexity and maintainability of both and choose the most sensible middle
-  ground, aligned as closely as possible with these principles and the Tier 1
-  input tilers.
+  first check whether host mechanisms alone can honor existing core policy;
+  otherwise represent the limitation through platform-neutral core options,
+  aligned as closely as possible with these principles and the Tier 1 input
+  tilers. Platform workarounds must not become policy owners.
 - Where core support is still needed, it is as small and simple as possible,
   optional with opt-in from the platform, and built generically: named for
   the capability or limitation, never the platform, with a comment explaining

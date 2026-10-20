@@ -744,6 +744,33 @@ platform API behavior.
 - User 2026-10-14 approved as delivered: items 14/19 migration (nonactivating
   move-only fullscreen/float remaps; maximized/minimized keep restore rectangle
   and show state across outputs).
+- User 2026-10-20 accepted: a DPI transition invalidates the Windows adapter's
+  placement basis, not the intended physical allocation. Revalidate and
+  reapply through fresh frame insets before exact arrival verification. One
+  immediate rebase per apply avoids trapping the owner in native setters;
+  further detected transitions and refused/failed corrections remain pending
+  for native-event reconciliation, not permanent app-clamp pins. Transfer
+  fences and stable-DPI clamp handling remain unchanged. Adapter convergence
+  and bounded agent-driven directional transfer/focus are evidenced; user
+  physical 2026-10-20 confirms cross-output move chords, while the remaining
+  topology matrix stays pending in the
+  [dual-output record](changes/windows-dual-output-live.md#cross-dpi-placement-follow-up-2026-10-20).
+- User 2026-10-20 accepted: exact-owner `directional` and `send-output` CLI
+  controls invoke existing production handlers with owner/proof and production
+  safety fences intact; queue acceptance is not completion or physical-key proof.
+  [Point-of-use contract](live-windows-testing.md#agent-live-test-practice).
+- User 2026-10-20 accepted: event-driven taskbar anchor revalidation via scoped
+  native child events and broadcasts, without a secondary retry timer.
+  Real-game incremental cost remains unmeasured, not accepted performance.
+  [Evidence and limits](changes/windows-dual-output-live.md#secondary-pager-restart-correction).
+- User 2026-10-20 accepted: retain disabled fail-closed legacy input-driver
+  stages; containment does not establish a functioning live fixture.
+  [Boundary](changes/windows-dual-output-live.md#input-driver-containment-2026-10-20).
+- User 2026-10-20 accepted: T2 adapter-only staged-clone refusal direction,
+  not runtime acceptance. The staged entry remains test-only and unwired;
+  migration is to be reworked under the [core-owned world model direction](#core-owned-world-model),
+  not the proposed narrow migration-authority capability. No core change is delivered.
+  [Offline proof and limits](changes/windows-full-world-state-replies.md#t2-offline-staged-transaction-2026-10-20).
 
 ## Project Name
 
@@ -2343,27 +2370,46 @@ platform API behavior.
   while an ordinary float is focused. Keep the offline geometry/focus and KDE
   wire fixtures; native observation/activation acceptance remains user-owned.
   [Evidence](changes/archive/triage-batch1-kde-shared.md).
-- R-OUT-05: opening with two occupied outputs routes to the focused output and focuses the newcomer, not by pointer (User 2026-10-10, 0.1 triage D06).
-  Conflict, User 2026-10-20: the cursor-first direction below is pending Tier 1
-  functional-matrix evidence; only that evidence may override R-OUT-05 /
-  REQ-OUT-05. The approved focused-output requirement remains in force.
-  User 2026-10-14 approves KDE adapter routing for 0.1. Move output selection
-  into Rust core/Planner in post-0.1 Push code down, alongside born-maximized;
+- R-OUT-05 / REQ-OUT-05: User 2026-10-20 accepted cursor output as the new
+  default, with focused-output placement as an option, superseding the
+  2026-10-10 focused-output default on the
+  [Tier 1 evidence](changes/archive/cursor-first-output-evidence.md).
+  The configurable replacement below is not implemented on any platform.
+  Historical 2026-10-14 approval: KDE adapter routing for 0.1, with output
+  selection planned for Rust core/Planner in post-0.1 Push code down alongside born-maximized;
   the current Planner receives an already selected native domain. Native
   timing/safety checks remain adapter responsibilities. [Delivery](changes/kde-dual-output-live.md#focused-output-admission-correction-and-breadth-repeat-2026-10-14).
-- <a id="cursor-first-output-targeting"></a> User 2026-10-20 direction, pending
-  evidence, not an approved replacement or implemented policy: workspace switches
-  and new-window launches target the output under the cursor; workspace sends act
-  on the focused window's output regardless of cursor. A launch with the cursor
-  on the focused window's output splits the focused window; on another output it
-  uses that output's standard new-window location (definition TBD from evidence).
-  Behavior must be identical on all platforms. Optional focus-follows-cursor and
-  cursor-follows-focus are default-off. The user's uncertain COSMIC recollection
-  is not evidence; the existing R-OUT-05 COSMIC cell records focused-output
-  admission. Capture Tier 1 input-tiler outcomes, including COSMIC, in the
-  [matrix discriminators](spec/reference-outcomes.md#cursor-first-output-targeting-discriminators)
-  before changing the requirement or adapters. Interim Windows foreground-first
-  workspace-command routing (`1e7bfaf4`) stays; admission work waits on the matrix.
+- <a id="cursor-first-output-targeting"></a> User 2026-10-20 accepted:
+  output targeting is configurable identically on all platforms; Tier 1 is split
+  evenly (COSMIC/Hyprland cursor-first, i3/sway focused-output).
+  Workspace-switch target: cursor output (default, COSMIC) or focused output
+  (i3/sway). New-window placement: COSMIC (default: cursor output, split that
+  output's last-focused window), Hyprland (cursor output, split the window
+  closest to the cursor), or i3/sway (focused output, split its last-focused
+  window). Window sends to another workspace act on the focused window's output
+  regardless of cursor, retaining the earlier user direction. Decision 1c:
+  relative sends (next/previous) also count on the focused window's output,
+  with no setting (Tier 1: COSMIC and i3/sway focused-output, Hyprland
+  cursor-output; 3 to 1).
+  Tentative (user review pending): the three-way placement setting subsumes the
+  launch half of workspace-switch targeting. Decision 1d: focus-follows-cursor
+  is an on/off setting, default off. Cursor-warp (cursor follows focus) is a
+  setting, default off (COSMIC); the i3/sway preset turns warp on when focus
+  crosses outputs. The Hyprland preset leaves warp off until its own
+  verb-dependent evidence row establishes the behavior.
+  [Tier 1 evidence](changes/archive/cursor-first-output-evidence.md),
+  [matrix discriminators](spec/reference-outcomes.md#cursor-first-output-targeting-discriminators).
+  Not implemented on any platform. Next: Windows first to unblock defect 4
+  admission; KDE/macOS by their streams. Interim Windows foreground-first
+  workspace-command routing (`1e7bfaf4`) remains until implementation.
+  User 2026-10-20 explicitly approves the platform-neutral shared-core addition:
+  implement the three-way new-window placement logic in shared core where
+  possible, with each platform supplying cursor position and settings.
+- User 2026-10-20: cross-platform Settings window behavior presets are a
+  convenience control (toggle, dropdown or buttons) setting ALL settings to
+  match a reference tiler: COSMIC (default), i3/sway, Hyprland. Next: inventory
+  every setting's per-preset value from Tier 1 evidence; missing evidence stays
+  TBD, including Hyprland's verb-dependent warp behavior above.
 - R-CLOSE-02: a reopened client is fresh admission at current focus, never old-slot restoration (User 2026-10-10, 0.1 triage D07).
 - Shared:
   - User statement 2026-10-03: default split placement is long-edge based: a
@@ -2504,6 +2550,73 @@ platform API behavior.
 
 ## Engine Architecture and Convergence
 
+- <a id="core-owned-world-model"></a> User direction 2026-10-20, consistent
+  with [Layering](principles.md#layering): shared core owns the model of
+  screens/outputs, workspaces, workspace-to-screen mapping, windows and the
+  focused window, and knows the cursor position. Core has all the knowledge
+  needed to apply actions (navigate, move, open, modify) without platform code
+  participating in those decisions. Platform code only handles user input,
+  reports real-world changes (screens, settings and changes made by the WM/OS
+  rather than core), and updates real windows from core's new world state.
+  Host-owned KDE virtual desktops and macOS Spaces are observations, not
+  competing platform policy owners; host-native limitations and native safety
+  remain subject to Layering and Gaming Compatibility.
+  Platforms report cursor position, possibly on every mouse move so core can
+  handle focus-follows-cursor. The approved reporting-first approach and
+  Gaming Compatibility constraint are recorded in the boundary decisions below.
+  First deliverable: inventory everything currently platform-owned that should
+  move into core, as discussion and sequencing input for the now-approved
+  core/platform boundary. Known starts: Windows workspace scope/history/ring/trailing
+  lifecycle and workspace owner/send paths (W3 world-route plan), new-window
+  output selection (already decided for core), cursor position, and KDE's
+  TypeScript born-maximized copy.
+  Consequence: whole-workspace migration is a core mapping change actuated by
+  the adapter. The proposed default-off, narrow migration-authority capability
+  is not approved in that form; rework migration under this ownership model,
+  coordinated with the boundary inventory. T2's accepted adapter-only
+  staged-clone refusal direction is unchanged.
+  [W2b record](changes/windows-full-world-state-replies.md#w2b-cross-stream-proposals).
+- <a id="core-platform-boundary"></a> User approved 2026-10-20, under
+  [Layering](principles.md#layering): the top-level core/platform split is set.
+  Core model: screens including geometry/work areas; workspaces always as a
+  per-screen mapping; windows including membership, state and size constraints;
+  focused window and screen; focus histories; cursor position; behavior settings.
+  Core policy: navigate, move, send, open/placement, close/reflow, layout,
+  workspace lifecycle including trailing empties and history, migration,
+  hotplug remap and focus-follows-cursor. Core output is the desired world
+  state, including frames, shown workspace per screen and focus target.
+  Host limitations are platform-neutral core options: for KDE shared desktops,
+  core retains per-screen mapping with an option that all screens always have
+  the same workspace count, so some screens may hold several empty workspaces;
+  KDE interprets that model. Platform responsibilities: input, observe, actuate,
+  render. This is the approved boundary, not a claim of completed extraction.
+- User approved 2026-10-20: core owns shapes and bounds of the active border,
+  group underlays and drop overlays. Platforms report cursor position so core
+  computes drop targets. Try this first; optimise only if dogfooding shows cost.
+  [Gaming Compatibility](principles.md#gaming-compatibility) still wins:
+  pause this work while a focused fullscreen game runs, as other overlays
+  already do.
+- User approved 2026-10-20: platforms report normalized classification facts:
+  window type/role, owner/parent, modal, resizable and minimum/maximum size,
+  fullscreen, cannot-be-controlled (for example elevated/protected), and app
+  id/class/title for rules. Core decides manage/float/ignore, user rules,
+  automatic fixed-size floats and game handling.
+- User approved 2026-10-20: core compares desired and observed state and
+  decides re-apply, adopt a host value (for example a learned minimum size),
+  refuse or float; core owns anti-fighting and completion. Platforms write,
+  read back and report observations, keeping only host-mechanical correctness:
+  coordinate/DPI conversion, invisible-border insets and lifetime/replacement
+  detection. User caveat: rough edges are expected where a platform cannot
+  apply core's state; work through them to optimise UX.
+- User approved 2026-10-20: platforms detect and report host gesture start
+  (window, move or resize), cursor updates, release and cancel, and render/apply.
+  Core owns the drag session, target, overlay shape, release outcome
+  (insert/swap/cross-output/float) and edge-drag share policy.
+- User approved 2026-10-20: core publishes per-screen pager content in the
+  world state: ordered workspaces with labels, current, occupied,
+  contains-focused, and per-workspace window lists if icons need them.
+  Platforms own placement/anchoring, host-styled drawing and click-to-command;
+  KDE's native pager maps from core's per-screen model.
 - User 2026-10-16, full-state replies D1: retain the stateful, side-effect-free
   `Engine` behind a world-level report/reply boundary. Deterministic typed
   replay remains explicit. No caller-owned or serialized core state crosses
@@ -3685,6 +3798,16 @@ platform API behavior.
   remembered eligible tiled focus, otherwise retain. This deliberately differs
   from COSMIC's configured workspace-axis then output navigation. A float-only
   source can cross. Local tiles are never floating-search targets.
+- User direction 2026-10-20 conflicts with the remembered cross-output target
+  above and the Engine proposal in R-OUT-03: crossing an output boundary should
+  focus the window nearest the crossed edge; last-focused selection applies
+  only to workspace switching on a single output. User dogfood trace 2026-10-20:
+  `O1=W1`, `O2=H[W2 W3]`; Win+Right from W1 selected W3, expected W2.
+  Next: confirm the [minimal discriminator](spec/reference-outcomes.md#cross-output-focus-edge-discriminator)
+  and Tier 1 cells with destination MRU not edge-nearest, then inspect the trace
+  to distinguish W3-as-MRU from a bug. Likely shared core behavior; any core
+  change needs user approval. No implementation change or reference consensus
+  is inferred.
 - Local selection and explicit native half-snaps stay host-synchronous in the
   KWin adapter. Rust keeps remembered cross-output focus authority through the
   minimal internal `focus.float_subject` flag, leafless `from_leaf: null`, and

@@ -364,11 +364,35 @@ Hooks: V-R4-DIR selects four-direction full-output adjacency and sole-root
 crossing after local exhaustion; V-WS-FOLLOW also covers explicit output send
 (shared core/KDE and Windows implemented offline; physical journeys pending).
 
-Conflict, User 2026-10-20: the [cursor-first direction](../decisions.md#cursor-first-output-targeting)
-is pending Tier 1 functional-matrix evidence, not an approved or implemented
-replacement for REQ-OUT-05. Override R-OUT-05 / REQ-OUT-05 only with that evidence;
-the focused-output requirement below remains normative. [Discriminators](reference-outcomes.md#cursor-first-output-targeting-discriminators)
+User 2026-10-20 accepted the [configurable output-targeting replacement](../decisions.md#cursor-first-output-targeting)
+on the [Tier 1 evidence](../changes/archive/cursor-first-output-evidence.md):
+workspace-switch target is cursor output (default, COSMIC) or focused output
+(i3/sway). New-window placement is COSMIC (default: cursor output, split its
+last-focused window), Hyprland (cursor output, split cursor-closest window),
+or i3/sway (focused output, split its last-focused window). Workspace sends act
+on the focused window's output regardless of cursor; relative next/previous
+targets count on that output, with no setting (Decision 1c; Tier 1 3 to 1:
+COSMIC and i3/sway focused-output, Hyprland cursor-output). This supersedes the old
+focused-output default in R-OUT-05 / REQ-OUT-05; not implemented on any platform.
+User 2026-10-20 explicitly approves implementing the three-way placement logic
+in platform-neutral shared core where possible; platforms supply cursor position
+and settings. Tentative (user review pending): the three-way placement setting
+subsumes the launch half of workspace-switch targeting. Decision 1d:
+focus-follows-cursor is an on/off setting, default off; cursor-warp (cursor
+follows focus) is a setting, default off (COSMIC). The i3/sway preset enables
+warp when focus crosses outputs; Hyprland's preset leaves warp off pending
+its own verb-dependent evidence row. These are selected requirements, not
+implemented settings.
+[Discriminators](reference-outcomes.md#cursor-first-output-targeting-discriminators)
 cover workspace switches, sends and launch location; unsupported outcomes stay TBD.
+
+Tier 1 cursor-first evidence supporting the accepted override: keyboard
+focus vs cursor/active-output separated in R-OUT-05; motion-first map
+[R-OUT-05a](reference-outcomes/multi-output.md#r-out-05a-motion-then-ordinary-open),
+switch/send [R-OUT-08](reference-outcomes/multi-output.md#r-out-08-numbered-switch-versus-send-with-opposite-cursor),
+empty click [R-OUT-09](reference-outcomes/multi-output.md#r-out-09-click-on-empty-area-of-the-other-output),
+coupling [R-OUT-10](reference-outcomes/multi-output.md#r-out-10-focuscursor-coupling-defaults);
+per-clause summary in [consensus](../research/reference-wm-consensus.md#cursor-first-output-targeting-supplement-2026-10-20).
 
 | Req | Scenario | Requirement / current | KDE | Win | macOS | Status | Source |
 |---|---|---|---|---|---|---|---|
@@ -376,7 +400,7 @@ cover workspace switches, sends and launch location; unsupported outcomes stay T
 | REQ-OUT-02 | [R-OUT-02](reference-outcomes/multi-output.md#r-out-02-perpendicular-move-at-an-output-edge) perpendicular move at edge | Wrap locally; no setting | current: default local wrap, verification-only; exact fixture/native delivery pending | current: same default; native delivery pending | same target; implementation gap (adapter absent) | NORMATIVE | [decisions](../decisions.md#move-layout-and-output-commands) User 2026-10-12, D13 |
 | REQ-OUT-03 | [R-OUT-03](reference-outcomes/multi-output.md#r-out-03-focus-left-across-outputs) focus left across outputs | Exhausted horizontal focus transfers with no layout/membership writes | current: transfers | current: transfers (proposal) | same target; implementation gap (adapter absent) | NORMATIVE | [decisions](../decisions.md#engine-operations-and-policy) R4 focus-transfer route |
 | REQ-OUT-04 | [R-OUT-04](reference-outcomes/multi-output.md#r-out-04-explicitly-send-a-window-to-the-other-output), R-OUT-07 explicit output send | Explicit follow/stay send independent of local exhaustion, same four-direction FULL-output adjacency and 2026-10-09 window-based selection as REQ-MOV-08. Follow Meta/Win+Ctrl+Alt+arrows and +H/J/K/L; stay bindable unbound. Destination current workspace; ordinary workspace-send remembered-leaf/focus-history/root admission, command follow/stay. Initially tiled-subject eligibility, sticky excluded; floating boundaries membership-only, reflow tiled sides only; ordinary float transfer OPEN | implemented offline: shared selector/KDE ranking, real-Engine non-left/top output send; distinct core/protocol output-send, pinned arrival/visibility fences, follow/source-MRU stay and floating boundaries retained ([selection](../changes/archive/position-based-output-selection.md), [transfer](../changes/archive/four-direction-output-transfer.md)); native journey pending | delivered offline `fda618f` 2026-10-14: catalog/settings/UI/exact Ctrl+Alt+Shift routing, both presets keep ownership-unknown defaults, distinct SendOutput ordinary admission, pinned commit-last transfer and follow/source-MRU/null stay; floating-boundary tiled-side reflow excludes mover writes, D16 exceptions retained; native gates 1,892 passed, 0 failed, 1 ignored; physical two-output/mixed-DPI/suppression pending ([record](../changes/archive/windows-explicit-output-send.md)) | same target; implementation gap (adapter absent) | NORMATIVE | [decisions](../decisions.md#move-layout-and-output-commands) item 5 USER 2026-10-07; selection User decision 2026-10-09 |
-| REQ-OUT-05 | [R-OUT-05](reference-outcomes/multi-output.md#r-out-05-open-a-window-with-two-occupied-outputs) open with two outputs | With two occupied outputs, open on the focused output and focus the newcomer, rather than routing by pointer | implemented offline: exact-birth routing to last active eligible managed output's shown workspace, fresh placement/focus proof and safety refusals; pre-debounce focus regressions pass. Sampled opposite-pointer native admissions pass both ways; remaining timing/game variants pending ([record](../changes/kde-dual-output-live.md#focused-output-admission-correction-and-breadth-repeat-2026-10-14)) | current: observed-domain admission; focused-output routing/native activation TBD, multi-output foundation pending | same target; implementation gap (adapter absent) | NORMATIVE; 2026-10-20 cursor-first conflict pending Tier 1 evidence, no override | [decisions](../decisions.md#placement-minimums-and-startup-adoption) User 2026-10-10, 0.1 triage D06 |
+| REQ-OUT-05 | [R-OUT-05](reference-outcomes/multi-output.md#r-out-05-open-a-window-with-two-occupied-outputs) open with two outputs | Cursor-output default with focused-output option; three-way placement as above, focus newcomer. Shared-core placement where possible explicitly approved; platforms supply cursor position/settings | old focused-output route implemented offline with sampled native passes; new configurable placement not implemented ([record](../changes/kde-dual-output-live.md#focused-output-admission-correction-and-breadth-repeat-2026-10-14)) | current: observed-domain admission; new configurable placement not implemented | new configurable placement not implemented; adapter absent | NORMATIVE; User 2026-10-20 accepted override of old focused-output default; not implemented on any platform | [decisions](../decisions.md#cursor-first-output-targeting) User 2026-10-20 on [Tier 1 evidence](../changes/archive/cursor-first-output-evidence.md); supersedes 2026-10-10 D06 default |
 | REQ-OUT-06 | [R-OUT-06](reference-outcomes/multi-output.md#r-out-06-disconnect-and-reconnect-an-occupied-output) disconnect/reconnect output | Preserve displaced layouts separately, never merge; disconnected-monitor active window shows its relocated workspace with focus retained (deliberate COSMIC/6-reference deviation: focus continuity keeps the window in use visible). Surviving-monitor active preserves view/focus. Nearest surviving monitor from disconnect-time geometry, fallback primary then output order (deliberate COSMIC first-remaining deviation: spatial proximity, only discriminating with 3+ outputs). Displaced workspaces return to original monitor with current contents; explicit moves stay | current: returns; native disconnect/focus/destination journey TBD | current: TBD (parked PC) | same target; implementation gap (adapter absent) | NORMATIVE | [decisions](../decisions.md#workspaces) displacement policy; G-02 User 2026-10-10 |
 
 <a id="drag"></a>

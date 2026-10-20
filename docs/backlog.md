@@ -23,29 +23,73 @@ decisions of 2026-09-24 are under
   within each output works); (2) no workspace pager on the secondary output;
   (3) workspace switching with the secondary output focused changes the
   primary; (4) new windows open on the secondary output while the primary is
-  focused. Workspace-command routing and secondary pager support fixed with
-  native two-output CLI/carrier/message-selection evidence; secondary pager
-  bar-right anchoring user-accepted 2026-10-20 (quick physical check);
-  physical input, shell/display-change acceptance remain pending. Next: (1)
-  diagnose cross-DPI transfer with per-window DPI/readback diagnostics,
-  preserving exact arrival fences; (4) admission waits on the cursor-first
-  output-targeting matrix below (interim foreground-first command routing
-  stays). Then work through the
+  focused. Status (agent-observed unless stated; physical chords, hotplug,
+  DPI/resolution changes and sleep/wake are user checks):
+  - (2)/(3) fixed; secondary pager bar-right anchoring user-accepted
+    2026-10-20 (quick physical check).
+  - (1) DPI placement rebasing and exact-owner directional control User
+    2026-10-20 accepted; Paint/Firefox transfers pass both ways with exact arrival
+    and follow focus. User dogfood 2026-10-20 reports cross-output window moves working well.
+  - User physical 2026-10-20: Win+digit on each output passes except the
+    empty-workspace focus item below; Win+Shift+arrows cross-output moves pass;
+    Win+Ctrl+Alt+arrows explicit send-follow works as designed. After Explorer
+    restart tiling survived and primary/secondary pager positions were correct;
+    primary anchor churn looked fine once. Cross-output title-bar drag with
+    drop overlay passed between outputs with different DPI. Task Manager stays
+    untiled (elevated by default; expected unmanageable class, not a defect).
+  - (4) awaits cursor-first implementation below; interim foreground-first
+    command routing stays.
+  - Checklist sweep: W2M-02 tiled follow/stay and admitted-float return pass
+    (`send-output` control User 2026-10-20 accepted); W2M-13 mouse selection, occupied
+    hide/show and Explorer-restart recovery pass with event-driven anchor
+    revalidation (User 2026-10-20 accepted; game cost unmeasured); W2M-10 partial; owner
+    exit-cause logging added.
+  - Open, now manual user checks: cross-output drag empty singleton and
+    reverse-DPI start (not clearly covered by the user's passing drag check;
+    refusal and START diagnostics added); W2M-04/07/08, remaining topology,
+    display changes and sleep/wake. Primary anchor churn has one physical
+    observation, not a repeated stress pass. The synthetic-input drag driver
+    is disabled fail-closed; the input-ownership invariant is in
+    [live testing](live-windows-testing.md).
+  [Record](changes/windows-dual-output-live.md),
   [two-monitor checklist](changes/windows-physical-checklist.md#two-monitor-pc).
-  [Record](changes/windows-dual-output-live.md).
 - P0 | Cross-platform cursor-first output targeting (User 2026-10-20) |
-  Direction: workspace switches and new-window launches target the output
-  under the cursor; window sends to another workspace act on the focused
-  window's output regardless of cursor. A launch with the cursor on the
-  focused window's output splits the focused window; on another output it
-  uses that output's standard new-window location. Optional, default-off
-  focus-follows-cursor and cursor-follows-focus. Must be identical on all
-  platforms. Conflicts with approved R-OUT-05 (2026-10-10, focused output,
-  not pointer); override only with Tier 1 functional-matrix evidence. First:
-  capture the Tier 1 input-tiler outcomes (including COSMIC) as
-  reference-outcome rows and functional-matrix cells, defining "standard
-  location"; then Windows implementation (unblocks Windows defect 4), KDE and
-  macOS adoption by their streams.
+  Decided on [Tier 1 evidence](changes/archive/cursor-first-output-evidence.md):
+  all-platform switch target cursor (default, COSMIC) or focused output (i3/sway);
+  three-way new-window placement COSMIC (default: cursor output/last-focused
+  window), Hyprland (cursor output/cursor-closest), i3/sway (focused output/last-focused).
+  Sends use the focused window's output; relative next/previous targets count
+  there too, no setting (Decision 1c, Tier 1 3 to 1: COSMIC/i3/sway versus Hyprland).
+  Focus-follows-cursor on/off and cursor-warp are settings, both default off
+  (Decision 1d, COSMIC); i3/sway preset enables cross-output focus warp.
+  Hyprland preset leaves warp off pending its own verb-dependent evidence row.
+  Replaces R-OUT-05's old default;
+  not implemented anywhere. User explicitly approves shared-core placement logic
+  where possible; platforms supply cursor position/settings. Next: Windows first
+  (unblocks defect 4 admission), KDE/macOS by their streams.
+  Tentative (user review pending): three-way placement subsumes launch targeting.
+- P1 | Empty-workspace focus across outputs | User physical 2026-10-20:
+  Win+digit to an empty workspace on one output focused a window on another,
+  so a following workspace send moved that window. Desired behavior is
+  undecided: stay focused on the empty output with no focused window, or move
+  to another output's window? Capture Tier 1 outcomes in the
+  [minimal action sequence](spec/reference-outcomes.md#empty-workspace-focus-across-outputs),
+  then decide with the user. Related to cursor-first targeting above.
+- P1 | Settings window behavior presets | User 2026-10-20: cross-platform
+  convenience control (toggle, dropdown or buttons) sets ALL settings to match
+  a reference tiler: COSMIC (default), i3/sway, Hyprland. Next: inventory every
+  setting's per-preset value from Tier 1 evidence; leave missing evidence TBD.
+  Hyprland warp stays off pending its own verb-dependent evidence row.
+- P1 | Cross-output directional focus picks the window nearest the crossed edge |
+  User dogfood trace 2026-10-20: `O1=W1`, `O2=H[W2 W3]`; Win+Right from W1
+  selected W3, expected W2. User direction: last-focused only for switching
+  workspaces on one output; output crossing chooses edge-nearest. Conflicts with
+  current Engine adjacent-output last-focused tiled leaf ([decision](decisions.md#engine-operations-and-policy),
+  [R-OUT-03](spec/reference-outcomes/multi-output.md#r-out-03-focus-left-across-outputs)).
+  Next: confirm [minimal sequence](spec/reference-outcomes.md#cross-output-focus-edge-discriminator)
+  and Tier 1 cells (destination >=2 tiles, MRU not edge-nearest), then inspect
+  the trace to confirm W3 was O2's MRU versus a bug. Likely shared core behavior;
+  any core change needs user approval.
 - P1 | Dogfood permanent maximize-clear refusals | User 2026-10-20 accepted
   Windows pre-clear diagnostic priority with fullscreen veto, and B9
   `float-maximize-clear` diagnostics with fullscreen veto, but both are
@@ -75,13 +119,22 @@ decisions of 2026-09-24 are under
   [Record](changes/windows-single-output-dogfood.md). Hidden windows'
   Alt+Tab/taskbar presence is the separate post-0.1 item below.
 - P1 | Core/platform boundaries and shared acceptance baselines | User
-  2026-10-18: discuss with the user before planning. Goal: a consistent test
+  2026-10-18: discuss with the user before planning. The boundary is now set by
+  [Layering](principles.md#layering) and the user-approved 2026-10-20
+  [core/platform decisions](decisions.md#core-platform-boundary), extending the
+  [core-owned world model direction](decisions.md#core-owned-world-model).
+  First deliverable and discussion input: inventory everything currently
+  platform-owned in each area and map it to its core destination: workspace
+  mapping/scope/history/trailing lifecycle, admission/output selection,
+  classification, verification/fences, drag/gesture, overlay geometry, pager
+  content and cursor. Include Windows workspace owner/send paths (W3 world-route
+  plan) and KDE's TypeScript born-maximized copy. Discuss the inventory and
+  sequencing with the user. Goal: a consistent test
   process over agreed cases, consistent with Tier 1 input tilers, for high
   quality and cross-platform consistency. A maximal, high-quality core also
   eases future targets (GNOME, Cinnamon) and lets window-manager developers
-  embed the core tiling library. Scope to agree:
-  - Core/platform functional boundary: the most sensible version of core,
-    with baseline acceptance tests that run against core alone.
+  embed the core tiling library. Acceptance scope to agree:
+  - Baseline acceptance tests for the approved boundary that run against core alone.
   - One shared baseline acceptance case set for KDE, Windows and macOS, minus
     agreed, documented platform gaps.
   - Platform test helpers: stage an initial tiling state and modify tiling
@@ -327,7 +380,15 @@ decisions of 2026-09-24 are under
   on current main. W2a is diagnostic evidence only, not positive migration or
   T2 parity acceptance; W3/W4 hidden/fullscreen/bootstrap/native gates remain.
 - P1 | Core + Windows: world migration authority and T2 crossing refusal |
-  One change across shared core and the Windows adapter, delivered on a
+  Assessed 2026-10-20 ([record](changes/windows-full-world-state-replies.md)):
+  (1) User 2026-10-20 did not approve the proposed default-off, migration-only
+  authority capability in that form: whole-workspace migration is a
+  [core-owned mapping change](decisions.md#core-owned-world-model) actuated by
+  the adapter. Rework with the core/platform boundary inventory above.
+  (2) adapter-only staged-clone refusal proven offline for
+  directional output-send/R4 (User 2026-10-20 accepted direction; test-only,
+  not wired, not runtime acceptance); explicit-target
+  sends keep `cross-domain-mismatch`. One change across shared core and the Windows adapter, delivered on a
   two-output Windows host so the theory is validated and tested live during
   implementation. Unblocks W2 above (proposals 1 and 2 in
   [W2b cross-stream proposals](changes/windows-full-world-state-replies.md#w2b-cross-stream-proposals)).
@@ -340,16 +401,17 @@ decisions of 2026-09-24 are under
   output-shared workspaces. Any core change needs explicit user approval
   before implementation; bring the options, trade-offs and recommendation to
   the user.
-  (1) Migration authority. Problem: a whole-workspace migration to an output with no observed target
-  session publishes the target as `Hold(IncompleteInventory)` with held
-  migration rows; the Windows world diff correctly refuses uncontrolled scope,
-  so no member arrives and `migration_confirmed` never settles. KDE
+  (1) Migration authority. Root cause: after planning the migration, core retains
+  the workspace under the target output while the adapter still reports it on
+  the source output. The target scope is `Hold(IncompleteInventory)` with held
+  migration rows; Windows correctly refuses uncontrolled scope, so members
+  never move and `migration_confirmed` never settles. KDE
   `world-apply.ts` currently bypasses the scope gate via
-  `command_result.members`. First validate the gap on two real outputs, then
-  resolve the contract: recommended narrowly actionable migration authority for
-  that migration only, retaining all other holds (alternative: explicit
-  transfer-authority precedence), with an explicitly specified final settlement
-  and the KDE bypass aligned to it. Prove member -> target view -> source refill
+  `command_result.members`. Next: use the boundary inventory as discussion input,
+  then rework migration as core-owned workspace-to-output mapping plus adapter
+  actuation, truthful observations and explicit final settlement; align KDE's
+  bypass with that contract. The narrow capability proposal is superseded,
+  not approved. Prove member -> target view -> source refill
   -> topology/binding confirmation through actual Windows W1 capture, feedback
   and re-observation, plus native two-output journeys. Coordinate the shared
   contract and KDE alignment with the core/KDE stream (and the parked KDE
