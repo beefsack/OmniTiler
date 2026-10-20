@@ -1475,10 +1475,10 @@ mod tests {
         std::fs::remove_dir(dir).unwrap();
     }
 
-    /// Connected loopback pair on both transports (replaces
-    /// `UnixStream::pair`): the server side is accepted in a helper thread
-    /// while the test thread connects.
-    #[cfg(any(unix, windows))]
+    /// Connected loopback pair on Windows (which has no socket-pair API):
+    /// the server side is accepted in a helper thread while the test
+    /// thread connects. Unix tests use in-memory socket pairs instead.
+    #[cfg(windows)]
     fn test_pair(
         tag: &str,
     ) -> (
@@ -1815,15 +1815,23 @@ mod tests {
         test_cleanup(&dir, &socket_path);
     }
 
-    /// Loopback-pair unit tests for the deadline reader: coalesced full
-    /// frames split exactly like the transport reader, the 1 MiB cap is
-    /// preserved, and a byte trickle without a newline hits the absolute
-    /// deadline.
+    /// Unit tests for the deadline reader: coalesced full frames split
+    /// exactly like the transport reader, the 1 MiB cap is preserved, and
+    /// a byte trickle without a newline hits the absolute deadline. Unix
+    /// uses an in-memory socket pair (no filesystem or rendezvous
+    /// involved); Windows has no socket-pair API, so it uses a loopback
+    /// pair (proven for these shapes on Windows CI).
     #[cfg(any(unix, windows))]
     #[test]
     fn deadline_reader_splits_coalesced_and_enforces_cap() {
         use std::io::Write as _;
+        #[cfg(unix)]
+        use std::os::unix::net::UnixStream;
+
         // Coalesced writes split into separate frames.
+        #[cfg(unix)]
+        let (reader_stream, mut writer) = UnixStream::pair().expect("pair");
+        #[cfg(windows)]
         let (reader_stream, mut writer, pair_dir, pair_socket) = test_pair("pair");
         let mut reader = DeadlineReader::new(reader_stream);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -1836,12 +1844,16 @@ mod tests {
             reader.read_frame(deadline),
             WaitRead::Line(line) if line == r#"{"b":2}"#
         ));
+        #[cfg(windows)]
         test_cleanup(&pair_dir, &pair_socket);
 
         // Oversize frame without a newline is rejected, not buffered forever.
         // The writer runs on its own thread: 1 MiB exceeds the pipe/socket
         // buffer, so a single-threaded write would block forever waiting for
         // the reader to drain.
+        #[cfg(unix)]
+        let (reader_stream, mut writer) = UnixStream::pair().expect("pair");
+        #[cfg(windows)]
         let (reader_stream, mut writer, pair_dir, pair_socket) = test_pair("pair");
         let big_writer = std::thread::spawn(move || {
             let big = "x".repeat(MAX_LINE_BYTES + 16);
@@ -1854,6 +1866,7 @@ mod tests {
             WaitRead::Err(crate::transport::FrameError::TooLong)
         ));
         big_writer.join().expect("writer");
+        #[cfg(windows)]
         test_cleanup(&pair_dir, &pair_socket);
     }
 
@@ -1861,6 +1874,12 @@ mod tests {
     #[test]
     fn deadline_reader_trickle_times_out() {
         use std::io::Write as _;
+        #[cfg(unix)]
+        use std::os::unix::net::UnixStream;
+
+        #[cfg(unix)]
+        let (reader_stream, mut writer) = UnixStream::pair().expect("pair");
+        #[cfg(windows)]
         let (reader_stream, mut writer, pair_dir, pair_socket) = test_pair("pair");
         let trickler = std::thread::spawn(move || {
             for _ in 0..30 {
@@ -1891,18 +1910,23 @@ mod tests {
             "deadline not absolute: {elapsed:?}"
         );
         trickler.join().expect("trickler");
+        #[cfg(windows)]
         test_cleanup(&pair_dir, &pair_socket);
     }
 
     /// A slow-draining peer must not defeat the write deadline either:
     /// each partial write honors the remaining absolute duration, so a
     /// peer that never reads cannot reset it. Here the peer is held and
-    /// never read while a 2 MiB payload far exceeds the pipe/socket
-    /// buffer, forcing the deadline path.
-    #[cfg(any(unix, windows))]
+    /// never read while a 2 MiB payload far exceeds the Unix socket
+    /// buffer, forcing the deadline path. Unix-only: Unix socket buffers
+    /// are small and blocking there is guaranteed; see the Windows
+    /// companion for the portable contract.
+    #[cfg(unix)]
     #[test]
     fn wait_write_hits_absolute_deadline_when_peer_never_reads() {
-        let (mut writer, _peer, pair_dir, pair_socket) = test_pair("pair-write");
+        use std::os::unix::net::UnixStream;
+
+        let (mut writer, _peer) = UnixStream::pair().expect("pair");
         // `_peer` is held, never read: the kernel buffer fills and further
         // writes block instead of failing, exercising the deadline.
         let big = "y".repeat(2 * 1024 * 1024);
@@ -1922,13 +1946,70 @@ mod tests {
             elapsed.as_millis() < 5000,
             "deadline not absolute: {elapsed:?}"
         );
+    }
+
+    /// Windows write deadline: a 2 MiB write to a never-read peer must
+    /// return promptly (no hang past the deadline). Named-pipe buffering
+    /// may accept the whole payload, so completion is acceptable — but it
+    /// must be prompt, and then every byte must have arrived intact. A
+    /// timeout is equally acceptable: the peer never drains. Either way
+    /// the absolute deadline is honored and the full client write path
+    /// runs on Windows (the Unix companion above forces the timeout
+    /// branch via small socket buffers).
+    #[cfg(windows)]
+    #[test]
+    fn wait_write_bounded_when_peer_never_reads() {
+        let (mut writer, _peer, pair_dir, pair_socket) = test_pair("pair-write");
+        // `_peer` is held, never read by the test thread.
+        let big = "y".repeat(2 * 1024 * 1024);
+        let start = std::time::Instant::now();
+        let deadline = start + std::time::Duration::from_millis(300);
+        let outcome = write_line_deadline(&mut writer, &big, deadline);
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed.as_millis() < 5000,
+            "write must not hang past the deadline: {elapsed:?}"
+        );
+        match outcome {
+            Err(WriteError::Timeout) => {}
+            Ok(()) => {
+                // Platform buffered it: drain the peer and verify integrity.
+                let drain = test_clone(&_peer);
+                let mut got = Vec::new();
+                let read_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                loop {
+                    let mut tmp = [0u8; 65536];
+                    match crate::transport::read_chunk(&drain, &mut tmp, read_deadline) {
+                        Ok(Some(n)) => {
+                            got.extend_from_slice(&tmp[..n]);
+                            if got.ends_with(b"\n") {
+                                break;
+                            }
+                        }
+                        other => panic!("drain failed, got {got:?} then {other:?}"),
+                    }
+                }
+                assert_eq!(got.len(), big.len() + 1, "short buffered write");
+                assert!(got.ends_with(b"\n"));
+                assert!(got[..big.len()].iter().all(|&b| b == b'y'));
+            }
+            Err(e) => panic!("unexpected write error: {e:?}"),
+        }
         test_cleanup(&pair_dir, &pair_socket);
     }
 
     /// The deadline-aware write sends the full line including its newline.
+    /// Unix uses an in-memory socket pair; Windows a loopback pair (no
+    /// socket-pair API there).
     #[cfg(any(unix, windows))]
     #[test]
     fn wait_write_sends_full_line_with_newline() {
+        #[cfg(unix)]
+        use std::os::unix::net::UnixStream;
+
+        #[cfg(unix)]
+        let (mut writer, reader) = UnixStream::pair().expect("pair");
+        #[cfg(windows)]
         let (mut writer, reader, pair_dir, pair_socket) = test_pair("pair");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         write_line_deadline(&mut writer, r#"{"a":1}"#, deadline).expect("write");
@@ -1939,17 +2020,25 @@ mod tests {
             crate::transport::read_bounded_line(&mut reader, &mut scratch),
             Ok(FrameRead::Line(r#"{"a":1}"#.to_string()))
         );
+        #[cfg(windows)]
         test_cleanup(&pair_dir, &pair_socket);
     }
 
     /// Coalesced short first line then an oversize second line: the second
     /// frame is rejected even though the per-read append only validates the
     /// first newline of each chunk. The writer runs on its own thread: the
-    /// 1 MiB payload exceeds the loopback buffer.
+    /// 1 MiB payload exceeds the pair buffer. Unix uses an in-memory
+    /// socket pair; Windows a loopback pair (no socket-pair API there).
     #[cfg(any(unix, windows))]
     #[test]
     fn deadline_reader_rejects_oversize_coalesced_second_line() {
         use std::io::Write as _;
+        #[cfg(unix)]
+        use std::os::unix::net::UnixStream;
+
+        #[cfg(unix)]
+        let (reader_stream, mut writer) = UnixStream::pair().expect("pair");
+        #[cfg(windows)]
         let (reader_stream, mut writer, pair_dir, pair_socket) = test_pair("pair");
         let sender = std::thread::spawn(move || {
             let mut payload = b"{\"a\":1}\n".to_vec();
@@ -1968,6 +2057,7 @@ mod tests {
             WaitRead::Err(crate::transport::FrameError::TooLong)
         ));
         sender.join().expect("sender");
+        #[cfg(windows)]
         test_cleanup(&pair_dir, &pair_socket);
     }
 }

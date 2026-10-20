@@ -23,6 +23,8 @@ pub const MAX_ID_LEN: usize = 64;
 pub const MAX_REQUEST_ID_LEN: usize = 128;
 
 /// X11 `WM_CLASS` and Wayland `app_id` shared by every fixture window.
+/// Linux-only: native window identity is only set on the Linux backend.
+#[cfg(target_os = "linux")]
 pub const APP_ID: &str = "OmniTilerTestWindow";
 
 /// Title prefix. The `sentinel/id/run-tag` prefix is server-controlled and
