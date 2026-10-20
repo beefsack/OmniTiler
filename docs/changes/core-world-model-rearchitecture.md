@@ -59,8 +59,8 @@ ownership before stage 1; accepted extractions are recorded below.
 
 | Platform | Current additional policy | Port requirement |
 | --- | --- | --- |
-| KDE | `kwin/src/born-maximized.ts`, `world-born-maximized.ts`, `fixed-size-predicate.ts`, `migration-source-refill.ts`, `world-drag.ts`, `world-observe.ts`, `world-apply.ts` | Remove the TypeScript born-maximized/fixed/admission copies, gesture and refill decisions after consuming core state. Report native desktops and external changes truthfully. Enable neutral equal-workspace-count support for desktops spanning outputs, without replacing the per-screen core model. Native pager maps that model. Do not retain migration writes that bypass held scope/member authority. |
-| macOS | `crates/tiler-macos/src/classifier.rs`, `workspace_select.rs`, `workspace_send*.rs`, `drag_drop.rs`, `runtime.rs` coexist with `world_runtime.rs` | AX/CG/Space facts and coordinate/lifetime mechanics stay native. Move classification, native-Space selection/send/trailing decisions and drag policy to core. Report host-owned Spaces and inability to create/transfer where appropriate, never fabricate logical/native capability. Reconcile all consumers onto the new sole world route. |
+| KDE | `kwin/src/born-maximized.ts`, `world-born-maximized.ts`, `fixed-size-predicate.ts`, `migration-source-refill.ts`, `world-drag.ts`, `world-observe.ts`, `world-apply.ts` | Port to world contract v2: screen/window facts and core logical ids replace native-derived domains/bindings. Enable `host_owned_workspace_domains` and `equal_workspace_count` for desktops spanning outputs; mechanically translate independently observed native membership/view into logical receipts. Missing native destination backing never holds logical mapping authority. Remove TypeScript admission/gesture/refill policy copies. Native pager maps the core model; held scope/member fences still apply. |
+| macOS | `crates/tiler-macos/src/classifier.rs`, `workspace_select.rs`, `workspace_send*.rs`, `drag_drop.rs`, `runtime.rs` coexist with `world_runtime.rs` | Port all consumers to world contract v2 and `host_owned_workspace_domains`; opt into equal counts only if the host requires them. AX/CG/Space facts, native-to-logical binding and coordinate/lifetime mechanics stay native. Translate observed Space membership/view into logical receipts, not desired-state echoes. Move classification, selection/send/trailing and drag policy to core. Report inability to create/transfer through truthful feedback, never fabricate backing, arrival or capability. |
 
 - Remove public portable per-domain `CoreEvent`/`CoreReply` application and
   session-query interfaces when Windows no longer needs them. Internal
@@ -269,3 +269,133 @@ remove the code it supersedes before its acceptance.
   coherent actionable target scope/member desire before staging arrival, then
   prove all observed phases. Review the unaccepted prototype before reuse;
   stage 2b must not start from it as an accepted foundation.
+
+### Stage 2a logical-authority replacement
+
+- The implementation direction is logical-first, not a narrower migration
+  exception: retained core workspace identities, per-screen rings and views
+  authorize decisions. Native backing identities are optional observations and
+  actuation bindings, never prerequisites for that authority.
+- The default world contract requires screen geometry/work areas and truthful
+  window facts, but no native workspace domains. Core creates and retains its
+  logical workspaces, including trailing empties. Host-owned workspace domains
+  and equal workspace counts remain explicit capability-named opt-ins for
+  later platform ports; replace the superseded native-derived mapping and
+  aligned-grid machinery rather than retaining a compatibility route.
+- Replace the report/protocol projection as necessary to make this distinction
+  real. Preserve report fencing, command consumption, explicit closes,
+  hidden/minimized/unreadable facts and observed transfer settlement. Review
+  prototype pieces individually; neither rejected held-authority approach is a
+  starting contract.
+- Core-only acceptance must cover native-free bootstrap/lifecycle and a
+  source-only-native-backing migration with actionable target scope and members
+  before arrival, then unchanged reports, arrival/view/refill, incomplete and
+  unreadable facts, closes, refusal/supersession and tree/share/focus retention.
+  Windows runtime ownership and cursor-first policy remain later slices.
+
+## Stage 2a replacement validation and remaining blocker (2026-10-21)
+
+- The logical-first replacement below is unaccepted. Passing broad gates and
+  earlier source review did not establish recovery after actuation feedback is
+  acknowledged. No implementation from this replacement is accepted for the
+  Windows owner cutover; the blocker below must be resolved first.
+
+- World contract v2 replaces the native-domain-derived route, without a v1
+  compatibility path. Core mints stable logical workspace ids, owns per-screen
+  rings/views/history/trailing lifecycle and retains exact-lifetime membership
+  independently of Engine layout sessions. Releasing a floating workspace's
+  layout no longer loses membership or intentional-float truth.
+- Reports carry screens (FULL rectangles and work areas), normalized window
+  facts, explicit closes and independently observed logical membership/view
+  receipts. The default needs no native workspace vocabulary. Optional
+  `host_owned_workspace_domains` requires translated logical member receipts
+  for host-owned arrival; `equal_workspace_count` pads core rings neutrally.
+  Native inventory is observation only, never logical destination authority.
+- The source-only-backing discriminator asserts Controlled target scope,
+  workspace and membership before staging arrival. Unchanged reports retain
+  logical ownership; raw member arrival, target view and source refill prove
+  settlement independently. Missing/contradictory receipts, unreadable facts,
+  incomplete topology/inventory and gesture barriers do not fabricate proof.
+  Explicit closes still settle across gaps. Ambiguous and partially refused
+  attempts retain no-retry holds after feedback disappears.
+- Proven wholly-unarrived refusal restores the logical unit's ring position,
+  views, tiling, tree/shares and remembered focus only from readable source
+  evidence and a validated session relocation. Partial arrivals or unhostable
+  source facts hold narrowly instead of destructively rebuilding layout.
+- Local/global-unique/shared scope behavior remains explicit. Nonempty global
+  swaps move complete logical units atomically; sticky floats stay on their
+  physical outputs, including sticky-only and empty-side swaps. Shared trailing
+  lifecycle uses union occupancy, with one shared history and no displacement
+  mapping. Output disconnect/return preserves logical units and layout state.
+- Removed native-derived aligned-grid identity, native binding/startup
+  conversion, pending native creation and displaced-native scaffolding. Replaced
+  obsolete domain-shaped world tests with focused v2 suites. The sole
+  WorldEngine is split by envelope, logical lifecycle, observation, membership,
+  commands/operations, settlement and publishing; layout remains internal
+  Engine/Session machinery.
+- Regression coverage includes T2 unchanged-source refusal, boundary floats,
+  exact source focus/MRU, default tiling seeds, hidden/minimized/fullscreen facts,
+  admission focus lifetime fencing, float-placement settlement, diagnostic-only
+  capacity origin, transactional report rejection and stale/consumed commands.
+  Exception-only sessions publish truthful rows without inventing a tile tree.
+- Locked core/protocol/Windows tests, build and strict all-target clippy pass;
+  workspace formatting and whitespace checks pass. A separate discriminating
+  recovery probe fails despite those passing gates.
+  No dependency, unsafe-code, input-hook or cursor-policy changes. Core-only
+  evidence is not native migration acceptance or Windows runtime adoption.
+
+### Unresolved migration refusal recovery
+
+- Invariant: an acknowledged terminal actuation outcome must remain retained
+  under its operation identity until readable evidence permits reconciliation.
+  A no-retry hold is not enough to remember whether the attempt was possibly
+  executed, proven refused or externally superseded.
+- The replacement initially restored migration mapping from missing facts when
+  refusal arrived inside incomplete inventory. It also swept the retained tree
+  empty across the gap. The correction preserves scope/session state and marks
+  the flight held until readable source/target evidence returns, but retains
+  only `TransferTarget.held`, not the terminal outcome.
+- Minimal failing sequence: migrate three source members; report incomplete
+  empty inventory with `RefusedProven` for the migration; acknowledge that
+  feedback; report complete readable original-source members with no feedback.
+  The replacement still desires the workspace at the target with the migration
+  held. Wholly-proven-source rollback is unreachable because its branch depends
+  on the now-absent feedback row. A possibly-executed hold is indistinguishable.
+- `world_migration_refusal.rs` recovery tests repeat `RefusedProven` on the
+  readable recovery report, masking this consumption boundary. The separate
+  failing probe omitted the repeated feedback and confirmed the stuck target
+  mapping and retained held flight. Neither feedback replay nor fabricated
+  arrival is an acceptable repair.
+- Recommended next change: retain the terminal migration outcome separately
+  from no-retry authority, and reconcile it from later readable evidence after
+  feedback acknowledgement. First turn the recovery probe into a permanent
+  regression, including partial arrivals, explicit closes and supersession;
+  inspect the retained-operation state transition before another semantic
+  repair. Re-run core/protocol/Windows gates and review this exact boundary.
+  This is an implementation blocker, not a new product question.
+
+### Remaining stage 2 boundary
+
+- 2b remains: replace Windows ManagedWorkspaces/direct-Engine ownership
+  atomically, including lifecycle/history/tiling/all send routes, startup and
+  restart restoration, hidden/fullscreen truth and T2 transaction routing.
+  Current Windows world capture/sequencer/diff remain test-only. They report
+  unknown member/view receipts until genuine application/readback supplies
+  evidence; acknowledgement never copies desires into observations.
+- 2b must remove remaining per-domain adapter interfaces and test-only route
+  scaffolding. Audit native scope/member gates for floating membership-only
+  sends and refill publication. The source-only sticky migration test currently
+  guarantees no target sticky row/frame write and the correct source-refill row
+  on the unchanged report; immediate refill sticky publication is not established
+  by this slice and needs the actuation audit.
+- 2c remains: retained cursor/settings/focus, approved cursor-first switch and
+  three-way fresh placement, distinguishing startup restoration. Shared
+  world-action/native acceptance and fixture checks on both outputs remain.
+  No fix for the dual-output fresh-admission defect is claimed here.
+- No new product question blocks logical authority. Existing parked focus/send
+  questions remain unchanged. Three-way placement subsuming launch targeting
+  stays tentative and unimplemented; no additional tentative product decision
+  was introduced in 2a.
+- Next: resolve the retained-outcome blocker and accept 2a before starting 2b.
+  Then implement truthful applied member/view receipts and bootstrap/restoration
+  projection, all Windows mode/send routes and both-output native verification.
