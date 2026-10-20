@@ -561,19 +561,16 @@ impl PipeListener {
         let server = self
             .pending
             .lock()
-            .map_err(|_| {
-                std::io::Error::new(std::io::ErrorKind::Other, "pipe listener lock poisoned")
-            })?
+            .map_err(|_| std::io::Error::other("pipe listener lock poisoned"))?
             .take()
-            .ok_or_else(|| {
-                std::io::Error::new(std::io::ErrorKind::Other, "pipe listener closed")
-            })?;
+            .ok_or_else(|| std::io::Error::other("pipe listener closed"))?;
         // A failed `connect` is retryable (cancel-safe), so the instance
         // goes back and the caller retries after its backoff.
         if let Err(e) = rt.block_on(async { server.connect().await }) {
-            *self.pending.lock().map_err(|_| {
-                std::io::Error::new(std::io::ErrorKind::Other, "pipe listener lock poisoned")
-            })? = Some(server);
+            *self
+                .pending
+                .lock()
+                .map_err(|_| std::io::Error::other("pipe listener lock poisoned"))? = Some(server);
             return Err(e);
         }
         // Park the next instance before handing this one out. The flagged
@@ -583,9 +580,10 @@ impl PipeListener {
         let sec = pipe_win::PipeSecurity::owner_only()?;
         let next = rt
             .block_on(async { pipe_win::create_server(self.pipe_name.as_os_str(), false, &sec) })?;
-        *self.pending.lock().map_err(|_| {
-            std::io::Error::new(std::io::ErrorKind::Other, "pipe listener lock poisoned")
-        })? = Some(next);
+        *self
+            .pending
+            .lock()
+            .map_err(|_| std::io::Error::other("pipe listener lock poisoned"))? = Some(next);
         Ok(Stream::server(rt, server))
     }
 }

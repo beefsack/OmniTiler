@@ -38,7 +38,7 @@ use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
 };
 use windows_sys::Win32::Security::{
-    GetTokenInformation, PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER,
+    GetTokenInformation, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER,
     TokenUser,
 };
 use windows_sys::Win32::System::Pipes::WaitNamedPipeW;
@@ -68,10 +68,7 @@ pub fn current_user_sid() -> io::Result<String> {
         GetTokenInformation(token, TokenUser, null_mut(), 0, &mut len);
         if len == 0 {
             CloseHandle(token);
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "GetTokenInformation gave no token size",
-            ));
+            return Err(io::Error::other("GetTokenInformation gave no token size"));
         }
         // Aligned backing store: `TOKEN_USER` is pointer-sized fields only,
         // so `align_of::<TOKEN_USER>() <= align_of::<usize>()` (const-proven
@@ -166,8 +163,7 @@ impl PipeSecurity {
                 return Err(io::Error::last_os_error());
             }
             if sd.is_null() {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
+                return Err(io::Error::other(
                     "security descriptor converter returned null",
                 ));
             }
@@ -236,7 +232,7 @@ mod tests {
     use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_KERNEL_OBJECT};
     use windows_sys::Win32::Security::{
         ACCESS_ALLOWED_ACE, ACL, ACL_SIZE_INFORMATION, AclSizeInformation,
-        DACL_SECURITY_INFORMATION, GetAce, GetAclInformation, OWNER_SECURITY_INFORMATION,
+        DACL_SECURITY_INFORMATION, GetAce, GetAclInformation, OWNER_SECURITY_INFORMATION, PSID,
     };
 
     #[test]
@@ -358,7 +354,7 @@ mod tests {
             let mut expected = vec![user, "S-1-5-18".to_string()];
             expected.sort();
             assert_eq!(sids, expected);
-            LocalFree(sd as *mut core::ffi::c_void);
+            LocalFree(sd);
         }
         drop(server);
     }
