@@ -696,7 +696,7 @@ pub(super) fn gesture_tick(
         state.preview_dead.remove(hwnd);
         state.gesture_preview_start.remove(hwnd);
         state.gesture_start_cursor.remove(hwnd);
-        let reply = match intent {
+        let (reply, event) = match intent {
             GestureIntent::MoveDrop { x, y } => {
                 let mut event = event;
                 event.command = CoreCommand::DragDrop {
@@ -706,7 +706,8 @@ pub(super) fn gesture_tick(
                     hover_prior: drop_prior,
                     source: None,
                 };
-                handle_engine_event(state, &mut event)
+                let reply = handle_engine_event(state, &mut event);
+                (reply, event)
             }
             GestureIntent::PointerResize {
                 direction,
@@ -722,7 +723,8 @@ pub(super) fn gesture_tick(
                     direction2: direction2.map(str::to_owned),
                     boundary2,
                 };
-                handle_engine_event(state, &mut event)
+                let reply = handle_engine_event(state, &mut event);
+                (reply, event)
             }
         };
         let op = match intent {
@@ -780,6 +782,20 @@ pub(super) fn gesture_tick(
                     CoreReply::SnapshotInvalid { detail, .. } => *detail,
                     _ => "unhandled-variant",
                 };
+                if op == "pointer-resize" {
+                    log_redacted_dispatch(
+                        state,
+                        "pointer-resize",
+                        state.tick,
+                        correlation.as_str(),
+                        &current.token,
+                        producer,
+                        state.gesture_before.get(hwnd).copied(),
+                        &event,
+                        &observed,
+                        kind,
+                    );
+                }
                 log_json_at(
                     &log_path,
                     serde_json::json!({

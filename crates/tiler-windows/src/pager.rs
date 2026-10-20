@@ -890,6 +890,23 @@ mod tests {
     }
 
     #[test]
+    fn primary_tray_churn_moves_strip_with_the_boundary() {
+        // Shell icon loading moves the primary tray edge left while the bar
+        // stays put: the strip must follow the fresh facts pump-for-pump
+        // (same width and row, shifted by exactly the boundary delta), so a
+        // fresh owner read is never painted at a stale carrier position.
+        let before = strip_for_taskbar(full(), &bottom_bar(), 2).expect("fits");
+        let mut grown = bottom_bar();
+        grown.tray_left = Some(1650);
+        let after = strip_for_taskbar(full(), &grown, 2).expect("fits");
+        assert_eq!(after.w, before.w);
+        assert_eq!(after.y, before.y);
+        assert_eq!(after.h, before.h);
+        assert_eq!(before.x - after.x, 50);
+        assert_eq!(right(after), 1650 - PAGER_TRAY_GAP);
+    }
+
+    #[test]
     fn strip_refuses_instead_of_guessing() {
         // Hidden taskbar.
         let mut bar = bottom_bar();
@@ -1101,6 +1118,24 @@ mod tests {
         // The app-button span (native 2615..2967) sits far left of the
         // right-anchored strip: ordinary counts never touch it.
         assert!(strip.x > 2967);
+    }
+
+    #[test]
+    fn proven_secondary_churn_moves_strip_with_the_edge() {
+        // Healthy proven-secondary churn (tray child edge moves as shell
+        // content loads while the bar stays put): the strip follows the
+        // fresh facts pump-for-pump, same width and row, shifted by exactly
+        // the edge delta. Same follow contract as the primary path above.
+        let before = strip_for_taskbar(secondary_full(), &secondary_bar_right_anchored(), 2)
+            .expect("serves");
+        let mut churned = secondary_bar_right_anchored();
+        churned.tray_left = Some(4440);
+        let after = strip_for_taskbar(secondary_full(), &churned, 2).expect("serves");
+        assert_eq!(after.w, before.w);
+        assert_eq!(after.y, before.y);
+        assert_eq!(after.h, before.h);
+        assert_eq!(before.x - after.x, 40);
+        assert_eq!(right(after), 4440 - PAGER_TRAY_GAP);
     }
 
     #[test]

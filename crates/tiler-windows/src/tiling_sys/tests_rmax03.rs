@@ -68,6 +68,8 @@ pub(super) fn test_state() -> TileLoop {
         pager_clicks: std::sync::Arc::new(std::sync::Mutex::new(None)),
         pager_served: Vec::new(),
         pager_retry_at: None,
+        pager_taskbar_dirty: false,
+        pager_hook_pid: None,
         pager_areas_fp: 0,
         pager_primary: None,
         pager_secondaries: Vec::new(),

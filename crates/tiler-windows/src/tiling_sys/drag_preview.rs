@@ -311,23 +311,71 @@ fn refresh_cross_drag_preview(
             }
         }
         CoreReply::Rejected { kind, .. } => {
+            log_redacted_dispatch(
+                state,
+                "drag-preview",
+                state.tick,
+                correlation.as_str(),
+                &settle.mover_token,
+                &settle.producer,
+                settle.start_rect,
+                &event,
+                &observed,
+                kind,
+            );
             if let Some(bound) = state.preview_bound.get_mut(&hwnd) {
                 bound.hover_prior = None;
             }
             hide_preview(state, preview_hide_for_refusal(kind));
         }
         CoreReply::Diverged(reason) => {
+            log_redacted_dispatch(
+                state,
+                "drag-preview",
+                state.tick,
+                correlation.as_str(),
+                &settle.mover_token,
+                &settle.producer,
+                settle.start_rect,
+                &event,
+                &observed,
+                reason.as_str(),
+            );
             hide_preview(state, reason.as_str());
             state.preview_bound.remove(&hwnd);
             state.preview_dead.insert(hwnd);
         }
         CoreReply::SnapshotInvalid { detail, .. } => {
+            log_redacted_dispatch(
+                state,
+                "drag-preview",
+                state.tick,
+                correlation.as_str(),
+                &settle.mover_token,
+                &settle.producer,
+                settle.start_rect,
+                &event,
+                &observed,
+                detail,
+            );
             if let Some(bound) = state.preview_bound.get_mut(&hwnd) {
                 bound.hover_prior = None;
             }
             hide_preview(state, detail);
         }
         _ => {
+            log_redacted_dispatch(
+                state,
+                "drag-preview",
+                state.tick,
+                correlation.as_str(),
+                &settle.mover_token,
+                &settle.producer,
+                settle.start_rect,
+                &event,
+                &observed,
+                "refused",
+            );
             if let Some(bound) = state.preview_bound.get_mut(&hwnd) {
                 bound.hover_prior = None;
             }

@@ -7335,6 +7335,137 @@ mod tests {
         );
     }
 
+    /// Producer-shaped empty-singleton drop (W2M06 leg B, 2026-10-20): the
+    /// source retains a sole mover, the destination has no retained session,
+    /// the mover row rides its large source tile frame (positioned outside
+    /// the smaller destination work area) with real Paint minimum hints, and
+    /// the release lands at the destination work center. The singleton
+    /// admission must project, not refuse `unchanged`.
+    #[test]
+    fn drag_empty_singleton_producer_shape_projects() {
+        use crate::boundary::{CoreCommand, CoreEvent, CoreReply};
+        use crate::ids::CorrelationId;
+        let mut engine = Engine::new();
+        let owner = OwnerId::parse("owner-a").expect("valid");
+        let gen_id = GenerationId::parse("gen-1").expect("valid");
+        engine.sync_binding(&owner, &gen_id);
+        let source_domain = OutputDomain {
+            id: OutputId("o1".to_owned()),
+            workspace: WorkspaceId("ws1".to_owned()),
+            bounds: Rect {
+                x: 0,
+                y: 0,
+                w: 2560,
+                h: 1380,
+            },
+            gap: 8,
+            adjacent: BTreeMap::new(),
+        };
+        let source_key = source_domain.key();
+        let source = crate::seed::seed_session(
+            &owner,
+            &gen_id,
+            7,
+            &source_domain,
+            &[engine_window("w29", "o1", "ws1")],
+        )
+        .expect("seeds sole-mover source");
+        engine.store_committed(source_key, source, 8);
+        let dest_domain = OutputDomain {
+            id: OutputId("o2".to_owned()),
+            workspace: WorkspaceId("ws1".to_owned()),
+            bounds: Rect {
+                x: 2560,
+                y: 355,
+                w: 1920,
+                h: 1032,
+            },
+            gap: 8,
+            adjacent: BTreeMap::new(),
+        };
+        let dest_key = dest_domain.key();
+        assert!(!engine.contains(&dest_key));
+        // Live start frame: the source tile allocation, larger than and
+        // positioned outside the destination work area.
+        let start_rect = Rect {
+            x: 8,
+            y: 8,
+            w: 2544,
+            h: 1364,
+        };
+        let mover = crate::seed::EngineWindow {
+            window: WindowId("w29".to_owned()),
+            output: OutputId("o2".to_owned()),
+            workspace: WorkspaceId("ws1".to_owned()),
+            rect: start_rect,
+            floating: false,
+            fit_excluded: false,
+            fullscreen: false,
+            maximized: false,
+            sticky: false,
+            fixed_auto: false,
+            fixed_suppress: false,
+            hints: crate::size_hints::WindowSizeHints {
+                min_w: Some(864),
+                min_h: Some(617),
+                max_w: None,
+                max_h: None,
+            },
+        };
+        let event = |command, correlation: &str| CoreEvent {
+            owner: owner.clone(),
+            generation: gen_id.clone(),
+            correlation: CorrelationId::parse(correlation).expect("valid"),
+            revision: 0,
+            fingerprint: 7,
+            domain: dest_domain.clone(),
+            domain_key: dest_key.clone(),
+            outer_gap: 8,
+            focused_window: WindowId("w29".to_owned()),
+            windows: vec![mover.clone()],
+            directional: None,
+            directional_target_outer_gap: None,
+            target_domain: None,
+            target_windows: vec![],
+            closed_windows: vec![],
+            command,
+        };
+        let preview = event(
+            CoreCommand::DragPreview {
+                window: "w29".to_owned(),
+                x: 3520,
+                y: 871,
+                hover_prior: None,
+                source: Some(cross_source("o1", "ws1")),
+            },
+            "corr-w2m06-singleton-pv",
+        );
+        let rect = match engine.handle(&preview) {
+            CoreReply::DragPreview(plan) => plan.preview.proposed_rect,
+            other => panic!("producer singleton preview must project, got {other:?}"),
+        };
+        assert!(!engine.contains(&dest_key), "preview must not store");
+        let drop = event(
+            CoreCommand::DragDrop {
+                window: "w29".to_owned(),
+                x: 3520,
+                y: 871,
+                hover_prior: None,
+                source: Some(cross_source("o1", "ws1")),
+            },
+            "corr-w2m06-singleton",
+        );
+        match engine.handle(&drop) {
+            CoreReply::Tiled(plan) => {
+                assert_eq!(plan.kind, crate::boundary::TiledKind::DragDrop);
+                assert_eq!(plan.geometry.len(), 1);
+                assert_eq!(plan.geometry[0].rect, rect);
+            }
+            other => panic!("producer singleton drop must admit, got {other:?}"),
+        }
+        assert!(engine.contains(&dest_key));
+    }
+
     /// Two-output drag world with deliberately different arrangements: the
     /// source is a small positive-coordinate monitor, the destination a
     /// larger negative-x monitor (no adjacency derivation: the pointer output

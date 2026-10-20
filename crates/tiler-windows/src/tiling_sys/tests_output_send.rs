@@ -1605,3 +1605,316 @@ fn unadmitted_float_mover_is_excluded() {
     );
     clear_pending_seams();
 }
+
+/// W2M-02 float-return gate rig: the mover keeps its physical frame on
+/// `primary` while membership homes on `right`, mirroring the committed
+/// first-send state (D16 membership-only float carry). Dispatch arrives with
+/// the physical (foreground) output `primary`, not the membership home.
+struct ReturnGateRig {
+    state: super::TileLoop,
+    areas: Vec<MonitorArea>,
+    fulls: Vec<Rect>,
+    me: crate::model::ProcessIdentity,
+    mover: WindowKey,
+    ws_primary: String,
+    ws_right: String,
+    observed: Vec<ObservedWindow>,
+    retained: Vec<super::RetainedRow>,
+    origin: SnapOrigin,
+    intent: QueuedWorkspaceOutputIntent,
+}
+
+fn return_gate_rig() -> ReturnGateRig {
+    use super::{inject_pending_elevated, inject_pending_suspend};
+    clear_pending_seams();
+    let mut state = test_state();
+    let areas = vec![
+        area(
+            "primary",
+            full_rect(0, 40, 1920, 1040),
+            full_rect(0, 0, 1920, 1080),
+        ),
+        area(
+            "right",
+            full_rect(1920, 0, 1920, 1080),
+            full_rect(1920, 0, 1920, 1080),
+        ),
+    ];
+    let fulls: Vec<Rect> = areas.iter().map(|a| a.full).collect();
+    state.workspaces.ensure_output("primary");
+    state.workspaces.ensure_output("right");
+    let ws_primary = state.workspaces.active_id("primary").expect("active");
+    let ws_right = state.workspaces.active_id("right").expect("active");
+    state.workspaces.set_tiled("primary", &ws_primary, true);
+    state.workspaces.set_tiled("right", &ws_right, true);
+    let me = me();
+    let mover = key(0x6100, 8200);
+    let frame = full_rect(100, 100, 400, 300);
+    state
+        .member_tokens
+        .insert(mover.clone(), "mover".to_owned());
+    state.member_identity.insert(
+        mover.clone(),
+        crate::model::ProcessIdentity {
+            pid: mover.pid,
+            process_creation: mover.creation.clone(),
+            user_sid: me.user_sid.clone(),
+            session_id: me.session_id,
+            exe_path: me.exe_path.clone(),
+        },
+    );
+    state
+        .member_tags
+        .insert(mover.clone(), "tag-6100".to_owned());
+    inject_pending_tag(mover.hwnd, Some("tag-6100".to_owned()));
+    assert!(
+        state
+            .workspaces
+            .assign(mover.clone(), "right", &ws_right, false)
+    );
+    inject_pending_suspend(Some(false));
+    inject_pending_elevated(Some(false));
+    let observed = vec![observed_window(&mover, "mover", frame, &me)];
+    let origin = SnapOrigin {
+        hwnd: mover.hwnd,
+        token: "mover".to_owned(),
+        pid: mover.pid,
+        creation: mover.creation.clone(),
+    };
+    let intent = QueuedWorkspaceOutputIntent {
+        direction: Direction::Left,
+        follow: false,
+        edge: SnapEdge::Down,
+        origin: None,
+        consumed: true,
+        announce: true,
+        tick: std::time::Instant::now(),
+    };
+    ReturnGateRig {
+        state,
+        areas,
+        fulls,
+        me,
+        mover,
+        ws_primary,
+        ws_right,
+        observed,
+        retained: Vec::new(),
+        origin,
+        intent,
+    }
+}
+
+/// Seed the mover tiled in its membership (destination) session.
+fn seed_tiled_on_right(rig: &mut ReturnGateRig) {
+    let dst_bounds = workspace_domain_for("right", &rig.ws_right, &rig.areas, 8, 8)
+        .expect("dst domain")
+        .0
+        .bounds;
+    seed(
+        &mut rig.state,
+        "right",
+        &rig.ws_right.clone(),
+        dst_bounds,
+        &["mover"],
+        "mover",
+    );
+}
+
+/// Float the mover in its membership session without D16 admission (no
+/// `overlay_now` entry), mirroring the production ToggleFloat converge path.
+fn float_without_admission(rig: &mut ReturnGateRig) {
+    use tiler_core::boundary::CoreCommand;
+    seed_tiled_on_right(rig);
+    let frame = full_rect(100, 100, 400, 300);
+    let (domain, dkey) =
+        workspace_domain_for("right", &rig.ws_right, &rig.areas, 8, 8).expect("dst domain");
+    let rows = vec![(
+        WindowId("mover".to_owned()),
+        frame,
+        tiler_core::size_hints::WindowSizeHints::none(),
+        false,
+    )];
+    let fp = crate::tiling::fingerprint(&[("mover".to_owned(), frame)]);
+    let correlation = CorrelationId::parse("float-return-rig").expect("correlation");
+    let mut event = crate::tiling::build_reconcile_event_for_floating(
+        &rig.state.owner,
+        &rig.state.generation,
+        &correlation,
+        rig.state
+            .engine
+            .session(&dkey)
+            .map(|s| s.accepted_revision())
+            .unwrap_or(0),
+        fp,
+        &domain,
+        &dkey,
+        8,
+        &rows,
+        Some(&WindowId("mover".to_owned())),
+    );
+    event.command = CoreCommand::ToggleFloat {
+        window: "mover".to_owned(),
+        float_rect: None,
+    };
+    let reply = rig.state.engine.handle(&event);
+    assert!(
+        !matches!(
+            reply,
+            tiler_core::boundary::CoreReply::Rejected { .. }
+                | tiler_core::boundary::CoreReply::Diverged(_)
+                | tiler_core::boundary::CoreReply::SnapshotInvalid { .. }
+        ),
+        "float toggle converges, got {reply:?}"
+    );
+}
+
+/// Admit the mover as an ordinary intentional float in its membership
+/// session (D16 ordinary arm: Engine exception plus exact live snapshot).
+fn admit_float_on_right(rig: &mut ReturnGateRig) {
+    float_without_admission(rig);
+    rig.state
+        .overlay_now
+        .insert("mover".to_owned(), (false, false));
+}
+
+fn dispatch_return(rig: &mut ReturnGateRig, tick: u64) -> &'static str {
+    super::workspace_output_send_one(
+        &mut rig.state,
+        &rig.me,
+        &rig.fulls.clone(),
+        &rig.areas.clone(),
+        &mut rig.observed.clone(),
+        &rig.retained,
+        "primary",
+        &rig.intent,
+        &rig.origin,
+        tick,
+    )
+}
+
+#[test]
+fn admitted_float_return_dispatch_recognizes_membership_home() {
+    use super::{inject_pending_focus, inject_pending_observe, inject_pending_overlay_seq};
+    // The exact W2M-02 blocker: admitted float, physical frame on the source
+    // output, membership home on the destination. The return dispatch with
+    // the physical output must commit the return instead of refusing
+    // `unmanaged`. Direction ranking keeps the pinned membership home as its
+    // source (no new placement policy); the deferred arm moves membership
+    // with no geometry.
+    let mut rig = return_gate_rig();
+    admit_float_on_right(&mut rig);
+    inject_monitor_areas(Some(rig.areas.clone()));
+    inject_pending_observe(rig.observed.clone(), Vec::new(), false);
+    inject_pending_overlay_seq(vec![(false, Some(false)), (false, Some(false))]);
+    inject_pending_focus(Some("focus-ok"));
+    let engine_before = format!("{:?}", rig.state.engine);
+    let outcome = dispatch_return(&mut rig, 77);
+    assert_eq!(outcome, "send-applied");
+    let loc = rig.state.workspaces.member_loc(&rig.mover).expect("homed");
+    assert_eq!(loc.output, "primary", "admitted float return commits");
+    assert_eq!(loc.workspace, rig.ws_primary);
+    assert_ne!(
+        format!("{:?}", rig.state.engine),
+        engine_before,
+        "admitted float return publishes the Engine"
+    );
+    assert_eq!(
+        pending_counters().apply,
+        0,
+        "slotless deferred return applies no geometry"
+    );
+    assert_eq!(
+        pending_counters().focus,
+        0,
+        "null-source stay takes no setter"
+    );
+    clear_pending_seams();
+}
+
+#[test]
+fn return_gate_still_refuses_wrong_origin_tiles() {
+    // A tiled mover whose membership home differs from the command output is
+    // a wrong-origin dispatch and stays `unmanaged`.
+    let mut rig = return_gate_rig();
+    seed_tiled_on_right(&mut rig);
+    let engine_before = format!("{:?}", rig.state.engine);
+    assert_eq!(dispatch_return(&mut rig, 78), "unmanaged");
+    let loc = rig.state.workspaces.member_loc(&rig.mover).expect("homed");
+    assert_eq!(loc.output, "right", "wrong-origin tile keeps membership");
+    assert_eq!(
+        format!("{:?}", rig.state.engine),
+        engine_before,
+        "wrong-origin tile keeps the retained Engine"
+    );
+    clear_pending_seams();
+}
+
+#[test]
+fn return_gate_still_refuses_unadmitted_floats_sticky_and_hidden() {
+    // Unadmitted float (Engine exception, no exact live snapshot): the gate
+    // refuses before the subject vocabulary, so `unmanaged`, not
+    // `send-refused-floating`.
+    {
+        let mut rig = return_gate_rig();
+        float_without_admission(&mut rig);
+        assert_eq!(dispatch_return(&mut rig, 79), "unmanaged");
+        let loc = rig.state.workspaces.member_loc(&rig.mover).expect("homed");
+        assert_eq!(loc.output, "right");
+        clear_pending_seams();
+    }
+    // Sticky movers never send, even when otherwise admitted.
+    {
+        let mut rig = return_gate_rig();
+        admit_float_on_right(&mut rig);
+        rig.state.sticky.insert(rig.mover.clone(), true);
+        assert_eq!(dispatch_return(&mut rig, 80), "unmanaged");
+        let loc = rig.state.workspaces.member_loc(&rig.mover).expect("homed");
+        assert_eq!(loc.output, "right", "sticky never transfers");
+        clear_pending_seams();
+    }
+    // Hidden members never dispatch, even when admitted.
+    {
+        let mut rig = return_gate_rig();
+        admit_float_on_right(&mut rig);
+        rig.state.workspaces.set_hidden(&rig.mover, true);
+        assert_eq!(dispatch_return(&mut rig, 81), "unmanaged");
+        let loc = rig.state.workspaces.member_loc(&rig.mover).expect("homed");
+        assert_eq!(loc.output, "right", "hidden never transfers");
+        clear_pending_seams();
+    }
+}
+
+#[test]
+fn return_gate_keeps_lifetime_and_scope_fences() {
+    // Stale lifetime tag: the gate recognizes the admitted float, then the
+    // lifetime fence refuses `identity-changed` and drops the stale member.
+    {
+        let mut rig = return_gate_rig();
+        admit_float_on_right(&mut rig);
+        super::inject_pending_tag(rig.mover.hwnd, Some("tag-recycled".to_owned()));
+        assert_eq!(dispatch_return(&mut rig, 82), "identity-changed");
+        assert!(
+            !rig.state.member_tokens.contains_key(&rig.mover),
+            "stale lifetime drops the member"
+        );
+        clear_pending_seams();
+    }
+    // Drifted scope: the gate recognizes the admitted float, then the scope
+    // fence refuses `scope-excluded` with membership retained.
+    {
+        let mut rig = return_gate_rig();
+        admit_float_on_right(&mut rig);
+        rig.state.scope = vec!["other-app.exe".to_owned()];
+        let engine_before = format!("{:?}", rig.state.engine);
+        assert_eq!(dispatch_return(&mut rig, 83), "scope-excluded");
+        let loc = rig.state.workspaces.member_loc(&rig.mover).expect("homed");
+        assert_eq!(loc.output, "right", "scope drift keeps membership");
+        assert_eq!(
+            format!("{:?}", rig.state.engine),
+            engine_before,
+            "scope drift keeps the retained Engine"
+        );
+        clear_pending_seams();
+    }
+}

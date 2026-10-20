@@ -63,6 +63,26 @@ fn push_hook(event: HookEvent) {
     }
 }
 
+/// Pure window-edge wake rule: which delivered WinEvents become loop wakes.
+/// Foreground always wakes; object create/destroy/show/hide/location wake
+/// only for window objects (`id_object == OBJID_WINDOW`), so menu, client,
+/// scrollbar and other sub-object noise never wakes. Child windows (taskbar
+/// descendants included) carry `OBJID_WINDOW` with their own HWND, so they
+/// wake exactly like top-level windows. Move/size transitions are handled
+/// separately above and never pass through here.
+pub(super) fn window_edge_wakes(event: u32, id_object: i32) -> bool {
+    id_object == OBJID_WINDOW
+        && matches!(
+            event,
+            EVENT_SYSTEM_FOREGROUND
+                | EVENT_OBJECT_CREATE
+                | EVENT_OBJECT_DESTROY
+                | EVENT_OBJECT_SHOW
+                | EVENT_OBJECT_HIDE
+                | EVENT_OBJECT_LOCATIONCHANGE
+        )
+}
+
 /// Owner-loop hook-event sink: the `extern` trampoline lives in
 /// `crate::ffi` and forwards here; this filtering (which edges become
 /// wakes, event-time cursor/sequence capture) is unchanged policy.
@@ -89,17 +109,7 @@ impl crate::ffi::WinEventSink for LoopEventSink {
                 cursor_pos(),
                 crate::snapkey::sys::shared_esc_seq(),
             ));
-        } else if ev.id_object == OBJID_WINDOW
-            && matches!(
-                ev.event,
-                EVENT_SYSTEM_FOREGROUND
-                    | EVENT_OBJECT_CREATE
-                    | EVENT_OBJECT_DESTROY
-                    | EVENT_OBJECT_SHOW
-                    | EVENT_OBJECT_HIDE
-                    | EVENT_OBJECT_LOCATIONCHANGE
-            )
-        {
+        } else if window_edge_wakes(ev.event, ev.id_object) {
             // Window-scoped SHOW/HIDE additionally bumps the bounded visibility
             // generation (the `Wake` push below is unchanged). All other edges -
             // including foreground/create/destroy/location - leave it alone, so

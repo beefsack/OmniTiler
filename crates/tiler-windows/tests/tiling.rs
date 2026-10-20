@@ -3,25 +3,29 @@ use tiler_core::directional::WindowId;
 use tiler_core::geometry::Rect;
 use tiler_core::ids::{CorrelationId, GenerationId, OwnerId};
 use tiler_windows::tiling::{
-    CaptureOptions, FrameInsets, FullscreenToggle, GestureIntent, INNER_GAP, OUTER_GAP,
-    OWN_SETTINGS_WINDOW_CLASS, ObservedTarget, ObservedTargetRef, ReadbackOutcome, RefusedTracker,
-    ResizeOptions, ResizeRepeat, ResizeRequest, ScopeHostChild, SkipReason, StatelessVerdict,
-    TokenMap, WindowFacts, WorkspaceAction, WorkspaceRequest, allow_match, allowlist_digest,
-    born_keep_latch, born_maximized_keep_overlay, build_reconcile_event, build_reconcile_event_for,
+    CaptureOptions, DirectionalOp, DirectionalRequest, FrameInsets, FullscreenToggle,
+    GestureIntent, INNER_GAP, OUTER_GAP, OWN_SETTINGS_WINDOW_CLASS, ObservedTarget,
+    ObservedTargetRef, ReadbackOutcome, RefusedTracker, ResizeOptions, ResizeRepeat, ResizeRequest,
+    ScopeHostChild, SendOutputRequest, SkipReason, StatelessVerdict, TokenMap, WindowFacts,
+    WorkspaceAction, WorkspaceRequest, allow_match, allowlist_digest, born_keep_latch,
+    born_maximized_keep_overlay, build_reconcile_event, build_reconcile_event_for,
     build_reconcile_event_for_floating, canonical_retained_rect, classify, classify_focus,
     classify_gesture, fingerprint, float_toggle_refusal, float_topmost_restore_needed,
     fullscreen_toggle_decision, hosted_child_allows, inspect_stateless_verdict,
     is_borderless_fullscreen, is_own_settings_window, min_hints_from_outer, normalize_min_track,
     overlay_refusal, parse_allowlist, parse_capture_args, parse_children_args,
-    parse_hide_proof_args, parse_inspect_args, parse_resize_args, parse_resize_request,
-    parse_scope_host_child, parse_shortcut_proof_args, parse_tile_args, parse_tile_proof_args,
+    parse_directional_args, parse_directional_request, parse_hide_proof_args, parse_inspect_args,
+    parse_resize_args, parse_resize_request, parse_scope_host_child, parse_send_output_args,
+    parse_send_output_request, parse_shortcut_proof_args, parse_tile_args, parse_tile_proof_args,
     parse_workspace_args, parse_workspace_proof_args, parse_workspace_request, prefer_modal_move,
-    readback_outcome, render_resize_request, render_workspace_request, resize_direction_valid,
+    readback_outcome, render_directional_request, render_resize_request,
+    render_send_output_request, render_workspace_request, resize_direction_valid,
     resize_mode_valid, resize_repeat_next, scope_allows, scope_exe_basename, send_flags_stable,
     should_clear_maximize_at_admission, should_clear_maximize_at_admission_with_mode,
     should_hold_born_fullscreen, tick_summary_signature, tiling_domain_bounds, toggle_gate_outcome,
-    verify_hide_proof_argv_consistency, verify_proof_argv_consistency,
-    verify_resize_argv_consistency, verify_shortcut_proof_argv_consistency,
+    verify_directional_argv_consistency, verify_hide_proof_argv_consistency,
+    verify_proof_argv_consistency, verify_resize_argv_consistency,
+    verify_send_output_argv_consistency, verify_shortcut_proof_argv_consistency,
     verify_workspace_argv_consistency, verify_workspace_proof_argv_consistency,
     visible_min_from_outer, workspace_dialog_refuses,
 };
@@ -3417,6 +3421,223 @@ fn resize_cli_parses_direction_mode_without_hwnd() {
     bad.correlation.clear();
     assert!(parse_resize_request(&render_resize_request(&bad)).is_err());
     assert!(parse_resize_request("not json").is_err());
+}
+
+#[test]
+fn directional_cli_parses_op_direction_without_hwnd() {
+    // Test-needed out-of-hook route (tentative): `directional (--move|--focus)
+    // --direction DIR` queues one bounded request through the existing
+    // exact-owner request transport with no carried HWND and no new IPC.
+    // The owner resolves the live foreground and dispatches through the real
+    // `keyboard_tick` directional arm.
+    fn strings(values: &[&str]) -> Vec<String> {
+        values.iter().map(|s| (*s).to_owned()).collect()
+    }
+    let moved =
+        parse_directional_args(&strings(&["--move", "--direction", "left"])).expect("move parses");
+    assert_eq!(moved.op, DirectionalOp::Move);
+    assert_eq!(moved.op.as_str(), "move");
+    assert_eq!(moved.direction, "left");
+    assert!(
+        verify_directional_argv_consistency(&strings(&["--move", "--direction", "left"]), &moved)
+            .is_ok()
+    );
+    let focus = parse_directional_args(&strings(&["--focus", "--direction", "down"]))
+        .expect("focus parses");
+    assert_eq!(focus.op, DirectionalOp::Focus);
+    assert_eq!(focus.op.as_str(), "focus");
+    assert_eq!(focus.direction, "down");
+    assert!(
+        verify_directional_argv_consistency(&strings(&["--focus", "--direction", "down"]), &focus)
+            .is_ok()
+    );
+    // Arity and order: exactly `(--move|--focus) --direction DIR`, no
+    // mixing, no extras, no swapped order.
+    assert!(parse_directional_args(&strings(&["--move"])).is_err());
+    assert!(parse_directional_args(&strings(&["--direction", "left"])).is_err());
+    assert!(parse_directional_args(&strings(&["--move", "--direction"])).is_err());
+    assert!(parse_directional_args(&strings(&["--direction", "left", "--move"])).is_err());
+    assert!(
+        parse_directional_args(&strings(&["--move", "--direction", "left", "--trace"])).is_err()
+    );
+    assert!(parse_directional_args(&strings(&["--zoom", "--direction", "left"])).is_err());
+    assert!(parse_directional_args(&strings(&["--move", "--direction", "north"])).is_err());
+    assert!(parse_directional_args(&strings(&["--move", "--mode", "left"])).is_err());
+    assert!(
+        parse_directional_args(&strings(&["--move", "--direction", "left", "--focus"])).is_err()
+    );
+    assert!(
+        verify_directional_argv_consistency(&strings(&["--focus", "--direction", "left"]), &moved)
+            .is_err()
+    );
+    assert!(
+        verify_directional_argv_consistency(&strings(&["--move", "--direction", "right"]), &moved)
+            .is_err()
+    );
+    // Validators reuse the Engine direction vocabulary shared with resize.
+    assert!(resize_direction_valid("up"));
+    assert!(!resize_direction_valid("north"));
+}
+
+#[test]
+fn directional_request_roundtrip_and_refusals() {
+    let request = DirectionalRequest {
+        v: 1,
+        creation: "abc123".to_owned(),
+        pid: 4242,
+        exe_path: "C:\\bin\\tiler-windows.exe".to_owned(),
+        user_sid: "S-1-5-21-1".to_owned(),
+        session_id: 1,
+        op: DirectionalOp::Move,
+        direction: "left".to_owned(),
+        correlation: "cli-4242-ab12".to_owned(),
+    };
+    let body = render_directional_request(&request);
+    assert!(body.contains("move"));
+    assert!(body.contains("left"));
+    assert!(!body.contains("hwnd"));
+    assert_eq!(
+        parse_directional_request(&body).expect("roundtrip"),
+        request
+    );
+    let focus = DirectionalRequest {
+        op: DirectionalOp::Focus,
+        direction: "down".to_owned(),
+        ..request.clone()
+    };
+    let body = render_directional_request(&focus);
+    assert!(body.contains("focus") && body.contains("down"));
+    assert_eq!(
+        parse_directional_request(&body).expect("focus roundtrip"),
+        focus
+    );
+    let mut bad = request.clone();
+    bad.direction = "north".to_owned();
+    assert!(parse_directional_request(&render_directional_request(&bad)).is_err());
+    let mut bad = request.clone();
+    bad.v = 2;
+    assert!(parse_directional_request(&render_directional_request(&bad)).is_err());
+    let mut bad = request.clone();
+    bad.correlation.clear();
+    assert!(parse_directional_request(&render_directional_request(&bad)).is_err());
+    let mut bad = request.clone();
+    bad.creation.clear();
+    assert!(parse_directional_request(&render_directional_request(&bad)).is_err());
+    let mut bad = request.clone();
+    bad.pid = 0;
+    assert!(parse_directional_request(&render_directional_request(&bad)).is_err());
+    // Unknown op (a future transport action) refuses; the transport carries
+    // exactly the move/focus grammar, never a default.
+    let unknown = serde_json::json!({
+        "v": 1, "creation": "abc123", "pid": 4242,
+        "exe_path": "C:\\bin\\tiler-windows.exe", "user_sid": "S-1-5-21-1",
+        "session_id": 1, "op": "zoom", "direction": "left", "correlation": "cli-4242-ab12",
+    })
+    .to_string();
+    assert!(parse_directional_request(&unknown).is_err());
+    assert!(parse_directional_request("not json").is_err());
+}
+
+#[test]
+fn send_output_cli_parses_follow_stay_direction_without_hwnd() {
+    // Test-needed out-of-hook route (tentative): `send-output
+    // (--follow|--stay) --direction DIR` queues one bounded request through
+    // the existing exact-owner request transport with no carried HWND and no
+    // new IPC. The owner resolves the live foreground and dispatches through
+    // the real explicit `SendToOutput` production route.
+    fn strings(values: &[&str]) -> Vec<String> {
+        values.iter().map(|s| (*s).to_owned()).collect()
+    }
+    let follow = parse_send_output_args(&strings(&["--follow", "--direction", "right"]))
+        .expect("follow parses");
+    assert!(follow.follow);
+    assert_eq!(follow.direction, "right");
+    assert!(
+        verify_send_output_argv_consistency(
+            &strings(&["--follow", "--direction", "right"]),
+            &follow
+        )
+        .is_ok()
+    );
+    let stay =
+        parse_send_output_args(&strings(&["--stay", "--direction", "left"])).expect("stay parses");
+    assert!(!stay.follow);
+    assert_eq!(stay.direction, "left");
+    assert!(
+        verify_send_output_argv_consistency(&strings(&["--stay", "--direction", "left"]), &stay)
+            .is_ok()
+    );
+    // Arity and order: exactly `(--follow|--stay) --direction DIR`, no
+    // mixing, no extras, no swapped order.
+    assert!(parse_send_output_args(&strings(&["--follow"])).is_err());
+    assert!(parse_send_output_args(&strings(&["--direction", "left"])).is_err());
+    assert!(parse_send_output_args(&strings(&["--follow", "--direction"])).is_err());
+    assert!(parse_send_output_args(&strings(&["--direction", "left", "--follow"])).is_err());
+    assert!(
+        parse_send_output_args(&strings(&["--follow", "--direction", "left", "--trace"])).is_err()
+    );
+    assert!(parse_send_output_args(&strings(&["--move", "--direction", "left"])).is_err());
+    assert!(parse_send_output_args(&strings(&["--follow", "--direction", "north"])).is_err());
+    assert!(parse_send_output_args(&strings(&["--follow", "--mode", "left"])).is_err());
+    assert!(
+        verify_send_output_argv_consistency(&strings(&["--stay", "--direction", "left"]), &follow)
+            .is_err()
+    );
+    assert!(
+        verify_send_output_argv_consistency(
+            &strings(&["--follow", "--direction", "left"]),
+            &follow
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn send_output_request_roundtrip_and_refusals() {
+    let request = SendOutputRequest {
+        v: 1,
+        creation: "abc123".to_owned(),
+        pid: 4242,
+        exe_path: "C:\\bin\\tiler-windows.exe".to_owned(),
+        user_sid: "S-1-5-21-1".to_owned(),
+        session_id: 1,
+        follow: true,
+        direction: "right".to_owned(),
+        correlation: "cli-4242-ab12".to_owned(),
+    };
+    let body = render_send_output_request(&request);
+    assert!(body.contains("right"));
+    assert!(!body.contains("hwnd"));
+    assert_eq!(
+        parse_send_output_request(&body).expect("roundtrip"),
+        request
+    );
+    let stay = SendOutputRequest {
+        follow: false,
+        direction: "left".to_owned(),
+        ..request.clone()
+    };
+    let body = render_send_output_request(&stay);
+    assert_eq!(
+        parse_send_output_request(&body).expect("stay roundtrip"),
+        stay
+    );
+    let mut bad = request.clone();
+    bad.direction = "north".to_owned();
+    assert!(parse_send_output_request(&render_send_output_request(&bad)).is_err());
+    let mut bad = request.clone();
+    bad.v = 2;
+    assert!(parse_send_output_request(&render_send_output_request(&bad)).is_err());
+    let mut bad = request.clone();
+    bad.correlation.clear();
+    assert!(parse_send_output_request(&render_send_output_request(&bad)).is_err());
+    let mut bad = request.clone();
+    bad.creation.clear();
+    assert!(parse_send_output_request(&render_send_output_request(&bad)).is_err());
+    let mut bad = request.clone();
+    bad.pid = 0;
+    assert!(parse_send_output_request(&render_send_output_request(&bad)).is_err());
+    assert!(parse_send_output_request("not json").is_err());
 }
 
 #[test]

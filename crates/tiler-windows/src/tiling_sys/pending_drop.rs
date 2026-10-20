@@ -722,6 +722,20 @@ pub(super) fn service_pending_drop(
                     "hover_prior": drop_prior_desc,
                 }),
             );
+            if op == "pointer-resize" {
+                log_redacted_dispatch(
+                    state,
+                    "pointer-resize",
+                    state.tick,
+                    correlation.as_str(),
+                    &current.token,
+                    &pending.producer,
+                    pending.source_rect,
+                    &event,
+                    &observed,
+                    kind,
+                );
+            }
             let fulls_owned = fulls.to_vec();
             reconcile_tick(state, me, &fulls_owned, areas);
         }

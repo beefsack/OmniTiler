@@ -58,10 +58,13 @@ use self::chord_resolution::{
     ChordObserved, ChordTarget, chord_overlay_refusal, observe_chord_intent,
     orientation_overlay_refusal, orientation_plan, resolve_chord_target, settle_chord_reject,
 };
+use self::cli_directional::poll_directional_cli_request;
 use self::cli_resize::poll_resize_cli_request;
+use self::cli_send_output::poll_send_output_cli_request;
 use self::cli_workspace::poll_workspace_cli_request;
 pub use self::commands::{
-    cmd_capture, cmd_inventory, cmd_resize, cmd_tile, cmd_workspace, load_normal_tile_base,
+    cmd_capture, cmd_directional, cmd_inventory, cmd_resize, cmd_send_output, cmd_tile,
+    cmd_workspace, load_normal_tile_base,
 };
 #[cfg(test)]
 use self::cross_drag::drag_refusal_kind;
@@ -70,7 +73,7 @@ use self::cross_drag::prepare_cross_drag_event;
 use self::cross_drag::{
     CrossDragSettle, DropDestination, adopt_gaps_and_refresh_floats, adopt_gaps_for_route,
     adopt_gaps_on_candidate, assemble_cross_drag_rows, cross_topology_fresh, fresh_cross_areas,
-    resolve_drop_destination, settle_cross_drag_drop, snapshot_cross_drag,
+    log_redacted_dispatch, resolve_drop_destination, settle_cross_drag_drop, snapshot_cross_drag,
 };
 use self::diag::{
     WindowDiagSample, diag_identity_broke, diag_identity_rebound, drop_diag_sample,
@@ -191,14 +194,16 @@ use self::pending_seams::{
     inject_pending_elev_probe, inject_pending_elevated, inject_pending_fg_class,
     inject_pending_float_move_ok, inject_pending_focus, inject_pending_foreground,
     inject_pending_iconic, inject_pending_invisible, inject_pending_native_move_ok,
-    inject_pending_observe, inject_pending_overlay_seq, inject_pending_pids,
-    inject_pending_placement_normal, inject_pending_recovery, inject_pending_rescue_fail,
-    inject_pending_stop, inject_pending_suspend, inject_pending_tag, inject_pending_unreadable,
-    inject_pending_zorder, pending_apply_writables, pending_counters, pending_native_transfers,
+    inject_pending_observe, inject_pending_overlay_seq, inject_pending_parents,
+    inject_pending_pids, inject_pending_placement_normal, inject_pending_recovery,
+    inject_pending_rescue_fail, inject_pending_stop, inject_pending_suspend, inject_pending_tag,
+    inject_pending_unreadable, inject_pending_zorder, pending_apply_writables, pending_counters,
+    pending_native_transfers,
 };
 use self::pending_seams::{
     fresh_arrival_rect, live_cloaked, live_fg_class, live_is_iconic, live_is_visible,
-    live_is_window, live_member_tag, live_query_recovery, live_window_pid, rescue_read_failed,
+    live_is_window, live_member_tag, live_parent_of, live_query_recovery, live_window_pid,
+    rescue_read_failed,
 };
 #[cfg(not(test))]
 use self::placement::placement_is_workspace_coords;
@@ -248,7 +253,7 @@ use self::run_loop_tick::{TickFlow, run_active_tick};
 use self::run_loop_wait::{
     DEGRADED_POLL_MS, MONITOR_FALLBACK_SECS, OWNER_WAIT_SOURCE_ORDER, OwnerDeadlines,
     OwnerWaitDiag, OwnerWaitSource, TRACE_REPORT_SECS, drain_hook_edges, gesture_sampling_open,
-    owner_deadline_source, pump_waits_snapshots, tray_staged_pending,
+    loop_exit_cause, owner_deadline_source, pump_waits_snapshots, tray_staged_pending,
 };
 use self::selection::remember_select_departure;
 use self::selection::workspace_do_select;
@@ -291,7 +296,9 @@ use self::workspace_mode::toggle_workspace_tiling;
 use self::workspace_mode::workspace_mode_known;
 use self::workspace_mode::workspace_mode_tiled;
 use self::workspace_navigation::workspace_tick;
-use self::workspace_send_tick::{workspace_output_send_tick, workspace_relative_send_tick};
+use self::workspace_send_tick::{
+    workspace_output_send_one, workspace_output_send_tick, workspace_relative_send_tick,
+};
 use crate::active_border::{
     ActiveBorderOptions, border_eligible, border_outer_rect, scale_style, scale_to_physical,
 };
@@ -299,7 +306,7 @@ use crate::active_border_sys::{
     BorderOverlay, OverlayOutcome, PreviewOverlay, UnderlayOverlay, lowest_in_z,
 };
 use crate::group_underlay::{
-    GroupUnderlayOptions, MoveSizeKind, aggregate_chord_keys, classify_hit_test, underlay_eligible,
+    GroupUnderlayOptions, MoveSizeKind, aggregate_chord_keys, underlay_eligible,
     underlay_geometry_debug, underlay_outer_rect,
 };
 use crate::input_handoff::InboxItem;
@@ -333,13 +340,15 @@ use crate::snapkey::{
 };
 use crate::storage::LedgerStore;
 use crate::tiling::{
-    AllowEntry, CaptureOptions, ChildrenOptions, FrameInsets, GestureIntent, HideProofOptions,
-    INNER_GAP, InspectOptions, OUTER_GAP, OWNER_ID, ObservedTarget, ObservedTargetRef,
-    RESIZE_REQUEST_FILE, ReadbackOutcome, RefusedTracker, ResizeOptions, ScopeHostChild,
-    SkipReason, StatelessVerdict, TileOptions, TileProofOptions, TokenMap, WindowFacts,
-    WorkspaceAction, WorkspaceOptions, allow_match, allowlist_digest, classify, classify_gesture,
+    AllowEntry, CaptureOptions, ChildrenOptions, DIRECTIONAL_REQUEST_FILE, DirectionalOptions,
+    FrameInsets, GestureIntent, HideProofOptions, INNER_GAP, InspectOptions, OUTER_GAP, OWNER_ID,
+    ObservedTarget, ObservedTargetRef, RESIZE_REQUEST_FILE, ReadbackOutcome, RefusedTracker,
+    ResizeOptions, SEND_OUTPUT_REQUEST_FILE, ScopeHostChild, SendOutputOptions, SkipReason,
+    StatelessVerdict, TileOptions, TileProofOptions, TokenMap, WindowFacts, WorkspaceAction,
+    WorkspaceOptions, allow_match, allowlist_digest, classify, classify_gesture,
     drop_point_in_domain, fingerprint, fullscreen_toggle_decision, hosted_child_allows,
-    inspect_stateless_verdict, is_borderless_fullscreen, parse_allowlist, parse_resize_request,
+    inspect_stateless_verdict, is_borderless_fullscreen, parse_allowlist,
+    parse_directional_request, parse_resize_request, parse_send_output_request,
     parse_workspace_request, readback_outcome, scope_allows, scope_exe_basename,
     should_hold_born_fullscreen, tick_summary_signature, tiling_domain_bounds_with,
 };
@@ -529,15 +538,28 @@ struct TileLoop {
     /// forever, so a failed registration retries promptly without
     /// busy-looping pumps.
     pager_retry_at: Option<Instant>,
-    /// Last monitor-topology fingerprint for the secondary-taskbar
-    /// rediscovery gate. The primary bar is re-read every pump; secondaries
-    /// only revalidate on the native rediscovery broadcast or a topology
-    /// change (they only feed refusal logging, never positions).
+    /// Last monitor-topology fingerprint for the secondary-taskbar gate.
+    /// The primary bar is re-read every pump; secondaries revalidate only
+    /// on the stale-anchor flag (validated taskbar-subtree edge, rediscovery
+    /// broadcast, or topology change), never while suspended. They only feed
+    /// refusal logging, never positions.
     pager_areas_fp: u64,
     /// Cached primary taskbar facts from the last pump (fresh per wake) and
     /// cached secondaries from the last event-driven revalidate.
     pager_primary: Option<crate::pager::TaskbarFacts>,
     pager_secondaries: Vec<crate::pager::TaskbarFacts>,
+    /// Taskbar-anchor invalidation: set by the hook-edge drain for
+    /// pid-scoped Explorer window edges, by the native rediscovery
+    /// broadcast, or by a monitor-topology change; cleared by the next
+    /// secondary revalidation. The gate never inspects the cached census,
+    /// so empty, unproven, and proven-but-churned anchors all revalidate
+    /// on genuine Explorer change instead of a polling loop.
+    pager_taskbar_dirty: bool,
+    /// Cached Explorer pid behind the installed pid-scoped taskbar hooks
+    /// (`None` while no scope is installed). Refreshed only on the
+    /// rediscovery broadcast, never periodically; identity only, never
+    /// geometry.
+    pager_hook_pid: Option<u32>,
     /// Live identity-verified pager frames per managed member key, refreshed
     /// on every observation alongside `overlay_now` (visible members plus
     /// retained fresh frames; hidden members fall back to their saved
@@ -1095,7 +1117,11 @@ mod output_sync;
 
 mod pager_host;
 
+mod cli_directional;
+
 mod cli_resize;
+
+mod cli_send_output;
 
 mod cli_workspace;
 
@@ -1255,6 +1281,14 @@ mod restart_adoption_tests;
 #[cfg(test)]
 #[path = "tests_orientation.rs"]
 mod orientation_route_tests;
+
+#[cfg(test)]
+#[path = "tests_directional_cli.rs"]
+mod directional_cli_tests;
+
+#[cfg(test)]
+#[path = "tests_send_output_cli.rs"]
+mod send_output_cli_tests;
 
 #[cfg(test)]
 #[path = "tests_intent_wake.rs"]

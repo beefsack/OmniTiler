@@ -74,21 +74,24 @@ pub(super) fn chord_held_now() -> (bool, bool) {
     )
 }
 
-/// Classify one open move/size gesture at START via the official
-/// `WM_NCHITTEST` result at the current cursor position. `EVENT_SYSTEM_MOVESIZESTART`
-/// does not distinguish move from resize; asking the window itself (through
-/// `DefWindowProc`, system-marshalled like `WM_GETMINMAXINFO`) is a bounded
-/// START-drain heuristic: no new hook, no SC_MOVE/SC_SIZE interception, no
-/// deferred rect comparison (which cannot show a stationary start). Hung or
-/// unreadable windows classify `Unknown` and never trigger.
-pub(super) fn classify_move_size_start(hwnd_u64: u64) -> MoveSizeKind {
-    let Some((cx, cy)) = crate::ffi::cursor_pos() else {
-        return MoveSizeKind::Unknown;
+/// Classify one open move/size gesture at START through the official
+/// `WM_NCHITTEST` result at the current cursor position, returning the
+/// classification plus the probe facts that produced it.
+/// `EVENT_SYSTEM_MOVESIZESTART` does not distinguish move from resize;
+/// asking the window itself (through `DefWindowProc`, system-marshalled
+/// like `WM_GETMINMAXINFO`) is a bounded START-drain heuristic: no new
+/// hook, no SC_MOVE/SC_SIZE interception, no deferred rect comparison
+/// (which cannot show a stationary start). Hung or unreadable windows
+/// classify `Unknown` and never trigger. Exactly one cursor read and at
+/// most one hit-test send per call; callers log the probe instead of
+/// re-sampling.
+pub(super) fn classify_move_size_start(hwnd_u64: u64) -> crate::group_underlay::MoveSizeStart {
+    let cursor = crate::ffi::cursor_pos();
+    let hit = match cursor {
+        Some((cx, cy)) => crate::ffi::hit_test_at(hwnd_u64, cx, cy),
+        None => None,
     };
-    let Some(hit) = crate::ffi::hit_test_at(hwnd_u64, cx, cy) else {
-        return MoveSizeKind::Unknown;
-    };
-    classify_hit_test(hit)
+    crate::group_underlay::classify_move_size_probe(cursor, hit)
 }
 
 /// Fresh outer rectangle for one HWND via a single `GetWindowRect` read.

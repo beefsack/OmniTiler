@@ -116,6 +116,13 @@ thread_local! {
     static INJECTED_PIDS: std::cell::RefCell<std::collections::HashMap<u64, u32>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
     static INJECTED_PIDS_ACTIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Scripted parent handles for taskbar-subtree validation (test-only):
+    /// stands in for `GetParent` without native windows. When active,
+    /// unscripted HWNDs read as `0` (top-level) without a native call.
+    /// Cleared by [`clear_pending_seams`].
+    static INJECTED_PARENTS: std::cell::RefCell<std::collections::HashMap<u64, u64>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    static INJECTED_PARENTS_ACTIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Scripted visible stacking sequence (top-to-bottom native order) for
     /// the next injected observation (test-only): the authoritative verified
     /// live-frame member sequence the real path derives from its single
@@ -411,6 +418,18 @@ pub(super) fn inject_pending_pids(pids: Vec<(u64, u32)>) {
     INJECTED_PIDS_ACTIVE.with(|active| active.set(true));
 }
 
+/// Script parent handles for taskbar-subtree validation (test-only):
+/// child HWND to its `GetParent` value (`0` for top-level). Unscripted
+/// HWNDs read as `0` without a native call once activated.
+/// Cleared by [`clear_pending_seams`].
+#[cfg(test)]
+pub(super) fn inject_pending_parents(parents: Vec<(u64, u64)>) {
+    INJECTED_PARENTS.with(|map| {
+        *map.borrow_mut() = parents.into_iter().collect();
+    });
+    INJECTED_PARENTS_ACTIVE.with(|active| active.set(true));
+}
+
 /// Script the visible stacking sequence (top-to-bottom) for the next
 /// injected observation (test-only). Cleared by [`clear_pending_seams`].
 #[cfg(test)]
@@ -588,6 +607,10 @@ pub(super) fn clear_pending_seams() {
         map.borrow_mut().clear();
     });
     INJECTED_PIDS_ACTIVE.with(|active| active.set(false));
+    INJECTED_PARENTS.with(|map| {
+        map.borrow_mut().clear();
+    });
+    INJECTED_PARENTS_ACTIVE.with(|active| active.set(false));
     INJECTED_ZORDER.with(|slot| {
         *slot.borrow_mut() = None;
     });
@@ -742,6 +765,21 @@ pub(super) fn live_window_pid(hwnd: u64) -> u32 {
         }
     }
     crate::ffi::window_pid(hwnd)
+}
+
+/// Test-aware parent read for taskbar-subtree validation: injected parents
+/// stand in for `GetParent` when the fixture activated them (unit tests
+/// only; compiled out of production builds). When active but unscripted for
+/// an HWND, returns `0` (top-level) without a native call so fixtures stay
+/// native-free. Otherwise the production read runs.
+pub(super) fn live_parent_of(hwnd: u64) -> u64 {
+    #[cfg(test)]
+    {
+        if INJECTED_PARENTS_ACTIVE.with(|active| active.get()) {
+            return INJECTED_PARENTS.with(|map| map.borrow().get(&hwnd).copied().unwrap_or(0));
+        }
+    }
+    crate::ffi::parent_of(hwnd)
 }
 
 /// Test-aware window-class read: injected classes stand in for the native

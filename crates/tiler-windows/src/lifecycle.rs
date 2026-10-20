@@ -285,6 +285,52 @@ pub mod sys {
         }
     }
 
+    /// Remove a stale out-of-hook directional request left by a dead owner.
+    /// Only called when no ledger is committed (no live owner), so any
+    /// residue is dead and safe to drop; the live single-pending queue is
+    /// never touched under a lease.
+    fn cleanup_stale_directional_request(dir: &Path) {
+        let _ = std::fs::remove_file(dir.join(crate::tiling::DIRECTIONAL_REQUEST_FILE));
+    }
+
+    /// Remove the owner's own directional request marker (exact creation
+    /// match only). Malformed or foreign bodies are left for the owner
+    /// loop's consume-once refusal, never deleted blindly here.
+    fn cleanup_own_directional_request(dir: &Path, own_creation: &str) {
+        let path = dir.join(crate::tiling::DIRECTIONAL_REQUEST_FILE);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return;
+        };
+        if let Ok(request) = crate::tiling::parse_directional_request(text.trim())
+            && request.creation == own_creation
+        {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
+    /// Remove a stale out-of-hook output-send request left by a dead owner.
+    /// Only called when no ledger is committed (no live owner), so any
+    /// residue is dead and safe to drop; the live single-pending queue is
+    /// never touched under a lease.
+    fn cleanup_stale_send_output_request(dir: &Path) {
+        let _ = std::fs::remove_file(dir.join(crate::tiling::SEND_OUTPUT_REQUEST_FILE));
+    }
+
+    /// Remove the owner's own output-send request marker (exact creation
+    /// match only). Malformed or foreign bodies are left for the owner
+    /// loop's consume-once refusal, never deleted blindly here.
+    fn cleanup_own_send_output_request(dir: &Path, own_creation: &str) {
+        let path = dir.join(crate::tiling::SEND_OUTPUT_REQUEST_FILE);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return;
+        };
+        if let Ok(request) = crate::tiling::parse_send_output_request(text.trim())
+            && request.creation == own_creation
+        {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
     fn hold_helper_verified(
         pid: u32,
         expected: &crate::model::ProcessIdentity,
@@ -744,6 +790,8 @@ pub mod sys {
         // No live owner holds the lease here: any workspace request residue is
         // dead and must not block the new owner.
         cleanup_stale_workspace_request(dir);
+        cleanup_stale_directional_request(dir);
+        cleanup_stale_send_output_request(dir);
         // Same lease, same guarantee: no live project icon exists, so prune
         // a crash ghost through the stable GUID before this owner adds its
         // own (tolerant, unclaimed).
@@ -823,6 +871,8 @@ pub mod sys {
                 Err(e) => {
                     let _ = std::fs::remove_file(dir.join(LEDGER_FILE_NAME));
                     cleanup_stale_workspace_request(dir);
+                    cleanup_stale_directional_request(dir);
+                    cleanup_stale_send_output_request(dir);
                     return Err(e);
                 }
             }
@@ -861,6 +911,8 @@ pub mod sys {
         // marker (exact creation match) on every teardown path so stop and
         // restore observe no residue.
         cleanup_own_workspace_request(dir, &me.process_creation);
+        cleanup_own_directional_request(dir, &me.process_creation);
+        cleanup_own_send_output_request(dir, &me.process_creation);
         if snap_want {
             snap_drive_restore(dir, me, &store, "teardown");
         }
@@ -1071,6 +1123,8 @@ pub mod sys {
                 None => {}
             }
             cleanup_own_workspace_request(&dir, &me.process_creation);
+            cleanup_own_directional_request(&dir, &me.process_creation);
+            cleanup_own_send_output_request(&dir, &me.process_creation);
             // No committed owner means no live icon: prune a crash ghost, if
             // any, through the stable project GUID (tolerant, unclaimed).
             let _ = crate::tray_sys::remove_stale_icon();
@@ -1163,6 +1217,8 @@ pub mod sys {
         let count = record.windows.len();
         cleanup_own_stop(&dir, &record.owner.process_creation)?;
         cleanup_own_workspace_request(&dir, &record.owner.process_creation);
+        cleanup_own_directional_request(&dir, &record.owner.process_creation);
+        cleanup_own_send_output_request(&dir, &record.owner.process_creation);
         std::fs::remove_file(dir.join(LEDGER_FILE_NAME))
             .map_err(|e| err(format!("error: ledger cleanup: {e}")))?;
         Ok((count, snap_restored))
@@ -1232,6 +1288,8 @@ pub mod sys {
         // pending dispatch must leave no marker behind: drop the exact
         // owner's residue (creation match only) after a verified exit.
         cleanup_own_workspace_request(&dir, &record.owner.process_creation);
+        cleanup_own_directional_request(&dir, &record.owner.process_creation);
+        cleanup_own_send_output_request(&dir, &record.owner.process_creation);
         Ok(stop_json(terminate, true, true))
     }
 

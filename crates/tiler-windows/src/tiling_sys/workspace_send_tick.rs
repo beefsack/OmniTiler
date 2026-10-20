@@ -392,7 +392,7 @@ pub(super) fn workspace_output_send_tick(
 /// binding, scope/lifetime/proof gates, pinned source plus complete source
 /// observation, one selector resolution, then the commit-last transfer.
 #[allow(clippy::too_many_arguments)]
-fn workspace_output_send_one(
+pub(super) fn workspace_output_send_one(
     state: &mut TileLoop,
     me: &ProcessIdentity,
     fulls: &[Rect],
@@ -444,9 +444,32 @@ fn workspace_output_send_one(
         log_refuse("unmanaged");
         return "unmanaged";
     };
-    if home.output != output || state.workspaces.is_hidden(&mover_key) {
+    if state.workspaces.is_hidden(&mover_key) {
         log_refuse("unmanaged");
         return "unmanaged";
+    }
+    if home.output.as_str() != output {
+        // D16 membership-only float return: an admitted float retains its
+        // physical frame on the source output while membership homes on the
+        // destination, so the immediate return dispatch arrives with the
+        // physical (foreground) output, not the membership home. Recognize
+        // only the exact proven admitted float here; every other mismatch
+        // stays `unmanaged`. Later scope/lifetime/overlay/membership fences
+        // still run below, and direction ranking keeps the pinned
+        // membership home as its source (no new placement policy).
+        let admitted_float = !state.sticky.contains_key(&mover_key)
+            && engine_is_float(state, &home.output, &home.workspace, &origin.token)
+            && float_send_admits(
+                state,
+                &mover_key,
+                &home.output,
+                &home.workspace,
+                &origin.token,
+            );
+        if !admitted_float {
+            log_refuse("unmanaged");
+            return "unmanaged";
+        }
     }
     // Exact scope and visible-lifetime gates before any Engine or project
     // mutation; tail-time fences re-verify live inside `run_output_send`.

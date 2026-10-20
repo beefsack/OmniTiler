@@ -83,8 +83,8 @@ pub use fs::{
     watch_raw_handle, watch_signaled,
 };
 pub use hooks::{
-    WinEvent, WinEventHook, WinEventSink, install_win_event_hook, install_win_event_hook_for_pid,
-    set_win_event_sink,
+    WinEvent, WinEventHook, WinEventSink, install_taskbar_hook, install_win_event_hook,
+    install_win_event_hook_for_pid, set_win_event_sink, take_taskbar_events,
 };
 pub use icons::{AppIcon, IconPixels, class_icon, exe_icon, message_icon, render_icon};
 pub use input::{
@@ -105,9 +105,11 @@ pub use overlay::{
 pub use pager::{
     IconBlit, MiniSlot, PAGER_WINDOW_CLASS, PagerCalibrationSink, PagerClick, PagerClickSink,
     PagerFrame, PagerWindow, TaskbarProbe, autohide_from_state as pager_autohide_from_state,
-    discover_secondary_taskbars, ensure_pager_class, query_appbar_state,
-    read_primary_taskbar as read_primary_taskbar_probe, register_taskbar_message,
-    take_rediscover as take_pager_rediscover, take_stale_hide as take_pager_stale_hide,
+    discover_secondary_taskbars, ensure_pager_class,
+    note_taskbar_rediscover as note_pager_taskbar_rediscover, primary_taskbar_pid,
+    query_appbar_state, read_primary_taskbar as read_primary_taskbar_probe,
+    register_taskbar_message, take_rediscover as take_pager_rediscover,
+    take_stale_hide as take_pager_stale_hide,
 };
 pub use process::{
     ProcError, ProcessHandle, WaitOutcome, creation_key_of, current_image_path, current_process_id,

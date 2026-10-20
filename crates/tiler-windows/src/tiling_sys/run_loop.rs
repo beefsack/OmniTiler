@@ -203,6 +203,8 @@ pub(super) fn run_tile_loop(
         pager_clicks: Arc::new(Mutex::new(None)),
         pager_served: Vec::new(),
         pager_retry_at: None,
+        pager_taskbar_dirty: false,
+        pager_hook_pid: None,
         pager_areas_fp: 0,
         pager_primary: None,
         pager_secondaries: Vec::new(),
@@ -407,6 +409,38 @@ pub(super) fn run_tile_loop(
     let Some(hooks) = hooks else {
         return Err(err("error: SetWinEventHook failed"));
     };
+    // Pid-scoped taskbar hooks (normal owner only; proof owners stay
+    // deterministic with no hooks beyond the global set above): the OS
+    // delivers only the live Explorer identity here, so game and app
+    // windows never reach the taskbar queue. The owner drain then validates
+    // each edge against the taskbar window subtree, so ordinary File
+    // Explorer traffic never invalidates anchors. The scope refreshes on
+    // the rediscovery broadcast below; install failure degrades to
+    // broadcast/topology invalidation.
+    let initial_scope = if proof {
+        None
+    } else {
+        crate::pager_sys::primary_taskbar_pid()
+    };
+    if !proof {
+        state.pager_hook_pid = initial_scope;
+    }
+    let mut taskbar_hooks = if proof {
+        Vec::new()
+    } else {
+        super::pager_host::install_taskbar_hooks(initial_scope)
+    };
+    // Any missing band (failed or partial install, partial sets never stand)
+    // logs once here; the next broadcast retries a coherent full scope.
+    if !proof
+        && initial_scope.is_some()
+        && taskbar_hooks.len() < super::pager_host::taskbar_hook_ranges().len()
+    {
+        log_json_at(
+            &log_path,
+            serde_json::json!({"event":"taskbar-hook","outcome":"unavailable"}),
+        );
+    }
     // Owner-owned notification tray (normal owner only; proof owners stay
     // deterministic with no icon). Created after the hooks so no hook-failure
     // early return can leak it, and RAII `Drop` covers every later path.
@@ -811,10 +845,21 @@ pub(super) fn run_tile_loop(
         let mut trace_last_turns: u64 = 0;
         let mut trace_last_offers: u64 = 0;
         loop {
-            if stop_requested(dir, me)? || tray.as_ref().is_some_and(|t| t.stop_requested()) {
-                return Ok(());
-            }
-            if deadline.is_some_and(|end| Instant::now() >= end) {
+            // Single clean-exit attribution point: the loop historically
+            // returned identically for all three causes, so a clean
+            // `run-end stopped` could not name its initiator. Evaluate the
+            // same three predicates in the same order and log the winning
+            // cause (`stop-file` exact-owner request, `tray-stop` tray Stop
+            // pick, `deadline` bounded-run expiry) before returning. The
+            // cause token carries no paths, ids, or window content.
+            let file_stop = stop_requested(dir, me)?;
+            let tray_stop = tray.as_ref().is_some_and(|t| t.stop_requested());
+            let expired = deadline.is_some_and(|end| Instant::now() >= end);
+            if let Some(cause) = loop_exit_cause(file_stop, tray_stop, expired) {
+                log_json_at(
+                    &log_path,
+                    serde_json::json!({"event":"loop-exit","cause": cause}),
+                );
                 return Ok(());
             }
             // Same-thread pre-drain: hook callbacks, tray picks, and overlay
@@ -1073,6 +1118,14 @@ pub(super) fn run_tile_loop(
             if trace_emit {
                 trace_last = now;
             }
+            // Single consumption point for the native rediscovery
+            // broadcast: the pager sync folds it into the stale-anchor
+            // flag, and the scope refresh below re-resolves Explorer
+            // identity on this same turn. The durable tray owner forwards
+            // its own `TaskbarCreated` here too, so this fires even with
+            // no pager windows alive to receive the broadcast.
+            let primary_had = state.pager_primary.is_some();
+            let rediscovered = crate::pager_sys::take_rediscover();
             let Intake {
                 woke: woke_out,
                 snap: snap_events,
@@ -1104,9 +1157,13 @@ pub(super) fn run_tile_loop(
                 &mut trace_last_turns,
                 &mut trace_last_offers,
                 woke,
+                rediscovered,
             );
             woke = woke_out;
-            match run_active_tick(
+            // Pre-tick suspend value: the tick below owns the
+            // suspend/resume transition, observed after the call.
+            let was_suspended = state.suspended;
+            let tick_flow = run_active_tick(
                 &mut state,
                 me,
                 dir,
@@ -1135,7 +1192,71 @@ pub(super) fn run_tile_loop(
                 migrate_events,
                 history_events,
                 &mut tray,
-            )? {
+            )?;
+            // Taskbar-scope management on the loop thread (normal owner;
+            // proof installs no scope), after the tick owns the
+            // suspend/resume transition: while suspended the scope drops, so
+            // a suspended game owns no scoped callbacks and no queue growth
+            // (the cached pid is retained, never re-resolved). On broadcast
+            // or on the resume transition, re-resolve the live pid and
+            // reinstall when the identity moved or the installed set is
+            // incomplete; a refused install degrades to broadcast/topology
+            // invalidation until the next broadcast or resume retries it.
+            // Runs before the flow dispatch so every flow reaches it.
+            let primary_appeared = !primary_had && state.pager_primary.is_some();
+            if !proof {
+                if state.suspended {
+                    if !taskbar_hooks.is_empty() {
+                        taskbar_hooks.clear();
+                    }
+                } else if rediscovered || was_suspended || primary_appeared {
+                    // Late primary appearance (broadcast consumed while
+                    // Explorer was gone) refreshes through the existing
+                    // `pager-taskbar` appeared transition above: no polling,
+                    // no timer, and no extra traffic while suspended.
+                    let old_present = state.pager_hook_pid.is_some();
+                    let current = crate::pager_sys::primary_taskbar_pid();
+                    if super::pager_host::taskbar_reinstall_due(
+                        state.pager_hook_pid,
+                        current,
+                        taskbar_hooks.len(),
+                    ) {
+                        state.pager_hook_pid = current;
+                        taskbar_hooks = super::pager_host::install_taskbar_hooks(current);
+                        let installed = taskbar_hooks.len();
+                        let full = installed >= super::pager_host::taskbar_hook_ranges().len();
+                        let outcome = if current.is_none() {
+                            "cleared"
+                        } else if full {
+                            "reinstalled"
+                        } else {
+                            "unavailable"
+                        };
+                        log_json_at(
+                            &log_path,
+                            serde_json::json!({
+                                "event": "taskbar-hook",
+                                "outcome": outcome,
+                                "old_present": old_present,
+                                "new_present": current.is_some(),
+                                "installed": installed,
+                            }),
+                        );
+                    } else if rediscovered || primary_appeared {
+                        log_json_at(
+                            &log_path,
+                            serde_json::json!({
+                                "event": "taskbar-hook",
+                                "outcome": "unchanged",
+                                "old_present": old_present,
+                                "new_present": current.is_some(),
+                                "installed": taskbar_hooks.len(),
+                            }),
+                        );
+                    }
+                }
+            }
+            match tick_flow {
                 TickFlow::Done => {}
                 TickFlow::Idle | TickFlow::Suspended | TickFlow::Paused => continue,
             }

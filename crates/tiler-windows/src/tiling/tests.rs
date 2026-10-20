@@ -280,6 +280,286 @@ fn overconstrained_target_is_refused_stable() {
 }
 
 #[test]
+fn transfer_readback_entry_joins_dpi_outer_insets_without_identity() {
+    // Existing desired/readback/matched fields stay byte-identical; the
+    // new DPI/outer/inset fields join from caller-supplied live reads.
+    // A 96 -> 120 write reports `dpi_changed`; unreadable rides null.
+    let effective = Rect {
+        x: 1284,
+        y: 8,
+        w: 1268,
+        h: 1364,
+    };
+    let readback = Rect {
+        x: 1285,
+        y: 8,
+        w: 1587,
+        h: 1381,
+    };
+    let outer = Rect {
+        x: 1277,
+        y: 8,
+        w: 1282,
+        h: 1371,
+    };
+    let outer_back = Rect {
+        x: 1278,
+        y: 8,
+        w: 1601,
+        h: 1388,
+    };
+    let entry = transfer_readback_entry(
+        "w22",
+        &effective,
+        Some(&readback),
+        Some(96),
+        Some(120),
+        Some(&outer),
+        Some(&outer_back),
+        Some([7, 0, 7, 7]),
+    );
+    assert_eq!(entry["window"], serde_json::json!("w22"));
+    assert_eq!(entry["desired"], serde_json::json!([1284, 8, 1268, 1364]));
+    assert_eq!(entry["readback"], serde_json::json!([1285, 8, 1587, 1381]));
+    assert_eq!(entry["matched"], serde_json::json!(false));
+    assert_eq!(entry["dpi_write"], serde_json::json!(96));
+    assert_eq!(entry["dpi_readback"], serde_json::json!(120));
+    assert_eq!(entry["dpi_changed"], serde_json::json!(true));
+    assert_eq!(entry["outer"], serde_json::json!([1277, 8, 1282, 1371]));
+    assert_eq!(
+        entry["outer_readback"],
+        serde_json::json!([1278, 8, 1601, 1388])
+    );
+    assert_eq!(entry["insets_readback"], serde_json::json!([7, 0, 7, 7]));
+    // Stable DPI on an exact arrival: no change flag, exact match.
+    let stable = transfer_readback_entry(
+        "w21",
+        &effective,
+        Some(&effective),
+        Some(96),
+        Some(96),
+        Some(&outer),
+        Some(&outer),
+        Some([7, 0, 7, 7]),
+    );
+    assert_eq!(stable["matched"], serde_json::json!(true));
+    assert_eq!(stable["dpi_changed"], serde_json::json!(false));
+    // Unreadable edges ride null; a missing readback never matches.
+    let unknown = transfer_readback_entry("w23", &effective, None, None, None, None, None, None);
+    assert_eq!(unknown["matched"], serde_json::json!(false));
+    assert_eq!(unknown["dpi_changed"], serde_json::json!(false));
+    assert!(unknown["dpi_write"].is_null());
+    assert!(unknown["readback"].is_null());
+    assert!(unknown["outer"].is_null());
+    // Opaque token plus integers only: no HWNDs, pids, paths, titles.
+    let serialized = serde_json::to_string(&unknown).unwrap_or_default();
+    assert!(!serialized.contains("hwnd"));
+    assert!(!serialized.contains("pid"));
+}
+
+#[test]
+fn dpi_transition_reouter_corrects_under_fresh_frame() {
+    // Producer-shaped: the tick9 write aimed outer [3,8,2554,1369] at the
+    // intended [8,8,2544,1364] under 96-DPI insets [5,0,5,5], then DPI
+    // flipped 96 -> 120. The fresh 120-DPI frame [7,0,7,7] remaps the
+    // same intended rectangle to [1,8,2558,1371]: exactly the outer that
+    // later arrived exactly once the DPI basis was stable.
+    let effective = Rect {
+        x: 8,
+        y: 8,
+        w: 2544,
+        h: 1364,
+    };
+    let fresh = FrameInsets {
+        left: 7,
+        top: 0,
+        right: 7,
+        bottom: 7,
+    };
+    assert_eq!(
+        dpi_transition_reouter(Some(96), Some(120), &effective, &fresh),
+        Some(Rect {
+            x: 1,
+            y: 8,
+            w: 2558,
+            h: 1371
+        })
+    );
+    // Firefox's verified right-to-left transfer used eight-pixel insets.
+    assert_eq!(
+        dpi_transition_reouter(
+            Some(96),
+            Some(120),
+            &Rect {
+                x: 1752,
+                y: 8,
+                w: 800,
+                h: 1364,
+            },
+            &FrameInsets {
+                left: 8,
+                top: 0,
+                right: 8,
+                bottom: 8,
+            },
+        ),
+        Some(Rect {
+            x: 1744,
+            y: 8,
+            w: 816,
+            h: 1372,
+        })
+    );
+    // A recompute that equals the attempted outer still reasserts: the
+    // first write ran under invalidated state and producer scaling
+    // exceeds inset deltas, so equal geometry never proves arrival.
+    let stale_same = FrameInsets {
+        left: 5,
+        top: 0,
+        right: 5,
+        bottom: 5,
+    };
+    assert_eq!(
+        dpi_transition_reouter(Some(96), Some(120), &effective, &stale_same),
+        Some(Rect {
+            x: 3,
+            y: 8,
+            w: 2554,
+            h: 1369
+        })
+    );
+    // Stable DPI keeps the existing clamp lane: no correction, so a
+    // genuine app-held size still suppresses instead of rewriting.
+    assert_eq!(
+        dpi_transition_reouter(Some(120), Some(120), &effective, &fresh),
+        None
+    );
+    // Unreadable DPI on either side never guesses: no correction, no
+    // false arrival; the tick readback classifies through existing lanes.
+    assert_eq!(
+        dpi_transition_reouter(None, Some(120), &effective, &fresh),
+        None
+    );
+    assert_eq!(
+        dpi_transition_reouter(Some(96), None, &effective, &fresh),
+        None
+    );
+    assert_eq!(dpi_transition_reouter(None, None, &effective, &fresh), None);
+    // Unmappable frame under the new state refuses: no correction.
+    let huge = Rect {
+        x: 0,
+        y: 0,
+        w: i32::MAX,
+        h: i32::MAX,
+    };
+    assert_eq!(
+        dpi_transition_reouter(Some(96), Some(120), &huge, &fresh),
+        None
+    );
+}
+
+#[test]
+fn dpi_readback_decision_repeats_rounds_without_false_clamp() {
+    // Producer-shaped round trip: a 96-DPI placement reads back mismatched
+    // under live 120. The decision is pending (invalidated, never a
+    // clamp); the fresh-inset rewrite maps the same intended rectangle
+    // through the 120-DPI frame, and the stable re-read arrives exactly.
+    let effective = Rect {
+        x: 8,
+        y: 8,
+        w: 2544,
+        h: 1364,
+    };
+    assert_eq!(
+        dpi_readback_decision(true, false, Some(96), Some(120)),
+        ReadbackOutcome::Pending
+    );
+    let fresh_120 = FrameInsets {
+        left: 7,
+        top: 0,
+        right: 7,
+        bottom: 7,
+    };
+    assert_eq!(
+        dpi_transition_reouter(Some(96), Some(120), &effective, &fresh_120),
+        Some(Rect {
+            x: 1,
+            y: 8,
+            w: 2558,
+            h: 1371
+        })
+    );
+    assert_eq!(
+        dpi_readback_decision(true, true, Some(120), Some(120)),
+        ReadbackOutcome::Match
+    );
+    // Reverse direction is symmetric: a 120-DPI placement invalidated by
+    // a flip to 96 stays pending, and the fresh 96-DPI frame remaps the
+    // same intended rectangle before the stable re-read arrives exactly.
+    assert_eq!(
+        dpi_readback_decision(true, false, Some(120), Some(96)),
+        ReadbackOutcome::Pending
+    );
+    let fresh_96 = FrameInsets {
+        left: 5,
+        top: 0,
+        right: 5,
+        bottom: 5,
+    };
+    assert_eq!(
+        dpi_transition_reouter(Some(120), Some(96), &effective, &fresh_96),
+        Some(Rect {
+            x: 3,
+            y: 8,
+            w: 2554,
+            h: 1369
+        })
+    );
+    assert_eq!(
+        dpi_readback_decision(true, true, Some(96), Some(96)),
+        ReadbackOutcome::Match
+    );
+    // Exact arrival after a flip needs no rewrite: match wins over the DPI
+    // delta even though the bases differ.
+    assert_eq!(
+        dpi_readback_decision(true, true, Some(96), Some(120)),
+        ReadbackOutcome::Match
+    );
+    // Stable DPI keeps the existing clamp lane: a genuine app-held size
+    // still pins instead of retrying every tick.
+    assert_eq!(
+        dpi_readback_decision(true, false, Some(120), Some(120)),
+        ReadbackOutcome::Clamp
+    );
+    // A failed or refused correction never pins a clamp and never reports
+    // success: unwritten mismatches stay pending with or without a DPI
+    // delta, and unreadable DPI never guesses a transition.
+    assert_eq!(
+        dpi_readback_decision(false, false, Some(120), Some(96)),
+        ReadbackOutcome::Pending
+    );
+    assert_eq!(
+        dpi_readback_decision(false, false, Some(120), Some(120)),
+        ReadbackOutcome::Pending
+    );
+    assert_eq!(
+        dpi_readback_decision(true, false, None, Some(120)),
+        ReadbackOutcome::Clamp
+    );
+    assert_eq!(
+        dpi_readback_decision(true, false, Some(120), None),
+        ReadbackOutcome::Clamp
+    );
+    // Changed-DPI second edge is not an arbitrary clamp: a corrected write
+    // whose basis no longer matches live DPI stays pending for the next
+    // tick instead of pinning.
+    assert_eq!(
+        dpi_readback_decision(true, false, Some(120), Some(96)),
+        ReadbackOutcome::Pending
+    );
+}
+
+#[test]
 fn drop_fence_is_source_bounds_only() {
     // Inside (including origin edge, exclusive far edge).
     assert!(drop_point_in_domain(0, 0, 100, 100, 0, 0));

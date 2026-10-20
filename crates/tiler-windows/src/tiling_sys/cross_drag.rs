@@ -727,6 +727,90 @@ pub(super) fn drag_refusal_kind(reply: &CoreReply) -> &'static str {
     }
 }
 
+/// Bounded redacted dispatch diagnostic for failing native-gesture Engine
+/// calls (W2M06 empty-singleton and reverse-DPI legs): records the exact
+/// adapter-built event shape plus the reply kind so a refusal replays
+/// offline through the real Engine contract. Emitted only on refusal
+/// paths, never on success. Redacted by construction: Engine window
+/// tokens, geometry, gaps, revisions and size hints only; no HWNDs, PIDs,
+/// creation stamps, or member tags.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn log_redacted_dispatch(
+    state: &TileLoop,
+    op: &'static str,
+    tick: u64,
+    correlation: &str,
+    mover_token: &str,
+    producer: &str,
+    start_rect: Option<Rect>,
+    event: &CoreEvent,
+    observed: &[ObservedWindow],
+    reply_kind: &str,
+) {
+    let mover_row = event.windows.iter().find(|w| w.window.0 == mover_token);
+    let observed_frame = observed
+        .iter()
+        .find(|w| w.token == mover_token)
+        .map(|w| [w.visible.x, w.visible.y, w.visible.w, w.visible.h]);
+    let (source, point, resize) = match &event.command {
+        CoreCommand::DragDrop { x, y, source, .. }
+        | CoreCommand::DragPreview { x, y, source, .. } => (
+            source
+                .as_ref()
+                .map(|key| [key.output.0.clone(), key.workspace.0.clone()]),
+            Some([*x, *y]),
+            None,
+        ),
+        CoreCommand::PointerResize {
+            direction,
+            boundary,
+            direction2,
+            boundary2,
+            ..
+        } => (
+            None,
+            None,
+            Some(serde_json::json!({
+                "direction": direction,
+                "boundary": boundary,
+                "direction2": direction2,
+                "boundary2": boundary2,
+            })),
+        ),
+        _ => (None, None, None),
+    };
+    log_json_at(
+        &state.log_path,
+        serde_json::json!({
+            "event": "dispatch-diagnostic",
+            "tick": tick,
+            "correlation": correlation,
+            "op": op,
+            "window": mover_token,
+            "producer": producer,
+            "reply_kind": reply_kind,
+            "domain": [event.domain_key.output.0, event.domain_key.workspace.0],
+            "bounds": [event.domain.bounds.x, event.domain.bounds.y, event.domain.bounds.w, event.domain.bounds.h],
+            "gap": event.domain.gap,
+            "outer_gap": event.outer_gap,
+            "revision": event.revision,
+            "fingerprint": event.fingerprint,
+            "focused": event.focused_window.0,
+            "windows": event.windows.len(),
+            "mover_rect": mover_row.map(|w| [w.rect.x, w.rect.y, w.rect.w, w.rect.h]),
+            "mover_floating": mover_row.map(|w| w.floating),
+            "mover_hints": mover_row.map(|w| [w.hints.min_w, w.hints.min_h, w.hints.max_w, w.hints.max_h]),
+            "source": source,
+            "directional": event.directional.as_ref().map(|pair| pair.len()),
+            "point": point,
+            "resize": resize,
+            "start_rect": start_rect.map(|r| [r.x, r.y, r.w, r.h]),
+            "observed_frame": observed_frame,
+            "dest_retained": state.engine.session(&event.domain_key).map(|session| session.snapshot().windows.len()),
+        }),
+    );
+}
+
 /// Finalize an occupied-destination cross drop reply: the pair plan sits on
 /// the discarded-on-refusal candidate, so the project membership commits
 /// only after the fresh topology, the single combined apply, its readback,
@@ -1305,6 +1389,20 @@ pub(super) fn settle_cross_drag_drop(
             });
             candidate.handle(&event)
         };
+        if !matches!(reply, CoreReply::Tiled(_)) {
+            log_redacted_dispatch(
+                state,
+                "drag-drop",
+                tick,
+                correlation_str,
+                &settle.mover_token,
+                &settle.producer,
+                settle.start_rect,
+                &event,
+                observed,
+                drag_refusal_kind(&reply),
+            );
+        }
         return finalize_empty_drag_drop(
             state,
             me,

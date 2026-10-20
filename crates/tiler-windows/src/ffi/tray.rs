@@ -541,6 +541,12 @@ unsafe extern "system" fn tray_wnd_proc(
     let taskbar_hit = with_inner(hwnd, |inner| inner.taskbar_created);
     if let Some(taskbar_created) = taskbar_hit {
         if msg == taskbar_created {
+            // Durable-owner broadcast: the pager overlays may not exist to
+            // receive it, so forward through the shared invalidation flag
+            // (atomic only, no logging or native work) before the icon
+            // recovery below. The host consumes it once and refreshes the
+            // pid-scoped hook scope on the same turn.
+            super::pager::note_taskbar_rediscover();
             with_inner_mut(hwnd, |inner| {
                 inner.recover_taskbar();
             });

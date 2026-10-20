@@ -116,6 +116,134 @@ fn install_win_event_hook_for(event_min: u32, event_max: u32, pid: u32) -> Optio
     Some(WinEventHook { raw })
 }
 
+/// Taskbar-scoped WinEvent queue: only the pid-scoped taskbar hooks below
+/// push here (Explorer-owned create/destroy/show/hide/location traffic),
+/// so game and app windows never appear. Plain values, same lock
+/// discipline as the main queue (never held across a message pump).
+/// Storage itself is bounded ([`TASKBAR_DRAIN_CAP`]): the push path drops
+/// excess and records coalesced overflow, so no backlog can accumulate
+/// between drains.
+fn taskbar_queue() -> &'static Mutex<TaskbarQueue> {
+    static QUEUE: OnceLock<Mutex<TaskbarQueue>> = OnceLock::new();
+    QUEUE.get_or_init(|| Mutex::new(TaskbarQueue::new()))
+}
+
+/// Max retained taskbar events: overflow coalesces to the overflow flag
+/// (sheer volume is itself change) at enqueue time, so the queue never
+/// grows without bound and validation stays bounded.
+pub const TASKBAR_DRAIN_CAP: usize = 64;
+
+/// Bounded taskbar-event store: at most [`TASKBAR_DRAIN_CAP`] retained
+/// events plus one coalesced-overflow bit. Pure push/take logic so the cap
+/// and clean-take contract unit-test without globals.
+struct TaskbarQueue {
+    events: Vec<WinEvent>,
+    overflowed: bool,
+}
+
+impl TaskbarQueue {
+    fn new() -> Self {
+        Self {
+            events: Vec::new(),
+            overflowed: false,
+        }
+    }
+
+    fn push(&mut self, event: WinEvent) {
+        if self.events.len() < TASKBAR_DRAIN_CAP {
+            self.events.push(event);
+        } else {
+            self.overflowed = true;
+        }
+    }
+
+    fn take(&mut self) -> (Vec<WinEvent>, bool) {
+        (
+            std::mem::take(&mut self.events),
+            std::mem::replace(&mut self.overflowed, false),
+        )
+    }
+}
+
+/// Taskbar-scope trampoline: routes pid-filtered Explorer events to the
+/// taskbar queue only. Shape filtering (window-object ids) lives once with
+/// the product drain; this stays a plain bounded push with the same
+/// panic containment as the main trampoline, and it runs solely for
+/// Explorer-delivered events, never for game or app traffic.
+unsafe extern "system" fn taskbar_trampoline(
+    _hook: HWINEVENTHOOK,
+    event: u32,
+    hwnd: HWND,
+    id_object: i32,
+    _id_child: i32,
+    thread: u32,
+    time: u32,
+) {
+    // No sink callback runs here, so nothing unwinds across the `extern`
+    // edge; lock poison drops the event (fail closed).
+    if let Ok(mut guard) = taskbar_queue().lock() {
+        guard.push(WinEvent {
+            event,
+            hwnd: hwnd as usize as u64,
+            id_object,
+            thread,
+            time,
+        });
+    }
+}
+
+/// Install one out-of-context pid-scoped hook routing to the taskbar queue;
+/// `None` when the API refuses it (the caller degrades to broadcast-only
+/// invalidation, as before). Scope is fixed at install: the caller
+/// reinstalls on Explorer identity change.
+pub fn install_taskbar_hook(event_min: u32, event_max: u32, pid: u32) -> Option<WinEventHook> {
+    let raw = unsafe {
+        SetWinEventHook(
+            event_min,
+            event_max,
+            std::ptr::null_mut(),
+            Some(taskbar_trampoline),
+            pid,
+            0,
+            windows_sys::Win32::UI::WindowsAndMessaging::WINEVENT_OUTOFCONTEXT,
+        )
+    };
+    if raw.is_null() {
+        return None;
+    }
+    Some(WinEventHook { raw })
+}
+
+/// Take queued taskbar-scope events (consumed once by the loop drain).
+/// Returns the retained batch plus whether enqueue-time overflow coalesced:
+/// the caller treats overflow as change. The take always empties the store,
+/// so no stale backlog survives a drain.
+pub fn take_taskbar_events() -> (Vec<WinEvent>, bool) {
+    taskbar_queue()
+        .lock()
+        .map(|mut queue| queue.take())
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+pub(crate) fn drive_taskbar_event(event: u32, hwnd: u64, id_object: i32, thread: u32, time: u32) {
+    // Offline drive through the taskbar trampoline: no hook is installed,
+    // the fabricated handle is only converted to an id, never dereferenced.
+    // Populates the taskbar queue without touching the global sink, so
+    // product-drain tests stay hermetic under parallel execution.
+    unsafe {
+        taskbar_trampoline(
+            std::ptr::null_mut(),
+            event,
+            hwnd as usize as HWND,
+            id_object,
+            0,
+            thread,
+            time,
+        );
+    }
+}
+
 #[cfg(test)]
 fn drive_win_event(event: u32, hwnd: u64, id_object: i32, thread: u32, time: u32) {
     // Offline drive through the real trampoline: no hook is installed, the
@@ -176,5 +304,57 @@ mod tests {
         set_win_event_sink(Arc::new(Panic));
         drive_win_event(0x8005, 0x1234, 7, 42, 99);
         set_win_event_sink(record);
+    }
+
+    fn taskbar_event(hwnd: u64) -> WinEvent {
+        WinEvent {
+            event: 0x8000,
+            hwnd,
+            id_object: 0,
+            thread: 11,
+            time: 1,
+        }
+    }
+
+    #[test]
+    fn taskbar_queue_bounds_storage_and_coalesces_overflow() {
+        // Local pure fixture: no globals, so parallel tests cannot race.
+        // Producer-shaped burst: cap plus excess pushes.
+        let mut queue = TaskbarQueue::new();
+        for hwnd in 0..(TASKBAR_DRAIN_CAP as u64 + 10) {
+            queue.push(taskbar_event(1000 + hwnd));
+        }
+        // First take returns exactly the cap plus the overflow bit.
+        let (batch, overflowed) = queue.take();
+        assert_eq!(batch.len(), TASKBAR_DRAIN_CAP);
+        assert!(overflowed);
+        assert_eq!(batch[0].hwnd, 1000);
+        assert_eq!(
+            batch[TASKBAR_DRAIN_CAP - 1].hwnd,
+            1000 + TASKBAR_DRAIN_CAP as u64 - 1
+        );
+        // Second take is clean: no stale backlog survives a drain.
+        let (again, overflowed) = queue.take();
+        assert!(again.is_empty());
+        assert!(!overflowed);
+        // The store stays usable after overflow.
+        queue.push(taskbar_event(2000));
+        let (batch, overflowed) = queue.take();
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch[0].hwnd, 2000);
+        assert!(!overflowed);
+    }
+
+    #[test]
+    fn taskbar_queue_without_overflow_takes_clean() {
+        let mut queue = TaskbarQueue::new();
+        queue.push(taskbar_event(3000));
+        queue.push(taskbar_event(3001));
+        let (batch, overflowed) = queue.take();
+        assert_eq!(batch.len(), 2);
+        assert!(!overflowed);
+        let (again, overflowed) = queue.take();
+        assert!(again.is_empty());
+        assert!(!overflowed);
     }
 }

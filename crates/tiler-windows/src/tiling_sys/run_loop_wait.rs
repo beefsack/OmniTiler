@@ -225,6 +225,29 @@ pub(super) fn owner_deadline_source(now: Instant, deadlines: &OwnerDeadlines) ->
     }
 }
 
+/// Deterministic clean-loop-exit cause for the single `loop-exit` trace
+/// line: exact-owner stop file first, then the tray Stop pick, then the
+/// bounded-run deadline. Matches the loop-head evaluation order so the
+/// logged cause is exactly the branch the loop would take. Pure
+/// (unit-testable): the loop evaluates the three live predicates and logs
+/// the returned cause before returning. No log content beyond the cause
+/// token (no paths, ids, or window content).
+#[must_use]
+pub(super) fn loop_exit_cause(
+    file_stop: bool,
+    tray_stop: bool,
+    expired: bool,
+) -> Option<&'static str> {
+    if file_stop {
+        Some("stop-file")
+    } else if tray_stop {
+        Some("tray-stop")
+    } else if expired {
+        Some("deadline")
+    } else {
+        None
+    }
+}
 /// Open-gesture sampling demand: a managed gesture with START capture holds
 /// the loop and needs the periodic preview sample. Mirrors the tick's wake
 /// condition exactly (same sets, same order).
@@ -269,6 +292,8 @@ pub(super) fn drain_hook_edges(
         .lock()
         .map(|mut queue| std::mem::take(&mut *queue))
         .unwrap_or_default();
+    // Main queue drain: hook callbacks queued on this thread. No pid work
+    // here; Explorer scoping lives in the separate taskbar queue below.
     let mut woke = false;
     // Trace-only batch breakdown for the owner-work sample; default
     // runs skip the counting.
@@ -313,18 +338,33 @@ pub(super) fn drain_hook_edges(
                 // Move-vs-resize classification, sampled once at START
                 // (the WinEvent itself does not distinguish). Hung or
                 // unreadable windows classify Unknown: never a trigger.
-                let kind = classify_move_size_start(hwnd);
-                state.move_kind.insert(hwnd, kind);
+                // The probe carries the single sample's facts (cursor
+                // point, raw hit or failing stage, PRE rect captured
+                // above) so an Unknown attributes without re-probing.
+                // No HWND, titles, or identity: tokens and geometry only.
+                let probe = classify_move_size_start(hwnd);
+                state.move_kind.insert(hwnd, probe.kind);
                 log_json_at(
                     log_path,
                     serde_json::json!({
                         "event": "move-kind",
                         "tick": state.tick,
-                        "kind": match kind {
+                        "kind": match probe.kind {
                             MoveSizeKind::Move => "move",
                             MoveSizeKind::Resize => "resize",
                             MoveSizeKind::Unknown => "unknown",
                         },
+                        "probe": match probe.probe {
+                            crate::group_underlay::MoveSizeProbe::CursorUnavailable => "cursor-unavailable",
+                            crate::group_underlay::MoveSizeProbe::HitTestUnavailable => "hit-test-unavailable",
+                            crate::group_underlay::MoveSizeProbe::Hit(_) => "hit",
+                        },
+                        "hit": match probe.probe {
+                            crate::group_underlay::MoveSizeProbe::Hit(raw) => serde_json::json!(raw),
+                            _ => serde_json::Value::Null,
+                        },
+                        "cursor": probe.cursor.map(|(x, y)| [x, y]),
+                        "start_rect": state.gesture_before.get(&hwnd).map(|r| [r.x, r.y, r.w, r.h]),
                     }),
                 );
                 // START-time pointer for the preview zero gate: a
@@ -378,6 +418,42 @@ pub(super) fn drain_hook_edges(
                 // Preview and underlay keep reading the held entry
                 // until settle runs later this same turn.
             }
+        }
+    }
+    // Taskbar-scope invalidation: the pid-scoped hooks deliver Explorer-only
+    // create/destroy/show/hide/location traffic here, so game and app
+    // windows never appear. Each surviving edge is validated against the
+    // taskbar window subtree (bar itself or a bounded ancestor chain);
+    // ordinary File Explorer traffic never matches, and unreadable or
+    // destroyed handles fail conservatively to stale. While suspended no
+    // filter work runs at all: any batch or coalesced overflow only retains
+    // the dirty flag for resume, so gaming owns no taskbar work. Bounded
+    // live reads, no logging, no sync work.
+    let (taskbar_batch, taskbar_overflowed) = crate::ffi::take_taskbar_events();
+    if taskbar_overflowed {
+        state.pager_taskbar_dirty = true;
+    }
+    let mut taskbar_hits: u64 = 0;
+    if state.suspended {
+        if !taskbar_batch.is_empty() {
+            state.pager_taskbar_dirty = true;
+        }
+    } else {
+        for event in taskbar_batch {
+            if !super::observe::window_edge_wakes(event.event, event.id_object) {
+                continue;
+            }
+            if super::pager_host::taskbar_subtree_hit(event.hwnd) {
+                state.pager_taskbar_dirty = true;
+                taskbar_hits += 1;
+                break;
+            }
+        }
+    }
+    if taskbar_hits > 0 {
+        woke = true;
+        if state.trace {
+            ow_wakes += taskbar_hits;
         }
     }
     EdgeDrain {

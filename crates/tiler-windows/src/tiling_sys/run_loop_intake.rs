@@ -42,6 +42,7 @@ pub(super) fn pump_intake(
     trace_last_turns: &mut u64,
     trace_last_offers: &mut u64,
     mut woke: bool,
+    rediscovered: bool,
 ) -> Intake {
     // Best-effort keyboard hook with bounded backoff retries (5s
     // doubling, 60s cap): failure logs one `snap-unavailable` per
@@ -264,10 +265,12 @@ pub(super) fn pump_intake(
     }
     // Taskbar pager (normal owner only; proof owners stay deterministic
     // with no overlays): per-output strips sync on this same pump, so frames
-    // stay live on the ~100ms cadence with change-gated repaints and no hook
-    // work. A waiting click wakes the pump; the tick dispatch drains it once
-    // (a gesture-held turn leaves it queued there).
-    if !proof && sync_taskbar_pager(state, me, fulls, areas, log_path, now) {
+    // stay live on the event-driven cadence with change-gated repaints.
+    // Secondary anchors revalidate only on the stale-anchor flag (scoped
+    // Explorer edge, rediscovery broadcast, or topology change). A waiting
+    // click wakes the pump; the tick dispatch drains it once (a gesture-held
+    // turn leaves it queued there).
+    if !proof && sync_taskbar_pager(state, me, fulls, areas, log_path, now, rediscovered) {
         woke = true;
     }
     // Shortcut-handling gate for the callback: fresh downs consume

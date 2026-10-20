@@ -287,6 +287,105 @@ pub const fn readback_outcome(
     }
 }
 
+/// Decide the tracker update for one `(desired, readback)` pair after the
+/// final DPI basis check. `matched` wins over everything: an exact arrival
+/// needs no rewrite even across a DPI flip. A written mismatch whose
+/// per-attempt DPI basis differs from the live DPI is an invalidated
+/// placement, never an app-held clamp: it stays pending so a later tick
+/// rebases under fresh state instead of pinning a permanent clamp. Only a
+/// stable-DPI written mismatch is an app clamp; anything unwritten is
+/// pending (transient/backoff lanes keep working). Unreadable DPI on
+/// either side never guesses a transition: the stable lane applies.
+#[must_use]
+pub const fn dpi_readback_decision(
+    wrote_this_tick: bool,
+    matched: bool,
+    dpi_attempt: Option<u32>,
+    dpi_live: Option<u32>,
+) -> ReadbackOutcome {
+    if matched {
+        return ReadbackOutcome::Match;
+    }
+    if matches!(
+        (dpi_attempt, dpi_live),
+        (Some(before), Some(after)) if before != after
+    ) {
+        return ReadbackOutcome::Pending;
+    }
+    if wrote_this_tick {
+        ReadbackOutcome::Clamp
+    } else {
+        ReadbackOutcome::Pending
+    }
+}
+
+/// Recompute one placement outer after an observed DPI transition across the
+/// write: the pre-write observation (frame insets plus DPI basis) is
+/// invalidated placement under a new DPI state, not an app-held clamp. The
+/// intended visible rectangle maps through the freshly verified frame, and
+/// the caller reapplies once under the same gates as the initial write.
+///
+/// Returns `None` when no correction applies: unreadable DPI on either side
+/// (never guessed), no change, or an unmappable frame. A recompute that
+/// equals the attempted outer still corrects: the producer evidence scales
+/// beyond inset deltas, so equal geometry reasserts the intended allocation
+/// under verified fresh state instead of assuming the first write landed.
+/// Pure; the native path supplies live reads and bounds correction to one
+/// attempt per window per tick (a second flip falls through to the tick
+/// readback lanes, so flapping DPI terminates without timers or counters).
+#[must_use]
+pub fn dpi_transition_reouter(
+    dpi_before: Option<u32>,
+    dpi_after: Option<u32>,
+    effective: &Rect,
+    fresh_insets: &FrameInsets,
+) -> Option<Rect> {
+    match (dpi_before, dpi_after) {
+        (Some(before), Some(after)) if before != after => fresh_insets.visible_to_outer(*effective),
+        _ => None,
+    }
+}
+
+/// Trace-only per-window transfer readback entry: the requested effective
+/// visible rectangle with the immediate post-write readback plus DPI,
+/// outer-frame, and inset evidence for the mismatch analysis. A DPI change
+/// across the write is evidence, not a discriminator: it does not by
+/// itself distinguish virtualization from app self-resize. A later tick
+/// re-emits the same shape under its own tick/op. Opaque token plus
+/// integers only (no HWNDs, pids, paths, titles); `None` means unreadable,
+/// never guessed. Pure formatter; the native path calls it under trace.
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn transfer_readback_entry(
+    window: &str,
+    effective: &Rect,
+    readback: Option<&Rect>,
+    dpi_write: Option<u32>,
+    dpi_readback: Option<u32>,
+    outer: Option<&Rect>,
+    outer_readback: Option<&Rect>,
+    insets_readback: Option<[i32; 4]>,
+) -> serde_json::Value {
+    let matched = readback.is_some_and(|r| r == effective);
+    let dpi_changed = match (dpi_write, dpi_readback) {
+        (Some(before), Some(after)) => before != after,
+        _ => false,
+    };
+    let rect_json = |rect: &Rect| serde_json::json!([rect.x, rect.y, rect.w, rect.h]);
+    serde_json::json!({
+        "window": window,
+        "desired": [effective.x, effective.y, effective.w, effective.h],
+        "readback": readback.map_or(serde_json::Value::Null, rect_json),
+        "matched": matched,
+        "dpi_write": dpi_write.map_or(serde_json::Value::Null, |dpi| serde_json::json!(dpi)),
+        "dpi_readback": dpi_readback.map_or(serde_json::Value::Null, |dpi| serde_json::json!(dpi)),
+        "dpi_changed": dpi_changed,
+        "outer": outer.map_or(serde_json::Value::Null, rect_json),
+        "outer_readback": outer_readback.map_or(serde_json::Value::Null, rect_json),
+        "insets_readback": insets_readback.map_or(serde_json::Value::Null, |insets| serde_json::json!(insets)),
+    })
+}
+
 /// Domain-bounds fence for a settle-time drop point: the release cursor must
 /// still sit inside the given domain bounds. The cross-output router
 /// (`resolve_drop_destination` in `tiling_sys`) applies this per output:

@@ -76,6 +76,131 @@ pub(super) fn effective_rect(
     }
 }
 
+/// Normalize a raw `GetDpiForWindow` read: `0` is unreadable (`None`), never
+/// a guessed fallback DPI.
+fn dpi_or_none(dpi: u32) -> Option<u32> {
+    if dpi == 0 { None } else { Some(dpi) }
+}
+
+/// Verdict of one gated placement attempt through the shared native path.
+enum SetterVerdict {
+    /// Setter accepted with the HWND still bound: DPI basis read
+    /// immediately before the setter, for transition detection.
+    Wrote { dpi_basis: Option<u32> },
+    /// Foreground veto blocked the write (no native call).
+    Vetoed,
+    /// Setter API call failed.
+    SetterFailed,
+    /// HWND pid changed across the write.
+    PidChanged,
+}
+
+/// Shared veto-plus-setter tail for one gated placement: foreground veto
+/// gate, DPI-basis read, `SetWindowPos`, post-write pid guard, proof audit,
+/// and trace log. The initial write and a DPI-transition correction run
+/// this one path so gates and audit behavior cannot drift. The caller owns
+/// lane bookkeeping (`applied`/`written`/skips/transient): a refused or
+/// failed correction downgrades the invalidated first placement to pending
+/// instead of pinning a clamp.
+#[allow(clippy::too_many_arguments)]
+fn run_gated_setter(
+    state: &mut TileLoop,
+    me: &ProcessIdentity,
+    fulls: &[Rect],
+    target: &WriteTarget,
+    outer: Rect,
+    effective: Rect,
+    token: &str,
+    tick: u64,
+    op: &str,
+    correlation: &str,
+    log_path: &std::path::Path,
+    proof_mode: bool,
+    written_label: &'static str,
+    veto_diag: &mut Option<VetoDiag>,
+) -> SetterVerdict {
+    // User safety across the tick: a vetoing foreground that arrived
+    // after the loop guard must veto this write, not ride along. Under
+    // an unmanageable fullscreen only the foreground itself vetoes;
+    // other verified managed windows still reconcile non-activatingly.
+    // Verified managed overlays bypass like a managed maximize.
+    let (read, limited_fg) = suspend_limited(state, me, fulls);
+    if read.veto.block && !geometry_write_allowed(&read, target.window.hwnd, limited_fg) {
+        if veto_diag.is_none() {
+            *veto_diag = Some(VetoDiag {
+                reason: read.veto.reason.as_str(),
+                desktop: read.desktop,
+                visible: read.visible,
+                captioned: read.captioned,
+                dwm_readable: read.dwm_readable,
+                cloaked: read.cloaked,
+            });
+        }
+        return SetterVerdict::Vetoed;
+    }
+    let hwnd_u64 = target.window.hwnd;
+    // DPI basis for this placement, read live on every write (cheap
+    // event-tied reads, never polling).
+    let dpi_basis = dpi_or_none(crate::ffi::dpi_for_window(hwnd_u64));
+    let ok = crate::ffi::set_window_pos(
+        hwnd_u64,
+        outer.x,
+        outer.y,
+        outer.w,
+        outer.h,
+        SWP_NOACTIVATE | SWP_NOZORDER,
+    );
+    // The held process keeps liveness authority across the write; recheck
+    // the HWND pid afterward against recycling.
+    let _ = &target.held;
+    let pid_ok = pid_current(target.window.hwnd, target.window.identity.pid);
+    if proof_mode {
+        let identity = &target.window.identity;
+        audit_json(
+            state,
+            serde_json::json!({
+                "event": "proof-write",
+                "tick": tick,
+                "op": op,
+                "window": token,
+                "requested": [effective.x, effective.y, effective.w, effective.h],
+                "outer": [outer.x, outer.y, outer.w, outer.h],
+                "target": {
+                    "hwnd": target.window.hwnd,
+                    "pid": identity.pid,
+                    "process_creation": identity.process_creation.clone(),
+                    "exe_path": identity.exe_path.clone(),
+                    "user_sid": identity.user_sid.clone(),
+                    "session_id": identity.session_id,
+                    "tag": identity.tag.clone(),
+                },
+                "flags": "SWP_NOACTIVATE|SWP_NOZORDER",
+                "outcome": if ok && pid_ok { written_label } else if !ok { "setter-failed" } else { "pid-changed" },
+            }),
+        );
+    }
+    if !pid_ok {
+        return SetterVerdict::PidChanged;
+    }
+    if !ok {
+        return SetterVerdict::SetterFailed;
+    }
+    if state.trace {
+        log_json_at(
+            log_path,
+            serde_json::json!({
+                "event": "write",
+                "tick": tick,
+                "correlation": correlation,
+                "op": op,
+                "window": token,
+                "desired": [effective.x, effective.y, effective.w, effective.h],
+            }),
+        );
+    }
+    SetterVerdict::Wrote { dpi_basis }
+}
+
 pub(super) fn apply_geometry(state: &mut TileLoop, input: ApplyInput<'_>) -> Option<ApplySummary> {
     #[cfg(test)]
     if INJECTED_OBSERVE.with(|slot| slot.borrow().is_some()) {
@@ -149,7 +274,6 @@ pub(super) fn apply_geometry(state: &mut TileLoop, input: ApplyInput<'_>) -> Opt
     };
     let by_token: HashMap<&str, &ObservedWindow> =
         observed.iter().map(|w| (w.token.as_str(), w)).collect();
-    let by_hwnd: HashMap<u64, &ObservedWindow> = observed.iter().map(|w| (w.hwnd, w)).collect();
     let proof_mode = state.allowlist.is_some();
     let now = Instant::now();
     // Pre-write suppression snapshot for per-window diagnostics: the
@@ -165,8 +289,13 @@ pub(super) fn apply_geometry(state: &mut TileLoop, input: ApplyInput<'_>) -> Opt
     // the transient/backoff lanes intact.
     let mut written: HashSet<String> = HashSet::new();
     // Native outer targets for attempted setters, for per-window
-    // diagnostics (inserted only where the setter actually runs).
+    // diagnostics (inserted only where the setter actually runs; a later
+    // DPI-transition correction overwrites with its final attempt).
     let mut outer_targets: HashMap<String, Rect> = HashMap::new();
+    // Per-window DPI basis of the final placement attempt (`None` when
+    // unreadable, never guessed). Read live on every write: a transition
+    // across the setter arms one corrective placement below.
+    let mut dpi_writes: HashMap<String, Option<u32>> = HashMap::new();
     for entry in &desired {
         if entry.client_clamped {
             skipped.push((entry.window.0.clone(), "client-clamped".to_owned()));
@@ -201,22 +330,6 @@ pub(super) fn apply_geometry(state: &mut TileLoop, input: ApplyInput<'_>) -> Opt
             skipped.push((entry.window.0.clone(), "refused-intent".to_owned()));
             continue;
         }
-        // Snapshot the pre-write identity for the proof audit before the
-        // revalidation borrows `state.tokens` mutably.
-        let audit_pre = if proof_mode {
-            by_hwnd.get(&expected.hwnd).map(|w| {
-                (
-                    w.identity.pid,
-                    w.identity.process_creation.clone(),
-                    w.identity.exe_path.clone(),
-                    w.identity.user_sid.clone(),
-                    w.identity.session_id,
-                    w.identity.tag.clone(),
-                )
-            })
-        } else {
-            None
-        };
         // Stored lifetime tag for the write gate: disjoint-field borrows of
         // `state` coexist with the `&mut state.tokens` below.
         let member_key = crate::workspace::WindowKey {
@@ -260,99 +373,218 @@ pub(super) fn apply_geometry(state: &mut TileLoop, input: ApplyInput<'_>) -> Opt
             skipped.push((entry.window.0.clone(), "frame-overflow".to_owned()));
             continue;
         };
-        // User safety across the tick: a vetoing foreground that arrived
-        // after the loop guard must veto this write, not ride along. Under
-        // an unmanageable fullscreen only the foreground itself vetoes;
-        // other verified managed windows still reconcile non-activatingly.
-        // Verified managed overlays bypass like a managed maximize.
-        let (read, limited_fg) = suspend_limited(state, me, fulls);
-        if read.veto.block && !geometry_write_allowed(&read, expected.hwnd, limited_fg) {
-            if veto_diag.is_none() {
-                veto_diag = Some(VetoDiag {
-                    reason: read.veto.reason.as_str(),
-                    desktop: read.desktop,
-                    visible: read.visible,
-                    captioned: read.captioned,
-                    dwm_readable: read.dwm_readable,
-                    cloaked: read.cloaked,
-                });
+        // DPI basis of the attempt just made (read immediately before its
+        // setter inside the shared path, never guessed): a transition
+        // across it invalidates the pre-write frame math and arms one
+        // corrective placement below.
+        let dpi_before = match run_gated_setter(
+            state,
+            me,
+            fulls,
+            &target,
+            outer,
+            effective,
+            entry.window.0.as_str(),
+            tick,
+            op,
+            correlation,
+            &log_path,
+            proof_mode,
+            "written",
+            &mut veto_diag,
+        ) {
+            SetterVerdict::Wrote { dpi_basis } => {
+                outer_targets.insert(entry.window.0.clone(), outer);
+                dpi_writes.insert(entry.window.0.clone(), dpi_basis);
+                applied += 1;
+                written.insert(entry.window.0.clone());
+                dpi_basis
             }
-            skipped.push((entry.window.0.clone(), "fullscreen-foreground".to_owned()));
-            continue;
-        }
-        let hwnd_u64 = target.window.hwnd;
-        outer_targets.insert(entry.window.0.clone(), outer);
-        let ok = crate::ffi::set_window_pos(
-            hwnd_u64,
-            outer.x,
-            outer.y,
-            outer.w,
-            outer.h,
-            SWP_NOACTIVATE | SWP_NOZORDER,
+            SetterVerdict::Vetoed => {
+                skipped.push((entry.window.0.clone(), "fullscreen-foreground".to_owned()));
+                continue;
+            }
+            SetterVerdict::SetterFailed => {
+                skipped.push((entry.window.0.clone(), "setter-failed".to_owned()));
+                state.refused.note_transient(
+                    &entry.window.0,
+                    &effective,
+                    &target.window.visible,
+                    now,
+                );
+                continue;
+            }
+            SetterVerdict::PidChanged => {
+                skipped.push((entry.window.0.clone(), "pid-changed".to_owned()));
+                continue;
+            }
+        };
+        // A DPI transition invalidates the placement basis. Rebase once
+        // here, then yield further transitions to native-event reconciliation
+        // rather than trapping the owner in setters against changing host
+        // state. The final readback keeps those transitions and any failed
+        // correction pending, never pinned as an app-held clamp.
+        let dpi_after = dpi_or_none(crate::ffi::dpi_for_window(target.window.hwnd));
+        // Fresh lifetime tag for the corrective gate, bound before the
+        // chain below so the borrow ends with the revalidation call and
+        // the veto resnapshot can borrow state mutably after it. Built
+        // only on an observed transition: the stable path pays nothing.
+        let transitioned = matches!(
+            (dpi_before, dpi_after),
+            (Some(before), Some(after)) if before != after
         );
-        // The held process keeps liveness authority across the write; recheck
-        // the HWND pid afterward against recycling.
-        let _ = &target.held;
-        let pid_ok = pid_current(target.window.hwnd, target.window.identity.pid);
-        if proof_mode {
-            let (pid, creation, exe, sid, session, tag) = audit_pre.unwrap_or_else(|| {
-                (
-                    target.window.identity.pid,
-                    target.window.identity.process_creation.clone(),
-                    target.window.identity.exe_path.clone(),
-                    target.window.identity.user_sid.clone(),
-                    target.window.identity.session_id,
-                    target.window.identity.tag.clone(),
-                )
-            });
-            audit_json(
-                state,
-                serde_json::json!({
-                    "event": "proof-write",
-                    "tick": tick,
-                    "op": op,
-                    "window": entry.window.0,
-                    "requested": [effective.x, effective.y, effective.w, effective.h],
-                    "outer": [outer.x, outer.y, outer.w, outer.h],
-                    "target": {
-                        "hwnd": target.window.hwnd,
-                        "pid": pid,
-                        "process_creation": creation,
-                        "exe_path": exe,
-                        "user_sid": sid,
-                        "session_id": session,
-                        "tag": tag,
-                    },
-                    "flags": "SWP_NOACTIVATE|SWP_NOZORDER",
-                    "outcome": if ok && pid_ok { "written" } else if !ok { "setter-failed" } else { "pid-changed" },
-                }),
+        if transitioned {
+            let member_key2 = crate::workspace::WindowKey {
+                hwnd: expected.hwnd,
+                pid: expected.identity.pid,
+                creation: expected.identity.process_creation.clone(),
+            };
+            let stored_tag2 = state.member_tags.get(&member_key2).map(String::as_str);
+            let fresh = revalidate_target(
+                expected,
+                me,
+                fulls,
+                &mut state.tokens,
+                proof_mode,
+                state.allowlist.as_ref(),
+                &state.scope,
+                stored_tag2,
+                &state.scope_hosts,
+                false,
             );
-        }
-        if !pid_ok {
-            skipped.push((entry.window.0.clone(), "pid-changed".to_owned()));
-            continue;
-        }
-        if !ok {
-            skipped.push((entry.window.0.clone(), "setter-failed".to_owned()));
-            state
-                .refused
-                .note_transient(&entry.window.0, &effective, &target.window.visible, now);
-            continue;
-        }
-        applied += 1;
-        written.insert(entry.window.0.clone());
-        if state.trace {
-            log_json_at(
-                &log_path,
-                serde_json::json!({
-                    "event": "write",
-                    "tick": tick,
-                    "correlation": correlation,
-                    "op": op,
-                    "window": entry.window.0,
-                    "desired": [effective.x, effective.y, effective.w, effective.h],
-                }),
-            );
+            // Explicit transition outcome: the first-transition evidence
+            // (original/new DPI, first outer, corrected target or refusal)
+            // rides its own diagnostic instead of being overwritten by the
+            // final-attempt records above.
+            let (outcome, corrected_outer, gate_reason): (
+                &'static str,
+                Option<Rect>,
+                Option<&str>,
+            ) = match fresh {
+                Err(reason) => {
+                    skipped.push((entry.window.0.clone(), reason.to_owned()));
+                    if proof_mode {
+                        audit_json(
+                            state,
+                            serde_json::json!({
+                                "event": "proof-skip",
+                                "tick": tick,
+                                "op": op,
+                                "window": entry.window.0,
+                                "requested": [effective.x, effective.y, effective.w, effective.h],
+                                "reason": reason,
+                            }),
+                        );
+                    }
+                    // The first placement is invalidated: drop it from the
+                    // clamp lane so the readback below stays pending.
+                    written.remove(entry.window.0.as_str());
+                    ("refused-gate", None, Some(reason))
+                }
+                Ok(target2) if target2.window.visible == effective => {
+                    // Exact arrival despite the flip: the allocation
+                    // landed, so no rewrite. Rebase the diagnostic basis
+                    // to the post-transition DPI the match just proved.
+                    dpi_writes.insert(entry.window.0.clone(), dpi_after);
+                    ("exact-no-rewrite", None, None)
+                }
+                Ok(target2) => {
+                    match crate::tiling::dpi_transition_reouter(
+                        dpi_before,
+                        dpi_after,
+                        &effective,
+                        &target2.window.insets,
+                    ) {
+                        None => {
+                            written.remove(entry.window.0.as_str());
+                            skipped.push((entry.window.0.clone(), "frame-overflow".to_owned()));
+                            ("unmappable", None, None)
+                        }
+                        // A recompute that equals the attempted outer
+                        // still reasserts: the first write ran under
+                        // invalidated state and producer scaling exceeds
+                        // inset deltas, so equal geometry never proves
+                        // arrival while the native frame still mismatches.
+                        Some(corrected) => {
+                            match run_gated_setter(
+                                state,
+                                me,
+                                fulls,
+                                &target2,
+                                corrected,
+                                effective,
+                                entry.window.0.as_str(),
+                                tick,
+                                op,
+                                correlation,
+                                &log_path,
+                                proof_mode,
+                                "written-corrected",
+                                &mut veto_diag,
+                            ) {
+                                SetterVerdict::Wrote { dpi_basis } => {
+                                    // Final placement basis for the
+                                    // readback diagnostics below: the
+                                    // corrected geometry under the
+                                    // post-transition DPI. `applied`
+                                    // stays one per window: this is one
+                                    // logical placement, not a second
+                                    // verified success.
+                                    outer_targets.insert(entry.window.0.clone(), corrected);
+                                    dpi_writes.insert(entry.window.0.clone(), dpi_basis);
+                                    ("corrected", Some(corrected), None)
+                                }
+                                SetterVerdict::Vetoed => {
+                                    written.remove(entry.window.0.as_str());
+                                    skipped.push((
+                                        entry.window.0.clone(),
+                                        "fullscreen-foreground".to_owned(),
+                                    ));
+                                    ("refused-veto", None, None)
+                                }
+                                SetterVerdict::SetterFailed => {
+                                    written.remove(entry.window.0.as_str());
+                                    skipped
+                                        .push((entry.window.0.clone(), "setter-failed".to_owned()));
+                                    state.refused.note_transient(
+                                        &entry.window.0,
+                                        &effective,
+                                        &target2.window.visible,
+                                        now,
+                                    );
+                                    ("setter-failed", None, None)
+                                }
+                                SetterVerdict::PidChanged => {
+                                    written.remove(entry.window.0.as_str());
+                                    skipped
+                                        .push((entry.window.0.clone(), "pid-changed".to_owned()));
+                                    ("pid-changed", None, None)
+                                }
+                            }
+                        }
+                    }
+                }
+            };
+            if state.trace {
+                log_json_at(
+                    &log_path,
+                    serde_json::json!({
+                        "event": "dpi-transition",
+                        "tick": tick,
+                        "correlation": correlation,
+                        "op": op,
+                        "window": entry.window.0,
+                        "dpi_before": dpi_before,
+                        "dpi_after": dpi_after,
+                        "effective": [effective.x, effective.y, effective.w, effective.h],
+                        "first_outer": [outer.x, outer.y, outer.w, outer.h],
+                        "outcome": outcome,
+                        "reason": gate_reason,
+                        "corrected": corrected_outer.map(|c| [c.x, c.y, c.w, c.h]),
+                        "same_outer": corrected_outer.is_some_and(|c| c == outer),
+                    }),
+                );
+            }
         }
     }
     // Complete Engine plan for this tick: every desired entry, not only the
@@ -399,6 +631,8 @@ pub(super) fn apply_geometry(state: &mut TileLoop, input: ApplyInput<'_>) -> Opt
             .iter()
             .map(|w| (w.token.as_str(), w.visible))
             .collect();
+        let reread_full: HashMap<&str, &ObservedWindow> =
+            reread.iter().map(|w| (w.token.as_str(), w)).collect();
         post_rects = reread_by_token
             .iter()
             .map(|(token, rect)| ((*token).to_owned(), *rect))
@@ -413,11 +647,27 @@ pub(super) fn apply_geometry(state: &mut TileLoop, input: ApplyInput<'_>) -> Opt
             let effective = effective_rect(state, entry);
             match reread_by_token.get(entry.window.0.as_str()) {
                 Some(visible) => {
-                    match readback_outcome(
-                        written.contains(entry.window.0.as_str()),
-                        &effective,
-                        visible,
-                    ) {
+                    // Final-attempt DPI basis against live DPI: a written
+                    // mismatch across a fresh transition is an invalidated
+                    // placement (pending, retried next tick), never an app
+                    // clamp. Live DPI is read only for written mismatches;
+                    // exact and unwritten rows pay nothing, and unreadable
+                    // DPI never guesses a transition.
+                    let wrote = written.contains(entry.window.0.as_str());
+                    let matched = visible == &effective;
+                    let (basis, live) = if matched || !wrote {
+                        (None, None)
+                    } else {
+                        let hwnd = reread_full
+                            .get(entry.window.0.as_str())
+                            .map(|w| w.hwnd)
+                            .or_else(|| by_token.get(entry.window.0.as_str()).map(|w| w.hwnd));
+                        (
+                            dpi_writes.get(entry.window.0.as_str()).copied().flatten(),
+                            hwnd.and_then(|hwnd| dpi_or_none(crate::ffi::dpi_for_window(hwnd))),
+                        )
+                    };
+                    match crate::tiling::dpi_readback_decision(wrote, matched, basis, live) {
                         ReadbackOutcome::Match => {
                             state.refused.note_match(&entry.window.0);
                         }
@@ -429,10 +679,13 @@ pub(super) fn apply_geometry(state: &mut TileLoop, input: ApplyInput<'_>) -> Opt
                         }
                         ReadbackOutcome::Pending => {
                             // No write behind this mismatch (skipped or
-                            // refused intent): count it, but leave the
-                            // tracker lanes alone so a later matching
-                            // re-read still converges instead of sticking
-                            // as a permanent clamp.
+                            // refused intent), or the write behind it was
+                            // invalidated by a DPI transition (failed
+                            // correction or a second flip after the final
+                            // attempt): count it, but leave the tracker
+                            // lanes alone so a later matching re-read
+                            // still converges instead of sticking as a
+                            // permanent clamp.
                             mismatched += 1;
                         }
                     }
@@ -450,12 +703,24 @@ pub(super) fn apply_geometry(state: &mut TileLoop, input: ApplyInput<'_>) -> Opt
                 .map(|entry| {
                     let readback = reread_by_token.get(entry.window.0.as_str());
                     let effective = effective_rect(state, entry);
-                    serde_json::json!({
-                        "window": entry.window.0,
-                        "desired": [effective.x, effective.y, effective.w, effective.h],
-                        "readback": readback.map(|r| [r.x, r.y, r.w, r.h]),
-                        "matched": readback.is_some_and(|r| r == &effective),
-                    })
+                    let live = reread_full.get(entry.window.0.as_str());
+                    let hwnd = live
+                        .map(|w| w.hwnd)
+                        .or_else(|| by_token.get(entry.window.0.as_str()).map(|w| w.hwnd));
+                    let dpi_readback =
+                        hwnd.and_then(|hwnd| dpi_or_none(crate::ffi::dpi_for_window(hwnd)));
+                    crate::tiling::transfer_readback_entry(
+                        &entry.window.0,
+                        &effective,
+                        readback,
+                        dpi_writes.get(entry.window.0.as_str()).copied().flatten(),
+                        dpi_readback,
+                        outer_targets.get(entry.window.0.as_str()),
+                        live.map(|w| &w.outer),
+                        live.map(|w| {
+                            [w.insets.left, w.insets.top, w.insets.right, w.insets.bottom]
+                        }),
+                    )
                 })
                 .collect();
             log_json_at(
@@ -465,6 +730,7 @@ pub(super) fn apply_geometry(state: &mut TileLoop, input: ApplyInput<'_>) -> Opt
                     "tick": tick,
                     "correlation": correlation,
                     "op": op,
+                    "pmv2": crate::ffi::thread_pm_v2_active(),
                     "entries": detail,
                 }),
             );

@@ -123,9 +123,19 @@ pub fn read_primary_taskbar() -> Option<TaskbarFacts> {
     })
 }
 
+/// Owning Explorer process id behind the primary taskbar, for (re)scoping
+/// the pid-filtered taskbar hooks at startup and on the rediscovery
+/// broadcast only. `None` while Explorer is gone: the host installs no
+/// scope then, so no queued edge can arm against a stale pid.
+#[must_use]
+pub fn primary_taskbar_pid() -> Option<u32> {
+    crate::ffi::primary_taskbar_pid()
+}
+
 /// Enumerate secondary taskbars (`Shell_SecondaryTrayWnd`). Heavier than the
-/// primary read, so the host calls this only on the slow revalidate cadence.
-/// Each entry carries its proven tray edge (an exact tray/clock child edge,
+/// primary read, so the host calls this only on the stale-anchor flag
+/// (pid-scoped Explorer window edge, rediscovery broadcast, or topology
+/// change). Each entry carries its proven tray edge (an exact tray/clock child edge,
 /// or the bar's own right edge once the child set proves no right-side shell
 /// region exists); `None` refuses layout, never positions. DPI and the
 /// auto-hide switch are read live like the primary path (same global switch,

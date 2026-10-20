@@ -347,6 +347,242 @@ pub fn cmd_resize(options: &ResizeOptions) -> Result<String> {
     Ok(serde_json::json!({"dispatched": true, "op": "resize", "direction": options.direction, "mode": options.mode, "route": "test-needed-tentative"}).to_string())
 }
 
+/// Test-needed exact-owner directional move/focus control for the normal
+/// `tile` loop only (tentative, pending user review; the product hook still
+/// filters injected chords, so synthetic input can never drive a move or a
+/// focus). Mirrors `cmd_resize` exactly: same-path medium caller, exact
+/// ledger-owner liveness, proof-owner refusal, and a bounded single-pending
+/// request file (`directional.request`). The owner consumes the request once,
+/// resolves the live foreground as the subject through the production
+/// origin/member/lifetime/scope gates, and dispatches through the real
+/// `keyboard_tick` directional arm without changing the hook classifier.
+/// The CLI carries op/direction only, never an HWND.
+pub fn cmd_directional(options: &DirectionalOptions) -> Result<String> {
+    use crate::tiling::{
+        DIRECTIONAL_REQUEST_VERSION, DirectionalRequest, render_directional_request,
+    };
+    ensure_pm_v2()?;
+    let me = medium_caller()?;
+    // Like `cmd_stop`, the CLI itself may run from any shell; only the
+    // ledger owner liveness plus the same-path medium binding gate below.
+    let dir =
+        crate::native::ledger_directory().map_err(|e| err(format!("error: ledger dir: {e}")))?;
+    let ledger_text =
+        std::fs::read_to_string(dir.join(crate::storage::LEDGER_FILE_NAME)).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                err("refuse: no owner running")
+            } else {
+                err(format!("error: ledger read: {e}"))
+            }
+        })?;
+    let record: crate::model::RecoveryLedger =
+        crate::model::parse_ledger(&ledger_text).map_err(|_| err("refuse: corrupt ledger"))?;
+    // Same-path medium caller check, mirroring `cmd_stop`: SID, session, exe.
+    if me.user_sid != record.owner.user_sid || me.session_id != record.owner.session_id {
+        return Err(err("refuse: owner mismatch"));
+    }
+    let exe = crate::native::current_exe_path().map_err(|e| err(format!("error: exe {e}")))?;
+    if !exe_paths_equal(&exe, &record.owner.exe_path) {
+        return Err(err("refuse: owner mismatch"));
+    }
+    // Proof owners never serve the normal control: a proof audit marker for
+    // this exact owner creation proves proof mode (normal runs write none).
+    let audit = dir.join(format!(
+        "proof-audit-{}.jsonl",
+        record.owner.process_creation
+    ));
+    if audit.exists() {
+        return Err(err("refuse: proof owner"));
+    }
+    // The ledger owner must be exactly alive (full identity, no PID reuse).
+    let held = HeldProcess::open(record.owner.pid).map_err(|e| match e {
+        crate::native::IdentityError::Absent => err("refuse: owner not running"),
+        other => err(format!("error: owner {other}")),
+    })?;
+    let live = held.identity().map_err(|e| match e {
+        crate::native::IdentityError::Absent => err("refuse: owner not running"),
+        other => err(format!("error: owner {other}")),
+    })?;
+    if live != record.owner || !held.is_alive() {
+        return Err(err("refuse: owner not running"));
+    }
+    let rid = held
+        .integrity()
+        .map_err(|e| err(format!("error: target integrity {e}")))?;
+    if !is_medium_rid(rid) {
+        return Err(err(format!("refuse: target integrity {rid} is not medium")));
+    }
+    if !crate::tiling::resize_direction_valid(&options.direction) {
+        return Err(err(
+            "refuse: directional direction must be left|right|up|down",
+        ));
+    }
+    let path = dir.join(DIRECTIONAL_REQUEST_FILE);
+    if path.exists() {
+        return Err(err("refuse: directional request pending"));
+    }
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(1);
+    let correlation = format!("cli-{}-{:x}", me.pid, nanos);
+    if tiler_core::ids::CorrelationId::parse(&correlation).is_none() {
+        return Err(err("error: correlation render"));
+    }
+    let request = DirectionalRequest {
+        v: DIRECTIONAL_REQUEST_VERSION,
+        creation: record.owner.process_creation.clone(),
+        pid: record.owner.pid,
+        exe_path: record.owner.exe_path.clone(),
+        user_sid: record.owner.user_sid.clone(),
+        session_id: record.owner.session_id,
+        op: options.op,
+        direction: options.direction.clone(),
+        correlation: correlation.clone(),
+    };
+    let body = render_directional_request(&request);
+    if body.is_empty() {
+        return Err(err("error: request render"));
+    }
+    // Bounded single-pending queue: the body is written and synced to a
+    // same-directory unique temp first and only then published atomically
+    // with no-overwrite semantics, so the owner never observes a partial
+    // body. A publish race against an already-queued request refuses.
+    match crate::storage::publish_no_overwrite(
+        &dir,
+        DIRECTIONAL_REQUEST_FILE,
+        body.as_bytes(),
+        &correlation,
+    ) {
+        Ok(()) => {}
+        Err(crate::storage::PublishError::Pending) => {
+            return Err(err("refuse: directional request pending"));
+        }
+        Err(crate::storage::PublishError::Io(e)) => {
+            return Err(err(format!("error: request write: {e}")));
+        }
+    }
+    Ok(serde_json::json!({"dispatched": true, "op": options.op.as_str(), "direction": options.direction, "route": "test-needed-tentative"}).to_string())
+}
+
+/// Test-needed exact-owner explicit output-send control for the normal
+/// `tile` loop only (tentative, pending user review; the product hook still
+/// filters injected chords, so synthetic input can never drive a send).
+/// Mirrors `cmd_directional` exactly: same-path medium caller, exact
+/// ledger-owner liveness, proof-owner refusal, and a bounded single-pending
+/// request file (`send-output.request`). The owner consumes the request once,
+/// resolves the live foreground as the subject through the production
+/// origin/member/lifetime/scope gates, and dispatches through the real
+/// explicit `SendToOutput` production route without changing the hook
+/// classifier. The CLI carries follow/direction only, never an HWND.
+pub fn cmd_send_output(options: &SendOutputOptions) -> Result<String> {
+    use crate::tiling::{
+        SEND_OUTPUT_REQUEST_VERSION, SendOutputRequest, render_send_output_request,
+    };
+    ensure_pm_v2()?;
+    let me = medium_caller()?;
+    // Like `cmd_stop`, the CLI itself may run from any shell; only the
+    // ledger owner liveness plus the same-path medium binding gate below.
+    let dir =
+        crate::native::ledger_directory().map_err(|e| err(format!("error: ledger dir: {e}")))?;
+    let ledger_text =
+        std::fs::read_to_string(dir.join(crate::storage::LEDGER_FILE_NAME)).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                err("refuse: no owner running")
+            } else {
+                err(format!("error: ledger read: {e}"))
+            }
+        })?;
+    let record: crate::model::RecoveryLedger =
+        crate::model::parse_ledger(&ledger_text).map_err(|_| err("refuse: corrupt ledger"))?;
+    // Same-path medium caller check, mirroring `cmd_stop`: SID, session, exe.
+    if me.user_sid != record.owner.user_sid || me.session_id != record.owner.session_id {
+        return Err(err("refuse: owner mismatch"));
+    }
+    let exe = crate::native::current_exe_path().map_err(|e| err(format!("error: exe {e}")))?;
+    if !exe_paths_equal(&exe, &record.owner.exe_path) {
+        return Err(err("refuse: owner mismatch"));
+    }
+    // Proof owners never serve the normal control: a proof audit marker for
+    // this exact owner creation proves proof mode (normal runs write none).
+    let audit = dir.join(format!(
+        "proof-audit-{}.jsonl",
+        record.owner.process_creation
+    ));
+    if audit.exists() {
+        return Err(err("refuse: proof owner"));
+    }
+    // The ledger owner must be exactly alive (full identity, no PID reuse).
+    let held = HeldProcess::open(record.owner.pid).map_err(|e| match e {
+        crate::native::IdentityError::Absent => err("refuse: owner not running"),
+        other => err(format!("error: owner {other}")),
+    })?;
+    let live = held.identity().map_err(|e| match e {
+        crate::native::IdentityError::Absent => err("refuse: owner not running"),
+        other => err(format!("error: owner {other}")),
+    })?;
+    if live != record.owner || !held.is_alive() {
+        return Err(err("refuse: owner not running"));
+    }
+    let rid = held
+        .integrity()
+        .map_err(|e| err(format!("error: target integrity {e}")))?;
+    if !is_medium_rid(rid) {
+        return Err(err(format!("refuse: target integrity {rid} is not medium")));
+    }
+    if !crate::tiling::resize_direction_valid(&options.direction) {
+        return Err(err(
+            "refuse: send-output direction must be left|right|up|down",
+        ));
+    }
+    let path = dir.join(SEND_OUTPUT_REQUEST_FILE);
+    if path.exists() {
+        return Err(err("refuse: send-output request pending"));
+    }
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(1);
+    let correlation = format!("cli-{}-{:x}", me.pid, nanos);
+    if tiler_core::ids::CorrelationId::parse(&correlation).is_none() {
+        return Err(err("error: correlation render"));
+    }
+    let request = SendOutputRequest {
+        v: SEND_OUTPUT_REQUEST_VERSION,
+        creation: record.owner.process_creation.clone(),
+        pid: record.owner.pid,
+        exe_path: record.owner.exe_path.clone(),
+        user_sid: record.owner.user_sid.clone(),
+        session_id: record.owner.session_id,
+        follow: options.follow,
+        direction: options.direction.clone(),
+        correlation: correlation.clone(),
+    };
+    let body = render_send_output_request(&request);
+    if body.is_empty() {
+        return Err(err("error: request render"));
+    }
+    // Bounded single-pending queue: the body is written and synced to a
+    // same-directory unique temp first and only then published atomically
+    // with no-overwrite semantics, so the owner never observes a partial
+    // body. A publish race against an already-queued request refuses.
+    match crate::storage::publish_no_overwrite(
+        &dir,
+        SEND_OUTPUT_REQUEST_FILE,
+        body.as_bytes(),
+        &correlation,
+    ) {
+        Ok(()) => {}
+        Err(crate::storage::PublishError::Pending) => {
+            return Err(err("refuse: send-output request pending"));
+        }
+        Err(crate::storage::PublishError::Io(e)) => {
+            return Err(err(format!("error: request write: {e}")));
+        }
+    }
+    Ok(serde_json::json!({"dispatched": true, "op": if options.follow { "follow" } else { "stay" }, "direction": options.direction, "route": "test-needed-tentative"}).to_string())
+}
+
 /// `capture` command: read-only frozen-allowlist capture of explicitly listed
 /// owned-helper windows only. Each `--hwnd` target is fully validated
 /// (owned-helper identity with lifetime tag, proof-mode eligibility, fresh

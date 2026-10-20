@@ -12,7 +12,7 @@ use super::dir_watch::DirWatch;
 use super::observe::pump_wait_with_intent;
 use super::run_loop_wait::{
     OWNER_WAIT_SOURCE_ORDER, OwnerDeadlines, OwnerTimeout, OwnerWaitDiag, OwnerWaitSource,
-    owner_deadline_source,
+    loop_exit_cause, owner_deadline_source,
 };
 use super::{OwnerWaitCounts, WaitWake, pump_waits_line};
 
@@ -57,6 +57,19 @@ fn healthy_idle_selects_infinite() {
         owner_deadline_source(now, &idle_deadlines()).requested_ms,
         u32::MAX
     );
+}
+
+#[test]
+fn loop_exit_names_its_initiator() {
+    // The single `loop-exit` cause matches the loop-head order: an
+    // exact-owner stop file wins over a tray Stop pick, which wins over
+    // bounded-run expiry; healthy idle reports no exit.
+    assert_eq!(loop_exit_cause(false, false, false), None);
+    assert_eq!(loop_exit_cause(true, false, false), Some("stop-file"));
+    assert_eq!(loop_exit_cause(false, true, false), Some("tray-stop"));
+    assert_eq!(loop_exit_cause(false, false, true), Some("deadline"));
+    assert_eq!(loop_exit_cause(true, true, true), Some("stop-file"));
+    assert_eq!(loop_exit_cause(false, true, true), Some("tray-stop"));
 }
 
 #[test]

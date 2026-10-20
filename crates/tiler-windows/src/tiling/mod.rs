@@ -63,16 +63,23 @@ pub use reconcile::{
     AllowEntry, GestureIntent, ObservedTarget, ReadbackOutcome, ReconcileInput, RefusedTracker,
     TRANSIENT_BASE_MS, TRANSIENT_MAX_MS, allow_match, allowlist_digest, build_reconcile_event,
     build_reconcile_event_for, build_reconcile_event_for_floating, classify_gesture,
-    drop_point_in_domain, parse_allowlist, prefer_modal_move, readback_outcome,
+    dpi_readback_decision, dpi_transition_reouter, drop_point_in_domain, parse_allowlist,
+    prefer_modal_move, readback_outcome, transfer_readback_entry,
 };
 pub use workspace::{
-    ChildrenOptions, InspectOptions, RESIZE_REQUEST_FILE, RESIZE_REQUEST_VERSION, ResizeOptions,
-    ResizeRepeat, ResizeRequest, WORKSPACE_REQUEST_VERSION, WorkspaceAction, WorkspaceDirection,
-    WorkspaceOptions, WorkspaceRequest, is_borderless_fullscreen, parse_children_args,
-    parse_inspect_args, parse_resize_args, parse_resize_request, parse_workspace_args,
-    parse_workspace_request, render_resize_request, render_workspace_request,
-    resize_direction_valid, resize_mode_valid, resize_repeat_next, tick_summary_signature,
-    verify_resize_argv_consistency, verify_workspace_argv_consistency,
+    ChildrenOptions, DIRECTIONAL_REQUEST_FILE, DIRECTIONAL_REQUEST_VERSION, DirectionalOp,
+    DirectionalOptions, DirectionalRequest, InspectOptions, RESIZE_REQUEST_FILE,
+    RESIZE_REQUEST_VERSION, ResizeOptions, ResizeRepeat, ResizeRequest, SEND_OUTPUT_REQUEST_FILE,
+    SEND_OUTPUT_REQUEST_VERSION, SendOutputOptions, SendOutputRequest, WORKSPACE_REQUEST_VERSION,
+    WorkspaceAction, WorkspaceDirection, WorkspaceOptions, WorkspaceRequest,
+    is_borderless_fullscreen, parse_children_args, parse_directional_args,
+    parse_directional_request, parse_inspect_args, parse_resize_args, parse_resize_request,
+    parse_send_output_args, parse_send_output_request, parse_workspace_args,
+    parse_workspace_request, render_directional_request, render_resize_request,
+    render_send_output_request, render_workspace_request, resize_direction_valid,
+    resize_mode_valid, resize_repeat_next, tick_summary_signature,
+    verify_directional_argv_consistency, verify_resize_argv_consistency,
+    verify_send_output_argv_consistency, verify_workspace_argv_consistency,
 };
 
 #[cfg(test)]

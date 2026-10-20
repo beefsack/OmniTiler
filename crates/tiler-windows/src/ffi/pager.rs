@@ -54,12 +54,12 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow,
     EnumChildWindows, EnumWindows, FindWindowExW, FindWindowW, GW_HWNDNEXT, GW_HWNDPREV,
     GWL_EXSTYLE, GWLP_USERDATA, GetClassNameW, GetClientRect, GetWindow, GetWindowLongPtrW,
-    GetWindowLongW, GetWindowRect, HWND_TOPMOST, IDC_ARROW, IsWindow, IsWindowVisible, LoadCursorW,
-    MA_NOACTIVATE, RegisterClassW, RegisterWindowMessageW, SW_HIDE, SW_SHOWNA, SWP_NOACTIVATE,
-    SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SetWindowLongPtrW, SetWindowPos, ShowWindow, WM_CREATE,
-    WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_LBUTTONDOWN, WM_MOUSEACTIVATE, WM_PAINT,
-    WM_SETTINGCHANGE, WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
-    WS_VISIBLE,
+    GetWindowLongW, GetWindowRect, GetWindowThreadProcessId, HWND_TOPMOST, IDC_ARROW, IsWindow,
+    IsWindowVisible, LoadCursorW, MA_NOACTIVATE, RegisterClassW, RegisterWindowMessageW, SW_HIDE,
+    SW_SHOWNA, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SetWindowLongPtrW,
+    SetWindowPos, ShowWindow, WM_CREATE, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED,
+    WM_LBUTTONDOWN, WM_MOUSEACTIVATE, WM_PAINT, WM_SETTINGCHANGE, WNDCLASSW, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_VISIBLE,
 };
 
 use crate::pager_icons::IconImage;
@@ -103,6 +103,15 @@ pub fn take_stale_hide() -> bool {
 
 fn want_rediscover() {
     REDISCOVER.store(true, Ordering::SeqCst);
+}
+
+/// Forward a durable-owner `TaskbarCreated` broadcast into the shared pager
+/// invalidation flag. The tray owner window survives Explorer restarts even
+/// when no pager overlay exists to receive the broadcast, so the tray
+/// procedure calls this (atomic flag only, no logging or native work) to
+/// guarantee the owner scope refresh runs on the next pump.
+pub fn note_taskbar_rediscover() {
+    want_rediscover();
 }
 
 fn want_stale_hide() {
@@ -942,6 +951,24 @@ pub fn query_appbar_state() -> usize {
     let mut data: APPBARDATA = unsafe { std::mem::zeroed() };
     data.cbSize = std::mem::size_of::<APPBARDATA>() as u32;
     unsafe { SHAppBarMessage(ABM_GETSTATE, &mut data) }
+}
+
+/// Owning Explorer process id behind the primary taskbar (`Shell_TrayWnd`).
+/// `None` when Explorer is gone or the owner is unreadable: the host treats
+/// that as no scope (never a match), so a restart window cannot misattribute
+/// queued edges to a recycled pid. One `FindWindowW` plus one
+/// `GetWindowThreadProcessId`, same cost class as the per-pump primary read.
+#[must_use]
+pub fn primary_taskbar_pid() -> Option<u32> {
+    let tray = unsafe { FindWindowW(wide(PRIMARY_TRAY_CLASS).as_ptr(), std::ptr::null()) };
+    if tray.is_null() {
+        return None;
+    }
+    let mut pid: u32 = 0;
+    unsafe {
+        GetWindowThreadProcessId(tray, &mut pid);
+    }
+    if pid == 0 { None } else { Some(pid) }
 }
 
 /// Read the primary taskbar fresh: `Shell_TrayWnd` rect and visibility plus

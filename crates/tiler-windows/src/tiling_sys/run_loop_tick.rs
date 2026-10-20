@@ -141,12 +141,14 @@ fn drop_blocked_intents(
     // Out-of-hook select observes the same suspension: consumed
     // once with a suspended outcome, never applied while a
     // fullscreen foreground holds the session. The test-needed
-    // resize poll carries its own suspend fence and refuses the
-    // same way.
+    // resize and directional polls carry their own suspend fences
+    // and refuse the same way.
     poll_workspace_cli_request(state, me, store, dir, fulls, areas);
     tray_select::poll_tray_select(state, me, store, dir, fulls, areas, tray);
     poll_pager_select(state, me, store, dir, fulls, areas);
     poll_resize_cli_request(state, me, dir, fulls, areas);
+    poll_directional_cli_request(state, me, dir, fulls, areas);
+    poll_send_output_cli_request(state, me, dir, fulls, areas);
 }
 
 /// Clear held-gesture and preview state on a blocked turn plus the
@@ -305,7 +307,11 @@ pub(super) fn run_active_tick(
     // event; the poll itself consumes once and dispatches through the
     // existing resolver. Checked before the idle skip so a pending
     // request never waits for an unrelated wake.
-    if dir.join(WORKSPACE_REQUEST_FILE).exists() || dir.join(RESIZE_REQUEST_FILE).exists() {
+    if dir.join(WORKSPACE_REQUEST_FILE).exists()
+        || dir.join(RESIZE_REQUEST_FILE).exists()
+        || dir.join(DIRECTIONAL_REQUEST_FILE).exists()
+        || dir.join(SEND_OUTPUT_REQUEST_FILE).exists()
+    {
         woke = true;
     }
     // Bare-chord edge wake: GetAsyncKeyState levels are sampled here,
@@ -667,6 +673,8 @@ pub(super) fn run_active_tick(
             tray_select::poll_tray_select(state, me, store, dir, &fulls, areas, tray);
             poll_pager_select(state, me, store, dir, &fulls, areas);
             poll_resize_cli_request(state, me, dir, &fulls, areas);
+            poll_directional_cli_request(state, me, dir, &fulls, areas);
+            poll_send_output_cli_request(state, me, dir, &fulls, areas);
         } else {
             if !snap_events.is_empty() {
                 keyboard_tick(state, me, &fulls, areas, snap_events, None);
@@ -698,6 +706,8 @@ pub(super) fn run_active_tick(
             poll_workspace_cli_request(state, me, store, dir, &fulls, areas);
             tray_select::poll_tray_select(state, me, store, dir, &fulls, areas, tray);
             poll_pager_select(state, me, store, dir, &fulls, areas);
+            poll_directional_cli_request(state, me, dir, &fulls, areas);
+            poll_send_output_cli_request(state, me, dir, &fulls, areas);
         }
     } else {
         // A just-ended managed gesture settles before keyboard
@@ -761,6 +771,8 @@ pub(super) fn run_active_tick(
         poll_workspace_cli_request(state, me, store, dir, &fulls, areas);
         tray_select::poll_tray_select(state, me, store, dir, &fulls, areas, tray);
         poll_pager_select(state, me, store, dir, &fulls, areas);
+        poll_directional_cli_request(state, me, dir, &fulls, areas);
+        poll_send_output_cli_request(state, me, dir, &fulls, areas);
     }
     // Post-mutation border refresh: reconciliation may have moved the
     // target this tick, so re-read the fresh frame instead of leaving

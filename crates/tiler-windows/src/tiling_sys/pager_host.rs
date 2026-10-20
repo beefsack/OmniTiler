@@ -277,11 +277,107 @@ fn pager_has_pending(state: &TileLoop) -> bool {
         .unwrap_or(false)
 }
 
+/// Pure secondary-enumeration gate: a stale-anchor flag (validated
+/// taskbar-subtree edge, rediscovery broadcast, or monitor-topology change
+/// folded into `dirty`) or a changed topology fingerprint revalidates, but
+/// never while suspended: enumeration and its filter work defer with the
+/// flag retained for resume, so gaming owns no taskbar work. The gate never
+/// inspects the cached census, so empty, unproven, and proven-but-churned
+/// anchors all converge on genuine Explorer change; healthy idle with no
+/// Explorer change never enumerates. No timer: rebuild traffic itself
+/// (child create/show/hide/location edges) drives convergence.
+fn secondary_revalidate_due(dirty: bool, areas_fp: u64, last_fp: u64, suspended: bool) -> bool {
+    (dirty || areas_fp != last_fp) && !suspended
+}
+
+/// Taskbar bar classes terminating the subtree walk: a queued Explorer
+/// window belongs to taskbar UI only when itself or an ancestor carries one
+/// of these. Ordinary File Explorer windows (`CabinetWClass` and kin) never
+/// match, however hot their traffic gets.
+const TASKBAR_BAR_CLASSES: [&str; 2] = ["Shell_TrayWnd", "Shell_SecondaryTrayWnd"];
+
+/// Max ancestor hops validated per taskbar event: taskbar descendants nest
+/// shallowly (bar, child, sub-child); anything deeper is not taskbar UI.
+const TASKBAR_SUBTREE_WALK_CAP: usize = 8;
+
+/// Pure taskbar-subtree check over live reads: true when `hwnd` itself or a
+/// bounded ancestor chain carries a taskbar bar class. Fail conservatively
+/// to stale (true) only when an unreadable class or destroyed handle
+/// prevents proving the window unrelated; a fully readable non-matching
+/// chain is unrelated (false). Reads run on the owner drain, never in the
+/// hook callback.
+pub(super) fn taskbar_subtree_hit(hwnd: u64) -> bool {
+    let mut cursor = hwnd;
+    for _ in 0..TASKBAR_SUBTREE_WALK_CAP {
+        if cursor == 0 {
+            return false;
+        }
+        match live_fg_class(cursor) {
+            Some(class) if TASKBAR_BAR_CLASSES.contains(&class.as_str()) => return true,
+            Some(_) => {}
+            None => return true,
+        }
+        cursor = live_parent_of(cursor);
+    }
+    false
+}
+
+/// Taskbar-scope hook ranges: the same narrow object bands as the global
+/// hooks (create/destroy/show/hide plus explicit location-change), installed
+/// pid-scoped to the live Explorer identity. The OS delivers only that
+/// process here, so game and app windows never reach the taskbar queue.
+pub(super) fn taskbar_hook_ranges() -> [(u32, u32); 2] {
+    [
+        (
+            EVENT_OBJECT_CREATE,
+            EVENT_OBJECT_SHOW
+                .max(EVENT_OBJECT_DESTROY)
+                .max(EVENT_OBJECT_HIDE),
+        ),
+        (EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_LOCATIONCHANGE),
+    ]
+}
+
+/// Install the pid-scoped taskbar hooks for one Explorer identity; empty
+/// when there is no identity (Explorer gone) or a band refuses. A partial
+/// set never stands: the guards drop it on return (unhook on drop) so the
+/// next broadcast retries a coherent full scope instead of silently keeping
+/// half the bands.
+pub(super) fn install_taskbar_hooks(pid: Option<u32>) -> Vec<crate::ffi::WinEventHook> {
+    let Some(pid) = pid else {
+        return Vec::new();
+    };
+    let hooks: Vec<crate::ffi::WinEventHook> = taskbar_hook_ranges()
+        .into_iter()
+        .filter_map(|(min, max)| crate::ffi::install_taskbar_hook(min, max, pid))
+        .collect();
+    if hooks.len() < taskbar_hook_ranges().len() {
+        Vec::new()
+    } else {
+        hooks
+    }
+}
+
+/// Pure taskbar-scope reinstall decision: reinstall when the live Explorer
+/// pid differs from the cached scope (startup, restart with a new pid, or
+/// Explorer gone) or when the installed set is incomplete (failed or partial
+/// install must retry on the next broadcast, never strand half-scoped).
+/// Identity and band count only, never geometry.
+pub(super) fn taskbar_reinstall_due(
+    cached: Option<u32>,
+    current: Option<u32>,
+    installed: usize,
+) -> bool {
+    cached != current || installed < taskbar_hook_ranges().len()
+}
+
 // Per-pump taskbar-pager sync for the tile loop: safety gate, fresh primary
 // taskbar facts, per-output frames from live plus saved rects, and overlay
-// present. Returns true when a click waits (the pump wakes for it; the tick
-// dispatch drains it once). Proof owners never page: the caller skips this
-// entirely on proof paths, and teardown drops the overlays.
+// present. `rediscovered` is the once-per-turn native rediscovery broadcast
+// consumed by the caller (single consumption point). Returns true when a
+// click waits (the pump wakes for it; the tick dispatch drains it once).
+// Proof owners never page: the caller skips this entirely on proof paths,
+// and teardown drops the overlays.
 pub(super) fn sync_taskbar_pager(
     state: &mut TileLoop,
     me: &ProcessIdentity,
@@ -289,6 +385,7 @@ pub(super) fn sync_taskbar_pager(
     areas: &[MonitorArea],
     log_path: &Path,
     now: Instant,
+    rediscovered: bool,
 ) -> bool {
     // A calibration broadcast hides every strip at once (inside the window
     // procedure); revalidate from fresh facts before showing again, so no
@@ -299,10 +396,13 @@ pub(super) fn sync_taskbar_pager(
         overlays.hide_all();
         state.pager_suppress_last = Some("stale-facts".to_owned());
     }
-    // Fresh primary facts every pump (five reads, no enumeration): a tray
-    // expansion, auto-hide slide, or Explorer disappearance is visible on
-    // the very next pump, never up to 5s late. Explorer restarts and the
-    // slow timer only retry this same read; layouts never use older facts.
+    // Fresh primary facts every pump (bar, tray edge, visibility, auto-hide
+    // switch, DPI: five reads, no enumeration): a tray expansion, auto-hide
+    // slide, or Explorer disappearance is visible on the very next pump.
+    // Child create/show/location traffic arrives through the existing global
+    // hooks and wakes that pump (see `window_edge_wakes`), so healthy
+    // primary churn re-reads on the changing pump itself; layouts never use
+    // older facts.
     let primary = crate::pager_sys::read_primary_taskbar();
     if primary != state.pager_primary {
         let outcome = match (&state.pager_primary, &primary) {
@@ -324,10 +424,25 @@ pub(super) fn sync_taskbar_pager(
         );
     }
     // Slow secondary enumeration (refusal logging only, never positions):
-    // the native rediscovery broadcast or a monitor-topology change
-    // revalidates; no timer arm (the owner wait is event-driven).
+    // a stale-anchor flag (validated taskbar-subtree edge from the drain,
+    // the rediscovery broadcast passed in by the caller, or a
+    // monitor-topology change) revalidates; the owner wait stays fully
+    // event-driven with no timer, and nothing enumerates while suspended
+    // (the flag is retained for resume). The drain sets the flag without
+    // inspecting the cached census, so empty, unproven, and proven-but-
+    // churned anchors all revalidate on genuine taskbar change; the flag
+    // clears only on revalidation, so a restart observed on an idle pump
+    // is never lost.
+    if rediscovered {
+        state.pager_taskbar_dirty = true;
+    }
     let areas_fp = areas_fingerprint(areas);
-    if crate::pager_sys::take_rediscover() || state.pager_areas_fp != areas_fp {
+    if secondary_revalidate_due(
+        state.pager_taskbar_dirty,
+        areas_fp,
+        state.pager_areas_fp,
+        state.suspended,
+    ) {
         let secondaries = crate::pager_sys::discover_secondaries();
         if secondaries.len() != state.pager_secondaries.len() {
             log_json_at(
@@ -341,6 +456,7 @@ pub(super) fn sync_taskbar_pager(
         }
         state.pager_secondaries = secondaries;
         state.pager_areas_fp = areas_fp;
+        state.pager_taskbar_dirty = false;
     }
     let gate_unknown = areas.is_empty() || state.pager_primary.is_none();
     let facts = pager_suppress_facts(state, me, fulls, state.taskbar_pager, gate_unknown);
@@ -1006,6 +1122,252 @@ mod pager_host_tests {
             Some(SelectScope::new(&output, &target, 1)),
             "only the latest click survives"
         );
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn window_edge_wakes_accepts_window_shapes_only() {
+        use super::observe::window_edge_wakes;
+        use super::{
+            EVENT_OBJECT_CREATE, EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE,
+            EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_SHOW, EVENT_SYSTEM_FOREGROUND,
+            EVENT_SYSTEM_MOVESIZEEND, EVENT_SYSTEM_MOVESIZESTART,
+        };
+        // Window-object shapes wake, whether top-level or child: the rule
+        // reads the event plus the object id only, never the HWND, so a
+        // taskbar descendant (own HWND, OBJID_WINDOW) wakes exactly like
+        // its bar. Producer-shaped child traffic is therefore a wake.
+        for event in [
+            EVENT_OBJECT_CREATE,
+            EVENT_OBJECT_DESTROY,
+            EVENT_OBJECT_SHOW,
+            EVENT_OBJECT_HIDE,
+            EVENT_OBJECT_LOCATIONCHANGE,
+            EVENT_SYSTEM_FOREGROUND,
+        ] {
+            assert!(
+                window_edge_wakes(event, 0),
+                "window shape wakes: {event:#X}"
+            );
+        }
+        // Sub-object noise never wakes: client area, title bar, menu and
+        // system menu ids carry no window-identity change. Foreground with
+        // a non-window id is noise too.
+        for id in [-4, -3, -2, -1] {
+            for event in [
+                EVENT_OBJECT_CREATE,
+                EVENT_OBJECT_SHOW,
+                EVENT_OBJECT_LOCATIONCHANGE,
+                EVENT_SYSTEM_FOREGROUND,
+            ] {
+                assert!(
+                    !window_edge_wakes(event, id),
+                    "sub-object never wakes: {event:#X}/{id}"
+                );
+            }
+        }
+        // Move/size transitions and unknown events route elsewhere, never
+        // through the wake rule.
+        assert!(!window_edge_wakes(EVENT_SYSTEM_MOVESIZESTART, 0));
+        assert!(!window_edge_wakes(EVENT_SYSTEM_MOVESIZEEND, 0));
+        assert!(!window_edge_wakes(0x800A, 0));
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn secondary_revalidate_due_covers_dirty_topology_and_suspend() {
+        // The gate never inspects the cached census: a stale-anchor flag
+        // (validated taskbar-subtree edge, broadcast, or topology mark) or a
+        // changed fingerprint revalidates, so empty, unproven, and
+        // proven-but-churned anchors all converge. Clean plus stable never
+        // enumerates. While suspended nothing enumerates: the flag is
+        // retained for resume, so gaming owns no taskbar work.
+        assert!(super::secondary_revalidate_due(true, 7, 7, false));
+        assert!(super::secondary_revalidate_due(false, 7, 8, false));
+        assert!(!super::secondary_revalidate_due(false, 7, 7, false));
+        assert!(!super::secondary_revalidate_due(true, 7, 7, true));
+        assert!(!super::secondary_revalidate_due(false, 7, 8, true));
+        assert!(!super::secondary_revalidate_due(false, 7, 7, true));
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn taskbar_reinstall_due_tracks_identity_and_completeness() {
+        // Startup or a vanished Explorer with no installed bands re-runs the
+        // (native-free, for `None`) install path on the next trigger rather
+        // than stranding half-scoped; a stable pid with both bands never
+        // reinstalls. Identity and band count only, never geometry: the live
+        // unit proves delivery, this locks the decision.
+        assert!(super::taskbar_reinstall_due(None, Some(4242), 0));
+        assert!(super::taskbar_reinstall_due(None, None, 0));
+        assert!(!super::taskbar_reinstall_due(
+            Some(4242),
+            Some(4242),
+            super::taskbar_hook_ranges().len()
+        ));
+        assert!(super::taskbar_reinstall_due(Some(4242), Some(7777), 2));
+        assert!(super::taskbar_reinstall_due(Some(4242), None, 0));
+        assert!(super::taskbar_reinstall_due(Some(4242), Some(4242), 0));
+        assert!(super::taskbar_reinstall_due(Some(4242), Some(4242), 1));
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn durable_tray_broadcast_refreshes_scope_without_pager_windows() {
+        // Restart with zero pager carriers: no overlay exists to receive
+        // the broadcast, so the durable tray owner forwards it through the
+        // shared flag. The host consumes it exactly once and the reinstall
+        // predicate retries a coherent full scope on that turn.
+        let _ = crate::ffi::take_pager_rediscover();
+        crate::ffi::note_pager_taskbar_rediscover();
+        assert!(
+            crate::pager_sys::take_rediscover(),
+            "forwarded broadcast must flag once"
+        );
+        assert!(
+            !crate::pager_sys::take_rediscover(),
+            "flag never replays a second pump"
+        );
+        assert!(super::taskbar_reinstall_due(None, Some(4242), 0));
+        assert!(!super::taskbar_reinstall_due(
+            Some(4242),
+            Some(4242),
+            super::taskbar_hook_ranges().len()
+        ));
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn install_taskbar_hooks_needs_identity() {
+        // No Explorer identity installs no hooks without touching native
+        // scope state; ranges mirror the narrow global object bands.
+        // (Refused identities cannot be simulated portably offline; the
+        // all-or-nothing shape is covered by `taskbar_reinstall_due` and the
+        // unavailable log path in the loop.)
+        assert!(super::install_taskbar_hooks(None).is_empty());
+        assert_eq!(super::taskbar_hook_ranges().len(), 2);
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn drain_taskbar_edge_marks_dirty_regardless_of_cache() {
+        use super::drain_hook_edges;
+        use super::observe::hook_queue;
+        use super::{EVENT_OBJECT_CREATE, EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_SHOW};
+        // Empty census (pre-rebuild): producer-shaped Explorer child edges
+        // still mark anchors stale. Child HWNDs are fabricated ids, never
+        // dereferenced; the object id carries the window shape.
+        let (mut state, me, _, dir, _, _, _) = pager_rig();
+        assert!(state.pager_secondaries.is_empty());
+        crate::ffi::hooks::drive_taskbar_event(EVENT_OBJECT_CREATE, 901, 0, 11, 1);
+        crate::ffi::hooks::drive_taskbar_event(EVENT_OBJECT_SHOW, 902, 0, 11, 2);
+        crate::ffi::hooks::drive_taskbar_event(EVENT_OBJECT_LOCATIONCHANGE, 903, 0, 11, 3);
+        let drain = drain_hook_edges(&mut state, &me, &dir);
+        assert!(drain.woke);
+        assert!(state.pager_taskbar_dirty);
+        // Unrelated main-queue traffic never marks anchors stale: game and
+        // app wakes flow through the global queue only, so they can never
+        // arm secondary enumeration however hot they get.
+        let (mut quiet, me, _, dir, _, _, _) = pager_rig();
+        hook_queue()
+            .lock()
+            .map(|mut queue| {
+                queue.push(super::observe::HookEvent::Wake(701));
+                queue.push(super::observe::HookEvent::Wake(702));
+            })
+            .expect("hook queue");
+        drain_hook_edges(&mut quiet, &me, &dir);
+        assert!(!quiet.pager_taskbar_dirty);
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn drain_taskbar_sub_object_noise_never_marks_dirty() {
+        use super::drain_hook_edges;
+        use super::{EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_SHOW};
+        // Sub-object Explorer traffic (client/menu ids on real shapes)
+        // reaches the scoped queue but the shared window-edge rule drops
+        // it: no stale mark, no wake, no enumeration.
+        let (mut state, me, _, dir, _, _, _) = pager_rig();
+        crate::ffi::hooks::drive_taskbar_event(EVENT_OBJECT_SHOW, 911, -4, 11, 1);
+        crate::ffi::hooks::drive_taskbar_event(EVENT_OBJECT_LOCATIONCHANGE, 912, -3, 11, 2);
+        let drain = drain_hook_edges(&mut state, &me, &dir);
+        assert!(!drain.woke);
+        assert!(!state.pager_taskbar_dirty);
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn taskbar_subtree_hit_accepts_bars_and_children() {
+        use super::{inject_pending_fg_class, inject_pending_parents, taskbar_subtree_hit};
+        // Bar itself matches with no walk; a tray child matches through its
+        // bar parent; an unreadable mid-chain link fails conservatively to
+        // stale (a destroyed handle cannot prove the window unrelated).
+        inject_pending_fg_class(900, Some("Shell_SecondaryTrayWnd".to_owned()));
+        inject_pending_fg_class(901, Some("TrayNotifyWnd".to_owned()));
+        inject_pending_fg_class(903, Some("TrayNotifyWnd".to_owned()));
+        inject_pending_parents(vec![(900, 0), (901, 900), (903, 904), (904, 0)]);
+        assert!(taskbar_subtree_hit(900));
+        assert!(taskbar_subtree_hit(901));
+        assert!(taskbar_subtree_hit(903));
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn taskbar_subtree_hit_rejects_ordinary_explorer_windows() {
+        use super::{inject_pending_fg_class, inject_pending_parents, taskbar_subtree_hit};
+        // Ordinary File Explorer traffic (top-level or nested, fully
+        // readable, no bar class anywhere) never invalidates anchors,
+        // however hot it gets. Null handles never match either.
+        inject_pending_fg_class(910, Some("CabinetWClass".to_owned()));
+        inject_pending_fg_class(911, Some("DirectUIHWND".to_owned()));
+        inject_pending_parents(vec![(910, 0), (911, 910)]);
+        assert!(!taskbar_subtree_hit(910));
+        assert!(!taskbar_subtree_hit(911));
+        assert!(!taskbar_subtree_hit(0));
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn drain_taskbar_unrelated_explorer_event_ignored() {
+        use super::drain_hook_edges;
+        use super::{EVENT_OBJECT_CREATE, inject_pending_fg_class, inject_pending_parents};
+        // A fully readable ordinary File Explorer create reaches the scoped
+        // queue (same Explorer pid) but validates unrelated: no stale mark,
+        // no wake, no enumeration.
+        let (mut state, me, _, dir, _, _, _) = pager_rig();
+        inject_pending_fg_class(920, Some("CabinetWClass".to_owned()));
+        inject_pending_parents(vec![(920, 0)]);
+        crate::ffi::hooks::drive_taskbar_event(EVENT_OBJECT_CREATE, 920, 0, 11, 1);
+        let drain = drain_hook_edges(&mut state, &me, &dir);
+        assert!(!drain.woke);
+        assert!(!state.pager_taskbar_dirty);
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn drain_taskbar_child_accepted_and_game_suspend_deferred() {
+        use super::drain_hook_edges;
+        use super::{EVENT_OBJECT_SHOW, inject_pending_fg_class, inject_pending_parents};
+        // A validated taskbar child marks stale and wakes the turn.
+        let (mut state, me, _, dir, _, _, _) = pager_rig();
+        inject_pending_fg_class(930, Some("TrayNotifyWnd".to_owned()));
+        inject_pending_fg_class(931, Some("Shell_TrayWnd".to_owned()));
+        inject_pending_parents(vec![(930, 931), (931, 0)]);
+        crate::ffi::hooks::drive_taskbar_event(EVENT_OBJECT_SHOW, 930, 0, 11, 1);
+        let drain = drain_hook_edges(&mut state, &me, &dir);
+        assert!(drain.woke);
+        assert!(state.pager_taskbar_dirty);
+        // While suspended no filter work runs: the batch only retains the
+        // flag for resume (no validation, no wake from the scoped edge).
+        let (mut held, me, _, dir, _, _, _) = pager_rig();
+        held.suspended = true;
+        inject_pending_fg_class(940, Some("CabinetWClass".to_owned()));
+        inject_pending_parents(vec![(940, 0)]);
+        crate::ffi::hooks::drive_taskbar_event(EVENT_OBJECT_SHOW, 940, 0, 11, 2);
+        let drain = drain_hook_edges(&mut held, &me, &dir);
+        assert!(!drain.woke);
+        assert!(held.pager_taskbar_dirty);
         clear_pending_seams();
     }
 

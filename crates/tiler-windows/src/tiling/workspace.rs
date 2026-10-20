@@ -593,6 +593,267 @@ pub fn parse_resize_request(json: &str) -> Result<ResizeRequest, String> {
     Ok(request)
 }
 
+/// Exact-owner directional move/focus control (test-needed, tentative
+/// pending user review): `directional (--move|--focus) --direction DIR`
+/// queues one bounded request for the normal `tile` loop only. The owner
+/// consumes it once, resolves the live foreground as the subject through the
+/// production origin/member/lifetime/scope gates, and dispatches through the
+/// real `keyboard_tick` directional arm with production origin, lifetime,
+/// scope, topology, arrival and follow-focus fences and single-press
+/// semantics. Like workspace controls, it does not require keyboard takeover.
+/// No synthetic input; never a proof path. The CLI carries op/direction only,
+/// never an HWND. Proof owners and suspended/elevated sessions refuse.
+pub const DIRECTIONAL_REQUEST_FILE: &str = "directional.request";
+pub const DIRECTIONAL_REQUEST_VERSION: u32 = 1;
+
+/// Directional op for the exact-owner `directional` control: `move` shifts
+/// the focused managed window one step, `focus` steps focus. Wire values
+/// match the production `SnapOp` vocabulary (`move`/`focus`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum DirectionalOp {
+    #[serde(rename = "move")]
+    Move,
+    #[serde(rename = "focus")]
+    Focus,
+}
+
+impl DirectionalOp {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Move => "move",
+            Self::Focus => "focus",
+        }
+    }
+}
+
+/// CLI options for the exact-owner test-needed `directional` control (normal
+/// `tile` only): `--move` or `--focus` plus `--direction` with
+/// `left`|`right`|`up`|`down`, in exactly this order. The CLI only queues a
+/// bounded single-pending request file; the owner loop validates the full
+/// owner binding and dispatches through the production directional arm.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectionalOptions {
+    pub op: DirectionalOp,
+    pub direction: String,
+}
+
+/// Parse the test-needed `directional` CLI form. Exactly `(--move|--focus)`
+/// `--direction DIR` in this order; anything else (including swapped order,
+/// a missing value, or repeated flags) refuses.
+pub fn parse_directional_args(args: &[String]) -> Result<DirectionalOptions, String> {
+    let usage = "usage: directional (--move|--focus) --direction (left|right|up|down)";
+    if args.len() != 3 {
+        return Err(usage.to_owned());
+    }
+    let op = match args[0].as_str() {
+        "--move" => DirectionalOp::Move,
+        "--focus" => DirectionalOp::Focus,
+        _ => return Err(usage.to_owned()),
+    };
+    if args[1] != "--direction" {
+        return Err(usage.to_owned());
+    }
+    if !resize_direction_valid(&args[2]) {
+        return Err("refuse: directional direction must be left|right|up|down".to_owned());
+    }
+    Ok(DirectionalOptions {
+        op,
+        direction: args[2].clone(),
+    })
+}
+
+/// Verify the raw received argv against the parsed `directional` options:
+/// exactly `(--move|--focus) --direction DIR` with matching values, no
+/// unknown flags.
+pub fn verify_directional_argv_consistency(
+    raw: &[String],
+    parsed: &DirectionalOptions,
+) -> Result<(), String> {
+    let usage = "usage: directional (--move|--focus) --direction (left|right|up|down)";
+    if raw.len() != 3 || raw[1] != "--direction" {
+        return Err(usage.to_owned());
+    }
+    let want = match parsed.op {
+        DirectionalOp::Move => "--move",
+        DirectionalOp::Focus => "--focus",
+    };
+    if raw[0] != want || raw[2] != parsed.direction {
+        return Err("error: argv/parsed directional mismatch (impossible)".to_owned());
+    }
+    Ok(())
+}
+
+/// Versioned exact-owner directional request body. `creation`/`pid`/
+/// `exe_path`/`user_sid`/`session_id` bind the exact ledger owner; `op` is
+/// the validated move/focus transport op; `direction` is the validated wire
+/// token; `correlation` is a client-generated opaque transport token.
+/// No titles, no geometry, no HWNDs, no secrets.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DirectionalRequest {
+    pub v: u32,
+    pub creation: String,
+    pub pid: u32,
+    pub exe_path: String,
+    pub user_sid: String,
+    pub session_id: u32,
+    pub op: DirectionalOp,
+    pub direction: String,
+    pub correlation: String,
+}
+
+/// Render one directional request body. Bounds only; full owner equality
+/// stays with the owner-side check.
+pub fn render_directional_request(request: &DirectionalRequest) -> String {
+    serde_json::to_string(request).unwrap_or_default()
+}
+
+/// Parse and bound one directional request body. Refuses malformed JSON,
+/// version drift, empty identity, unknown direction tokens, and invalid
+/// correlation tokens. Owner equality (exact creation/pid/exe/sid/session)
+/// stays with the caller, which holds the live owner identity.
+pub fn parse_directional_request(json: &str) -> Result<DirectionalRequest, String> {
+    let request: DirectionalRequest = serde_json::from_str(json)
+        .map_err(|_| "refuse: malformed directional request".to_owned())?;
+    if request.v != DIRECTIONAL_REQUEST_VERSION {
+        return Err("refuse: directional request version".to_owned());
+    }
+    if request.creation.is_empty()
+        || request.pid == 0
+        || request.exe_path.is_empty()
+        || request.user_sid.is_empty()
+        || request.correlation.is_empty()
+    {
+        return Err("refuse: malformed directional request".to_owned());
+    }
+    if !resize_direction_valid(&request.direction) {
+        return Err("refuse: malformed directional request".to_owned());
+    }
+    if tiler_core::ids::CorrelationId::parse(&request.correlation).is_none() {
+        return Err("refuse: malformed directional request".to_owned());
+    }
+    Ok(request)
+}
+
+/// Exact-owner explicit output-send control (test-needed, tentative pending
+/// user review): `send-output (--follow|--stay) --direction DIR` queues one
+/// bounded request for the normal `tile` loop only. The owner consumes it
+/// once, resolves the live foreground as the subject through the production
+/// origin/member/lifetime/scope gates, and dispatches through the real
+/// explicit `SendToOutput` production route (`workspace_output_send_one` /
+/// `run_output_send`) with production origin, lifetime, scope, topology,
+/// arrival, follow/stay and suspension fences. Like workspace controls, it
+/// does not require keyboard takeover. No synthetic input; never a proof
+/// path. The CLI carries follow/direction only, never an HWND. Proof owners
+/// and suspended/elevated sessions refuse.
+pub const SEND_OUTPUT_REQUEST_FILE: &str = "send-output.request";
+pub const SEND_OUTPUT_REQUEST_VERSION: u32 = 1;
+
+/// CLI options for the exact-owner test-needed `send-output` control
+/// (normal `tile` only): `--follow` or `--stay` plus `--direction` with
+/// `left`|`right`|`up`|`down`, in exactly this order. The CLI only queues a
+/// bounded single-pending request file; the owner loop validates the full
+/// owner binding and dispatches through the production output-send arm.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SendOutputOptions {
+    pub follow: bool,
+    pub direction: String,
+}
+
+/// Parse the test-needed `send-output` CLI form. Exactly
+/// `(--follow|--stay)` `--direction DIR` in this order; anything else
+/// (including swapped order, a missing value, or repeated flags) refuses.
+pub fn parse_send_output_args(args: &[String]) -> Result<SendOutputOptions, String> {
+    let usage = "usage: send-output (--follow|--stay) --direction (left|right|up|down)";
+    if args.len() != 3 {
+        return Err(usage.to_owned());
+    }
+    let follow = match args[0].as_str() {
+        "--follow" => true,
+        "--stay" => false,
+        _ => return Err(usage.to_owned()),
+    };
+    if args[1] != "--direction" {
+        return Err(usage.to_owned());
+    }
+    if !resize_direction_valid(&args[2]) {
+        return Err("refuse: send-output direction must be left|right|up|down".to_owned());
+    }
+    Ok(SendOutputOptions {
+        follow,
+        direction: args[2].clone(),
+    })
+}
+
+/// Verify the raw received argv against the parsed `send-output` options:
+/// exactly `(--follow|--stay) --direction DIR` with matching values, no
+/// unknown flags.
+pub fn verify_send_output_argv_consistency(
+    raw: &[String],
+    parsed: &SendOutputOptions,
+) -> Result<(), String> {
+    let usage = "usage: send-output (--follow|--stay) --direction (left|right|up|down)";
+    if raw.len() != 3 || raw[1] != "--direction" {
+        return Err(usage.to_owned());
+    }
+    let want = if parsed.follow { "--follow" } else { "--stay" };
+    if raw[0] != want || raw[2] != parsed.direction {
+        return Err("error: argv/parsed send-output mismatch (impossible)".to_owned());
+    }
+    Ok(())
+}
+
+/// Versioned exact-owner output-send request body. `creation`/`pid`/
+/// `exe_path`/`user_sid`/`session_id` bind the exact ledger owner; `follow`
+/// is the explicit follow/stay intent; `direction` is the validated wire
+/// token; `correlation` is a client-generated opaque transport token.
+/// No titles, no geometry, no HWNDs, no secrets.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SendOutputRequest {
+    pub v: u32,
+    pub creation: String,
+    pub pid: u32,
+    pub exe_path: String,
+    pub user_sid: String,
+    pub session_id: u32,
+    pub follow: bool,
+    pub direction: String,
+    pub correlation: String,
+}
+
+/// Render one output-send request body. Bounds only; full owner equality
+/// stays with the owner-side check.
+pub fn render_send_output_request(request: &SendOutputRequest) -> String {
+    serde_json::to_string(request).unwrap_or_default()
+}
+
+/// Parse and bound one output-send request body. Refuses malformed JSON,
+/// version drift, empty identity, unknown direction tokens, and invalid
+/// correlation tokens. Owner equality (exact creation/pid/exe/sid/session)
+/// stays with the caller, which holds the live owner identity.
+pub fn parse_send_output_request(json: &str) -> Result<SendOutputRequest, String> {
+    let request: SendOutputRequest = serde_json::from_str(json)
+        .map_err(|_| "refuse: malformed send-output request".to_owned())?;
+    if request.v != SEND_OUTPUT_REQUEST_VERSION {
+        return Err("refuse: send-output request version".to_owned());
+    }
+    if request.creation.is_empty()
+        || request.pid == 0
+        || request.exe_path.is_empty()
+        || request.user_sid.is_empty()
+        || request.correlation.is_empty()
+    {
+        return Err("refuse: malformed send-output request".to_owned());
+    }
+    if !resize_direction_valid(&request.direction) {
+        return Err("refuse: malformed send-output request".to_owned());
+    }
+    if tiler_core::ids::CorrelationId::parse(&request.correlation).is_none() {
+        return Err("refuse: malformed send-output request".to_owned());
+    }
+    Ok(request)
+}
+
 /// Central portable borderless-fullscreen predicate: a captionless window
 /// whose visible frame completely contains any monitor's full bounds
 /// (`rcMonitor`, not `rcWork`). Dimensions alone never classify: captioned

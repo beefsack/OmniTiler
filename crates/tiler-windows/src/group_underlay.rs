@@ -111,6 +111,52 @@ pub enum MoveSizeKind {
     Unknown,
 }
 
+/// START probe outcome for one open move/size gesture: distinguishes an
+/// unreadable cursor, an unavailable hit-test (hung window, timeout, or
+/// failed send), and a successful raw `WM_NCHITTEST` result. Classification
+/// still flows through `classify_hit_test` unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MoveSizeProbe {
+    CursorUnavailable,
+    HitTestUnavailable,
+    Hit(u32),
+}
+
+/// One sampled START classification plus its probe facts: the single
+/// cursor read and the single hit-test send that produced it, so the
+/// `move-kind` diagnostic can attribute an `Unknown` without re-probing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MoveSizeStart {
+    pub kind: MoveSizeKind,
+    pub cursor: Option<(i32, i32)>,
+    pub probe: MoveSizeProbe,
+}
+
+/// Pure START mapping over one sampled cursor/hit-test pair. The
+/// classification is exactly `classify_hit_test` on a successful hit;
+/// anything earlier is `Unknown` with the failing stage recorded. No
+/// sampling here: the caller performs the single native sample once.
+#[must_use]
+pub fn classify_move_size_probe(cursor: Option<(i32, i32)>, hit: Option<u32>) -> MoveSizeStart {
+    match (cursor, hit) {
+        (None, _) => MoveSizeStart {
+            kind: MoveSizeKind::Unknown,
+            cursor: None,
+            probe: MoveSizeProbe::CursorUnavailable,
+        },
+        (Some(point), None) => MoveSizeStart {
+            kind: MoveSizeKind::Unknown,
+            cursor: Some(point),
+            probe: MoveSizeProbe::HitTestUnavailable,
+        },
+        (Some(point), Some(raw)) => MoveSizeStart {
+            kind: classify_hit_test(raw),
+            cursor: Some(point),
+            probe: MoveSizeProbe::Hit(raw),
+        },
+    }
+}
+
 /// Classify one raw `WM_NCHITTEST` result (`HT*` codes are stable Win32 ABI:
 /// `HTNOWHERE` 0, `HTCLIENT` 1, `HTCAPTION` 2, `HTSYSMENU` 3, sizing borders
 /// 10..=17).
@@ -470,6 +516,66 @@ mod tests {
         }
         for hit in [0, 1, 3, 4, 5, 9, 18, 0xffff] {
             assert_eq!(classify_hit_test(hit), Unknown, "hit={hit}");
+        }
+    }
+
+    #[test]
+    fn move_size_probe_attributes_unknown_stage() {
+        use MoveSizeKind::{Move, Resize, Unknown};
+        use MoveSizeProbe::{CursorUnavailable, Hit, HitTestUnavailable};
+        // No cursor: the sampler never sends, and the hit value (even a
+        // would-be move) must not decide.
+        for hit in [None, Some(2)] {
+            assert_eq!(
+                classify_move_size_probe(None, hit),
+                MoveSizeStart {
+                    kind: Unknown,
+                    cursor: None,
+                    probe: CursorUnavailable,
+                },
+                "hit={hit:?}",
+            );
+        }
+        // Cursor without hit-test answer: Unknown with the failing stage.
+        assert_eq!(
+            classify_move_size_probe(Some((100, 200)), None),
+            MoveSizeStart {
+                kind: Unknown,
+                cursor: Some((100, 200)),
+                probe: HitTestUnavailable,
+            },
+        );
+        // Successful hits keep the exact `classify_hit_test` verdict with
+        // the raw value and cursor retained.
+        assert_eq!(
+            classify_move_size_probe(Some((100, 200)), Some(2)),
+            MoveSizeStart {
+                kind: Move,
+                cursor: Some((100, 200)),
+                probe: Hit(2),
+            },
+        );
+        for hit in [10, 17] {
+            assert_eq!(
+                classify_move_size_probe(Some((0, 0)), Some(hit)),
+                MoveSizeStart {
+                    kind: Resize,
+                    cursor: Some((0, 0)),
+                    probe: Hit(hit),
+                },
+                "hit={hit}",
+            );
+        }
+        for hit in [0, 1, 3, 18] {
+            assert_eq!(
+                classify_move_size_probe(Some((0, 0)), Some(hit)),
+                MoveSizeStart {
+                    kind: Unknown,
+                    cursor: Some((0, 0)),
+                    probe: Hit(hit),
+                },
+                "hit={hit}",
+            );
         }
     }
 
