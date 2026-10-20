@@ -103,10 +103,23 @@ do not broaden cleanup or repeatedly restart the experiment.
 
 ## Agent Live-Test Practice
 
-- Immediately before every injected keystroke (including Esc, Enter, and
-  typing), verify the foreground HWND/PID belongs to the intended owned test
-  window, menu, or dialog; otherwise abort that leg without injecting. Input
-  reaching the operator's terminal can interrupt the agent session. Dismiss
+- A stray synthetic-input incident (keyboard priming into an unverified pre-existing foreground) occurred once; it is why the input-ownership invariant below exists.
+- No synthetic keyboard or mouse input of any kind unless, immediately before
+  each batch, the foreground HWND resolves to a process the test itself created.
+  Bind creation provenance to executable/PID/start identity and revalidate the
+  actual HWND-to-process mapping; an app name, new HWND, PID delta or existing
+  shared application host is not creation proof. This includes priming keys,
+  typing, motion, clicks, wheel, button/key releases and failure cleanup.
+  Windows Terminal must never receive input. For every mouse batch, also verify
+  `WindowFromPoint` at the target (current cursor for button-only events) and
+  its root owner belong to a test-created process; capture alone is not proof.
+  Negative virtual-desktop coordinates remain valid and must not bypass checks.
+  Prefer acquisition with no input, such as an owner-granted
+  `AllowSetForegroundWindow`; never prime an unverified foreground. Failed or
+  uncertain verification aborts the batch with no input, never an elsewhere
+  retry or fallback. Cleanup belongs in `finally` and obeys the same guards;
+  if release is unsafe, report held state and stop for physical recovery.
+  Input reaching the operator's terminal can interrupt the agent session. Dismiss
   menus without global keystrokes: click a verified owned test window or send
   an owned-window cancellation such as `WM_CANCELMODE`, then verify the menu
   is gone. Never leave a menu, dialog, or overlay open at a step boundary.
@@ -130,6 +143,14 @@ do not broaden cleanup or repeatedly restart the experiment.
   `mise exec -- just live-lib-mock` run offline parser/seam and fault-injection
   checks. Drivers must call leg cleanup and final cleanup from `finally`;
   the library does not launch a journey or replace its recovery procedure.
+- The legacy [mouse-drag driver](../scripts/windows-mouse-drag.ps1) is parked:
+  `-Live` refuses before effects, foreground/input helpers refuse, and native
+  injection methods are removed. `-Mock` proves containment, not a functioning
+  fixture. Keep input-dependent journeys manual until a replacement receives
+  independent invariant review and proves foreground/cursor/caption stability
+  on test-created Notepad/Paint under the scoped owner. Do not bypass the gate
+  by extracting legacy stages or restoring priming methods.
+  User 2026-10-20 accepted: retain these disabled fail-closed legacy stages.
 - Never fall back to clicks: one pre-guard fallback click reached the operator
   terminal without injected keys. Park the leg instead.
 - A restorable preimage is an actual settings byte copy plus taskbar auto-hide
@@ -139,6 +160,11 @@ do not broaden cleanup or repeatedly restart the experiment.
 - Use system-aware/PMv2 helpers for exact geometry: unaware windows show a
   one-pixel host-side offset at non-100% scale (host constraint; baseline
   `9fa32420`), not adapter error.
+- Absolute injected mouse coordinates normalized against the virtual desktop
+  require `MOUSEEVENTF_VIRTUALDESK` with `MOUSEEVENTF_ABSOLUTE`. Without it,
+  Windows maps onto the primary output only. Verify cursor readback and the
+  exact owned hit target before any button event; a requested point is not
+  evidence that the pointer reached the other output.
 - Injected Win+M bypasses the owner entirely; shortcut chords stay physical
   and user-owned.
 - Exhaustion fixtures use few large-declared-minimum helpers: a default-policy
@@ -150,6 +176,27 @@ do not broaden cleanup or repeatedly restart the experiment.
   keyboard shortcut journeys remain physical and user-owned. Keyboard-resize
   and OS-owned chords such as Win+M stay physical for the same reason;
   synthetic input cannot drive them. Never weaken the filter for tests.
+- User 2026-10-20 accepted: `directional (--move|--focus) --direction
+  (left|right|up|down)` queues one exact-owner request on the normal owner,
+  resolves the live foreground and invokes the production directional handler
+  without keyboard injection. It does not require keyboard takeover; proof
+  owners refuse and production origin/lifetime/scope/arrival gates remain.
+  Use the exact running executable, one request at a time; join its
+  `directional` / `edge: cli` dispatch line to the production outcome and
+  independent readbacks. CLI stdout is queue acceptance, not completion or
+  physical shortcut evidence. Include `directional.request` in final residue
+  checks alongside the existing control markers.
+- User 2026-10-20 accepted: `send-output (--follow|--stay) --direction
+  (left|right|up|down)` uses the same exact-owner, normal-owner-only control
+  boundary and the existing production explicit-output-send handler. It retains
+  proof/suspension/origin/lifetime/scope/topology/arrival gates and leaves
+  injected-key filtering unchanged. Join its serial `send-output` / `edge: cli`
+  wrapper to production `workspace-output` outcomes and independent frames;
+  queue acceptance is not completion. Include `send-output.request` in final
+  residue checks. A membership-only floating arrival can retain a frame on
+  another output; the dispatch gate recognizes only proven admitted floats
+  across that home/physical mismatch. Wrong-origin tiles and stale subjects
+  still refuse. This is not permission to change output-targeting policy.
 - The agent-owned identity-tagged `tiler-test-window.exe` is retained only for
   the proofs explicitly bound to it until ported: the non-hooking lifecycle
   `run --hide` proof and the documented private cloak proof (`cloak HWND

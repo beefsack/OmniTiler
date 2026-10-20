@@ -21,33 +21,29 @@ if ("$($MyInvocation.InvocationName)" -eq ".") { return }
 # `DragDrop` with producer `native`; Esc/zero/self/centre/outside restore
 # with no plan. The shared drop-preview carrier shows the Engine-resolved
 # target slot while held, with the same resolver/prior/hints as the drop.
-# Three borrowed approved apps (Notepad, Calculator via ApplicationFrameHost,
-# Paint) are bound by exact HWND; the explicit `--scope-exe` filter keeps the
-# hosting Terminal (and everything else) untouched.
+# The historical stages used Notepad, Calculator and Paint. They are not
+# authorized fixture entry points and remain disabled below.
 #
 #   pwsh -NoProfile -File scripts/windows-mouse-drag.ps1 -Mock
-#   pwsh -NoProfile -File scripts/windows-mouse-drag.ps1 -Live [-Stage <name>] [-OwnerSeconds 600]
+#   pwsh -NoProfile -File scripts/windows-mouse-drag.ps1 -Live   # always refuses: legacy route parked, no accepted fixture
 #   pwsh -NoProfile -File scripts/windows-mouse-drag.ps1 -Stop -RunDir '<dir>'
 #
-# Title stages (-All and the five singletons) are the accepted slice and stay
-# stable: TitleDrag, Cancel, Zero, SelfCentre (self + centre-other), and
-# SameOutput (taskbar-strip outside point).
+# Title stages (-All and the five singletons) are unreachable historical
+# evidence only (parked, not an accepted slice): TitleDrag, Cancel, Zero,
+# SelfCentre (self + centre-other), and SameOutput (taskbar-strip point).
 #
-# Safety: explicit flags mandatory; bare invocation parses and exits. Live
-# borrows the three approved ordinary apps by exact HWND (existing windows
-# are never closed; created ones close after via exact-HWND WM_CLOSE) plus
-# temporary minimize/restore of approved extras, under a scoped normal owner
-# (`--scope-exe` plus the Calculator child-host gate, never the hosting
-# Terminal tree). NEVER closes/kills/types
-# into the hosting Terminal/process tree (moving/tiling it is allowed). No
-# process-name kills, no registry/policy writes, no app content. Synthetic
-# input is unmarked absolute mouse only (physical-equivalent pointer path).
-# Injected Esc never sets the product cancel edge (the product hook filters
-# injected keys; the native modal loop still cancels and settle reads back
-# no-change with restored geometry). Foreground work uses E8-prime +
-# AttachThreadInput + one SetForegroundWindow on the exact bound target.
-# Out-of-hook stop only (`stop` then `restore`). End state: zero run
-# actors; ledger/stop clean; SPI arranging 1, pen 35.
+# PARKED legacy route (no accepted process-created fixture): -Live always
+# refuses before any live effect and performs zero launch, foreground,
+# injection, or window mutation. The native injection entry points are
+# removed (no available call in this file can synthesize keyboard/mouse);
+# the mouse/key wrapper functions below refuse unconditionally. Stage
+# functions (TitleDrop/Cancel/Zero/Self/Centre/Outside) remain in the file
+# as unreachable historical evidence only and must not be treated as a
+# functioning fixture. Foreground acquisition also refuses: this driver
+# cannot prove that its legacy launch routes created the receiving process.
+# -Stop recovery from a persisted run dir is retained. -Mock runs
+# offline checks only: parser, ABI size, portable tests, plan/frame
+# fixtures, and the parked-gate proof.
 
 $MD_STEPS = [System.Collections.ArrayList]@()
 function Rec-Md([string]$Name, $Data) { $null = $MD_STEPS.Add(@{ name = $Name; data = $Data }) }
@@ -55,7 +51,7 @@ function Fail-Md([string]$Msg) { throw $Msg }
 
 $MD_SCOPE_ARGS = " --scope-exe notepad.exe --scope-exe ApplicationFrameHost.exe --scope-exe mspaint.exe --scope-host-child ApplicationFrameHost.exe=CalculatorApp.exe"
 $MD_VK_ESC = 27
-$MD_MOUSE_MOVE = 0x0001; $MD_MOUSE_ABS = 0x8000; $MD_MOUSE_DOWN = 0x0002; $MD_MOUSE_UP = 0x0004
+$MD_MOUSE_MOVE = 0x0001; $MD_MOUSE_ABS = 0x8000; $MD_MOUSE_VIRTUALDESK = 0x4000; $MD_MOUSE_DOWN = 0x0002; $MD_MOUSE_UP = 0x0004
 $MD_INPUT_SIZE_X64 = 40
 $MD_MAX_OWNER_SECONDS = 600
 
@@ -81,8 +77,6 @@ public static class MouseDragNative {
   public struct POINT { public int x; public int y; }
   [StructLayout(LayoutKind.Sequential)]
   public struct RECT { public int left; public int top; public int right; public int bottom; }
-  [DllImport("user32.dll", SetLastError = true)]
-  public static extern uint SendInput(uint n, INPUT[] p, int cb);
   [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr ctx);
   public static void EnsurePMv2() {
     try { SetThreadDpiAwarenessContext((IntPtr)(-4)); } catch {}
@@ -101,29 +95,11 @@ public static class MouseDragNative {
     if (n <= 0) return "";
     return b.ToString();
   }
-  public static uint SendMouse(uint flags, int nx, int ny) {
-    INPUT[] arr = new INPUT[1];
-    arr[0].type = 0;
-    arr[0].u.mi.dx = nx; arr[0].u.mi.dy = ny;
-    arr[0].u.mi.mouseData = 0; arr[0].u.mi.dwFlags = flags;
-    arr[0].u.mi.time = 0; arr[0].u.mi.dwExtraInfo = (UIntPtr)0;
-    return SendInput(1, arr, Marshal.SizeOf(typeof(INPUT)));
-  }
-  public static uint SendKey(ushort vk, bool up) {
-    INPUT[] arr = new INPUT[1];
-    arr[0].type = 1;
-    arr[0].u.ki.wVk = vk; arr[0].u.ki.wScan = 0;
-    arr[0].u.ki.dwFlags = up ? 0x0002u : 0u;
-    arr[0].u.ki.time = 0; arr[0].u.ki.dwExtraInfo = (UIntPtr)0;
-    return SendInput(1, arr, Marshal.SizeOf(typeof(INPUT)));
-  }
-  public static uint PrimeE8() { return SendKey(0xE8, false) + SendKey(0xE8, true); }
   public static int SizeOfInput() { return Marshal.SizeOf(typeof(INPUT)); }
   [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT p);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT r);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
-  [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint a, uint b, bool c);
   [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint p);
   [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr hWnd);
@@ -331,61 +307,28 @@ function Get-MdRootHwnd([long]$Hwnd) {
   return [MouseDragNative]::GetAncestor([IntPtr]$Hwnd, $GA_ROOT).ToInt64()
 }
 
-function Set-MdForeground([long]$Hwnd, [string]$Tag) {
-  [void][MouseDragNative]::PrimeE8()
-  $selfTid = [MouseDragNative]::GetCurrentThreadId()
-  $fg = [MouseDragNative]::GetForegroundWindow()
-  $fgTid = 0
-  try {
-    $pidOut = 0u
-    $fgTid = [MouseDragNative]::GetWindowThreadProcessId($fg, [ref]$pidOut)
-    if ($fgTid -ne 0) { [void][MouseDragNative]::AttachThreadInput($selfTid, $fgTid, $true) }
-    [void][MouseDragNative]::SetForegroundWindow([IntPtr]$Hwnd)
-  } finally {
-    if ($fgTid -ne 0) { [void][MouseDragNative]::AttachThreadInput($selfTid, $fgTid, $false) }
-  }
-  # Bounded retry: a transient popup (tooltip) can win the first race; re-assert up to 3 times.
-  for ($att = 1; $att -le 3; $att++) {
-    $got = [MouseDragNative]::GetForegroundWindow().ToInt64()
-    if ([uint64]$got -eq [uint64]$Hwnd) { return }
-    Start-Sleep -Milliseconds 500
-    [void][MouseDragNative]::PrimeE8()
-    [void][MouseDragNative]::SetForegroundWindow([IntPtr]$Hwnd)
-  }
-  $got = [MouseDragNative]::GetForegroundWindow().ToInt64()
-  if ([uint64]$got -ne [uint64]$Hwnd) {
-    $cls = ""
-    try { $cls = [MouseDragNative]::ClassOf($got) } catch {}
-    Fail-Md "$Tag foreground readback $got (class $cls) != $Hwnd"
-  }
+# Parked-route injection seam: the native keyboard/mouse entry points are
+# removed from this file, so no available call can synthesize input. The
+# two wrapper functions below refuse unconditionally (defense in depth for
+# the unreachable legacy stage code that still references them). The
+# foreground helper refuses too: identity readback alone cannot prove that
+# this test created a process rather than adopted an existing app instance.
+function Send-MdGuardedMouse([uint32]$Flags, [int]$Nx, [int]$Ny, [long]$Hwnd, [string]$Tag, [int]$X = -1, [int]$Y = -1) {
+  Fail-Md "$Tag parked: native mouse injection removed; legacy route disabled"
+}
+function Send-MdGuardedKey([uint16]$Vk, [bool]$Up, [long]$Hwnd, [string]$Tag) {
+  Fail-Md "$Tag parked: native key injection removed; legacy route disabled"
 }
 
-function Send-MdMouseMove([int]$X, [int]$Y) {
+function Set-MdForeground([long]$Hwnd, [string]$Tag) {
+  Fail-Md "$Tag parked: no proven process-created foreground fixture; no acquisition or input"
+}
+
+function Send-MdMouseMove([int]$X, [int]$Y, [long]$Hwnd, [string]$Tag) {
   $screen = Get-MdVirtualScreen
   $nx = ConvertTo-MdAbsolute $X ([int]$screen[0]) ([int]$screen[2])
   $ny = ConvertTo-MdAbsolute $Y ([int]$screen[1]) ([int]$screen[3])
-  if ([MouseDragNative]::SendMouse($MD_MOUSE_MOVE -bor $MD_MOUSE_ABS, $nx, $ny) -ne 1) { Fail-Md "absolute mouse move rejected" }
-}
-
-function Send-MdMouseDrag([int]$FromX, [int]$FromY, [int]$ToX, [int]$ToY, [int]$Steps) {
-  $screen = Get-MdVirtualScreen
-  $fx = ConvertTo-MdAbsolute $FromX ([int]$screen[0]) ([int]$screen[2])
-  $fy = ConvertTo-MdAbsolute $FromY ([int]$screen[1]) ([int]$screen[3])
-  if ([MouseDragNative]::SendMouse($MD_MOUSE_MOVE -bor $MD_MOUSE_ABS, $fx, $fy) -ne 1) { Fail-Md "drag pre-move rejected" }
-  Start-Sleep -Milliseconds 250
-  if ([MouseDragNative]::SendMouse($MD_MOUSE_DOWN, 0, 0) -ne 1) { Fail-Md "drag button-down rejected" }
-  Start-Sleep -Milliseconds 400
-  for ($i = 1; $i -le $Steps; $i++) {
-    $x = $FromX + [int](($ToX - $FromX) * $i / $Steps)
-    $y = $FromY + [int](($ToY - $FromY) * $i / $Steps)
-    $nx = ConvertTo-MdAbsolute $x ([int]$screen[0]) ([int]$screen[2])
-    $ny = ConvertTo-MdAbsolute $y ([int]$screen[1]) ([int]$screen[3])
-    if ([MouseDragNative]::SendMouse($MD_MOUSE_MOVE -bor $MD_MOUSE_ABS, $nx, $ny) -ne 1) { Fail-Md "drag step $i rejected" }
-    Start-Sleep -Milliseconds 60
-  }
-  Start-Sleep -Milliseconds 400
-  if ([MouseDragNative]::SendMouse($MD_MOUSE_UP, 0, 0) -ne 1) { Fail-Md "drag button-up rejected" }
-  Start-Sleep -Milliseconds 600
+  Send-MdGuardedMouse ($MD_MOUSE_MOVE -bor $MD_MOUSE_ABS -bor $MD_MOUSE_VIRTUALDESK) $nx $ny $Hwnd "$Tag-move" $X $Y
 }
 
 function Send-MdVerifiedDrag([int]$FromX, [int]$FromY, [int]$ToX, [int]$ToY, [int]$Steps, [long]$Hwnd, [string]$Tag, [string]$OwnerCopy, [array]$Siblings = @(), [string]$LogPath = "", [int]$Mark = 0, [string]$MoverToken = "") {
@@ -397,7 +340,7 @@ function Send-MdVerifiedDrag([int]$FromX, [int]$FromY, [int]$ToX, [int]$ToY, [in
   $screen = Get-MdVirtualScreen
   $fx = ConvertTo-MdAbsolute $FromX ([int]$screen[0]) ([int]$screen[2])
   $fy = ConvertTo-MdAbsolute $FromY ([int]$screen[1]) ([int]$screen[3])
-  if ([MouseDragNative]::SendMouse($MD_MOUSE_MOVE -bor $MD_MOUSE_ABS, $fx, $fy) -ne 1) { Fail-Md "$Tag drag pre-move rejected" }
+  Send-MdGuardedMouse ($MD_MOUSE_MOVE -bor $MD_MOUSE_ABS -bor $MD_MOUSE_VIRTUALDESK) $fx $fy $Hwnd "$Tag-drag-pre" $FromX $FromY
   Start-Sleep -Milliseconds 250
   $inv0 = Invoke-MdNative $OwnerCopy @("inventory") | ConvertFrom-Json
   $n0 = @($inv0.windows | Where-Object { @("notepad.exe", "mspaint.exe", "applicationframehost.exe") -contains "$($_.exe)".ToLowerInvariant() }).Count
@@ -406,7 +349,7 @@ function Send-MdVerifiedDrag([int]$FromX, [int]$FromY, [int]$ToX, [int]$ToY, [in
   foreach ($sibling in $Siblings) {
     $siblingFrames += [pscustomobject]@{ hwnd = [long]$sibling.hwnd; frame = ((Get-MdFrame ([long]$sibling.hwnd)) -join ',') }
   }
-  if ([MouseDragNative]::SendMouse($MD_MOUSE_DOWN, 0, 0) -ne 1) { Fail-Md "$Tag drag button-down rejected" }
+  Send-MdGuardedMouse $MD_MOUSE_DOWN 0 0 $Hwnd "$Tag-drag-down"
   Start-Sleep -Milliseconds 400
   $nudge = [math]::Min(3, $Steps)
   for ($i = 1; $i -le $nudge; $i++) {
@@ -414,7 +357,7 @@ function Send-MdVerifiedDrag([int]$FromX, [int]$FromY, [int]$ToX, [int]$ToY, [in
     $y = $FromY + [int](($ToY - $FromY) * $i / $Steps)
     $nx = ConvertTo-MdAbsolute $x ([int]$screen[0]) ([int]$screen[2])
     $ny = ConvertTo-MdAbsolute $y ([int]$screen[1]) ([int]$screen[3])
-    if ([MouseDragNative]::SendMouse($MD_MOUSE_MOVE -bor $MD_MOUSE_ABS, $nx, $ny) -ne 1) { Fail-Md "$Tag drag step $i rejected" }
+    Send-MdGuardedMouse ($MD_MOUSE_MOVE -bor $MD_MOUSE_ABS -bor $MD_MOUSE_VIRTUALDESK) $nx $ny $Hwnd "$Tag-drag-nudge$i" $x $y
     Start-Sleep -Milliseconds 60
   }
   Start-Sleep -Milliseconds 500
@@ -422,19 +365,19 @@ function Send-MdVerifiedDrag([int]$FromX, [int]$FromY, [int]$ToX, [int]$ToY, [in
   $inv1 = Invoke-MdNative $OwnerCopy @("inventory") | ConvertFrom-Json
   $n1 = @($inv1.windows | Where-Object { @("notepad.exe", "mspaint.exe", "applicationframehost.exe") -contains "$($_.exe)".ToLowerInvariant() }).Count
   if ($n1 -gt $n0) {
-    [void][MouseDragNative]::SendMouse($MD_MOUSE_UP, 0, 0)
+    Send-MdGuardedMouse $MD_MOUSE_UP 0 0 $Hwnd "$Tag-tear-release"
     Assert-MdButtonReleased "$Tag-tear"
     Fail-Md "$Tag tab tear suspected (approved HWNDs $n0 -> $n1)"
   }
   if ("$($rect0 -join ',')" -ceq "$($rect1 -join ',')") {
-    [void][MouseDragNative]::SendMouse($MD_MOUSE_UP, 0, 0)
+    Send-MdGuardedMouse $MD_MOUSE_UP 0 0 $Hwnd "$Tag-nostart-release"
     Assert-MdButtonReleased "$Tag-nostart"
     Fail-Md "$Tag drag-start unverified (rect $($rect0 -join ',' ) unmoved after nudge)"
   }
   Rec-Md "$Tag-drag-start" @{ rect = ($rect1 -join ",") }
   foreach ($snapshot in $siblingFrames) {
     if ($snapshot.frame -cne ((Get-MdFrame $snapshot.hwnd) -join ',')) {
-      [void][MouseDragNative]::SendMouse($MD_MOUSE_UP, 0, 0)
+      Send-MdGuardedMouse $MD_MOUSE_UP 0 0 $Hwnd "$Tag-sibling-release"
       Fail-Md "$Tag sibling moved before drop hwnd=$($snapshot.hwnd)"
     }
   }
@@ -443,24 +386,24 @@ function Send-MdVerifiedDrag([int]$FromX, [int]$FromY, [int]$ToX, [int]$ToY, [in
     $y = $FromY + [int](($ToY - $FromY) * $i / $Steps)
     $nx = ConvertTo-MdAbsolute $x ([int]$screen[0]) ([int]$screen[2])
     $ny = ConvertTo-MdAbsolute $y ([int]$screen[1]) ([int]$screen[3])
-    if ([MouseDragNative]::SendMouse($MD_MOUSE_MOVE -bor $MD_MOUSE_ABS, $nx, $ny) -ne 1) { Fail-Md "$Tag drag step $i rejected" }
+    Send-MdGuardedMouse ($MD_MOUSE_MOVE -bor $MD_MOUSE_ABS -bor $MD_MOUSE_VIRTUALDESK) $nx $ny $Hwnd "$Tag-drag-step$i" $x $y
     Start-Sleep -Milliseconds 60
   }
   Start-Sleep -Milliseconds 400
   foreach ($snapshot in $siblingFrames) {
     if ($snapshot.frame -cne ((Get-MdFrame $snapshot.hwnd) -join ',')) {
-      [void][MouseDragNative]::SendMouse($MD_MOUSE_UP, 0, 0)
+      Send-MdGuardedMouse $MD_MOUSE_UP 0 0 $Hwnd "$Tag-prerelease-guard"
       Fail-Md "$Tag sibling moved before release hwnd=$($snapshot.hwnd)"
     }
   }
   if ($MoverToken -ne "" -and $LogPath -ne "") {
     # Native caption mid-hold: the separate preview carrier shows the
     # Engine-resolved target slot above windows while the frame follows.
-    $releaseHold = { [void][MouseDragNative]::SendMouse($MD_MOUSE_UP, 0, 0) }
+    $releaseHold = { Send-MdGuardedMouse $MD_MOUSE_UP 0 0 $Hwnd "$Tag-midhold-release" }
     $null = Test-MdPreviewMidHold $OwnerCopy $LogPath $Mark $MoverToken $Hwnd $Tag $releaseHold
   }
   if ($siblingFrames.Count -gt 0) { Rec-Md "$Tag-siblings-held" @{ count = $siblingFrames.Count; samples = 2; stable = $true } }
-  if ([MouseDragNative]::SendMouse($MD_MOUSE_UP, 0, 0) -ne 1) { Fail-Md "$Tag drag button-up rejected" }
+  Send-MdGuardedMouse $MD_MOUSE_UP 0 0 $Hwnd "$Tag-drag-up"
   Start-Sleep -Milliseconds 600
 }
 
@@ -1066,15 +1009,17 @@ function Wait-MdConverged([string]$LogPath, [int]$Mark, [array]$Apps, [int]$Time
   return $null
 }
 
-function Assert-MdDropStable($Owner, [array]$Apps, $Snap, [string]$Tag) {
-  # Finish-pointer stability: subsequent pointer movement after the drop must
-  # not alter the settled frames and must not plan a new Engine mutation.
+function Assert-MdDropStable($Owner, [array]$Apps, $Snap, [string]$Tag, [long]$MoverHwnd) {
+  # Finish-pointer stability: a guarded move onto the mover's own owned
+  # centre after the drop must not alter settled frames and must not plan
+  # a new Engine mutation. The motion target is owned, never blind.
   $postMark = (Get-MdLines $Owner.log).Count
   $postFrames = @(); foreach ($a in $Apps) { $postFrames += , (Get-MdFrame ([long]$a.hwnd)) }
   $null = Test-MdFramesMatchPlan $Snap.detail $postFrames "$Tag-stable-plan"
-  $pt = New-Object MouseDragNative+POINT
-  [void][MouseDragNative]::GetCursorPos([ref]$pt)
-  Send-MdMouseMove (([int]$pt.x) + 40) (([int]$pt.y) + 30)
+  $frame = Get-MdFrame $MoverHwnd
+  $cx = [int]$frame[0] + [int]([int]$frame[2] / 2)
+  $cy = [int]$frame[1] + [int]([int]$frame[3] / 2)
+  Send-MdMouseMove $cx $cy $MoverHwnd "$Tag-stable"
   Start-Sleep -Milliseconds 1500
   $later = @(); foreach ($a in $Apps) { $later += , (Get-MdFrame ([long]$a.hwnd)) }
   for ($i = 0; $i -lt $Apps.Count; $i++) {
@@ -1091,7 +1036,7 @@ function Assert-MdDropStable($Owner, [array]$Apps, $Snap, [string]$Tag) {
 
 function Invoke-MouseDragMock {
   Install-MdNative
-  Rec-Md "scope" @{ ordinary = "scoped-normal-3app"; apps = @("notepad.exe", "ApplicationFrameHost.exe=CalculatorApp.exe", "mspaint.exe"); never = @("terminal", "kills-by-name", "typing"); registry = "none"; content = "none"; screenshots = "run-dir-png-only" }
+  Rec-Md "scope" @{ route = "parked-disabled"; live = "refuses-zero-effects"; ordinary = "scoped-normal-3app-historical-only"; apps = @("notepad.exe", "ApplicationFrameHost.exe=CalculatorApp.exe", "mspaint.exe"); never = @("terminal", "kills-by-name", "typing", "live-injection"); registry = "none"; content = "none"; screenshots = "run-dir-png-only" }
   $help = Invoke-MdNative (Join-Path $Repo "target\debug\tiler-windows.exe") @("--help")
   foreach ($need in @("tile", "--user-start", "--scope-exe", "stop", "restore")) {
     if ("$help" -notmatch [regex]::Escape($need)) { Fail-Md "mock CLI help missing $need" }
@@ -1140,7 +1085,20 @@ function Invoke-MouseDragMock {
   if ($text -match $regPat) { Fail-Md "mock registry/policy write present" }
   $secondOut = ', 25' + '60|25' + '60,'
   if ($text -match $secondOut) { Fail-Md "mock hardcoded second-output origin present" }
-  Rec-Md "harness-contract" @{ stages = 6; rows = @("TitleDrop", "Cancel", "Zero", "Self", "Centre", "Outside"); outside = "taskbar"; registry = "none"; producer = "native" }
+  Rec-Md "harness-contract" @{ stages = 6; rows = @("TitleDrop", "Cancel", "Zero", "Self", "Centre", "Outside"); outside = "taskbar"; registry = "none"; producer = "native"; live = "parked-unreachable-historical-only" }
+  # Absolute-input contract: every virtual-screen absolute move normalizes
+  # against Get-MdVirtualScreen, so each carries MOUSEEVENTF_VIRTUALDESK
+  # alongside MOVE+ABSOLUTE; button-only DOWN/UP stay flag-only.
+  # Line-scoped so a future bare absolute move fails the mock offline.
+  $absNeedle = 'MD_MOUSE_' + 'ABS'
+  $virtNeedle = 'VIRTUAL' + 'DESK'
+  if ($text -notmatch '0x4000') { Fail-Md "mock absolute contract missing 0x4000" }
+  $absLines = @(Get-Content -LiteralPath $PSCommandPath | Where-Object { $_ -match $absNeedle })
+  if ($absLines.Count -eq 0) { Fail-Md "mock absolute contract found no absolute moves" }
+  foreach ($ln in $absLines) {
+    if ($ln -notmatch $virtNeedle) { Fail-Md "mock absolute move without virtualdesk flag" }
+  }
+  Rec-Md "absolute-contract" @{ moves = $absLines.Count; virtualdesk = "0x4000" }
   # Negative cleanup contract: the verdict is written AFTER every cleanup leg
   # ran, so no success can hide a cleanup error. Statically: the finally
   # region (up to the single-verdict marker) holds no bare `throw` that
@@ -1155,6 +1113,59 @@ function Invoke-MouseDragMock {
   $finRegion = $text.Substring($finIdx, $verdictIdx - $finIdx)
   if ($finRegion -match '(?m)^\s*throw\s*$') { Fail-Md "mock bare throw inside cleanup legs" }
   Rec-Md "cleanup-contract" @{ verdict = "single-post-cleanup"; legs_throw = "none"; mismatch = "loud-fail" }
+  # Parked-route proof (offline only): the native injection entry points
+  # are gone from this file, both wrapper functions refuse without any
+  # native call, the legacy live entry refuses before any effect (proven by
+  # invoking it with stubbed launch helpers and an empty call log), and
+  # the foreground helper also refuses without a native call.
+  # Stage functions remain as unreachable
+  # historical evidence; nothing here claims a functioning fixture.
+  $nativeEntryNeedle = 'Send' + 'Input'
+  if ($text -match $nativeEntryNeedle) { Fail-Md "mock native injection entry present" }
+  $nativeCallNeedle = '::Send' + '(Mouse|Key)'
+  if ($text -match $nativeCallNeedle) { Fail-Md "mock native injection call present" }
+  $primeNeedle = 'Prime' + 'E8'
+  if ($text -match $primeNeedle) { Fail-Md "mock unowned priming route present" }
+  $e8Needle = '0x' + 'E8'
+  if ($text -match $e8Needle) { Fail-Md "mock unowned key route present" }
+  foreach ($need in @("Set-MdForeground", "Send-MdGuardedMouse", "Send-MdGuardedKey", "parked")) {
+    if ($text -notmatch [regex]::Escape($need)) { Fail-Md "mock parked route missing $need" }
+  }
+  Rec-Md "injection-removed-static" @{ entry_points = "none"; wrapper_calls = "none"; priming = "none" }
+  # Live-gate stub proof: invoke the legacy live entry with every launch
+  # helper shadowed by a call-logging stub. It must refuse with the parked
+  # marker and leave the call log empty: zero launch, zero foreground,
+  # zero window effects.
+  $script:mdLiveCalls = @()
+  function Install-MdNative { $script:mdLiveCalls += @("Install-MdNative") }
+  function New-MdRunDir([string]$Base) { $script:mdLiveCalls += @("New-MdRunDir"); return "" }
+  function Get-MdOriginalSnapshot { $script:mdLiveCalls += @("Get-MdOriginalSnapshot"); return @() }
+  try {
+    Invoke-MouseDragLive
+    Fail-Md "mock live gate did not refuse"
+  } catch {
+    if ("$($_.Exception.Message)" -notmatch "parked") { throw }
+  }
+  if (@($script:mdLiveCalls).Count -ne 0) { Fail-Md ("mock live gate had effects: " + ($script:mdLiveCalls -join ",")) }
+  # Wrapper refusal proof: both injection wrappers throw the parked marker
+  # with no native call.
+  foreach ($probe in @(
+    @{ name = "mouse-refuses"; sb = { Send-MdGuardedMouse 1 0 0 0 "mock-probe" } },
+    @{ name = "key-refuses"; sb = { Send-MdGuardedKey 27 $false 0 "mock-probe" } },
+    @{ name = "foreground-refuses"; sb = { Set-MdForeground 0 "mock-probe" } }
+  )) {
+    try { & $probe.sb | Out-Null; Fail-Md ("mock wrapper accepted: " + $probe.name) }
+    catch { if ("$($_.Exception.Message)" -notmatch "parked") { throw } }
+  }
+  # Unreachable-stage seam: every legacy stage still routes through the
+  # refusing wrappers, so even if reached it cannot inject.
+  foreach ($stageFn in @("Invoke-MdCancelStage", "Invoke-MdZeroStage", "Send-MdVerifiedDrag", "Assert-MdDropStable")) {
+    $probe = $text.IndexOf("function $stageFn")
+    if ($probe -lt 0) { Fail-Md "mock stage missing $stageFn" }
+    $seg = $text.Substring($probe, [Math]::Min(6000, $text.Length - $probe))
+    if ($seg -notmatch "Guarded") { Fail-Md "mock $stageFn has no refusing wrapper" }
+  }
+  Rec-Md "live-parked-gate" @{ live_effects = "zero"; wrappers = "refuse"; foreground = "refuse"; stages = "unreachable-refusing" }
   $report = @{ status = "pass"; stage = "MouseDragMock"; steps = $MD_STEPS }
   $report | ConvertTo-Json -Depth 8 | Write-Output
 }
@@ -1239,7 +1250,7 @@ function Invoke-MdTitleDropStage($Owner, [string]$ProofDir, $Start, [array]$Apps
   if (-not $moved) { Fail-Md "TitleDrop mover topology unchanged" }
   Assert-MdPreviewAgreement $Owner.log $mark $moverToken ([int]$got.event.tick) "$($got.event.hover_prior)" $postFrames[$moverIdx] "TitleDrop"
   if ("$($got.event.hover_prior)" -cne "none") { Fail-Md "TitleDrop leaf journey carried prior $($got.event.hover_prior) (want none)" }
-  Assert-MdDropStable $Owner $Managed $snap "titledrop"
+  Assert-MdDropStable $Owner $Managed $snap "titledrop" ([long]$mover.hwnd)
   Save-MdShot $ProofDir "titledrop-after" | Out-Null
   Rec-Md "TitleDrop" @{ outcome = "drag-drop-applied"; producer = "native"; tick = $snap.tick; zone = "other-tile-left-edge" }
 }
@@ -1257,20 +1268,20 @@ function Invoke-MdCancelStage($Owner, [string]$ProofDir, [array]$Apps, [array]$M
   $screen = Get-MdVirtualScreen
   $nx = ConvertTo-MdAbsolute ([int]$title[0]) ([int]$screen[0]) ([int]$screen[2])
   $ny = ConvertTo-MdAbsolute ([int]$title[1]) ([int]$screen[1]) ([int]$screen[3])
-  if ([MouseDragNative]::SendMouse($MD_MOUSE_MOVE -bor $MD_MOUSE_ABS, $nx, $ny) -ne 1) { Fail-Md "cancel pre-move rejected" }
+  Send-MdGuardedMouse ($MD_MOUSE_MOVE -bor $MD_MOUSE_ABS -bor $MD_MOUSE_VIRTUALDESK) $nx $ny ([long]$mover.hwnd) "cancel-pre" ([int]$title[0]) ([int]$title[1])
   Start-Sleep -Milliseconds 250
-  if ([MouseDragNative]::SendMouse($MD_MOUSE_DOWN, 0, 0) -ne 1) { Fail-Md "cancel button-down rejected" }
+  Send-MdGuardedMouse $MD_MOUSE_DOWN 0 0 ([long]$mover.hwnd) "cancel-down"
   Start-Sleep -Milliseconds 400
-  Send-MdMouseMove (([int]$title[0]) + 120) (([int]$title[1]) + 60)
+  Send-MdMouseMove (([int]$title[0]) + 120) (([int]$title[1]) + 60) ([long]$mover.hwnd) "cancel-nudge"
   Start-Sleep -Milliseconds 300
   # Injected Esc: the native modal loop still cancels and restores geometry;
   # the product hook filters injected keys so no cancel edge is claimed.
   # Accept either explicit cancel or no-change-with-restore.
-  if ([MouseDragNative]::SendKey($MD_VK_ESC, $false) -ne 1) { Fail-Md "esc down rejected" }
+  Send-MdGuardedKey $MD_VK_ESC $false ([long]$mover.hwnd) "cancel-esc"
   Start-Sleep -Milliseconds 200
-  if ([MouseDragNative]::SendKey($MD_VK_ESC, $true) -ne 1) { Fail-Md "esc up rejected" }
+  Send-MdGuardedKey $MD_VK_ESC $true ([long]$mover.hwnd) "cancel-esc"
   Start-Sleep -Milliseconds 300
-  if ([MouseDragNative]::SendMouse($MD_MOUSE_UP, 0, 0) -ne 1) { Fail-Md "cancel button-up rejected" }
+  Send-MdGuardedMouse $MD_MOUSE_UP 0 0 ([long]$mover.hwnd) "cancel-up"
   Start-Sleep -Milliseconds 800
   Assert-MdButtonReleased "cancel"
   $got = Wait-MdGesture $Owner.log $mark @("gesture-cancelled-esc", "gesture-no-change", "drag-drop-refused") 25 "cancel"
@@ -1302,11 +1313,11 @@ function Invoke-MdZeroStage($Owner, [string]$ProofDir, [array]$Apps, [array]$Man
   $screen = Get-MdVirtualScreen
   $nx = ConvertTo-MdAbsolute ([int]$title[0]) ([int]$screen[0]) ([int]$screen[2])
   $ny = ConvertTo-MdAbsolute ([int]$title[1]) ([int]$screen[1]) ([int]$screen[3])
-  if ([MouseDragNative]::SendMouse($MD_MOUSE_MOVE -bor $MD_MOUSE_ABS, $nx, $ny) -ne 1) { Fail-Md "zero pre-move rejected" }
+  Send-MdGuardedMouse ($MD_MOUSE_MOVE -bor $MD_MOUSE_ABS -bor $MD_MOUSE_VIRTUALDESK) $nx $ny ([long]$mover.hwnd) "zero-pre" ([int]$title[0]) ([int]$title[1])
   Start-Sleep -Milliseconds 250
-  if ([MouseDragNative]::SendMouse($MD_MOUSE_DOWN, 0, 0) -ne 1) { Fail-Md "zero button-down rejected" }
+  Send-MdGuardedMouse $MD_MOUSE_DOWN 0 0 ([long]$mover.hwnd) "zero-down"
   Start-Sleep -Milliseconds 400
-  if ([MouseDragNative]::SendMouse($MD_MOUSE_UP, 0, 0) -ne 1) { Fail-Md "zero button-up rejected" }
+  Send-MdGuardedMouse $MD_MOUSE_UP 0 0 ([long]$mover.hwnd) "zero-up"
   Start-Sleep -Milliseconds 800
   Assert-MdButtonReleased "zero"
   # A zero title click often emits no START at all: stable source plus NO
@@ -1440,6 +1451,7 @@ function Invoke-MdOutsideStage($Owner, [string]$ProofDir, $Start, [array]$Apps, 
 }
 
 function Invoke-MouseDragLive {
+  Fail-Md "parked: legacy ordinary-app drag route has no accepted process-created fixture; -Live refuses with zero launch/foreground/injection/effects (use -Stop for persisted-run recovery, -Mock for offline checks)"
   if ($RunDir -ne "") { Fail-Md "refuse: -Live always creates a new run dir; -RunDir is for -Stop only" }
   Install-MdNative
   $proofDir = New-MdRunDir $Repo
@@ -1469,7 +1481,8 @@ function Invoke-MouseDragLive {
     $elig = Get-MdEligibleApps $copy.ownerCopy "preflight"
     # Snapshot EVERY pre-existing eligible window (all Notepad tabs, Paint,
     # hosts): extras minimize pre-start and restore after, so all of them
-    # restore show+geometry in finally.
+    # restore show+geometry in finally. This legacy borrowing route is one
+    # reason the live gate must remain closed.
     foreach ($w in @($elig)) {
       $s = Get-MdAppSnapshot ([long]$w.hwnd) "borrow-pre"
       $borrowedSnaps += $s
