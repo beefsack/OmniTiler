@@ -4164,6 +4164,12 @@ decisions of 2026-09-24 are under
        1,000 -> 270 ms), trailing reuse (122 ms) and post-create select
        (900-944 ms), and exact-shape AccessibilityUIServer/ControlCenter
        removal exceptions. Next, in order:
+       0. Fixture-authenticated guarded input harness: extend the guarded
+          diagnostic controls (currently legacy-helper/TextEdit only) to
+          authenticate live-fixture windows, so product focus/move chords and
+          managed select/send/trailing checks run against the fixture
+          ([fixture integration](changes/archive/macos-fixture-tiler-integration.md)).
+          Prerequisite for automated 3a.
        a. Live-verify the trailing send-follow focus fix (yabai move ->
           front-PSN -> selector): sole-window follow to reused and new Spaces,
           inverse follow, stay/source focus, two create/auto-remove cycles,
