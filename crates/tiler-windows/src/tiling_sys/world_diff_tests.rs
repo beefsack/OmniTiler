@@ -3801,6 +3801,910 @@ fn windows_profile_disables_maximized_focus_fence() {
     assert_eq!(native_fingerprint(&state), before);
 }
 
+fn t2_profile() -> tiler_core::world_engine::WorldEngineConfig {
+    tiler_core::world_engine::WorldEngineConfig {
+        fixed_send_admission: true,
+        maximized_focus_fence: false,
+        aligned_per_output_workspaces: false,
+    }
+}
+
+#[derive(Clone, Copy)]
+enum T2Rig {
+    Tiny,
+    Roomy,
+    RoomyFloat,
+    RoomyFixedFloat,
+    Local,
+}
+
+fn t2_rig(kind: T2Rig) -> (TileLoop, Vec<ObservedWindow>, Vec<MonitorArea>) {
+    if matches!(kind, T2Rig::Local) {
+        let rig = two_window_rig();
+        return (rig.state, rig.observed, rig.areas);
+    }
+    let mut state = test_state();
+    state.workspaces.ensure_output(DEV1);
+    state.workspaces.ensure_output(DEV2);
+    let ws_a = state.workspaces.workspace_ids(DEV1)[0].clone();
+    let ws_b = state.workspaces.workspace_ids(DEV2)[0].clone();
+    state.workspaces.set_tiled(DEV1, &ws_a, true);
+    state.workspaces.set_tiled(DEV2, &ws_b, true);
+    let k1 = win_key(1001, 2001, "proc-1");
+    let k2 = win_key(1002, 2002, "proc-2");
+    admit(&mut state, &k1, DEV1, &ws_a, "w1", false);
+    admit(&mut state, &k2, DEV2, &ws_b, "w2", false);
+    if matches!(kind, T2Rig::RoomyFloat) {
+        state.floated.insert(k1.clone());
+    }
+    if matches!(kind, T2Rig::RoomyFixedFloat) {
+        state.fixed_auto_seen.insert(k1.clone());
+    }
+    let observed = vec![
+        observed_window(&k1, "w1", rect(100, 100, 800, 600), plain_facts()),
+        observed_window(&k2, "w2", rect(1920, 0, 9, 9), plain_facts()),
+    ];
+    let mut areas = two_areas();
+    if matches!(kind, T2Rig::Tiny) {
+        areas[1].work = rect(1920, 0, 25, 25);
+        areas[1].full = rect(1920, 0, 25, 25);
+    }
+    (state, observed, areas)
+}
+
+// --- T2 staged delivery (test-only single-authority proof) ---
+// Bounded scope: direct `Send`, `SendDirectional`, `MoveDirectional`, and the
+// Operation `SendToOutput` / cross-output `Move` equivalents stage once on a
+// fresh candidate (`deliver_staged` is the sole `.clone()` site; the flag is
+// a branch indicator). Supported candidates adopt; tiled-source cross-output
+// Window transfers that stage floating decline locally as `float-no-remap`;
+// Rejected/Duplicate/CommandConsumed keep core parity (Consumed adopts its
+// fresh observation, bypassing classification). Explicit cross-target sends
+// refuse `cross-domain-mismatch` core-side here: preserved core refusal, not
+// T2 parity. Fixture facts only.
+
+/// Boot-only shared rig: real sources plus one sequenced, acked boot; table
+/// rows dispatch their own commands on a fresh rig each.
+struct StagedRig {
+    state: TileLoop,
+    observed: Vec<ObservedWindow>,
+    retained: Vec<RetainedRow>,
+    areas: Vec<MonitorArea>,
+    ws_a: String,
+    ws_b: String,
+    seq: WorldSequencer,
+    boot_rev: u64,
+    boot_reply: WorldReply,
+    boot_report: tiler_core::world_report::WorldReport,
+}
+
+fn staged_boot(kind: T2Rig) -> StagedRig {
+    use tiler_core::world_engine::WorldOutcome;
+    let (state, observed, areas) = t2_rig(kind);
+    let ws_a = state.workspaces.workspace_ids(DEV1)[0].clone();
+    let ws_b = if matches!(kind, T2Rig::Local) {
+        String::new()
+    } else {
+        state.workspaces.workspace_ids(DEV2)[0].clone()
+    };
+    let mut seq = WorldSequencer::bootstrap(ADAPTER, GENERATION).expect("bootstrap");
+    seq.invalidate();
+    let boot = seq
+        .try_dispatch(&state, Some(&observed), &[], &areas, 1001, None)
+        .expect("boot");
+    // Boot is observation-only: zero incremental cloning.
+    let boot_reply = match seq.deliver_staged(&boot) {
+        (WorldOutcome::Accepted(reply), false) => reply,
+        (other, cloned) => panic!("boot {other:?} cloned={cloned}"),
+    };
+    let boot_rev = boot_reply.state_revision;
+    assert!(matches!(seq.ack(&boot_reply), AckOutcome::Applied(_)));
+    StagedRig {
+        state,
+        observed,
+        retained: Vec::new(),
+        areas,
+        ws_a,
+        ws_b,
+        seq,
+        boot_rev,
+        boot_reply,
+        boot_report: boot,
+    }
+}
+
+/// Pinned T2 command shapes shared by every table below.
+#[derive(Clone, Copy)]
+enum T2Cmd {
+    SendDir,
+    Send,
+    MoveDir,
+    OpSend,
+    OpMoveCross,
+}
+
+fn t2_cmd(sel: T2Cmd, ws_b: &str) -> WorldCommand {
+    match sel {
+        T2Cmd::SendDir => WorldCommand::SendDirectional {
+            window: WindowId("w1".to_owned()),
+            direction: "right".to_owned(),
+            follow: false,
+        },
+        T2Cmd::Send => WorldCommand::Send {
+            window: WindowId("w1".to_owned()),
+            target_output: OutputId("o2".to_owned()),
+            target_workspace: ws_b.to_owned(),
+            follow: false,
+        },
+        T2Cmd::MoveDir => WorldCommand::MoveDirectional {
+            window: WindowId("w1".to_owned()),
+            direction: "right".to_owned(),
+            same_axis: tiler_core::directional::SameAxisMove::GroupWithNeighbor,
+        },
+        T2Cmd::OpSend => WorldCommand::Operation(tiler_core::boundary::CoreCommand::SendToOutput {
+            window: "w1".to_owned(),
+            target_output: "o2".to_owned(),
+            target_workspace: ws_b.to_owned(),
+            follow: false,
+        }),
+        T2Cmd::OpMoveCross => WorldCommand::Operation(tiler_core::boundary::CoreCommand::Move {
+            window: "w1".to_owned(),
+            direction: "right".to_owned(),
+            cross_output_transfer: true,
+            same_axis_move: tiler_core::directional::SameAxisMove::GroupWithNeighbor,
+        }),
+    }
+}
+
+/// One watermarked command dispatch plus its staged delivery.
+fn staged_send(
+    rig: &mut StagedRig,
+    command: Option<WorldCommand>,
+) -> (
+    tiler_core::world_report::WorldReport,
+    (tiler_core::world_engine::WorldOutcome, bool),
+) {
+    rig.seq.invalidate();
+    let report = rig
+        .seq
+        .try_dispatch(
+            &rig.state,
+            Some(&rig.observed),
+            &rig.retained,
+            &rig.areas,
+            1001,
+            command,
+        )
+        .expect("dispatch");
+    let outcome = rig.seq.deliver_staged(&report);
+    (report, outcome)
+}
+
+/// Release an exact refused flight, then converge observation-only: never
+/// clones and must apply.
+fn staged_catchup(rig: &mut StagedRig, req_id: &str) -> WorldReply {
+    use tiler_core::world_engine::WorldOutcome;
+    assert!(rig.seq.note_rejected_or_lost(GENERATION, req_id));
+    let (_, outcome) = staged_send(rig, None);
+    match outcome {
+        (WorldOutcome::Accepted(reply), false) => {
+            assert!(matches!(rig.seq.ack(&reply), AckOutcome::Applied(_)));
+            reply
+        }
+        (other, cloned) => panic!("catchup {other:?} cloned={cloned}"),
+    }
+}
+
+/// Pinned mover row of an accepted reply.
+fn mover_row<'a>(reply: &'a WorldReply, mover: &str) -> &'a WindowDesire {
+    reply
+        .windows
+        .iter()
+        .find(|w| w.lifetime.0 == mover)
+        .expect("mover row")
+}
+
+/// Retained Window-transfer count for one mover.
+fn mover_transfers(rig: &StagedRig, mover: &str) -> usize {
+    rig.seq
+        .test_retained()
+        .iter()
+        .filter(|t| matches!(&t.kind, TransferKind::Window(w) if w.0 == mover))
+        .count()
+}
+
+// Tiny 25x25 target: directional crossings stage a capacity float and decline
+// locally; explicit cross-target sends take the core's own refusal here.
+// Every refusal discards the candidate with source sessions, revision,
+// transfers, and desired state exactly as booted; no applicable reply exists.
+#[test]
+fn t2_staged_tiny_cross() {
+    use tiler_core::world_engine::WorldOutcome;
+    let rows = [
+        (T2Cmd::SendDir, "float-no-remap"),
+        (T2Cmd::MoveDir, "float-no-remap"),
+        (T2Cmd::OpMoveCross, "float-no-remap"),
+        (T2Cmd::Send, "cross-domain-mismatch"),
+        (T2Cmd::OpSend, "cross-domain-mismatch"),
+    ];
+    for (i, (sel, want)) in rows.into_iter().enumerate() {
+        let mut rig = staged_boot(T2Rig::Tiny);
+        let ws_a = rig.ws_a.clone();
+        let ws_b = rig.ws_b.clone();
+        let engine_boot = rig.seq.test_engine_debug();
+        // Row 0 additionally rides a real close plus staged feedback: the
+        // decline must keep both dirty for the catch-up alone to ack.
+        if i == 0 {
+            rig.state.pending_closed.insert(
+                "w9".to_owned(),
+                super::PendingClosed {
+                    output: DEV1.to_owned(),
+                    workspace: ws_a.clone(),
+                },
+            );
+            rig.seq.note_feedback(AttemptFeedback {
+                operation_id: "op-probe-held".to_owned(),
+                kind: AttemptKind::Transfer,
+                outcome: AttemptOutcome::Applied,
+                hold: None,
+            });
+        }
+        let before = native_fingerprint(&rig.state);
+        let captured = capture_world(
+            &rig.state,
+            Some(&rig.observed),
+            &rig.retained,
+            &rig.areas,
+            1001,
+        );
+        let fresh = FreshHost::from_sources(&rig.state, &rig.observed, &rig.retained, &captured);
+        let mut native = FakeNative::seeded(&fresh);
+        let views = native.views.clone();
+        let mover = &fresh.baseline["w1"].key;
+        let home_before = rig
+            .state
+            .workspaces
+            .member_loc(mover)
+            .map(|loc| (loc.output.clone(), loc.workspace.clone()));
+        let (report, (outcome, cloned)) = staged_send(&mut rig, Some(t2_cmd(sel, &ws_b)));
+        assert!(cloned, "row {i} must stage once");
+        match &outcome {
+            WorldOutcome::Rejected { kind, message } => {
+                assert_eq!(*kind, want, "row {i}: {message}")
+            }
+            other => panic!("row {i} must refuse, got {other:?}"),
+        }
+        assert_eq!(rig.seq.test_engine_debug(), engine_boot, "row {i} engine");
+        assert_eq!(rig.seq.test_revision(), rig.boot_rev, "row {i} rev");
+        assert_eq!(
+            rig.seq.next_command_seq(),
+            report.command_seq.expect("command sequence") + 1,
+            "row {i} rejected sequence is not reused"
+        );
+        assert_eq!(mover_transfers(&rig, "w1"), 0, "row {i} retained");
+        assert_eq!(
+            rig.seq.last_desired(),
+            Some(&rig.boot_reply),
+            "row {i} desired"
+        );
+        assert_eq!(native_fingerprint(&rig.state), before);
+        assert_eq!(
+            rig.state
+                .workspaces
+                .member_loc(mover)
+                .map(|loc| (loc.output.clone(), loc.workspace.clone())),
+            home_before,
+            "row {i} committed membership"
+        );
+        if i == 0 {
+            // Nothing acknowledged by the decline itself.
+            assert!(rig.seq.has_pending_feedback(), "row 0 feedback acked early");
+            let dirty = capture_world(
+                &rig.state,
+                Some(&rig.observed),
+                &rig.retained,
+                &rig.areas,
+                1001,
+            );
+            assert_eq!(rig.seq.outstanding_closes(&dirty), vec!["w9".to_owned()]);
+            assert!(rig.seq.is_dirty(&dirty));
+        }
+        let req = report.request_id.clone();
+        assert!(rig.seq.note_rejected_or_lost(GENERATION, &req));
+        rig.seq.invalidate();
+        let (_, (catchup_outcome, catchup_cloned)) = staged_send(&mut rig, None);
+        assert!(!catchup_cloned, "row {i} catch-up must not clone");
+        let catchup = match catchup_outcome {
+            WorldOutcome::Accepted(reply) => match rig.seq.ack(&reply) {
+                AckOutcome::Applied(receipt) => {
+                    if i == 0 {
+                        // Only the accepted catch-up acks: exact feedback plus
+                        // the exact-homing close pair the caller prunes.
+                        assert_eq!(receipt.feedback_acked, vec!["op-probe-held".to_owned()]);
+                        assert_eq!(
+                            receipt.closed_acked,
+                            vec![(
+                                "w9".to_owned(),
+                                super::PendingClosed {
+                                    output: DEV1.to_owned(),
+                                    workspace: ws_a.clone(),
+                                }
+                            )]
+                        );
+                        assert_eq!(
+                            rig.seq
+                                .apply_close_receipt(&mut rig.state.pending_closed, &receipt),
+                            vec!["w9".to_owned()]
+                        );
+                    }
+                    reply
+                }
+                other => panic!("row {i} catchup ack {other:?}"),
+            },
+            other => panic!("row {i} catchup {other:?}"),
+        };
+        assert!(rig.seq.test_revision() > rig.boot_rev, "row {i} continuity");
+        // Catch-up actuates no remap: the mover stays homed and no
+        // membership or view setter fires.
+        let mut diff = HostDiff::new(ADAPTER, GENERATION);
+        diff.gate.current_obs = rig.seq.current_obs();
+        let (stats, _) = apply(&mut diff, &catchup, &fresh, &mut native);
+        assert!(
+            !stats.stopped_mid_apply,
+            "row {i} catch-up must be applicable"
+        );
+        assert_eq!(native.read_homing("w1"), Some(("o1".to_owned(), ws_a)));
+        assert_eq!(native.membership_writes, 0, "row {i} catch-up membership");
+        assert_eq!(native.views, views, "row {i} catch-up view");
+        if i == 0 {
+            assert!(!rig.seq.has_pending_feedback(), "row 0 feedback unacked");
+            assert!(rig.state.pending_closed.is_empty());
+        }
+    }
+}
+
+// Fitting crossings adopt on the single owned engine and the next
+// observation still converges with zero further cloning. The RoomyFloat row
+// keeps its existing float under the D16-admitting profile; local moves
+// adopt transfer-free; the local-only Operation move skips staging yet runs.
+#[test]
+fn t2_staged_supported_adopt() {
+    use tiler_core::world_engine::WorldOutcome;
+    #[derive(Clone, Copy)]
+    enum Fit {
+        SendDir,
+        SendSame,
+        LocalMove,
+        OpMoveCross,
+        OpMoveLocal,
+    }
+    // (rig, shape, staged-float, mover transfer, target, clones)
+    let rows = [
+        (T2Rig::Roomy, Fit::SendDir, false, true, "o2", true),
+        (T2Rig::RoomyFloat, Fit::SendDir, true, true, "o2", true),
+        (T2Rig::RoomyFixedFloat, Fit::SendDir, true, true, "o2", true),
+        (T2Rig::Local, Fit::LocalMove, false, false, "", true),
+        (T2Rig::Roomy, Fit::SendSame, false, true, "o1", true),
+        (T2Rig::Roomy, Fit::OpMoveCross, false, true, "o2", true),
+        (T2Rig::Local, Fit::OpMoveLocal, false, false, "", false),
+    ];
+    for (i, (kind, sel, expect_float, expect_transfer, expect_target, expect_clone)) in
+        rows.into_iter().enumerate()
+    {
+        let mut rig = staged_boot(kind);
+        let ws_b = rig.ws_b.clone();
+        let ws_same = rig.state.workspaces.workspace_ids(DEV1)[1].clone();
+        let before = native_fingerprint(&rig.state);
+        let command = match sel {
+            Fit::SendDir => t2_cmd(T2Cmd::SendDir, &ws_b),
+            Fit::SendSame => WorldCommand::Send {
+                window: WindowId("w1".to_owned()),
+                target_output: OutputId("o1".to_owned()),
+                target_workspace: ws_same,
+                follow: false,
+            },
+            Fit::LocalMove => WorldCommand::MoveDirectional {
+                window: WindowId("w1".to_owned()),
+                direction: "down".to_owned(),
+                same_axis: tiler_core::directional::SameAxisMove::GroupWithNeighbor,
+            },
+            Fit::OpMoveCross => t2_cmd(T2Cmd::OpMoveCross, &ws_b),
+            Fit::OpMoveLocal => WorldCommand::Operation(tiler_core::boundary::CoreCommand::Move {
+                window: "w1".to_owned(),
+                direction: "down".to_owned(),
+                cross_output_transfer: false,
+                same_axis_move: tiler_core::directional::SameAxisMove::GroupWithNeighbor,
+            }),
+        };
+        let (_, (outcome, cloned)) = staged_send(&mut rig, Some(command));
+        assert_eq!(cloned, expect_clone, "row {i} clone flag");
+        let reply = match outcome {
+            WorldOutcome::Accepted(reply) => reply,
+            other => panic!("row {i} must adopt, got {other:?}"),
+        };
+        assert_eq!(
+            mover_row(&reply, "w1").floating,
+            expect_float,
+            "row {i} float"
+        );
+        let transfer = reply
+            .transfers
+            .iter()
+            .find(|t| matches!(&t.kind, TransferKind::Window(w) if w.0 == "w1"));
+        assert_eq!(transfer.is_some(), expect_transfer, "row {i} transfer");
+        if expect_transfer {
+            assert_eq!(
+                transfer.expect("row {i} transfer").target_output.0,
+                expect_target
+            );
+        }
+        if expect_float {
+            let captured = capture_world(
+                &rig.state,
+                Some(&rig.observed),
+                &rig.retained,
+                &rig.areas,
+                1001,
+            );
+            let fresh =
+                FreshHost::from_sources(&rig.state, &rig.observed, &rig.retained, &captured);
+            let mut native = FakeNative::seeded(&fresh);
+            let frame_before = native.read_frame("w1");
+            let views_before = native.views.clone();
+            let mut diff = HostDiff::new(ADAPTER, GENERATION);
+            diff.gate.current_obs = rig.seq.current_obs();
+            let (stats, _) = apply(&mut diff, &reply, &fresh, &mut native);
+            assert!(!stats.stopped_mid_apply, "row {i} float reply applies");
+            assert_eq!(native.membership_writes, 1, "row {i} float arrival");
+            assert_eq!(native.read_frame("w1"), frame_before, "row {i} float frame");
+            assert_eq!(native.read_homing("w1"), Some(("o2".to_owned(), ws_b)));
+            assert_eq!(native.views, views_before, "row {i} stay views");
+        }
+        assert!(matches!(rig.seq.ack(&reply), AckOutcome::Applied(_)));
+        assert!(rig.seq.test_revision() > rig.boot_rev, "row {i} rev");
+        assert_eq!(native_fingerprint(&rig.state), before);
+        let (_, continued) = staged_send(&mut rig, None);
+        assert!(
+            matches!(continued, (WorldOutcome::Accepted(_), false)),
+            "row {i} continuity {continued:?}"
+        );
+    }
+}
+
+// A Roomy send adopts op-1; then a redelivery duplicates, a fresh observation
+// under the consumed sequence adopts without re-execution (oracle-identical),
+// and a second same-window command fences on the flight.
+#[test]
+fn t2_staged_fence_consumed_and_duplicate() {
+    use tiler_core::world_engine::{WorldEngine, WorldOutcome};
+    let mut rig = staged_boot(T2Rig::Roomy);
+    let ws_b = rig.ws_b.clone();
+    let before = native_fingerprint(&rig.state);
+    let mut oracle = WorldEngine::new_with_config(GENERATION, t2_profile()).expect("oracle");
+    match oracle.handle_report(&rig.boot_report) {
+        WorldOutcome::Accepted(reply) => assert_eq!(reply, rig.boot_reply),
+        other => panic!("oracle boot {other:?}"),
+    }
+    let send = t2_cmd(T2Cmd::SendDir, &ws_b);
+    let (report, (outcome, cloned)) = staged_send(&mut rig, Some(send.clone()));
+    assert!(cloned, "send must stage once");
+    let adopted = match outcome {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("send adopt {other:?}"),
+    };
+    match oracle.handle_report(&report) {
+        WorldOutcome::Accepted(reply) => assert_eq!(reply, adopted),
+        other => panic!("oracle send {other:?}"),
+    }
+    let adopted_rev = adopted.state_revision;
+    assert!(matches!(rig.seq.ack(&adopted), AckOutcome::Applied(_)));
+    assert_eq!(mover_transfers(&rig, "w1"), 1, "op-1 retained");
+    let engine_adopted = rig.seq.test_engine_debug();
+    // Redelivery duplicates against both engines: no replay, no mutation.
+    let (dup_outcome, dup_cloned) = rig.seq.deliver_staged(&report);
+    assert!(dup_cloned, "duplicate must stage the affected kind");
+    assert!(
+        matches!(dup_outcome, WorldOutcome::Duplicate(_)),
+        "got {dup_outcome:?}"
+    );
+    assert_eq!(oracle.handle_report(&report), dup_outcome);
+    assert_eq!(
+        rig.seq.test_engine_debug(),
+        engine_adopted,
+        "duplicate mutated"
+    );
+    // Fresh observation (moved frame, explicit close, staged feedback) under
+    // the consumed op-1 sequence: CommandConsumed ADOPTS the new observation
+    // (revision advances, oracle-identical) without re-executing the command.
+    rig.observed[0].visible.x += 2;
+    let outer = rig.observed[0].outer;
+    rig.observed[0].insets = FrameInsets::measure(outer, rig.observed[0].visible);
+    let homing = super::PendingClosed {
+        output: DEV1.to_owned(),
+        workspace: rig.ws_a.clone(),
+    };
+    rig.state
+        .pending_closed
+        .insert("w9".to_owned(), homing.clone());
+    rig.seq.note_feedback(AttemptFeedback {
+        operation_id: "op-probe-held".to_owned(),
+        kind: AttemptKind::Transfer,
+        outcome: AttemptOutcome::Applied,
+        hold: None,
+    });
+    let captured = capture_world(
+        &rig.state,
+        Some(&rig.observed),
+        &rig.retained,
+        &rig.areas,
+        1001,
+    );
+    let consumed = rig
+        .seq
+        .assemble(&captured, rig.seq.next_request_seq(), Some(1), Some(send));
+    let (consumed_outcome, consumed_cloned) = rig.seq.deliver_staged(&consumed);
+    assert!(consumed_cloned, "consumed must stage the affected kind");
+    assert!(
+        matches!(consumed_outcome, WorldOutcome::CommandConsumed(_)),
+        "got {consumed_outcome:?}"
+    );
+    assert_eq!(oracle.handle_report(&consumed), consumed_outcome);
+    assert!(
+        rig.seq.test_revision() > adopted_rev,
+        "consumed must advance"
+    );
+    assert_ne!(
+        rig.seq.test_engine_debug(),
+        engine_adopted,
+        "consumed must adopt"
+    );
+    assert_eq!(mover_transfers(&rig, "w1"), 1, "consumed replayed");
+    // Sequencer obligations stay dirty until an accepted observation flight
+    // acks them; that flight still carries exactly one op-1.
+    assert!(rig.seq.has_pending_feedback());
+    assert_eq!(rig.seq.outstanding_closes(&captured), vec!["w9".to_owned()]);
+    // Counter honesty: `assemble` is a test-only probe and leaves the
+    // sequencer request counter behind, so the next dispatched observation
+    // reuses req-3 with new content and the core refuses it as reused. That
+    // refusal releases through the existing path and the req-4 catch-up is
+    // the accepted observation flight that acks the carried obligations.
+    let (reuse_report, (reuse_outcome, reuse_cloned)) = staged_send(&mut rig, None);
+    match reuse_outcome {
+        WorldOutcome::Rejected { kind, .. } => {
+            assert!(!reuse_cloned, "reused hop must not clone");
+            assert_eq!(kind, "request-reused");
+        }
+        other => panic!("reused hop {other:?} cloned={reuse_cloned}"),
+    }
+    let reuse_req = reuse_report.request_id.clone();
+    assert!(rig.seq.note_rejected_or_lost(GENERATION, &reuse_req));
+    rig.seq.invalidate();
+    let (_, (obs_outcome, obs_cloned)) = staged_send(&mut rig, None);
+    assert!(!obs_cloned, "observation must not clone");
+    match obs_outcome {
+        WorldOutcome::Accepted(reply) => match rig.seq.ack(&reply) {
+            AckOutcome::Applied(receipt) => {
+                assert_eq!(receipt.feedback_acked, vec!["op-probe-held".to_owned()]);
+                assert_eq!(receipt.closed_acked, vec![("w9".to_owned(), homing)]);
+                assert_eq!(
+                    rig.seq
+                        .apply_close_receipt(&mut rig.state.pending_closed, &receipt),
+                    vec!["w9".to_owned()]
+                );
+            }
+            other => panic!("obs ack {other:?}"),
+        },
+        other => panic!("obs {other:?}"),
+    }
+    assert!(!rig.seq.has_pending_feedback());
+    assert_eq!(mover_transfers(&rig, "w1"), 1);
+    // A second same-window command fences on the outstanding op-1 flight and
+    // the original flight survives the release plus catch-up.
+    let before_fence = rig.seq.test_engine_debug();
+    let (report2, (fence_outcome, fence_cloned)) =
+        staged_send(&mut rig, Some(t2_cmd(T2Cmd::MoveDir, &ws_b)));
+    assert!(fence_cloned, "fenced command must stage once");
+    match &fence_outcome {
+        WorldOutcome::Rejected { kind, message } => {
+            assert_eq!(
+                *kind, "transfer-in-flight",
+                "fence misclassified: {message}"
+            )
+        }
+        other => panic!("fence must refuse, got {other:?}"),
+    }
+    assert_eq!(rig.seq.test_engine_debug(), before_fence, "fence mutated");
+    assert_eq!(mover_transfers(&rig, "w1"), 1, "original op-1 lost");
+    assert_eq!(native_fingerprint(&rig.state), before);
+    staged_catchup(&mut rig, &report2.request_id.clone());
+    assert_eq!(mover_transfers(&rig, "w1"), 1, "catch-up dropped op-1");
+    let before_stale = rig.seq.test_engine_debug();
+    assert!(matches!(
+        rig.seq.deliver_staged(&report),
+        (
+            WorldOutcome::Rejected {
+                kind: "request-superseded",
+                ..
+            },
+            true
+        )
+    ));
+    assert_eq!(rig.seq.test_engine_debug(), before_stale, "stale mutated");
+}
+
+// Observation-only, focus, local-only operations, and whole-workspace
+// migration stage nothing and never see `float-no-remap`; migration keeps
+// its current core transfer when accepted.
+#[test]
+fn t2_staged_untouched_scope() {
+    use tiler_core::world_engine::WorldOutcome;
+    let rig = two_output_rig();
+    let state = rig.state;
+    let observed = rig.observed;
+    let retained = rig.retained;
+    let areas = rig.areas;
+    let ws_a = rig.ws_a;
+    let before = native_fingerprint(&state);
+    let mut seq = WorldSequencer::bootstrap(ADAPTER, GENERATION).expect("bootstrap");
+    seq.invalidate();
+    let boot = seq
+        .try_dispatch(&state, Some(&observed), &retained, &areas, 1001, None)
+        .expect("boot");
+    match seq.deliver_staged(&boot) {
+        (WorldOutcome::Accepted(reply), false) => {
+            assert!(matches!(seq.ack(&reply), AckOutcome::Applied(_)));
+        }
+        (other, cloned) => panic!("boot {other:?} cloned={cloned}"),
+    }
+    // Settle one arm: ack an Accepted reply, or release a Rejected flight
+    // with an observation-only catch-up. No arm may clone or decline.
+    let settle = |seq: &mut WorldSequencer,
+                  report: &tiler_core::world_report::WorldReport|
+     -> Option<WorldReply> {
+        let req_id = report.request_id.clone();
+        match seq.deliver_staged(report) {
+            (WorldOutcome::Accepted(reply), false) => {
+                assert!(matches!(seq.ack(&reply), AckOutcome::Applied(_)));
+                Some(reply)
+            }
+            (WorldOutcome::Rejected { kind, .. }, false) => {
+                assert_ne!(kind, "float-no-remap", "unaffected arm misclassified");
+                assert!(seq.note_rejected_or_lost(GENERATION, &req_id));
+                seq.invalidate();
+                let catchup = seq
+                    .try_dispatch(&state, Some(&observed), &retained, &areas, 1001, None)
+                    .expect("catchup");
+                match seq.deliver_staged(&catchup) {
+                    (WorldOutcome::Accepted(reply), false) => {
+                        assert!(matches!(seq.ack(&reply), AckOutcome::Applied(_)));
+                        None
+                    }
+                    (other, cloned) => panic!("catchup {other:?} cloned={cloned}"),
+                }
+            }
+            (other, cloned) => panic!("unaffected arm {other:?} cloned={cloned}"),
+        }
+    };
+    let arms: Vec<(&str, Option<WorldCommand>, bool)> = vec![
+        ("observation-only", None, false),
+        (
+            "focus",
+            Some(WorldCommand::Focus {
+                window: WindowId("w1".to_owned()),
+                direction: "left".to_owned(),
+            }),
+            false,
+        ),
+        (
+            "operation focus",
+            Some(WorldCommand::Operation(
+                tiler_core::boundary::CoreCommand::Focus {
+                    window: "w1".to_owned(),
+                    direction: "right".to_owned(),
+                    cross_output_transfer: true,
+                    float_subject: false,
+                },
+            )),
+            false,
+        ),
+        (
+            "local operation move",
+            Some(WorldCommand::Operation(
+                tiler_core::boundary::CoreCommand::Move {
+                    window: "w1".to_owned(),
+                    direction: "down".to_owned(),
+                    cross_output_transfer: false,
+                    same_axis_move: tiler_core::directional::SameAxisMove::GroupWithNeighbor,
+                },
+            )),
+            false,
+        ),
+        (
+            "migration",
+            Some(WorldCommand::MigrateDirectional {
+                source_output: OutputId("o1".to_owned()),
+                workspace: ws_a.clone(),
+                direction: "right".to_owned(),
+            }),
+            true,
+        ),
+        (
+            "explicit migration",
+            Some(WorldCommand::MigrateWorkspace {
+                source_output: OutputId("o1".to_owned()),
+                target_output: OutputId("o2".to_owned()),
+                workspace: ws_a.clone(),
+            }),
+            false,
+        ),
+        (
+            "operation migration",
+            Some(WorldCommand::Operation(
+                tiler_core::boundary::CoreCommand::MigrateWorkspace {
+                    direction: "right".to_owned(),
+                },
+            )),
+            false,
+        ),
+    ];
+    for (name, command, check_migration) in arms {
+        seq.invalidate();
+        let report = seq
+            .try_dispatch(&state, Some(&observed), &retained, &areas, 1001, command)
+            .expect(name);
+        match settle(&mut seq, &report) {
+            Some(reply) if check_migration => assert!(
+                reply
+                    .transfers
+                    .iter()
+                    .any(|t| matches!(t.kind, TransferKind::Migration)),
+                "{name} keeps its transfer, got {:?}",
+                reply.transfers
+            ),
+            _ => {}
+        }
+    }
+    assert_eq!(native_fingerprint(&state), before);
+}
+#[test]
+fn t2_staged_source_repair() {
+    use tiler_core::world_engine::WorldOutcome;
+    let cmds = [
+        (T2Cmd::SendDir, "focus-mismatch"),
+        (T2Cmd::Send, "focus-mismatch"),
+        (T2Cmd::MoveDir, "partial-observation"),
+        (T2Cmd::OpSend, "focus-mismatch"),
+        (T2Cmd::OpMoveCross, "partial-observation"),
+    ];
+    for (i, (sel, want)) in cmds.into_iter().enumerate() {
+        let mut state = test_state();
+        state.workspaces.ensure_output(DEV1);
+        state.workspaces.ensure_output(DEV2);
+        let ws_a = state.workspaces.workspace_ids(DEV1)[0].clone();
+        let ws_b = state.workspaces.workspace_ids(DEV2)[0].clone();
+        state.workspaces.set_tiled(DEV1, &ws_a, true);
+        state.workspaces.set_tiled(DEV2, &ws_b, true);
+        let k_old = win_key(1002, 2002, "proc-2");
+        let k_mover = win_key(1001, 2001, "proc-1");
+        let k_target = win_key(1003, 2003, "proc-3");
+        admit(&mut state, &k_mover, DEV1, &ws_a, "w1", false);
+        admit(&mut state, &k_old, DEV1, &ws_a, "w0", false);
+        admit(&mut state, &k_target, DEV2, &ws_b, "w3", false);
+        let observed = vec![
+            observed_window(&k_old, "w0", rect(100, 100, 800, 600), plain_facts()),
+            observed_window(&k_mover, "w1", rect(100, 710, 800, 300), plain_facts()),
+            observed_window(&k_target, "w3", rect(1920, 0, 9, 9), plain_facts()),
+        ];
+        let mut areas = two_areas();
+        let retained: Vec<RetainedRow> = Vec::new();
+        let before = native_fingerprint(&state);
+        let mut seq = WorldSequencer::bootstrap(ADAPTER, GENERATION).expect("bootstrap");
+        seq.invalidate();
+        let boot = seq
+            .try_dispatch(&state, Some(&observed), &retained, &areas, 1001, None)
+            .expect("boot");
+        let boot_reply = match seq.deliver_staged(&boot) {
+            (WorldOutcome::Accepted(reply), false) => reply,
+            (other, cloned) => panic!("row {i} boot {other:?} cloned={cloned}"),
+        };
+        assert!(matches!(seq.ack(&boot_reply), AckOutcome::Applied(_)));
+        // Same-tick source shrink: usable bounds drop below the two-leaf
+        // split budget while FULL topology still resolves the target.
+        areas[0].work = rect(0, 0, 24, 24);
+        let command = t2_cmd(sel, &ws_b);
+        seq.invalidate();
+        let report = seq
+            .try_dispatch(
+                &state,
+                Some(&observed),
+                &retained,
+                &areas,
+                1001,
+                Some(command.clone()),
+            )
+            .expect("command");
+        let req_id = report.request_id.clone();
+        let engine_pre = seq.test_engine_debug();
+        let verdict = match seq.deliver_staged(&report) {
+            (WorldOutcome::Rejected { kind, message }, true) => {
+                assert_eq!(kind, want, "row {i} same-report verdict: {message}");
+                (kind, message)
+            }
+            (other, cloned) => {
+                panic!("row {i} repair shape must reject, got {other:?} cloned={cloned}")
+            }
+        };
+        assert_eq!(
+            seq.test_engine_debug(),
+            engine_pre,
+            "row {i} engine mutated"
+        );
+        assert_eq!(native_fingerprint(&state), before);
+        // Observation-only catch-up converges the repair: the mover floats,
+        // stays homed, and moves nothing. No command stages here.
+        assert!(seq.note_rejected_or_lost(GENERATION, &req_id));
+        seq.invalidate();
+        let catchup = seq
+            .try_dispatch(&state, Some(&observed), &retained, &areas, 1001, None)
+            .expect("catchup");
+        let repaired = match seq.deliver_staged(&catchup) {
+            (WorldOutcome::Accepted(reply), false) => reply,
+            (other, cloned) => {
+                panic!("row {i} repair must converge, got {other:?} cloned={cloned}")
+            }
+        };
+        assert!(matches!(seq.ack(&repaired), AckOutcome::Applied(_)));
+        let mover = mover_row(&repaired, "w1");
+        assert!(mover.floating, "row {i} repair must float the mover");
+        assert_eq!(mover.output.0, "o1", "row {i} repair keeps homing");
+        assert!(
+            repaired
+                .windows
+                .iter()
+                .find(|w| w.lifetime.0 == "w0")
+                .is_some_and(|w| !w.floating),
+            "row {i} repair floats only the mover"
+        );
+        assert!(
+            !repaired
+                .transfers
+                .iter()
+                .any(|t| matches!(&t.kind, TransferKind::Window(_))),
+            "row {i} repair moves nothing"
+        );
+        // The NEXT command runs under a stale tiled flag (adapter lags the
+        // repair): the verdict matches, still without adoption.
+        seq.invalidate();
+        let report2 = seq
+            .try_dispatch(
+                &state,
+                Some(&observed),
+                &retained,
+                &areas,
+                1001,
+                Some(command),
+            )
+            .expect("stale command");
+        let req2 = report2.request_id.clone();
+        let engine_pre2 = seq.test_engine_debug();
+        match seq.deliver_staged(&report2) {
+            (WorldOutcome::Rejected { kind, message }, true) => {
+                assert_eq!((kind, message), verdict, "row {i} stale verdict drift")
+            }
+            (other, cloned) => {
+                panic!("row {i} stale must reject, got {other:?} cloned={cloned}")
+            }
+        }
+        assert_eq!(
+            seq.test_engine_debug(),
+            engine_pre2,
+            "row {i} stale mutated"
+        );
+        assert!(seq.note_rejected_or_lost(GENERATION, &req2));
+        assert_eq!(native_fingerprint(&state), before);
+    }
+}
+
 #[test]
 fn stale_reply_must_not_retire_ambiguous_view_fence() {
     // Regression: envelope freshness must gate generation-scoped tracking.

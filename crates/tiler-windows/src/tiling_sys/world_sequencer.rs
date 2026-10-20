@@ -648,6 +648,128 @@ impl WorldSequencer {
     }
 }
 
+/// Offline T2 staged delivery (test-only proof; never runtime).
+///
+/// Fixture-scoped single-authority transaction on the sequencer-owned engine:
+/// an affected command evaluates the exact report ONCE on a fresh `.clone()`
+/// candidate. An Accepted candidate adopts unless the pinned Window transfer
+/// is unsupported (report-time tiled source, cross-output operation-pinned
+/// transfer, floating staged row); unsupported discards the candidate and
+/// returns a local `float-no-remap` refusal whose flight the caller releases
+/// via [`WorldSequencer::note_rejected_or_lost`] plus observation-only
+/// catch-up, with no ack and no native effects. CommandConsumed reconciles
+/// fresh observation state on the candidate and the core adopts it, so it
+/// adopts here, bypassing T2 classification (the command never re-executes);
+/// Duplicate is mutation-free and adopts for uniformity; Rejected drops the
+/// candidate with the real engine untouched. Unaffected commands run directly
+/// with zero incremental cloning. Returns the outcome plus whether the
+/// affected-command branch ran: exactly one `.clone()` call site establishes
+/// the count, so the flag is a branch indicator, not a hook count. The raw
+/// [`WorldSequencer::deliver`] path is untouched.
+#[cfg(test)]
+impl WorldSequencer {
+    pub(super) fn deliver_staged(&mut self, report: &WorldReport) -> (WorldOutcome, bool) {
+        let Some(mover) = Self::staged_mover(report) else {
+            return (self.engine.handle_report(report), false);
+        };
+        let mut candidate = self.engine.clone();
+        let staged = candidate.handle_report(report);
+        let declined = matches!(
+            &staged,
+            WorldOutcome::Accepted(reply) if Self::staged_declines(&mover, report, reply)
+        );
+        if declined {
+            (
+                WorldOutcome::Rejected {
+                    kind: "float-no-remap",
+                    message: "cross-output capacity float without remap",
+                },
+                true,
+            )
+        } else {
+            if !matches!(staged, WorldOutcome::Rejected { .. }) {
+                self.engine = candidate;
+            }
+            (staged, true)
+        }
+    }
+
+    /// Test-only read proof: retained-engine revision, transfers, and full
+    /// engine debug (session snapshots included) for before/after compare.
+    pub(super) fn test_revision(&self) -> u64 {
+        self.engine.state_revision()
+    }
+
+    pub(super) fn test_retained(&self) -> Vec<tiler_core::world_report::TransferTarget> {
+        self.engine.retained_transfers()
+    }
+
+    pub(super) fn test_engine_debug(&self) -> String {
+        format!("{:?}", self.engine)
+    }
+
+    /// Affected mover for staging, bounded to the T2 scope: direct output
+    /// sends, directional sends and moves, plus the equivalent Operation
+    /// SendToOutput / cross-output Move. Every other command kind runs the
+    /// direct path with no staging; no claim is made here about whether
+    /// those other routes can cross outputs.
+    fn staged_mover(report: &WorldReport) -> Option<String> {
+        match &report.command {
+            Some(WorldCommand::Send { window, .. })
+            | Some(WorldCommand::SendDirectional { window, .. })
+            | Some(WorldCommand::MoveDirectional { window, .. }) => Some(window.0.clone()),
+            Some(WorldCommand::Operation(command)) => match command {
+                tiler_core::boundary::CoreCommand::SendToOutput { window, .. } => {
+                    Some(window.clone())
+                }
+                tiler_core::boundary::CoreCommand::Move {
+                    window,
+                    cross_output_transfer,
+                    ..
+                } if *cross_output_transfer => Some(window.clone()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Functional decline facts only for the pinned mover: report-time tiled
+    /// source, cross-output Window transfer under `op-<command_seq>`,
+    /// floating staged row. Never reads `float_origin`.
+    fn staged_declines(mover: &str, report: &WorldReport, reply: &WorldReply) -> bool {
+        let Some(source) = report
+            .domains
+            .iter()
+            .flat_map(|domain| domain.windows.iter())
+            .find(|window| window.window.0 == mover)
+        else {
+            return false;
+        };
+        if source.floating {
+            return false;
+        }
+        let Some(seq) = report.command_seq else {
+            return false;
+        };
+        let operation_id = format!("op-{seq}");
+        let Some(transfer) = reply.transfers.iter().find(|target| {
+            matches!(
+                &target.kind,
+                tiler_core::world_report::TransferKind::Window(window) if window.0 == mover
+            )
+        }) else {
+            return false;
+        };
+        if transfer.target_output == source.output || transfer.operation_id != operation_id {
+            return false;
+        }
+        reply
+            .windows
+            .iter()
+            .any(|row| row.lifetime.0 == mover && row.floating)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::rmax03_adapter_tests::test_state;
