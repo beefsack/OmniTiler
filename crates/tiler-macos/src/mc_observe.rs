@@ -27,6 +27,7 @@ pub(crate) struct WindowMemberLive {
     pub(crate) bundle: String,
     pub(crate) exe: Option<String>,
     pub(crate) exe_alias: Option<String>,
+    pub(crate) ax_windows_absent: Option<bool>,
     pub(crate) spaces: Result<Vec<u64>, String>,
 }
 
@@ -45,6 +46,8 @@ pub(crate) fn enumerate_window_members() -> Result<Vec<WindowMemberLive>, McErro
     }
     let mut bundles = std::collections::HashMap::new();
     let mut exes: std::collections::HashMap<u32, (Option<String>, Option<String>)> =
+        std::collections::HashMap::new();
+    let mut ax_absent: std::collections::HashMap<u32, Option<bool>> =
         std::collections::HashMap::new();
     let mut out = Vec::with_capacity(all.len());
     for w in &all {
@@ -69,6 +72,23 @@ pub(crate) fn enumerate_window_members() -> Result<Vec<WindowMemberLive>, McErro
                 crate::mc_probe::normalize_windowserver_alias(raw)
             })
             .clone();
+        // Optional AX-window inventory proof for the ControlCenter rule:
+        // only an exact-shape window consults (and populates) the per-PID
+        // cache; every other window carries `None` without inserting, so an
+        // earlier nonmatching window never blocks a later matching one.
+        // Same calling thread, bounded by the existing messaging timeout;
+        // any failure reads `None` (fail closed).
+        let shape_matches = crate::mc_probe::controlcenter_shape_matches(
+            &bundle,
+            exe.as_deref(),
+            w.layer,
+            w.onscreen,
+            w.bounds.w,
+            w.bounds.h,
+        );
+        let ax_windows_absent = ax_proof_cached(&mut ax_absent, w.pid, shape_matches, || {
+            read_ax_windows_absent(w.pid, &bundle, exe.as_deref(), exe_alias.as_deref())
+        });
         let spaces = crate::ffi::sls_spaces_for_windows(&[w.wid]);
         out.push(WindowMemberLive {
             wid: w.wid,
@@ -82,10 +102,75 @@ pub(crate) fn enumerate_window_members() -> Result<Vec<WindowMemberLive>, McErro
             bundle,
             exe,
             exe_alias,
+            ax_windows_absent,
             spaces,
         });
     }
     Ok(out)
+}
+
+/// Cache discipline for the optional AX proof: only an exact-shape window
+/// consults the per-PID cache; any other window returns `None` without
+/// inserting, so an earlier nonmatching window (onscreen item, panel, or
+/// foreign owner) never blocks a later matching one. A genuine read result
+/// (including a `None` failure) is cached once per PID per scan, so a
+/// second matching window reuses it without a second IPC. Pure over the
+/// injected read; the live caller passes [`read_ax_windows_absent`].
+fn ax_proof_cached(
+    cache: &mut std::collections::HashMap<u32, Option<bool>>,
+    pid: u32,
+    shape_matches: bool,
+    read: impl FnOnce() -> Option<bool>,
+) -> Option<bool> {
+    if !shape_matches {
+        return None;
+    }
+    if let Some(cached) = cache.get(&pid) {
+        return *cached;
+    }
+    let proof = read();
+    cache.insert(pid, proof);
+    proof
+}
+
+/// Optional owner AX-window inventory proof for the ControlCenter rule:
+/// `Some(true)` only when a fresh readable `AXWindows` read on the exact
+/// owner PID completes empty; `Some(false)` when it completes nonempty -
+/// an owner popup or any other inventory entry refuses, never exempts.
+/// `None` when the app element, messaging timeout, or window list is
+/// unreadable, or when the owner identity re-read after the IPC no longer
+/// matches (fail closed on PID reuse). Constructs, uses, and drops every
+/// `AxElement` on the calling thread; the only AX setting touched is the
+/// existing finite messaging timeout. Counts every returned element of the
+/// exact owner's inventory. No titles, no content, no paths.
+fn read_ax_windows_absent(
+    pid: u32,
+    bundle: &str,
+    exe: Option<&str>,
+    exe_alias: Option<&str>,
+) -> Option<bool> {
+    if bundle != crate::mc_probe::CONTROLCENTER_BUNDLE
+        || exe != Some(crate::mc_probe::CONTROLCENTER_EXE)
+    {
+        return None;
+    }
+    let pid_i32 = i32::try_from(pid).ok()?;
+    let app = crate::ffi::AxElement::application(pid_i32)?;
+    if crate::ffi::ax_set_messaging_timeout(&app, crate::mc_probe::MC_AX_TIMEOUT_SECS) != 0 {
+        return None;
+    }
+    let windows = app.windows().ok()?;
+    // PID-reuse fence: the identity that authorized this read must still
+    // hold after the IPC; any drift voids the proof.
+    let fresh_bundle = crate::ffi::bundle_id_for_pid(pid_i32);
+    if fresh_bundle.as_deref() != Some(bundle) {
+        return None;
+    }
+    let fresh_exe = crate::ffi::process_executable_path(pid_i32);
+    if fresh_exe.as_deref() != exe_alias.or(exe) {
+        return None;
+    }
+    Some(windows.is_empty())
 }
 
 /// Fresh topology user-SID set for the sticky-chrome rule: every Space in
@@ -139,6 +224,7 @@ pub(crate) fn verify_space_empty(temp: u64) -> Result<crate::mc_probe::EmptySumm
                     h: m.h,
                     exe: m.exe,
                     exe_alias: m.exe_alias,
+                    ax_windows_absent: m.ax_windows_absent,
                 },
                 m.spaces,
             )
@@ -217,5 +303,70 @@ pub(crate) fn capture_focus_legs() -> FocusLegs {
         slps_pid: slps,
         direct,
         direct_readable: readable,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ax_proof_cache_skips_nonmatching_without_read_or_insert() {
+        // Same owner PID, enumeration order as captured on Space 1: an
+        // onscreen nonmatching item first, then the exact offscreen 120x30
+        // shape. The first must neither read nor poison the cache; the
+        // second reads exactly once and proves; a third matching window
+        // reuses the cache.
+        let mut cache = std::collections::HashMap::new();
+        let mut reads = 0u32;
+        assert_eq!(
+            ax_proof_cached(&mut cache, 656, false, || {
+                reads += 1;
+                Some(true)
+            }),
+            None
+        );
+        assert_eq!(reads, 0, "nonmatching window must not read AX");
+        assert!(!cache.contains_key(&656));
+        assert_eq!(
+            ax_proof_cached(&mut cache, 656, true, || {
+                reads += 1;
+                Some(true)
+            }),
+            Some(true)
+        );
+        assert_eq!(reads, 1);
+        assert_eq!(
+            ax_proof_cached(&mut cache, 656, true, || {
+                reads += 1;
+                Some(false)
+            }),
+            Some(true),
+            "later matching window reuses the cached proof"
+        );
+        assert_eq!(reads, 1);
+    }
+
+    #[test]
+    fn ax_proof_cache_records_genuine_failure_once() {
+        // A genuine AX failure is cached once per PID per scan and stays
+        // fail closed without a second IPC.
+        let mut cache = std::collections::HashMap::new();
+        let mut reads = 0u32;
+        assert_eq!(
+            ax_proof_cached(&mut cache, 656, true, || {
+                reads += 1;
+                None
+            }),
+            None
+        );
+        assert_eq!(
+            ax_proof_cached(&mut cache, 656, true, || {
+                reads += 1;
+                Some(true)
+            }),
+            None
+        );
+        assert_eq!(reads, 1);
     }
 }

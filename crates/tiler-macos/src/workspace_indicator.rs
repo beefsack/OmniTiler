@@ -635,6 +635,7 @@ pub struct MemberView {
     pub h: f64,
     pub exe: Option<String>,
     pub exe_alias: Option<String>,
+    pub ax_windows_absent: Option<bool>,
     pub spaces: Result<Vec<u64>, ()>,
 }
 
@@ -674,6 +675,7 @@ pub fn summarize_spaces(
                     h: m.h,
                     exe: m.exe.clone(),
                     exe_alias: m.exe_alias.clone(),
+                    ax_windows_absent: m.ax_windows_absent,
                 };
                 let membership = m.spaces.as_ref().ok().map(Vec::as_slice);
                 if crate::mc_probe::classify_window_full(&window, membership, spaces, *sid).0
@@ -760,6 +762,7 @@ pub(crate) fn scan_space_state(
                     h: m.h,
                     exe: m.exe,
                     exe_alias: m.exe_alias,
+                    ax_windows_absent: m.ax_windows_absent,
                     spaces: m.spaces.map_err(|_| ()),
                 })
                 .collect(),
@@ -1133,6 +1136,7 @@ mod tests {
             h: 320.0,
             exe: None,
             exe_alias: None,
+            ax_windows_absent: None,
             spaces,
         }
     }

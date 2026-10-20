@@ -8,8 +8,8 @@
 //! call carries the complete bounded metadata the cleanup predicate needs:
 //! every live member of the Space (shell chrome included) with identity,
 //! geometry, and membership, plus the read-only focus-oracle legs and the
-//! protected Ghostty snapshot for the same instant. IDs and geometry only —
-//! never titles, content, or paths.
+//! protected Ghostty snapshot for the same instant. Includes the existing
+//! owner-executable read, never titles or content.
 
 use crate::mc_lifecycle::{
     capture_focus_legs, enumerate_window_members, live, snapshot_ghostty_windows,
@@ -58,6 +58,9 @@ pub fn run_mc_members(space: u64) -> Result<String, (i32, String)> {
                     w: m.w,
                     h: m.h,
                     spaces: m.spaces.ok(),
+                    exe: m.exe,
+                    exe_alias: m.exe_alias,
+                    ax_windows_absent: m.ax_windows_absent,
                 })
                 .collect();
             members.sort_by_key(|m| m.wid);

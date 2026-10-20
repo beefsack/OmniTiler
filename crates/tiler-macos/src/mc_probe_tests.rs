@@ -292,6 +292,7 @@ fn ghostty_is_candidate_before_negative_layer_shell_rule() {
             h: 100.0,
             exe: None,
             exe_alias: None,
+            ax_windows_absent: None,
         },
         Ok(vec![13]),
     )];
@@ -308,6 +309,7 @@ fn ghostty_is_candidate_before_negative_layer_shell_rule() {
             h: 100.0,
             exe: None,
             exe_alias: None,
+            ax_windows_absent: None,
         },
         Err("withheld".to_owned()),
     )];
@@ -323,6 +325,7 @@ fn ghostty_is_candidate_before_negative_layer_shell_rule() {
             h: 100.0,
             exe: None,
             exe_alias: None,
+            ax_windows_absent: None,
         },
         Ok(vec![11]),
     )];
@@ -342,6 +345,7 @@ fn member(wid: u32, bundle: &str, layer: i32) -> (WindowMember, Result<Vec<u64>,
             h: 100.0,
             exe: None,
             exe_alias: None,
+            ax_windows_absent: None,
         },
         Ok(vec![11]),
     )
@@ -370,6 +374,7 @@ fn emptiness_gate_skips_shell_but_never_ghostty() {
             h: 100.0,
             exe: None,
             exe_alias: None,
+            ax_windows_absent: None,
         },
         Ok(vec![11, 13]),
     )];
@@ -387,6 +392,7 @@ fn emptiness_gate_skips_shell_but_never_ghostty() {
             h: 100.0,
             exe: None,
             exe_alias: None,
+            ax_windows_absent: None,
         },
         Err("SLSCopySpacesForWindows returned null".to_owned()),
     )];
@@ -404,6 +410,7 @@ fn emptiness_gate_skips_shell_but_never_ghostty() {
             h: 100.0,
             exe: None,
             exe_alias: None,
+            ax_windows_absent: None,
         },
         Ok(vec![13]),
     )];
@@ -420,6 +427,7 @@ fn emptiness_gate_skips_shell_but_never_ghostty() {
             h: 100.0,
             exe: None,
             exe_alias: None,
+            ax_windows_absent: None,
         },
         Err("withheld".to_owned()),
     )];
@@ -453,6 +461,7 @@ fn chrome(
             h,
             exe: exe.map(str::to_owned),
             exe_alias: None,
+            ax_windows_absent: None,
         },
         spaces,
     )
@@ -546,6 +555,7 @@ fn compositor_alias_keeps_raw_observation_in_report() {
             h: 600.0,
             exe: Some(WINDOWSERVER_EXE.to_owned()),
             exe_alias: Some(alias.to_owned()),
+            ax_windows_absent: None,
         },
         Ok(vec![20]),
     )];
@@ -724,6 +734,343 @@ fn sticky_chrome_exemption_needs_all_four_marks() {
     assert!(err.to_string().contains("not empty"));
     // Empty user set: stickiness unprovable, candidate.
     let err = verify_space_empty_members(&sticky(), 20, &[]).unwrap_err();
+    assert!(err.to_string().contains("not empty"));
+}
+
+#[test]
+fn system_accessibility_chrome_partial_subset_is_shell() {
+    // Real-shaped fixture: fresh user set [1, 277, 434] with target 434;
+    // the chrome is offscreen layer 3 0x0 with readable membership [434, 1]
+    // (target plus a strict user-Space subset, missing 277). The
+    // every-space rule above misses 277, so only the partial-subset rule
+    // exempts it. The old predicate would return Candidate for this shape.
+    let user = vec![1, 277, 434];
+    let partial = || {
+        vec![chrome(
+            12,
+            696,
+            A11Y_SERVER_BUNDLE,
+            3,
+            false,
+            0.0,
+            0.0,
+            Some(A11Y_SERVER_EXE),
+            Ok(vec![434, 1]),
+        )]
+    };
+    // Same classifier both gates share: direct (trailing probe) and the
+    // removal emptiness gate agree.
+    let direct = WindowMember {
+        wid: 12,
+        pid: 696,
+        bundle: A11Y_SERVER_BUNDLE.to_owned(),
+        layer: 3,
+        onscreen: false,
+        w: 0.0,
+        h: 0.0,
+        exe: Some(A11Y_SERVER_EXE.to_owned()),
+        exe_alias: None,
+        ax_windows_absent: None,
+    };
+    let (class, reason) = classify_window_full(&direct, Some(&[434, 1]), &user, 434);
+    assert_eq!(class, WindowClass::Shell);
+    assert_eq!(
+        reason.expect("shell carries its exclusion").reason,
+        ShellReason::SystemAccessibilityChrome
+    );
+    let summary = verify_space_empty_members(&partial(), 434, &user).unwrap();
+    assert_eq!((summary.checked, summary.shell_skipped), (0, 1));
+    assert_eq!(summary.excluded.len(), 1);
+    let only = &summary.excluded[0];
+    assert_eq!((only.wid, only.pid), (12, 696));
+    assert_eq!(only.bundle, A11Y_SERVER_BUNDLE);
+    assert_eq!(only.exe.as_deref(), Some(A11Y_SERVER_EXE));
+    assert_eq!(only.reason, ShellReason::SystemAccessibilityChrome);
+    // An ordinary extra window on the same target still refuses: managed
+    // and user windows are never ignored.
+    let mut occupied = partial();
+    occupied.push(chrome(
+        3675,
+        31863,
+        "com.example.app",
+        0,
+        true,
+        100.0,
+        100.0,
+        None,
+        Ok(vec![434]),
+    ));
+    let err = verify_space_empty_members(&occupied, 434, &user).unwrap_err();
+    assert!(err.to_string().contains("not empty"));
+    // Unknown membership on the chrome shape refuses as unknown, never shell.
+    let unknown = vec![chrome(
+        12,
+        696,
+        A11Y_SERVER_BUNDLE,
+        3,
+        false,
+        0.0,
+        0.0,
+        Some(A11Y_SERVER_EXE),
+        Err("withheld".to_owned()),
+    )];
+    let err = verify_space_empty_members(&unknown, 434, &user).unwrap_err();
+    assert!(err.to_string().contains("emptiness unknown"));
+    // Nearby variations stay candidates: wrong exe, wrong bundle, onscreen,
+    // wrong layer, nonzero/NaN area, and member SID outside the user set.
+    // (Temp-absent membership is checked separately below: it classifies
+    // Candidate but does not block, since it is not on the temp.)
+    let near_miss_exe = format!("{A11Y_SERVER_EXE}X");
+    for variant in [
+        chrome(
+            12,
+            696,
+            A11Y_SERVER_BUNDLE,
+            3,
+            false,
+            0.0,
+            0.0,
+            None,
+            Ok(vec![434, 1]),
+        ),
+        chrome(
+            12,
+            696,
+            A11Y_SERVER_BUNDLE,
+            3,
+            false,
+            0.0,
+            0.0,
+            Some(&near_miss_exe),
+            Ok(vec![434, 1]),
+        ),
+        chrome(
+            12,
+            696,
+            "com.example.a11y",
+            3,
+            false,
+            0.0,
+            0.0,
+            Some(A11Y_SERVER_EXE),
+            Ok(vec![434, 1]),
+        ),
+        chrome(
+            12,
+            696,
+            A11Y_SERVER_BUNDLE,
+            3,
+            true,
+            0.0,
+            0.0,
+            Some(A11Y_SERVER_EXE),
+            Ok(vec![434, 1]),
+        ),
+        chrome(
+            12,
+            696,
+            A11Y_SERVER_BUNDLE,
+            4,
+            false,
+            0.0,
+            0.0,
+            Some(A11Y_SERVER_EXE),
+            Ok(vec![434, 1]),
+        ),
+        chrome(
+            12,
+            696,
+            A11Y_SERVER_BUNDLE,
+            3,
+            false,
+            10.0,
+            0.0,
+            Some(A11Y_SERVER_EXE),
+            Ok(vec![434, 1]),
+        ),
+        chrome(
+            12,
+            696,
+            A11Y_SERVER_BUNDLE,
+            3,
+            false,
+            f64::NAN,
+            0.0,
+            Some(A11Y_SERVER_EXE),
+            Ok(vec![434, 1]),
+        ),
+        chrome(
+            12,
+            696,
+            A11Y_SERVER_BUNDLE,
+            3,
+            false,
+            0.0,
+            0.0,
+            Some(A11Y_SERVER_EXE),
+            Ok(vec![434, 999]),
+        ),
+    ] {
+        let err = verify_space_empty_members(&[variant], 434, &user).unwrap_err();
+        assert!(err.to_string().contains("not empty"), "{err}");
+    }
+    // Temp-absent membership is not shell, and it does not block the temp:
+    // Candidate but clear, since it sits elsewhere.
+    let away = vec![chrome(
+        12,
+        696,
+        A11Y_SERVER_BUNDLE,
+        3,
+        false,
+        0.0,
+        0.0,
+        Some(A11Y_SERVER_EXE),
+        Ok(vec![1]),
+    )];
+    let (class, _) = classify_window_full(&away[0].0, Some(&[1]), &user, 434);
+    assert_eq!(class, WindowClass::Candidate);
+    let summary = verify_space_empty_members(&away, 434, &user).unwrap();
+    assert_eq!((summary.checked, summary.shell_skipped), (1, 0));
+    let err = verify_space_empty_members(&partial(), 434, &[]).unwrap_err();
+    assert!(err.to_string().contains("not empty"));
+    // Ghostty with the same executable is still a candidate (ownership first).
+    let ghost = vec![chrome(
+        3675,
+        31863,
+        "com.mitchellh.ghostty",
+        3,
+        false,
+        0.0,
+        0.0,
+        Some(A11Y_SERVER_EXE),
+        Ok(vec![434, 1]),
+    )];
+    let err = verify_space_empty_members(&ghost, 434, &user).unwrap_err();
+    assert!(err.to_string().contains("not empty"));
+}
+
+#[test]
+fn controlcenter_chrome_exemption_needs_ax_empty_proof() {
+    // Real captured shape (fresh user set [1, 277, 467], target 467): WID
+    // 5559 PID 656, exact bundle + exe, offscreen layer 25, 120x30,
+    // target-only membership, fresh readable empty owner AX inventory.
+    fn cc(
+        ax: Option<bool>,
+        spaces: Result<Vec<u64>, String>,
+    ) -> (WindowMember, Result<Vec<u64>, String>) {
+        let mut pair = chrome(
+            5559,
+            656,
+            CONTROLCENTER_BUNDLE,
+            CONTROLCENTER_LAYER,
+            false,
+            CONTROLCENTER_W,
+            CONTROLCENTER_H,
+            Some(CONTROLCENTER_EXE),
+            spaces,
+        );
+        pair.0.ax_windows_absent = ax;
+        pair
+    }
+    let user = vec![1, 277, 467];
+    // Proven empty inventory exempts with its identity evidence.
+    let summary = verify_space_empty_members(&[cc(Some(true), Ok(vec![467]))], 467, &user).unwrap();
+    assert_eq!((summary.checked, summary.shell_skipped), (0, 1));
+    assert_eq!(summary.excluded.len(), 1);
+    let only = &summary.excluded[0];
+    assert_eq!((only.wid, only.pid), (5559, 656));
+    assert_eq!(only.bundle, CONTROLCENTER_BUNDLE);
+    assert_eq!(only.exe.as_deref(), Some(CONTROLCENTER_EXE));
+    assert_eq!(only.reason, ShellReason::ControlCenterChrome);
+    assert!(
+        only.detail.contains("AX windows readable empty"),
+        "{detail}",
+        detail = only.detail
+    );
+    // Same classifier both gates share: direct (trailing probe) and the
+    // removal emptiness gate agree.
+    let direct = cc(Some(true), Ok(vec![467]));
+    let (class, reason) = classify_window_full(&direct.0, Some(&[467]), &user, 467);
+    assert_eq!(class, WindowClass::Shell);
+    assert_eq!(
+        reason.expect("shell carries its exclusion").reason,
+        ShellReason::ControlCenterChrome
+    );
+    // Unknown (`None`), nonempty (`Some(false)`), or unreadable AX proofs
+    // never exempt: the shape blocks as a target member.
+    for ax in [None, Some(false)] {
+        let err = verify_space_empty_members(&[cc(ax, Ok(vec![467]))], 467, &user).unwrap_err();
+        assert!(err.to_string().contains("not empty"), "{err}");
+    }
+    // Unknown membership refuses as unknown, never shell.
+    let err = verify_space_empty_members(&[cc(Some(true), Err("withheld".to_owned()))], 467, &user)
+        .unwrap_err();
+    assert!(err.to_string().contains("emptiness unknown"));
+    // Nearby variations stay candidates even with a proven-empty AX
+    // inventory: onscreen, normal layer, wrong geometry (captured 94x30
+    // items, captured layer-2005 352x149 panel), wrong bundle/exe/owner,
+    // nonfinite area, and member SIDs outside the user set.
+    let mut onscreen = cc(Some(true), Ok(vec![467]));
+    onscreen.0.onscreen = true;
+    let mut normal_layer = cc(Some(true), Ok(vec![467]));
+    normal_layer.0.layer = 0;
+    let mut narrow = cc(Some(true), Ok(vec![467]));
+    narrow.0.w = 94.0;
+    let mut panel = cc(Some(true), Ok(vec![467]));
+    panel.0.layer = 2005;
+    panel.0.w = 352.0;
+    panel.0.h = 149.0;
+    let mut nan = cc(Some(true), Ok(vec![467]));
+    nan.0.w = f64::NAN;
+    let near_miss_exe = format!("{CONTROLCENTER_EXE}X");
+    let variants = vec![
+        onscreen,
+        normal_layer,
+        narrow,
+        panel,
+        nan,
+        cc(Some(true), Ok(vec![467, 999])),
+        {
+            let mut wrong_bundle = cc(Some(true), Ok(vec![467]));
+            wrong_bundle.0.bundle = "com.example.app".to_owned();
+            wrong_bundle
+        },
+        {
+            let mut wrong_exe = cc(Some(true), Ok(vec![467]));
+            wrong_exe.0.exe = Some(near_miss_exe.clone());
+            wrong_exe
+        },
+        {
+            let mut no_exe = cc(Some(true), Ok(vec![467]));
+            no_exe.0.exe = None;
+            no_exe
+        },
+        {
+            let mut no_owner = cc(Some(true), Ok(vec![467]));
+            no_owner.0.bundle = String::new();
+            no_owner.0.exe = None;
+            no_owner
+        },
+    ];
+    for variant in &variants {
+        let err =
+            verify_space_empty_members(std::slice::from_ref(variant), 467, &user).unwrap_err();
+        assert!(err.to_string().contains("not empty"), "{err}");
+    }
+    // Temp-absent membership is not shell, and it does not block the temp:
+    // Candidate but clear, since it sits elsewhere.
+    let away = vec![cc(Some(true), Ok(vec![1]))];
+    let (class, _) = classify_window_full(&away[0].0, Some(&[1]), &user, 467);
+    assert_eq!(class, WindowClass::Candidate);
+    let summary = verify_space_empty_members(&away, 467, &user).unwrap();
+    assert_eq!((summary.checked, summary.shell_skipped), (1, 0));
+    // Empty user set: stickiness unprovable, candidate.
+    let err = verify_space_empty_members(&[cc(Some(true), Ok(vec![467]))], 467, &[]).unwrap_err();
+    assert!(err.to_string().contains("not empty"));
+    // Ghostty with the same executable is still a candidate (ownership first).
+    let mut ghost = cc(Some(true), Ok(vec![467]));
+    ghost.0.bundle = "com.mitchellh.ghostty".to_owned();
+    let err = verify_space_empty_members(&[ghost], 467, &user).unwrap_err();
     assert!(err.to_string().contains("not empty"));
 }
 
@@ -1088,4 +1435,45 @@ fn mismatch_detail_distinguishes_geometry_from_unknown_membership() {
             .unwrap()
             .contains("count")
     );
+}
+
+#[test]
+fn residual_member_preserves_exe_metadata_and_reads_legacy_json() {
+    let member = ResidualMember {
+        wid: 5129,
+        pid: 424,
+        bundle: String::new(),
+        layer: 24,
+        onscreen: false,
+        x: 0.0,
+        y: 0.0,
+        w: 2240.0,
+        h: 30.0,
+        spaces: Some(vec![434]),
+        exe: Some(WINDOWSERVER_EXE.to_owned()),
+        exe_alias: None,
+        ax_windows_absent: None,
+    };
+    let round_tripped: ResidualMember =
+        serde_json::from_str(&serde_json::to_string(&member).unwrap()).unwrap();
+    assert_eq!(round_tripped, member);
+    assert_eq!(round_tripped.exe.as_deref(), Some(WINDOWSERVER_EXE));
+    // Reports captured before the exe fields existed still decode, with the
+    // metadata absent rather than inferred.
+    let legacy = serde_json::json!({
+        "wid": 12,
+        "pid": 696,
+        "bundle": A11Y_SERVER_BUNDLE,
+        "layer": 3,
+        "onscreen": false,
+        "x": 0.0,
+        "y": 810.0,
+        "w": 0.0,
+        "h": 0.0,
+        "spaces": [434, 1],
+    });
+    let decoded: ResidualMember = serde_json::from_value(legacy).unwrap();
+    assert_eq!(decoded.exe, None);
+    assert_eq!(decoded.exe_alias, None);
+    assert_eq!(decoded.ax_windows_absent, None);
 }

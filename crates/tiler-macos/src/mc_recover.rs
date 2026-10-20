@@ -362,6 +362,9 @@ pub fn run_mc_recover(
             w: m.w,
             h: m.h,
             spaces: m.spaces.ok(),
+            exe: m.exe,
+            exe_alias: m.exe_alias,
+            ax_windows_absent: m.ax_windows_absent,
         })
         .collect();
     residual.sort_by_key(|m| m.wid);

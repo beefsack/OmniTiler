@@ -594,9 +594,13 @@ pub fn focus_ghostty_returned(after: &FocusLegs) -> bool {
 }
 
 /// One residual Space member under read-only inspection: identity plus
-/// geometry plus membership. No titles, no content, no paths — the bundle
-/// names the owner (e.g. the window-server accessibility chrome), the
-/// membership names the blocking Space.
+/// geometry plus membership. No titles, no content - the bundle names the
+/// owner (e.g. the window-server accessibility chrome), the membership
+/// names the blocking Space, and `exe` carries the already-collected owner
+/// executable path (auditable compositor evidence, never inferred).
+/// `ax_windows_absent` carries the optional owner AX-window inventory proof
+/// (`Some(true)` only on a fresh readable empty inventory; absent in
+/// reports captured before the proof existed).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ResidualMember {
     pub wid: u32,
@@ -609,6 +613,12 @@ pub struct ResidualMember {
     pub w: f64,
     pub h: f64,
     pub spaces: Option<Vec<u64>>,
+    #[serde(default)]
+    pub exe: Option<String>,
+    #[serde(default)]
+    pub exe_alias: Option<String>,
+    #[serde(default)]
+    pub ax_windows_absent: Option<bool>,
 }
 
 /// Bounded recovery report: restore-original-then-maybe-remove for one
@@ -734,7 +744,12 @@ pub fn classify_window(bundle: &str, layer: i32) -> WindowClass {
 /// inferred). `exe_alias` carries the raw alias read when normalization
 /// applied (`None` otherwise), so the exclusion record retains the actual
 /// observation. `onscreen`/`w`/`h` are the live geometry reads for the
-/// sticky-chrome rule. No titles anywhere on this surface.
+/// sticky-chrome rule. `ax_windows_absent` is the optional owner AX-window
+/// inventory proof for the ControlCenter rule only: `Some(true)` when a
+/// fresh readable `AXWindows` read on the exact owner PID returned empty,
+/// `Some(false)` when it returned a window, `None` when unreadable, timed
+/// out, identity-mismatched, or never read (any non-shape window). `None`
+/// never exempts. No titles anywhere on this surface.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WindowMember {
     pub wid: u32,
@@ -746,6 +761,7 @@ pub struct WindowMember {
     pub h: f64,
     pub exe: Option<String>,
     pub exe_alias: Option<String>,
+    pub ax_windows_absent: Option<bool>,
 }
 
 /// Temp-emptiness verdict: counts plus one [`ShellExclusion`] per skipped
@@ -809,16 +825,37 @@ pub(crate) fn normalize_windowserver_alias(
     }
 }
 
-/// Exact bundle of the window-server accessibility chrome. The exemption
-/// additionally requires offscreen, zero area, and sticky membership over
-/// every currently enumerated user Space — any deviation stays a candidate.
+/// Exact bundle of the window-server accessibility chrome. The legacy rule
+/// requires offscreen, zero area, and every-user-Space membership; partial
+/// attachment additionally requires the exact executable and layer below.
 pub const A11Y_SERVER_BUNDLE: &str = "com.apple.AccessibilityUIServer";
+/// Exact executable of that accessibility chrome, as read from the fresh
+/// `process_executable_path` for its owner. Compared byte-exact; no alias
+/// normalization is applied on this path.
+pub const A11Y_SERVER_EXE: &str =
+    "/System/Library/CoreServices/AccessibilityUIServer.app/Contents/MacOS/AccessibilityUIServer";
+
+/// Exact bundle of the ControlCenter status-item chrome. The narrow rule
+/// below exempts exactly one captured shape (offscreen layer 25, 120x30)
+/// and only with a fresh readable empty owner AX window inventory.
+pub const CONTROLCENTER_BUNDLE: &str = "com.apple.controlcenter";
+/// Exact executable of that chrome, as read from the fresh
+/// `process_executable_path` for its owner. Compared byte-exact; no alias
+/// normalization is applied on this path.
+pub const CONTROLCENTER_EXE: &str =
+    "/System/Library/CoreServices/ControlCenter.app/Contents/MacOS/ControlCenter";
+/// Exact CG layer of the exemptible ControlCenter shape (captured 120x30
+/// status item). Ordinary layers never exempt.
+pub const CONTROLCENTER_LAYER: i32 = 25;
+/// Exact CG size of the exemptible ControlCenter shape.
+pub const CONTROLCENTER_W: f64 = 120.0;
+/// Exact CG size of the exemptible ControlCenter shape.
+pub const CONTROLCENTER_H: f64 = 30.0;
 
 /// Why one window was excluded as shell. Each variant names checkable
-/// evidence carried on [`ShellExclusion`]; the two narrow rules below exist
+/// evidence carried on [`ShellExclusion`]; the three narrow rules below exist
 /// because live metadata proved exactly these classes, and every nearby
-/// variation (changed owner, nonzero frame, onscreen, non-sticky, unknown
-/// membership) stays a candidate and blocks.
+/// variation outside their explicit predicates stays a candidate and blocks.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ShellReason {
     /// Exact Dock bundle match.
@@ -831,6 +868,22 @@ pub enum ShellReason {
     /// Exact [`A11Y_SERVER_BUNDLE`] bundle, offscreen, zero area, and sticky
     /// over every enumerated user Space: window-server accessibility chrome.
     StickyAccessibilityChrome,
+    /// Exact [`A11Y_SERVER_BUNDLE`] bundle plus exact [`A11Y_SERVER_EXE`],
+    /// offscreen, layer 3, zero area, and membership containing the temp
+    /// with every member SID inside the fresh user-Space set: the same
+    /// accessibility chrome seen partially attached (target plus a strict
+    /// user-Space subset). Unknown membership or any member SID outside the
+    /// user set stays a candidate.
+    SystemAccessibilityChrome,
+    /// Exact [`CONTROLCENTER_BUNDLE`] bundle plus exact
+    /// [`CONTROLCENTER_EXE`], offscreen, [`CONTROLCENTER_LAYER`] layer,
+    /// 120x30, membership containing the temp with every member SID inside
+    /// the fresh user-Space set, and a fresh readable empty owner AX window
+    /// inventory (`ax_windows_absent == Some(true)`). Unknown/unreadable AX
+    /// (`None`), nonempty AX (`Some(false)`), unknown membership, onscreen,
+    /// wrong layer/geometry/owner, empty user set, temp absent, or any
+    /// member SID outside the user set all stay candidates and block.
+    ControlCenterChrome,
 }
 
 /// One shell exclusion with its identity evidence: which window, what
@@ -847,8 +900,35 @@ pub struct ShellExclusion {
     pub detail: String,
 }
 
+/// Pure exact-shape predicate for the ControlCenter exemption candidate:
+/// exact [`CONTROLCENTER_BUNDLE`] bundle, exact [`CONTROLCENTER_EXE`]
+/// executable, [`CONTROLCENTER_LAYER`] layer, offscreen, and exactly
+/// 120x30. Shared by the live collector (which reads the AX proof only for
+/// this shape) and the classifier below (which additionally requires the
+/// proof plus target membership). Every nearby variation - normal-layer or
+/// onscreen ControlCenter items, other geometries (including the captured
+/// 94x30 items and the layer-2005 352x149 panel), other owners, unreadable
+/// owners - fails here and stays a candidate. NaN dimensions never equal
+/// the exact size, so nonfinite geometry fails closed.
+#[must_use]
+pub fn controlcenter_shape_matches(
+    bundle: &str,
+    exe: Option<&str>,
+    layer: i32,
+    onscreen: bool,
+    w: f64,
+    h: f64,
+) -> bool {
+    bundle == CONTROLCENTER_BUNDLE
+        && exe == Some(CONTROLCENTER_EXE)
+        && layer == CONTROLCENTER_LAYER
+        && !onscreen
+        && w == CONTROLCENTER_W
+        && h == CONTROLCENTER_H
+}
+
 /// Pure narrow shell classifier over plain data: the base
-/// ([`classify_window`]: Dock-exact, sub-normal layers) plus exactly two
+/// ([`classify_window`]: Dock-exact, sub-normal layers) plus exactly three
 /// evidence-based exemptions, in order. Ghostty is always a candidate
 /// first — even with a compositor executable path or a sub-normal layer —
 /// so an owned window is never exempted. There is deliberately NO generic
@@ -944,6 +1024,71 @@ pub fn classify_window_full(
                 format!(
                     "bundle == {A11Y_SERVER_BUNDLE}, offscreen, 0x0, sticky over {} user Spaces",
                     user_spaces.len(),
+                ),
+            )),
+        );
+    }
+    // (3) System accessibility chrome, partial attachment: the same chrome
+    // class as (2) with the exact executable pinned, offscreen, layer 3,
+    // and zero area, but the membership need only contain the temp with
+    // every member SID inside the fresh user set. Live CG+SLS showed this
+    // chrome attached to a strict user-Space subset (present on the temp
+    // and one other user Space, absent from a third), which (2) misses and
+    // would block a proven-empty temp. Unknown owner/membership,
+    // nonzero/NaN area, onscreen, wrong layer/exe/bundle, empty user set,
+    // temp absent, or any member SID outside the user set all stay
+    // candidates and block below.
+    if window.bundle == A11Y_SERVER_BUNDLE
+        && window.exe.as_deref() == Some(A11Y_SERVER_EXE)
+        && !window.onscreen
+        && window.layer == 3
+        && window.w == 0.0
+        && window.h == 0.0
+        && !user_spaces.is_empty()
+        && user_spaces.contains(&temp)
+        && matches!(membership, Some(spaces) if spaces.contains(&temp) && spaces.iter().all(|s| user_spaces.contains(s)))
+    {
+        return (
+            WindowClass::Shell,
+            Some(exclusion(
+                ShellReason::SystemAccessibilityChrome,
+                format!(
+                    "bundle == {A11Y_SERVER_BUNDLE}, exe == {A11Y_SERVER_EXE}, offscreen layer 3 0x0, member of temp {temp} within {} user Spaces",
+                    user_spaces.len(),
+                ),
+            )),
+        );
+    }
+    // (4) ControlCenter status-item chrome: the exact captured shape only
+    // (exact bundle + exe, offscreen layer 25, 120x30) with target
+    // membership wholly inside the fresh user-Space set, plus the optional
+    // owner AX-window inventory proof (`Some(true)` = fresh readable empty
+    // inventory for the exact owner PID). The inventory is scoped to the
+    // exact owner, so foreign popups never enter it; truncation cannot fake
+    // empty (a truncated list is nonempty). Every nearby variation stays a
+    // candidate: normal-layer or onscreen ControlCenter items, other
+    // geometries, other/unreadable owners, nonfinite area, unknown or
+    // foreign membership - and the captured layer-2005 352x149 panel.
+    if controlcenter_shape_matches(
+        &window.bundle,
+        window.exe.as_deref(),
+        window.layer,
+        window.onscreen,
+        window.w,
+        window.h,
+    ) && window.ax_windows_absent == Some(true)
+        && !user_spaces.is_empty()
+        && user_spaces.contains(&temp)
+        && matches!(membership, Some(spaces) if spaces.contains(&temp) && spaces.iter().all(|s| user_spaces.contains(s)))
+    {
+        return (
+            WindowClass::Shell,
+            Some(exclusion(
+                ShellReason::ControlCenterChrome,
+                format!(
+                    "bundle == {CONTROLCENTER_BUNDLE}, exe == {CONTROLCENTER_EXE}, offscreen layer {CONTROLCENTER_LAYER} 120x30, member of temp {temp} within {} user Spaces, owner pid {} AX windows readable empty",
+                    user_spaces.len(),
+                    window.pid,
                 ),
             )),
         );
@@ -1243,8 +1388,9 @@ pub struct McSpaceLocation {
 /// contains the Space — shell chrome included — with identity, geometry,
 /// and membership. Plus the read-only focus-oracle legs and the protected
 /// Ghostty snapshot for the same instant, so one call carries the complete
-/// bounded metadata the cleanup predicate needs. IDs and geometry only —
-/// never titles, content, or paths. No launch, no writes, no posts.
+/// bounded metadata the cleanup predicate needs. IDs, geometry, and the
+/// already-collected owner executable path only - never titles or content.
+/// No launch, no writes, no posts.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct McMembersReport {
     pub space: u64,

@@ -618,6 +618,123 @@ fn zero_area_candidate_is_unknown_never_an_append_trigger() {
     assert_eq!(candidate_occupied(7, 77, 0.0, 0.0, &[3], 20), Ok(false));
 }
 
+#[test]
+fn trailing_probe_scan_reports_first_blocker_and_self_pid() {
+    use crate::mc_probe::WindowMember;
+    use crate::workspace_select::{TrailingExeKind, scan_trailing_windows};
+    let member = |wid: u32, pid: u32, spaces: Vec<u64>| {
+        (
+            WindowMember {
+                wid,
+                pid,
+                bundle: "com.example.app".to_owned(),
+                layer: 0,
+                onscreen: true,
+                w: 480.0,
+                h: 320.0,
+                exe: Some("/Applications/Example.app/Contents/MacOS/Example".to_owned()),
+                exe_alias: None,
+                ax_windows_absent: None,
+            },
+            Ok(spaces),
+        )
+    };
+    // Occupied: first candidate on the SID blocks with its membership.
+    let windows = vec![member(7, 77, vec![20]), member(8, 78, vec![20])];
+    let (verdict, checked, shell_skipped, blocker) =
+        scan_trailing_windows(20, 999, &[20], &windows);
+    assert_eq!(verdict, Ok(false));
+    assert_eq!((checked, shell_skipped), (2, 0));
+    let blocker = blocker.expect("occupied reports blocker");
+    assert_eq!((blocker.wid, blocker.pid), (7, 77));
+    assert_eq!(blocker.members, Some(vec![20]));
+    assert!(!blocker.self_probe);
+    assert_eq!(blocker.exe_kind, TrailingExeKind::Other);
+    // Empty: candidate homed elsewhere blocks nothing.
+    let windows = vec![member(7, 77, vec![3])];
+    let (verdict, _, _, blocker) = scan_trailing_windows(20, 999, &[20, 3], &windows);
+    assert_eq!(verdict, Ok(true));
+    assert!(blocker.is_none());
+    // Unknown membership aborts with the same refusal and no path.
+    let windows = vec![(member(9, 77, vec![20]).0, Err("dark".to_owned()))];
+    let (verdict, _, _, blocker) = scan_trailing_windows(20, 77, &[20], &windows);
+    assert_eq!(verdict, Err("workspace emptiness unknown".to_owned()));
+    let blocker = blocker.expect("unknown reports blocker");
+    assert_eq!((blocker.wid, blocker.pid), (9, 77));
+    assert!(blocker.self_probe, "candidate PID joins current probe PID");
+    assert_eq!(blocker.members, None);
+    assert_eq!(blocker.exe_kind, TrailingExeKind::Other);
+}
+
+#[test]
+fn trailing_probe_skips_controlcenter_only_with_ax_empty_proof() {
+    // Same proof, same gate: the real captured ControlCenter shape
+    // (offscreen layer-25 120x30, exact owner, target-only membership)
+    // skips only with a fresh readable empty owner AX inventory.
+    use crate::mc_probe::{CONTROLCENTER_BUNDLE, CONTROLCENTER_EXE, WindowMember};
+    use crate::workspace_select::scan_trailing_windows;
+    let cc = |ax: Option<bool>| {
+        (
+            WindowMember {
+                wid: 5559,
+                pid: 656,
+                bundle: CONTROLCENTER_BUNDLE.to_owned(),
+                layer: 25,
+                onscreen: false,
+                w: 120.0,
+                h: 30.0,
+                exe: Some(CONTROLCENTER_EXE.to_owned()),
+                exe_alias: None,
+                ax_windows_absent: ax,
+            },
+            Ok(vec![467]),
+        )
+    };
+    // Proven empty: skipped, temp reads empty.
+    let (verdict, checked, shell_skipped, blocker) =
+        scan_trailing_windows(467, 999, &[1, 277, 467], &[cc(Some(true))]);
+    assert_eq!(verdict, Ok(true));
+    assert_eq!((checked, shell_skipped), (0, 1));
+    assert!(blocker.is_none());
+    // Unknown or nonempty AX proof: the shape blocks as a target member.
+    for ax in [None, Some(false)] {
+        let (verdict, _, _, blocker) = scan_trailing_windows(467, 999, &[1, 277, 467], &[cc(ax)]);
+        assert_eq!(verdict, Ok(false));
+        let blocker = blocker.expect("unproven shape reports blocker");
+        assert_eq!((blocker.wid, blocker.pid), (5559, 656));
+        assert_eq!(blocker.members, Some(vec![467]));
+    }
+}
+
+#[test]
+fn trailing_probe_line_is_metadata_only() {
+    use crate::workspace_select::{
+        TrailingExeKind, TrailingProbeBlocker, format_trailing_probe_line,
+    };
+    let blocker = TrailingProbeBlocker {
+        wid: 7,
+        pid: 77,
+        bundle: "com.example.app".to_owned(),
+        layer: 0,
+        onscreen: true,
+        w: 480.0,
+        h: 320.0,
+        members: Some(vec![20]),
+        self_probe: false,
+        exe_kind: TrailingExeKind::Other,
+    };
+    let line = format_trailing_probe_line(20, "occupied", 2, 1, Some(&blocker), None, 999);
+    assert!(line.contains("sid=20"), "{line}");
+    assert!(line.contains("verdict=occupied"), "{line}");
+    assert!(line.contains("WID7/PID77"), "{line}");
+    assert!(line.contains("members=Some([20])"), "{line}");
+    assert!(!line.contains("/Applications"), "{line}");
+    assert!(!line.contains("/System"), "{line}");
+    let empty = format_trailing_probe_line(20, "empty", 1, 2, None, None, 999);
+    assert!(empty.contains("verdict=empty"), "{empty}");
+    assert!(!empty.contains("blocker="), "{empty}");
+}
+
 fn open_gates() -> SelectGates {
     SelectGates {
         session_unlocked: true,

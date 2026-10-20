@@ -329,9 +329,8 @@ impl SelectionState {
 ///   [`tiler_core::workspace::MIN_WORKSPACES`].
 /// - Unknown emptiness (`Err`), occupied (`Ok(false)`), or current-owned
 ///   SIDs are never eligible: they report residue instead of removing.
-/// - Foreign chrome blocking is modeled as unknown/occupied by the
-///   emptiness proof (the live `verify_space_empty` refuses it) — never
-///   exempted, never removed.
+/// - Foreign chrome outside the explicit evidence-based shell predicates
+///   remains unknown/occupied; the live `verify_space_empty` refuses it.
 ///
 /// Cleanup iterates owned in reverse (newest first) so a subsequent
 /// occupied trailing append cleans newest-first without shifting older
@@ -664,6 +663,175 @@ const PRODUCT_DRAIN_BUDGET_SECS: u64 = 30;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const PRODUCT_DRAIN_CAFFEINATE_SECS: u64 = 60;
 
+/// Executable-owner label for the trailing-probe diagnostic line. Exact
+/// matches on the two proven system executables only; everything else reads
+/// `other`, unreadable reads `unreadable`. Never prints a path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TrailingExeKind {
+    WindowServer,
+    A11yServer,
+    Other,
+    Unreadable,
+}
+
+impl TrailingExeKind {
+    fn of(exe: Option<&str>) -> Self {
+        match exe {
+            Some(path) if path == crate::mc_probe::WINDOWSERVER_EXE => Self::WindowServer,
+            Some(path) if path == crate::mc_probe::A11Y_SERVER_EXE => Self::A11yServer,
+            Some(_) => Self::Other,
+            None => Self::Unreadable,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::WindowServer => "window-server",
+            Self::A11yServer => "a11y-server",
+            Self::Other => "other",
+            Self::Unreadable => "unreadable",
+        }
+    }
+}
+
+/// First blocking candidate at the trailing-emptiness decision: the exact
+/// window that proves occupied (`Ok(false)`) or unknown (`Err`). IDs plus
+/// geometry and membership only - never titles, content, or paths.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct TrailingProbeBlocker {
+    pub wid: u32,
+    pub pid: u32,
+    pub bundle: String,
+    pub layer: i32,
+    pub onscreen: bool,
+    pub w: f64,
+    pub h: f64,
+    pub members: Option<Vec<u64>>,
+    pub self_probe: bool,
+    pub exe_kind: TrailingExeKind,
+}
+
+/// One bounded metadata-only trailing-probe line: SID, verdict, counts,
+/// and the exact first blocker when present. Pure; the live probe emits
+/// exactly one such line per outcome. No titles, content, or paths.
+#[must_use]
+pub(crate) fn format_trailing_probe_line(
+    sid: u64,
+    verdict: &str,
+    checked: usize,
+    shell_skipped: usize,
+    blocker: Option<&TrailingProbeBlocker>,
+    reason: Option<&str>,
+    self_pid: u32,
+) -> String {
+    let mut line = format!(
+        "tiler-macos select route=native phase=trailing-probe sid={sid} verdict={verdict} checked={checked} shell_skipped={shell_skipped} self_pid={self_pid}"
+    );
+    if let Some(blocker) = blocker {
+        line.push_str(&format!(
+            " blocker=WID{}/PID{} bundle={} layer={} onscreen={} wh={:.0}x{:.0} members={:?} self_probe={} exe={}",
+            blocker.wid,
+            blocker.pid,
+            blocker.bundle,
+            blocker.layer,
+            blocker.onscreen,
+            blocker.w,
+            blocker.h,
+            blocker.members,
+            blocker.self_probe,
+            blocker.exe_kind.label(),
+        ));
+    }
+    if let Some(reason) = reason {
+        line.push_str(&format!(" reason={reason}"));
+    }
+    line
+}
+
+/// Pure injected scan core behind [`probe_trailing_emptiness`]: identical
+/// verdict rule over caller-supplied reads (user-SID set plus one
+/// `(window, membership)` pair per enumerated window, in enumeration
+/// order). Returns the verdict plus the counts and first blocker the
+/// diagnostic line reports. Unknown membership or zero-area aborts with
+/// the same `Err` strings as the live probe, so an earlier occupied
+/// candidate yields to the later unknown - never guessed empty.
+pub(crate) fn scan_trailing_windows(
+    sid: u64,
+    self_pid: u32,
+    user: &[u64],
+    windows: &[(crate::mc_probe::WindowMember, Result<Vec<u64>, String>)],
+) -> (
+    Result<bool, String>,
+    usize,
+    usize,
+    Option<TrailingProbeBlocker>,
+) {
+    let mut checked = 0usize;
+    let mut shell_skipped = 0usize;
+    let mut first_occupied: Option<TrailingProbeBlocker> = None;
+    for (member, spaces) in windows {
+        if crate::mc_probe::classify_window_full(
+            member,
+            spaces.as_ref().ok().map(Vec::as_slice),
+            user,
+            sid,
+        )
+        .0 == crate::mc_probe::WindowClass::Shell
+        {
+            shell_skipped += 1;
+            continue;
+        }
+        checked += 1;
+        let detail = |members: Option<Vec<u64>>| TrailingProbeBlocker {
+            wid: member.wid,
+            pid: member.pid,
+            bundle: member.bundle.clone(),
+            layer: member.layer,
+            onscreen: member.onscreen,
+            w: member.w,
+            h: member.h,
+            members,
+            self_probe: member.pid == self_pid,
+            exe_kind: TrailingExeKind::of(member.exe.as_deref()),
+        };
+        let owned_spaces = match spaces {
+            Ok(spaces) => spaces.clone(),
+            Err(_) => {
+                let blocker = detail(None);
+                return (
+                    Err("workspace emptiness unknown".to_owned()),
+                    checked,
+                    shell_skipped,
+                    Some(blocker),
+                );
+            }
+        };
+        match candidate_occupied(
+            member.wid,
+            member.pid,
+            member.w,
+            member.h,
+            &owned_spaces,
+            sid,
+        ) {
+            Ok(true) => {
+                if first_occupied.is_none() {
+                    first_occupied = Some(detail(Some(owned_spaces)));
+                }
+            }
+            Ok(false) => {}
+            Err(reason) => {
+                let blocker = detail(Some(owned_spaces));
+                return (Err(reason), checked, shell_skipped, Some(blocker));
+            }
+        }
+    }
+    match first_occupied {
+        Some(blocker) => (Ok(false), checked, shell_skipped, Some(blocker)),
+        None => (Ok(true), checked, shell_skipped, None),
+    }
+}
+
 /// Proven-emptiness scan for one trailing SID over fresh native reads (SLS
 /// user rows plus full window membership; shell entries skip, zero-area and
 /// unreadable candidates read unknown — never empty). Shared by the
@@ -671,39 +839,47 @@ const PRODUCT_DRAIN_CAFFEINATE_SECS: u64 = 60;
 /// both prove the identical rule: no AppKit touch anywhere inside, safe on
 /// any thread.
 pub(crate) fn probe_trailing_emptiness(sid: u64) -> Result<bool, String> {
+    let self_pid = std::process::id();
     let user = crate::mc_observe::fresh_user_spaces().map_err(|e| e.to_string())?;
     let all = crate::mc_observe::enumerate_window_members().map_err(|e| e.to_string())?;
-    let mut empty = true;
-    for w in all {
-        let member = crate::mc_probe::WindowMember {
-            wid: w.wid,
-            pid: w.pid,
-            bundle: w.bundle,
-            layer: w.layer,
-            onscreen: w.onscreen,
-            w: w.w,
-            h: w.h,
-            exe: w.exe,
-            exe_alias: w.exe_alias,
-        };
-        if crate::mc_probe::classify_window_full(
-            &member,
-            w.spaces.as_ref().ok().map(Vec::as_slice),
-            &user,
+    let windows: Vec<(crate::mc_probe::WindowMember, Result<Vec<u64>, String>)> = all
+        .into_iter()
+        .map(|w| {
+            let member = crate::mc_probe::WindowMember {
+                wid: w.wid,
+                pid: w.pid,
+                bundle: w.bundle,
+                layer: w.layer,
+                onscreen: w.onscreen,
+                w: w.w,
+                h: w.h,
+                exe: w.exe,
+                exe_alias: w.exe_alias,
+                ax_windows_absent: w.ax_windows_absent,
+            };
+            (member, w.spaces)
+        })
+        .collect();
+    let (verdict, checked, shell_skipped, blocker) =
+        scan_trailing_windows(sid, self_pid, &user, &windows);
+    let (verdict_str, reason) = match verdict.as_ref() {
+        Ok(true) => ("empty", None),
+        Ok(false) => ("occupied", None),
+        Err(reason) => ("unknown", Some(reason.clone())),
+    };
+    eprintln!(
+        "{}",
+        format_trailing_probe_line(
             sid,
+            verdict_str,
+            checked,
+            shell_skipped,
+            blocker.as_ref(),
+            reason.as_deref(),
+            self_pid,
         )
-        .0 == crate::mc_probe::WindowClass::Shell
-        {
-            continue;
-        }
-        let spaces = w
-            .spaces
-            .map_err(|_| "workspace emptiness unknown".to_owned())?;
-        if candidate_occupied(member.wid, member.pid, member.w, member.h, &spaces, sid)? {
-            empty = false;
-        }
-    }
-    Ok(empty)
+    );
+    verdict
 }
 
 /// Live product drain for one claimed armed select: builds the proven
