@@ -20,7 +20,13 @@ planner_bus_name := "com.omnitiler.Planner"
 planner_unit := "omnitiler-planner.service"
 
 # Detached lifecycle: disable packaged script, verify unloaded, build and launch the worktree Planner, then load the KWin bundle.
-dev-on:
+# Repeatable admission scope (`just dev-on [--scope-class NAME]...`; each
+# flag carries one comma-joined allowlist fragment, accumulating in order):
+# only windows whose exact resourceClass (Wayland app_id) is listed are
+# managed; empty (default) is the unchanged whole world. Malformed entries
+# fail closed before any mutation; changing scope requires dev-off first.
+[positional-arguments]
+dev-on *args:
     #!/usr/bin/env bash
     set -euo pipefail
     REPO_ROOT="{{ justfile_directory() }}"
@@ -33,6 +39,48 @@ dev-on:
     EXE_FILE="$STATE_DIR/planner-exe"
     START_FILE="$STATE_DIR/planner-start"
     RECEIPT_PTR="$STATE_DIR/controller-receipt-path"
+    SCOPE_CLASS=""
+    DEVON_ARGS=("$@")
+    DEVON_I=0
+    while [[ "$DEVON_I" -lt "${#DEVON_ARGS[@]}" ]]; do
+      DEVON_A="${DEVON_ARGS[$DEVON_I]}"
+      case "$DEVON_A" in
+        --scope-class)
+          DEVON_I=$((DEVON_I + 1))
+          [[ "$DEVON_I" -lt "${#DEVON_ARGS[@]}" ]] || { echo "error: just dev-on: --scope-class requires a value" >&2; exit 1; }
+          DEVON_VAL="${DEVON_ARGS[$DEVON_I]}"
+          [[ -n "$DEVON_VAL" ]] || { echo "error: just dev-on: --scope-class requires a non-empty value" >&2; exit 1; }
+          case "$DEVON_VAL" in *,,*|,*|*,) echo "error: just dev-on: invalid --scope-class entry '' (expected 1-128 chars of [A-Za-z0-9._-], leading alnum)" >&2; exit 1 ;; esac
+          DEVON_PARTS=()
+          IFS=',' read -r -a DEVON_PARTS <<< "$DEVON_VAL"
+          for DEVON_P in ${DEVON_PARTS[@]+"${DEVON_PARTS[@]}"}; do
+            [[ "$DEVON_P" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || { echo "error: just dev-on: invalid --scope-class entry '$DEVON_P' (expected 1-128 chars of [A-Za-z0-9._-], leading alnum)" >&2; exit 1; }
+          done
+          if [[ -z "$SCOPE_CLASS" ]]; then SCOPE_CLASS="$DEVON_VAL"; else SCOPE_CLASS="$SCOPE_CLASS,$DEVON_VAL"; fi
+          ;;
+        --scope-class=*)
+          DEVON_VAL="${DEVON_A#--scope-class=}"
+          [[ -n "$DEVON_VAL" ]] || { echo "error: just dev-on: --scope-class requires a non-empty value" >&2; exit 1; }
+          case "$DEVON_VAL" in *,,*|,*|*,) echo "error: just dev-on: invalid --scope-class entry '' (expected 1-128 chars of [A-Za-z0-9._-], leading alnum)" >&2; exit 1 ;; esac
+          DEVON_PARTS=()
+          IFS=',' read -r -a DEVON_PARTS <<< "$DEVON_VAL"
+          for DEVON_P in ${DEVON_PARTS[@]+"${DEVON_PARTS[@]}"}; do
+            [[ "$DEVON_P" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || { echo "error: just dev-on: invalid --scope-class entry '$DEVON_P' (expected 1-128 chars of [A-Za-z0-9._-], leading alnum)" >&2; exit 1; }
+          done
+          if [[ -z "$SCOPE_CLASS" ]]; then SCOPE_CLASS="$DEVON_VAL"; else SCOPE_CLASS="$SCOPE_CLASS,$DEVON_VAL"; fi
+          ;;
+        *)
+          echo "error: just dev-on: unknown argument '$DEVON_A' (expected '--scope-class NAME')" >&2
+          exit 1
+          ;;
+      esac
+      DEVON_I=$((DEVON_I + 1))
+    done
+    # Single source for bring-up: the allowlist travels by explicit argv
+    # to start-test.sh below, never by environment (an inherited scope env
+    # would accumulate onto the flag and duplicate it).
+    SCOPE_START_ARGS=()
+    [[ -z "$SCOPE_CLASS" ]] || SCOPE_START_ARGS+=("--scope-class" "$SCOPE_CLASS")
     planner_start_identity() {
       local pid="$1" stat_line stat_pid rest
       local -a fields=()
@@ -163,6 +211,10 @@ dev-on:
       esac
     fi
     if [[ "$PLAN_UP" -eq 1 && "$CTRL_UP" -eq 1 ]]; then
+      if [[ -n "$SCOPE_CLASS" ]]; then
+        echo "error: dev-on: dev mode already up with an unprovable live scope; refusing scoped request (scope '$SCOPE_CLASS'); run 'just dev-off' first, then re-run with the same --scope-class flags" >&2
+        exit 1
+      fi
       echo "dev-on: dev mode already up (planner pid $SPLIT_PLANNER_PID owns $PLANNER_BUS, controller '$PLUGIN_ID' loaded); making no changes"
       if [[ -f "$RECEIPT_PTR" ]] && command -v jq >/dev/null 2>&1; then
         REC_PRINT="$(cat "$RECEIPT_PTR" 2>/dev/null || true)"
@@ -216,7 +268,10 @@ dev-on:
         echo "error: controller receipt path already exists: $RECOVERY_RECEIPT" >&2
         exit 1
       fi
-      CONTROLLER_OWNERSHIP_FILE="$RECOVERY_RECEIPT" bash "$REPO_ROOT/scripts/start-test.sh" start || {
+      # Explicit argv carries the allowlist; the inherited environment is
+      # cleared so a contaminated OMNITILER_SCOPE_CLASS can neither
+      # broaden explicit flags nor scope the unscoped default.
+      OMNITILER_SCOPE_CLASS= CONTROLLER_OWNERSHIP_FILE="$RECOVERY_RECEIPT" bash "$REPO_ROOT/scripts/start-test.sh" start "${SCOPE_START_ARGS[@]}" || {
         echo "error: start-test.sh start failed during recovery (verified planner $SPLIT_PLANNER_PID left running); no Planner was terminated and packaged script was not re-enabled" >&2
         exit 1
       }
@@ -322,7 +377,10 @@ dev-on:
     busctl --user --no-pager status "$PLANNER_BUS" || { echo "error: busctl status for $PLANNER_BUS failed" >&2; exit 1; }
     # 7. Load the worktree KWin bundle. start-test.sh owns the duplicate
     # plugin guard; do not reimplement it here.
-    CONTROLLER_OWNERSHIP_FILE="$RECEIPT" bash "$REPO_ROOT/scripts/start-test.sh" start || {
+    # Explicit argv carries the allowlist; the inherited environment is
+    # cleared so a contaminated OMNITILER_SCOPE_CLASS can neither
+    # broaden explicit flags nor scope the unscoped default.
+    OMNITILER_SCOPE_CLASS= CONTROLLER_OWNERSHIP_FILE="$RECEIPT" bash "$REPO_ROOT/scripts/start-test.sh" start "${SCOPE_START_ARGS[@]}" || {
       echo "error: start-test.sh start failed (verified planner ${VERIFIED_PID:-unknown} will be terminated by rollback); see $PLANNER_LOG" >&2
       exit 1
     }
@@ -836,18 +894,71 @@ dev-status:
 
 # Desktop dispatcher for `just dev`: KDE runs dev-kde, GNOME hits the
 # dev-gnome stub, anything else fails closed. XDG_CURRENT_DESKTOP is read
-# once; KDE wins when both KDE and GNOME are listed.
-dev mode="":
+# once; KDE wins when both KDE and GNOME are listed. Arguments are an
+# optional mode (`verbose`|`trace`) plus a repeatable admission scope
+# (`--scope-class NAME`, each flag one comma-joined allowlist fragment,
+# accumulating in order), in any order; anything else (including a
+# malformed scope entry) fails closed before any mutation.
+[positional-arguments]
+dev *args:
     #!/usr/bin/env bash
     set -euo pipefail
     JUSTFILE="{{ justfile() }}"
+    MODE=""
+    SCOPE=""
+    DEV_ARGS=("$@")
+    DEV_I=0
+    while [[ "$DEV_I" -lt "${#DEV_ARGS[@]}" ]]; do
+      DEV_A="${DEV_ARGS[$DEV_I]}"
+      case "$DEV_A" in
+        --scope-class)
+          DEV_I=$((DEV_I + 1))
+          [[ "$DEV_I" -lt "${#DEV_ARGS[@]}" ]] || { echo "error: just dev: --scope-class requires a value" >&2; exit 1; }
+          DEV_VAL="${DEV_ARGS[$DEV_I]}"
+          [[ -n "$DEV_VAL" ]] || { echo "error: just dev: --scope-class requires a non-empty value" >&2; exit 1; }
+          case "$DEV_VAL" in *,,*|,*|*,) echo "error: just dev: invalid --scope-class entry '' (expected 1-128 chars of [A-Za-z0-9._-], leading alnum)" >&2; exit 1 ;; esac
+          DEV_PARTS=()
+          IFS=',' read -r -a DEV_PARTS <<< "$DEV_VAL"
+          for DEV_P in ${DEV_PARTS[@]+"${DEV_PARTS[@]}"}; do
+            [[ "$DEV_P" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || { echo "error: just dev: invalid --scope-class entry '$DEV_P' (expected 1-128 chars of [A-Za-z0-9._-], leading alnum)" >&2; exit 1; }
+          done
+          if [[ -z "$SCOPE" ]]; then SCOPE="$DEV_VAL"; else SCOPE="$SCOPE,$DEV_VAL"; fi
+          ;;
+        --scope-class=*)
+          DEV_VAL="${DEV_A#--scope-class=}"
+          [[ -n "$DEV_VAL" ]] || { echo "error: just dev: --scope-class requires a non-empty value" >&2; exit 1; }
+          case "$DEV_VAL" in *,,*|,*|*,) echo "error: just dev: invalid --scope-class entry '' (expected 1-128 chars of [A-Za-z0-9._-], leading alnum)" >&2; exit 1 ;; esac
+          DEV_PARTS=()
+          IFS=',' read -r -a DEV_PARTS <<< "$DEV_VAL"
+          for DEV_P in ${DEV_PARTS[@]+"${DEV_PARTS[@]}"}; do
+            [[ "$DEV_P" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || { echo "error: just dev: invalid --scope-class entry '$DEV_P' (expected 1-128 chars of [A-Za-z0-9._-], leading alnum)" >&2; exit 1; }
+          done
+          if [[ -z "$SCOPE" ]]; then SCOPE="$DEV_VAL"; else SCOPE="$SCOPE,$DEV_VAL"; fi
+          ;;
+        -*)
+          echo "error: just dev: unknown argument '$DEV_A' (expected 'verbose', 'trace', or '--scope-class NAME')" >&2
+          exit 1
+          ;;
+        *)
+          # Bare words stay positional modes for backward compatibility:
+          # the mode check below reports unknown modes; a second bare
+          # word is rejected here.
+          [[ -z "$MODE" ]] || { echo "error: just dev: unknown argument '$DEV_A' (expected 'verbose', 'trace', or '--scope-class NAME')" >&2; exit 1; }
+          MODE="$DEV_A"
+          ;;
+      esac
+      DEV_I=$((DEV_I + 1))
+    done
+    DEV_FWD=()
+    [[ -z "$MODE" ]] || DEV_FWD+=("$MODE")
+    [[ -z "$SCOPE" ]] || DEV_FWD+=("--scope-class" "$SCOPE")
     DESKTOP="${XDG_CURRENT_DESKTOP:-}"
     echo "just dev: XDG_CURRENT_DESKTOP='$DESKTOP'"
     DESKTOP_LOWER="$(printf '%s' "$DESKTOP" | tr '[:upper:]' '[:lower:]')"
     case ":$DESKTOP_LOWER:" in
       *:kde:*)
         echo "just dev: dispatching to dev-kde"
-        exec just --justfile "$JUSTFILE" dev-kde "{{ mode }}"
+        exec just --justfile "$JUSTFILE" dev-kde "${DEV_FWD[@]}"
         ;;
       *:gnome:*)
         echo "just dev: dispatching to dev-gnome"
@@ -868,16 +979,67 @@ dev-gnome:
 
 # `just dev verbose` keeps bounded lifecycle and failure diagnostics. `just dev trace`
 # additionally enables bounded structural Planner request/reply, KWin per-window writes, and hook detail.
+# A repeatable admission scope (`just dev [--scope-class NAME]...`, any
+# position; repeated flags accumulate one comma-joined allowlist fragment
+# each) restricts management, commands, and effects to windows whose exact
+# resourceClass (Wayland app_id) is listed; empty (default) is the unchanged
+# whole world. The allowlist bakes into the dev bundle build and the detached
+# bring-up; changing it requires dev-off first.
 # Foreground full-solution dev session: build all components, refuse unless DOWN, run dev-on,
 # start the worktree tray, tail logs, and tear down on exit/Ctrl-C.
 [continue]
-dev-kde mode="":
+[positional-arguments]
+dev-kde *args:
     #!/usr/bin/env bash
     set -euo pipefail
     JUSTFILE="{{ justfile() }}"
     RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp}"
     STATE_DIR="$RUNTIME_DIR/omnitiler-dev"
-    DEV_MODE="{{ mode }}"
+    DEV_MODE=""
+    SCOPE_CLASS=""
+    KDE_ARGS=("$@")
+    KDE_I=0
+    while [[ "$KDE_I" -lt "${#KDE_ARGS[@]}" ]]; do
+      KDE_A="${KDE_ARGS[$KDE_I]}"
+      case "$KDE_A" in
+        --scope-class)
+          KDE_I=$((KDE_I + 1))
+          [[ "$KDE_I" -lt "${#KDE_ARGS[@]}" ]] || { echo "error: just dev: --scope-class requires a value" >&2; exit 1; }
+          KDE_VAL="${KDE_ARGS[$KDE_I]}"
+          [[ -n "$KDE_VAL" ]] || { echo "error: just dev: --scope-class requires a non-empty value" >&2; exit 1; }
+          case "$KDE_VAL" in *,,*|,*|*,) echo "error: just dev: invalid --scope-class entry '' (expected 1-128 chars of [A-Za-z0-9._-], leading alnum)" >&2; exit 1 ;; esac
+          KDE_PARTS=()
+          IFS=',' read -r -a KDE_PARTS <<< "$KDE_VAL"
+          for KDE_P in ${KDE_PARTS[@]+"${KDE_PARTS[@]}"}; do
+            [[ "$KDE_P" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || { echo "error: just dev: invalid --scope-class entry '$KDE_P' (expected 1-128 chars of [A-Za-z0-9._-], leading alnum)" >&2; exit 1; }
+          done
+          if [[ -z "$SCOPE_CLASS" ]]; then SCOPE_CLASS="$KDE_VAL"; else SCOPE_CLASS="$SCOPE_CLASS,$KDE_VAL"; fi
+          ;;
+        --scope-class=*)
+          KDE_VAL="${KDE_A#--scope-class=}"
+          [[ -n "$KDE_VAL" ]] || { echo "error: just dev: --scope-class requires a non-empty value" >&2; exit 1; }
+          case "$KDE_VAL" in *,,*|,*|*,) echo "error: just dev: invalid --scope-class entry '' (expected 1-128 chars of [A-Za-z0-9._-], leading alnum)" >&2; exit 1 ;; esac
+          KDE_PARTS=()
+          IFS=',' read -r -a KDE_PARTS <<< "$KDE_VAL"
+          for KDE_P in ${KDE_PARTS[@]+"${KDE_PARTS[@]}"}; do
+            [[ "$KDE_P" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || { echo "error: just dev: invalid --scope-class entry '$KDE_P' (expected 1-128 chars of [A-Za-z0-9._-], leading alnum)" >&2; exit 1; }
+          done
+          if [[ -z "$SCOPE_CLASS" ]]; then SCOPE_CLASS="$KDE_VAL"; else SCOPE_CLASS="$SCOPE_CLASS,$KDE_VAL"; fi
+          ;;
+        -*)
+          echo "error: just dev: unknown argument '$KDE_A' (expected 'verbose', 'trace', or '--scope-class NAME')" >&2
+          exit 1
+          ;;
+        *)
+          # Bare words stay positional modes for backward compatibility:
+          # the mode check below reports unknown modes; a second bare
+          # word is rejected here.
+          [[ -z "$DEV_MODE" ]] || { echo "error: just dev: unknown argument '$KDE_A' (expected 'verbose', 'trace', or '--scope-class NAME')" >&2; exit 1; }
+          DEV_MODE="$KDE_A"
+          ;;
+      esac
+      KDE_I=$((KDE_I + 1))
+    done
     if [[ "$DEV_MODE" == "trace" ]]; then
       export OMNITILER_TRACE=1
     elif [[ "$DEV_MODE" == "verbose" ]]; then
@@ -937,18 +1099,21 @@ dev-kde mode="":
     JUST_BUILD_RC=0
     if [[ "$BORDER_PRELOADED" == "true" ]]; then
       echo "warning: native effect already loaded (border preloaded=$BORDER_PRELOADED); skipping native rebuild so the loaded library is never overwritten. No hot reload is promised; a rebuilt binary still requires logout/login."
-      just --justfile "$JUSTFILE" build-rust || JUST_BUILD_RC=$?
+      # The scope env reaches only the build children below (single
+      # source for the bundle bake); the later dev-on child gets the
+      # allowlist by explicit argv, never by inheritance.
+      OMNITILER_SCOPE_CLASS="$SCOPE_CLASS" just --justfile "$JUSTFILE" build-rust || JUST_BUILD_RC=$?
       if [[ "$JUST_BUILD_RC" -ne 0 ]]; then
         echo "error: just dev: build-rust failed (exit $JUST_BUILD_RC); refusing bring-up; no dev lifecycle changes made" >&2
         exit "$JUST_BUILD_RC"
       fi
-      just --justfile "$JUSTFILE" build-kwin-script || JUST_BUILD_RC=$?
+      OMNITILER_SCOPE_CLASS="$SCOPE_CLASS" just --justfile "$JUSTFILE" build-kwin-script || JUST_BUILD_RC=$?
       if [[ "$JUST_BUILD_RC" -ne 0 ]]; then
         echo "error: just dev: build-kwin-script failed (exit $JUST_BUILD_RC); refusing bring-up; no dev lifecycle changes made" >&2
         exit "$JUST_BUILD_RC"
       fi
     else
-      just --justfile "$JUSTFILE" build || JUST_BUILD_RC=$?
+      OMNITILER_SCOPE_CLASS="$SCOPE_CLASS" just --justfile "$JUSTFILE" build || JUST_BUILD_RC=$?
       if [[ "$JUST_BUILD_RC" -ne 0 ]]; then
         echo "error: just dev: build failed (exit $JUST_BUILD_RC); refusing bring-up; no dev lifecycle changes made" >&2
         exit "$JUST_BUILD_RC"
@@ -1165,7 +1330,9 @@ dev-kde mode="":
     # rollback owns failures here; native owned loads are unwound on failure
     # and no logs are tailed without success.
     JUST_DEV_ON_RC=0
-    just --justfile "$JUSTFILE" dev-on || JUST_DEV_ON_RC=$?
+    DEV_ON_SCOPE_ARGS=()
+    [[ -z "$SCOPE_CLASS" ]] || DEV_ON_SCOPE_ARGS+=("--scope-class" "$SCOPE_CLASS")
+    just --justfile "$JUSTFILE" dev-on "${DEV_ON_SCOPE_ARGS[@]}" || JUST_DEV_ON_RC=$?
     if [[ "$JUST_DEV_ON_RC" -ne 0 ]]; then
       echo "error: just dev: bring-up via dev-on failed (exit $JUST_DEV_ON_RC); unwinding owned native loads in reverse; no logs tailed; rollback handled by dev-on" >&2
       native_unload_owned_reverse || true

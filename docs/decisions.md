@@ -769,6 +769,35 @@ platform API behavior.
 
 ## Development Environment
 
+- User decision 2026-10-20 (KDE development window scope): repeatable
+  `--scope-class NAME` limits development runs to exact, case-sensitive KWin
+  `resourceClass` identities (Wayland app_id). Empty scope preserves normal
+  whole-world behavior. Keep admission, focus/command fencing and launcher
+  plumbing in the KDE platform layer; no shared-core change. Recommend
+  `--scope-class OmniTilerTestWindow` for fixture-driven live tests. The allowlist
+  is baked only into development bundles; installed builds remain unscoped.
+  Malformed scope refuses rather than broadening management; changing a live
+  scope requires a fresh controller lifecycle.
+  [Usage](dev-loop.md#linux-kde) and
+  [evidence](changes/archive/kde-dev-scope-fixture-integration.md).
+- User decision 2026-10-20 (live-test windows): a pragmatic development-only
+  winit helper, native host decorations only, no GTK/Qt fixtures. Start with
+  common geometry/state and one small KDE/X11 window-type example; isolate
+  native extensions so Windows/macOS can add their own actions. Existing
+  Windows `tiler-test-window` and macOS `probe_target` stay unchanged.
+  Adopt [research recommendations 2, 4, 5 and 6](research/live-test-window.md):
+  shared caller IDs and ordered batches, many windows in one process by
+  default; fullscreen means display-mode/state behavior, not game-renderer
+  parity; preserve existing helpers; private local JSON-lines transport and
+  subscriptions. Initial `tiler-live-fixture` uses Unix sockets on Linux/macOS;
+  Windows transport explicitly reports unsupported pending its native adapter.
+  [Usage and platform limitations](../crates/tiler-live-fixture/README.md).
+- User direction 2026-10-20 (fixture expansion): take useful low-complexity
+  winit controls beyond geometry, including level, focus/attention and bounded
+  observation ergonomics. Preserve identity, report unsupported/no-readback
+  honestly and add no unsafe code. Change history, elevated Windows instances
+  and exclusive-mode selection remain deferred.
+  [Delivered scope and evidence](changes/archive/live-fixture-api-expansion.md).
 - User decision 2026-10-03 (dev environments): single root `mise.toml` for
   Windows and macOS toolchains, run from the project root; OS-specific entries
   stay in that root file. devenv/Nix stays the source on Linux/NixOS, including

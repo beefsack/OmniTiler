@@ -170,8 +170,10 @@ command -v -- npm >/dev/null 2>&1 || die "required tool 'npm' not found in PATH"
 command -v -- cargo >/dev/null 2>&1 || die "required tool 'cargo' not found in PATH"
 
 # Prebuilt KWin bundle with the tag commit SHA baked in as build identity.
+# The installed bundle is always unscoped: clear any dev scope the invoking
+# shell exports so a release never carries a fixture filter.
 npm ci --prefix "$TREE/kwin" --no-audit --no-fund || die "npm ci failed for tagged kwin source"
-OMNITILER_SOURCE_REV="$TAG_SHA" npm --prefix "$TREE/kwin" run build:installed \
+OMNITILER_SCOPE_CLASS= OMNITILER_SOURCE_REV="$TAG_SHA" npm --prefix "$TREE/kwin" run build:installed \
   || die "prebuilt KWin bundle build failed"
 BUNDLE="$TREE/kwin/contents/code/main.js"
 [[ -f "$BUNDLE" && ! -L "$BUNDLE" ]] || die "prebuilt KWin bundle missing after build"

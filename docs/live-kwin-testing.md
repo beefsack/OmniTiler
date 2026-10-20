@@ -146,8 +146,20 @@ startup:
 - A transport reply, process exit status, missing error, or visual appearance
   alone is not feature evidence. Record the relevant authoritative state before
   and after a mutation and preserve raw machine responses that gate it.
+- Never call no-argument `org.kde.KWin.queryWindowInfo`: it starts an interactive
+  window picker and can leave a crosshair after the caller times out; Escape
+  dismisses it. Prior occurrences in the archived
+  [POC3](changes/archive/poc3-disposable-rust-actuation.md) and
+  [direct-geometry migration](changes/archive/rust-engine-direct-geometry-migration.md)
+  records are not passive inventory precedents. For fixture-only tests, use
+  `list` to discover caller IDs and `get` for observed state, retaining unknown
+  and unsupported values; these do not establish foreign-window state.
 - Use verified Wayland-native normal resizable test clients. Validate focus,
   active window, desktop/output scope, and tile association before insertion.
+  For agent-driven runs, stay fixture-scoped (`just dev --scope-class
+  OmniTilerTestWindow [--scope-class ...]` or the `dev-on` equivalent) so
+  only listed-`resourceClass` fixture windows are managed; foreign windows
+  stay untouched by construction.
 - `invokeShortcut` bypasses the xkb layer and cannot prove physical shortcut
   delivery. Manual journeys require physical input and matching state evidence.
 - The trailing-empty workspace proof is a separate executable procedure at

@@ -143,9 +143,14 @@ usage: start-test.sh <command> [--help]
 Manual lifecycle interface for the omnitiler-kwin KWin script.
 
 Commands:
-  start    build the kwin bundle, load and run omnitiler through
+  start [--scope-class NAME]...
+            build the kwin bundle, load and run omnitiler through
             KWin's /Scripting D-Bus interface, and confirm the exact
-            loaded state bound to the captured KWin PID/start identity
+            loaded state bound to the captured KWin PID/start identity.
+            Each --scope-class adds one comma-joined allowlist fragment;
+            repeated flags accumulate. Only windows whose exact
+            resourceClass (Wayland app_id) is listed are managed; empty
+            (default) manages the whole world
   status   report the exact plugin load state and persisted KGlobalAccel
             action records
   stop <script-id>
@@ -178,7 +183,9 @@ start mutates live KWin state and still requires explicit authorization.
 start never mutates shortcut records; only reconcile-shortcuts --apply does.
   stop <script-id> requires the nonce-owned receipt created by start.
   start without CONTROLLER_OWNERSHIP_FILE creates a private random receipt and
-  prints its exact stop command.
+  prints its exact stop command. Malformed scope entries fail closed
+  before any build or load; changing scope requires a fresh start
+  (stop first, then start with the new scope flags).
 KGlobalAccel records persist after unload and do not prove live callbacks.
 status, desktops, and reconcile-shortcuts are read-only.
 EOF
@@ -197,6 +204,44 @@ require_tools() {
 strict_json_matches() {
   local predicate="$1" value="$2"
   jq -s -e "length == 1 and (.[0] | $predicate)" <<<"$value" >/dev/null 2>&1
+}
+
+# Dev/test admission scope allowlist: comma-joined exact resourceClass
+# identities (the class charset excludes commas, so splitting is exact).
+# scope_validate rejects any malformed entry; scope_append validates one
+# flag fragment and accumulates it onto OMNITILER_SCOPE_CLASS in order.
+scope_validate() {
+  local allowlist="$1" origin="$2" entry
+  local -a entries=()
+  # `read -a` drops a trailing empty field, so comma edges are checked
+  # explicitly: no leading, trailing, or doubled commas (no empty entry).
+  case "$allowlist" in
+    ""|,*|*,|*",,"*)
+      echo "error: invalid $origin entry '' (expected 1-128 chars of [A-Za-z0-9._-], leading alnum)" >&2
+      return 1
+      ;;
+  esac
+  IFS=',' read -r -a entries <<< "$allowlist"
+  for entry in ${entries[@]+"${entries[@]}"}; do
+    [[ "$entry" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || {
+      echo "error: invalid $origin entry '$entry' (expected 1-128 chars of [A-Za-z0-9._-], leading alnum)" >&2
+      return 1
+    }
+  done
+}
+
+scope_append() {
+  local fragment="$1"
+  [[ -n "$fragment" ]] || {
+    echo "error: --scope-class requires a non-empty value" >&2
+    return 1
+  }
+  scope_validate "$fragment" "--scope-class" || return 1
+  if [[ -z "${OMNITILER_SCOPE_CLASS:-}" ]]; then
+    OMNITILER_SCOPE_CLASS="$fragment"
+  else
+    OMNITILER_SCOPE_CLASS="${OMNITILER_SCOPE_CLASS:-},$fragment"
+  fi
 }
 
 read_plugin_id() {
@@ -627,6 +672,15 @@ cmd_start() {
   require_tools npm busctl jq sha256sum stat
   read_plugin_id
   safe_output_path "$BUNDLE" || { echo "error: controller bundle path is unsafe" >&2; exit 1; }
+  # Dev/test admission scope: comma-joined exact resourceClass allowlist
+  # baked into the bundle at build time ("" disables). Every entry is
+  # validated here, before any build or load, so a typo fails closed
+  # instead of silently managing the whole world.
+  local scope_class="${OMNITILER_SCOPE_CLASS:-}"
+  if [[ -n "$scope_class" ]]; then
+    scope_validate "$scope_class" "scope class" || exit 1
+  fi
+  export OMNITILER_SCOPE_CLASS="$scope_class"
   local start_nonce controller_build source_digest
   start_nonce="${START_NONCE:-start-$(date +%Y%m%dT%H%M%S)-$$}"
   [[ "$start_nonce" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{7,63}$ ]] || {
@@ -724,7 +778,7 @@ cmd_start() {
   if [[ "$loaded_after" != loaded ]]; then
     cleanup_after_load "controller plugin '$PLUGIN_ID' is not reported loaded after run"
   fi
-  echo "started: plugin '$PLUGIN_ID' loaded as script id $SCRIPT_ID; script-id=$SCRIPT_ID plugin=$PLUGIN_ID nonce=$start_nonce build=$controller_build kwin-pid=$KWIN_PID start-identity=$KWIN_START_IDENTITY receipt=$(ownership_json controller "$start_nonce" "$controller_build" "$PLUGIN_ID" "$SCRIPT_ID")"
+  echo "started: plugin '$PLUGIN_ID' loaded as script id $SCRIPT_ID; script-id=$SCRIPT_ID plugin=$PLUGIN_ID nonce=$start_nonce build=$controller_build scope-class=${scope_class:-} kwin-pid=$KWIN_PID start-identity=$KWIN_START_IDENTITY receipt=$(ownership_json controller "$start_nonce" "$controller_build" "$PLUGIN_ID" "$SCRIPT_ID")"
   echo
   echo "stop it:"
   printf '  CONTROLLER_OWNERSHIP_FILE=%q bash %q stop %s\n' "$CONTROLLER_OWNERSHIP_FILE" "$0" "$SCRIPT_ID"
@@ -1106,10 +1160,33 @@ case "${1:-}" in
     exit 0
     ;;
   start)
-    if [[ $# -ne 1 ]]; then
-      echo "error: 'start' takes no arguments" >&2
-      exit 1
+    # Optional repeatable admission scope: start [--scope-class NAME]...
+    # Each flag carries one comma-joined allowlist fragment; repeated flags
+    # accumulate in order. Parsed and validated before any build or load;
+    # malformed entries fail closed here. The validated allowlist rides
+    # OMNITILER_SCOPE_CLASS into the bundle build below.
+    shift
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --scope-class)
+          [[ $# -ge 2 ]] || { echo "error: --scope-class requires a value" >&2; exit 1; }
+          scope_append "$2"
+          shift 2
+          ;;
+        --scope-class=*)
+          scope_append "${1#--scope-class=}"
+          shift
+          ;;
+        *)
+          echo "error: unknown 'start' argument '$1' (expected --scope-class NAME)" >&2
+          exit 1
+          ;;
+      esac
+    done
+    if [[ -n "${OMNITILER_SCOPE_CLASS:-}" ]]; then
+      scope_validate "${OMNITILER_SCOPE_CLASS:-}" "--scope-class" || exit 1
     fi
+    export OMNITILER_SCOPE_CLASS="${OMNITILER_SCOPE_CLASS:-}"
     cmd_start
     ;;
   status)

@@ -1,4 +1,5 @@
 import { startWorldAdapterEntry, mintAdapterIncarnation } from "./world-entry";
+import { readBakedScopeClass } from "./scope-class";
 import { TrayPublisher } from "./tray-publisher";
 
 // Production entry: the single world-state adapter owns all KWin observation
@@ -19,12 +20,22 @@ const trayTimers = new Set<QTimer>();
 // the live scope from the latest accepted Planner mapping. The tray invokes
 // the toggle over KGlobalAccel; the menu waits for the next published state.
 const trayHolder: { current: TrayPublisher | null } = { current: null };
+// Baked dev/test scope (`OMNITILER_SCOPE_CLASS` at build time): absent in
+// manual builds without the esbuild define, when the entry falls back to
+// the `scopeClass` script config, else whole world.
+const bakedScopeClass = readBakedScopeClass();
 const planHandle = startWorldAdapterEntry({
     owner: "kwin-world-adapter",
     // Fresh incarnation per evaluation: reset counters open a fresh sequence
     // namespace against the retained Planner instead of fencing as
     // superseded/consumed. The owner stays stable so sessions survive.
     adapter: mintAdapterIncarnation(),
+    // Development scope baked by the launcher build (`OMNITILER_SCOPE_CLASS`
+    // env at `npm run build` time, "" when unset): exact `resourceClass`
+    // filter, validated once at startup. Undefined (manual builds without
+    // the define) falls back to the `scopeClass` script config, else whole
+    // world.
+    ...(bakedScopeClass !== undefined ? { scopeClass: bakedScopeClass } : {}),
     // Accepted and ignored: the core generation binds through authenticated
     // discovery, and float membership rides the full observation.
     generation: "world-1",

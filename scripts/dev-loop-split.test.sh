@@ -323,7 +323,22 @@ set -euo pipefail
 state="${FAKE_STATE_DIR:?}"
 calllog="${FAKE_CALL_LOG:?}"
 if [[ "${1:-}" == "start" ]]; then
-  printf 'start-test start TRACE=%s\n' "${OMNITILER_TRACE:-0}" >> "$calllog"
+  shift
+  fake_scope="${OMNITILER_SCOPE_CLASS:-}"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --scope-class)
+        if [[ -z "$fake_scope" ]]; then fake_scope="$2"; else fake_scope="$fake_scope,$2"; fi
+        shift 2
+        ;;
+      --scope-class=*)
+        if [[ -z "$fake_scope" ]]; then fake_scope="${1#--scope-class=}"; else fake_scope="$fake_scope,${1#--scope-class=}"; fi
+        shift
+        ;;
+      *) shift ;;
+    esac
+  done
+  printf 'start-test start TRACE=%s SCOPE=%s\n' "${OMNITILER_TRACE:-0}" "$fake_scope" >> "$calllog"
   if [[ -f "$state/block-start" ]]; then
     for _ in $(seq 1 100); do sleep 0.2; done
   fi
@@ -635,6 +650,19 @@ assert_calls_missing() {
   fi
 }
 
+# Exact full-line match (grep -Fq substring assertions cannot distinguish
+# SCOPE=A from a duplicated SCOPE=A,A).
+assert_calls_line() {
+  local needle="$1" label="$2"
+  if grep -Fxq "$needle" "$WORK/calls.log"; then
+    PASS=$((PASS + 1))
+  else
+    echo "FAIL [$label]: calls missing exact line '$needle'" >&2
+    cat "$WORK/calls.log" >&2
+    FAIL=$((FAIL + 1))
+  fi
+}
+
 make_fake_tools
 build_isolated_justfile
 
@@ -664,6 +692,12 @@ check_exit 0 "real justfile dry-run dev"
 
 run_just_real --dry-run dev verbose
 check_exit 0 "real justfile dry-run dev verbose"
+
+run_just_real --dry-run dev --scope-class OmniTilerTestWindow
+check_exit 0 "real justfile dry-run dev scope"
+
+run_just_real --dry-run dev-on --scope-class OmniTilerTestWindow
+check_exit 0 "real justfile dry-run dev-on scope"
 
 run_just_real --dry-run build
 check_exit 0 "real justfile dry-run build"
@@ -766,6 +800,136 @@ assert_contains "unexpected isScriptLoaded reply" "dev-on malformed msg"
 assert_calls_missing "start-test start" "dev-on malformed no start"
 assert_calls_missing "setsid" "dev-on malformed no launch"
 assert_calls_missing "dogfood disable" "dev-on malformed no disable"
+
+# dev-on: malformed --scope-class entry fails closed before any mutation.
+reset_state
+set_controller false
+run_just dev-on --scope-class 'bad!scope'
+check_exit 1 "dev-on scope malformed exit"
+assert_contains "invalid --scope-class entry" "dev-on scope malformed msg"
+assert_calls_missing "start-test start" "dev-on scope malformed no start"
+assert_calls_missing "setsid" "dev-on scope malformed no launch"
+assert_calls_missing "dogfood" "dev-on scope malformed no dogfood"
+
+# dev-on: malformed second entry fails closed; no partial scope is kept.
+reset_state
+set_controller false
+run_just dev-on --scope-class OmniTilerTestWindow --scope-class 'bad!'
+check_exit 1 "dev-on scope second malformed exit"
+assert_contains "invalid --scope-class entry 'bad!'" "dev-on scope second malformed msg"
+assert_calls_missing "start-test start" "dev-on scope second malformed no start"
+assert_calls_missing "dogfood" "dev-on scope second malformed no dogfood"
+
+# dev-on: a spaced scope value arrives intact as one argv word and fails
+# charset validation (never splits, never executes).
+reset_state
+set_controller false
+run_just dev-on --scope-class 'bad scope!'
+check_exit 1 "dev-on scope spaced exit"
+assert_contains "invalid --scope-class entry 'bad scope!'" "dev-on scope spaced msg"
+assert_calls_missing "start-test start" "dev-on scope spaced no start"
+assert_calls_missing "dogfood" "dev-on scope spaced no dogfood"
+
+# dev-on: --scope-class without a value fails closed before any mutation.
+reset_state
+set_controller false
+run_just dev-on --scope-class
+check_exit 1 "dev-on scope missing exit"
+assert_contains "requires a value" "dev-on scope missing msg"
+assert_calls_missing "start-test start" "dev-on scope missing no start"
+assert_calls_missing "setsid" "dev-on scope missing no launch"
+assert_calls_missing "dogfood" "dev-on scope missing no dogfood"
+
+# dev-on: unknown argument fails closed before any mutation.
+reset_state
+set_controller false
+run_just dev-on --bogus
+check_exit 1 "dev-on scope unknown exit"
+assert_contains "unknown argument" "dev-on scope unknown msg"
+assert_calls_missing "start-test start" "dev-on scope unknown no start"
+assert_calls_missing "setsid" "dev-on scope unknown no launch"
+assert_calls_missing "dogfood" "dev-on scope unknown no dogfood"
+
+# dev-on: command substitution in arguments is data, never executed.
+# The sentinel lives under the mock work dir; its creation would prove
+# recipe-shell evaluation of raw input before validation.
+reset_state
+set_controller false
+SENTINEL="$WORK/pwned-devon-subst"
+rm -f "$SENTINEL"
+run_just dev-on '$(touch '"$SENTINEL"')'
+check_exit 1 "dev-on scope command-subst exit"
+assert_contains "unknown argument" "dev-on scope command-subst msg"
+if [[ -e "$SENTINEL" ]]; then echo "FAIL [dev-on scope command-subst no exec]: sentinel was created" >&2; FAIL=$((FAIL + 1)); else PASS=$((PASS + 1)); fi
+assert_calls_missing "start-test start" "dev-on scope command-subst no start"
+assert_calls_missing "setsid" "dev-on scope command-subst no launch"
+assert_calls_missing "dogfood" "dev-on scope command-subst no dogfood"
+
+# dev-on: backtick substitution in arguments is data, never executed.
+reset_state
+set_controller false
+SENTINEL="$WORK/pwned-devon-backtick"
+rm -f "$SENTINEL"
+run_just dev-on '`touch '"$SENTINEL"'`'
+check_exit 1 "dev-on scope backtick exit"
+assert_contains "unknown argument" "dev-on scope backtick msg"
+if [[ -e "$SENTINEL" ]]; then echo "FAIL [dev-on scope backtick no exec]: sentinel was created" >&2; FAIL=$((FAIL + 1)); else PASS=$((PASS + 1)); fi
+assert_calls_missing "start-test start" "dev-on scope backtick no start"
+assert_calls_missing "dogfood" "dev-on scope backtick no dogfood"
+
+# dev-on: valid scope threads to the controller start on normal bring-up.
+reset_state
+set_controller false
+run_just dev-on --scope-class OmniTilerTestWindow
+check_exit 0 "dev-on scope exit"
+assert_contains "planner pid" "dev-on scope msg"
+assert_calls_contain "start-test start" "dev-on scope start"
+# Exact line: a single flag must forward exactly once (the old env+argv
+# double-carry logged SCOPE=OmniTilerTestWindow,OmniTilerTestWindow).
+assert_calls_line "start-test start TRACE=0 SCOPE=OmniTilerTestWindow" "dev-on scope single exact"
+
+# dev-on: repeated flags accumulate to one comma-joined allowlist.
+reset_state
+set_controller false
+run_just dev-on --scope-class OmniTilerTestWindow --scope-class kwrite
+check_exit 0 "dev-on scope repeated exit"
+assert_calls_line "start-test start TRACE=0 SCOPE=OmniTilerTestWindow,kwrite" "dev-on scope repeated forwarded"
+
+# dev-on: comma-joined single flag parses identically to repeated flags.
+reset_state
+set_controller false
+run_just dev-on --scope-class=OmniTilerTestWindow,kwrite
+check_exit 0 "dev-on scope joined exit"
+assert_calls_line "start-test start TRACE=0 SCOPE=OmniTilerTestWindow,kwrite" "dev-on scope joined forwarded"
+
+# dev-on: explicit flags are authoritative over an inherited scope env.
+# A contaminated OMNITILER_SCOPE_CLASS must not add a foreign identity.
+reset_state
+set_controller false
+OMNITILER_SCOPE_CLASS=firefox run_just dev-on --scope-class OmniTilerTestWindow
+check_exit 0 "dev-on scope env-isolated exit"
+assert_calls_line "start-test start TRACE=0 SCOPE=OmniTilerTestWindow" "dev-on scope env-isolated exact"
+
+# dev-on: an inherited scope env must not scope the unscoped default.
+reset_state
+set_controller false
+OMNITILER_SCOPE_CLASS=firefox run_just dev-on
+check_exit 0 "dev-on scope env-default exit"
+assert_calls_line "start-test start TRACE=0 SCOPE=" "dev-on scope env-default empty"
+
+# dev-on: explicit scope on an already-up session is rejected, never
+# misreported as a scoped run.
+reset_state
+make_planner_proc 4242 111111
+set_planner_owned 4242
+set_controller true
+run_just dev-on --scope-class OmniTilerTestWindow
+check_exit 1 "dev-on scope already-up exit"
+assert_contains "already up" "dev-on scope already-up msg"
+assert_contains "dev-off" "dev-on scope already-up guidance"
+assert_calls_missing "start-test start" "dev-on scope already-up no start"
+assert_calls_missing "setsid" "dev-on scope already-up no launch"
+assert_calls_missing "dogfood" "dev-on scope already-up no dogfood"
 
 # dev-off: Planner up/controller down skips stop, stops planner.
 reset_state
@@ -985,6 +1149,52 @@ assert_calls_missing "cargo " "dev malformed no cargo"
 assert_calls_missing "npm " "dev malformed no npm"
 assert_calls_missing "cmake " "dev malformed no cmake"
 
+# dev: malformed --scope-class entry fails closed before any probe or mutation.
+reset_state
+set_controller false
+run_just dev --scope-class 'bad!scope'
+check_exit 1 "dev scope malformed exit"
+assert_contains "invalid --scope-class entry" "dev scope malformed msg"
+assert_calls_missing "start-test start" "dev scope malformed no start"
+assert_calls_missing "setsid" "dev scope malformed no launch"
+assert_calls_missing "dogfood" "dev scope malformed no dogfood"
+assert_calls_missing "cargo " "dev scope malformed no cargo"
+assert_calls_missing "npm " "dev scope malformed no npm"
+assert_calls_missing "cmake " "dev scope malformed no cmake"
+
+# dev: malformed second scope entry fails closed; nothing is adopted.
+reset_state
+set_controller false
+run_just dev --scope-class OmniTilerTestWindow --scope-class 'bad!'
+check_exit 1 "dev scope second malformed exit"
+assert_contains "invalid --scope-class entry 'bad!'" "dev scope second malformed msg"
+assert_calls_missing "cargo " "dev scope second malformed no cargo"
+assert_calls_missing "start-test start" "dev scope second malformed no start"
+assert_calls_missing "dogfood" "dev scope second malformed no dogfood"
+
+# dev: unknown argument fails closed before any probe or mutation.
+reset_state
+set_controller false
+run_just dev --bogus
+check_exit 1 "dev scope unknown exit"
+assert_contains "unknown argument" "dev scope unknown msg"
+assert_calls_missing "start-test start" "dev scope unknown no start"
+assert_calls_missing "cargo " "dev scope unknown no cargo"
+assert_calls_missing "dogfood" "dev scope unknown no dogfood"
+
+# dev: backtick substitution in arguments is data, never executed.
+reset_state
+set_controller false
+SENTINEL="$WORK/pwned-dev-backtick"
+rm -f "$SENTINEL"
+run_just dev '`touch '"$SENTINEL"'`'
+check_exit 1 "dev scope backtick exit"
+assert_contains "unknown mode" "dev scope backtick msg"
+if [[ -e "$SENTINEL" ]]; then echo "FAIL [dev scope backtick no exec]: sentinel was created" >&2; FAIL=$((FAIL + 1)); else PASS=$((PASS + 1)); fi
+assert_calls_missing "start-test start" "dev scope backtick no start"
+assert_calls_missing "cargo " "dev scope backtick no cargo"
+assert_calls_missing "dogfood" "dev scope backtick no dogfood"
+
 # dev dispatcher: colon-separated XDG_CURRENT_DESKTOP is matched
 # case-insensitively with KDE winning over GNOME; GNOME hits the dev-gnome
 # stub; anything else fails closed before any mutation.
@@ -1140,6 +1350,24 @@ if [[ -n "${DEV_LOG_PATH:-}" && -f "$DEV_LOG_PATH" ]]; then PASS=$((PASS + 1)); 
 if [[ -n "${DEV_LOG_PATH:-}" ]] && grep -Fq "[planner]" "$DEV_LOG_PATH" && grep -Fq "[kwin]" "$DEV_LOG_PATH" && grep -Fq "[tray]" "$DEV_LOG_PATH"; then PASS=$((PASS + 1)); else echo "FAIL [dev down durable log labeled content]" >&2; FAIL=$((FAIL + 1)); fi
 if [[ "$(grep -c -F "combined log:" "$OUTPUT" || true)" -ge 2 ]]; then PASS=$((PASS + 1)); else echo "FAIL [dev down combined log teardown reprint]" >&2; FAIL=$((FAIL + 1)); fi
 if [[ ! -e "$WORK/runtime/omnitiler-dev/dev-log" && ! -e "$WORK/runtime/omnitiler-dev/dev-stream" && ! -e "$WORK/runtime/omnitiler-dev/dev-planner-stream" && ! -e "$WORK/runtime/omnitiler-dev/dev-kwin-stream" && ! -e "$WORK/runtime/omnitiler-dev/dev-tray-stream" && ! -e "$WORK/runtime/omnitiler-dev/tray-pid" && ! -e "$WORK/runtime/omnitiler-dev/tray-log" ]]; then PASS=$((PASS + 1)); else echo "FAIL [dev down stream state removed]" >&2; FAIL=$((FAIL + 1)); fi
+
+# dev: scoped DOWN bring-up threads repeated scope flags as one allowlist
+# to the controller start, then tears down via dev-off.
+reset_state
+set_controller false
+sleep 300 &
+DEV_SCOPE_PID=$!
+make_planner_proc "$DEV_SCOPE_PID" 777030
+printf '%s\n' "$DEV_SCOPE_PID" > "$WORK/state/owner-pid"
+run_just dev --scope-class OmniTilerTestWindow --scope-class kwrite
+DEV_SCOPE_EXIT="$EXIT"
+kill "$DEV_SCOPE_PID" 2>/dev/null || true
+wait "$DEV_SCOPE_PID" 2>/dev/null || true
+EXIT="$DEV_SCOPE_EXIT"
+check_exit 0 "dev scoped cycle exit"
+assert_calls_line "start-test start TRACE=0 SCOPE=OmniTilerTestWindow,kwrite" "dev scoped scope forwarded"
+assert_calls_contain "start-test stop 7" "dev scoped teardown stop"
+assert_calls_contain "dogfood enable" "dev scoped teardown enable"
 
 # dev: pre-owned tray name is preserved, never launched or killed.
 reset_state

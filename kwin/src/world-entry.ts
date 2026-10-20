@@ -78,6 +78,7 @@ import { readNativeAlias } from "./native-alias";
 import { createWorldCloseTracker } from "./world-close-tracker";
 import { createWorldCommandContext } from "./world-command-context";
 import { createWorldSettingsLive } from "./world-settings-live";
+import { normalizeScopeClassList, readBakedScopeClass, windowMatchesScopeClass } from "./scope-class";
 import { WorldBornMaximizedAdmission } from "./world-born-maximized";
 
 export const WORLD_DBUS_SERVICE = "com.omnitiler.Planner";
@@ -147,6 +148,13 @@ export interface WorldEntryOverrides {
     ) => void;
     readonly readFixedPredicateFn?: () => unknown;
     readonly fixedOriginOf?: (win: string, ref: object) => { readonly fixedAuto: boolean; readonly fixedSuppress: boolean } | null;
+    // Dev/test admission scope seam (default: the baked
+    // `__OMNITILER_SCOPE_CLASS__` define, else the `scopeClass` script
+    // config, else whole world): comma-joined string or array of exact
+    // `resourceClass` identities, validated once at startup. Offline tests
+    // pass `scopeClass` directly.
+    readonly scopeClass?: string | readonly string[];
+    readonly readScopeClassFn?: () => unknown;
     // Compatibility seams accepted from the production entry and ignored or
     // honored without policy: generation is superseded by authenticated
     // discovery (never used as the core generation); floatIntent is accepted
@@ -355,6 +363,43 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // them here. Behavior identical to the previous inline closures.
     const settings = createWorldSettingsLive(overrides);
 
+    // Dev/test admission scope, resolved once at startup: explicit
+    // override, test seam, baked define, `scopeClass` script config, else
+    // whole world. Invalid input or a throwing reader fails closed
+    // (inert script). Only the absent script-config global in offline
+    // tests falls back to whole world.
+    const scopeClass: readonly string[] | null = ((): readonly string[] | null => {
+        if (overrides.scopeClass !== undefined) {
+            return normalizeScopeClassList(overrides.scopeClass);
+        }
+        if (overrides.readScopeClassFn !== undefined) {
+            try {
+                return normalizeScopeClassList(overrides.readScopeClassFn());
+            } catch (error) {
+                void error;
+                return null;
+            }
+        }
+        const baked = readBakedScopeClass();
+        if (baked !== undefined) {
+            return normalizeScopeClassList(baked);
+        }
+        if (typeof readConfig !== "function") {
+            return [];
+        }
+        try {
+            return normalizeScopeClassList(readConfig("scopeClass", ""));
+        } catch (error) {
+            void error;
+            return null;
+        }
+    })();
+    if (scopeClass === null) {
+        log("omnitiler:world:scope-invalid recovery=refuse-start");
+        return null;
+    }
+    log(`omnitiler:world:scope class=${scopeClass.length === 0 ? "-" : scopeClass.join(",")}`);
+
     const gestureActive = (): boolean => {
         if (overrides.gestureActive !== undefined) {
             try {
@@ -380,6 +425,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         readOuterGap: () => settings.readOuterGapLive(),
         gestureActive,
         knownClosed: () => closeTracker.snapshotClosed(),
+        scopeClass,
         logicalBindingOf: (nativeId, out) => {
             // Locally-created but not yet core-acknowledged bindings publish
             // here so core pending consumes them: a bound pending creation
@@ -515,8 +561,17 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             const active = readProp(surface, "activeWindow");
             if (typeof active === "object" && active !== null) {
                 // Canonical native-id form (braced UUIDs unwrap): the raw
-                // live internalId is never compared unnormalized.
-                return normalizeNativeId(readProp(active as object, "internalId"));
+                // live internalId is never compared unnormalized. A foreign
+                // focus reads as no active window under a scope, so no
+                // command or effect path can target it.
+                const id = normalizeNativeId(readProp(active as object, "internalId"));
+                if (id === null) {
+                    return null;
+                }
+                if (scopeClass.length !== 0 && !windowMatchesScopeClass(readProp, active as object, scopeClass)) {
+                    return null;
+                }
+                return id;
             }
         } catch (error) {
             void error;
@@ -603,6 +658,47 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         }
     };
 
+    // Scoped command fence: a window-carrying command whose live subject
+    // is provably foreign never rides the wire (observation filtering
+    // already drops foreign subjects at dispatch, but the command itself
+    // must never name them). An unresolvable subject passes through:
+    // dispatch drops it narrowly as vanished and apply holds unknown
+    // targets without writes.
+    const commandWindowTarget = (command: WorldCommand): string | null => {
+        const rec = command as unknown as Record<string, unknown>;
+        if (typeof rec["win"] === "string") {
+            return rec["win"] as string;
+        }
+        if (rec["op"] === "operation") {
+            const inner = rec["command"];
+            if (typeof inner === "object" && inner !== null &&
+                typeof (inner as Record<string, unknown>)["win"] === "string") {
+                return (inner as Record<string, unknown>)["win"] as string;
+            }
+        }
+        return null;
+    };
+    const windowInScope = (win: string): boolean => {
+        if (scopeClass.length === 0) {
+            return true;
+        }
+        let ref: object | null = null;
+        try {
+            ref = liveRefById(win);
+        } catch (error) {
+            void error;
+            ref = null;
+        }
+        if (ref === null) {
+            return true;
+        }
+        try {
+            return windowMatchesScopeClass(readProp, ref, scopeClass);
+        } catch (error) {
+            void error;
+            return false;
+        }
+    };
     // Fail-fast single-flight submit: a queued intent or a flight in
     // progress refuses as busy with one bounded line (the caller fails
     // closed and retries after the flight settles). All non-directional
@@ -613,6 +709,11 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         }
         if (state.boundGen === null) {
             log(`omnitiler:world:command-refused op=${token((command as { op?: unknown }).op)} reason=undiscovered`);
+            return false;
+        }
+        const target = commandWindowTarget(command);
+        if (target !== null && !windowInScope(target)) {
+            log(`omnitiler:world:command-refused op=${token((command as { op?: unknown }).op)} reason=scope-class`);
             return false;
         }
         if (pendingQueue.length > 0 || state.inFlightReq !== null) {
@@ -665,6 +766,11 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         }
         if (state.boundGen === null) {
             log(`omnitiler:world:command-refused op=${token((command as { op?: unknown }).op)} reason=undiscovered`);
+            return false;
+        }
+        const target = commandWindowTarget(command);
+        if (target !== null && !windowInScope(target)) {
+            log(`omnitiler:world:command-refused op=${token((command as { op?: unknown }).op)} reason=scope-class`);
             return false;
         }
         if (!isQueuedDirectional(command)) {

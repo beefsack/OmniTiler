@@ -9,7 +9,7 @@ describe("production bundle compatibility", () => {
 
         assert.match(
             manifest,
-            /"build": "rm -rf dist && esbuild src\/entry\.ts --bundle --format=iife --target=es2017 --outfile=contents\/code\/main\.js"/,
+            /"build": "rm -rf dist && esbuild src\/entry\.ts --bundle --format=iife --target=es2017 .*__OMNITILER_SCOPE_CLASS__.*--outfile=contents\/code\/main\.js"/,
         );
         assert.match(bundle, /^"use strict";\n\(\(\) => \{/);
         assert.doesNotMatch(bundle, /\bcatch\s*\{/);

@@ -7,6 +7,7 @@
 import { decodeList } from "./qml-list";
 import { normalizeNativeId } from "./native-id";
 import { readNativeAlias } from "./native-alias";
+import { normalizeScopeClassList, windowMatchesScopeClass } from "./scope-class";
 import {
     FIXED_SIZE_PREDICATE_DEFAULT,
     FIXED_SIZE_PREDICATE_EITHER,
@@ -268,6 +269,11 @@ export interface ObserveEnv {
     // startup configuration). Classifies fresh fixed-size admissions for the
     // fixedAuto/fitExcluded wire flags; never policy.
     readFixedPredicate?: () => unknown;
+    // Dev/test admission scope (platform-only): an allowlist of exact
+    // native `resourceClass` identities (comma-joined string or array).
+    // Empty preserves whole-world behavior. Foreign windows are skipped
+    // like non-normal windows, never marked unreadable.
+    scopeClass?: string | readonly string[];
     // Fixed-window tile override (native only): the Rust-owned intent store
     // tile set carries adapter-asserted tile wins (D3 suppress signal). A
     // tile-overridden window carries fixedSuppress=true so the core never
@@ -351,6 +357,13 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
     const screens = screensCapped.items;
     const desktops = desktopsCapped.items;
     const winList = winListCapped.items;
+    // Dev/test admission scope: exact `resourceClass` allowlist (empty
+    // disables). Malformed input fails the whole observation; the entry
+    // only passes validated input, so this guards direct callers.
+    const scope = normalizeScopeClassList(env.scopeClass ?? "");
+    if (scope === null) {
+        return null;
+    }
     // Over-cap inventories truncate the tail and mark the report
     // incomplete (fencing implicit-close inference), but the enumerated
     // head stays fully readable: a cut tail must not blank live scopes.
@@ -418,6 +431,12 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
             const raw = normalizeNativeId(readProp(active as object, "internalId"));
             if (raw !== null) {
                 activeId = raw;
+                // A foreign focus never names an unmanaged window: under a
+                // scope the global and per-domain focus read as unfocused
+                // instead of pointing at foreign state.
+                if (!windowMatchesScopeClass(readProp, active as object, scope)) {
+                    activeId = "";
+                }
             }
         }
     } catch (error) {
@@ -430,6 +449,12 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
         }
         const ref = item as object;
         if (readProp(ref, "normalWindow") !== true) {
+            continue;
+        }
+        // Scoped runs exclude foreign windows from observation entirely
+        // (like non-normal windows): the core never sees them, so it never
+        // manages, commands, or effects them. Never an unreadable hold.
+        if (!windowMatchesScopeClass(readProp, ref, scope)) {
             continue;
         }
         const rawId = normalizeNativeId(readProp(ref, "internalId"));

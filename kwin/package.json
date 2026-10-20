@@ -6,10 +6,10 @@
   "description": "KWin scripting component for OmniTiler. Development-only toolchain; KWin executes only the generated non-module bundle.",
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
-    "build": "rm -rf dist && esbuild src/entry.ts --bundle --format=iife --target=es2017 --outfile=contents/code/main.js",
-    "build:trace": "rm -rf dist && esbuild src/entry.ts --bundle --format=iife --target=es2017 --define:__OMNITILER_TRACE__='\"1\"' --outfile=contents/code/main.js",
+    "build": "rm -rf dist && esbuild src/entry.ts --bundle --format=iife --target=es2017 --define:__OMNITILER_SCOPE_CLASS__='\"'\"${OMNITILER_SCOPE_CLASS:-}\"'\"' --outfile=contents/code/main.js",
+    "build:trace": "rm -rf dist && esbuild src/entry.ts --bundle --format=iife --target=es2017 --define:__OMNITILER_TRACE__='\"1\"' --define:__OMNITILER_SCOPE_CLASS__='\"'\"${OMNITILER_SCOPE_CLASS:-}\"'\"' --outfile=contents/code/main.js",
     "test": "npm run build && rm -rf dist/tests && esbuild \"tests/*.test.ts\" --bundle --platform=node --format=cjs --target=es2020 --define:__OMNITILER_TRACE__='\"1\"' --outdir=dist/tests && TRAY_BRIDGE_FIXTURE=../test-fixtures/tray-bridge-v2.json node --test \"dist/tests/**/*.test.js\"",
-    "build:installed": "rm -rf dist && esbuild src/entry.ts --bundle --format=iife --target=es2017 --define:__OMNITILER_SOURCE_REV__='\"'\"$OMNITILER_SOURCE_REV\"'\"' --outfile=contents/code/main.js"
+    "build:installed": "rm -rf dist && esbuild src/entry.ts --bundle --format=iife --target=es2017 --define:__OMNITILER_SOURCE_REV__='\"'\"$OMNITILER_SOURCE_REV\"'\"' --define:__OMNITILER_SCOPE_CLASS__='\"\"' --outfile=contents/code/main.js"
   },
   "engines": {
     "node": ">=24"

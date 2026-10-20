@@ -110,6 +110,9 @@ done
 if [[ " $* " == *" run build:installed "* ]]; then
   rev="${OMNITILER_SOURCE_REV:-}"
   [[ "$rev" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] || exit 1
+  # Release hygiene: the installed bundle must never carry a dev scope,
+  # so the archive script clears it before this invocation.
+  [[ -z "${OMNITILER_SCOPE_CLASS:-}" ]] || exit 1
   mkdir -p "$prefix/contents/code"
   printf '// stub bundle for %s\n' "$rev" > "$prefix/contents/code/main.js"
   chmod 0644 "$prefix/contents/code/main.js"
@@ -228,6 +231,15 @@ if [[ -d "$EXTRACT/$TOP_DIR" ]]; then
   grep -Fq -- "$TAG_SHA" "$EXTRACT/$TOP_DIR/kwin/contents/code/main.js" \
     || fail "extracted bundle lacks baked source rev"
 fi
+
+# Release hygiene: an exported dev scope must not contaminate the
+# installed bundle (the stub refuses non-empty scope, so this run proves
+# the archive script clears it before build:installed).
+OUT_SCOPE="$WORK/out-scope"
+mkdir -p -- "$OUT_SCOPE"
+OMNITILER_SCOPE_CLASS=OmniTilerTestWindow bash "$ARCHIVE_SCRIPT" --tag "$TAG" --output-dir "$OUT_SCOPE" >/dev/null 2>&1 \
+  || fail "archive build with exported dev scope failed"
+[[ -f "$OUT_SCOPE/$TOP_DIR.tar.gz" ]] || fail "scoped-env archive missing"
 
 # Determinism only in the fast default suite (integration build is slow).
 if [[ "$INTEGRATION" != "1" ]]; then

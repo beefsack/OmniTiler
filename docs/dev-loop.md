@@ -53,11 +53,27 @@ These recipes never stop or mask units, never resolve the Planner through
 just dev         # foreground: refuse unless DOWN, dev-on, tail labeled logs, Ctrl-C tears down via dev-off
 just dev verbose # same bounded operational diagnostics, named explicitly for troubleshooting
 just dev trace   # additionally build KWin trace detail and log bounded structural Planner request/reply JSON
+just dev --scope-class OmniTilerTestWindow # fixture-only management
 just dev-on      # disable packaged script, start worktree Planner + KWin bundle
+just dev-on --scope-class OmniTilerTestWindow # detached scoped bring-up with the same filter
 just dev-status  # read-only: name owner, isScriptLoaded, receipt, unit state
 just reload      # rebuild and swap only the recorded worktree Planner
 just dev-off     # unload exact script, stop recorded Planner, re-enable packaged script
 ```
+
+Agent-driven fixture runs should stay scoped: `just dev --scope-class
+OmniTilerTestWindow [--scope-class ...]` (or the `dev-on` equivalent).
+Each flag carries an identity (or comma-joined allowlist) and repeated flags
+accumulate, so the filter is exactly the listed identities, repeatably.
+Only windows whose `resourceClass` is listed are managed (on Wayland this
+is the `app_id`; the fixture uses `OmniTilerTestWindow` for both).
+Scoped-out windows never enter the world report, so the core never sees
+them: no tiling, no commands, no focus or stacking effects touch foreign
+windows. Empty (default) keeps the unchanged whole-world behavior. Any
+malformed entry fails closed before any mutation, and the allowlist bakes
+into the dev bundle build. An explicit scope on an already-up session is
+rejected outright (the live scope is not provable); changing scope requires
+`just dev-off` first.
 
 - Build and launch from the same source revision. When reusing Cargo outputs
   across checkouts, verify source/build provenance and the launched executable;
@@ -176,6 +192,8 @@ Current world-route diagnostics:
 - `omnitiler:world:discovered gen=<generation>`: discovery only, not applied state.
 - `omnitiler:world:dispatch req=<request> obs=<watermark> cmd=<operation|observe>`.
 - `omnitiler:world:applied rev=<revision> geom=<N> member=<N> views=<N> mk=<N> rm=<N> fx=<N> held=<N>`: snapshot accepted and partial actuator counts, not atomic native completion.
+  `member` counts native membership writes, not managed windows; use the observed
+  roster to establish how many windows are managed.
 - `omnitiler:world:stale reason=<token> recovery=catchup`: zero stale setters,
   followed by an observation-only report.
 - `omnitiler:world:rejected kind=<token> msg=<fixed-check> recovery=on-next-event`:
