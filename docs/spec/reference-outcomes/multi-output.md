@@ -285,10 +285,21 @@ offline); workspace send still refuses cross-output (`S(S-ours-out)` pinned base
 - When: open C (ordinary admission, no rules).
 - Observe: focused output vs pointer output vs app/startup
   assignment; newcomer focus and source view.
-- Then COSMIC: lands on the focused output L (admission defaults to
-  the seat active output) with newcomer focus. `S(S-cos-out)` +
-  `S(S-cos-mapfocus)`.
-- Then Hyprland/Dwindle: lands on focused L (initial map takes the focus monitor with no cursor branch absent rules; the pointer on R plays no role) with newcomer focus; source view unchanged. `S(S-hyp-newfocus)`.
+- Then COSMIC: landing TBD absent a recorded active output: ordinary
+  no-token admission takes `seat.active_output()`, which is the cursor
+  output only after motion and is NOT fixed by keyboard focus plus
+  pointer position (`S(S-cos-cursor)` + `S(S-cos-out)`). Conditional: L
+  when active output is still L (no motion ran), R after motion moves it
+  to R ([R-OUT-05a](#r-out-05a-motion-then-ordinary-open)). Newcomer
+  focus per `S(S-cos-mapfocus)` when admitted; source view unchanged.
+- Then Hyprland/Dwindle: landing TBD absent a recorded focus monitor:
+  initial map takes the focus monitor with no cursor branch absent rules,
+  but the focus monitor itself follows the pointer after motion via
+  `rawMonitorFocus`, so keyboard focus plus pointer position alone do
+  not fix it (`S(S-hyp-newfocus)` + `S(S-hyp-cursor)`). Conditional: L
+  while the focus monitor is L, R after motion moves it
+  ([R-OUT-05a](#r-out-05a-motion-then-ordinary-open)). Newcomer focus
+  unless silent/no-focus rule; source view unchanged.
 - Then bspwm: lands on the focused desktop L with newcomer focus
   (ordinary admission anchors at the desktop focus). `S(S-bsp-insert)`.
 - Then i3: lands on the focused workspace with newcomer focus
@@ -534,3 +545,144 @@ evidence is linked separately in the platform cells.
   pass ([record](../../changes/archive/windows-explicit-output-send.md)).
   Exact physical child-order, suppression and mixed-DPI journey TBD.
 - Variant hook: V-WS-FOLLOW.
+
+### R-OUT-05a: motion then ordinary open
+
+- Given (tree profiles): L focused `H[A*]`, R `H[X,Y]` with Y the
+  workspace MRU; focus-following disabled (COSMIC shipped default;
+  Hyprland `input:follow_mouse=0` with `misc:mouse_move_focuses_monitor`
+  at shipped default; i3 `focus_follows_mouse no`; sway
+  `focus_follows_mouse no`). Move the cursor L -> R onto X by motion
+  only (no click); keyboard focus stays A. Ordinary windows, no rules.
+- Given (column profiles): same focus/cursor split at shipped defaults
+  with focus-following disabled as above; viewport recorded.
+- Given (paneru): display `D1` focused, pointer moved to `D2` by motion
+  only; each display keeps its own strip and native Space.
+- When: open ordinary C (no rules, no startup token). Reset leg
+  (same output, no cross-output motion): L `H[A*,B]` with A focused and
+  the cursor on B on L; open C. Launch-context leg (reset to the opposite
+  cursor fixture): use built-in `Spawn` / ordinary shortcut exec for a new
+  process C, propagate its startup token, and keep focus, cursor and shown
+  workspaces unchanged until map. No existing-instance handoff.
+- Observe: target output (cursor R vs focused L), destination anchor,
+  newcomer focus.
+- Then COSMIC: lands on R: motion sets `seat.active_output()` unconditionally and no-token admission takes it (`S(S-cos-cursor)` + `S(S-cos-out)`); anchor is R's MRU Y via `last_active` (`S(S-cos-last)`), newcomer splits Y with focus to C (`S(S-cos-axis)` + `S(S-cos-mapfocus)`). Reset leg: C splits A (`last_active` resolves the focused A on L). Launch-context leg: `Spawn` captures R's workspace in the activation token; C targets R with default activation policy `Focus` (`S(S-cos-cursor)`).
+- Then Hyprland/Dwindle: lands on R: motion switches the focus monitor via `rawMonitorFocus` while window focus stays A, and initial map takes the focus monitor (`S(S-hyp-cursor)` + `S(S-hyp-newfocus)`); anchor is the cursor-closest node (A is not on R's workspace, so the active-window branch fails and `getClosestNode` applies): pointer over X splits X despite MRU Y (`S(S-hyp-ins)`). Reset leg: C splits the same-workspace active window A with newcomer focus (`S(S-hyp-ins)` + `S(S-hyp-newfocus)`). Launch-context leg: exec captures R's workspace; unchanged launch/map context does not set silent, so C targets R and takes focus (`S(S-hyp-cursor)`).
+- Then bspwm: TBD (Tier2/3 not investigated).
+- Then i3: lands on L: with FFM disabled, motion changes neither focus nor output (`S(S-i3-ffmoff)`); ordinary admission anchors at the focused workspace with newcomer focus (`S(S-i3-ffmoff)` + `S(S-i3-geometry)`). Reset leg: C inserts after focused A as flat `H[A,C,B]` (`S(S-i3-geometry)`). Launch-context leg: exec captures L's focused workspace in startup context; C targets L and takes focus (`S(S-i3-ffmoff)`).
+- Then xmonad/Tall+Navigation2D: TBD (Tier2/3 not investigated).
+- Then sway: lands on L: with `focus_follows_mouse no`, motion leaves seat focus on L (`S(S-sway-ffmoff)`); ordinary admission anchors after the seat focus-inactive node with newcomer focus (`S(S-sway-ins)`). Reset leg: C inserts after focused A as flat `H[A,C,B]` (`S(S-sway-ins)`). Launch-context leg: exec captures L's seat-focused workspace; C targets L and takes focus (`S(S-sway-ffmoff)`).
+- Then qtile/Columns: TBD (Tier2/3 not investigated).
+- Then awesome/tile: TBD (Tier2/3 not investigated).
+- Then niri: TBD (Tier2/3 not investigated).
+- Then PaperWM: TBD (Tier2/3 not investigated).
+- Then karousel/Lazy: fixture-inapplicable (single-screen profile; no second output). `S(S-kar-single)`.
+- Then paneru: TBD (Tier2/3 not investigated).
+- Then Ours KDE: TBD (cursor-first variant not established).
+- Then Ours Windows: TBD (cursor-first variant not established).
+- Variant hook: provisional/TBD (cursor-first targeting; no R-OUT-05 override without user selection).
+- Launch scope: arbitrary GUI launchers, reused application instances and
+  clients that fail to propagate startup context remain TBD. Launch-time
+  captured destinations are not a promise to re-target after later cursor
+  motion; the no-token leg instead resolves at map time.
+
+### R-OUT-08: numbered switch versus send with opposite cursor
+
+- Given (tree profiles): L shows numbered ws 1 `H[A*]` focused (plus
+  hidden ws 2 on L); R shows numbered ws 5 `H[X]` (plus hidden ws 6 on
+  R); number 9 unassigned anywhere. Focus-following disabled as in
+  R-OUT-05a (Hyprland `misc:mouse_move_focuses_monitor` at shipped
+  default). Move the cursor L -> R by motion only; keyboard focus stays
+  A. Ordinary windows, no rules. (COSMIC numbers are per-output
+  positions, not global names: its fresh leg uses the trailing-empty
+  index and its relative legs the plain non-directional forms, with shipped
+  `OutputBound` workspace mode.)
+- Given (column profiles): same focus/cursor split and numbering;
+  viewport recorded.
+- Given (paneru): display `D1` focused, pointer on `D2`; each display
+  keeps its own strip and native Space.
+- When (fresh switch): switch to fresh number 9 (COSMIC: trailing-empty
+  index). When (relative switch, reset): per-output next
+  (COSMIC plain `NextWorkspace`; Hyprland `workspace,m+1`; i3/sway
+  `workspace next_on_output`). When (relative send, reset): send focused
+  A one step forward (COSMIC plain `SendToNextWorkspace`; Hyprland
+  `movetoworkspace,+1`; i3/sway `move container to workspace
+  next_on_output`).
+- Observe: which output each verb acts on (cursor R vs focused/source L);
+  for sends, subject source versus target scope.
+- Then COSMIC: fresh switch shows R's trailing-empty index (numbered shortcuts address `seat.active_output()`); relative switch advances R's active workspace (plain form acts on the active output); relative send targets L's ws 2 (plain form takes `focused_output` active index + 1). Direction/layout-gate legs TBD. `S(S-cos-cursor)` (+ trailing-empty per `S(S-cos-send)`).
+- Then Hyprland/Dwindle: fresh `workspace,9` is created on the focus monitor R; relative `workspace,m+1` resolves monitor-relative from R (5 -> 6 on R); relative `movetoworkspace,+1` resolves 5 + 1 = 6 while the subject stays focused A from L (source L vs target R encoded, not agreed). `S(S-hyp-cursor)`.
+- Then bspwm: TBD (Tier2/3 not investigated).
+- Then i3: fresh `workspace number 9` is created on the focused output L (`workspace_get` falls back to the focused output); relative switch and relative send both resolve on L (1 -> 2) with A as the send subject (`workspace_next_on_output` scans the focused output). `S(S-i3-ffmoff)`.
+- Then xmonad/Tall+Navigation2D: TBD (Tier2/3 not investigated).
+- Then sway: fresh `workspace number 9` is created on the focused output L (initial-output fallback); relative switch and relative send both resolve on L (1 -> 2) with A as the send subject (resolution from the seat-focused workspace). `S(S-sway-ffmoff)`.
+- Then qtile/Columns: TBD (Tier2/3 not investigated).
+- Then awesome/tile: TBD (Tier2/3 not investigated).
+- Then niri: TBD (Tier2/3 not investigated).
+- Then PaperWM: TBD (Tier2/3 not investigated).
+- Then karousel/Lazy: fixture-inapplicable (single-screen profile; no second output). `S(S-kar-single)`.
+- Then paneru: TBD (Tier2/3 not investigated).
+- Then Ours KDE: TBD (cursor-first variant not established).
+- Then Ours Windows: TBD (cursor-first variant not established).
+- Variant hook: provisional/TBD (cursor-first targeting; no selection).
+- Caveat (outside the main fixture): switching to an existing
+  global number follows its owner in Hyprland/i3/sway (the workspace is
+  not moved by the pointer); COSMIC numbered shortcuts are per-output
+  positions on the active output.
+
+### R-OUT-09: click on empty area of the other output
+
+- Given (tree profiles): L focused `H[A*]`, R `H[B]`; focus-following
+  disabled as in R-OUT-05a. Move the cursor L -> R onto empty desktop
+  area by motion only; keyboard focus stays A. Use uncovered workspace
+  background/gap, not a panel, layer-shell surface or overview.
+- Given (column profiles): same focus/cursor split; viewport recorded.
+- Given (paneru): display `D1` focused, pointer on empty area of `D2`.
+- When: plain-click the empty area on R (no window under cursor; click-focus leg reuses [R-MOU-01](mouse.md#r-mou-01-pointer-hover-vs-click-focus)).
+- Observe: keyboard focus (retains A vs moves to R) and target output.
+- Then COSMIC: retains A: press resolves its target via `seat.active_output()` but `set_focus` runs only inside `if Some(target)`, so empty R writes no focus; active output is already R from motion (`S(S-cos-cursor)`).
+- Then Hyprland/Dwindle: retains A with monitor R: button press requires a window for refocus and empty motion clears keyboard focus only on refocus or with no focused window (`S(S-hyp-cursor)`); the click still updates the focus monitor to R.
+- Then bspwm: TBD (Tier2/3 not investigated).
+- Then i3: focuses R: any click in a workspace focuses that workspace (`workspace_show` plus activate) (`S(S-i3-ffmoff)`).
+- Then xmonad/Tall+Navigation2D: TBD (Tier2/3 not investigated).
+- Then sway: focuses R's workspace via `seat_set_focus` on empty-workspace click (`S(S-sway-ffmoff)`).
+- Then qtile/Columns: TBD (Tier2/3 not investigated).
+- Then awesome/tile: TBD (Tier2/3 not investigated).
+- Then niri: TBD (Tier2/3 not investigated).
+- Then PaperWM: TBD (Tier2/3 not investigated).
+- Then karousel/Lazy: fixture-inapplicable (single-screen profile; no second output). `S(S-kar-single)`.
+- Then paneru: TBD (Tier2/3 not investigated).
+- Then Ours KDE: TBD (cursor-first variant not established).
+- Then Ours Windows: TBD (cursor-first variant not established).
+- Variant hook: provisional/TBD (cursor-first targeting; no selection).
+
+### R-OUT-10: focus/cursor coupling defaults
+
+- Given (all profiles): L `H[A*]` focused, R `H[X]`; two occupied
+  outputs, shipped defaults, no custom rules. karousel excluded
+  (single-screen, `S(S-kar-single)`).
+- When (hover leg): with coupling options off, move the cursor onto X on
+  R by motion only (no click); repeat at shipped defaults and with only the
+  focus-follows option on. When (keyboard leg, reset with cursor on L): explicitly focus X on R via a
+  keyboard focus verb; repeat with only the cursor-follows option on.
+- Observe: whether hover alone moves keyboard focus (and to which
+  output), and whether keyboard focus moves the cursor; defaults versus
+  isolated-option behavior.
+- Then COSMIC: shipped both off (`focus_follows_cursor=false`, `cursor_follows_focus=false`, delay 250): hover leaves focus on A and keyboard focus leaves the cursor; focus-follows on focuses after the delay; cursor-follows on warps to the focused window (`S(S-cos-cursor)`).
+- Then Hyprland/Dwindle: shipped coupled (`input:follow_mouse=1`, `misc:mouse_move_focuses_monitor=true`): hover focuses the window and the monitor; warps gated (`cursor:no_warps=false` master gate, `warp_on_change_workspace=0`, `warp_on_monitor_change=-1` inherits workspace); explicit directional/monitor focus verbs warp; with `follow_mouse=0` (plus `mouse_move_focuses_monitor=false`) hover moves neither window focus nor monitor (`S(S-hyp-cursor)`).
+- Then bspwm: TBD (Tier2/3 not investigated).
+- Then i3: shipped coupled (FFM enabled by zero-init default; `mouse_warping` output): enter/motion focuses, cross-output motion focuses, workspace switch warps; with `focus_follows_mouse no` plus `mouse_warping none` hover moves no focus and switches warp nothing (`S(S-i3-ffmoff)`).
+- Then xmonad/Tall+Navigation2D: TBD (Tier2/3 not investigated).
+- Then sway: shipped coupled (`focus_follows_mouse yes`, `mouse_warping output`): hover focuses including across outputs; focus-change warp skipped when the cursor is already on the focus output; with `no` plus `none` hover moves no focus and no warp (`S(S-sway-ffmoff)`).
+- Then qtile/Columns: TBD (Tier2/3 not investigated).
+- Then awesome/tile: TBD (Tier2/3 not investigated).
+- Then niri: TBD (Tier2/3 not investigated).
+- Then PaperWM: TBD (Tier2/3 not investigated).
+- Then karousel/Lazy: fixture-inapplicable (single-screen profile). `S(S-kar-single)`.
+- Then paneru: TBD (Tier2/3 not investigated).
+- Then Ours KDE: TBD (cursor-first variant not established).
+- Then Ours Windows: TBD (cursor-first variant not established).
+- Variant hook: provisional/TBD (optional coupling settings supported;
+  focus-following defaults off in COSMIC but on in all other Tier 1
+  references; output-warp defaults differ from general cursor-following;
+  no selection).

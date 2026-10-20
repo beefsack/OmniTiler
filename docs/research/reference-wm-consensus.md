@@ -298,6 +298,12 @@ axis stays a qualifier (X/Q inapplicable).
 
 ## Table U: strong consensus, ours unresolved (19 full rows + two KDE legs)
 
+Note: tallies below are the dated historical audit snapshot. The
+R-OUT-05 focused-7/8 count is map-only (static-pointer fixture) and is
+superseded for motion-first legs by the
+[cursor-first supplement](#cursor-first-output-targeting-supplement-2026-10-20);
+do not read it as current motion-first evidence. It selects nothing.
+
 | Row | Consensus | Count | COSMIC | Ours |
 |---|---|---|---|---|
 | R-INS-01 position | newcomer after focus | after-5/7ev (C,B,I,S,A vs X,Q; H EF), 4/4 fam | after (sourced) | order TBD / TBD |
@@ -313,7 +319,7 @@ axis stays a qualifier (X/Q inapplicable).
 | R-CLOSE-03 sole | shown workspace retained on sole close | retained-7/8 (C,B,I,X,S,Q,A), 4/4 fam | yes (active kept) | TBD both (Engine collapse sourced; native journey TBD) |
 | R-CLOSE-04 float | tiles untouched with MRU refocus | untouched-6/8 plus focus-B-6/8 (C,B,I,S,Q,A), 4/4 fam | yes (layer separation plus MRU fixup) | TBD both (exception-drop sourced; adapter journey TBD) |
 | R-CLOSE-05 full | closed fullscreen needs no restore; survivor refills with focus | full-leg-5/8 (H/B/I/Q/A), 3 fam | TBD (removal sourced, overlay cleanup TBD) | TBD both (removal plus desired focus sourced; native cleanup TBD) |
-| R-OUT-05 open | ordinary admission lands on the focused output with newcomer focus | focused-7/8 (C,B,I,X,S,Q,A), 4/4 fam | yes (active-output default plus mapfocus) | routing TBD both (admission anchor sourced) |
+| R-OUT-05 open | ordinary admission lands on the focused output with newcomer focus | focused-7/8 (C,B,I,X,S,Q,A), 4/4 fam; HISTORICAL map-only tally, superseded for motion-first legs by the [cursor-first supplement](#cursor-first-output-targeting-supplement-2026-10-20) | yes (active-output default plus mapfocus) | routing TBD both (admission anchor sourced) |
 | R-MOU-01 click | plain click focuses B | click-8/8, 4/4 fam | yes (press focuses) | TBD both (host click/hover journeys; adapter verbs prove no producer path) |
 | R-SPC-01 transient | transient dialog floats instead of tiling | float-8/8 (C,H,B,I,X,S,Q,A), 4/4 fam | floats (is_dialog) | KDE TBD (`normalWindow` dialog mapping untraced); Windows excludes owned dialogs | Eligibility gap, not an established difference |
 | R-SPC-05 hints | app-owned resize/hint change leaves allocation authoritative | ignore-8/8 (C,H,B,I,X,S,Q,A), 4/4 fam; A later arrange hint-shaping qualifier | yes (no minimum enforcement) | authoritative both (KDE/host reaction and exact reflow TBD) | Direction matches; remainders queued |
@@ -1229,7 +1235,7 @@ one to three lines.
 |---|---|---|---|
 | R-OUT-03 cross-output focus | crosses to L; target X vs stays | cross: B (west search spans monitors, `S-bsp-flt-focus`+`S-bsp-move-target`), I (workspace-level fallback returns L's visible workspace, `S-i3-outfocus`), X (all-visible-screen candidates, `S-xmo-scope`), S (output fallback after tree walk, `S-sway-focus`), A (global miss then screen cross, `S-awe-focus`), H partial (monitor fallback, target TBD, `S-hyp-focus`) = 6/8, 3 fam; target-X: B/I/X/S/A = 5/8, 3 fam; stay: Q (`left()` in-group only, `S-qti-focus`); fall-through branch TBD: C | B cross-6/8 plus target-X-5/8 (Ours matches) |
 | R-OUT-04 explicit send | carry to L; follow vs stay | carry: C (`MoveToOutput`/`SendToOutput`, `S-cos-out`), H (`movetoworkspace`, `S-hyp-movews`), B (`transfer_node`, `S-bsp-send`+`S-bsp-xfer`), I/S (TAIL attach, `S-i3-outmove`/`S-sway-outmove`), X (`W.shift`, `S-xmo-scope`), Q (`togroup`, `S-qti-group`), A (`move_to_tag`, `S-awe-tag`) = 8/8, 4/4 fam; visible follow: C Move/H follow/B `--follow`/I/S/Q follow/A activate = 7/8, 4/4 fam; X stays on source view, target-stack focus sourced, source refocus TBD | A carry-8/8 plus follow-7/8 (Ours has no send counterpart) |
-| R-OUT-05 open routing | lands on the focused output with newcomer focus | focused-L plus newcomer focus: C (`S-cos-out`+`S-cos-mapfocus`), B (`S-bsp-insert`), I (`S-i3-admit`), X (`S-xmo-admit`), S (`S-sway-ins`), Q (`S-qti-add`), A (`S-awe-manage`) = 7/8, 4/4 fam; TBD: H | U focused-output-7/8 (Ours routing TBD) |
+| R-OUT-05 open routing | lands on the focused output with newcomer focus | focused-L plus newcomer focus: C (`S-cos-out`+`S-cos-mapfocus`), B (`S-bsp-insert`), I (`S-i3-admit`), X (`S-xmo-admit`), S (`S-sway-ins`), Q (`S-qti-add`), A (`S-awe-manage`) = 7/8, 4/4 fam; TBD: H | U focused-output-7/8 (Ours routing TBD; HISTORICAL map-only tally, superseded for motion-first legs by the [cursor-first supplement](#cursor-first-output-targeting-supplement-2026-10-20)) |
 | R-OUT-06 disconnect | evacuation destination and return | retain monitor/desktops: B (shipped remove-unplugged=false; same-id return reuses monitor, `S-bsp-monrm`); evacuate: S (highest-available else fallback, `S-sway-evac`); TBD: C, H, I, X, Q, A | C audit-only (no agreed predicate) |
 
 Scrolling comparison (non-voting): R-OUT-01 niri/PaperWM/paneru stay
@@ -1760,3 +1766,46 @@ standalone tests: their semantic predicates are already established.
   manufacture a single vote for a compound fixture. R-START-03/R-MAX-01 and
   the existing R-WS-02/04/05 historical-vote predicates are unchanged by the
   added partial evidence.
+
+## Cursor-first output-targeting supplement (2026-10-20)
+
+Scope: Tier 1 only (COSMIC, Hyprland, i3, sway per the 2026-10-12
+reference tiers) at pins C `3d55cba06c9cf6f27609cdefb520f7857dba20af`, H
+`19fb395d45314960e6f79f17994a84094f1cd4f6`, I
+`903bcd518df32b0e055b17f5da3f988a0187fd3d`, S
+`1652c54b73f67df17b7b4ab0b0f7048204aa8104`, read via local sibling
+clones (`git show`/`git grep` at pin; no web fetch). Tier2/3 profiles
+were not investigated: their new-row cells stay TBD, never silent
+agreement. karousel stays fixture-inapplicable (`S-kar-single`). Ours
+cells stay TBD (cursor-first variant not established). Matrix evidence lives
+in [R-OUT-05a](../spec/reference-outcomes/multi-output.md#r-out-05a-motion-then-ordinary-open),
+[R-OUT-08](../spec/reference-outcomes/multi-output.md#r-out-08-numbered-switch-versus-send-with-opposite-cursor),
+[R-OUT-09](../spec/reference-outcomes/multi-output.md#r-out-09-click-on-empty-area-of-the-other-output) and
+[R-OUT-10](../spec/reference-outcomes/multi-output.md#r-out-10-focuscursor-coupling-defaults);
+source keys `S-cos-cursor`, `S-hyp-cursor`, `S-i3-ffmoff`, `S-sway-ffmoff`
+in the [matrix legend](../spec/reference-outcomes.md#evidence-tags).
+The historical focused-7/8 R-OUT-05 tallies above are labeled
+historical/map-only and are explicitly superseded for motion-first
+legs by this supplement; they are not silently retallied. Nothing here
+selects a product requirement: REQ-OUT-05 stays NORMATIVE with no
+override, and every recommendation below is Tentative (user review
+pending).
+
+| Clause | Tier 1 per-clause summary | Recommendation |
+|---|---|---|
+| Motion then ordinary map / shortcut launch | C lands R splitting MRU Y (`active_output` follows motion); H lands R splitting the cursor-closest node (focus monitor follows motion); I/S with FFM disabled stay on L. Built-in shortcut spawns capture that same R/R/L/L destination in startup context, distinct from no-token map-time fallback. 2-2 split, no Tier 1 consensus | Tentative (user review pending): favor cursor-first under the tier rule (COSMIC primary, H agrees). Override of standing R-OUT-05 requires explicit user selection |
+| Numbered switch with opposite cursor | Fresh numbers land R in C (trailing-empty index) and H (created on the focus monitor), L in I/S. Per-output relative-next advances R in C/H vs L in I/S. Existing global numbers stay owned (row caveat). 2-2 split; exact settled focus TBD | Tentative (user review pending): favor cursor-first under the same tier rule; explicitly decide how platform workspace ordinals map to outputs rather than copying global-ID lookup |
+| Workspace send with opposite cursor | Source consensus 4/4: all act on focused A on L. Target scope splits: H `+1` resolves focus-monitor-relative (5 + 1 = ws 6 on R); C/I/S resolve focused-output-relative (ws 2 on L) | Tentative (user review pending): keep both subject and relative workspace resolution on the focused window's output, matching C/I/S; disclose H's contrary relative-target behavior |
+| Same-output ordinary anchor | All four use focused A as the admission anchor. Split geometry differs (C old-first/new-after groups; H pointer-half order; I/S flat siblings) | Tentative (user review pending): retain focused-A anchoring; evidence supports the target, not identical recursive split geometry |
+| Other-output insertion | C splits R's MRU Y; H splits the cursor-closest node (X despite MRU Y); I/S have no pointer-forced FFM-off branch. No universal insertion consensus | Tentative (user review pending): define "standard location" as that output's last-focused tiled anchor, following C; disclose H's cursor-closest alternative rather than claiming consensus |
+| Focus-follows-cursor option/default | Configurable in all four. Default C off, H/I/S on; all three other Tier 1 references oppose C's default | Tentative (user review pending): support the optional setting. The tier-rule exception favors default-on; requested default-off is a deliberate deviation needing user resolution, not a Tier 1 default consensus. Existing normative click-focus behavior is not changed |
+| Cursor-follows-focus option/default | C general cursor-following default off; H allows verb-specific warps but workspace-warp setting is 0; I/S default output warps on. Each has configurable suppression; these are not identical trigger scopes | Tentative (user review pending): support optional warping, but describe requested default-off as a choice against common cross-output warps, not a unanimous reference default; settle trigger scope explicitly |
+| Empty click on the other output | Routing converges on R in all four after the click. Keyboard-focus effect splits 2-2: C/H retain A; I/S focus R's workspace | Tentative (user review pending): preserve R targeting; favor C's no-focus-write-on-empty behavior if a cross-platform click-focus policy is selected, disclosing I/S disagreement |
+
+Unresolved/TBD claims: COSMIC `workspace_set` activate settled focus
+and direction/layout-gate legs; i3/sway other-output anchor under
+FFM-off beyond the focused-L policy; all Tier2/3 outcomes; all Ours
+and native/live outcomes; exact pixel frames and focus-settle timing
+in every new cell. GUI-launcher paths, existing-instance handoffs, unpropagated
+startup tokens and focus/cursor changes between launch and map are outside
+the captured-context launch fixture and remain TBD.
