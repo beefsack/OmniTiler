@@ -95,6 +95,31 @@ decisions of 2026-09-24 are under
     Cases may also assert responsiveness, so they may be time-bound with
     deadlines (a stated reason for a limit under
     [Simplicity](principles.md#simplicity)).
+- P1 | Controllable live-test window helper (User 2026-10-20) | Pragmatic
+  dev-only helper, not product code: winit native windowing (no GTK/Qt
+  fixtures), common geometry/state controlled over a local CLI interface with
+  caller IDs and batches, plus one small KDE-specific feature as the example
+  pattern for other platforms' native extensions. Existing Windows/macOS
+  helpers stay. Delivered offline as `crates/tiler-live-fixture`; pending
+  user smoke on KDE Wayland and X11 (crate README), then Windows/macOS
+  transport and native extensions by their streams. Follow-ups (user
+  2026-10-20): z-order query/set (host-limited; no Wayland query),
+  attention/focus requests, Windows elevated fixture instance for UAC/
+  unmanageable-window cases (prompt needs physical approval); after live
+  runs: bounded settlement waits, safe exclusive-mode selection, then a
+  request-correlated change history. Delivered 2026-10-20: winit API sweep,
+  KDE dev `--scope-class` (fixture-only runs), live runs with OmniTiler
+  active ([record](changes/archive/kde-dev-scope-fixture-integration.md)).
+  Remaining follow-ups: fixture/native identity correlation, then bounded
+  history.
+- P1 | KDE client self-resize while tiled (F1, 2026-10-20) | A tiled
+  client resizing itself leaves geometry inconsistent with its tile until an
+  unrelated subscribed event reconciles; reproduced on Wayland and X11 with
+  the live fixture. First: capture Tier 1 reference outcomes and check
+  existing spec rows, then user decides the desired behavior before repair.
+  [Record](changes/archive/kde-dev-scope-fixture-integration.md).
+  [Research](research/live-test-window.md),
+  [record](changes/archive/controllable-live-test-window.md).
 - P0 | KDE Meta+G unfloat does not re-tile until focus changes | Fixed offline
   2026-10-17, pending user re-check. The apply observation retained stale
   floating/fit-excluded flags after accepted unfloat; settle float departures

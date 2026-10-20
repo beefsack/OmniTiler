@@ -15,6 +15,13 @@ behavior or ambiguity (reference WMs disagree, or our behavior is undecided).
 Reuse existing coverage rather than duplicating a scenario with a
 trivially different start state.
 
+### Fixture-driven native state discriminators
+
+| Variant | Minimal action sequence | Observed KDE outcome | Unsupported outcome / decision |
+| --- | --- | --- | --- |
+| Client-driven tiled geometry | Tile A/B; have A request a different size without activation or output/desktop change; observe; admit C | Wayland and X11/XWayland: A keeps client-requested geometry, no world dispatch in bounded capture; admission triggers reconciliation and reclaims A's tile. Current hooks observe homing/activation/inventory, not ordinary frame changes | Desired immediate correction versus retained client geometry and reference-WM outcomes TBD; no new policy selected. [Evidence](../changes/archive/kde-dev-scope-fixture-integration.md#tiler-findings-and-host-limits) |
+| X11 urgency hint versus attention state | With B active, request critical attention on A; clear A's attention; activate A | WM_HINTS urgency clears, but KWin DEMANDS_ATTENTION persists until activation. Accepted clear is a client-hint acknowledgement, not compositor-state withdrawal | Other hosts/reference WMs and visual urgency presentation TBD; no tiler urgency policy changed. [Evidence](../changes/archive/kde-dev-scope-fixture-integration.md#tiler-findings-and-host-limits) |
+
 <a id="cursor-first-output-targeting-discriminators"></a>
 ### Cursor-first output-targeting discriminators
 
