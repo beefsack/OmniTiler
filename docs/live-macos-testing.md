@@ -187,6 +187,37 @@ experiment.
   diagnostic code and `input-register` command have been removed; retain the
   recorded 0/3 physical-delivery result, but do not run that step.
 
+## Fixture-First Live Tests
+
+- Agent live legs test fixture windows only. Start the fixture
+  (`tiler-live-fixture serve`, Unix-socket announcement) and drive it over
+  its control socket. Full protocol, flags, fields and limits are in the
+  [fixture README](../crates/tiler-live-fixture/README.md).
+- Honest gap, no scoped integrated fixture run until solved: the fixture
+  carries no macOS bundle allowlist entry (fixture `APP_ID` is Linux-only;
+  directly spawned helpers have no LaunchServices bundle entry and bind via
+  `ProcessIdentity` instead, which matches no bundle allowlist), so no
+  `--scope` value covers fixture windows today. Standalone fixture first-use
+  (fixture alone, no tiler management) may verify separately; do not run an
+  integrated scoped tiler leg against fixture windows until a scoped admission
+  path is proven live. `scope-inspect --scope BUNDLE` stays read-only
+  metadata for named apps, not a fixture scoping route.
+- Foreign (non-fixture) applications are only for application-specific
+  investigations after first trying the fixture, with the approved scope
+  naming them explicitly. Rationale: fixture windows are predictable,
+  controllable and observable (caller ids, observed predicates, per-field
+  outcomes), and fixture-only scope protects the operator desktop.
+- The macOS probe target is retained only for proofs explicitly bound to it
+  until ported; it is not the default for new agent legs.
+- Short first-use checklist: isolate (private run dir, no tiler management
+  until a scoped admission path is proven, `caffeinate -d` bounded leg,
+  user hand-over per leg); prove identity
+  (announced socket path plus per-run nonce, fixture caller ids, fresh CG
+  owner-PID join; never the hosting terminal); read back (AX/CG/Space membership,
+  never dispatch returns alone); clean up (fixture `shutdown`, remove only
+  owned socket/run dir, stop only leg-started PIDs by exact PID, verify
+  restored baseline and remaining residue).
+
 ## TCC, Signing, And Permission Experiments
 
 - Request only the TCC services the approved experiment needs

@@ -150,9 +150,13 @@ do not broaden cleanup or repeatedly restart the experiment.
   keyboard shortcut journeys remain physical and user-owned. Keyboard-resize
   and OS-owned chords such as Win+M stay physical for the same reason;
   synthetic input cannot drive them. Never weaken the filter for tests.
-- The agent-owned, identity-tagged `tiler-test-window.exe` is the standard
-  disposable helper (accepted 2026-10-14). The non-hooking lifecycle
-  `run --hide` proof accepts only this helper, not ordinary applications.
+- The agent-owned identity-tagged `tiler-test-window.exe` is retained only for
+  the proofs explicitly bound to it until ported: the non-hooking lifecycle
+  `run --hide` proof and the documented private cloak proof (`cloak HWND
+  --tag TAG --seconds N --stop-file PATH --log PATH`, `uncloak`,
+  `cloak-observe`). New Windows agent live legs use the live fixture, scoped with
+  `--scope-exe tiler-live-fixture.exe` (see Fixture-First Live Tests below).
+  Do not cite private proofs as fixture coverage.
 - Trace runs write run logs and provenance sidecars to
   `%LOCALAPPDATA%\omnitiler\session-1\`. Input queue age, owner work and
   render/drag-preview activity are summarized at most once per second, with
@@ -162,6 +166,37 @@ do not broaden cleanup or repeatedly restart the experiment.
   identities, not ordinals; `float-mismatch` reports successful floating
   settlement with a frame delta. Compare native rectangles in one coordinate
   convention (do not mix DPI-virtualized and physical values).
+
+## Fixture-First Live Tests
+
+- Agent live legs test fixture windows only, scoped fixture-only. Start the
+  fixture (`tiler-live-fixture serve`, pipe announcement), then scope the
+  tiler before any mutation, e.g.
+  `mise exec -- just tile --user-start --scope-exe tiler-live-fixture.exe ...`
+  so only the fixture executable is managed; foreign windows stay untouched
+  by construction. Full protocol, flags, fields and limits are in the
+  [fixture README](../crates/tiler-live-fixture/README.md).
+- Foreign (non-fixture) applications are only for application-specific
+  investigations after first trying the fixture, with the approved scope
+  naming them explicitly. Rationale: fixture windows are predictable,
+  controllable and observable (caller ids, observed predicates, per-field
+  outcomes), and fixture-only scope protects the operator desktop.
+- The agent-owned `tiler-test-window.exe` helper is retained only for the
+  proofs explicitly bound to it until ported (the `run --hide` lifecycle proof
+  and the documented private cloak proof named above);
+  it is not the default for new agent legs. Do not cite private proofs
+  as fixture coverage.
+- The fixture transport compiles on both native targets in CI. Windows passed
+  the fixture build, tests and clippy in native run 39393279249; macOS carries
+  2 open test failures (see the fixture README platform status). Live window
+  behavior on either host is verify-on-first-use with no accepted evidence yet.
+- Short first-use checklist: isolate (private run dir, fixture-only scope,
+  user hand-over per leg); prove identity (announced pipe name plus PID,
+  fixture caller ids, no Terminal/operator windows in scope); read back
+  (`get` observed predicates, never accepted-setter echoes); clean up
+  (`shutdown`, remove only the owned run dir -- the pipe endpoint is
+  kernel-namespace, no file to delete -- `just stop`, verify restored baseline
+  and clean ledger).
 
 ## Sandbox Registry And Policy Experiments (deferred to Phase 4)
 

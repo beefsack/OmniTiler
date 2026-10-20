@@ -183,6 +183,21 @@ startup:
 - Preserve normal desktop retirement/appending as documented lifecycle churn,
   not a restoration target; see the live-boundary decision.
 
+## Fixture-First Live Tests
+
+- Agent live legs test fixture windows only, scoped fixture-only. Start the
+  fixture (`tiler-live-fixture serve`), then scope the tiler to its identity
+  before any mutation: `just dev-on --scope-class OmniTilerTestWindow`
+  (teardown with `just dev-off`); agent-driven runs stay scoped so only
+  listed-`resourceClass` fixture windows are managed. Full protocol, flags,
+  fields and limits are in the [fixture README](../crates/tiler-live-fixture/README.md).
+- Foreign (non-fixture) applications are only for application-specific
+  investigations after first trying the fixture, with the approved scope
+  naming them explicitly. Rationale: fixture windows are predictable,
+  controllable and observable (caller ids, observed predicates, per-field
+  outcomes), and fixture-only scope protects the operator desktop by
+  construction: unrelated windows stay untouched even on a mistaken command.
+
 ## Preserved Residue
 
 - The unidentified prior `omnitiler-advisory-*` runtime-directory

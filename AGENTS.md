@@ -17,6 +17,9 @@
 - Before any live KWin/Plasma testing, read and follow
   [docs/live-kwin-testing.md](docs/live-kwin-testing.md). It does not grant
   mutation authorization.
+- Agent live legs use the live fixture scoped fixture-only; see the
+  [fixture reference](crates/tiler-live-fixture/README.md) and the
+  [KDE fixture-first rules](docs/live-kwin-testing.md#fixture-first-live-tests).
 
 ## Live Windows Testing
 
@@ -24,6 +27,9 @@
   windows, desktop overlays, forced-crash recovery probes, or registry/policy
   writes), read and follow [docs/live-windows-testing.md](docs/live-windows-testing.md).
   It does not grant mutation authorization.
+- Agent live legs use the live fixture scoped fixture-only; see the
+  [fixture reference](crates/tiler-live-fixture/README.md) and the
+  [Windows fixture-first rules](docs/live-windows-testing.md#fixture-first-live-tests).
 
 ## Live macOS Testing
 
@@ -33,6 +39,10 @@
   forced-crash recovery probes), read and follow
   [docs/live-macos-testing.md](docs/live-macos-testing.md).
   It does not grant mutation authorization.
+- Agent live legs use the live fixture; macOS fixture scoping has a bundle
+  gap, so see the [fixture reference](crates/tiler-live-fixture/README.md)
+  and the [macOS fixture-first rules](docs/live-macos-testing.md#fixture-first-live-tests)
+  before assuming any scope covers fixture windows.
 
 ## Local-System Information
 

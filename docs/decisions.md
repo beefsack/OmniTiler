@@ -44,9 +44,11 @@ Historical implementation detail is recoverable in Git history.
   [Preview guide and evidence](changes/macos-dogfood-preview.md).
 - User 2026-10-14: Windows `just dev` user-accepted (including tray Stop and
   whole-desktop use); further issues become new backlog items.
-- User 2026-10-14: agent-owned identity-tagged `tiler-test-window.exe` is the
+- User 2026-10-14: agent-owned identity-tagged `tiler-test-window.exe` was the
   standard disposable helper for Windows agent live tests; each live test
-  still needs a user desktop hand-over.
+  still needs a user desktop hand-over. Superseded 2026-10-20 except for
+  explicitly bound legacy-helper proofs: new agent legs on all platforms use the live
+  fixture scoped fixture-only (decision below).
 - User 2026-10-14 approved as delivered: `just/` platform-file layout, macOS
   `dev` stub, retained per-run Windows payload dirs with current pointer, and
   KDE-wins mixed desktop lists.
@@ -789,15 +791,29 @@ platform API behavior.
   shared caller IDs and ordered batches, many windows in one process by
   default; fullscreen means display-mode/state behavior, not game-renderer
   parity; preserve existing helpers; private local JSON-lines transport and
-  subscriptions. Initial `tiler-live-fixture` uses Unix sockets on Linux/macOS;
-  Windows transport explicitly reports unsupported pending its native adapter.
-  [Usage and platform limitations](../crates/tiler-live-fixture/README.md).
+  subscriptions. Initial `tiler-live-fixture` uses Unix sockets on Linux/macOS
+  and an owner-restricted named pipe on Windows (native run 39393279249
+  passed fixture build/tests/clippy; macOS fixture tests carry 2 open
+  failures open for native macOS investigation).
+  [Usage and platform limitations](../crates/tiler-live-fixture/README.md#platform-status).
 - User direction 2026-10-20 (fixture expansion): take useful low-complexity
   winit controls beyond geometry, including level, focus/attention and bounded
   observation ergonomics. Preserve identity, report unsupported/no-readback
   honestly and add no unsafe code. Change history, elevated Windows instances
   and exclusive-mode selection remain deferred.
   [Delivered scope and evidence](changes/archive/live-fixture-api-expansion.md).
+- User decision 2026-10-20 (fixture standard, all platforms): new agent live
+  legs use `tiler-live-fixture` scoped fixture-only (KDE `--scope-class
+  OmniTilerTestWindow`, Windows `--scope-exe tiler-live-fixture.exe`; macOS
+  integrated fixture runs are blocked by the recorded bundle-scope gap); foreign
+  apps only for application-specific investigations after first trying the
+  fixture. This supersedes the 2026-10-14 Windows helper default above except
+  for proofs explicitly bound to the legacy helpers (`run --hide`,
+  bound macOS probe-target legs) until ported.
+  [Fixture reference](../crates/tiler-live-fixture/README.md) and
+  [KDE](live-kwin-testing.md#fixture-first-live-tests),
+  [Windows](live-windows-testing.md#fixture-first-live-tests),
+  [macOS](live-macos-testing.md#fixture-first-live-tests) guides.
 - User decision 2026-10-03 (dev environments): single root `mise.toml` for
   Windows and macOS toolchains, run from the project root; OS-specific entries
   stay in that root file. devenv/Nix stays the source on Linux/NixOS, including
