@@ -93,6 +93,57 @@ Send-Fixture '{"v":1,"request_id":"bye","op":"shutdown"}'
 # --dir, remove only that run dir afterwards.
 ```
 
+### Windows live evidence (2026-10-20)
+
+Standalone and fixture-only integrated checks passed on native Windows 11
+across two outputs with different scale factors. Fresh native HWND/PID joins,
+PMv2 rectangles, DWM frames, visibility and zoom/minimize state corroborated
+fixture replies. Runtime changes retained the same HWNDs.
+
+| Operation / field | Observed result |
+| --- | --- |
+| `spawn`, `get`, `list`, ordered `batch` | Passed with multiple windows on both outputs |
+| `subscribe`, `unsubscribe` | One connection received exactly one created and one closed event, then completed its final list |
+| Decorations off/on, resizable/fixed, size | Runtime changes passed on both outputs without recreation |
+| Min/max size | Accepted on both outputs; native `WM_GETMINMAXINFO` confirmed track limits on one output. Programmatic sizes outside the hints were still honored; these are not resize clamps |
+| Maximize/windowed, minimize/restore | Passed on both outputs, independently confirmed by native state and frames |
+| Borderless fullscreen/windowed | Native frame covered each monitor and restored; fullscreen `observed.mode` remains unknown (`null`) under the current non-Wayland readback policy |
+| Hide/show, focus | Fixture observations agreed with native visibility and foreground HWND |
+| Level, cursor, buttons, increments, theme, transparency, attention | Accepted hints/actions; no visual, input-passthrough or user-resize enforcement claim |
+| X11-only type/override-redirect, `blur:true` | Unsupported, not Windows fixture defects |
+| Compact output / observation deadlines | Resize matched; intentional mismatch timed out with nonzero exit |
+| `close`, `shutdown`, exact-process forced exit | Windows and server cleaned; graceful shutdown exited 0 and forced exit removed the named pipe endpoint |
+
+Geometry rules for Windows checks:
+
+- Compare physical coordinates from a PMv2-aware observer. DPI-unaware monitor
+  metrics can be virtualized while another rectangle is physical; this can
+  falsely suggest oversized fullscreen windows. Distinguish client size, outer
+  bounds and DWM visible frames (including invisible resize borders).
+- A cross-DPI move can preserve logical size and change physical client size.
+  Place the window on the target output, then set `size_px` and wait for the
+  observed physical size when exact staging matters.
+- Runtime decoration toggles changed client/DWM frame geometry reversibly
+  without changing `GWL_STYLE` bits. Style bits alone do not prove decorations.
+- Native enumeration includes auxiliary winit/IME windows in the fixture
+  process. Join caller IDs and the run-tagged sentinel titles to HWNDs rather
+  than treating every window of the PID as a fixture test window.
+
+Integrated checks used `--scope-exe tiler-live-fixture.exe`. Four fixture
+windows tiled across both outputs; exact-owner directional focus and move
+worked on each output, cross-output send/follow returned the subject, and
+workspace send/select roundtrips hid and revealed members on each output.
+Serial CLI dispatches were joined to production outcomes and independent
+frames/visibility/foreground, not treated as completion on queue acceptance.
+The managed-token roster joined to fixture HWNDs; protected window geometry
+stayed unchanged. Stop/restore released the hook, preserved settings and left
+no owner, fixture process, recovery ledger or pending control requests.
+
+Native fixture tests (119), strict all-target clippy and workspace fmt passed.
+No fixture code defect was found. Exclusive fullscreen/display-mode changes
+and physical input acceptance were not exercised. See the
+[first-use record](../../docs/changes/archive/windows-live-fixture-first-use.md).
+
 ### macOS bundle launch and scope
 
 Standalone Cargo/direct-executable launch works, but has no LaunchServices
@@ -573,12 +624,12 @@ it as fixture cloak coverage or as game-behavior evidence.
 
 - Linux (KDE): fixture-driven live evidence as listed above; live use stays
   under the [KDE guide](../../docs/live-kwin-testing.md).
-- Windows: native run 39393279249 passed the fixture build, tests and clippy.
-  Live use is verify-on-first-use; scope the tiler with
-  `--scope-exe tiler-live-fixture.exe` per the
+- Windows: native standalone and fixture-only integrated live checks passed
+  on both outputs, with 119 fixture tests, strict clippy and fmt. See the
+  Windows evidence above; keep `--scope-exe tiler-live-fixture.exe` per the
   [Windows guide](../../docs/live-windows-testing.md#fixture-first-live-tests).
-  The Windows job in that run later failed on the preexisting `tiler-macos`
-  target; that failure predates this crate's changes and needs no action here.
+  CI run 39419800653 passed fixture build/tests/clippy; its Windows and Linux
+  Rust jobs still failed on preexisting `tiler-macos` compilation errors.
 - macOS: native standalone socket/window smoke passed, with 121 offline
   tests and strict clippy/fmt. The signed regular-policy fixture bundle now
   supplies bundle identity and launch date; read-only scope inspection
@@ -601,8 +652,10 @@ it as fixture cloak coverage or as game-behavior evidence.
   compositor configure; on X11 the winit fullscreen getter is a setter
   cache (written on the request path, never from window-manager events),
   so a set fullscreen there stays null (unknown) in `observed` while
-  `configured` keeps the sent value. Maximized comes from its getter;
-  minimized/visible are optional readbacks with unknown staying null
+  `configured` keeps the sent value. Windows fullscreen also remains unknown
+  under the non-Wayland readback policy, even when native monitor-sized frames
+  confirm its effect. Maximized comes from its getter; minimized/visible are
+  optional readbacks with unknown staying null
   (Wayland minimize state is always unknown). Decorations, resizable and
   min/max hints have no cross-backend readback (cache only).
 - Hints are physical pixels throughout (correct on high DPI); a `set`

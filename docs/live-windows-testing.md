@@ -233,10 +233,19 @@ do not broaden cleanup or repeatedly restart the experiment.
   and the documented private cloak proof named above);
   it is not the default for new agent legs. Do not cite private proofs
   as fixture coverage.
-- The fixture transport compiles on both native targets in CI. Windows passed
-  the fixture build, tests and clippy in native run 39393279249; macOS carries
-  2 open test failures (see the fixture README platform status). Live window
-  behavior on either host is verify-on-first-use with no accepted evidence yet.
+- Native Windows standalone and fixture-only integrated smoke passed on both
+  outputs (2026-10-20): dynamic controls, directional focus/move, cross-output
+  send/follow and workspace roundtrips, with independent native readbacks and
+  clean teardown. The [fixture README](../crates/tiler-live-fixture/README.md#windows-live-evidence-2026-10-20)
+  records coverage and limits. macOS standalone and integrated coverage are
+  recorded there separately; Windows evidence does not establish macOS behavior.
+- Use PMv2 physical rectangles throughout and distinguish client, outer and
+  DWM frames. Cross-DPI placement can change physical client size; set exact
+  size after placement and wait on observed geometry. Fullscreen mode remains
+  unknown in fixture observations on Windows: confirm monitor-sized native
+  frames rather than waiting on a cached mode. Min/max are track hints, not
+  programmatic resize clamps; decoration changes need frame/client readback,
+  not style bits alone. Ignore auxiliary winit/IME windows when joining IDs.
 - Short first-use checklist: isolate (private run dir, fixture-only scope,
   user hand-over per leg); prove identity (announced pipe name plus PID,
   fixture caller ids, no Terminal/operator windows in scope); read back
