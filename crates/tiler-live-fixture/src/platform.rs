@@ -16,6 +16,7 @@
 //! windows for negative-path tests. Runtime changes are reported as
 //! unsupported everywhere.
 
+#[cfg(target_os = "linux")]
 use crate::protocol::X11WindowType;
 
 /// Extension action names accepted by [`action_supported`].

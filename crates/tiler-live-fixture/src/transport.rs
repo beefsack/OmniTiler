@@ -176,6 +176,20 @@ pub fn default_socket_dir() -> PathBuf {
     dir
 }
 
+/// Short temp base for fixture tests. macOS `$TMPDIR` (`/var/folders/...`,
+/// 60+ chars) plus per-run socket names exceeds the 104-byte `SUN_LEN`
+/// Unix socket limit, so socket tests would fail to bind there. `/tmp` is
+/// short on every Unix CI host; other platforms keep the real temp dir
+/// (Windows pipe names allow 240 chars).
+#[cfg(test)]
+pub fn test_temp_base() -> PathBuf {
+    #[cfg(target_os = "macos")]
+    let base = PathBuf::from("/tmp");
+    #[cfg(not(target_os = "macos"))]
+    let base = std::env::temp_dir();
+    base
+}
+
 /// Create the socket directory private from the start, or accept an existing
 /// directory only when it is already an owned private real directory.
 /// Existing directories are never chmodded: a shared (e.g. group/other
@@ -986,7 +1000,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn bind_refuses_preexisting_path() {
-        let dir = std::env::temp_dir().join(format!(
+        let dir = test_temp_base().join(format!(
             "tiler-live-fixture-test-{}-{}",
             std::process::id(),
             generate_run_tag()
@@ -1003,7 +1017,7 @@ mod tests {
     #[test]
     fn socket_dir_is_private() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!(
+        let dir = test_temp_base().join(format!(
             "tiler-live-fixture-test-{}-{}",
             std::process::id(),
             generate_run_tag()
@@ -1018,7 +1032,7 @@ mod tests {
     #[test]
     fn existing_shared_dir_is_refused_without_mutation() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!(
+        let dir = test_temp_base().join(format!(
             "tiler-live-fixture-test-shared-{}-{}",
             std::process::id(),
             generate_run_tag()
@@ -1038,7 +1052,7 @@ mod tests {
     #[test]
     fn existing_private_dir_is_permitted() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!(
+        let dir = test_temp_base().join(format!(
             "tiler-live-fixture-test-private-{}-{}",
             std::process::id(),
             generate_run_tag()
@@ -1052,13 +1066,13 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn symlink_dir_is_refused() {
-        let target = std::env::temp_dir().join(format!(
+        let target = test_temp_base().join(format!(
             "tiler-live-fixture-test-target-{}-{}",
             std::process::id(),
             generate_run_tag()
         ));
         prepare_socket_dir(&target).unwrap();
-        let link = std::env::temp_dir().join(format!(
+        let link = test_temp_base().join(format!(
             "tiler-live-fixture-test-link-{}-{}",
             std::process::id(),
             generate_run_tag()
@@ -1073,7 +1087,7 @@ mod tests {
     #[test]
     fn existing_socket_is_retained_and_new_socket_is_private() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!(
+        let dir = test_temp_base().join(format!(
             "tiler-live-fixture-test-sock-{}-{}",
             std::process::id(),
             generate_run_tag()
@@ -1096,7 +1110,7 @@ mod tests {
     fn missing_parents_are_refused_not_created() {
         // Non-recursive creation: parents must already exist, so a typo'd
         // --dir can never scaffold a world-readable prefix.
-        let dir = std::env::temp_dir().join(format!(
+        let dir = test_temp_base().join(format!(
             "tiler-live-fixture-test-noparent-{}-{}",
             std::process::id(),
             generate_run_tag()
@@ -1114,7 +1128,7 @@ mod tests {
     fn windows_pipe_round_trip_and_exclusive_bind() {
         use std::io::BufReader;
 
-        let dir = std::env::temp_dir().join(format!(
+        let dir = test_temp_base().join(format!(
             "tiler-live-fixture-win-{}-{}",
             std::process::id(),
             generate_run_tag()
@@ -1127,12 +1141,11 @@ mod tests {
                 .starts_with("\\\\.\\pipe\\tiler-live-fixture-")
         );
         // A second bind for the same endpoint must fail, never hijack.
-        let second = bind_private_socket(&dir, "fixture.sock");
-        assert!(second.is_err());
-        assert_eq!(
-            second.unwrap_err().kind(),
-            std::io::ErrorKind::AlreadyExists
-        );
+        // (`unwrap_err` needs `Debug` on the listener, so match instead.)
+        match bind_private_socket(&dir, "fixture.sock") {
+            Ok(_) => panic!("second bind must fail"),
+            Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::AlreadyExists),
+        }
 
         let server = std::thread::spawn(move || {
             let conn = listener.accept().expect("accept");
@@ -1177,7 +1190,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn windows_prepare_refuses_files() {
-        let dir = std::env::temp_dir().join(format!(
+        let dir = test_temp_base().join(format!(
             "tiler-live-fixture-winfile-{}-{}",
             std::process::id(),
             generate_run_tag()

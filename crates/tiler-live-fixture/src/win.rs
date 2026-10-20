@@ -25,9 +25,11 @@ use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
 use winit::raw_window_handle::HasWindowHandle;
 use winit::window::{Fullscreen, Window, WindowId};
 
+#[cfg(target_os = "linux")]
+use crate::protocol::APP_ID;
 use crate::protocol::{
-    APP_ID, Attention, FieldOutcome, Fields, Observed, Theme, WindowButton, WindowLevel,
-    WindowMode, X11WindowType,
+    Attention, FieldOutcome, Fields, Observed, Theme, WindowButton, WindowLevel, WindowMode,
+    X11WindowType,
 };
 use crate::state::{
     ApplyReport, Capabilities, CreatedWindow, Host, HostEvent, Server, capabilities_for_backend,

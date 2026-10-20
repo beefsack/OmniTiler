@@ -1438,7 +1438,7 @@ mod tests {
         std::path::PathBuf,
         crate::transport::Listener,
     ) {
-        let dir = std::env::temp_dir().join(format!(
+        let dir = crate::transport::test_temp_base().join(format!(
             "tiler-live-fixture-{tag}-{}-{}",
             std::process::id(),
             crate::transport::generate_run_tag()
