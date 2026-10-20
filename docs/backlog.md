@@ -95,23 +95,19 @@ decisions of 2026-09-24 are under
     Cases may also assert responsiveness, so they may be time-bound with
     deadlines (a stated reason for a limit under
     [Simplicity](principles.md#simplicity)).
-- P1 | Controllable live-test window helper (User 2026-10-20) | Pragmatic
-  dev-only helper, not product code: winit native windowing (no GTK/Qt
-  fixtures), common geometry/state controlled over a local CLI interface with
-  caller IDs and batches, plus one small KDE-specific feature as the example
-  pattern for other platforms' native extensions. Existing Windows/macOS
-  helpers stay. Delivered offline as `crates/tiler-live-fixture`; pending
-  user smoke on KDE Wayland and X11 (crate README), then Windows/macOS
-  transport and native extensions by their streams. Follow-ups (user
-  2026-10-20): z-order query/set (host-limited; no Wayland query),
-  attention/focus requests, Windows elevated fixture instance for UAC/
-  unmanageable-window cases (prompt needs physical approval); after live
-  runs: bounded settlement waits, safe exclusive-mode selection, then a
-  request-correlated change history. Delivered 2026-10-20: winit API sweep,
-  KDE dev `--scope-class` (fixture-only runs), live runs with OmniTiler
-  active ([record](changes/archive/kde-dev-scope-fixture-integration.md)).
-  Remaining follow-ups: fixture/native identity correlation, then bounded
-  history.
+- P1 | Live fixture first use on Windows and macOS (2026-10-20) |
+  `crates/tiler-live-fixture` is the standard agent live-test window
+  (KDE live-verified, KDE `--scope-class`, Windows named pipe CI-green).
+  Windows: first-use live verification per the
+  [fixture-first checklist](live-windows-testing.md#fixture-first-live-tests).
+  macOS: first-use verification, two `deadline_reader_*` oversized-frame
+  test failures (CI run 39393279249), and fixture bundle-scoping gap
+  ([checklist](live-macos-testing.md#fixture-first-live-tests)).
+  [Reference](../crates/tiler-live-fixture/README.md).
+- P2 | Live fixture follow-ups | Fixture/native identity correlation, Windows
+  elevated instance for UAC/unmanageable cases (physical approval), safe
+  exclusive-mode selection, z-order query where hosts allow, then a bounded
+  request-correlated change history. Add pragmatically as tests need them.
 - P1 | KDE client self-resize while tiled (F1, 2026-10-20) | A tiled
   client resizing itself leaves geometry inconsistent with its tile until an
   unrelated subscribed event reconciles; reproduced on Wayland and X11 with
