@@ -5156,6 +5156,10 @@ recorded separately from unexercised legs. Reference-WM checks test other compos
   commits of 2026-10-19: non-macOS `display_cgid_of_pinned` is missing for
   `workspace_send_live_tests.rs`, and `take_trailing_proof` in
   `workspace_select.rs` fails strict dead-code. KDE/core gates pass otherwise.
+  Since `0f76c595` CI `rust` and the Windows portable build also fail to
+  compile `tiler-macos` (`AX_ATTRIBUTE_UNSUPPORTED` missing from
+  `crate::ffi`; no `take_trailing_proof` on `SelectionState`), so `main` CI is
+  red independent of later changes.
 
 - Approved 0.1 known limitation D26(b) (User 2026-10-12): intentional-float
   memory does not survive logout/login under unchanged session-scoped
