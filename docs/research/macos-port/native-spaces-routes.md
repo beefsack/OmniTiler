@@ -17,15 +17,134 @@ from existing checkouts; public issue and OS-help links support upstream claims.
 Pins match the [availability snapshot][pins], including its newer Amethyst,
 rift, glide and paneru pins; historical plan citations are not advanced.
 
+## Trailing lifecycle findings (2026-10-20)
+
+- **FACT, yabai first:** `dd845723` [space.c:17-70][Y19] queries
+  `SLSCopyWindowsWithOptionsAndTags` with options `0x2` (`0x7` including
+  minimized), zero set/clear tags, then filters parent IDs, levels 0/3/8 and
+  attributes/tags. Managed-window eligibility additionally excludes sticky,
+  hidden, minimized, floating and nonstandard windows
+  ([window_manager.c:272-281][Y20]). This is not a complete destructive-emptiness
+  proof. Its [destroy/create handlers][Y21] check user/last-Space/animation
+  eligibility, not emptiness, and dispatch through the scripting addition.
+  They provide no safe tier-2 shortcut for creation or empty-only removal.
+- **FACT, ordered remainder at [snapshot pins][pins]:** rift `8114ccc`
+  [window_server.rs:426-514][R3] uses `0x7` membership, defines sticky as more
+  than one Space, and enumerates onscreen CG windows excluding desktop elements.
+  AeroSpace `74a1bf1`, Amethyst `5cfe2fe`/Silica `ebead82`, FlashSpace `9680153`,
+  paneru `8a21331` and glide `ef3b30f` provide no faster native create/remove
+  route in the inspected sources. Hammerspoon `23e387e` [MC AX lifecycle][H2]
+  remains the SIP-on create/remove precedent. Its
+  [window-list API][H4] warns that overlays/tooltips/offscreen windows need
+  downstream filtering. No surveyed reference has an AccessibilityUIServer
+  exemption matching our destructive proof; do not attribute ours upstream.
+- **EVIDENCE, deliberate divergence:** retain full CG inventory plus fresh
+  per-window `0x7` membership, including unmanaged/hidden user windows, rather
+  than transplanting yabai's management filter or unchecked destroy. Exact system
+  AccessibilityUIServer, offscreen layer 3, 0x0, had partial membership
+  `[434,1]` over user Spaces `[1,277,434]` and no AX windows. The existing
+  every-Space sticky check therefore produced a false unknown. The
+  [user-approved exact-owner subset exception](../../decisions.md#scope-and-platform-goals)
+  is narrower than ignoring a bundle, layer or all zero-area windows.
+- **EVIDENCE and limit:** positive trailing selection reuse confirms in 122 ms;
+  MC create plus immediate selection confirms in 900-944 ms. Inherited 434
+  removal and runtime-owned 445/455 shutdown removal succeed. ControlCenter
+  5559 initially blocked 467 removal. The subsequent exact-system offscreen
+  layer-25 120x30 exception additionally requires fresh readable empty owner AX
+  inventory; its one verified removal restores `[1,277]`/current 1. Other shapes,
+  normal-layer windows and unknown AX/owner evidence still block. Two fresh
+  create/automatic-remove cycles and user-run opened/pinned ControlCenter contrast
+  remain unverified.
+- **FACT, chrome versus content:** Amethyst `5cfe2fe`
+  [ignores ControlCenter wholesale][A4]; that management filter is too broad for
+  destructive emptiness. AeroSpace `74a1bf1` captures an accessory ControlCenter
+  [AX system-dialog popup][AS2]. It is user-visible content, not grounds to
+  ignore the owner: our stronger empty-owner-AX-inventory check excludes it.
+  The captured CG layer-2005 352x149 panel remains a candidate independently.
+  No surveyed reference establishes a generic safe ControlCenter removal rule.
+- **FACT, missing send step:** yabai's [native-send tail][Y22] moves, then calls
+  `SLSSpaceSetFrontPSN` for the subject application before later selection;
+  [the event handler][Y13] pins front then gestures. The [ABI][Y23] takes a
+  by-value `ProcessSerialNumber` and returns `CGError`. Our earlier bridged
+  follow copied move plus swipe but omitted this destination-front pin.
+  In the captured sole-visible-subject fixture, exact membership/current arrives
+  in 65 ms from native dispatch while Finder remains frontmost: focus fails and
+  the outcome is honestly `PossiblyExecuted`.
+- **Implementation, not live acceptance:** front pin now precedes the one swipe
+  with fresh session/owner/anchor checks, complete capability gating before
+  bridged-route choice and exact final subject-focus proof. No uncertain
+  post-arrival AX raise, replay or second selector. Remainder survey offers no
+  competing native-send focus contract: rift/paneru/glide have focus primitives
+  but no equivalent native send; AeroSpace parks; Amethyst/Silica drag; FlashSpace
+  activates apps; Hammerspoon's compatibility move has no post-move focus proof.
+  Reused/new-target hardware follow acceptance and timing remain TBD.
+- **Fixture rule:** `mc-members.layout.space_ids` is sorted, not native order.
+  Application activation can change Space order during return. Retain full
+  ordered `spaces-diagnose` rows and prove the actual last SID is the empty
+  target before claiming reuse; do not infer a stale row or lost binding from
+  a second append after such a reorder. [Live outcome](../../changes/macos-managed-workspaces.md#trailing-lifecycle-investigation-2026-10-20).
+
+## Send latency findings (2026-10-20)
+
+- **FACT, corrected discovery:** [Y18] uses [Y16] to resolve the internal mangled bridged
+  dispatcher through loaded Mach-O symbols, not `dlsym`. The previous unmangled
+  `dlsym` miss was a false-negative lookup, not proof of absence. The corrected
+  read-only lookup finds dispatcher, operation class and init selector; one
+  owned-helper bridged move changed exact membership to the inactive target,
+  kept current unchanged and passed independent public self-restore after the
+  mover exited. Its 3.157 s settle was a full observation window, not move time.
+- **FACT, reference default:** [Y1] allocates/initializes
+  `SLSBridgedMoveWindowsToManagedSpaceOperation`, dispatches asynchronously and
+  releases it. On macOS 15+, [Y2] bypasses the old direct API if this dispatcher
+  is absent, then tries SA before the compat triple. The earlier old-direct
+  no-effect result tested neither bridged nor compat. Compat still has no exact
+  tag-preimage getter in the surveyed sources: reset-to-zero is not restoration.
+  No compat write, SA attempt, injection or reduced SIP is added.
+- **FACT, retiling:** [Y4] moves then tiles the destination in the send handler;
+  [Y17] refreshes application windows, validates the visible user Space and
+  updates/flushes invalid/dirty views on `SPACE_CHANGED` and `DISPLAY_CHANGED`.
+  Our adapter follows the event-driven shape with complete owner-thread AX
+  rereads on topology changes and verified arrival, not blind frame writes.
+  Unlike direct upstream retiling, existing current-Space/revision fences remain:
+  a fast stay return can precede destination geometry; revisit triggers tiling.
+
+| Ordered reference survey at [snapshot pins][pins] | Relied-on finding; reason for divergence |
+| --- | --- |
+| yabai `dd845723`, [Y1], [Y2], [Y4], [Y16], [Y17] | Bridged-first move, synchronous layout update and event-driven visible-view validation. Copy move ABI/discovery and event-driven reread; retain our exact effect proof, current-only setters and no-replay policy. |
+| rift `8114ccc`, [R1], [R2] | Native membership queries and versioned switch gestures, no native move binding found. No evidence for a faster native transfer. |
+| AeroSpace `74a1bf1`, [MacWindow.swift:123-183][AS1] | Corner parking/unparking, not native Space sends. Not selected because workspace semantics differ. |
+| Amethyst `5cfe2fe` / Silica `ebead82`, [A1]-[A3] | Drag fallback's 50 ms grab and 400 ms hold; Amethyst adds a 1 s switch-back delay. Retain unmeasured fallback holds as reference values, not OS minima; use verified Dock-swipe return, not the fixed switch-back sleep. |
+| FlashSpace `9680153`, [WorkspaceManager.swift:180-230][FS1] | App hide/show/activate changes app-level workspace assignment, not per-window native membership. Not selected. |
+| Hammerspoon `23e387e`, [H1], [H2] | Same compat triple without effect/preimage proof; MC selection defaults to a 300 ms wait. Neither beats the proven bridged move under our restore contract. |
+| paneru `8a21331`, [skylight.rs:144-256][P1], [windows.rs:906-960][P2] | SkyLight reads/SLPS focus plus virtual strips; no native move found. Not a replacement for native sends. |
+| glide `ef3b30f`, [window_server.rs:215-284][G1] | SLPS focus and native-Space integration, no native move found. No faster transfer contract established. |
+
+- **EVIDENCE, synthetic scoped TextEdit:** bridged-first sends now dispatch and
+  immediately select via Dock-swipe, without a serial 200 ms membership poll.
+  Final exact membership/current/focus gates success; late completion only gets
+  bounded readback, never a second move/select or drag fallback. Baseline
+  admission-to-native-arrival 547-575 ms becomes 88-98 ms. Comparable empty-target
+  first exact subject geometry becomes 270 ms from 1,000 ms; inverse is 218 ms.
+  These are a few controlled samples, not a distribution or visual/input-ready
+  measurement. Floor-release, multi-display and live post-create fast sends are
+  unproven. [Checkpoint and limits](../../changes/macos-managed-workspaces.md#send-latency-work-2026-10-20).
+- **Remaining waits:** absent bridged capability selects the original drag
+  before any effect. Its 50/400 ms constants cite [A1]; lowering them is unproven.
+  Post-select/readback deadlines bound asynchronous completion, not stabilization
+  sleeps. The 1 s observer backstop remains only for lost/unsupported events.
+
 ## Dogfood latency investigation (2026-10-19)
 
 - **Subsequent route choice:** the user selected the yabai-informed Dock-swipe
-  selector for dogfood, tentatively replacing MC AX selection only. Transfer,
+  selector for dogfood, then approved it as the default on 2026-10-20 with MC AX
+  automatic fallback and user-selectable routes still to implement (backlog
+  item 3b/3c). At the original selector checkpoint, transfer,
   MC trailing create/remove, send waits and observation/reconcile timing remain
   unchanged. The [implementation checkpoint](../../changes/macos-managed-workspaces.md#dock-swipe-selector-dogfood-checkpoint-2026-10-20)
   has corrected pre-post order drift and terminal ownership/cleanup. The selector
-  is available for UX dogfood; positive trailing reuse remains unproven because
-  conservative unknown occupancy refused it and retained a test-created Space.
+  was available for UX dogfood; conservative unknown occupancy then refused
+  positive reuse and retained a test-created Space. The later lifecycle findings
+  above supersede that reuse/cleanup blocker, not the owed follow-focus checks.
   The comparison recommendations below describe
   the preceding investigation, not an outstanding route-choice requirement.
 - **Pinned mechanics rechecked:** [Y7] computes absolute target/current native
@@ -482,11 +601,28 @@ independent exact restoration, separately for the floor and newer families.
 [Y13]: https://github.com/asmvik/yabai/blob/dd845723416f5fe92af49fad5ebab00369e07edd/src/event_loop.c#L359-L375
 [Y14]: https://github.com/asmvik/yabai/blob/dd845723416f5fe92af49fad5ebab00369e07edd/src/misc/extern.h
 [Y15]: https://github.com/asmvik/yabai/blob/dd845723416f5fe92af49fad5ebab00369e07edd/src/sa.m#L604-L621
+[Y16]: https://github.com/asmvik/yabai/blob/dd845723416f5fe92af49fad5ebab00369e07edd/src/misc/macho_dlsym.h#L55-L80
+[Y17]: https://github.com/asmvik/yabai/blob/dd845723416f5fe92af49fad5ebab00369e07edd/src/event_loop.c#L994-L1080
+[Y18]: https://github.com/asmvik/yabai/blob/dd845723416f5fe92af49fad5ebab00369e07edd/src/yabai.c#L148-L149
+[Y19]: https://github.com/asmvik/yabai/blob/dd845723416f5fe92af49fad5ebab00369e07edd/src/space.c#L17-L70
+[Y20]: https://github.com/asmvik/yabai/blob/dd845723416f5fe92af49fad5ebab00369e07edd/src/window_manager.c#L272-L281
+[Y21]: https://github.com/asmvik/yabai/blob/dd845723416f5fe92af49fad5ebab00369e07edd/src/space_manager.c#L1037-L1072
+[Y22]: https://github.com/asmvik/yabai/blob/dd845723416f5fe92af49fad5ebab00369e07edd/src/window_manager.c#L2093-L2123
+[Y23]: https://github.com/asmvik/yabai/blob/dd845723416f5fe92af49fad5ebab00369e07edd/src/misc/extern.h#L55
+[AS1]: https://github.com/nikitabobko/AeroSpace/blob/74a1bf17e82d70e0a21945ba04bb4f590bf19f83/Sources/AppBundle/tree/MacWindow.swift#L123-L183
+[AS2]: https://github.com/nikitabobko/AeroSpace/blob/74a1bf17e82d70e0a21945ba04bb4f590bf19f83/axDumps/scenario_firefox_google_meet_share_window/05_apple_controlcenter.json5
+[FS1]: https://github.com/wojciech-kulik/FlashSpace/blob/968015308d8d284a98831f90f365538a63456ee9/FlashSpace/Features/Workspaces/WorkspaceManager.swift#L180-L230
+[P1]: https://github.com/karinushka/paneru/blob/8a213313538a352537b26e25131cfe75f1e00724/src/manager/skylight.rs#L144-L256
+[P2]: https://github.com/karinushka/paneru/blob/8a213313538a352537b26e25131cfe75f1e00724/src/manager/windows.rs#L906-L960
+[G1]: https://github.com/tmandry/glide/blob/ef3b30f88445fe4b517eb4c60023011f6d3725dd/src/sys/window_server.rs#L215-L284
 [H1]: https://github.com/Hammerspoon/hammerspoon/blob/23e387e2805a9890066366e0ac96c71b27f0cfd5/extensions/spaces/libspaces.m#L116-L199
 [H2]: https://github.com/Hammerspoon/hammerspoon/blob/23e387e2805a9890066366e0ac96c71b27f0cfd5/extensions/spaces/spaces.lua#L689-L882
 [H3]: https://github.com/Hammerspoon/hammerspoon/blob/23e387e2805a9890066366e0ac96c71b27f0cfd5/extensions/spaces/libspaces.m#L16-L21
+[H4]: https://github.com/Hammerspoon/hammerspoon/blob/23e387e2805a9890066366e0ac96c71b27f0cfd5/extensions/spaces/libspaces.m#L100-L130
 [A1]: https://github.com/ianyh/Silica/blob/ebead82a28486e7719b7ed69633ecfed8a4fe2d2/Silica/Sources/SIWindow.m#L210-L262
 [A2]: https://github.com/ianyh/Silica/blob/ebead82a28486e7719b7ed69633ecfed8a4fe2d2/Silica/Sources/SISystemWideElement.m#L29-L65
 [A3]: https://github.com/ianyh/Amethyst/blob/5cfe2fe12b1a933139010da5760aaa7e44033e9b/Amethyst/Managers/WindowManager.swift#L949-L974
+[A4]: https://github.com/ianyh/Amethyst/blob/5cfe2fe12b1a933139010da5760aaa7e44033e9b/Amethyst/Categories/NSRunningApplication%2BManageable.swift#L18-L36
 [R1]: https://github.com/acsandmann/rift/blob/8114ccc534b5c9a7e6a77ce27568d8739be9216f/src/sys/space_switch.rs#L170-L223
 [R2]: https://github.com/acsandmann/rift/blob/8114ccc534b5c9a7e6a77ce27568d8739be9216f/src/sys/window_server.rs#L426-L476
+[R3]: https://github.com/acsandmann/rift/blob/8114ccc534b5c9a7e6a77ce27568d8739be9216f/src/sys/window_server.rs#L426-L514

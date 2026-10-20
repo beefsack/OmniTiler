@@ -190,8 +190,9 @@ platform API behavior.
     actions out of the preview until ordinary-window transfer and its exact
     inverse are verified. MC AX lifecycle/selection and same-display gesture
     selection have owned-fixture evidence; the direct move had no effect, the
-    bridged dispatcher was absent, and compat metadata restoration remains
-    unresolved. These results establish neither a SIP cause nor universal native
+    old bridged lookup missed the dispatcher (corrected below), and compat
+    metadata restoration remains unresolved. These results establish neither a
+    SIP cause nor universal native
     impossibility. Public AppKit self-join is an owned-helper recovery fixture,
     not foreign-window authority. Removal checks user-window emptiness with
     narrowly evidenced compositor/chrome exclusions; unknown ownership blocks.
@@ -319,29 +320,37 @@ platform API behavior.
     faster path when one arrives. This supersedes the "pending physical
     discriminator" clause of the preview input route above.
     [Physical results](changes/archive/macos-dogfood-hardening.md#user-physical-results-2026-10-16).
-   - **User-approved 2026-10-19 (tentative selector swap, pending dogfood):**
-     replace managed Space selection's Mission Control AX route with the
-     yabai-informed SIP-on high-velocity Dock-swipe gesture, including numbered,
-     relative, previous, trailing selection and the released numbered send-stay
-     return. Supersedes the MC AX selector choice in the select-only seam and
-     preview fallback below, not their ordinal/history or exactly-one-observed-
-     display restrictions. No selectable route setting. Keep trailing creation
-     and removal on their existing MC routes and window transfer on synthetic
-     title-bar drag plus the existing switch chord; send holds and reconciliation
-     timing are unchanged. Native effect confirmation does not prove visual
-     smoothness or input readiness; the user judges those in dogfooding.
-     - **Tentative technical detail, 2026-10-20:** after MC trailing creation,
-       subscribe before opening MC and await Dock's exact `AXExposeExit`
-       notification before posting the selector, following pinned yabai
-       `mission_control.c`. AX MC-group disappearance alone did not suffice in
-       disposable checks. The 2 s event-pumped deadline bounds a wedged Dock;
-       no fixed stabilization sleep or automatic selector replay is added.
-       Missing exit refuses selection while preserving exact append ownership.
-       Normal existing-Space selection does not arm or wait on this observer.
-       Disposable post-create acceptance passed at 945 ms including MC creation
-       (28 ms from gesture posting to exact current-SID confirmation). Positive
-       trailing reuse remains unproven under conservative unknown occupancy.
+   - **User-approved 2026-10-20 (selector; amends 2026-10-19):** default to
+     yabai-style SIP-on Dock-swipe for numbered, relative, previous and trailing
+     selection and numbered send-stay return. Preserve ordinal/history and
+     exactly-one-observed-display restrictions; MC create/remove stays unchanged.
+     Restore MC AX selection as the automatic fallback when Dock-swipe is
+     unavailable (including the refused macOS >= 27 payload), and offer both as
+     user-selectable routes, per [Host Integration](principles.md#host-integration).
+     Fallback and settings are not implemented (backlog item 3b/3c).
      [Implementation status](changes/macos-managed-workspaces.md#dock-swipe-selector-dogfood-checkpoint-2026-10-20).
+     - **User-approved 2026-10-20 (post-create gate):** subscribe before opening
+       MC and await Dock's exact `AXExposeExit` before selection, following pinned
+       yabai. Group disappearance alone was insufficient. Retain the 2 s
+       event-pumped deadline, exact append ownership on refusal, and no fixed
+       stabilization sleep or replay. Existing-Space selects do not arm this gate.
+   - **User-approved 2026-10-20 (sends):** default to pinned yabai's SIP-on
+     bridged native move on complete capability proof; otherwise choose the
+     existing synthetic title-bar drag before effects. Make sends user-selectable
+     (backlog item 3c, not implemented), per
+     [Host Integration](principles.md#host-integration). Preserve full managed
+     identity/focus/hit/revision proof, consumed authority, one move then exact-SID
+     selection, final membership/current/subject-focus proof, and no fallback or
+     replay after dispatch. Stay returns to the pinned source resident; current-only
+     frame fences remain. Compat writes, SA and reduced SIP remain excluded.
+   - **User-approved 2026-10-20 (arrival convergence):** event-driven, coalesced
+     complete owner-thread rereads on Space change/verified arrival replace
+     waiting on the 1 s backstop. Display events may run the existing loop early,
+     without faster idle polling. Synthetic follow arrival is 88-98 ms; comparable
+     first exact subject tile is 270 ms versus 1,000 ms baseline. Fast stay may
+     return before destination tiling, which occurs on revisit. Physical/visual,
+     floor-release and multi-display acceptance remain pending.
+     [Evidence and limits](changes/macos-managed-workspaces.md#send-latency-work-2026-10-20).
    - **User-approved 2026-10-16 (native workspace route):** a user-run manual
     check moved an ordinary window to another Space by all three native routes
     (title-bar drag plus Ctrl+Right, drag plus enabled Ctrl+2, drag onto the
@@ -416,7 +425,8 @@ platform API behavior.
      [Outcome and physical check](changes/macos-managed-workspaces.md#select-only-fallback-handover-2026-10-17).
    - **User-approved 2026-10-19 — managed native workspaces** (to be checked in
      dogfooding; supersedes the select-only fallback's "all sends disabled"):
-     - Sends use a synthetic title-bar drag of the engine-named managed window
+     - The original send route (fallback under the approved latency choice
+       above) uses a synthetic title-bar drag of the engine-named managed window
        plus a tagged Desktop-N (or Control+Fn arrow) Mission Control chord.
        The grab point must be plain window chrome proven by same-element AX
        role/owner evidence; title bars with no plain chrome refuse.
@@ -434,9 +444,40 @@ platform API behavior.
        sends-follow, and the indicator shows a trailing slot; there is no
        trailing send-stay. Creation settles through existing logical/native
        bindings (no shared-core change). Only runtime-created, proven-empty
-       Spaces are removed; unknown occupancy refuses removal, with no exemption
-       for foreign system chrome. Sends beyond Desktop 9 refuse before creation.
+       Spaces are removed; unknown occupancy refuses removal. The original
+       no-foreign-system-chrome rule is amended only by the two exact-shape
+       exceptions below. Sends beyond Desktop 9 refuse before creation.
        Stale indicator clicks refuse instead of creating.
+       - **User-approved 2026-10-20 - AccessibilityUIServer chrome:** exempt
+         only the exact system executable/bundle, offscreen layer 3, exactly
+         0x0, with fresh readable membership containing the target wholly
+         within the fresh user-Space set. Its observed partial attachment is
+         not user content; the evidenced owner vends no AX windows. Full fresh
+         inventory and runtime-created-Space-only removal remain required,
+         unlike yabai's managed-window filter and unchecked destroy.
+         [Evidence](changes/macos-managed-workspaces.md#trailing-lifecycle-investigation-2026-10-20).
+       - **User-approved 2026-10-20 - ControlCenter status chrome:** exempt
+         only the exact system executable/bundle, offscreen layer 25, exactly
+         120x30, with fresh readable target membership wholly in the user-Space
+         set and a fresh readable empty owner AX-window inventory. This excludes
+         AeroSpace's pinned AX system-dialog popup; layer-2005 352x149 panels
+         and onscreen/94x30 variants remain blocking. One exact-SID removal
+         passes; user-run opened/pinned contrast and two fresh automatic
+         create/remove cycles remain pending.
+         [Evidence](changes/macos-managed-workspaces.md#controlcenter-cleanup-and-follow-focus-repair-2026-10-20).
+       - These exact evidenced shapes follow
+         [Host Integration](principles.md#host-integration), not a general
+         foreign-chrome exemption. Unknown owners, normal-layer windows, panels
+         and unknown proof still block; Ghostty is never exempt. Stop rather
+         than infer safety if opened/pinned content cannot be distinguished.
+     - **Tentative 2026-10-20 - preserve bridged subject-follow focus:** match
+       pinned yabai's move, destination-front-PSN, then selection sequence.
+       Missing front/PSN capability selects the existing drag route before
+       effects. After native dispatch, any failure stays uncertain and never
+       replays; no post-arrival AX-raise repair is added. Final exact subject
+       focus remains required, preserving existing follow/stay semantics.
+       The missing front pin is implemented and regression-covered, not yet
+       live-verified for reused/new trailing targets.
      - Test harness only: chords may be posted into disposable TextEdit
        documents in a run-owned temporary directory, never when another app is
        frontmost. CG frames sampled while Mission Control is shown are not

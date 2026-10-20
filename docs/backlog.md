@@ -4087,9 +4087,26 @@ decisions of 2026-09-24 are under
        Dock-swipe selection is the leading candidate
        ([findings](research/macos-port/native-spaces-routes.md)). **Top macOS
        priority (user 2026-10-19):** fast workspace switching and moving.
-       Dock-swipe selection (yabai-informed) in progress for dogfooding; then
-       send-phase latency (fixed drag waits, reconcile on Space change instead
-       of the 1 s backstop).
+       Delivered for dogfooding and user-approved 2026-10-20: yabai-style
+       Dock-swipe selection (43-62 ms native-current), Dock exit gating after
+       creation, bridged native sends with drag fallback and Dock-swipe follow
+       (arrival 88-98 ms), event-driven arrival rereads (first correct tile
+       1,000 -> 270 ms), trailing reuse (122 ms) and post-create select
+       (900-944 ms), and exact-shape AccessibilityUIServer/ControlCenter
+       removal exceptions. Next, in order:
+       a. Live-verify the trailing send-follow focus fix (yabai move ->
+          front-PSN -> selector): sole-window follow to reused and new Spaces,
+          inverse follow, stay/source focus, two create/auto-remove cycles,
+          with timings.
+       b. Restore MC AX selection as the automatic fallback when Dock-swipe is
+          unavailable (e.g. refused macOS >= 27 payload), per
+          [Host Integration](principles.md#host-integration).
+       c. User-configurable route settings for selection (Dock-swipe / MC AX)
+          and sends (bridged / drag), per Host Integration.
+       d. Unproven: stay visit-to-tile latency, physical smoothness/input
+          readiness, multi-display, macOS 15 floor, user-run opened/pinned
+          ControlCenter contrast.
+       [Send checkpoint and checklist](changes/macos-managed-workspaces.md#send-latency-work-2026-10-20).
   4. Drag/drop overlays, re-scoped (user 2026-10-17): no modifier+drag; the
      producer is a passively observed native title-bar drag of a managed
      window, matching Windows' title-bar route, with physical user acceptance.
@@ -4104,7 +4121,7 @@ decisions of 2026-09-24 are under
      code. If it passes, ship the product underlay and move the border below
      the target. [Underlay evidence](changes/macos-group-underlay.md).
   6. `ffi.rs` unsafe surface review straight after item 5 (unsafe blocks went
-     93 -> 114 on 2026-10-17): minimise and isolate every unsafe use, prefer
+     93 -> 114 on 2026-10-17, 114 -> 132 on 2026-10-20): minimise and isolate every unsafe use, prefer
      maintained bindings, and remove diagnostics that no longer serve a live
      route.
   7. macOS 0.1 gate: keep the current definition (P0 0.1 item); decide after
@@ -4137,8 +4154,9 @@ decisions of 2026-09-24 are under
   (user quick check passed).
   Native-Space capability comparison ([verdict](research/macos-port/native-spaces-routes.md#live-verdict-2026-10-16),
   [record](changes/archive/macos-native-workspaces.md)): MC AX create/select/remove
-  and gesture select work on owned fixtures; direct SLS window move dispatched
-  without effect; bridged dispatcher absent.
+   and gesture select work on owned fixtures; direct SLS window move dispatched
+   without effect; the old unmangled bridged lookup missed the dispatcher
+   (corrected by the send work above).
   Earlier milestones below retain their original evidence scope. The kickoff
   superseded the sequencing of 2026-10-10. Documentation review and reference-source pins
   done ([kickoff](changes/archive/macos-port-kickoff.md)); Phase 0 decisions

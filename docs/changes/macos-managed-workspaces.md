@@ -1,9 +1,277 @@
 # macOS managed native workspaces
 
+## ControlCenter cleanup and follow-focus repair (2026-10-20)
+
+- Outcome: inherited runtime-created **467 is removed**, with exact native
+  readback `[1,277]`/current 1 and unchanged protected-window records after MC
+  closed. This supersedes the retained-467 blocker below. Removal latency was
+  not captured; no new selection/send timing is claimed.
+- User-approved exception (2026-10-20): exact system ControlCenter
+  executable/bundle, offscreen
+  layer 25, exactly 120x30, readable target membership wholly in the fresh user
+  set, and fresh **readable empty owner AX-window inventory**. This is stronger
+  than no standard/document window. The pinned AeroSpace AX system-dialog
+  popup, captured layer-2005 352x149 panel, onscreen/94x30 variants, normal-layer
+  windows and unknown owners/proofs stay candidates. System chrome, not user
+  content, is the reason for this narrow exception; no bundle-wide ignore.
+- User-approved routes: Dock-swipe selection and bridged native sends are the
+  defaults; drag remains the pre-effect send fallback. MC AX automatic selection
+  fallback and user-selectable selection/send routes are approved but not yet
+  implemented (backlog item 3b/3c), per
+  [Host Integration](../principles.md#host-integration). Dock `AXExposeExit`
+  gating and event-driven coalesced owner rereads are approved. Both exact-shape
+  chrome exceptions amend only the earlier no-foreign-chrome clause; unknown
+  owners, normal-layer windows and panels still block.
+- The real 5559/656 fixture fails before the new rule and passes afterward.
+  Near-miss, panel, unknown-AX, ordinary-window, Ghostty and shared probe/removal
+  regressions pass. Optional AX proof is read once per exact-owner PID per scan
+  under the existing 2 s IPC deadline and revalidated against fresh owner
+  identity. Nonmatching windows do not poison that cache; genuine failures
+  remain cached unknown. Malformed AX-window entries now error, never fake empty.
+- Follow repair: copy pinned yabai's missing `SLSSpaceSetFrontPSN` step between
+  the one native move and one Dock-swipe. Availability includes the front symbol
+  and PSN capability before choosing bridged rather than drag. Fresh anchor,
+  session and exact CG owner gates precede the front write. Post-move failures
+  remain `PossiblyExecuted`, with no AX raise, replay, second select or drag
+  fallback; exact membership/current/subject-focus still gate `Applied`.
+  This repairs existing subject-follow intent, not a new focus policy.
+  The sequencing choice remains tentative and is not live-verified.
+- Independent review accepts both changes. No shared-core or dependency change.
+  Unsafe is **132 blocks**, all in `ffi.rs` (+2 for the pinned lookup/call).
+- Latest live scan proved ControlCenter 5559 offscreen 120x30 with
+  `ax_windows_absent:true`; one verified remove dispatched, completed and
+  reported `ControlCenterChrome` plus readable-empty proof. No foreign window
+  was directly manipulated. Subsequent fixture readiness stopped on an observed
+  locked/non-console session before any runtime/tap or synthetic input started.
+- Last known cleanup state: `[1,277]`/current 1; no Space residue; one owned
+  TextEdit source document remains open on 1 and the resident file is unopened.
+  The pre-existing TextEdit process/windows remain untouched apart from opening
+  that owned source. No holders were applied; baseline preimage was absent.
+  The owned display-awake child was reaped. Revalidate source ownership before
+  later exact-document close; full fixture cleanup is not claimed.
+- Remaining live checks: **two fresh create/direct-return/automatic-remove
+  cycles**, checking any new chrome; sole-visible-window follow to a reused empty
+  Space and a newly created Space with exact subject focus/timings; inverse
+  follow and numbered stay/source-focus regression after the front-PSN change.
+  Physical/visual/input-ready, floor-release and multi-display gates also remain
+  unproven. No focus-fix hardware acceptance is inferred from offline tests.
+  User-run opened/pinned ControlCenter contrast also remains pending.
+- Final offline gates: **2,387 passed**, zero failures (core 1,042; protocol 27;
+  effect FFI 40; macOS 1,278), strict four-crate all-target clippy, workspace
+  format/diff and added-line ASCII checks pass. A cold full-test capture timed
+  out without a failing test; isolated and complete reruns pass. Signed build
+  and separate verification pass; pre-lock LaunchServices AX trust survived.
+  Final artifact SHA-256:
+  `24a7ee494fbc2d4eb614fe27ca0aed2f566734cfcb261fd53d799183cfef38dc`.
+- Closeout and post-integration reruns: locked four-crate tests **2,387 passed /
+  63 suites**, strict all-target clippy, workspace fmt and diff checks pass.
+  Earlier captures timed out on build/package locks or before a test-binary
+  banner; isolated conformance/entry tests and complete reruns pass. The final
+  post-integration test/clippy runs also use `--offline`. No test failure or
+  startup cause is established; no source correction or new signed artifact
+  follows the evidence above.
+- Next: exact-document cleanup after fresh ownership/session validation, then
+  the pending lifecycle/follow checks above. The broader note remains active.
+
+## Trailing lifecycle investigation (2026-10-20)
+
+- Goal: prove positive empty trailing reuse, post-create selection and removal
+  of runtime-created empty Spaces without weakening user-window protection.
+- Continuation (now user-approved 2026-10-20): admit only the evidenced
+  exact-system ControlCenter
+  offscreen layer-25 120x30 status surface after fresh no-AX-standard/document
+  proof, strengthened to readable zero AX windows for the exact owner. The
+  pinned AeroSpace popup exposes an AX system dialog, while the captured CG
+  panel has layer 2005 and 352x149 geometry: both remain candidates. Other
+  widths and onscreen status variants also remain blocking. Then remove inherited
+  467 and prove two fresh create/remove cycles. Separately trace trailing-send
+  subject focus against pinned reference routes, fix only within existing native
+  semantics, and prove reused/new-target follow plus cleanup. No broader chrome
+  exemption, shared-core change or permanent setting change is selected.
+- Send-focus trace: pre-dispatch subject proof passes and exact membership/current
+  arrives, but Finder is frontmost afterward. The moved subject was the sole
+  TextEdit window on the source. Pinned yabai sets the destination front PSN
+  immediately after native move; our route omitted that step. Adopt that
+  reference sequencing before the one selector, not an uncertain post-arrival
+  AX-raise repair. Expected subject-follow semantics and exact focus/readback,
+  no-replay and stay-return fences remain unchanged.
+- Root cause: the fresh full CG inventory plus per-window SLS memberships sees
+  AccessibilityUIServer WID 12 as offscreen, layer 3, 0x0, attached to `[434,1]`
+  while the user-Space set is `[1,277,434]`. The all-Spaces sticky exemption
+  fails; reuse reports unknown and removal reports occupied. WindowServer's
+  per-Space menubar is already exempt by fresh exact executable identity.
+- Read-only evidence also proves the exact system AccessibilityUIServer
+  executable and zero AX windows. `mc-members` now preserves existing executable
+  metadata so these owner checks are auditable; no new collection path.
+- User-approved narrow correction (2026-10-20): exempt only exact system
+  AccessibilityUIServer
+  owner/bundle, offscreen layer-3 0x0 chrome with readable target membership
+  wholly within the fresh user-Space set. Preserve ordinary/unknown windows,
+  Ghostty-first protection, fresh full inventory and created-Space ownership.
+  This is an explicit exception to the prior no-foreign-chrome clause, not a
+  general zero-area, layer, sticky-window or application-ignore rule.
+- Changes: additive exact-owner classifier, real-shaped partial-membership and
+  near-miss regressions, executable metadata in member/recovery diagnostics,
+  and one bounded native trailing-probe verdict/blocker line. No new read path,
+  timer, dependency, shared-core change or unsafe block. Independent review
+  accepts the destructive predicate and scan preserves unknown precedence.
+- Reference survey: yabai does not prove emptiness before destroy, and its
+  direct creation/removal requires Dock injection. No faster tier-2 creation
+  route was found; retain Hammerspoon-style MC AX creation/removal.
+  [Pinned inventory/filter citations and divergence](../research/macos-port/native-spaces-routes.md#trailing-lifecycle-findings-2026-10-20).
+- First corrected live leg: inherited SID 434 removed through verified empty
+  removal; product select created/bound SID 445 and confirmed current in 909 ms
+  (dispatch 874 ms; completion observed 1,013 ms). Shutdown automatically removed
+  inactive empty 445. Two reuse fixtures appended again after returning through
+  application activation. Decision-boundary metadata in the second fixture
+  proves the probe correctly checked occupied baseline SID 277, not empty 455.
+  `mc-members` places 455 at native index 1 after return: the native row had
+  reordered to `[1,455,277]`. Its sorted `layout.space_ids` is not native order.
+  The suspected stale occupancy, lost binding and transient type explanations
+  are withdrawn. No product target-resolution fix is indicated. Next fixture
+  must use direct native return, retain full ordered `spaces-diagnose` rows,
+  and gate reuse on the actual last SID still being the created empty target.
+  Current 447/457 were correctly retained at shutdown, then removed with fresh
+  verified empty proof; runtime cleanup also removed inactive empty 455.
+- Cleanup after those legs: `[1,277]`/current 1, protected-window raw records match,
+  holders restored 9/9 with preimage absent, run documents closed and original
+  TextEdit process left alive. Send-trailing legs not attempted. Deletion and
+  final topology are verified; diagnostic MC-close `Ok(false)` means already
+  closed (benign no-op), not a close failure.
+- Final gated product leg retained ordered `[1,277,467]` across direct native
+  returns. Select-0 creates 467 in **900 ms native / 1,010 ms observed**;
+  select-0 reuses exactly 467, with no append, in **122 / 217 ms**. Native
+  post-create confirmations in the preceding legs were 909/944 ms.
+- Trailing send reuses 467 and reaches exact subject membership/current 65 ms
+  after native dispatch (487 ms after engine input receipt), but leaves Finder
+  frontmost and fails subject-focus proof: `PossiblyExecuted`, no replay, not
+  accepted follow. The later send-1 post occurred 37 s after the bounded runtime
+  stopped; it is an expired fixture, not evidence of a product send defect.
+  Send-created immediate follow and complete trailing-send roundtrip remain TBD.
+- **Historical blocker / cleanup (resolved by the checkpoint above):** final
+  current is 1, native row `[1,277,467]`. Both run
+  documents are AX-verified closed, original TextEdit remains alive, holders
+  restored 9/9 with preimage absent, owned children gone, protected raw records
+  equal. SID **467 remains**: ControlCenter WID 5559/PID 656, offscreen layer 25,
+  120x30, has membership `[467]`. One empty-remove attempt refused before
+  dispatch. This nonzero foreign chrome is outside the narrow exception; no
+  exemption, forced removal or retry is added. Full restoration is not claimed.
+- Verification: locked four-crate tests **2,377 passed**, zero failures (core
+  1,042; protocol 27; effect FFI 40; macOS 1,268), strict four-crate all-target
+  clippy, workspace format/diff checks pass. Signed app build and separate
+  verification pass; LaunchServices AX grant survives. Unsafe remains **130**,
+  all in `ffi.rs` (+0 here). Main live artifact SHA-256:
+  `d51b5014609bd7de340a5a49b9765ac0bb55c444d66456bd2bfbe88f56547e73`.
+  Final rebuilt/signed executable after comment-only ASCII corrections:
+  `adc4216d10f630c4c7d2f9c76c14f699e92e40c7d7246df13f8a1a16ccd46336`.
+  Separate verification and LaunchServices AX/unlocked/inactive-Secure-Input
+  preflight pass; read-only native/protected baselines remain unchanged.
+  No screenshots,
+  physical/input-ready, floor-release or multi-display acceptance is inferred.
+- Historical next step (superseded by the checkpoint above): resolve the
+  ControlCenter classification/cleanup decision with a bounded
+  class-specific investigation, retaining 467 meanwhile; separately fix/prove
+  trailing-send subject focus before a live create-send roundtrip. Do not adopt
+  managed-only occupancy or silently widen the chrome exception.
+
+## Send latency work (2026-10-20)
+
+- Goal: minimize native send and first-correct-destination-tile latency without
+  changing follow/stay semantics or weakening identity, revision, current-Space
+  and no-replay fences. Scope is the macOS adapter; shared-core changes are not
+  selected.
+- Outcome: bridged-first transfer and event-driven arrival rereads are available
+  for dogfood. Native follow arrival is **88-98 ms**; one comparable first exact
+  subject tile is **270 ms**, down from **1,000 ms**. Inactive-target tiling after
+  fast stay remains a limitation, not a completed acceptance claim.
+- [Reference survey](../research/macos-port/native-spaces-routes.md#send-latency-findings-2026-10-20):
+  pinned yabai first, then rift, AeroSpace, Amethyst/Silica,
+  FlashSpace, Hammerspoon, paneru and glide. Yabai moves then tiles synchronously
+  and validates/flushes on Space changes. Its fast bridged dispatcher uses
+  loaded Mach-O symbol lookup, not `dlsym`; the earlier negative availability
+  diagnostic was a false negative. The old direct API's no-effect result does not
+  test that branch. Compat-tag writes remain blocked without exact preimage
+  restoration; parking/app hiding would change workspace semantics.
+- Implementation: exact-symbol Mach-O lookup with checked byte fixtures and a
+  loader-trusted mapped-image boundary; reviewed ObjC init/dispatch/release;
+  explicit diagnostic bridged probe with independent public self-restore after
+  mover exit. Product chooses bridged only on complete function/class/selector
+  availability, else retains drag before effects. One consumed managed proof
+  plus fresh anchor precedes one native move and immediate exact-SID Dock-swipe.
+  Exact membership/current/subject focus gates success; uncertainty never selects
+  a second time, falls back to drag or replays. Ordinal/single-display limits,
+  source-focus stays and current-Space frame fences are unchanged.
+- Complete per-app AX rereads now consume coalesced topology/arrival generations;
+  unchanged publications stay quiet and failed rereads consume their wake before
+  the existing silence backstop. Display events run the existing main loop early
+  after its app pump, not on a faster idle cadence. Verified arrival wakes owners
+  on the effect thread, not only at later completion receipt. Metadata-only phase
+  logs use operation/revision and a process-common monotonic clock; reread triggers
+  and actual frame readback distinguish convergence from mere dispatch.
+- Remaining drag waits cite Silica's 50 ms grab / 400 ms hold at their definitions;
+  they are reference values, not OS minima. No speculative reduction is made.
+  Bounded async-completion readback remains for late effects; no global poll is
+  accelerated. An initial fast implementation measured 320-326 ms arrival and
+  390 ms first subject tile; removing its serial 200 ms pre-selection poll yielded
+  the final rows below. Parser containment was corrected for mapped shared-cache
+  string tables before acceptance; allocation caps do not re-prove loader mappings.
+
+| Synthetic scoped TextEdit leg | Submission to exact membership/current | Submission to first correct subject geometry |
+| --- | --- | --- |
+| Drag baseline, follow | 547-575 ms | 1,000 ms for the comparable empty destination; 425 ms after arrival. Other baseline subject timings unmeasured, not resident-reflow proxies. |
+| Final bridged follow to empty destination | 88 ms: dispatch at 31 ms, selector 50 ms, exact arrival 57 ms after dispatch | 270 ms, exact applied AX readback; 182 ms after arrival. |
+| Final bridged inverse to resident | 98 ms: dispatch at 26 ms, selector 63 ms | 218 ms, exact applied subject readback; 120 ms after arrival. |
+| Final bridged stay | Forward arrival 92 ms, then 25 ms return selector; `Applied`, current/source-resident focus restored | Not applied on arrival: off-current subject retains its half-width source frame. Full width verified on revisit, but visit-to-tile timing unmeasured. |
+
+- A prior fast-stay sample had exact readback but a failed/refused destination
+  setter after return; it is not counted as applied. The final sample has no
+  such setter attempt. Preserve the current-only fence instead of writing hidden
+  windows or delaying stay for geometry. [Minimal discriminator](../spec/reference-outcomes.md#macos-native-workspace-discriminator).
+- Verification: locked four-crate tests **2,373 passed**, zero failures (core
+  1,042; protocol 27; effect FFI 40; macOS 1,264 including 1,111 library tests),
+  strict all-target four-crate clippy, workspace format, diff and added-line ASCII
+  checks pass. Cold compile time caused earlier command timeouts; warm suites
+  pass without a hanging-test finding. Signed current build plus separate verify
+  and final LaunchServices preflight pass; AX grant survives. Unsafe blocks are
+  **130**, all in `ffi.rs` (**+6** from 124). No dependencies or core changes.
+- Final signed executable SHA-256:
+  `a4cc2df9e01672a8bb3b1f1d6ab3c3d3cccc0475f55495bd6357463a6318a489`.
+  Follow timing artifact precedes log/ASCII-only corrections; latest stay artifact
+  precedes ASCII-only corrections. No behavioral change follows those live legs.
+- Cleanup: original observed `[1,277,434]`/current 1 restored; inherited test-created
+  SID 434 retained, with no removal attempt or new Space. Raw protected-window
+  records match before/after. All run documents AX-verified closed, owned runtime
+  and display-awake children gone, holders restored 9/9 with preimage absent.
+  TextEdit remains windowless; valid fixture files/raw receipts remain temporary.
+  No screenshots or visual/input-ready claims. Fixture lesson: use valid RTF or
+  `.txt`; plain text with an `.rtf` suffix produced a modal alert during setup.
+- Open: floor-release, multi-display, post-create fast-send and physical/visual
+  acceptance; immediate inactive-target tiling after stay and visit-to-tile timing.
+  The broader managed-workspace note remains active for these and earlier gates.
+
+### Send latency dogfood checklist
+
+```text
+mise exec -- just tile --user-start --scope com.apple.TextEdit --input tap --preset authentic --meta ctrl --seconds 120 --diag-stay-index 2
+```
+
+- With disposable A/B on Desktop 1 and an empty existing Desktop 2, focus B;
+  try Ctrl+Shift+2 then Ctrl+Shift+1. Check subject focus and prompt destination
+  layout, then repeat Ctrl+Alt+Shift+2 for stay: current/focus should return to A.
+- Visit Desktop 2 with Ctrl+2 after stay and check B expands there. Judge visual
+  smoothness and when typing works separately; synthetic confirmation is not that
+  acceptance. Stop on a refusal rather than repeating an uncertain effect.
+- Let the runtime stop, conditionally Revert owned holders with the existing
+  procedure below, close only disposable documents, and restore the starting
+  Desktop. Join `route=unselected|bridged|drag`, `op`, `phase`, `revision`, `now_ms`;
+  count first correct subject `frame-set outcome=applied exact=true`, not a
+  resident's reflow or an exact readback accompanying a refused setter.
+
 ## Dock-swipe selector dogfood checkpoint (2026-10-20)
 
 - Goal: replace managed Space selection's MC AX traversal with the pinned
-  yabai SIP-on high-velocity Dock-swipe route, tentatively pending dogfood.
+  yabai SIP-on high-velocity Dock-swipe route. Approved as the default on
+  2026-10-20; physical/visual dogfood acceptance remains pending.
   Preserve numbered, relative, previous and trailing semantics, the exactly-one
   observed-display restriction, and numbered send-stay's released return.
 - Non-goals: drag transfer, send waits/reconcile timing, trailing MC create/remove,

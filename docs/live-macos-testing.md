@@ -31,6 +31,10 @@ selected route; Dock injection and SIP reduction are out of scope.
   autostart changes, logoff/restart, or security-policy exclusions. The
   user performs physical input, observations, and session boundaries;
   agents do not synthesize those acceptance results.
+- Never quit, terminate or close a process or window the run did not create,
+  including a pre-existing windowless application during fixture recovery.
+  Creating a document in an existing application does not confer ownership of
+  its process or other windows.
 - Never disable SIP or Gatekeeper, never inject into Dock or another
   process, and never write synthetic input to a window that is not an
   identified owned test window. Games and anti-cheat contexts, elevated or

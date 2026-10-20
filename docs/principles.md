@@ -29,6 +29,17 @@ Project principles, approved by the user.
 - Use a timer only for a genuine deadline or where the host offers no
   event; state that reason where the timer is defined.
 
+## Host Integration
+
+- Good UX is critical. Where an undocumented host route is much faster or
+  gives clearly better UX than the documented one, prefer the undocumented
+  route.
+- Undocumented routes carry a higher breakage risk, so always keep a
+  documented route as the fallback, used automatically when the undocumented
+  route is unavailable.
+- Make the route user-configurable, so users can work around breakage
+  themselves.
+
 ## Consistency
 
 - Consistent behavior across target platforms and with the Tier 1 input
