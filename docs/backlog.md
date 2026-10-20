@@ -129,7 +129,12 @@ decisions of 2026-09-24 are under
   classification, verification/fences, drag/gesture, overlay geometry, pager
   content and cursor. Include Windows workspace owner/send paths (W3 world-route
   plan) and KDE's TypeScript born-maximized copy. Discuss the inventory and
-  sequencing with the user. Goal: a consistent test
+  sequencing with the user. Status 2026-10-21: inventory and staged plan
+  delivered (tentative sequencing, user review pending); stage 1 (core-owned
+  ordered window eligibility, Windows duplicates removed) delivered with
+  fixture checks on both outputs; stages 2-5 pending, Windows first, KDE/macOS
+  ports follow separately
+  ([record](changes/core-world-model-rearchitecture.md)). Goal: a consistent test
   process over agreed cases, consistent with Tier 1 input tilers, for high
   quality and cross-platform consistency. A maximal, high-quality core also
   eases future targets (GNOME, Cinnamon) and lets window-manager developers
