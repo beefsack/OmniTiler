@@ -722,6 +722,13 @@ platform API behavior.
 
 ## Licensing
 
+- User decision 2026-10-20: globally allow `BSD-2-Clause`, `BSD-3-Clause`
+  and `ISC` in dependency checks and notice generation, alongside MIT,
+  Apache-2.0 and Unicode-3.0. These are permissive with MIT-equivalent notice
+  obligations; App Store concerns apply to copyleft (GPL), not these licenses
+  ([research section 7.3](research/licensing.md#73-gpl-vs-current-mac-app-store-terms)).
+  The previous allow list was the minimal set satisfying dependencies then,
+  not a deliberate exclusion of other permissive licenses.
 - User decision 2026-10-11: project default is MIT, copyright Michael
   Alexander. All Rust crates, including the staticlib linked into the native
   effect, KWin TypeScript script, Settings KCMs, tray/planner, scripts,

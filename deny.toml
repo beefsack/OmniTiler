@@ -1,6 +1,4 @@
 # First-party license policy; see docs/research/licensing.md, sections 2-3.
-# All workspace crates resolve to MIT. Minimal allow set for the observed
-# `cargo metadata --locked` inventory: every external OR-expression offers
-# an MIT/Apache-2.0/Unicode-3.0 alternative.
+# Permissive dependency licenses; see docs/decisions.md, Licensing.
 [licenses]
-allow = ["Apache-2.0", "MIT", "Unicode-3.0"]
+allow = ["Apache-2.0", "MIT", "Unicode-3.0", "BSD-2-Clause", "BSD-3-Clause", "ISC"]

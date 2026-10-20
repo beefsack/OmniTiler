@@ -111,9 +111,10 @@ zvariant_utils 4.2.0.
 | unicode-ident 1.0.24 | `(MIT OR Apache-2.0) AND Unicode-3.0` | Needs `Unicode-3.0` too; build-time proc-macro, still audit-visible |
 | r-efi 6.0.0 | `MIT OR Apache-2.0 OR LGPL-2.1-or-later` | Use under MIT; LGPL alternative never triggered; UEFI-only |
 
-`allow = ["Apache-2.0", "MIT", "Unicode-3.0"]` satisfies every expression
-via the MIT/Apache/Unicode alternative. Anything offering only other
-terms fails the check by default.
+The original minimal allow list (`Apache-2.0`, `MIT`, `Unicode-3.0`)
+satisfied the surveyed expressions. The current global allow list also includes
+`BSD-2-Clause`, `BSD-3-Clause` and `ISC` (user decision 2026-10-20);
+other terms still fail the check by default.
 
 ### 2.4 Target split (dependency edges, not compiled output)
 
