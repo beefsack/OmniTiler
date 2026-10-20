@@ -103,6 +103,23 @@ remove the code it supersedes before its acceptance.
 - Core-only tests must not require native hosts. Document unsupported live
   predicates as platform gaps rather than weakening common assertions.
 
+### Stage 2 implementation slices
+
+- 2a: establish retained logical mapping authority independently of native
+  observation. Start with the valid source-only-backing migration discriminator;
+  cover unchanged reports, member arrival, target view and source refill,
+  including incomplete/unreadable evidence, explicit closes and supersession.
+  Native identities remain observations, never fabricated destination domains.
+- 2b: atomically replace the Windows workspace/Engine owner for all lifecycle,
+  history, tiling and send routes, preserving startup and T2 transactions. Remove
+  superseded per-domain adapter interfaces and test-only route scaffolding.
+- 2c: retain cursor/settings/focus and implement the approved switch and fresh
+  placement policy, with startup/restart restoration kept distinct. Complete
+  shared world-action/native acceptance and both-output fixture checks.
+- Each slice must have its own passing applicable local gates. A core-only
+  slice does not claim runtime adoption, migration live acceptance or a fix for
+  dual-output fresh admission.
+
 ## Contracts and parked questions
 
 - Retain complete observations, explicit closes, hidden/minimized/unreadable
@@ -217,3 +234,38 @@ remove the code it supersedes before its acceptance.
   holds the absent target, then implement stage 2's single-owner cutover and
   cursor-first policy without an adapter authority bypass. Preserve T2's
   source-state transaction and hidden/fullscreen/bootstrap distinctions.
+
+## Stage 2a investigation and unresolved boundary (2026-10-21)
+
+- The core-only source-only-backing discriminator reproduces a valid accepted
+  disjoint migration, not an unknown-workspace rejection: the retained target
+  is `out-b/wa1`, the native backing remains observed under `out-a`, and the
+  desired target scope is `Hold(IncompleteInventory)`. A fresh unchanged report
+  also re-seeds source membership because disjoint flights retain no members.
+- Retaining disjoint members prevents source flap-back, but is not the logical
+  ownership cutover. Publishing Controlled membership beneath a held target
+  contradicts scope authority. Holding scope and membership together preserves
+  that fence but leaves the migration unable to progress. Both approaches are
+  rejected as stage 2a completion, even with passing tests.
+- Windows `tiling_sys/world_diff.rs` checks controlled scope before member,
+  target-view and migration actuation. An unheld transfer token does not grant
+  authority through those gates. Tests that manually report target arrival
+  after an entirely held reply prove settlement only, not achievable migration.
+- The unaccepted core prototype also needs correction for logical-identity
+  pruning on incomplete topology, refusal/supersession mapping/session
+  reconciliation, and disjoint multi-member tree/share/focus assertions.
+  Aligned-grid coverage is not evidence for disjoint preservation.
+- Focused prototype checks pass: 32 aligned, 13 disjoint and one logical-mapping
+  test. Broader core/protocol/Windows tests and strict clippy also pass, but these
+  gates do not establish the missing authority contract. No implementation is
+  accepted, no Windows owner cutover or cursor-first policy is delivered, and
+  no native acceptance is claimed.
+- Exact next entry: design the retained logical-domain resolution boundary so
+  complete readable source/target-screen facts can authorize the core's logical
+  destination independently of whether a native destination domain already
+  exists. Keep raw native observations distinct for member/view/refill proof;
+  do not weaken genuinely incomplete/unreadable/gesture holds or use retained
+  transfer provenance as adapter authority. Require the discriminator to assert
+  coherent actionable target scope/member desire before staging arrival, then
+  prove all observed phases. Review the unaccepted prototype before reuse;
+  stage 2b must not start from it as an accepted foundation.
