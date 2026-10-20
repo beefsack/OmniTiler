@@ -42,6 +42,16 @@ ABOUT_TEMPLATE="$REPO_ROOT/about.hbs"
 SHIPPING_ROOTS="omnitiler tiler-kwin-effect-ffi"
 LINUX_TARGETS="x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu"
 WORKSPACE_MEMBERS="omnitiler tiler-core tiler-protocol tiler-kwin-effect-ffi tiler-windows tiler-macos"
+# cargo-about generate selects either one active package (--manifest-path) or
+# the whole workspace (--workspace); it has no --package selector, so the
+# workspace-wide mode would sweep in dev-only members (e.g. tiler-live-fixture)
+# outside the documented SHIPPING_ROOTS union. Root the render at the
+# `omnitiler` package instead: the `tiler-kwin-effect-ffi` normal-dependency
+# closure is currently a subset of the `omnitiler` closure, so this still
+# covers the full union. If that subset invariant ever breaks, the
+# completeness check below (union over both SHIPPING_ROOTS) fails loudly
+# rather than silently dropping the new crate.
+SHIPPING_MANIFEST="$REPO_ROOT/crates/omnitiler/Cargo.toml"
 
 SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/third-party-notices.XXXXXX")"
 trap 'rm -rf -- "$SCRATCH"' EXIT
@@ -59,8 +69,7 @@ render_notices() {
   [[ -f "$ABOUT_CONFIG" ]] || { echo "error: cargo-about config missing: $ABOUT_CONFIG" >&2; exit 1; }
   [[ -f "$ABOUT_TEMPLATE" ]] || { echo "error: notices template missing: $ABOUT_TEMPLATE" >&2; exit 1; }
   cargo about generate \
-    --manifest-path "$REPO_ROOT/Cargo.toml" \
-    --workspace \
+    --manifest-path "$SHIPPING_MANIFEST" \
     --frozen \
     -c "$ABOUT_CONFIG" \
     -o "$out" \
@@ -73,8 +82,7 @@ check_harvested() {
   local missing="$SCRATCH/unharvested.txt"
   command -v jq >/dev/null 2>&1 || { echo "error: required tool 'jq' not found in PATH; refusing" >&2; exit 1; }
   cargo about generate \
-    --manifest-path "$REPO_ROOT/Cargo.toml" \
-    --workspace \
+    --manifest-path "$SHIPPING_MANIFEST" \
     --frozen \
     -c "$ABOUT_CONFIG" \
     --format json \

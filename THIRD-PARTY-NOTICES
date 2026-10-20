@@ -369,10 +369,6 @@ USED BY:
   Authors: Michal 'vorner' Vaner <vorner@vorner.cz>, Masaki Hara <ackie.h.gmai@gmail.com>
   Repository: https://github.com/vorner/signal-hook
 
-- signal-hook 0.3.18 (declared: Apache-2.0 OR MIT)
-  Authors: Michal 'vorner' Vaner <vorner@vorner.cz>, Thomas Himmelstoss <thimm@posteo.de>
-  Repository: https://github.com/vorner/signal-hook
-
 FULL TEXT:
 Copyright (c) 2017 tokio-jsonrpc developers
 

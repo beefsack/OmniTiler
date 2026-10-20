@@ -20,7 +20,31 @@
     zip
     kdePackages.kpackage
     weston
+    # Runtime display libraries for the dev-only tiler-live-fixture helper.
+    # The helper compiles without X11/Wayland headers (dynamic-loading Cargo
+    # features) but dlopens these at runtime for live use.
+    wayland
+    libxkbcommon
+    xorg.libX11
+    xorg.libXcursor
+    xorg.libXext
+    xorg.libXi
+    xorg.libXrandr
+    xorg.libxcb
   ];
+
+  # Make the runtime display libraries above findable by dlopen. A refreshed
+  # shell (session restart) is required before live use.
+  env.LD_LIBRARY_PATH = lib.makeLibraryPath (with pkgs; [
+    wayland
+    libxkbcommon
+    xorg.libX11
+    xorg.libXcursor
+    xorg.libXext
+    xorg.libXi
+    xorg.libXrandr
+    xorg.libxcb
+  ]);
 
   enterShell = ''
     export PATH=${pkgs.clang-tools}/bin:$PATH
