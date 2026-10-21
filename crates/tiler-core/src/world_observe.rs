@@ -88,7 +88,8 @@ impl WorldEngine {
 
     /// Screen completeness from the staged observation: `None` when the
     /// screen is not reported at all.
-    pub(crate) fn screen_complete(&self, output: &OutputId) -> Option<bool> {        self.staged
+    pub(crate) fn screen_complete(&self, output: &OutputId) -> Option<bool> {
+        self.staged
             .screens
             .iter()
             .find(|screen| screen.output == *output)

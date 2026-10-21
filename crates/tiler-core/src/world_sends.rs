@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::boundary::{CoreCommand, CoreEvent, CoreReply};
-use crate::directional::{OutputId, WindowId};
+use crate::directional::{OutputId, WindowId, WorkspaceId};
 use crate::engine::Engine;
 use crate::ids::{CorrelationId, OwnerId};
 use crate::seed::EngineWindow;
@@ -20,7 +20,7 @@ use crate::world_engine::{
     KIND_CREATION_EXHAUSTED, KIND_IN_FLIGHT, KIND_SCOPE_HELD, KIND_SEND_REFUSED, KIND_SEND_TARGET,
     KIND_SEND_WINDOW, KIND_SNAPSHOT, MSG_CREATION_EXHAUSTED, MSG_IN_FLIGHT, MSG_SCOPE_HELD,
     MSG_SEND_REFUSED, MSG_SEND_TARGET, MSG_SEND_WINDOW, MSG_SNAPSHOT, RetainedTransfer,
-    WorldEngine,
+    StagedDomain, WorldEngine,
 };
 use crate::world_report::{OneShotEffect, TransferKind, TransferTarget, WorldReport};
 
@@ -59,7 +59,7 @@ impl WorldEngine {
             by_id,
             held_scopes,
         );
-        self.settle_send(command_seq, operation_id, result)
+        self.settle_send(report, command_seq, operation_id, result)
     }
 
     /// Cross-output window-send path for direction-only sends
@@ -90,17 +90,23 @@ impl WorldEngine {
             by_id,
             held_scopes,
         );
-        self.settle_send(command_seq, operation_id, result)
+        self.settle_send(report, command_seq, operation_id, result)
     }
 
     /// Settle one executed send: retain the transfer under its stable
     /// operation identity (consuming the command sequence), then emit the
     /// one-shot focus outcome. Follow focuses the mover; stay focuses the
     /// source MRU survivor (`None` when the source is left empty, so no
-    /// effect rather than a guessed fallback). Never retains a view target:
-    /// sends never view-switch, including `follow=false` stays.
+    /// effect rather than a guessed fallback). Follow also selects the
+    /// target view on the same output (core logical authority: the moved
+    /// view plus a retained follow-view flight under `{op}-follow`, latest
+    /// per output wins exactly like selection; shared mode fans out); stay
+    /// never moves any view and retains no flight. The moved view is still
+    /// only a desire: native arrival proves separately through the retained
+    /// flights, never from this commit.
     pub(crate) fn settle_send(
         &mut self,
+        report: &WorldReport,
         command_seq: u64,
         operation_id: String,
         result: Result<(RetainedTransfer, Option<WindowId>), (&'static str, &'static str)>,
@@ -119,6 +125,36 @@ impl WorldEngine {
                         ),
                     };
                     self.commit_send_member(window, &target);
+                }
+                // Follow owns the same-output target view: without the
+                // logical move the adapter's follow switch can never prove
+                // (visibility is checked against the core view) and the
+                // transfer holds forever. The moved view plus a retained
+                // follow-view flight (latest per output wins, exactly like
+                // selection) lets the existing view machinery actuate and
+                // prove the switch; the window flight still settles only on
+                // observed membership. Cross-output targets stay untouched:
+                // direction-only sends already target the neighbor's
+                // current view.
+                if retained.target.follow && retained.target.target_output == retained.source_output
+                {
+                    let output = retained.target.target_output.clone();
+                    let workspace = retained.target.target_workspace.clone();
+                    self.retain_view_inner(&output, &workspace, format!("{operation_id}-follow"));
+                    if report.workspace_mode == crate::workspace_scope::WorkspaceMode::Shared {
+                        let canonical = self.mapping.get(&output.0).cloned().unwrap_or_default();
+                        let mut live: Vec<String> = report
+                            .screens
+                            .iter()
+                            .map(|screen| screen.output.0.clone())
+                            .collect();
+                        live.sort();
+                        for out in &live {
+                            self.mapping.insert(out.clone(), canonical.clone());
+                            self.views.insert(out.clone(), workspace.clone());
+                        }
+                        self.history.observe_shared(&canonical, &workspace);
+                    }
                 }
                 self.note_command(command_seq);
                 self.retained.push(retained);
@@ -605,8 +641,8 @@ impl WorldEngine {
     /// Numbered send over the scoped ring for `output`: positional
     /// `1..=9`, or `0` for the trailing path (reuse the live trailing
     /// empty, else mint the trailing workspace immediately, exactly like
-    /// lifecycle). Commits an ordinary transfer with no view target at any
-    /// step: sends never view-switch, including stays.
+    /// lifecycle). Commits an ordinary transfer; follow additionally selects
+    /// the target view while stays never view-switch.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn start_numbered_send(
         &mut self,
@@ -647,6 +683,18 @@ impl WorldEngine {
                 message: MSG_SCOPE_HELD,
             };
         }
+        // Numbered sends are same-output workspace routing: the public
+        // output must name the mover's own output. A foreign output would
+        // resolve the wrong ring and (on the Create path) mint into the
+        // wrong mapping, while the Engine refuses cross-output workspace
+        // sends as `CrossDomainMismatch` at the boundary anyway. Refuse up
+        // front with those exact semantics and no mutation.
+        if source_row.output != *output {
+            return CommandApplied::Rejected {
+                kind: RefusalKind::CrossDomainMismatch.as_str(),
+                message: RefusalKind::CrossDomainMismatch.message(),
+            };
+        }
         let ring = self.send_ring(report, output);
         if ring.is_empty() {
             return CommandApplied::Rejected {
@@ -670,11 +718,18 @@ impl WorldEngine {
                         by_id,
                         held_scopes,
                     );
-                    self.settle_send(command_seq, operation_id, result)
+                    self.settle_send(report, command_seq, operation_id, result)
                 }
                 TrailingSelection::Create => {
                     // Trailing workspaces exist immediately in the logical
-                    // contract: mint, then commit the send.
+                    // contract: mint, stage an empty readable domain for the
+                    // fresh id, then commit the send. Without the staged
+                    // domain the fresh target below would refuse as
+                    // `send-target` even though the mapping already names
+                    // it. Geometry always derives from the destination
+                    // screen (identical to the source domain on the guarded
+                    // same output); the source domain is only a fallback
+                    // and never a different screen.
                     let created = self.create_trailing_workspace(output, report.default_tiled);
                     let Some(target) = created else {
                         return CommandApplied::Rejected {
@@ -682,6 +737,57 @@ impl WorldEngine {
                             message: MSG_CREATION_EXHAUSTED,
                         };
                     };
+                    let target_key = DomainKey {
+                        output: output.clone(),
+                        workspace: WorkspaceId(target.clone()),
+                    };
+                    let staged_geometry = self
+                        .staged
+                        .screens
+                        .iter()
+                        .find(|screen| screen.output == *output)
+                        .and_then(|screen| {
+                            screen
+                                .work_area
+                                .map(|bounds| (bounds, screen.gap, screen.outer_gap))
+                        })
+                        .or_else(|| {
+                            (source_key.output == *output)
+                                .then(|| {
+                                    self.staged
+                                        .domains
+                                        .iter()
+                                        .find(|d| d.key == source_key)
+                                        .map(|d| (d.bounds, d.gap, d.outer_gap))
+                                })
+                                .flatten()
+                        });
+                    let Some((bounds, gap, outer_gap)) = staged_geometry else {
+                        return CommandApplied::Rejected {
+                            kind: KIND_SEND_TARGET,
+                            message: MSG_SEND_TARGET,
+                        };
+                    };
+                    self.staged.domains.push(StagedDomain {
+                        key: target_key.clone(),
+                        bounds,
+                        gap,
+                        outer_gap,
+                        windows: Vec::new(),
+                        focused: WindowId(String::new()),
+                        minimized: Vec::new(),
+                        unreadable: Vec::new(),
+                        closed: Vec::new(),
+                        readable: true,
+                        hold: None,
+                    });
+                    if self
+                        .tiling
+                        .get(&target_key)
+                        .is_some_and(|mode| *mode == crate::world_report::TilingMode::Floating)
+                    {
+                        self.floating_scopes.insert(target_key);
+                    }
                     let operation_id = format!("op-{command_seq}");
                     let result = self.execute_send(
                         report,
@@ -693,7 +799,7 @@ impl WorldEngine {
                         by_id,
                         held_scopes,
                     );
-                    self.settle_send(command_seq, operation_id, result)
+                    self.settle_send(report, command_seq, operation_id, result)
                 }
             }
         } else {
@@ -714,7 +820,7 @@ impl WorldEngine {
                 by_id,
                 held_scopes,
             );
-            self.settle_send(command_seq, operation_id, result)
+            self.settle_send(report, command_seq, operation_id, result)
         }
     }
 }

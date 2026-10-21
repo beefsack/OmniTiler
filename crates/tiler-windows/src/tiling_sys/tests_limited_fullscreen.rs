@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
-use super::{geometry_write_allowed, is_limited_fullscreen};
+use super::is_limited_fullscreen;
+use super::settings::geometry_write_allowed;
 use crate::native_guards::{ForegroundFacts, ForegroundVeto, ForegroundVetoReason};
 
 fn veto_read(block: bool, reason: ForegroundVetoReason) -> ForegroundVeto {
@@ -79,4 +80,3 @@ fn limited_policy_excludes_only_foreground() {
         assert!(geometry_write_allowed(&other, 0x1001, 0x9911));
     }
 }
-

@@ -1,24 +1,18 @@
 #![forbid(unsafe_code)]
-//! Tiling-only Windows runtime over the retained portable Engine.
+//! Tiling-only Windows helpers over the world route.
 //!
 //! Shared policy lives in the core (`tiler_core::window_policy`); this crate
 //! keeps only host fact collection and the thin `classify` / `classify_focus`
 //! normalization plus its native log vocabulary. Native enumeration,
 //! actuation, and the event loop live in [`crate::tiling_sys`] (`cfg(windows)`
-//! only). The Engine is the layout authority: this crate builds complete
-//! `Reconcile` observations, applies `CoreReply` geometry verbatim, and never
-//! adopts observed rectangles into retained state. The remaining runtime here
-//! is still per-domain pending later migration stages.
+//! only). Layout authority is the core world engine: the world sequencer
+//! captures complete world reports and applies the accepted desired snapshot
+//! verbatim, never adopting observed rectangles into retained state.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use tiler_core::boundary::{CoreCommand, CoreEvent};
-use tiler_core::directional::{OutputId, WindowId, WorkspaceId};
 use tiler_core::geometry::Rect;
-use tiler_core::ids::{CorrelationId, GenerationId, OwnerId};
-use tiler_core::seed::EngineWindow;
-use tiler_core::session::{DomainKey, OutputDomain};
 
 mod classification;
 mod cli;
@@ -58,11 +52,10 @@ pub use geometry::{
     visible_max_from_outer, visible_min_from_outer,
 };
 pub use reconcile::{
-    AllowEntry, GestureIntent, ObservedTarget, ReadbackOutcome, ReconcileInput, RefusedTracker,
-    TRANSIENT_BASE_MS, TRANSIENT_MAX_MS, allow_match, allowlist_digest, build_reconcile_event,
-    build_reconcile_event_for, build_reconcile_event_for_floating, classify_gesture,
-    dpi_readback_decision, dpi_transition_reouter, drop_point_in_domain, parse_allowlist,
-    prefer_modal_move, readback_outcome, transfer_readback_entry,
+    AllowEntry, GestureIntent, ObservedTarget, ReadbackOutcome, RefusedTracker, TRANSIENT_BASE_MS,
+    TRANSIENT_MAX_MS, allow_match, allowlist_digest, classify_gesture, dpi_readback_decision,
+    dpi_transition_reouter, drop_point_in_domain, parse_allowlist, prefer_modal_move,
+    readback_outcome, transfer_readback_entry,
 };
 pub use workspace::{
     ChildrenOptions, DIRECTIONAL_REQUEST_FILE, DIRECTIONAL_REQUEST_VERSION, DirectionalOp,

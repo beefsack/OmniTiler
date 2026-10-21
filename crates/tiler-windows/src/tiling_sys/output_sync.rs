@@ -526,15 +526,7 @@ pub(super) fn workspace_maintenance(
     };
     let foreground = crate::ffi::foreground_window();
     let _ = super::world_tick::run_observation_tick(
-        state,
-        me,
-        store,
-        dir,
-        &observed,
-        &retained,
-        areas,
-        foreground,
-        fulls,
+        state, me, store, dir, &observed, &retained, areas, foreground, fulls,
     );
     // Foreground-driven select only on an actual foreground change to an
     // exactly verified hidden member; event-only wakes never switch.

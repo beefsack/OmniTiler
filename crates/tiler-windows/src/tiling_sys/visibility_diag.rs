@@ -7,6 +7,7 @@ use crate::product_hide::ProductTeardown;
 /// entering member up to this cap; the remainder report through one
 /// `workspace-reveal-summary` line with an honest omitted count.
 /// Reason: bounds normal-log volume for large workspaces (mirrors the hide cap).
+#[cfg(test)]
 pub(super) const REVEAL_DIAG_PER_SELECT: usize = 64;
 /// Reason: caps entries per batched visibility event to bound normal-log volume.
 pub(super) const VIS_DIAG_MAX_ENTRIES: usize = 16;
@@ -342,6 +343,7 @@ pub(super) fn flush_rehide_diag(state: &mut TileLoop) -> Option<serde_json::Valu
 /// categorical outcome/detail, tick, action correlation, monotonic elapsed
 /// time from the action start, and the operation phase (`None` for the
 /// ordinary reveal leg, `Some("rollback")` for narrow-recovery reveals).
+#[cfg(test)]
 pub(super) fn reveal_log_line(
     tick: u64,
     correlation: &str,
@@ -366,6 +368,7 @@ pub(super) fn reveal_log_line(
 /// Production `workspace-hide` payload: opaque token (null when unknown),
 /// categorical outcome/detail, tick, action correlation, the project-topmost
 /// exception flag, and monotonic elapsed time from the action start.
+#[cfg(test)]
 pub(super) fn hide_log_line(
     tick: u64,
     correlation: &str,
@@ -390,6 +393,7 @@ pub(super) fn hide_log_line(
 /// Bounded per-window hide diagnostic through the shared per-select cap.
 /// Silent past the cap; the caller reports the remainder through
 /// [`omission_summary`].
+#[cfg(test)]
 pub(super) fn note_hide_diag(
     state: &mut TileLoop,
     ctx: &ActionCtx,
@@ -426,6 +430,7 @@ pub(super) fn note_hide_diag(
 /// Bounded per-window reveal diagnostic through the shared per-select cap.
 /// Silent past the cap; the caller reports the remainder through
 /// [`omission_summary`].
+#[cfg(test)]
 pub(super) fn note_reveal_diag(
     state: &mut TileLoop,
     ctx: &ActionCtx,
@@ -462,6 +467,7 @@ pub(super) fn note_reveal_diag(
 /// Bounded phase summary for one capped per-window diagnostic leg. `None`
 /// when every attempt logged; otherwise the honest attempted/logged/omitted
 /// counts under the action correlation.
+#[cfg(test)]
 pub(super) fn omission_summary(
     event: &'static str,
     tick: u64,
@@ -531,10 +537,8 @@ fn fenced_visibility(
     if stored_tag.is_empty() {
         return (None, None);
     }
-    if !crate::native_guards::visible_lifetime_ok(
-        stored_tag,
-        live_member_tag(key.hwnd).as_deref(),
-    ) {
+    if !crate::native_guards::visible_lifetime_ok(stored_tag, live_member_tag(key.hwnd).as_deref())
+    {
         return (None, None);
     }
     #[cfg(test)]
@@ -903,51 +907,6 @@ pub(super) fn flush_exceptions(state: &mut TileLoop) -> Option<serde_json::Value
         "omitted": omitted,
         "coalesced": coalesced.len(),
     }))
-}
-
-/// Narrow rollback shared by every scoped transition: reveal exactly the
-/// claims committed above (exact identity, no blind replay, no fabricated
-/// rollback) through one joint reveal phase with per-window
-/// `workspace-reveal` lines in the `rollback` phase plus a bounded omission
-/// summary. Retired claims drop member state; revealed claims unflag;
-/// failures keep the ledger for the next attempt.
-pub(super) fn rollback_newly_hidden(
-    state: &mut TileLoop,
-    me: &ProcessIdentity,
-    store: &LedgerStore,
-    newly_hidden: &[crate::native_guards::WindowKey],
-    ctx: &ActionCtx,
-    clock: &mut impl crate::product_hide::batch::BatchWaitClock,
-) {
-    let reveal = reveal_phase(
-        state,
-        me,
-        store,
-        ctx,
-        newly_hidden,
-        Some("rollback"),
-        true,
-        clock,
-    );
-    if let Some(line) = omission_summary(
-        "workspace-reveal-summary",
-        state.tick,
-        &ctx.correlation,
-        Some("rollback"),
-        reveal.attempted,
-        reveal.logged,
-    ) {
-        let t0 = Instant::now();
-        log_json_at(&state.log_path.clone(), line);
-        let _ = t0;
-    }
-    log_visibility_timing(
-        state,
-        ctx,
-        "rollback",
-        &PhaseBreakdown::default(),
-        &reveal.breakdown,
-    );
 }
 
 /// Drop every visibility/exception sample for one dead member.

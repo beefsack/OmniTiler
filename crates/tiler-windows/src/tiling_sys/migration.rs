@@ -129,9 +129,7 @@ pub(super) fn workspace_migrate_tick(
 /// Native device key for one migration intent: the cached output when live,
 /// else the first live area.
 fn migrate_device(state: &TileLoop, areas: &[MonitorArea]) -> Option<String> {
-    if !state.active_output.is_empty()
-        && areas.iter().any(|a| a.device == state.active_output)
-    {
+    if !state.active_output.is_empty() && areas.iter().any(|a| a.device == state.active_output) {
         return Some(state.active_output.clone());
     }
     areas.first().map(|a| a.device.clone())
@@ -186,7 +184,8 @@ pub(super) fn workspace_migrate_one(
         workspace,
         direction: direction_name(intent.direction).to_owned(),
     };
-    let reply = super::world_tick::observe_and_command(state, me, store, dir, fulls, areas, command);
+    let reply =
+        super::world_tick::observe_and_command(state, me, store, dir, fulls, areas, command);
     let outcome: &'static str = if reply.is_some() {
         "migrate-applied"
     } else {

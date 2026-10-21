@@ -456,10 +456,7 @@ pub fn select_directional_target(
 /// stays local (callers never build a pair for Up/Down).
 #[must_use]
 pub const fn directional_focus_crosses(direction: Direction) -> bool {
-    matches!(
-        direction,
-        Direction::Left | Direction::Right
-    )
+    matches!(direction, Direction::Left | Direction::Right)
 }
 
 /// Resolve the output under a pointer point for pointer-driven cross-output
@@ -839,9 +836,7 @@ mod tests {
             reused_hwnd_stale(&known, &hidden, &key(21, "snew")).is_empty(),
             "hidden claims own their HWND through the ledger path"
         );
-        assert!(
-            reused_hwnd_stale(&known, &BTreeSet::new(), &key(22, "other")).is_empty()
-        );
+        assert!(reused_hwnd_stale(&known, &BTreeSet::new(), &key(22, "other")).is_empty());
     }
 
     #[test]
@@ -883,8 +878,10 @@ mod tests {
         let shown = key(31, "s");
         let hidden = key(32, "h");
         let members: BTreeSet<WindowKey> = BTreeSet::from([shown.clone(), hidden.clone()]);
-        let token_of: BTreeMap<WindowKey, String> =
-            BTreeMap::from([(shown.clone(), "wA".to_owned()), (hidden.clone(), "wC".to_owned())]);
+        let token_of: BTreeMap<WindowKey, String> = BTreeMap::from([
+            (shown.clone(), "wA".to_owned()),
+            (hidden.clone(), "wC".to_owned()),
+        ]);
         let fresh: HashSet<String> = HashSet::from(["wA".to_owned(), "wC".to_owned()]);
         let writable = writable_subset(&members, |k| k == &hidden, &token_of, &fresh);
         assert!(!writable.contains("wC"), "hidden target never writable");
@@ -902,7 +899,10 @@ mod tests {
         // Sticky wins over float and tile-override lanes.
         let sticky = classify_restart_marker(Value(7), Value(1), Value(1));
         assert_eq!(sticky, RestartMarker::Sticky(false));
-        assert_eq!(restart_sticky_eligible(true, true, true, sticky), Some(false));
+        assert_eq!(
+            restart_sticky_eligible(true, true, true, sticky),
+            Some(false)
+        );
         assert!(!restart_float_eligible(true, true, true, sticky));
         assert!(!restart_tile_override_eligible(true, true, true, sticky));
         // Ordinary float intent floats; tile override never floats.
@@ -918,7 +918,10 @@ mod tests {
         let corrupt = classify_restart_marker(Value(7), Value(3), Value(9));
         assert_eq!(corrupt, RestartMarker::Corrupt);
         assert!(!restart_float_eligible(true, true, true, corrupt));
-        assert_eq!(classify_restart_marker(Absent, Absent, Absent), RestartMarker::Absent);
+        assert_eq!(
+            classify_restart_marker(Absent, Absent, Absent),
+            RestartMarker::Absent
+        );
         // Every eligibility needs admission, identity, and lifetime.
         assert!(!restart_float_eligible(false, true, true, float));
         assert!(!restart_float_eligible(true, false, true, float));
@@ -946,21 +949,75 @@ mod tests {
         );
         // Exact desktop and invisible handles never veto; validity and
         // readability fail closed; cloak exempts; captions exempt.
-        assert!(!classify_foreground(ForegroundFacts { is_desktop: true, ..covering }).block);
-        assert!(!classify_foreground(ForegroundFacts { visible: false, ..covering }).block);
-        assert!(classify_foreground(ForegroundFacts { valid: false, ..covering }).block);
-        assert!(classify_foreground(ForegroundFacts { dwm_readable: false, ..covering }).block);
-        assert!(classify_foreground(ForegroundFacts { cloak_readable: false, ..covering }).block);
-        assert!(!classify_foreground(ForegroundFacts { cloaked: true, ..covering }).block);
-        assert!(!classify_foreground(ForegroundFacts { captioned: true, ..covering }).block);
-        assert!(!classify_foreground(ForegroundFacts { covers_monitor: false, ..covering }).block);
+        assert!(
+            !classify_foreground(ForegroundFacts {
+                is_desktop: true,
+                ..covering
+            })
+            .block
+        );
+        assert!(
+            !classify_foreground(ForegroundFacts {
+                visible: false,
+                ..covering
+            })
+            .block
+        );
+        assert!(
+            classify_foreground(ForegroundFacts {
+                valid: false,
+                ..covering
+            })
+            .block
+        );
+        assert!(
+            classify_foreground(ForegroundFacts {
+                dwm_readable: false,
+                ..covering
+            })
+            .block
+        );
+        assert!(
+            classify_foreground(ForegroundFacts {
+                cloak_readable: false,
+                ..covering
+            })
+            .block
+        );
+        assert!(
+            !classify_foreground(ForegroundFacts {
+                cloaked: true,
+                ..covering
+            })
+            .block
+        );
+        assert!(
+            !classify_foreground(ForegroundFacts {
+                captioned: true,
+                ..covering
+            })
+            .block
+        );
+        assert!(
+            !classify_foreground(ForegroundFacts {
+                covers_monitor: false,
+                ..covering
+            })
+            .block
+        );
     }
 
     #[test]
     fn output_at_point_resolves_pointer_output_without_adjacency() {
         let outputs = vec![
-            DirectionalOutput { id: "a".to_owned(), full: rect(0, 0, 1920, 1080) },
-            DirectionalOutput { id: "b".to_owned(), full: rect(1920, 0, 1920, 1080) },
+            DirectionalOutput {
+                id: "a".to_owned(),
+                full: rect(0, 0, 1920, 1080),
+            },
+            DirectionalOutput {
+                id: "b".to_owned(),
+                full: rect(1920, 0, 1920, 1080),
+            },
         ];
         assert_eq!(output_at_point(&outputs, 10, 10), Some("a".to_owned()));
         assert_eq!(output_at_point(&outputs, 2000, 10), Some("b".to_owned()));
@@ -968,15 +1025,24 @@ mod tests {
         assert_eq!(output_at_point(&[], 10, 10), None);
         // Degenerate rectangles never contain: left/top edges inclusive,
         // zero-area excluded.
-        let flat = vec![DirectionalOutput { id: "z".to_owned(), full: rect(0, 0, 0, 1080) }];
+        let flat = vec![DirectionalOutput {
+            id: "z".to_owned(),
+            full: rect(0, 0, 0, 1080),
+        }];
         assert_eq!(output_at_point(&flat, 0, 10), None);
     }
 
     #[test]
     fn directional_select_needs_edge_touch_and_known_source() {
         let outputs = vec![
-            DirectionalOutput { id: "left".to_owned(), full: rect(0, 0, 1920, 1080) },
-            DirectionalOutput { id: "right".to_owned(), full: rect(1920, 0, 1920, 1080) },
+            DirectionalOutput {
+                id: "left".to_owned(),
+                full: rect(0, 0, 1920, 1080),
+            },
+            DirectionalOutput {
+                id: "right".to_owned(),
+                full: rect(1920, 0, 1920, 1080),
+            },
         ];
         let mover = rect(1800, 400, 200, 200);
         assert_eq!(
@@ -1055,17 +1121,29 @@ mod tests {
         assert_eq!(drag_drop_fences_hold(&drag, &live), Some("owner-changed"));
         live = fence_live();
         live.source_tiled = false;
-        assert_eq!(directional_fences_hold(&snap, &live), Some("workspace-floating"));
-        assert_eq!(drag_drop_fences_hold(&drag, &live), Some("workspace-floating"));
+        assert_eq!(
+            directional_fences_hold(&snap, &live),
+            Some("workspace-floating")
+        );
+        assert_eq!(
+            drag_drop_fences_hold(&drag, &live),
+            Some("workspace-floating")
+        );
         live = fence_live();
         live.source_is_active = false;
         assert_eq!(directional_fences_hold(&snap, &live), Some("view-changed"));
         live = fence_live();
         live.membership_ok = false;
-        assert_eq!(directional_fences_hold(&snap, &live), Some("origin-vanished"));
+        assert_eq!(
+            directional_fences_hold(&snap, &live),
+            Some("origin-vanished")
+        );
         live = fence_live();
         live.overlay_fullscreen = true;
-        assert_eq!(directional_fences_hold(&snap, &live), Some("overlay-changed"));
+        assert_eq!(
+            directional_fences_hold(&snap, &live),
+            Some("overlay-changed")
+        );
     }
 
     fn send_snapshot() -> SendFenceSnapshot {
@@ -1100,19 +1178,31 @@ mod tests {
         assert_eq!(send_fences_hold(send_snapshot(), send_live()), None);
         let mut live = send_live();
         live.active_is_source = false;
-        assert_eq!(send_fences_hold(send_snapshot(), live), Some("view-changed"));
+        assert_eq!(
+            send_fences_hold(send_snapshot(), live),
+            Some("view-changed")
+        );
         live = send_live();
         live.source_tiled = false;
-        assert_eq!(send_fences_hold(send_snapshot(), live), Some("mode-changed"));
+        assert_eq!(
+            send_fences_hold(send_snapshot(), live),
+            Some("mode-changed")
+        );
         live = send_live();
         live.inner_gap = 4;
         assert_eq!(send_fences_hold(send_snapshot(), live), Some("deferred"));
         live = send_live();
         live.scope_ok = false;
-        assert_eq!(send_fences_hold(send_snapshot(), live), Some("scope-excluded"));
+        assert_eq!(
+            send_fences_hold(send_snapshot(), live),
+            Some("scope-excluded")
+        );
         live = send_live();
         live.lifetime_ok = false;
-        assert_eq!(send_fences_hold(send_snapshot(), live), Some("identity-changed"));
+        assert_eq!(
+            send_fences_hold(send_snapshot(), live),
+            Some("identity-changed")
+        );
         live = send_live();
         live.membership_ok = false;
         assert_eq!(send_fences_hold(send_snapshot(), live), Some("unverified"));
@@ -1123,7 +1213,10 @@ mod tests {
             send_fences_hold(send_snapshot(), live),
             Some("send-refused-fullscreen")
         );
-        let snap_max = SendFenceSnapshot { overlay_maximized: true, ..send_snapshot() };
+        let snap_max = SendFenceSnapshot {
+            overlay_maximized: true,
+            ..send_snapshot()
+        };
         let mut carried = send_live();
         carried.overlay_maximized = true;
         assert_eq!(send_fences_hold(snap_max, carried), None);
@@ -1131,7 +1224,10 @@ mod tests {
 
     #[test]
     fn send_overlay_gate_carries_stable_refuses_arrival_defers_drift() {
-        assert_eq!(send_overlay_gate(false, false, false, Some(false), false), Ok(()));
+        assert_eq!(
+            send_overlay_gate(false, false, false, Some(false), false),
+            Ok(())
+        );
         assert_eq!(
             send_overlay_gate(false, true, false, Some(true), true),
             Ok(()),

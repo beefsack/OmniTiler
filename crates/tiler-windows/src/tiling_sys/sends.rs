@@ -87,22 +87,9 @@ pub(super) fn workspace_do_send(
     };
     let foreground = crate::ffi::foreground_window();
     let reply = super::world_tick::run_world_command(
-        state,
-        me,
-        store,
-        dir,
-        observed,
-        retained,
-        areas,
-        foreground,
-        fulls,
-        command,
+        state, me, store, dir, observed, retained, areas, foreground, fulls, command,
     );
-    let transition_ms = ctx
-        .start
-        .elapsed()
-        .as_millis()
-        .min(u128::from(u64::MAX)) as u64;
+    let transition_ms = ctx.start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
     match reply {
         Some(_) => SendEffect {
             outcome: "ok",

@@ -140,24 +140,6 @@ impl WorldService {
         self.world_lock.try_lock()
     }
 
-    /// Trace-only placement lines for the last evaluated world request:
-    /// at most one startup-fit plus one send-placement line, each carrying
-    /// authoritative ordered tree shapes. Empty unless the opt-in trace
-    /// gate is set and the last op recorded a placement diagnostic. Pure
-    /// reads under the backend lock; never mutates, never touches the wire.
-    #[must_use]
-    pub fn placement_trace_lines(&self) -> Vec<String> {
-        if !tiler_protocol::world_protocol::placement_trace_enabled() {
-            return Vec::new();
-        }
-        match self.backend.lock() {
-            Ok(backend) => {
-                tiler_protocol::world_protocol::placement_trace_lines(backend.engine.engine())
-            }
-            Err(_) => Vec::new(),
-        }
-    }
-
     /// Discovery/bootstrap body for an adapter incarnation and request id:
     /// generation plus capabilities with `ready=false` and no applicable
     /// desired state. The adapter sends a full report before any ready

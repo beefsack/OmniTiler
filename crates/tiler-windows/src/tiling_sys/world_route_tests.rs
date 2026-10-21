@@ -77,6 +77,7 @@ fn observed_window() -> ObservedWindow {
             tag: "tag-1".to_owned(),
         },
         facts: plain_facts(),
+        member_tag: Some("tag-1".to_owned()),
     }
 }
 
@@ -120,27 +121,16 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
 
     // First dispatch: the visible member proves the active view, so the
     // report carries a truthful view receipt (never echoed desire). The
-    // core bootstraps logical state; the restoration ingress rides only
-    // this first report: persisted rings, views, tiling, and member homing
-    // from the live owner tables.
+    // core bootstraps logical state from the live screens.
     let out_token = state.output_token("DEV1");
     let report = seq
-        .try_dispatch(
-            &state.inputs(),
-            Some(&observed),
-            &retained,
-            &areas,
-            0,
-            None,
-        )
+        .try_dispatch(&state.inputs(), Some(&observed), &retained, &areas, 0, None)
         .expect("dispatch");
-    // Fresh bootstrap proves nothing yet: no durable restoration ingress
-    // (the core mints rings/views from the live screens) and no view
-    // receipts (nothing applied, so nothing is proven).
+    // Fresh bootstrap proves nothing yet: no view receipts (nothing
+    // applied, so nothing is proven).
     assert!(report.views.is_empty(), "no receipts before proof");
     assert_eq!(report.windows.len(), 1);
     assert_eq!(report.windows[0].window.0, "w1");
-    assert!(report.restored.is_none(), "fresh bootstrap restores nothing");
     let reply = match seq.deliver(&report) {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
@@ -162,23 +152,12 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
     // receipt, so the report stays receipt-free instead of echoing desire.
     seq.invalidate();
     let second = seq
-        .try_dispatch(
-            &state.inputs(),
-            Some(&observed),
-            &retained,
-            &areas,
-            0,
-            None,
-        )
+        .try_dispatch(&state.inputs(), Some(&observed), &retained, &areas, 0, None)
         .expect("dispatch");
     assert_eq!(
         second.views, report.views,
         "no receipt before proof, got {:?}",
         second.views
-    );
-    assert!(
-        second.restored.is_none(),
-        "restoration never fabricates"
     );
     let geometry_reply = match seq.deliver(&second) {
         WorldOutcome::Accepted(reply) => reply,
@@ -245,14 +224,7 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
     // re-actuation.
     seq.invalidate();
     let pending = seq
-        .try_dispatch(
-            &state.inputs(),
-            Some(&observed),
-            &retained,
-            &areas,
-            0,
-            None,
-        )
+        .try_dispatch(&state.inputs(), Some(&observed), &retained, &areas, 0, None)
         .expect("dispatch");
     assert_eq!(
         pending.views, report.views,
@@ -278,14 +250,7 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
     // path, not invented here).
     seq.invalidate();
     let unrelated = seq
-        .try_dispatch(
-            &state.inputs(),
-            Some(&observed),
-            &retained,
-            &areas,
-            0,
-            None,
-        )
+        .try_dispatch(&state.inputs(), Some(&observed), &retained, &areas, 0, None)
         .expect("dispatch");
     let reply = match seq.deliver(&unrelated) {
         WorldOutcome::Accepted(reply) => reply,
@@ -328,17 +293,12 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
         "view actuation proves, got {vproduced:?}"
     );
     vdiff.gate.note_applied(&reply);
-    state.applied_views.insert(out_token.clone(), target.clone());
+    state
+        .applied_views
+        .insert(out_token.clone(), target.clone());
     seq.invalidate();
     let echoed = seq
-        .try_dispatch(
-            &state.inputs(),
-            Some(&observed),
-            &retained,
-            &areas,
-            0,
-            None,
-        )
+        .try_dispatch(&state.inputs(), Some(&observed), &retained, &areas, 0, None)
         .expect("dispatch");
     assert_eq!(
         echoed.views.len(),
@@ -393,14 +353,7 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
     assert!(seq.has_pending_feedback());
     seq.invalidate();
     let third = seq
-        .try_dispatch(
-            &state.inputs(),
-            Some(&observed),
-            &retained,
-            &areas,
-            0,
-            None,
-        )
+        .try_dispatch(&state.inputs(), Some(&observed), &retained, &areas, 0, None)
         .expect("dispatch");
     assert!(seq.has_flight());
     assert!(seq.note_rejected_or_lost("gen-1", &third.request_id));
@@ -709,9 +662,327 @@ fn production_send_route_reports_honest_outcome_without_proof() {
         state.applied_homing
     );
     assert!(
-        reply.transfers.iter().any(|t| matches!(&t.kind, tiler_core::world_report::TransferKind::Window(w) if w.0 == "w1") && t.target_workspace == target),
+        reply.transfers.iter().any(
+            |t| matches!(&t.kind, tiler_core::world_report::TransferKind::Window(w) if w.0 == "w1")
+                && t.target_workspace == target
+        ),
         "unproven send flight stays retained, got {:?}",
         reply.transfers
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn arrival_reply(
+    out: &str,
+    rows: Vec<tiler_core::world_report::WindowDesire>,
+) -> tiler_core::world_report::WorldReply {
+    use tiler_core::world_report::{ScopeAuthority as Auth, ScopeStatus};
+    tiler_core::world_report::WorldReply {
+        contract_version: tiler_core::world_report::WORLD_CONTRACT_VERSION,
+        adapter_incarnation: "adapter-1".to_owned(),
+        core_generation: "gen-1".to_owned(),
+        request_id: "req-9".to_owned(),
+        based_on_observation_seq: 9,
+        state_revision: 9,
+        ready: true,
+        command_consumed: false,
+        scopes: vec![ScopeStatus {
+            scope: format!("{out}/ws1"),
+            authority: Auth::Controlled,
+        }],
+        workspaces: Vec::new(),
+        outputs: Vec::new(),
+        windows: rows,
+        transfers: Vec::new(),
+        effects: Vec::new(),
+        command_result: None,
+        presentation_bytes: 0,
+    }
+}
+
+fn arrival_row(
+    out: &str,
+    ws: &str,
+    token: &str,
+    allocation: Option<Rect>,
+    effective: Option<Rect>,
+    frame_auth: tiler_core::world_report::ScopeAuthority,
+    floating: bool,
+) -> tiler_core::world_report::WindowDesire {
+    tiler_core::world_report::WindowDesire {
+        lifetime: tiler_core::directional::WindowId(token.to_owned()),
+        output: tiler_core::directional::OutputId(out.to_owned()),
+        workspace: ws.to_owned(),
+        allocation,
+        effective_frame: effective,
+        frame_authority: frame_auth,
+        membership_authority: tiler_core::world_report::ScopeAuthority::Controlled,
+        floating,
+        float_origin: None,
+        frame_operation: None,
+    }
+}
+
+#[test]
+fn drop_arrival_proves_frameless_floats_only_on_matching_receipts() {
+    // Membership-only float lanes preserve their physical frame by design,
+    // so arrival settles on the proven applied-homing receipt alone. No
+    // live window is needed; a mismatched or absent receipt never proves.
+    use tiler_core::world_report::ScopeAuthority as Auth;
+    let mut state = test_state();
+    state.ensure_device("DEV1");
+    let out = state.output_token("DEV1");
+    let me = route_me();
+    let fulls = vec![Rect {
+        x: 0,
+        y: 0,
+        w: 800,
+        h: 600,
+    }];
+    let areas = vec![area()];
+    let reply = arrival_reply(
+        &out,
+        vec![arrival_row(
+            &out,
+            "ws1",
+            "w1",
+            None,
+            None,
+            Auth::Untouched,
+            true,
+        )],
+    );
+    let arrived = |state: &mut super::TileLoop, expect: Option<&str>| {
+        super::drop_arrival_verified(state, &me, &fulls, &areas, &reply, "w1", 9999, expect)
+    };
+    assert!(!arrived(&mut state, None), "no receipt proves nothing");
+    state
+        .applied_homing
+        .insert("w1".to_owned(), (out.clone(), "ws1".to_owned()));
+    assert!(arrived(&mut state, None), "matching receipt proves");
+    assert!(
+        !arrived(&mut state, Some("OTHER")),
+        "expected-device mismatch never proves"
+    );
+    state
+        .applied_homing
+        .insert("w1".to_owned(), (out.clone(), "ws2".to_owned()));
+    assert!(!arrived(&mut state, None), "wrong workspace never proves");
+    state.applied_homing.remove("w1");
+    assert!(!arrived(&mut state, None), "removed receipt proves nothing");
+    assert!(
+        !super::drop_arrival_verified(&mut state, &me, &fulls, &areas, &reply, "w9", 9999, None),
+        "unknown mover never proves"
+    );
+}
+
+#[test]
+fn drop_arrival_never_proves_from_allocation() {
+    // The canonical slot is never the write target and never arrival
+    // proof: only the published effective frame (tiled rows) or a proven
+    // receipt (frameless lanes) settles. Fake-HWND natives fail every
+    // fresh read-back, so framed rows hold offline.
+    use tiler_core::world_report::ScopeAuthority as Auth;
+    let mut state = test_state();
+    state.ensure_device("DEV1");
+    let out = state.output_token("DEV1");
+    let me = route_me();
+    let fulls = vec![Rect {
+        x: 0,
+        y: 0,
+        w: 800,
+        h: 600,
+    }];
+    let areas = vec![area()];
+    let slot = Rect {
+        x: 0,
+        y: 0,
+        w: 400,
+        h: 560,
+    };
+    // Fullscreen-style row: the slot is known but there is no frame
+    // target and no frame authority. The slot alone never proves.
+    let reply = arrival_reply(
+        &out,
+        vec![arrival_row(
+            &out,
+            "ws1",
+            "w1",
+            Some(slot),
+            None,
+            Auth::Untouched,
+            false,
+        )],
+    );
+    assert!(
+        !super::drop_arrival_verified(&mut state, &me, &fulls, &areas, &reply, "w1", 9999, None),
+        "allocation without a frame target never proves"
+    );
+    // Tiled row with a published target but no live window: the fresh
+    // read-back fails closed instead of echoing the target.
+    let reply = arrival_reply(
+        &out,
+        vec![arrival_row(
+            &out,
+            "ws1",
+            "w1",
+            Some(slot),
+            Some(slot),
+            Auth::Controlled,
+            false,
+        )],
+    );
+    assert!(
+        !super::drop_arrival_verified(&mut state, &me, &fulls, &areas, &reply, "w1", 9999, None),
+        "unreadable live frame never proves"
+    );
+    // Row homed on an unknown wire fails closed even with a receipt.
+    let reply = arrival_reply(
+        "o9",
+        vec![arrival_row(
+            "o9",
+            "ws1",
+            "w1",
+            None,
+            None,
+            Auth::Untouched,
+            true,
+        )],
+    );
+    state
+        .applied_homing
+        .insert("w1".to_owned(), ("o9".to_owned(), "ws1".to_owned()));
+    assert!(
+        !super::drop_arrival_verified(&mut state, &me, &fulls, &areas, &reply, "w1", 9999, None),
+        "unknown wire never proves"
+    );
+}
+
+#[test]
+fn busy_command_reports_unverified_not_cached_reply() {
+    // A command that never dispatches (single-flight busy) must not
+    // report the previous accepted reply as its outcome: the cached
+    // reply acknowledges older work, never this command.
+    let mut state = test_state();
+    state.ensure_device("DEV1");
+    let key = crate::native_guards::WindowKey {
+        hwnd: 101,
+        pid: 202,
+        creation: "proc-1".to_owned(),
+    };
+    state.member_tokens.insert(key.clone(), "w1".to_owned());
+    state.member_tags.insert(key.clone(), "tag-1".to_owned());
+    state.member_identity.insert(
+        key.clone(),
+        crate::model::ProcessIdentity {
+            pid: 202,
+            process_creation: "proc-1".to_owned(),
+            user_sid: "S-1-5-21-1000".to_owned(),
+            session_id: 1,
+            exe_path: "C:\\Apps\\app.exe".to_owned(),
+        },
+    );
+    let observed = vec![observed_window()];
+    let (dir, store, areas, fulls) = route_dirs("busy-cmd");
+    let me = route_me();
+    super::world_tick::run_observation_tick(
+        &mut state,
+        &me,
+        &store,
+        &dir,
+        &observed,
+        &[],
+        &areas,
+        0,
+        &fulls,
+    )
+    .expect("seed converges");
+    assert!(
+        state.world.last_reply().is_some(),
+        "seed accepted a cached reply"
+    );
+    // Open a flight without acknowledging it: the next command dispatch
+    // stays busy and the command never runs.
+    {
+        let super::TileLoop {
+            ref mut world,
+            ref member_tokens,
+            ref member_identity,
+            ref member_tags,
+            ref member_rects,
+            ref float_rects,
+            ref hint_logged,
+            ref sticky,
+            ref floated,
+            ref restart_reject_hold,
+            ref born_fullscreen,
+            ref born_first_exit,
+            ref fixed_auto_seen,
+            ref fixed_tile_overrides,
+            ref fixed_origin_overrides,
+            ref hidden_claims,
+            ref minimized_omitted,
+            ref pending_closed,
+            ref scope,
+            ref settings_live,
+            ref output_tokens,
+            ref applied_homing,
+            ref applied_views,
+            ref inner_gap,
+            ref outer_gap,
+            ref active,
+            ..
+        } = state;
+        world.invalidate();
+        let inputs = super::TileLoop::owner_inputs(
+            member_tokens,
+            member_identity,
+            member_tags,
+            member_rects,
+            float_rects,
+            hint_logged,
+            sticky,
+            floated,
+            restart_reject_hold,
+            born_fullscreen,
+            born_first_exit,
+            fixed_auto_seen,
+            fixed_tile_overrides,
+            fixed_origin_overrides,
+            hidden_claims,
+            minimized_omitted,
+            pending_closed,
+            scope,
+            settings_live,
+            output_tokens,
+            applied_homing,
+            applied_views,
+            *inner_gap,
+            *outer_gap,
+            active,
+        );
+        world
+            .try_dispatch_observation(&inputs, Some(&observed), &[], &areas, 0)
+            .expect("flight opens");
+    }
+    let out = state.output_token("DEV1");
+    let reply = super::world_tick::run_world_command(
+        &mut state,
+        &me,
+        &store,
+        &dir,
+        &observed,
+        &[],
+        &areas,
+        0,
+        &fulls,
+        tiler_core::world_report::WorldCommand::SelectTrailing {
+            output: tiler_core::directional::OutputId(out),
+        },
+    );
+    assert!(
+        reply.is_none(),
+        "busy command must not replay the cached reply, got {reply:?}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -460,61 +460,6 @@ pub struct NativeObservation {
     pub current_native: String,
 }
 
-/// One persisted logical workspace ring: the stable output id plus its
-/// ordered stable logical workspace ids, as retained by the adapter across
-/// a restart. Neutral bootstrap facts: no native domain authority, no
-/// applied member/view receipts.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RestoredRing {
-    pub output: OutputId,
-    pub workspaces: Vec<String>,
-}
-
-/// One persisted per-workspace tiling mode: the stable logical workspace on
-/// its owning screen plus whether the adapter retains it tiled. Absent
-/// entries seed from the reported saved default.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RestoredTiling {
-    pub output: OutputId,
-    pub workspace: String,
-    pub tiled: bool,
-}
-
-/// One persisted member homing: the opaque window lifetime plus its retained
-/// logical workspace on the observed screen. The adapter binds the token to
-/// its live native lifetime; the core never verifies identity here. All
-/// classification (floating, sticky, minimized, fullscreen, hidden) rides
-/// the window facts.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RestoredMember {
-    pub window: WindowId,
-    pub output: OutputId,
-    pub workspace: String,
-}
-
-/// Bootstrap restoration ingress: persisted rings, current views,
-/// per-workspace tiling, and member homing adopted on the first accepted
-/// report of an incarnation only. Restored members are retained (never
-/// fresh placement, admission, or focus): genuinely new lifetimes after the
-/// restoration bootstrap still focus once through the ordinary
-/// admission-focus path.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RestoredWorld {
-    pub rings: Vec<RestoredRing>,
-    pub views: Vec<ScreenView>,
-    pub tiling: Vec<RestoredTiling>,
-    pub members: Vec<RestoredMember>,
-}
-
-/// Bound on restored outputs per report (mirrors the screen cap).
-pub const MAX_RESTORED_RINGS: usize = MAX_WORLD_SCREENS;
-/// Bound on restored workspace ids per output.
-pub const MAX_RESTORED_PER_RING: usize = 256;
-/// Bound on restored per-workspace tiling entries per report.
-pub const MAX_RESTORED_TILING: usize = 4096;
-/// Bound on restored member homings per report (mirrors the fact cap).
-pub const MAX_RESTORED_MEMBERS: usize = MAX_WORLD_FACTS;
-
 /// Explicit world commands. At most one per report; observation-only
 /// reports carry none. Every variant consumes one `command_seq` (bound to
 /// the adapter incarnation/core generation high-watermark) and is retained
@@ -568,8 +513,9 @@ pub enum WorldCommand {
     /// Numbered send: positional `0..=9` over the scoped send ring for
     /// `output` (`0` is the trailing path: reuse the live trailing empty
     /// or create the trailing workspace immediately, exactly like
-    /// lifecycle). Commits an ordinary transfer and never view-switches,
-    /// including `follow=false` stays.
+    /// lifecycle). Commits an ordinary transfer; follow additionally selects
+    /// the same-output target view while `follow=false` stays never move
+    /// any view.
     SendNumbered {
         window: WindowId,
         output: OutputId,
@@ -728,20 +674,6 @@ pub struct WorldReport {
     pub inventory_complete: bool,
     pub gesture_barrier: bool,
     pub feedback: Vec<AttemptFeedback>,
-    /// Bootstrap restoration ingress (restart/persistence adoption): the
-    /// adapter's persisted logical workspace rings, current views,
-    /// per-workspace tiling modes, and member homing, as neutral opaque
-    /// facts. `None` is a fresh bootstrap (core mints rings/views from the
-    /// live screens); `Some` is a restoration bootstrap adopted
-    /// transactionally on the first accepted report of an incarnation only.
-    /// Later reports carrying restoration refuse as stale without mutation.
-    /// Native identity/lifetime association stays adapter-mechanical (member
-    /// windows are opaque tokens the adapter binds to its live lifetimes);
-    /// core logical mapping is the sole homing authority. Floating, sticky,
-    /// minimized, fullscreen, and hidden truth rides the window facts, never
-    /// this ingress. Malformed or dangling restoration refuses as
-    /// `snapshot-invalid` without mutation.
-    pub restored: Option<RestoredWorld>,
 }
 
 /// World reply: single globally ordered full desired snapshot. No
@@ -1032,41 +964,6 @@ pub fn report_digest(report: &WorldReport) -> u64 {
         feed(&mut hash, &format!("{:?}", feedback.hold));
         sep(&mut hash);
     }
-    match report.restored.as_ref() {
-        None => flag(&mut hash, false),
-        Some(restored) => {
-            flag(&mut hash, true);
-            for ring in &restored.rings {
-                feed(&mut hash, &ring.output.0);
-                sep(&mut hash);
-                for id in &ring.workspaces {
-                    feed(&mut hash, id);
-                    sep(&mut hash);
-                }
-            }
-            for view in &restored.views {
-                feed(&mut hash, &view.output.0);
-                sep(&mut hash);
-                feed(&mut hash, &view.view);
-                sep(&mut hash);
-            }
-            for entry in &restored.tiling {
-                feed(&mut hash, &entry.output.0);
-                sep(&mut hash);
-                feed(&mut hash, &entry.workspace);
-                sep(&mut hash);
-                flag(&mut hash, entry.tiled);
-            }
-            for member in &restored.members {
-                feed(&mut hash, &member.window.0);
-                sep(&mut hash);
-                feed(&mut hash, &member.output.0);
-                sep(&mut hash);
-                feed(&mut hash, &member.workspace);
-                sep(&mut hash);
-            }
-        }
-    }
     hash
 }
 
@@ -1244,105 +1141,6 @@ pub fn validate_report_reason(report: &WorldReport) -> Option<&'static str> {
     for feedback in &report.feedback {
         if !is_opaque_id(&feedback.operation_id) {
             return Some("feedback-invalid");
-        }
-    }
-    if let Some(restored) = report.restored.as_ref() {
-        let facts: BTreeSet<&str> = report
-            .windows
-            .iter()
-            .map(|fact| fact.window.0.as_str())
-            .collect();
-        let closed: BTreeSet<&str> = report.closed.iter().map(|id| id.0.as_str()).collect();
-        if let Some(reason) = validate_restored(restored, &facts, &closed) {
-            return Some(reason);
-        }
-    }
-    None
-}
-
-/// Validate bootstrap restoration ingress without echoing payload bytes:
-/// every carried id is opaque, rings/views/tiling/members are cross-linked
-/// (views, tiling, and members must name ring entries), and every restored
-/// member must ride the report's window facts (a restored window that is
-/// explicitly closed or unknown is stale). `None` when valid. Restored
-/// outputs need not name reported screens: units homed on a disconnected
-/// screen displace onto a survivor through the ordinary hotplug path.
-/// First-report-only enforcement lives in the engine (`restored-stale`),
-/// not here.
-#[must_use]
-pub fn validate_restored(
-    restored: &RestoredWorld,
-    facts: &BTreeSet<&str>,
-    closed: &BTreeSet<&str>,
-) -> Option<&'static str> {
-    if restored.rings.is_empty() {
-        return Some("restored-ring-invalid");
-    }
-    if restored.rings.len() > MAX_RESTORED_RINGS
-        || restored.views.len() > MAX_WORLD_VIEWS
-        || restored.tiling.len() > MAX_RESTORED_TILING
-        || restored.members.len() > MAX_RESTORED_MEMBERS
-    {
-        return Some("section-over-cap");
-    }
-    let mut ringed: BTreeSet<(&str, &str)> = BTreeSet::new();
-    let mut ring_outputs: BTreeSet<&str> = BTreeSet::new();
-    for ring in &restored.rings {
-        if !is_opaque_id(&ring.output.0) || !ring_outputs.insert(ring.output.0.as_str()) {
-            return Some("restored-output-invalid");
-        }
-        if ring.workspaces.is_empty() || ring.workspaces.len() > MAX_RESTORED_PER_RING {
-            return Some("restored-workspace-invalid");
-        }
-        for id in &ring.workspaces {
-            if !is_opaque_id(id) || !ringed.insert((ring.output.0.as_str(), id.as_str())) {
-                return Some("restored-workspace-invalid");
-            }
-        }
-    }
-    let mut view_outputs: BTreeSet<&str> = BTreeSet::new();
-    for view in &restored.views {
-        if !is_opaque_id(&view.output.0) || !view_outputs.insert(view.output.0.as_str()) {
-            return Some("restored-view-invalid");
-        }
-        if !ring_outputs.contains(view.output.0.as_str()) {
-            return Some("restored-view-unknown");
-        }
-        if view.view.is_empty() || !ringed.contains(&(view.output.0.as_str(), view.view.as_str())) {
-            return Some("restored-view-invalid");
-        }
-    }
-    let mut tiling_keys: BTreeSet<(&str, &str)> = BTreeSet::new();
-    for entry in &restored.tiling {
-        if !is_opaque_id(&entry.output.0) || !is_opaque_id(&entry.workspace) {
-            return Some("restored-tiling-invalid");
-        }
-        if !ringed.contains(&(entry.output.0.as_str(), entry.workspace.as_str())) {
-            return Some("restored-tiling-unknown");
-        }
-        if !tiling_keys.insert((entry.output.0.as_str(), entry.workspace.as_str())) {
-            return Some("restored-tiling-duplicate");
-        }
-    }
-    let mut member_windows: BTreeSet<&str> = BTreeSet::new();
-    for member in &restored.members {
-        if !is_opaque_id(&member.window.0)
-            || !is_opaque_id(&member.output.0)
-            || !is_opaque_id(&member.workspace)
-        {
-            return Some("restored-member-invalid");
-        }
-        if !ringed.contains(&(member.output.0.as_str(), member.workspace.as_str())) {
-            return Some("restored-member-unknown");
-        }
-        if !member_windows.insert(member.window.0.as_str()) {
-            return Some("restored-member-duplicate");
-        }
-        if closed.contains(member.window.0.as_str()) {
-            return Some("restored-member-closed");
-        }
-        if !facts.contains(member.window.0.as_str()) {
-            return Some("restored-member-unknown");
         }
     }
     None

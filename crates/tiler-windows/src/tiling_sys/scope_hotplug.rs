@@ -28,12 +28,14 @@ pub(super) fn sync_monitor_outputs(state: &mut TileLoop, areas: &[MonitorArea]) 
         if state.output_tokens.contains_key(key) {
             continue;
         }
-        while state.output_tokens.values().any(|id| id == &format!("o{next}")) {
+        while state
+            .output_tokens
+            .values()
+            .any(|id| id == &format!("o{next}"))
+        {
             next = next.saturating_add(1);
         }
-        state
-            .output_tokens
-            .insert(key.clone(), format!("o{next}"));
+        state.output_tokens.insert(key.clone(), format!("o{next}"));
         next = next.saturating_add(1);
     }
     sync_tail(state, areas, &current, &[]);
@@ -51,21 +53,20 @@ fn sync_tail(state: &mut TileLoop, areas: &[MonitorArea], current: &[String], de
     state.known_outputs = known;
     let mut last = areas.to_vec();
     for origin in deferred {
-        if !last.iter().any(|a| &a.device == origin) {
-            if let Some(area) = state
+        if !last.iter().any(|a| &a.device == origin)
+            && let Some(area) = state
                 .last_areas
                 .iter()
                 .find(|a| &a.device == origin)
                 .cloned()
-            {
-                last.push(area);
-            }
+        {
+            last.push(area);
         }
     }
     state.last_areas = last;
-    if state.active_output.is_empty() {
-        if let Some(first) = state.known_outputs.first().cloned() {
-            state.active_output = first;
-        }
+    if state.active_output.is_empty()
+        && let Some(first) = state.known_outputs.first().cloned()
+    {
+        state.active_output = first;
     }
 }

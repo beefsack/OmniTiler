@@ -141,7 +141,9 @@ pub fn tile_options_from_settings(settings: &schema::Settings) -> crate::tiling:
 /// local mode when there are no live settings (proof owners) or the document
 /// carries the backfilled default.
 #[must_use]
-pub fn startup_mode(live: Option<&persistence::LiveSettings>) -> tiler_core::workspace_scope::WorkspaceMode {
+pub fn startup_mode(
+    live: Option<&persistence::LiveSettings>,
+) -> tiler_core::workspace_scope::WorkspaceMode {
     live.map(|live| live.settings.core.workspace.mode_enum())
         .unwrap_or(tiler_core::workspace_scope::DEFAULT_WORKSPACE_MODE)
 }

@@ -106,6 +106,7 @@ fn observed(hwnd: u64, token: &str) -> super::ObservedWindow {
             no_activate: false,
             dialog: false,
         },
+        member_tag: None,
     }
 }
 
@@ -185,9 +186,9 @@ fn sticky_markers_readopt_through_real_tileloop_twice() {
             );
             assert!(
                 crate::product_hide::sys::peek_sticky_raw(win.hwnd)
-                    == crate::native_guards::MarkerSlot::Value(
-                        crate::tiling::sticky_marker_value(prior)
-                    ),
+                    == crate::native_guards::MarkerSlot::Value(crate::tiling::sticky_marker_value(
+                        prior
+                    )),
                 "prior {prior} restart {restart}: durable marker kept"
             );
         }
@@ -762,12 +763,14 @@ fn hydration_candidates(
     rows: &[(String, Rect, tiler_core::size_hints::WindowSizeHints, bool)],
 ) -> Vec<super::restart::HydrationCandidate<'_>> {
     rows.iter()
-        .map(|(token, rect, hints, floating)| super::restart::HydrationCandidate {
-            token,
-            rect: *rect,
-            floating: *floating,
-            hints: *hints,
-        })
+        .map(
+            |(token, rect, hints, floating)| super::restart::HydrationCandidate {
+                token,
+                rect: *rect,
+                floating: *floating,
+                hints: *hints,
+            },
+        )
         .collect()
 }
 
@@ -1017,11 +1020,9 @@ fn reject_rig() -> RejectRig {
     }
 }
 
-
 /// Production reconcile event over freshly assembled rows on a cloned
 /// Engine, so the probe never mutates the rig: proves the fixture plans
 /// through the real event builder and extracts the plan-level writes.
-
 
 #[test]
 fn mixed_roster_adoption_carries_fixed_anchor_as_exception() {

@@ -2,6 +2,7 @@
 use super::*;
 use crate::snapkey::{QueuedFullscreenIntent, QueuedMaximizeIntent};
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn dispatch_maximize_intent(
     state: &mut TileLoop,
     me: &ProcessIdentity,
@@ -140,12 +141,8 @@ pub(super) fn dispatch_maximize_intent(
         );
         return;
     };
-    if !crate::native_guards::member_matches(
-        &member_key,
-        origin.hwnd,
-        origin.pid,
-        &origin.creation,
-    ) {
+    if !crate::native_guards::member_matches(&member_key, origin.hwnd, origin.pid, &origin.creation)
+    {
         state.snap_advance = None;
         log_json_at(
             log_path,
@@ -304,6 +301,7 @@ pub(super) fn dispatch_maximize_intent(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn dispatch_fullscreen_intent(
     state: &mut TileLoop,
     me: &ProcessIdentity,
@@ -443,12 +441,8 @@ pub(super) fn dispatch_fullscreen_intent(
         );
         return;
     };
-    if !crate::native_guards::member_matches(
-        &member_key,
-        origin.hwnd,
-        origin.pid,
-        &origin.creation,
-    ) {
+    if !crate::native_guards::member_matches(&member_key, origin.hwnd, origin.pid, &origin.creation)
+    {
         state.snap_advance = None;
         log_json_at(
             log_path,
@@ -547,6 +541,9 @@ pub(super) fn dispatch_fullscreen_intent(
                 no_activate: false,
                 dialog: false,
             }),
+            // Synthetic fallback row: no fresh membership read was taken, so
+            // it carries no stamp and can never prove a receipt.
+            member_tag: None,
         });
         owned_expected.as_ref().expect("retained expected built")
     };

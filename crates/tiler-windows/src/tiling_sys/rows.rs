@@ -132,7 +132,10 @@ pub(super) fn hold_band_target(
 /// the live member tag must still equal the stored tag and the HWND must
 /// still resolve to the stored pid. Call immediately before the `SetProp` /
 /// `RemoveProp` under the held process and again after the readback.
-pub(super) fn marker_tag_pid_fresh(state: &TileLoop, key: &crate::native_guards::WindowKey) -> bool {
+pub(super) fn marker_tag_pid_fresh(
+    state: &TileLoop,
+    key: &crate::native_guards::WindowKey,
+) -> bool {
     state.member_tags.get(key).is_some_and(|stored| {
         crate::native_guards::visible_lifetime_ok(
             stored,
@@ -461,13 +464,10 @@ pub(super) fn refresh_world_hints(
         let Some(token) = state.member_tokens.get(&key).cloned() else {
             continue;
         };
-        if record.iconic
-            || record.claim.show.minimized
-            || state.minimized_omitted.contains(&key)
-        {
+        if record.iconic || record.claim.show.minimized || state.minimized_omitted.contains(&key) {
             continue;
         }
-        if state.member_rects.get(&token).is_none() && state.float_rects.get(&token).is_none() {
+        if !state.member_rects.contains_key(&token) && !state.float_rects.contains_key(&token) {
             continue;
         }
         let fresh = hidden_hint_for(state, &key, &hint_cx);
@@ -491,9 +491,7 @@ pub(super) fn refresh_world_hints(
         sync(state, &row.token, hints);
     }
     let live: HashSet<String> = state.member_tokens.values().cloned().collect();
-    state
-        .hint_logged
-        .retain(|token, _| live.contains(token));
+    state.hint_logged.retain(|token, _| live.contains(token));
     state
         .hint_last_good
         .retain(|key, _| state.member_tokens.contains_key(key));

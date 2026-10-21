@@ -365,6 +365,7 @@ pub(super) fn engine_is_automatic_fixed(
 /// latch) admits like intentional floats; only an explicit tile override
 /// still refuses here. Pure in-memory read: no Engine mutation, no native
 /// calls.
+#[cfg(test)]
 pub(super) fn float_send_admits(
     state: &TileLoop,
     mover_key: &crate::native_guards::WindowKey,
@@ -514,7 +515,10 @@ fn member_is_automatic_fixed(state: &TileLoop, key: &crate::native_guards::Windo
 /// Call BEFORE the winning Engine assignment commits: the assignment
 /// withdraws the automatic mark, so a later read would lose the evidence.
 /// Takes no native reads and performs no writes.
-pub(super) fn fixed_origin_provenance(state: &TileLoop, key: &crate::native_guards::WindowKey) -> bool {
+pub(super) fn fixed_origin_provenance(
+    state: &TileLoop,
+    key: &crate::native_guards::WindowKey,
+) -> bool {
     if state.fixed_auto_seen.contains(key) || state.fixed_origin_overrides.contains(key) {
         return true;
     }
@@ -529,28 +533,6 @@ pub(super) fn fixed_predicate_for(
     live: Option<&LiveSettings>,
 ) -> tiler_core::size_hints::FixedSizePredicate {
     live.map(|live| live.settings.core.fixed_size_predicate_mode())
-        .unwrap_or_default()
-}
-
-/// Best-effort admission D2 fallback for subsequent capacity decisions:
-/// the last-good live setting, read per decision so a saved change applies
-/// to later admissions only and never reclassifies retained topology
-/// (D10). Proof owners carry no live settings (`None`) and keep the
-/// largest-splittable default.
-pub(super) fn anchor_fallback_for(
-    live: Option<&LiveSettings>,
-) -> tiler_core::admission::AnchorFallback {
-    live.map(|live| live.settings.core.anchor_fallback_mode())
-        .unwrap_or_default()
-}
-
-/// Best-effort admission D3 result for subsequent admission or actual
-/// capacity-repair decisions: the last-good live setting, read per decision
-/// so a saved change applies later only and never reflows retained
-/// tiles/floats (D10). Proof owners carry no live settings (`None`) and
-/// keep the float default.
-pub(super) fn no_space_for(live: Option<&LiveSettings>) -> tiler_core::admission::NoSpaceResult {
-    live.map(|live| live.settings.core.no_space_result_mode())
         .unwrap_or_default()
 }
 

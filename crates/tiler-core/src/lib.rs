@@ -11,7 +11,7 @@ pub mod bounds;
 pub mod contract;
 pub mod cosmic_v1;
 pub mod directional;
-pub mod engine;
+pub(crate) mod engine;
 pub mod geometry;
 pub mod ids;
 pub mod output_selection;
@@ -37,3 +37,52 @@ pub mod world_sends;
 pub mod world_settle;
 pub mod world_sizing;
 pub mod world_tiling_views;
+
+#[cfg(test)]
+mod capacity_admission_tests;
+#[cfg(test)]
+mod fixed_size_admission_tests;
+#[cfg(test)]
+mod gap_repair_replay_tests;
+#[cfg(test)]
+mod maximized_focus_send_tests;
+#[cfg(test)]
+mod minimize_restore_tests;
+#[cfg(test)]
+mod observation_send_r4_tests;
+#[cfg(test)]
+mod per_domain_drag_preview_tests;
+#[cfg(test)]
+pub(crate) mod per_domain_fixture;
+#[cfg(test)]
+mod per_domain_reconcile_tests;
+#[cfg(test)]
+mod per_domain_resize_tests;
+#[cfg(test)]
+mod release_domain_tests;
+#[cfg(test)]
+mod restart_disjoint_adoption_tests;
+#[cfg(test)]
+mod session_float_focus_admission_tests;
+#[cfg(test)]
+mod session_observation_convergence_tests;
+#[cfg(test)]
+mod size_hints_tests;
+#[cfg(test)]
+mod world_admission_close_stay_tests;
+#[cfg(test)]
+mod world_capacity_diagnostic_tests;
+#[cfg(test)]
+mod world_coverage_gaps_tests;
+#[cfg(test)]
+mod world_float_boundary_tests;
+#[cfg(test)]
+mod world_float_membership_tests;
+#[cfg(test)]
+mod world_global_swap_tests;
+#[cfg(test)]
+mod world_logical_contract_tests;
+#[cfg(test)]
+mod world_migration_refusal_tests;
+#[cfg(test)]
+mod world_restored_routing_tests;

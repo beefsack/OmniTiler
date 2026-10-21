@@ -410,19 +410,9 @@ impl PlannerEndpoint {
                 "reply exceeds size bound".to_owned(),
             ));
         }
-        // Trace-only placement snapshot: capture under the single-flight
-        // guard so a concurrent world flight cannot evaluate between the
-        // request and the trace read (the guard fails fast as busy, never
-        // queues). The backend lock then serializes against lock-free
-        // discovery, which never writes placement traces. Logging never
-        // changes the result.
-        let trace_lines = self.world.placement_trace_lines();
         drop(_guard);
         eprintln!("{}", world_ingress_summary(&request));
         eprintln!("{}", world_egress_summary(&request, &reply));
-        for line in trace_lines {
-            eprintln!("{line}");
-        }
         Ok(reply)
     }
 

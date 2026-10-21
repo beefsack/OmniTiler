@@ -90,6 +90,9 @@ pub(super) fn overlay_expected(
             no_activate: false,
             dialog: false,
         }),
+        // Synthetic fallback row: no fresh membership read was taken, so it
+        // carries no stamp and can never prove a receipt.
+        member_tag: None,
     })
 }
 
@@ -119,21 +122,6 @@ pub(super) fn actuate_focus(
     retained: &[RetainedRow],
     to_token: &str,
 ) -> FocusActuation {
-    #[cfg(test)]
-    if let Some(outcome) = INJECTED_FOCUS.with(|slot| *slot.borrow()) {
-        PENDING_COUNTERS.with(|slot| {
-            slot.borrow_mut().focus += 1;
-        });
-        let _ = (state, me, fulls, observed, retained, to_token);
-        return FocusActuation {
-            outcome,
-            setter_accepted: false,
-            prime_inserted: 0,
-            attach_ok: false,
-            eventual: false,
-            deferred: false,
-        };
-    }
     let unsettled = |outcome: &'static str| FocusActuation {
         outcome,
         setter_accepted: false,

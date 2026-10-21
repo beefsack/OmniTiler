@@ -130,9 +130,27 @@ pub(super) fn ensure_workspace_assignments(
             // first report screens): the adapter binds only the mechanical
             // token/identity/tag triple, never a workspace.
             state.member_tokens.insert(key.clone(), fresh_token.clone());
-            state.member_rects.insert(fresh_token, window.visible);
+            state
+                .member_rects
+                .insert(fresh_token.clone(), window.visible);
             state.member_identity.insert(key.clone(), identity);
-            state.member_tags.insert(key, fresh_tag);
+            state.member_tags.insert(key.clone(), fresh_tag);
+            // Trace-only token<->HWND join for native correlation (see the
+            // world-tick admission path): stable token plus the full member
+            // identity, no titles or app content. Fresh admissions only.
+            if state.trace {
+                log_json_at(
+                    &state.log_path,
+                    serde_json::json!({
+                        "event": "member-admitted",
+                        "tick": state.tick,
+                        "window": fresh_token,
+                        "hwnd": key.hwnd,
+                        "pid": key.pid,
+                        "creation": key.creation,
+                    }),
+                );
+            }
             admitted_outputs.push(output);
             continue;
         }
@@ -173,135 +191,6 @@ pub(super) fn ensure_workspace_assignments(
     {
         state.active_output = first;
     }
-}
-
-/// Periodic hidden-claim audit: destroyed/recycled claims retire through the
-/// identity-safe reveal path (no foreign writes), then drop session
-/// membership, tokens, identity, and prune emptied workspaces. A merely
-/// invisible window never retires anything: only recovery decides. Unknown
-/// identities retain with the ledger kept.
-///
-/// Death classification truth table (never a close on live evidence):
-/// - `Ok` with a different process, or a nonce that no longer equals the
-///   claim tag, means this window is gone or recycled: the property dies
-///   with its window, so a live claimed window always reads both back.
-/// - `absent:*` means the HWND/PID is destroyed or recycled.
-/// - `refuse: sid/session mismatch` means the HWND no longer belongs to our
-///   session: membership must drop even though something is alive there.
-/// - Every other error (`uncertain:*` from access-denied reads, `error:*`
-///   owner/nonce failures, `refuse: zero hwnd`) retains with the ledger
-///   kept: a removed tag or an access failure on a live window is never a
-///   close. The close queue additionally re-verifies the member tag
-///   (see [`queue_verified_close`]), so a live window never reports even if
-///   retirement below were ever reached for it.
-///
-/// Diagnostics: each retirement logs one `workspace-reveal` line in the
-/// `audit` phase before the state removal below, with the safe opaque member
-/// token (null when unknown) and the categorical reveal outcome. The
-/// `maintenance` correlation names the acting sweep (there is no action
-/// context here) and elapsed reads zero (no action clock). Volume needs no
-/// cap: each claim retires at most once, and uncertain claims retain
-/// silently.
-pub(super) fn audit_hidden_claims(state: &mut TileLoop, me: &ProcessIdentity, store: &LedgerStore) {
-    let keys: Vec<crate::native_guards::WindowKey> = state.hidden_claims.keys().cloned().collect();
-    let mut retired_any = false;
-    for key in keys {
-        let Some(record) = state.hidden_claims.get(&key).cloned() else {
-            continue;
-        };
-        let dead = match live_query_recovery(key.hwnd, me) {
-            Ok(snap) => {
-                snap.process != record.claim.process
-                    || snap.nonce.as_deref() != Some(record.claim.tag.as_str())
-            }
-            Err(msg) => {
-                if msg.starts_with("absent:") || msg.contains("sid/session mismatch") {
-                    true
-                } else {
-                    // Unknown: retain with the ledger kept.
-                    continue;
-                }
-            }
-        };
-        if !dead {
-            continue;
-        }
-        let token = state.member_tokens.get(&key).cloned().unwrap_or_default();
-        let sample = if token.is_empty() {
-            None
-        } else {
-            Some(token.as_str())
-        };
-        let line = match crate::product_hide::sys::reveal_product_claim_to(
-            store,
-            me,
-            &record.claim,
-            record.iconic,
-        ) {
-            Ok(teardown) => reveal_log_line(
-                state.tick,
-                "maintenance",
-                sample,
-                "retired",
-                Some(reveal_outcome(&teardown)),
-                Some("audit"),
-                0,
-            ),
-            Err(e) => {
-                let (outcome, detail) = reveal_err_outcome(&e.to_string());
-                reveal_log_line(
-                    state.tick,
-                    "maintenance",
-                    sample,
-                    outcome,
-                    Some(detail),
-                    Some("audit"),
-                    0,
-                )
-            }
-        };
-        log_json_at(&state.log_path.clone(), line);
-        state.hidden_claims.remove(&key);
-        // D23: a retired hidden close queues exactly like a visible one, so
-        // hidden-workspace closes clean their Engine slots on the next valid
-        // observation for that domain. Death is already verified above.
-        queue_verified_close(state, &key);
-        drop_member_state(state, &key);
-        retired_any = true;
-    }
-    // Authoritative uncertain-hide resolution: visibility never clears the
-    // hold; only the durable ledger does. A readable ledger with no product
-    // entry for the HWND proves absence and clears, so a later app hide can
-    // close; a kept entry retains across visible recovery and a second hide;
-    // an unreadable ledger retains. Proven-absent clears drop the marker
-    // only, never membership, so the member still converges on its retained
-    // slot.
-    if !state.vis_diag.uncertain_hides.is_empty() {
-        match store.committed() {
-            Err(_) => {}
-            Ok(record) => {
-                let mut proven_absent = Vec::new();
-                for k in state.vis_diag.uncertain_hides.iter() {
-                    let kept = record.as_ref().is_some_and(|r| {
-                        r.owner == *me
-                            && r.windows.iter().any(|w| {
-                                w.hwnd == k.hwnd && w.kind == crate::model::WindowClaimKind::Product
-                            })
-                    });
-                    if !kept {
-                        proven_absent.push(k.clone());
-                    }
-                }
-                for k in proven_absent {
-                    state.vis_diag.uncertain_hides.remove(&k);
-                }
-            }
-        }
-    }
-    // Trailing convergence is core-owned: retirements ride the next report
-    // and the core reprunes. The flag below only records that a retirement
-    // happened this pass.
-    let _ = retired_any;
 }
 
 /// D23 close-versus-minimize classification at the observation/lifetime
@@ -572,121 +461,6 @@ pub(super) fn workspace_close_cleanup(state: &mut TileLoop) {
     prune_float_state(state);
 }
 
-/// Hide one managed member bound to its stored full identity: the live
-/// window must equal the stored [`ProcessIdentity`] exactly, so a recycled
-/// HWND refuses with no writes. Fresh proof gate on every write in proof
-/// modes; commit-before-hide through the central watcher/ledger. Outcomes
-/// are typed at the source, never selected by error strings. The detail
-/// carries the managed-admission refusal code when the outcome is
-/// `refused`, so the select hide loop can log the exact failure.
-///
 /// Bounded per-window hide diagnostics cap for one select transition.
+#[cfg(test)]
 pub(super) const MAX_HIDE_DIAG_PER_SELECT: usize = 64;
-pub(super) fn workspace_hide_one(
-    state: &mut TileLoop,
-    me: &ProcessIdentity,
-    store: &LedgerStore,
-    dir: &Path,
-    key: &crate::native_guards::WindowKey,
-    expected: &ProcessIdentity,
-    iconic: bool,
-) -> (&'static str, Option<&'static str>) {
-    // Shared admission with the joint batch phases (identical fences), so
-    // the remaining single-window path (migration) cannot diverge in safety.
-    // Only the wait below stays per-window; select/send/rollback phases use
-    // the joint batch instead.
-    let claim = match super::visibility_batch::admit_hide_item(state, me, key, expected) {
-        Ok(claim) => claim,
-        Err((outcome, detail)) => return (outcome, detail),
-    };
-    match crate::product_hide::sys::hide_managed_claim(store, me, &claim, dir) {
-        Ok(committed) => {
-            state.hidden_claims.insert(
-                key.clone(),
-                HiddenRecord {
-                    claim: committed,
-                    iconic,
-                },
-            );
-            state.vis_diag.uncertain_hides.remove(key);
-            ("hidden", None)
-        }
-        Err(e) => {
-            // Commit-before-hide appends the durable enriched claim BEFORE the
-            // async visibility post, so an already-committed claim should
-            // register in the owner table even when the post-hide readback
-            // fails. That rescue re-read is fallible, however: when it fails
-            // the window may be hidden with a kept ledger but no owner-table
-            // entry. The uncertain-hide hold marker covers that gap (never a
-            // close); the joint batch path needs none of this because it
-            // registers before posting. Never re-admit the claimed HWND nonce
-            // and never fabricate a rollback. The hold applies to every
-            // post-commit failure with unreadable rescue evidence, not just
-            // the `uncertain:` prefix: `error:` posts, `refuse:` readbacks and
-            // any other kept-ledger error with a failed rescue must also
-            // hold. A readable ledger with no durable entry proves no commit
-            // (pre-commit refusal or an `absent:` post that already removed
-            // its note) and takes no marker; unreadable rescue always holds
-            // until authoritative ledger evidence resolves it.
-            let (rescued, ledger_unreadable) = if rescue_read_failed() {
-                (false, true)
-            } else {
-                match store.committed() {
-                    Ok(Some(record)) if record.owner == *me => {
-                        if let Some(durable) = record.windows.iter().find(|w| {
-                            w.hwnd == claim.hwnd
-                                && w.tag == claim.tag
-                                && w.process == claim.process
-                                && w.kind == crate::model::WindowClaimKind::Product
-                        }) {
-                            state.hidden_claims.insert(
-                                key.clone(),
-                                HiddenRecord {
-                                    claim: durable.clone(),
-                                    iconic,
-                                },
-                            );
-                            state.vis_diag.uncertain_hides.remove(key);
-                            (true, false)
-                        } else {
-                            (false, false)
-                        }
-                    }
-                    Ok(_) => (false, false),
-                    Err(_) => (false, true),
-                }
-            };
-            let msg = e.to_string();
-            if !rescued && ledger_unreadable {
-                state.vis_diag.uncertain_hides.insert(key.clone());
-            }
-            if msg.starts_with("absent:") {
-                ("origin-vanished", None)
-            } else if msg.starts_with("uncertain:") {
-                ("uncertain", None)
-            } else {
-                ("refused", None)
-            }
-        }
-    }
-}
-
-/// Fresh proof-owned gate for one reveal write: in proof modes the helper
-/// must verify against the frozen allowlist immediately before the reveal
-/// effect, exactly like the hide path.
-pub(super) fn workspace_proof_reveal_gate(
-    state: &TileLoop,
-    me: &ProcessIdentity,
-    hwnd: u64,
-) -> std::result::Result<(), &'static str> {
-    let Some(entries) = state.allowlist.as_ref() else {
-        return Ok(());
-    };
-    if !state.workspace_proof {
-        return Err("workspace-disabled");
-    }
-    let Some(entry) = entries.iter().find(|e| e.hwnd == hwnd) else {
-        return Err("allowlist-changed");
-    };
-    verify_proof_owned(hwnd, entry, me).map_err(|_| "identity-changed")
-}

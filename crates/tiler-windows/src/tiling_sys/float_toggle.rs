@@ -76,8 +76,7 @@ pub(super) fn apply_float_from_tiled(
     applied: &'static str,
     mark_sticky: bool,
 ) {
-    let Some(effective) = plan_float_rect(state, areas, from, loc, origin, settle, log_path)
-    else {
+    let Some(effective) = plan_float_rect(state, areas, from, loc, origin, settle, log_path) else {
         return;
     };
     let Some(expected) = observed.iter().find(|w| w.hwnd == member_key.hwnd) else {

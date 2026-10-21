@@ -117,7 +117,13 @@ impl TileLoop {
     /// on the output (stale-intent detection needs the distinction).
     pub(super) fn workspace_mode_known_here(&self, device: &str, workspace: &str) -> Option<bool> {
         let wire = self.wire_of(device)?;
-        if !self.world.engine().logical_ring(&wire).iter().any(|id| id == workspace) {
+        if !self
+            .world
+            .engine()
+            .logical_ring(&wire)
+            .iter()
+            .any(|id| id == workspace)
+        {
             return None;
         }
         Some(matches!(
@@ -140,11 +146,6 @@ impl TileLoop {
             workspace,
             hidden: self.hidden_claims.contains_key(key),
         })
-    }
-
-    /// Whether one member key carries a live hide claim.
-    pub(super) fn is_hidden_member(&self, key: &crate::native_guards::WindowKey) -> bool {
-        self.hidden_claims.contains_key(key)
     }
 
     /// World-backed workspace members: core logical members mapped back to
@@ -192,10 +193,15 @@ impl TileLoop {
                 next = next.max(n.saturating_add(1));
             }
         }
-        while self.output_tokens.values().any(|id| id == &format!("o{next}")) {
+        while self
+            .output_tokens
+            .values()
+            .any(|id| id == &format!("o{next}"))
+        {
             next = next.saturating_add(1);
         }
-        self.output_tokens.insert(device.to_owned(), format!("o{next}"));
+        self.output_tokens
+            .insert(device.to_owned(), format!("o{next}"));
     }
 
     /// Forget one member everywhere (verified-close cleanup): drops the
@@ -217,25 +223,6 @@ impl TileLoop {
         true
     }
 
-    /// Post-reveal eligible visible focus set: non-hidden members whose
-    /// Engine token is present in the fresh focus observation.
-    pub(super) fn eligible_focus_set(
-        &self,
-        members: &std::collections::BTreeSet<crate::native_guards::WindowKey>,
-        fresh_tokens: &HashSet<String>,
-    ) -> std::collections::BTreeSet<crate::native_guards::WindowKey> {
-        members
-            .iter()
-            .filter(|k| !self.is_hidden_member(k))
-            .filter(|k| {
-                self.member_tokens
-                    .get(*k)
-                    .is_some_and(|t| fresh_tokens.contains(t))
-            })
-            .cloned()
-            .collect()
-    }
-
     /// Saved default for newly created workspaces (restart-adopted live
     /// setting, default on). The core seeds logical workspaces from the
     /// report ingress; this only feeds tray truth lines.
@@ -244,12 +231,6 @@ impl TileLoop {
             .as_ref()
             .map(|live| live.settings.core.workspace.default_tiled)
             .unwrap_or(true)
-    }
-
-    /// Monotonic core revision for log correlation (the per-domain Engine
-    /// revision no longer exists; commands carry no revision binding).
-    pub(super) fn core_revision(&self) -> u64 {
-        self.world.engine().state_revision()
     }
 
     /// Whether the core currently homes one token as an intentional float:
@@ -272,9 +253,8 @@ impl TileLoop {
     /// the adapter D4 latch (the core automatic mark no longer survives as
     /// a separate adapter-readable session flag).
     pub(super) fn core_is_automatic_token(&self, token: &str) -> bool {
-        self.member_tokens.iter().any(|(key, bound)| {
-            bound == token && self.fixed_auto_seen.contains(key)
-        })
+        self.member_tokens
+            .iter()
+            .any(|(key, bound)| bound == token && self.fixed_auto_seen.contains(key))
     }
-
 }

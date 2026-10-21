@@ -323,7 +323,10 @@ pub(super) fn refresh_group_underlay(
         fulls,
         tiler_core::world_report::WorldCommand::Operation(CoreCommand::ActiveGroup),
     );
-    let Some(result) = reply.as_ref().and_then(|reply| reply.command_result.as_ref()) else {
+    let Some(result) = reply
+        .as_ref()
+        .and_then(|reply| reply.command_result.as_ref())
+    else {
         hide_underlay(state, "no-group");
         return;
     };

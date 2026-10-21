@@ -65,14 +65,7 @@ pub(super) fn resolve_drop_destination(
     let Some(bounds) = dest_bounds else {
         return DropDestination::Refused("unknown-output");
     };
-    if !crate::tiling::drop_point_in_domain(
-        bounds.x,
-        bounds.y,
-        bounds.w,
-        bounds.h,
-        x,
-        y,
-    ) {
+    if !crate::tiling::drop_point_in_domain(bounds.x, bounds.y, bounds.w, bounds.h, x, y) {
         return DropDestination::Refused("outside-work-area");
     }
     DropDestination::Cross {
@@ -289,7 +282,7 @@ pub(super) fn settle_cross_drag_drop(
         );
         return "drag-drop-refused";
     };
-    let foreground = crate::ffi::foreground_window();
+    let foreground = live_foreground_window();
     let reply = super::world_tick::run_world_command(
         state,
         me,
@@ -328,19 +321,19 @@ pub(super) fn settle_cross_drag_drop(
         return "drag-drop-refused";
     };
     // Required arrival proof before follow focus: the mover's desired
-    // allocation must read back live on the destination monitor.
-    let arrived = reply
-        .windows
-        .iter()
-        .find(|w| w.lifetime.0 == settle.mover_token)
-        .and_then(|row| row.allocation)
-        .is_some_and(|alloc| {
-            state
-                .readback_frame(me, fulls, settle.member_key.hwnd)
-                .is_some_and(|visible| {
-                    visible == alloc && output_for_rect(&fresh_areas, &visible) == settle.dest_output
-                })
-        });
+    // effective frame (or the proven membership receipt for frameless
+    // lanes) must read back live on the destination monitor. `allocation`
+    // is the canonical slot, never the write target, so it never proves.
+    let arrived = drop_arrival_verified(
+        state,
+        me,
+        fulls,
+        &fresh_areas,
+        reply,
+        &settle.mover_token,
+        settle.member_key.hwnd,
+        Some(settle.dest_output.as_str()),
+    );
     if !arrived {
         log_json_at(
             &state.log_path,

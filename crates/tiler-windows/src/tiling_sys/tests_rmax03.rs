@@ -13,7 +13,6 @@ pub(super) fn test_state() -> TileLoop {
         world: super::world_owner::WorldOwner::bootstrap_ids(owner.as_str(), generation.as_str())
             .expect("world owner bootstrap"),
         tokens: crate::tiling::TokenMap::default(),
-        refused: crate::tiling::RefusedTracker::default(),
         stable: std::collections::HashMap::new(),
         managed: std::collections::HashSet::new(),
         active: std::collections::HashSet::new(),
@@ -28,7 +27,6 @@ pub(super) fn test_state() -> TileLoop {
         trace: false,
         suspended: false,
         suspended_limited: false,
-        last_summary: None,
         // NUL log sink: no test asserts on log bytes, and a relative
         // file would interleave garbage across parallel tests into the
         // crate directory on every run.
@@ -99,11 +97,8 @@ pub(super) fn test_state() -> TileLoop {
         diag_pending: std::collections::HashMap::new(),
         diag_emitted: std::collections::HashMap::new(),
         diag_class: std::collections::HashMap::new(),
-        diag_last_emit: None,
         diag_emit_seq: std::collections::HashMap::new(),
-        diag_emit_clock: 0,
         diag_coalesced: std::collections::HashSet::new(),
-        diag_query_ms: 0,
         vis_diag: super::VisibilityDiagnostics::default(),
         suspend_started: None,
         restore_wake: None,

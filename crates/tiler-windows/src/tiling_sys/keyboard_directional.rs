@@ -2,6 +2,7 @@
 use super::*;
 use crate::snapkey::QueuedIntent;
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn dispatch_directional_intent(
     state: &mut TileLoop,
     me: &ProcessIdentity,
@@ -141,12 +142,8 @@ pub(super) fn dispatch_directional_intent(
         );
         return;
     };
-    if !crate::native_guards::member_matches(
-        &member_key,
-        origin.hwnd,
-        origin.pid,
-        &origin.creation,
-    ) {
+    if !crate::native_guards::member_matches(&member_key, origin.hwnd, origin.pid, &origin.creation)
+    {
         state.snap_advance = None;
         log_json_at(
             log_path,
@@ -1117,16 +1114,7 @@ pub(super) fn dispatch_directional_intent(
         },
     };
     let reply = super::world_tick::run_world_command(
-        state,
-        me,
-        store,
-        dir,
-        &observed,
-        &retained,
-        areas,
-        foreground,
-        fulls,
-        command,
+        state, me, store, dir, &observed, &retained, areas, foreground, fulls, command,
     );
     // Resolve the world outcome into the snap vocabulary. Focus actuates
     // the core's explicit target and syncs the advance chain only on
@@ -1215,43 +1203,12 @@ pub(super) fn dispatch_directional_intent(
                 );
                 return;
             };
-            // Arrival proof: the mover's desired allocation reads back live
-            // on its homed output. Allocation changes also separate applied
-            // from no-op.
-            let Some((alloc, wire)) = reply
-                .windows
-                .iter()
-                .find(|w| w.lifetime.0 == from)
-                .and_then(|row| row.allocation.map(|alloc| (alloc, row.output.0.clone())))
-            else {
-                state.snap_advance = None;
-                log_json_at(
-                    log_path,
-                    serde_json::json!({
-                        "event": "snap",
-                        "tick": tick,
-                        "correlation": correlation.as_str(),
-                        "op": intent.op.as_str(),
-                        "direction": direction_name(intent.direction),
-                        "edge": intent.edge.as_str(),
-                        "disposition": "consumed",
-                        "outcome": "move-unverified",
-                        "origin": origin.token,
-                        "window": from,
-                        "continued": continued,
-                    }),
-                );
-                return;
-            };
-            let homed_device = state.device_of(&wire);
-            let arrived = state
-                .readback_frame(me, fulls, member_key.hwnd)
-                .is_some_and(|rect| {
-                    rect == alloc
-                        && homed_device.is_some_and(|device| {
-                            output_for_rect(areas, &rect) == device
-                        })
-                });
+            // Arrival proof: the mover's desired effective frame (or the
+            // proven membership receipt for frameless lanes) reads back
+            // live on its homed output. Allocation changes also separate
+            // applied from no-op.
+            let arrived =
+                drop_arrival_verified(state, me, fulls, areas, reply, &from, member_key.hwnd, None);
             if !arrived {
                 state.snap_advance = None;
                 log_json_at(
@@ -1272,29 +1229,39 @@ pub(super) fn dispatch_directional_intent(
                 );
                 return;
             }
-            let changed = observed
+            // Frameless-lane arrivals (proven through the membership
+            // receipt) carry no frame target to compare: only framed rows
+            // distinguish applied from no-op here.
+            if let Some(target) = reply
+                .windows
                 .iter()
-                .find(|w| w.token == from)
-                .is_none_or(|w| w.visible != alloc);
-            if !changed {
-                state.snap_advance = None;
-                log_json_at(
-                    log_path,
-                    serde_json::json!({
-                        "event": "snap",
-                        "tick": tick,
-                        "correlation": correlation.as_str(),
-                        "op": intent.op.as_str(),
-                        "direction": direction_name(intent.direction),
-                        "edge": intent.edge.as_str(),
-                        "disposition": "consumed",
-                        "outcome": "move-noop",
-                        "origin": origin.token,
-                        "window": from,
-                        "continued": continued,
-                    }),
-                );
-                return;
+                .find(|w| w.lifetime.0 == from)
+                .and_then(|row| row.effective_frame)
+            {
+                let changed = observed
+                    .iter()
+                    .find(|w| w.token == from)
+                    .is_none_or(|w| w.visible != target);
+                if !changed {
+                    state.snap_advance = None;
+                    log_json_at(
+                        log_path,
+                        serde_json::json!({
+                            "event": "snap",
+                            "tick": tick,
+                            "correlation": correlation.as_str(),
+                            "op": intent.op.as_str(),
+                            "direction": direction_name(intent.direction),
+                            "edge": intent.edge.as_str(),
+                            "disposition": "consumed",
+                            "outcome": "move-noop",
+                            "origin": origin.token,
+                            "window": from,
+                            "continued": continued,
+                        }),
+                    );
+                    return;
+                }
             }
             // Follow focus without hiding: the arrival is already placed,
             // so only foreground the mover.

@@ -1,10 +1,5 @@
 #![forbid(unsafe_code)]
-use tiler_core::boundary::{CoreCommand, CoreReply};
-use tiler_core::directional::{Direction, WindowId};
-use tiler_core::engine::Engine;
-use tiler_core::geometry::Rect;
-use tiler_core::ids::{CorrelationId, GenerationId, OwnerId};
-use tiler_core::size_hints::WindowSizeHints;
+use tiler_core::directional::Direction;
 use tiler_windows::snapkey::{
     Classified, INTENT_QUEUE_CAP, KeyboardConfig, MARKED_DIAG_CAP, MOD_DIAG_CAP, MarkedDiagBuf,
     MarkedKeyDiag, ModDiagBuf, ModSource, ModTrafficDiag, OriginVerdict, QueuedSnapEvent,
@@ -14,7 +9,7 @@ use tiler_windows::snapkey::{
     is_chord_vk, is_fullscreen_vk, is_proof_mod_vk, is_win_vk, marked_diag_evidence,
     mod_diag_evidence, resolve_origin, stamp_mask_result, win_up_mask_reserve,
 };
-use tiler_windows::tiling::{ReconcileInput, build_reconcile_event, fingerprint, parse_tile_args};
+use tiler_windows::tiling::parse_tile_args;
 
 fn takeover() -> KeyboardConfig {
     KeyboardConfig {
@@ -997,95 +992,6 @@ fn tile_args_keyboard_defaults_and_flags() {
     );
 }
 
-fn engine_harness(
-    windows: &[(WindowId, Rect)],
-    focused: &WindowId,
-) -> (Engine, tiler_core::boundary::CoreEvent) {
-    let mut engine = Engine::new();
-    let owner = OwnerId::parse("tiler-windows").expect("valid");
-    let generation = GenerationId::parse("gen-1").expect("valid");
-    engine.sync_binding(&owner, &generation);
-    let pairs: Vec<(String, Rect)> = windows.iter().map(|(w, r)| (w.0.clone(), *r)).collect();
-    let hinted: Vec<(WindowId, Rect, WindowSizeHints)> = windows
-        .iter()
-        .map(|(w, r)| (w.clone(), *r, WindowSizeHints::none()))
-        .collect();
-    let event = build_reconcile_event(&ReconcileInput {
-        owner: &owner,
-        generation: &generation,
-        correlation: &CorrelationId::parse("snap-test").expect("valid"),
-        revision: 0,
-        fingerprint: fingerprint(&pairs),
-        domain_bounds: Rect {
-            x: 0,
-            y: 0,
-            w: 1600,
-            h: 900,
-        },
-        windows: &hinted,
-        focused: Some(focused),
-    });
-    (engine, event)
-}
-
-fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
-    Rect { x, y, w, h }
-}
-
-#[test]
-fn engine_focus_moves_through_nested_topology() {
-    let w1 = WindowId("w1".to_owned());
-    let w2 = WindowId("w2".to_owned());
-    let w3 = WindowId("w3".to_owned());
-    let observed = vec![
-        (w1.clone(), rect(8, 8, 500, 884)),
-        (w2.clone(), rect(516, 8, 500, 884)),
-        (w3.clone(), rect(1024, 8, 568, 884)),
-    ];
-    let (mut engine, seed) = engine_harness(&observed, &w1);
-    let reply = engine.handle(&seed);
-    assert!(
-        matches!(reply, CoreReply::Projection(_) | CoreReply::Tiled(_)),
-        "seed must converge, got {reply:?}"
-    );
-    // Focus right from w1 lands on its neighbor with full geometry.
-    let mut focus = seed.clone();
-    focus.command = CoreCommand::Focus {
-        window: w1.0.clone(),
-        direction: "right".to_owned(),
-        cross_output_transfer: false,
-        float_subject: false,
-    };
-    assert_eq!(focus.command.op(), "focus");
-    let reply = engine.handle(&focus);
-    match reply {
-        CoreReply::FocusDirectional(plan) => {
-            assert_eq!(plan.to_window, w2);
-            assert_eq!(plan.geometry.len(), 3);
-        }
-        other => panic!("focus must plan directionally, got {other:?}"),
-    }
-    // Move uses the move route with full desired geometry. The moved window
-    // is the focused one, mirroring the owner drain. Explicit default-wrap
-    // fixture: production threads the live `core.same_axis_move` here.
-    let mut mv = seed.clone();
-    mv.focused_window = w2.clone();
-    mv.command = CoreCommand::Move {
-        window: w2.0.clone(),
-        direction: "right".to_owned(),
-        cross_output_transfer: false,
-        same_axis_move: tiler_core::directional::SameAxisMove::GroupWithNeighbor,
-    };
-    assert_eq!(mv.command.op(), "move");
-    let reply = engine.handle(&mv);
-    match reply {
-        CoreReply::MoveDirectional(plan) => {
-            assert_eq!(plan.geometry.len(), 3);
-        }
-        other => panic!("move must plan directionally, got {other:?}"),
-    }
-}
-
 #[test]
 fn digit_chords_select_and_send_on_same_vk() {
     // US symbols share the digit VK: Shift flips select into send.
@@ -1260,35 +1166,6 @@ fn digit_mask_roundtrip_and_queue_saturation() {
         Some(true)
     );
     assert!(q.dropped >= 1);
-}
-
-#[test]
-fn engine_edge_focus_is_a_no_op_rejection() {
-    let w1 = WindowId("w1".to_owned());
-    let w2 = WindowId("w2".to_owned());
-    let observed = vec![
-        (w1.clone(), rect(8, 8, 788, 884)),
-        (w2.clone(), rect(804, 8, 788, 884)),
-    ];
-    let (mut engine, seed) = engine_harness(&observed, &w1);
-    let seed_reply = engine.handle(&seed);
-    assert!(
-        matches!(seed_reply, CoreReply::Projection(_) | CoreReply::Tiled(_)),
-        "seed must converge, got {seed_reply:?}"
-    );
-    // Focus left off the left edge: no neighbor, no actuation.
-    let mut edge = seed.clone();
-    edge.command = CoreCommand::Focus {
-        window: w1.0.clone(),
-        direction: "left".to_owned(),
-        cross_output_transfer: false,
-        float_subject: false,
-    };
-    let reply = engine.handle(&edge);
-    assert!(
-        matches!(reply, CoreReply::Rejected { .. }),
-        "edge focus must refuse without geometry, got {reply:?}"
-    );
 }
 
 #[test]

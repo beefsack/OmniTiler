@@ -192,10 +192,7 @@ pub(super) fn pump_intake(
         let owner = tray.hwnd_value();
         let focused = tray_select::tray_focused_output(state, areas, owner);
         let (pager_ids, pager_active) = match focused.as_deref() {
-            Some(output) => (
-                state.workspace_ids(output),
-                state.active_view(output),
-            ),
+            Some(output) => (state.workspace_ids(output), state.active_view(output)),
             None => (Vec::new(), None),
         };
         let ordinal = focused.as_deref().and_then(|output| {
@@ -245,7 +242,15 @@ pub(super) fn pump_intake(
                 .map(|(output, workspace)| (output.as_str(), workspace.as_str()));
             if crate::tray::verify_toggle_scope(rendered, live_ref) {
                 let toggle_fulls = monitor_fulls(areas);
-                toggle_workspace_tiling(state, me, store, dir, &toggle_fulls, areas, &request.output);
+                toggle_workspace_tiling(
+                    state,
+                    me,
+                    store,
+                    dir,
+                    &toggle_fulls,
+                    areas,
+                    &request.output,
+                );
                 woke = true;
             } else {
                 // Stale or mismatched menu scope (output switch or a
@@ -328,7 +333,16 @@ pub(super) fn pump_intake(
                     .map(|bridge| bridge.published_gen)
                     .unwrap_or(0);
                 if tagged.is_stale(published) {
-                    keyboard_tick(state, me, store, dir, fulls, areas, tagged.items, Some("config-change"));
+                    keyboard_tick(
+                        state,
+                        me,
+                        store,
+                        dir,
+                        fulls,
+                        areas,
+                        tagged.items,
+                        Some("config-change"),
+                    );
                 } else {
                     if state.trace {
                         snap_age_us = Some(crate::input_pump::snap_batch_age_us(

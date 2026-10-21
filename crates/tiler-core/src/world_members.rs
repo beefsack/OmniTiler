@@ -9,13 +9,13 @@
 //! it. Transfer provenance only shields actuation lag; it never authorizes
 //! homing.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use crate::directional::{OutputId, WindowId, WorkspaceId};
 use crate::geometry::Rect;
 use crate::session::DomainKey;
 use crate::world_engine::WorldEngine;
-use crate::world_report::{RestoredWorld, TilingMode, TransferKind, WorldReport};
+use crate::world_report::{TransferKind, WorldReport};
 
 /// Core-owned per-lifetime logical state: the homed logical workspace plus
 /// the exact-lifetime float/minimized marks that survive session release.
@@ -33,71 +33,6 @@ impl WorldEngine {
     pub(crate) fn core_homing(&self, window: &WindowId) -> Option<DomainKey> {
         let home = self.members.get(window)?.home.clone();
         self.rehome_displaced(home)
-    }
-
-    /// Adopt bootstrap restoration ingress: persisted rings replace the
-    /// (empty, first-report-only) mapping, persisted views seed the retained
-    /// views, persisted tiling modes seed the planner-owned modes, and
-    /// persisted homing seeds the membership owner. No sessions, transfers,
-    /// history, or effects are touched: restored members converge through
-    /// the ordinary sweep and settle as retained (never fresh admission),
-    /// and history observes the restored views through the ordinary
-    /// post-staging path. The logical creation counter advances past any
-    /// restored `ws-<n>` ids so later trailing creation never collides.
-    pub(crate) fn apply_restored(&mut self, restored: &RestoredWorld) {
-        let mut mapping: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for ring in &restored.rings {
-            mapping.insert(ring.output.0.clone(), ring.workspaces.clone());
-        }
-        self.mapping = mapping;
-        for view in &restored.views {
-            if self
-                .mapping
-                .get(&view.output.0)
-                .is_some_and(|ring| ring.iter().any(|id| id == &view.view))
-            {
-                self.views.insert(view.output.0.clone(), view.view.clone());
-            }
-        }
-        for entry in &restored.tiling {
-            self.tiling.insert(
-                DomainKey {
-                    output: entry.output.clone(),
-                    workspace: WorkspaceId(entry.workspace.clone()),
-                },
-                if entry.tiled {
-                    TilingMode::Tiled
-                } else {
-                    TilingMode::Floating
-                },
-            );
-        }
-        for member in &restored.members {
-            self.members.insert(
-                member.window.clone(),
-                MemberState {
-                    home: DomainKey {
-                        output: member.output.clone(),
-                        workspace: WorkspaceId(member.workspace.clone()),
-                    },
-                    floating: false,
-                    minimized: false,
-                    geometry: None,
-                },
-            );
-        }
-        let mut floor = self.creation_counter;
-        for ring in &restored.rings {
-            for id in &ring.workspaces {
-                if let Some(number) = id
-                    .strip_prefix("ws-")
-                    .and_then(|suffix| suffix.parse::<u64>().ok())
-                {
-                    floor = floor.max(number);
-                }
-            }
-        }
-        self.creation_counter = floor;
     }
 
     /// Whether `id` names a known logical workspace on `output`.

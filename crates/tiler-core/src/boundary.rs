@@ -182,7 +182,7 @@ impl CoreCommand {
 /// the two-domain directional move/focus request route (`None` elsewhere); the
 /// source gap rides in `outer_gap`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CoreEvent {
+pub(crate) struct CoreEvent {
     pub owner: OwnerId,
     pub generation: GenerationId,
     pub correlation: CorrelationId,
@@ -209,7 +209,8 @@ pub struct CoreEvent {
 /// Tiled-plan kind for every `planned`-outcome route. Wire `kind`/`capability`
 /// strings stay in protocol; this enum only classifies the typed plan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TiledKind {
+#[allow(dead_code)]
+pub(crate) enum TiledKind {
     Reconcile,
     UpdateGaps,
     Admit,
@@ -227,7 +228,8 @@ pub enum TiledKind {
 impl TiledKind {
     /// Wire `detail.kind` token for this plan kind.
     #[must_use]
-    pub const fn kind_str(self) -> &'static str {
+    #[allow(dead_code)]
+    pub(crate) const fn kind_str(self) -> &'static str {
         match self {
             Self::Reconcile => "reconcile",
             Self::UpdateGaps => "update-gaps",
@@ -250,7 +252,8 @@ impl TiledKind {
     /// move/directional-move (whose wire capability is a dynamically
     /// formatted Debug token, out of scope until that family migrates).
     #[must_use]
-    pub const fn capability_str(self) -> Option<&'static str> {
+    #[allow(dead_code)]
+    pub(crate) const fn capability_str(self) -> Option<&'static str> {
         match self {
             Self::Admit => Some("admit-tiled"),
             Self::Focus => Some("directional-focus"),
@@ -268,7 +271,7 @@ impl TiledKind {
 /// Generic tiled success plan: base revision, policy version, classified kind,
 /// full desired geometry, retained focus, and optional intentional-float rect.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TiledPlan {
+pub(crate) struct TiledPlan {
     pub base_revision: u64,
     pub policy_version: u32,
     pub kind: TiledKind,
@@ -285,7 +288,7 @@ impl TiledPlan {
     /// re-validating. Float stays empty; use [`TiledPlan::for_toggle_float`]
     /// for the intentional-float route.
     #[must_use]
-    pub fn from_lifecycle(kind: TiledKind, plan: &SessionPlan) -> Self {
+    pub(crate) fn from_lifecycle(kind: TiledKind, plan: &SessionPlan) -> Self {
         Self {
             base_revision: plan.dispatch.base_revision,
             policy_version: plan.dispatch.policy_version,
@@ -303,7 +306,7 @@ impl TiledPlan {
     /// its window derived from the plan operation (the `Remove` window, else
     /// an empty window exactly like the legacy reply when a rect is set).
     #[must_use]
-    pub fn for_toggle_float(plan: &SessionPlan, float_rect: Option<Rect>) -> Self {
+    pub(crate) fn for_toggle_float(plan: &SessionPlan, float_rect: Option<Rect>) -> Self {
         let mut tiled = Self::from_lifecycle(TiledKind::ToggleFloat, plan);
         if let Some(rect) = float_rect {
             tiled.float_window = Some(match &plan.dispatch.operation {
@@ -321,7 +324,7 @@ impl TiledPlan {
     /// on the moved window. Never validates; the session policy owns
     /// placement.
     #[must_use]
-    pub fn from_drag(plan: &SessionDragPlan) -> Self {
+    pub(crate) fn from_drag(plan: &SessionDragPlan) -> Self {
         Self {
             base_revision: plan.dispatch.base_revision,
             policy_version: LIFECYCLE_POLICY_VERSION,
@@ -347,7 +350,7 @@ impl TiledPlan {
 /// send (`MoveToOutput` intent): the transfer shape is ordinary in both; only
 /// the target scope differs.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SendWorkspacePlan {
+pub(crate) struct SendWorkspacePlan {
     pub base_revision: u64,
     pub policy_version: u32,
     pub geometry: Vec<DesiredGeometry>,
@@ -368,7 +371,7 @@ impl SendWorkspacePlan {
     /// source/target identities, no target slot). A move operation under any
     /// other intent is not a send and refuses.
     #[must_use]
-    pub fn from_session(plan: &SessionPlan) -> Option<Self> {
+    pub(crate) fn from_session(plan: &SessionPlan) -> Option<Self> {
         let follow = match &plan.dispatch.intent {
             crate::contract::LifecycleIntent::MoveToWorkspace { follow, .. }
             | crate::contract::LifecycleIntent::MoveToOutput { follow, .. } => *follow,
@@ -405,7 +408,7 @@ impl SendWorkspacePlan {
 /// carried no active client or the active stayed sticky: follow-only, never
 /// activate a source window on the target). Never validates.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MigrateWorkspacePlan {
+pub(crate) struct MigrateWorkspacePlan {
     pub base_revision: u64,
     pub direction: Direction,
     pub source: DomainKey,
@@ -426,7 +429,7 @@ pub struct MigrateWorkspacePlan {
 /// capability (protocol formats the exact wire `Debug` tokens), requested
 /// direction, full desired geometry, and retained focus.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MovePlanReply {
+pub(crate) struct MovePlanReply {
     pub base_revision: u64,
     pub rule: Rule,
     pub capability: Capability,
@@ -442,7 +445,7 @@ pub struct MovePlanReply {
 /// comes from the protocol pair lookup (which owns its fence), so the
 /// constructor takes it as already-checked input.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MoveCrossView {
+pub(crate) struct MoveCrossView {
     pub rule: Rule,
     pub intent_direction: Direction,
     pub intent_window: WindowId,
@@ -459,7 +462,7 @@ pub struct MoveCrossView {
 impl MovePlanReply {
     /// Typed construction for synchronous local (R1-R3) move plans.
     #[must_use]
-    pub fn from_local(direction: Direction, plan: &SessionMovePlan) -> Self {
+    pub(crate) fn from_local(direction: Direction, plan: &SessionMovePlan) -> Self {
         Self {
             base_revision: plan.dispatch.base_revision,
             rule: plan.dispatch.rule,
@@ -475,7 +478,7 @@ impl MovePlanReply {
     /// Typed construction for R4 cross-output move plans: `None` unless the
     /// plan operation actually crossed. Never stages pending itself.
     #[must_use]
-    pub fn from_cross(
+    pub(crate) fn from_cross(
         plan: &SessionMovePlan,
         source_output: &OutputId,
         source_workspace: &WorkspaceId,
@@ -519,7 +522,7 @@ impl MovePlanReply {
 /// target window, full desired geometry, and retained focus. The cross-output
 /// operation echo rides along only for crossed plans.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FocusPlanReply {
+pub(crate) struct FocusPlanReply {
     pub base_revision: u64,
     pub direction: Direction,
     pub to_window: WindowId,
@@ -532,7 +535,7 @@ pub struct FocusPlanReply {
 impl FocusPlanReply {
     /// Typed construction for local focus plans.
     #[must_use]
-    pub fn from_local(direction: Direction, plan: &SessionFocusPlan) -> Self {
+    pub(crate) fn from_local(direction: Direction, plan: &SessionFocusPlan) -> Self {
         Self {
             base_revision: plan.dispatch.base_revision,
             direction,
@@ -547,7 +550,7 @@ impl FocusPlanReply {
     /// Typed construction for crossed focus plans (carries the operation the
     /// adapter must fence; preconditions derive from it in protocol).
     #[must_use]
-    pub fn from_cross(direction: Direction, plan: &SessionFocusPlan) -> Self {
+    pub(crate) fn from_cross(direction: Direction, plan: &SessionFocusPlan) -> Self {
         let mut reply = Self::from_local(direction, plan);
         reply.cross_operation = Some(plan.dispatch.operation.clone());
         reply
@@ -558,7 +561,7 @@ impl FocusPlanReply {
 /// mode or pointer boundary (exactly one, set by the matching constructor),
 /// full operation for share/group detail, geometry, and retained focus.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResizePlanReply {
+pub(crate) struct ResizePlanReply {
     pub base_revision: u64,
     pub direction: Direction,
     pub mode: Option<ResizeMode>,
@@ -576,7 +579,7 @@ pub struct ResizePlanReply {
 
 /// Second-axis detail of an atomic corner pointer-resize reply.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SecondaryPointerResize {
+pub(crate) struct SecondaryPointerResize {
     pub direction: Direction,
     pub boundary: i32,
     pub operation: ResizeOperation,
@@ -585,7 +588,11 @@ pub struct SecondaryPointerResize {
 impl ResizePlanReply {
     /// Typed construction for keyboard resize plans.
     #[must_use]
-    pub fn from_keyboard(direction: Direction, mode: ResizeMode, plan: &SessionResizePlan) -> Self {
+    pub(crate) fn from_keyboard(
+        direction: Direction,
+        mode: ResizeMode,
+        plan: &SessionResizePlan,
+    ) -> Self {
         Self {
             base_revision: plan.dispatch.base_revision,
             direction,
@@ -601,7 +608,11 @@ impl ResizePlanReply {
 
     /// Typed construction for pointer resize plans.
     #[must_use]
-    pub fn from_pointer(direction: Direction, boundary: i32, plan: &SessionResizePlan) -> Self {
+    pub(crate) fn from_pointer(
+        direction: Direction,
+        boundary: i32,
+        plan: &SessionResizePlan,
+    ) -> Self {
         Self {
             base_revision: plan.dispatch.base_revision,
             direction,
@@ -619,7 +630,7 @@ impl ResizePlanReply {
     /// primary (horizontal) direction/boundary plus the bound vertical
     /// second axis from the plan's secondary operation.
     #[must_use]
-    pub fn from_pointer_corner(
+    pub(crate) fn from_pointer_corner(
         direction: Direction,
         boundary: i32,
         direction2: Direction,
@@ -649,7 +660,7 @@ impl ResizePlanReply {
 
 /// Successful active-group resolution with everything the wire reply echoes.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ActiveGroupFound {
+pub(crate) struct ActiveGroupFound {
     pub base_revision: u64,
     pub group: NodeId,
     pub focused_leaf: NodeId,
@@ -693,7 +704,7 @@ impl NoGroupReason {
 /// Typed active-group resolution: either the found group or a classified
 /// `no-group` with the retained base revision when known.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ActiveGroupResolution {
+pub(crate) enum ActiveGroupResolution {
     Found(ActiveGroupFound),
     NoGroup {
         base_revision: Option<u64>,
@@ -706,7 +717,7 @@ pub enum ActiveGroupResolution {
 /// proposed rect and the carried hover state (`preview.hover_prior()`); never
 /// commits, never advances the revision, never seeds.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DragPreviewPlan {
+pub(crate) struct DragPreviewPlan {
     pub base_revision: u64,
     pub preview: DragPreview,
 }
@@ -717,7 +728,7 @@ pub struct DragPreviewPlan {
 /// [`crate::session`]/[`crate::contract`] and the protocol `MSG_*`
 /// constants). Serialization stays entirely in protocol.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CoreReply {
+pub(crate) enum CoreReply {
     Projection(ProjectionPlan),
     Tiled(TiledPlan),
     SendWorkspace(SendWorkspacePlan),
@@ -757,7 +768,7 @@ pub enum CoreReply {
 /// the wire detail, and identical reply shapes. The wire `kind`/`capability`
 /// tokens live here as the single source; protocol only serializes them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProjectionKind {
+pub(crate) enum ProjectionKind {
     Reconcile,
     UpdateGaps,
 }
@@ -765,7 +776,8 @@ pub enum ProjectionKind {
 impl ProjectionKind {
     /// Wire `detail.kind` token.
     #[must_use]
-    pub const fn kind_str(self) -> &'static str {
+    #[allow(dead_code)]
+    pub(crate) const fn kind_str(self) -> &'static str {
         match self {
             Self::Reconcile => "reconcile",
             Self::UpdateGaps => "update-gaps",
@@ -774,7 +786,8 @@ impl ProjectionKind {
 
     /// Wire `detail.capability` token.
     #[must_use]
-    pub const fn capability_str(self) -> &'static str {
+    #[allow(dead_code)]
+    pub(crate) const fn capability_str(self) -> &'static str {
         match self {
             Self::Reconcile => "reconcile-geometry",
             Self::UpdateGaps => "update-gaps-geometry",
@@ -786,7 +799,7 @@ impl ProjectionKind {
 /// desired geometry in wire order, and retained focus (`None` only for the
 /// empty-domain path, which carries no geometry).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProjectionPlan {
+pub(crate) struct ProjectionPlan {
     pub base_revision: u64,
     pub kind: ProjectionKind,
     pub geometry: Vec<DesiredGeometry>,
@@ -823,7 +836,7 @@ pub struct ProjectionPlan {
 /// focus, outer gap) stay in the caller, which passes its already-checked
 /// focus through untouched.
 #[allow(clippy::too_many_arguments)]
-pub fn project_retained_tiled_geometry(
+pub(crate) fn project_retained_tiled_geometry(
     session: &Session,
     domain_key: &DomainKey,
     bounds: Rect,
@@ -978,7 +991,10 @@ pub fn project_retained_tiled_geometry(
 /// or geometry. A `None` session reports `NoSession` with no base revision.
 /// The carried revision is intentionally not gated: this is a current-state
 /// snapshot.
-pub fn resolve_active_group(session: Option<&Session>, event: &CoreEvent) -> ActiveGroupResolution {
+pub(crate) fn resolve_active_group(
+    session: Option<&Session>,
+    event: &CoreEvent,
+) -> ActiveGroupResolution {
     let Some(session) = session else {
         return ActiveGroupResolution::NoGroup {
             base_revision: None,

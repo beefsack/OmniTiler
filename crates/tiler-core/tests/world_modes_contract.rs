@@ -63,7 +63,6 @@ fn report(
     feedback: Vec<tiler_core::world_report::AttemptFeedback>,
 ) -> WorldReport {
     WorldReport {
-        restored: None,
         contract_version: tiler_core::world_report::WORLD_CONTRACT_VERSION,
         owner: "owner-a".to_owned(),
         adapter_incarnation: "adapter-1".to_owned(),
@@ -807,7 +806,7 @@ fn migration_partial_arrival_holds_narrowly_on_refusal() {
 }
 
 #[test]
-fn reobservation_emits_no_fresh_claims_real_restoration_pending_2b() {
+fn reobservation_emits_no_fresh_claims() {
     // Exact re-observation emits no fresh admission intent beyond the first
     // observation. Real restoration across a new engine/new generation with
     // previously hidden/observed memberships is pending stage 2b: a fresh

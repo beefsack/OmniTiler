@@ -3,6 +3,7 @@ use super::keyboard_directional::dispatch_directional_intent;
 use super::keyboard_overlays::{dispatch_fullscreen_intent, dispatch_maximize_intent};
 use super::*;
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn keyboard_tick(
     state: &mut TileLoop,
     me: &ProcessIdentity,

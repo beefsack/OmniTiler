@@ -605,7 +605,7 @@ pub(super) fn service_pending_drop(
         GestureIntent::MoveDrop { .. } => "drag-drop",
         GestureIntent::PointerResize { .. } => "pointer-resize",
     };
-    let foreground = crate::ffi::foreground_window();
+    let foreground = live_foreground_window();
     let reply = super::world_tick::run_world_command(
         state,
         me,
@@ -621,21 +621,18 @@ pub(super) fn service_pending_drop(
     match reply {
         Some(reply) => {
             // Arrival proof before claiming success: the mover's desired
-            // allocation must read back live.
-            let arrived = reply
-                .windows
-                .iter()
-                .find(|w| w.lifetime.0 == current.token)
-                .and_then(|row| row.allocation.map(|alloc| (alloc, row.output.0.clone())))
-                .is_some_and(|(alloc, wire)| {
-                    state.device_of(&wire).is_some_and(|device| {
-                        state
-                            .readback_frame(me, fulls, current.hwnd)
-                            .is_some_and(|visible| {
-                                visible == alloc && output_for_rect(areas, &visible) == device
-                            })
-                    })
-                });
+            // effective frame (or the proven membership receipt for
+            // frameless lanes) must read back live.
+            let arrived = drop_arrival_verified(
+                state,
+                me,
+                fulls,
+                areas,
+                &reply,
+                &current.token,
+                current.hwnd,
+                Some(pending.output.as_str()),
+            );
             if !arrived {
                 log_json_at(
                     &log_path,

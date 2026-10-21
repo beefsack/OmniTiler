@@ -81,6 +81,7 @@ fn observed_window() -> ObservedWindow {
             tag: "tag-1".to_owned(),
         },
         facts: plain_facts(),
+        member_tag: Some("tag-1".to_owned()),
     }
 }
 
@@ -120,10 +121,9 @@ fn observation_dispatch_applies_and_projects_presentation() {
     let report = world
         .try_dispatch_observation(&state.inputs(), Some(&observed), &retained, &areas, 0)
         .expect("dispatch");
-    // Fresh bootstrap carries no restoration ingress and no view receipts:
-    // the core mints rings/views from the live screens, and receipts only
-    // ever echo proven native arrival (never desire).
-    assert!(report.restored.is_none(), "no fabricated restoration");
+    // Fresh bootstrap carries no view receipts: the core mints
+    // rings/views from the live screens, and receipts only ever echo
+    // proven native arrival (never desire).
     assert!(report.views.is_empty(), "no receipts before proof");
     let outcome = world.deliver_production(&report);
     let reply = match outcome {
@@ -155,9 +155,8 @@ fn select_command_retains_view_transfer_without_self_echo() {
     let first = world
         .try_dispatch_observation(&state.inputs(), Some(&observed), &retained, &areas, 0)
         .expect("dispatch");
-    // Fresh bootstrap proves nothing yet: no restoration ingress and no
-    // view receipts (the core mints rings/views from the live screens).
-    assert!(first.restored.is_none(), "no fabricated restoration");
+    // Fresh bootstrap proves nothing yet: no view receipts (the core
+    // mints rings/views from the live screens).
     assert!(first.views.is_empty(), "no receipts before proof");
     let reply = match world.deliver_production(&first) {
         WorldOutcome::Accepted(reply) => reply,
@@ -171,7 +170,6 @@ fn select_command_retains_view_transfer_without_self_echo() {
     let second = world
         .try_dispatch_observation(&state.inputs(), Some(&observed), &retained, &areas, 0)
         .expect("dispatch");
-    assert!(second.restored.is_none(), "restoration never fabricates");
     assert_eq!(
         second.views, first.views,
         "no receipt before proof, got {:?}",
@@ -226,33 +224,6 @@ fn select_command_retains_view_transfer_without_self_echo() {
         reply.transfers.iter().any(|t| t.target_workspace == target),
         "view flight retained, got {:?}",
         reply.transfers
-    );
-}
-
-#[test]
-fn durable_restored_never_fabricates_rings() {
-    // No fabricated restoration: this carrier persists no logical rings,
-    // so the first report carries no restoration ingress even with live
-    // member tables staged (restart truth rides the native marker/recovery
-    // lanes consumed as ordinary facts, covered by restart_adoption_tests).
-    // A genuinely fresh process restores nothing either: remaining windows
-    // admit as new instead of silent retention. The deleted wrappers are
-    // gone: capture carries `None` on live and fresh states alike.
-    let live = staged_state();
-    let observed = vec![observed_window()];
-    let areas = vec![area()];
-    assert!(
-        super::super::world_capture::capture_world(&live.inputs(), Some(&observed), &[], &areas, 0)
-            .restored
-            .is_none(),
-        "live tables are memory-only, never durable rings"
-    );
-    let fresh = rmax03_adapter_tests::test_state();
-    assert!(
-        super::super::world_capture::capture_world(&fresh.inputs(), Some(&[]), &[], &areas, 0)
-            .restored
-            .is_none(),
-        "fresh bootstrap carries no restoration"
     );
 }
 
@@ -318,7 +289,6 @@ fn t2_staged_decline_leaves_committed_world_unchanged() {
         |windows: Vec<WindowFact>, command_seq: Option<u64>, command: Option<WorldCommand>| {
             seq_no += 1;
             tiler_core::world_report::WorldReport {
-                restored: None,
                 contract_version: WORLD_CONTRACT_VERSION,
                 owner: owner.clone(),
                 adapter_incarnation: owner.clone(),
@@ -455,7 +425,6 @@ fn t2_supported_and_floating_movers_adopt_once() {
             |windows: Vec<WindowFact>, command_seq: Option<u64>, command: Option<WorldCommand>| {
                 seq_no += 1;
                 tiler_core::world_report::WorldReport {
-                    restored: None,
                     contract_version: WORLD_CONTRACT_VERSION,
                     owner: owner.clone(),
                     adapter_incarnation: owner.clone(),

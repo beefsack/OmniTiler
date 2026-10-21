@@ -136,22 +136,6 @@ pub(super) fn inject_hint_now(now: Option<Instant>) {
     INJECTED_NOW.with(|slot| slot.set(now));
 }
 
-/// Inject one controlled fresh-query outcome for `hwnd` (test-only): any
-/// outcome but `Hint` stands in for the OS answer with no hint and no native
-/// call. An injected `Invalid` is an unperformed query (identity/measurement
-/// failure, never a successful empty) and never clears last-good state; an
-/// injected `NoHint` is a successful empty query and does clear it, exactly
-/// like empty injected hints (see [`test_hint_for`]). Overwrites any previous
-/// outcome for the same window; [`clear_test_hints`] resets all of them.
-#[cfg(test)]
-pub(super) fn inject_test_outcome(hwnd: u64, outcome: HintOutcome) {
-    if outcome == HintOutcome::Hint {
-        return;
-    }
-    INJECTED_OUTCOMES.with(|map| {
-        map.borrow_mut().insert(hwnd, outcome);
-    });
-}
 /// One minimum-hint query outcome for bounded summaries. `Hint` carries a
 /// usable hint; `NoHint` is a successful query that reported no usable hint
 /// (and therefore replaces last-good state); every other variant is a raw
@@ -166,62 +150,6 @@ pub(super) enum HintOutcome {
     Failed,
     Invalid,
     Budget,
-}
-
-impl HintOutcome {
-    pub(super) const fn as_str(self) -> &'static str {
-        match self {
-            Self::Hint => "hint",
-            Self::NoHint => "no-hint",
-            Self::Timeout => "timeout",
-            Self::Failed => "failed",
-            Self::Invalid => "invalid",
-            Self::Budget => "budget",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-pub(super) struct HintStats {
-    pub(super) queried: usize,
-    pub(super) with_hint: usize,
-    pub(super) timeout: usize,
-    pub(super) failed: usize,
-    pub(super) invalid: usize,
-    pub(super) budget_skipped: usize,
-}
-
-impl HintStats {
-    pub(super) fn note(&mut self, outcome: HintOutcome) {
-        match outcome {
-            HintOutcome::Hint => {
-                self.queried += 1;
-                self.with_hint += 1;
-            }
-            HintOutcome::NoHint => {
-                // A successful query with no usable data summarizes with the
-                // other unknown remainders; the log shape is unchanged and
-                // per-row diagnostics keep the distinct `no-hint` outcome.
-                self.queried += 1;
-                self.invalid += 1;
-            }
-            HintOutcome::Timeout => {
-                self.queried += 1;
-                self.timeout += 1;
-            }
-            HintOutcome::Failed => {
-                self.queried += 1;
-                self.failed += 1;
-            }
-            HintOutcome::Invalid => {
-                self.queried += 1;
-                self.invalid += 1;
-            }
-            HintOutcome::Budget => {
-                self.budget_skipped += 1;
-            }
-        }
-    }
 }
 
 /// Fresh query deadline shared by all domains in this operation.
@@ -303,15 +231,4 @@ pub(super) fn test_hint_for(hwnd: u64) -> Option<(WindowSizeHints, HintOutcome)>
             };
             (hints, outcome)
         })
-}
-
-impl TileLoop {
-    /// Lightweight per-token Timeout-reuse report: `Some` when the token rode
-    /// a fresh-query lane on a recent tick, `None` when it never did or was
-    /// pruned with membership. Test-only reader; the stored
-    /// `hint_fallback_uses` data is production state.
-    #[cfg(test)]
-    pub(super) fn hint_fallback_report(&self, token: &str) -> Option<HintFallbackUse> {
-        self.hint_fallback_uses.get(token).copied()
-    }
 }

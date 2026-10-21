@@ -70,12 +70,8 @@ fn dispatch_fullscreen_cli_toggle(
         log_json_at(&state.log_path, line);
         return;
     };
-    if !crate::native_guards::member_matches(
-        &member_key,
-        origin.hwnd,
-        origin.pid,
-        &origin.creation,
-    ) {
+    if !crate::native_guards::member_matches(&member_key, origin.hwnd, origin.pid, &origin.creation)
+    {
         let mut line = settle("foreground-changed");
         line["origin"] = serde_json::Value::from(origin.token.clone());
         log_json_at(&state.log_path, line);
@@ -137,6 +133,9 @@ fn dispatch_fullscreen_cli_toggle(
                 no_activate: false,
                 dialog: false,
             }),
+            // Synthetic fallback row: no fresh membership read was taken, so
+            // it carries no stamp and can never prove a receipt.
+            member_tag: None,
         });
         owned_expected.as_ref().expect("retained expected built")
     };
@@ -683,7 +682,7 @@ pub(super) fn poll_workspace_cli_request(
     };
     enum CliSelect {
         Explicit(String),
-        Cmd(tiler_core::world_report::WorldCommand),
+        Cmd(Box<tiler_core::world_report::WorldCommand>),
     }
     let (target, none_outcome, dispatch_op, dispatch_index): (
         Option<CliSelect>,
@@ -694,11 +693,11 @@ pub(super) fn poll_workspace_cli_request(
         WorkspaceAction::Select => {
             if request.index == 0 {
                 (
-                    Some(CliSelect::Cmd(
+                    Some(CliSelect::Cmd(Box::new(
                         tiler_core::world_report::WorldCommand::SelectTrailing {
                             output: tiler_core::directional::OutputId(wire.clone()),
                         },
-                    )),
+                    ))),
                     "unknown-output",
                     "select",
                     request.index,
@@ -717,11 +716,11 @@ pub(super) fn poll_workspace_cli_request(
             }
         }
         WorkspaceAction::Previous => (
-            Some(CliSelect::Cmd(
+            Some(CliSelect::Cmd(Box::new(
                 tiler_core::world_report::WorldCommand::SelectPrevious {
                     output: tiler_core::directional::OutputId(wire.clone()),
                 },
-            )),
+            ))),
             "unknown-target",
             "previous",
             0,
@@ -730,12 +729,12 @@ pub(super) fn poll_workspace_cli_request(
             Some(direction) => {
                 let delta = direction.delta();
                 (
-                    Some(CliSelect::Cmd(
+                    Some(CliSelect::Cmd(Box::new(
                         tiler_core::world_report::WorldCommand::SelectRelative {
                             output: tiler_core::directional::OutputId(wire.clone()),
                             delta,
                         },
-                    )),
+                    ))),
                     "unknown-target",
                     if delta < 0 {
                         "relative-prev"
@@ -789,63 +788,44 @@ pub(super) fn poll_workspace_cli_request(
         ),
         CliSelect::Cmd(command) => {
             let foreground = crate::ffi::foreground_window();
+            // Causal source before dispatch: the core's current logical view
+            // on the ACTUAL resolved output (never the stale init-only
+            // `active_output` cache, never an op literal).
+            let source_view = state
+                .active_view(&output)
+                .unwrap_or_else(|| "ws?".to_owned());
             let reply = super::world_tick::run_world_command(
-                state,
-                me,
-                store,
-                dir,
-                &observed,
-                &retained,
-                areas,
-                foreground,
-                fulls,
-                command,
+                state, me, store, dir, &observed, &retained, areas, foreground, fulls, *command,
             );
-            let transition_ms = ctx
-                .start
-                .elapsed()
-                .as_millis()
-                .min(u128::from(u64::MAX)) as u64;
-            match reply {
-                Some(_) => SelectEffect {
-                    outcome: "ok",
-                    geometry: None,
-                    focus: "none",
-                    transition_ms,
-                    observation_ms: 0,
-                    geometry_ms: 0,
-                    hide_ms: 0,
-                    reveal_ms: 0,
-                    focus_ms: 0,
-                    plan_ms: 0,
-                    source_workspace: state.active_output.clone(),
-                    target_workspace: dispatch_op.to_owned(),
-                },
-                None => SelectEffect {
-                    outcome: "unverified",
-                    geometry: None,
-                    focus: "none",
-                    transition_ms,
-                    observation_ms: 0,
-                    geometry_ms: 0,
-                    hide_ms: 0,
-                    reveal_ms: 0,
-                    focus_ms: 0,
-                    plan_ms: 0,
-                    source_workspace: state.active_output.clone(),
-                    target_workspace: dispatch_op.to_owned(),
-                },
-            }
+            let transition_ms = ctx.start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+            // Post-command core view on the same resolved output: the actual
+            // commanded target on `ok`, the unchanged source on `unverified`.
+            // Still core state (not native proof); arrival proves separately.
+            let target_view = state
+                .active_view(&output)
+                .unwrap_or_else(|| "ws?".to_owned());
+            cmd_select_effect(
+                transition_ms,
+                if reply.is_some() { "ok" } else { "unverified" },
+                source_view,
+                target_view,
+            )
         }
     };
+    // Primary workspace line carries the ACTUAL resolved output plus the
+    // post-command core view there (target on ok, unchanged source
+    // otherwise): never the stale init-only cache. Same event vocabulary.
+    let post_view = state
+        .active_view(&output)
+        .unwrap_or_else(|| "ws?".to_owned());
     log_json_at(
         &state.log_path,
-        workspace_log(
-            state,
+        select_primary_line(
             tick,
+            &output,
+            &post_view,
             dispatch_op,
             dispatch_index,
-            "cli",
             effect.outcome,
         ),
     );
@@ -876,4 +856,93 @@ pub(super) fn poll_workspace_cli_request(
             target: effect.geometry.as_ref(),
         },
     );
+}
+
+/// Secondary-action effect for a core-resolved select command
+/// (trailing/previous/relative): the pre-dispatch core view on the resolved
+/// output plus the post-command core view there. Both are workspace ids,
+/// never the device cache or the op literal; the post view is core state,
+/// never native arrival proof.
+fn cmd_select_effect(
+    transition_ms: u64,
+    outcome: &'static str,
+    source_view: String,
+    target_view: String,
+) -> SelectEffect {
+    SelectEffect {
+        outcome,
+        geometry: None,
+        focus: "none",
+        transition_ms,
+        observation_ms: 0,
+        geometry_ms: 0,
+        hide_ms: 0,
+        reveal_ms: 0,
+        focus_ms: 0,
+        plan_ms: 0,
+        source_workspace: source_view,
+        target_workspace: target_view,
+    }
+}
+
+/// Primary workspace log line for the select path with the ACTUAL resolved
+/// output plus the post-command core view. Same event vocabulary as
+/// [`workspace_log`](super::history::workspace_log); the caller supplies the
+/// resolved values instead of the stale init-only cache.
+fn select_primary_line(
+    tick: u64,
+    output: &str,
+    workspace: &str,
+    op: &str,
+    index: u8,
+    outcome: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "event": "workspace",
+        "tick": tick,
+        "output": output,
+        "workspace": workspace,
+        "op": op,
+        "index": index,
+        "edge": "cli",
+        "outcome": outcome,
+    })
+}
+
+#[cfg(test)]
+mod cli_workspace_tests {
+    use super::{cmd_select_effect, select_primary_line};
+
+    #[test]
+    fn cmd_select_effect_logs_core_views_not_cache_or_literals() {
+        // Stale cache holds the other device; the op literal is "select".
+        // The effect must carry the resolved output's core views instead.
+        let effect = cmd_select_effect(7, "ok", "ws-1".to_owned(), "ws-3".to_owned());
+        assert_eq!(effect.outcome, "ok");
+        assert_eq!(effect.source_workspace, "ws-1");
+        assert_eq!(effect.target_workspace, "ws-3");
+        assert_ne!(effect.source_workspace, "\\\\.\\DISPLAY2");
+        assert_ne!(effect.target_workspace, "select");
+
+        let effect = cmd_select_effect(9, "unverified", "ws-1".to_owned(), "ws-1".to_owned());
+        assert_eq!(effect.outcome, "unverified");
+        assert_eq!(effect.source_workspace, "ws-1");
+        assert_eq!(effect.target_workspace, "ws-1");
+    }
+
+    #[test]
+    fn select_primary_line_carries_resolved_output_and_view() {
+        let line = select_primary_line(17, "\\\\.\\DISPLAY1", "ws-3", "select", 0, "ok");
+        assert_eq!(line["event"], serde_json::json!("workspace"));
+        assert_eq!(line["output"], serde_json::json!("\\\\.\\DISPLAY1"));
+        assert_eq!(line["workspace"], serde_json::json!("ws-3"));
+        assert_eq!(line["op"], serde_json::json!("select"));
+        assert_eq!(line["index"], serde_json::json!(0));
+        assert_eq!(line["edge"], serde_json::json!("cli"));
+        assert_eq!(line["outcome"], serde_json::json!("ok"));
+        // The workspace names the core view, never the op literal; the
+        // output names the resolved device, never a workspace id.
+        assert_ne!(line["workspace"], serde_json::json!("select"));
+        assert_ne!(line["output"], serde_json::json!("ws-3"));
+    }
 }

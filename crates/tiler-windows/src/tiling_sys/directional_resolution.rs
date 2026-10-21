@@ -69,12 +69,6 @@ pub(super) fn chord_output(state: &TileLoop, areas: &[MonitorArea]) -> Option<St
     )
 }
 
-/// Core revision for log correlation (the per-domain Engine revision no
-/// longer exists; commands carry no revision binding).
-pub(super) fn revision_for(state: &TileLoop, _output: &str, _workspace: &str) -> u64 {
-    state.core_revision()
-}
-
 /// Windows multi-output directional foundation (REQ-OUT-01..03, REQ-MOV-08).
 ///
 /// Exhausted directional tiled moves cross all four directions into the
@@ -89,128 +83,8 @@ pub(super) fn revision_for(state: &TileLoop, _output: &str, _workspace: &str) ->
 /// membership change or native effect. Failed half-applied operations stop
 /// narrowly with no replay and no permanent disabling; the retained Engine
 /// plan stands and the next observation converges.
-/// FULL-rectangle outputs for the shared window selector.
-pub(super) fn directional_outputs_from_areas(
-    areas: &[MonitorArea],
-) -> Vec<crate::native_guards::DirectionalOutput> {
-    areas
-        .iter()
-        .map(|area| crate::native_guards::DirectionalOutput {
-            id: area.device.clone(),
-            full: area.full,
-        })
-        .collect()
-}
-
-/// Resolve the cross-output target for one directional intent.
-///
-/// Returns `None` for the local path: no candidate, floating target,
-/// vertical focus which never crosses, or unreadable/unknown destination
-/// topology. Local-first semantics require this: an unreadable destination
-/// must never refuse an otherwise valid local command; the exhausted edge
-/// then reports the honest local noop.
-pub(super) fn resolve_directional_target(
-    state: &TileLoop,
-    areas: &[MonitorArea],
-    source_output: &str,
-    direction: tiler_core::directional::Direction,
-    mover_rect: &Rect,
-    is_focus: bool,
-) -> Option<(String, String)> {
-    if is_focus && !crate::native_guards::directional_focus_crosses(direction) {
-        return None;
-    }
-    let outputs = directional_outputs_from_areas(areas);
-    let selected = crate::native_guards::select_directional_target(
-        direction,
-        source_output,
-        mover_rect,
-        &outputs,
-    )
-    .ok()??;
-    if selected == source_output {
-        return None;
-    }
-    let target_workspace = state.active_view(&selected)?;
-    // Modes beyond tiled stay out of scope: fall back to the local path so
-    // an exhausted edge reports the honest local noop instead of crossing
-    // into a floating layout.
-    if !state.is_tiled_view(&selected, &target_workspace) {
-        return None;
-    }
-    Some((selected, target_workspace))
-}
-
-/// Snapshot the directional fences at pair-build time, including the live
-/// FULL rectangles, inset domain bounds, and owner binding so later tails
-/// detect topology or binding drift.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn directional_snapshot(
-    state: &TileLoop,
-    areas: &[MonitorArea],
-    source_output: &str,
-    source_workspace: &str,
-    target_output: &str,
-    target_workspace: &str,
-    direction: tiler_core::directional::Direction,
-    overlay_maximized: bool,
-    overlay_fullscreen: bool,
-) -> Option<crate::native_guards::DirectionalFenceSnapshot> {
-    let source_area = areas.iter().find(|a| a.device == source_output)?;
-    let target_area = areas.iter().find(|a| a.device == target_output)?;
-    let source_bounds = tiling_domain_bounds_with(source_area.work, state.outer_gap)?;
-    let target_bounds = tiling_domain_bounds_with(target_area.work, state.outer_gap)?;
-    Some(crate::native_guards::DirectionalFenceSnapshot {
-        inner_gap: state.inner_gap,
-        outer_gap: state.outer_gap,
-        source_output: source_output.to_owned(),
-        source_workspace: source_workspace.to_owned(),
-        target_output: target_output.to_owned(),
-        target_workspace: target_workspace.to_owned(),
-        source_tiled: state.is_tiled_view(source_output, source_workspace),
-        target_tiled: state.is_tiled_view(target_output, target_workspace),
-        direction,
-        overlay_maximized,
-        overlay_fullscreen,
-        source_full: source_area.full,
-        target_full: target_area.full,
-        source_bounds,
-        target_bounds,
-        owner: state.owner.as_str().to_owned(),
-        generation: state.generation.as_str().to_owned(),
-    })
-}
-
-/// Read the live directional fences with fresh native state at a meaningful
-/// boundary (before Engine dispatch, before actuation). Scope, lifetime,
-/// overlay, views, gaps, modes, topology, and owner binding are all
-/// re-read here; callers pass only `membership_ok`, whose semantics differ
-/// before and after the project membership moves.
-pub(super) fn directional_live(
-    state: &TileLoop,
-    areas: &[MonitorArea],
-    snapshot: &crate::native_guards::DirectionalFenceSnapshot,
-    mover_key: &crate::native_guards::WindowKey,
-    membership_ok: bool,
-    overlay_maximized: bool,
-    overlay_fullscreen: bool,
-) -> crate::native_guards::DirectionalFenceLive {
-    // The direction selects the candidate only; fence evaluation is
-    // direction-free, so the drag-drop snapshot carries the shared
-    // computation (single mapping in `drag_snapshot_for_directional`).
-    fence_live_impl(
-        state,
-        areas,
-        &crate::native_guards::drag_snapshot_for_directional(snapshot),
-        mover_key,
-        membership_ok,
-        overlay_maximized,
-        overlay_fullscreen,
-    )
-}
-
-/// Read the live drag-drop fences: same shared computation as
-/// [`directional_live`] over the pointer-resolved (non-adjacency) snapshot.
+/// Read the live drag-drop fences over the pointer-resolved (non-adjacency)
+/// snapshot.
 pub(super) fn drag_drop_live(
     state: &TileLoop,
     areas: &[MonitorArea],
@@ -293,31 +167,63 @@ fn fence_live_impl(
     }
 }
 
-/// Verify the cross-output arrival after a world-routed apply: the mover's
-/// desired core allocation must read back on the destination monitor.
-/// Uses the just-published managed observation (`state.stable`, refreshed by
-/// the apply's internal readback), never the setter result.
-pub(super) fn directional_arrival_verified(
-    state: &TileLoop,
+/// Verify post-apply arrival for one mover row with fresh native proof,
+/// never the setter result and never core desire.
+///
+/// Tiled rows under Controlled frame authority prove through the exact
+/// published frame target on the row's device: the live frame must equal
+/// `effective_frame` (the only write target; `allocation` is the canonical
+/// slot, never a write target and never arrival proof) with screen affinity
+/// on the same device.
+///
+/// Every other row (membership-only redirect lanes with no published frame,
+/// fullscreen rows without a frame target, floats) proves through the
+/// proven applied-homing receipt the tick merged with independent fresh
+/// revalidation: non-floating rows must additionally still sit on the row's
+/// device, while floating rows preserve their physical frame by design and
+/// settle on the receipt alone. Anything unproven fails closed so the
+/// caller holds instead of claiming arrival.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn drop_arrival_verified(
+    state: &mut TileLoop,
+    me: &ProcessIdentity,
+    fulls: &[Rect],
     areas: &[MonitorArea],
     reply: &tiler_core::world_report::WorldReply,
     mover_token: &str,
     mover_hwnd: u64,
-    target_output: &str,
+    expect_device: Option<&str>,
 ) -> bool {
-    let Some(desired) = reply
-        .windows
-        .iter()
-        .find(|w| w.lifetime.0 == mover_token)
-        .and_then(|w| w.allocation)
-    else {
+    let Some(row) = reply.windows.iter().find(|w| w.lifetime.0 == mover_token) else {
         return false;
     };
-    let Some(visible) = state.stable.get(&mover_hwnd).copied() else {
+    let Some(device) = state.device_of(&row.output.0) else {
         return false;
     };
-    if visible != desired {
+    if expect_device.is_some_and(|expected| expected != device) {
         return false;
     }
-    output_for_rect(areas, &visible) == target_output
+    if !row.floating && row.frame_authority == tiler_core::world_report::ScopeAuthority::Controlled
+    {
+        let Some(target) = row.effective_frame else {
+            return false;
+        };
+        let Some(live) = state.readback_frame(me, fulls, mover_hwnd) else {
+            return false;
+        };
+        return live == target && output_for_rect(areas, &live) == device;
+    }
+    let Some((wire, workspace)) = state.applied_homing.get(mover_token) else {
+        return false;
+    };
+    if wire != &row.output.0 || workspace != &row.workspace {
+        return false;
+    }
+    if row.floating {
+        return true;
+    }
+    let Some(live) = state.readback_frame(me, fulls, mover_hwnd) else {
+        return false;
+    };
+    output_for_rect(areas, &live) == device
 }

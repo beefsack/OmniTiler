@@ -36,7 +36,8 @@ impl TileLoop {
     /// be idempotent); the hide-time record itself is never rewritten, so
     /// the reveal preimage stays intact.
     fn refresh_hidden_iconic(&mut self) {
-        let keys: Vec<crate::native_guards::WindowKey> = self.hidden_claims.keys().cloned().collect();
+        let keys: Vec<crate::native_guards::WindowKey> =
+            self.hidden_claims.keys().cloned().collect();
         for key in keys {
             if !self.last_hwnds.contains(&key.hwnd) {
                 continue;
@@ -86,51 +87,17 @@ impl TileLoop {
             if enum_failed {
                 return None;
             }
-            // D23 injected fixture contract: iconic HWNDs join the raw
-            // inventory (production enumeration yields iconic windows).
-            // Visible iconic members resolve to omission exactly as the real
-            // iconic arm does; hidden members refresh through the owned
-            // exact-lifetime gate below (never unconditional). Unreadable
-            // HWNDs join the inventory only (production `Unknown`: present,
-            // never a close, never a row). Invisible HWNDs join the inventory
-            // only as well (production invisible `Unknown`): the external-hide
-            // close fence decides, never row assembly. The omission set
-            // refreshes every pass, never leaking across ticks. Fixtures
-            // without iconic/unreadable/invisible HWNDs behave exactly as
-            // before.
+            // D23 injected fixture contract: the injected observed plus
+            // retained frames are the complete inventory (production
+            // enumeration yields exactly these windows). The omission set
+            // refreshes every pass, never leaking across ticks.
             self.minimized_omitted.clear();
-            let iconic: std::collections::HashSet<u64> =
-                INJECTED_ICONIC.with(|slot| slot.borrow().clone());
-            let unreadable: std::collections::HashSet<u64> =
-                INJECTED_UNREADABLE.with(|slot| slot.borrow().clone());
-            let invisible: std::collections::HashSet<u64> =
-                INJECTED_INVISIBLE.with(|slot| slot.borrow().clone());
-            self.last_enumerated = observed.len()
-                + retained_injected.len()
-                + iconic.len()
-                + unreadable.len()
-                + invisible.len();
+            self.last_enumerated = observed.len() + retained_injected.len();
             self.last_hwnds = observed
                 .iter()
                 .map(|window| window.hwnd)
                 .chain(retained_injected.iter().map(|row| row.key.hwnd))
-                .chain(iconic.iter().copied())
-                .chain(unreadable.iter().copied())
-                .chain(invisible.iter().copied())
                 .collect();
-            for hwnd in &iconic {
-                if self.hidden_claims.keys().any(|key| key.hwnd == *hwnd) {
-                    continue;
-                }
-                if let Some(key) = self
-                    .member_tokens
-                    .keys()
-                    .find(|key| key.hwnd == *hwnd)
-                    .cloned()
-                {
-                    self.minimized_omitted.insert(key);
-                }
-            }
             // Same hidden-iconic refresh as the real path below, driven by
             // the fixture seam instead of native queries.
             self.refresh_hidden_iconic();
@@ -227,11 +194,12 @@ impl TileLoop {
                     }
                     skipped.push((known.token.clone(), reason.as_str().to_owned()));
                     if reason == SkipReason::Minimized {
-                        self.minimized_omitted.insert(crate::native_guards::WindowKey {
-                            hwnd: known.identity.hwnd,
-                            pid: known.identity.pid,
-                            creation: known.identity.process_creation.clone(),
-                        });
+                        self.minimized_omitted
+                            .insert(crate::native_guards::WindowKey {
+                                hwnd: known.identity.hwnd,
+                                pid: known.identity.pid,
+                                creation: known.identity.process_creation.clone(),
+                            });
                         continue;
                     }
                     retained.push(RetainedRow {
@@ -447,13 +415,5 @@ impl TileLoop {
         members.extend(visible_top_to_bottom.iter().cloned());
         self.pager_z =
             crate::pager::retain_pager_order(&self.pager_z, &members, visible_top_to_bottom);
-    }
-
-    pub(super) fn focused_token(&self, observed: &[ObservedWindow]) -> Option<WindowId> {
-        let foreground = crate::ffi::foreground_window();
-        observed
-            .iter()
-            .find(|w| w.hwnd == foreground)
-            .map(|w| WindowId(w.token.clone()))
     }
 }

@@ -85,7 +85,16 @@ fn drop_blocked_intents(
     tray: &mut Option<crate::tray_sys::TrayOwner>,
 ) {
     if !snap_events.is_empty() {
-        keyboard_tick(state, me, store, dir, fulls, areas, snap_events, Some("suspended"));
+        keyboard_tick(
+            state,
+            me,
+            store,
+            dir,
+            fulls,
+            areas,
+            snap_events,
+            Some("suspended"),
+        );
     }
     if !workspace_events.is_empty() {
         workspace_tick(
@@ -112,7 +121,16 @@ fn drop_blocked_intents(
         );
     }
     if !output_events.is_empty() {
-        workspace_output_send_tick(state, me, store, dir, fulls, areas, output_events, Some("suspended"));
+        workspace_output_send_tick(
+            state,
+            me,
+            store,
+            dir,
+            fulls,
+            areas,
+            output_events,
+            Some("suspended"),
+        );
     }
     if !migrate_events.is_empty() {
         workspace_migrate_tick(
@@ -565,7 +583,16 @@ pub(super) fn run_active_tick(
         // and drop safely.
         state.snap_advance = None;
         if !snap_events.is_empty() {
-            keyboard_tick(state, me, store, dir, &fulls, areas, snap_events, Some("gesture"));
+            keyboard_tick(
+                state,
+                me,
+                store,
+                dir,
+                &fulls,
+                areas,
+                snap_events,
+                Some("gesture"),
+            );
         }
         if !workspace_events.is_empty() {
             workspace_tick(
@@ -592,7 +619,16 @@ pub(super) fn run_active_tick(
             );
         }
         if !output_events.is_empty() {
-            workspace_output_send_tick(state, me, store, dir, &fulls, areas, output_events, Some("gesture"));
+            workspace_output_send_tick(
+                state,
+                me,
+                store,
+                dir,
+                &fulls,
+                areas,
+                output_events,
+                Some("gesture"),
+            );
         }
         if !migrate_events.is_empty() {
             workspace_migrate_tick(
@@ -684,7 +720,16 @@ pub(super) fn run_active_tick(
                 );
             }
             if !output_events.is_empty() {
-                workspace_output_send_tick(state, me, store, dir, &fulls, areas, output_events, None);
+                workspace_output_send_tick(
+                    state,
+                    me,
+                    store,
+                    dir,
+                    &fulls,
+                    areas,
+                    output_events,
+                    None,
+                );
             }
             if !migrate_events.is_empty() {
                 workspace_migrate_tick(state, me, store, dir, &fulls, areas, migrate_events, None);
@@ -703,7 +748,16 @@ pub(super) fn run_active_tick(
         // continuation resumes.
         state.snap_advance = None;
         if !snap_events.is_empty() {
-            keyboard_tick(state, me, store, dir, &fulls, areas, snap_events, Some("gesture"));
+            keyboard_tick(
+                state,
+                me,
+                store,
+                dir,
+                &fulls,
+                areas,
+                snap_events,
+                Some("gesture"),
+            );
         }
         if !workspace_events.is_empty() {
             workspace_tick(
@@ -730,7 +784,16 @@ pub(super) fn run_active_tick(
             );
         }
         if !output_events.is_empty() {
-            workspace_output_send_tick(state, me, store, dir, &fulls, areas, output_events, Some("gesture"));
+            workspace_output_send_tick(
+                state,
+                me,
+                store,
+                dir,
+                &fulls,
+                areas,
+                output_events,
+                Some("gesture"),
+            );
         }
         if !migrate_events.is_empty() {
             workspace_migrate_tick(

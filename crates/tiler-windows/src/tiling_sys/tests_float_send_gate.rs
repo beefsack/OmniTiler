@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-use super::float_send_admits;
+use super::admission::float_send_admits;
 
 fn mover_key() -> crate::native_guards::WindowKey {
     crate::native_guards::WindowKey {
@@ -18,7 +18,6 @@ fn seed_float_session(state: &mut super::TileLoop) {
     state.member_tokens.insert(mover.clone(), "wF".to_owned());
     state.floated.insert(mover);
 }
-
 
 #[test]
 fn float_send_gate_admits_ordinary_and_single_overlays_only() {

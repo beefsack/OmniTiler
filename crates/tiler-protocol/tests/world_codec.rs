@@ -414,59 +414,28 @@ fn snapshot_rejection_names_fixed_check_reason() {
     assert_eq!(error.message, "window-output-unknown");
 }
 
-fn with_restored(value: &serde_json::Value) -> String {
-    let mut value = value.clone();
+#[test]
+fn unknown_restoration_key_refuses() {
+    // No restoration ingress exists on the wire: a present `restored`
+    // key is unknown and refuses before any semantic check. Reports
+    // without the key decode.
+    let report = decode_request(&one_window_request()).expect("decodes");
+    let estimate = tiler_core::world_report::report_estimate(&report);
+    assert!(
+        estimate >= one_window_request().len(),
+        "estimate {estimate} bounds wire {}",
+        one_window_request().len()
+    );
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["restored"] = serde_json::json!({
         "rings": [{"out": "out", "ws": ["ws-1"]}],
         "views": [{"out": "out", "view": "ws-1"}],
         "tiling": [{"out": "out", "ws": "ws-1", "tiled": true}],
         "members": [{"win": "win-a", "out": "out", "ws": "ws-1"}],
     });
-    value.to_string()
-}
-
-#[test]
-fn restored_absent_or_null_decodes_to_none() {
-    let report = decode_request(&one_window_request()).expect("decodes");
-    assert!(report.restored.is_none());
-    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
-    value["restored"] = serde_json::Value::Null;
-    let report = decode_request(&value.to_string()).expect("null decodes");
-    assert!(report.restored.is_none());
-}
-
-#[test]
-fn restored_valid_decodes_and_bounds_wire() {
-    let value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
-    let compact = with_restored(&value);
-    let report = decode_request(&compact).expect("restored decodes");
-    let restored = report.restored.as_ref().expect("restored present");
-    assert_eq!(restored.rings.len(), 1);
-    assert_eq!(restored.rings[0].workspaces, vec!["ws-1".to_owned()]);
-    assert_eq!(restored.views.len(), 1);
-    assert_eq!(restored.tiling.len(), 1);
-    assert_eq!(restored.members.len(), 1);
-    let estimate = tiler_core::world_report::report_estimate(&report);
-    assert!(
-        estimate >= compact.len(),
-        "estimate {estimate} bounds wire {}",
-        compact.len()
-    );
-}
-
-#[test]
-fn restored_malformed_refuses_fixed_vocabulary() {
-    // Unknown member window: stale restoration, never silent adoption.
-    let value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
-    let mut restored: serde_json::Value =
-        serde_json::from_str(&with_restored(&value)).expect("valid");
-    restored["restored"]["members"] =
-        serde_json::json!([{"win": "win-gone", "out": "out", "ws": "ws-1"}]);
-    let error = decode_request(&restored.to_string()).expect_err("unknown member refuses");
-    assert_eq!(error.kind, "snapshot-invalid");
-    assert_eq!(error.message, "restored-member-unknown");
-    // Unknown-key shape refuses before any semantic check.
-    let mut bad: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
-    bad["restored"] = serde_json::json!({"bogus": []});
-    assert!(decode_request(&bad.to_string()).is_err());
+    assert!(decode_request(&value.to_string()).is_err());
+    let mut null_value: serde_json::Value =
+        serde_json::from_str(&one_window_request()).expect("valid");
+    null_value["restored"] = serde_json::Value::Null;
+    assert!(decode_request(&null_value.to_string()).is_err());
 }

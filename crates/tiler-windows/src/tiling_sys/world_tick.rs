@@ -16,11 +16,11 @@
 use super::world_capture::capture_world;
 use super::world_diff::{FreshHost, NativeOps};
 use super::world_native::{LiveNative, NativePrimitives};
-use super::world_sequencer::DispatchError;
 use super::{MonitorArea, ObservedWindow, RetainedRow, TileLoop};
 use std::collections::HashMap;
-use tiler_core::directional::WindowId;
-use tiler_core::world_report::{AttemptOutcome, WorldCommand};
+use tiler_core::world_report::{
+    AttemptFeedback, AttemptOutcome, CommandResult, TransferKind, WorldCommand, WorldReply,
+};
 
 /// Merge applied transfer effects into the proven receipt maps. Each
 /// `Applied` feedback revalidates against independent fresh native proof
@@ -68,9 +68,7 @@ pub(super) fn merge_applied_transfers(
                 }
             }
             TransferKind::View | TransferKind::Migration => {
-                if native
-                    .read_view(&transfer.target_output.0)
-                    .as_deref()
+                if native.read_view(&transfer.target_output.0).as_deref()
                     == Some(transfer.target_workspace.as_str())
                 {
                     proven_v.insert(
@@ -93,11 +91,7 @@ fn tiled_frame_matches(
     native: &mut LiveNative,
     token: &str,
 ) -> bool {
-    let Some(row) = reply
-        .windows
-        .iter()
-        .find(|row| row.lifetime.0 == token)
-    else {
+    let Some(row) = reply.windows.iter().find(|row| row.lifetime.0 == token) else {
         return true;
     };
     if row.floating {
@@ -109,6 +103,209 @@ fn tiled_frame_matches(
     native.read_frame(token).is_some_and(|live| live == target)
 }
 
+/// Trace-only apply diagnostic caps: rows stay bounded by the reply vec
+/// lengths (already under `WORLD_MAX_REPLY_BYTES`) plus these fixed
+/// per-event caps with honest `omitted` counts. Never a per-window dump:
+/// only feedback rows, held scopes, and retained transfer desires ride.
+const MAX_APPLY_DIAG_FEEDBACK: usize = 16;
+const MAX_APPLY_DIAG_SCOPES: usize = 16;
+const MAX_APPLY_DIAG_TRANSFERS: usize = 16;
+
+/// Redacted fixed command vocabulary for the apply diagnostic: the kind
+/// alone, never window tokens, output/workspace strings, exe paths,
+/// directions, or any other raw command payload.
+fn world_command_kind(command: &WorldCommand) -> &'static str {
+    match command {
+        WorldCommand::Focus { .. } => "focus",
+        WorldCommand::Send { .. } => "send",
+        WorldCommand::SwitchView { .. } => "switch-view",
+        WorldCommand::SelectWorkspace { .. } => "select-workspace",
+        WorldCommand::SelectNumbered { .. } => "select-numbered",
+        WorldCommand::SelectRelative { .. } => "select-relative",
+        WorldCommand::SelectPrevious { .. } => "select-previous",
+        WorldCommand::SelectTrailing { .. } => "select-trailing",
+        WorldCommand::SendRelative { .. } => "send-relative",
+        WorldCommand::SendNumbered { .. } => "send-numbered",
+        WorldCommand::SetWorkspaceTiling { .. } => "set-workspace-tiling",
+        WorldCommand::MigrateWorkspace { .. } => "migrate-workspace",
+        WorldCommand::FocusDirectional { .. } => "focus-directional",
+        WorldCommand::MoveDirectional { .. } => "move-directional",
+        WorldCommand::SendDirectional { .. } => "send-directional",
+        WorldCommand::MigrateDirectional { .. } => "migrate-directional",
+        WorldCommand::Operation(_) => "operation",
+    }
+}
+
+/// Redacted fixed result vocabulary: the variant alone, never rects,
+/// members, or bounds.
+fn command_result_kind(result: &Option<CommandResult>) -> &'static str {
+    match result {
+        None => "none",
+        Some(CommandResult::DragPreview { .. }) => "drag-preview",
+        Some(CommandResult::Float { .. }) => "float",
+        Some(CommandResult::ActiveGroup { .. }) => "active-group",
+        Some(CommandResult::NoGroup { .. }) => "no-group",
+        Some(CommandResult::Migration { .. }) => "migration",
+    }
+}
+
+/// Event-driven throttle: commands always log (the owner trace only runs on
+/// dispatch), while observation ticks log only on change: staged feedback,
+/// landed writes, or a stopped/partial pass. Pure-held observation ticks
+/// (steady-state holds with no attempt) stay quiet; a command that holds
+/// with no attempt still logs on its own command row with `held > 0` and
+/// empty feedback, which is exactly the no-attempt Hold signature.
+fn should_log_apply(
+    command_kind: &str,
+    stats: &super::world_diff::ApplyStats,
+    feedback: &[AttemptFeedback],
+) -> bool {
+    if command_kind != "observation" {
+        return true;
+    }
+    if !feedback.is_empty() {
+        return true;
+    }
+    if stats.stopped_mid_apply || stats.partial {
+        return true;
+    }
+    stats.geometry_writes
+        + stats.membership_writes
+        + stats.view_writes
+        + stats.creations
+        + stats.removals
+        + stats.effects
+        > 0
+}
+
+/// Pure trace-row builder for one apply pass (TRACE-ONLY: no actuation
+/// input, no retry, no interpretation). `Applied` appears only when the
+/// diff's own feedback says so: setter-side write counts never fabricate
+/// an applied row. Desired homing/views ride labeled `desired_*`, never as
+/// observed proof. The only refusal detail available from existing values
+/// is the feedback `hold` reason vocabulary: the [`NativeOps`] contract
+/// surfaces explicit refusal as `Ok(false)` and torn state as `Err`
+/// without a native errno, so deeper refusal detail would need a broader
+/// seam change (reported as a limitation, not papered over here).
+fn apply_diag_value(
+    tick: u64,
+    reply: &WorldReply,
+    delivery: &'static str,
+    command_kind: &str,
+    stats: &super::world_diff::ApplyStats,
+    feedback: &[AttemptFeedback],
+) -> serde_json::Value {
+    let feedback_rows: Vec<serde_json::Value> = feedback
+        .iter()
+        .take(MAX_APPLY_DIAG_FEEDBACK)
+        .map(|item| {
+            serde_json::json!({
+                "op": item.operation_id.clone(),
+                "kind": item.kind.as_str(),
+                "outcome": item.outcome.as_str(),
+                "hold": item.hold.map(|reason| reason.as_str()),
+            })
+        })
+        .collect();
+    let held_scopes: Vec<serde_json::Value> = reply
+        .scopes
+        .iter()
+        .filter(|status| status.authority != tiler_core::world_report::ScopeAuthority::Controlled)
+        .take(MAX_APPLY_DIAG_SCOPES)
+        .map(|status| {
+            serde_json::json!({
+                "scope": status.scope.clone(),
+                "authority": status.authority.as_str(),
+                "reason": status.authority.hold_reason().map(|reason| reason.as_str()),
+            })
+        })
+        .collect();
+    let desired_transfers: Vec<serde_json::Value> = reply
+        .transfers
+        .iter()
+        .take(MAX_APPLY_DIAG_TRANSFERS)
+        .map(|transfer| {
+            let (kind, window) = match &transfer.kind {
+                TransferKind::Window(id) => ("window", Some(id.0.clone())),
+                TransferKind::View => ("view", None),
+                TransferKind::Migration => ("migration", None),
+            };
+            serde_json::json!({
+                "op": transfer.operation_id.clone(),
+                "kind": kind,
+                "window": window,
+                "target_output": transfer.target_output.0.clone(),
+                "target_workspace": transfer.target_workspace.clone(),
+                "follow": transfer.follow,
+                "held": transfer.held,
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "event": "world-apply",
+        "tick": tick,
+        "request": reply.request_id.clone(),
+        "revision": reply.state_revision,
+        "observation": reply.based_on_observation_seq,
+        "delivery": delivery,
+        "command": command_kind,
+        "command_consumed": reply.command_consumed,
+        "command_result": command_result_kind(&reply.command_result),
+        "stats": {
+            "geometry_writes": stats.geometry_writes,
+            "membership_writes": stats.membership_writes,
+            "view_writes": stats.view_writes,
+            "creations": stats.creations,
+            "removals": stats.removals,
+            "effects": stats.effects,
+            "held": stats.held,
+            "stopped_mid_apply": stats.stopped_mid_apply,
+            "partial": stats.partial,
+        },
+        "feedback": feedback_rows,
+        "feedback_omitted": feedback.len().saturating_sub(feedback_rows.len()),
+        "held_scopes": held_scopes,
+        "held_scopes_omitted": reply
+            .scopes
+            .iter()
+            .filter(|status| {
+                status.authority != tiler_core::world_report::ScopeAuthority::Controlled
+            })
+            .count()
+            .saturating_sub(held_scopes.len()),
+        "desired_transfers": desired_transfers,
+        "desired_transfers_omitted": reply
+            .transfers
+            .len()
+            .saturating_sub(desired_transfers.len()),
+    })
+}
+
+/// Trace-only emission for one apply pass. Event-driven owner trace only:
+/// no input-hook cost, no native re-read, no per-window dump.
+// Eight inputs are the disjoint trace context plus the pass products
+// (reply, delivery, command kind, stats, feedback); bundling would hide
+// the call-site borrow split the tick relies on.
+#[allow(clippy::too_many_arguments)]
+fn log_apply_diag(
+    log_path: &std::path::Path,
+    trace: bool,
+    tick: u64,
+    reply: &WorldReply,
+    delivery: &'static str,
+    command_kind: &str,
+    stats: &super::world_diff::ApplyStats,
+    feedback: &[AttemptFeedback],
+) {
+    if !trace || !should_log_apply(command_kind, stats, feedback) {
+        return;
+    }
+    super::trace::log_json_at(
+        log_path,
+        apply_diag_value(tick, reply, delivery, command_kind, stats, feedback),
+    );
+}
+
 /// Mechanical admission preamble: bind observed windows to stable tokens
 /// plus stored identity and stamped lifetime tags. Admission verifies the
 /// holdable key, live identity, scope fence, and hosted-child gate, then
@@ -116,7 +313,11 @@ fn tiled_frame_matches(
 /// touches rings/views, and never commits policy. Prunes only
 /// verified-closed lifetimes (dropped from the member maps once the close
 /// receipt pruned the native queue) and recycled-HWND stale entries.
-fn admit_observed(state: &mut TileLoop, me: &crate::model::ProcessIdentity, observed: &[ObservedWindow]) {
+fn admit_observed(
+    state: &mut TileLoop,
+    me: &crate::model::ProcessIdentity,
+    observed: &[ObservedWindow],
+) {
     for window in observed {
         let key = crate::native_guards::WindowKey {
             hwnd: window.hwnd,
@@ -203,7 +404,9 @@ fn admit_observed(state: &mut TileLoop, me: &crate::model::ProcessIdentity, obse
             let owned = entries
                 .iter()
                 .find(|e| e.hwnd == key.hwnd)
-                .is_some_and(|entry| super::observe::verify_proof_owned(key.hwnd, entry, me).is_ok());
+                .is_some_and(|entry| {
+                    super::observe::verify_proof_owned(key.hwnd, entry, me).is_ok()
+                });
             if !owned {
                 continue;
             }
@@ -214,7 +417,8 @@ fn admit_observed(state: &mut TileLoop, me: &crate::model::ProcessIdentity, obse
         };
         let post_ok = crate::product_hide::sys::hold_target_verified(live.pid, &live).is_ok()
             && crate::ffi::window_pid(key.hwnd) == key.pid
-            && crate::product_hide::sys::read_member_tag(key.hwnd).as_deref() == Some(fresh_tag.as_str());
+            && crate::product_hide::sys::read_member_tag(key.hwnd).as_deref()
+                == Some(fresh_tag.as_str());
         if !post_ok {
             continue;
         }
@@ -222,7 +426,23 @@ fn admit_observed(state: &mut TileLoop, me: &crate::model::ProcessIdentity, obse
             .member_tokens
             .insert(key.clone(), window.token.clone());
         state.member_identity.insert(key.clone(), live);
-        state.member_tags.insert(key, fresh_tag);
+        state.member_tags.insert(key.clone(), fresh_tag);
+        // Trace-only token<->HWND join for native correlation: the stable
+        // token plus the full member identity (HWND/PID/creation). No
+        // titles, exe paths, or raw input. Fresh admissions only.
+        if state.trace {
+            super::trace::log_json_at(
+                &state.log_path,
+                serde_json::json!({
+                    "event": "member-admitted",
+                    "tick": state.tick,
+                    "window": window.token.clone(),
+                    "hwnd": key.hwnd,
+                    "pid": key.pid,
+                    "creation": key.creation,
+                }),
+            );
+        }
     }
 }
 
@@ -231,7 +451,7 @@ fn admit_observed(state: &mut TileLoop, me: &crate::model::ProcessIdentity, obse
 /// floating lanes (sticky, automatic fixed, core floats, born holds) track
 /// the live frame in `float_rects` and never plant a tile slot (automatic
 /// floats additionally drop any first-contact seed).
-fn snapshot_frames(state: &mut TileLoop, observed: &[ObservedWindow]) {
+pub(super) fn snapshot_frames(state: &mut TileLoop, observed: &[ObservedWindow]) {
     for window in observed {
         let key = crate::native_guards::WindowKey {
             hwnd: window.hwnd,
@@ -295,6 +515,9 @@ pub(super) fn run_observation_tick(
     foreground_hwnd: u64,
     fulls: &[tiler_core::geometry::Rect],
 ) -> Option<tiler_core::world_report::WorldReply> {
+    let trace = state.trace;
+    let tick = state.tick;
+    let log_path = state.log_path.clone();
     admit_observed(state, me, observed);
     admit_retained_and_marks(state, me, observed, retained, areas);
     snapshot_frames(state, observed);
@@ -355,7 +578,6 @@ pub(super) fn run_observation_tick(
         minimized_omitted,
         pending_closed,
         scope,
-        scope_hosts,
         settings_live,
         output_tokens,
         applied_homing,
@@ -372,15 +594,18 @@ pub(super) fn run_observation_tick(
         foreground_hwnd,
     ) {
         Ok(report) => report,
-        Err(DispatchError::Busy) => return world.last_reply().cloned(),
-        Err(DispatchError::CatchupRequired) => return world.last_reply().cloned(),
-        Err(DispatchError::CountersExhausted) => return None,
+        // The observation never dispatched (busy flight, catch-up owed to
+        // a command, or exhausted counters): nothing ran, so no cached
+        // reply may stand in as this tick's outcome.
+        Err(_) => return None,
     };
     let outcome = world.deliver_production(&report);
-    let reply = match outcome {
-        tiler_core::world_engine::WorldOutcome::Accepted(reply)
-        | tiler_core::world_engine::WorldOutcome::Duplicate(reply)
-        | tiler_core::world_engine::WorldOutcome::CommandConsumed(reply) => reply,
+    let (delivery, reply) = match outcome {
+        tiler_core::world_engine::WorldOutcome::Accepted(reply) => ("accepted", reply),
+        tiler_core::world_engine::WorldOutcome::Duplicate(reply) => ("duplicate", reply),
+        tiler_core::world_engine::WorldOutcome::CommandConsumed(reply) => {
+            ("command-consumed", reply)
+        }
         tiler_core::world_engine::WorldOutcome::Rejected { .. } => {
             world.note_rejected_or_lost(&report.request_id);
             return None;
@@ -408,7 +633,6 @@ pub(super) fn run_observation_tick(
         minimized_omitted,
         pending_closed,
         scope,
-        scope_hosts,
         settings_live,
         output_tokens,
         applied_homing,
@@ -437,7 +661,6 @@ pub(super) fn run_observation_tick(
         minimized_omitted,
         pending_closed,
         scope,
-        scope_hosts,
         settings_live,
         output_tokens,
         applied_homing,
@@ -489,7 +712,17 @@ pub(super) fn run_observation_tick(
         NativePrimitives::default(),
     );
     world.sync_diff_gate();
-    let (_stats, feedback) = world.apply_accepted(&reply, &fresh, &mut native);
+    let (stats, feedback) = world.apply_accepted(&reply, &fresh, &mut native);
+    log_apply_diag(
+        &log_path,
+        trace,
+        tick,
+        &reply,
+        delivery,
+        "observation",
+        &stats,
+        &feedback,
+    );
     // Proven receipt snapshot: desired values only where live native
     // evidence proves arrival (identity/tag/claim/visibility/scope
     // gates, exact frame on the target for tiled rows). Changed homing
@@ -552,6 +785,10 @@ pub(super) fn run_world_command(
     fulls: &[tiler_core::geometry::Rect],
     command: WorldCommand,
 ) -> Option<tiler_core::world_report::WorldReply> {
+    let trace = state.trace;
+    let tick = state.tick;
+    let log_path = state.log_path.clone();
+    let command_kind = world_command_kind(&command);
     admit_observed(state, me, observed);
     admit_retained_and_marks(state, me, observed, retained, areas);
     snapshot_frames(state, observed);
@@ -612,7 +849,6 @@ pub(super) fn run_world_command(
             minimized_omitted,
             pending_closed,
             scope,
-            scope_hosts,
             settings_live,
             output_tokens,
             applied_homing,
@@ -630,21 +866,20 @@ pub(super) fn run_world_command(
             command,
         ) {
             Ok(report) => report,
-            Err(DispatchError::CatchupRequired) => {
-                // Observation-only catch-up is pending: drop the command
-                // (never queued, never replayed) and let the next
-                // observation tick dispatch the catch-up first; the caller
-                // resubmits after.
-                return world.last_reply().cloned();
-            }
-            Err(_) => return world.last_reply().cloned(),
+            // Observation-only catch-up is pending or the owner is busy:
+            // the command never dispatched (never queued, never replayed),
+            // so no cached reply may stand in as its outcome. The caller
+            // resubmits after the next observation tick runs the catch-up.
+            Err(_) => return None,
         }
     };
     let outcome = world.deliver_production(&report);
-    let reply = match outcome {
-        tiler_core::world_engine::WorldOutcome::Accepted(reply)
-        | tiler_core::world_engine::WorldOutcome::Duplicate(reply)
-        | tiler_core::world_engine::WorldOutcome::CommandConsumed(reply) => reply,
+    let (delivery, reply) = match outcome {
+        tiler_core::world_engine::WorldOutcome::Accepted(reply) => ("accepted", reply),
+        tiler_core::world_engine::WorldOutcome::Duplicate(reply) => ("duplicate", reply),
+        tiler_core::world_engine::WorldOutcome::CommandConsumed(reply) => {
+            ("command-consumed", reply)
+        }
         tiler_core::world_engine::WorldOutcome::Rejected { .. } => {
             world.note_rejected_or_lost(&report.request_id);
             return None;
@@ -669,7 +904,6 @@ pub(super) fn run_world_command(
         minimized_omitted,
         pending_closed,
         scope,
-        scope_hosts,
         settings_live,
         output_tokens,
         applied_homing,
@@ -698,7 +932,6 @@ pub(super) fn run_world_command(
         minimized_omitted,
         pending_closed,
         scope,
-        scope_hosts,
         settings_live,
         output_tokens,
         applied_homing,
@@ -746,7 +979,17 @@ pub(super) fn run_world_command(
         NativePrimitives::default(),
     );
     world.sync_diff_gate();
-    let (_stats, feedback) = world.apply_accepted(&reply, &fresh, &mut native);
+    let (stats, feedback) = world.apply_accepted(&reply, &fresh, &mut native);
+    log_apply_diag(
+        &log_path,
+        trace,
+        tick,
+        &reply,
+        delivery,
+        command_kind,
+        &stats,
+        &feedback,
+    );
     // Proven receipt snapshot plus applied transfer effects (see the
     // observation path): re-proof of unchanged homing plus exact proven
     // arrivals with independent fresh revalidation. Never wholesale desire.
@@ -805,16 +1048,7 @@ pub(super) fn observe_and_command(
     let foreground = crate::ffi::foreground_window();
     let observed = state.observe(me, fulls, &mut skipped, &mut retained)?;
     run_world_command(
-        state,
-        me,
-        store,
-        dir,
-        &observed,
-        &retained,
-        areas,
-        foreground,
-        fulls,
-        command,
+        state, me, store, dir, &observed, &retained, areas, foreground, fulls, command,
     )
 }
 
@@ -854,7 +1088,6 @@ pub(super) fn dispatch_test_observation(
         ref minimized_omitted,
         ref mut pending_closed,
         ref scope,
-        ref scope_hosts,
         ref settings_live,
         ref output_tokens,
         ref mut applied_homing,
@@ -884,7 +1117,6 @@ pub(super) fn dispatch_test_observation(
         minimized_omitted,
         pending_closed,
         scope,
-        scope_hosts,
         settings_live,
         output_tokens,
         applied_homing,
@@ -926,3 +1158,204 @@ pub(super) fn dispatch_test_observation(
     }
 }
 
+#[cfg(test)]
+mod apply_diag_tests {
+    use super::*;
+    use tiler_core::directional::{OutputId, WindowId};
+    use tiler_core::world_report::{
+        AttemptKind, HoldReason, ScopeAuthority, ScopeStatus, TransferTarget,
+    };
+
+    fn reply_shell() -> WorldReply {
+        WorldReply {
+            contract_version: tiler_core::world_report::WORLD_CONTRACT_VERSION,
+            adapter_incarnation: "adapter-1".to_owned(),
+            core_generation: "gen-1".to_owned(),
+            request_id: "req-9".to_owned(),
+            based_on_observation_seq: 3,
+            state_revision: 7,
+            ready: true,
+            command_consumed: false,
+            scopes: vec![
+                ScopeStatus {
+                    scope: "o1/w1".to_owned(),
+                    authority: ScopeAuthority::Controlled,
+                },
+                ScopeStatus {
+                    scope: "o1/w2".to_owned(),
+                    authority: ScopeAuthority::Hold(HoldReason::GestureBarrier),
+                },
+            ],
+            workspaces: Vec::new(),
+            outputs: Vec::new(),
+            windows: Vec::new(),
+            transfers: vec![TransferTarget {
+                operation_id: "op-3".to_owned(),
+                kind: TransferKind::Window(WindowId("w1".to_owned())),
+                target_output: OutputId("o1".to_owned()),
+                target_workspace: "w2".to_owned(),
+                follow: false,
+                held: false,
+            }],
+            effects: Vec::new(),
+            command_result: None,
+            presentation_bytes: 0,
+        }
+    }
+
+    fn stats_shell() -> super::super::world_diff::ApplyStats {
+        super::super::world_diff::ApplyStats {
+            geometry_writes: 0,
+            membership_writes: 1,
+            view_writes: 0,
+            creations: 0,
+            removals: 0,
+            effects: 0,
+            held: 2,
+            stopped_mid_apply: false,
+            partial: false,
+        }
+    }
+
+    #[test]
+    fn diag_shape_uses_fixed_vocab_and_bounds_rows() {
+        let reply = reply_shell();
+        let stats = stats_shell();
+        let outcomes = [
+            AttemptOutcome::Applied,
+            AttemptOutcome::PossiblyExecuted,
+            AttemptOutcome::RefusedProven,
+            AttemptOutcome::SupersededExternal,
+            AttemptOutcome::Unattempted,
+        ];
+        let feedback: Vec<AttemptFeedback> = (0..20)
+            .map(|n| AttemptFeedback {
+                operation_id: format!("op-{n}"),
+                kind: AttemptKind::Transfer,
+                outcome: outcomes[n % outcomes.len()],
+                hold: (n % 2 == 0).then_some(HoldReason::GestureBarrier),
+            })
+            .collect();
+        let value = apply_diag_value(11, &reply, "accepted", "send", &stats, &feedback);
+        assert_eq!(value["event"], serde_json::json!("world-apply"));
+        assert_eq!(value["tick"], serde_json::json!(11));
+        assert_eq!(value["request"], serde_json::json!("req-9"));
+        assert_eq!(value["revision"], serde_json::json!(7));
+        assert_eq!(value["observation"], serde_json::json!(3));
+        assert_eq!(value["delivery"], serde_json::json!("accepted"));
+        assert_eq!(value["command"], serde_json::json!("send"));
+        assert_eq!(value["command_result"], serde_json::json!("none"));
+        assert_eq!(value["stats"]["membership_writes"], serde_json::json!(1));
+        assert_eq!(value["stats"]["held"], serde_json::json!(2));
+        let rows = value["feedback"].as_array().expect("feedback rows");
+        assert_eq!(rows.len(), MAX_APPLY_DIAG_FEEDBACK);
+        assert_eq!(
+            value["feedback_omitted"],
+            serde_json::json!(20 - MAX_APPLY_DIAG_FEEDBACK)
+        );
+        assert_eq!(rows[0]["outcome"], serde_json::json!("applied"));
+        assert_eq!(rows[1]["outcome"], serde_json::json!("possibly-executed"));
+        assert_eq!(rows[2]["outcome"], serde_json::json!("refused-proven"));
+        assert_eq!(rows[0]["kind"], serde_json::json!("transfer"));
+        assert_eq!(rows[0]["hold"], serde_json::json!("gesture-barrier"));
+        assert!(rows[1]["hold"].is_null());
+        let scopes = value["held_scopes"].as_array().expect("held scopes");
+        assert_eq!(scopes.len(), 1);
+        assert_eq!(scopes[0]["scope"], serde_json::json!("o1/w2"));
+        assert_eq!(scopes[0]["authority"], serde_json::json!("hold"));
+        assert_eq!(scopes[0]["reason"], serde_json::json!("gesture-barrier"));
+        let transfers = value["desired_transfers"]
+            .as_array()
+            .expect("desired transfers");
+        assert_eq!(transfers.len(), 1);
+        assert_eq!(transfers[0]["kind"], serde_json::json!("window"));
+        assert_eq!(transfers[0]["target_workspace"], serde_json::json!("w2"));
+        assert_eq!(value["desired_transfers_omitted"], serde_json::json!(0));
+    }
+
+    #[test]
+    fn diag_throttles_quiet_observation_ticks_only() {
+        let quiet = super::super::world_diff::ApplyStats::default();
+        let empty: Vec<AttemptFeedback> = Vec::new();
+        assert!(!should_log_apply("observation", &quiet, &empty));
+        // Pure-held observation ticks stay quiet: steady-state holds with no
+        // attempt carry no new evidence.
+        let held_only = super::super::world_diff::ApplyStats {
+            held: 5,
+            ..Default::default()
+        };
+        assert!(!should_log_apply("observation", &held_only, &empty));
+        // Commands always log, so a no-attempt Hold on a command still shows
+        // as `held > 0` with empty feedback.
+        assert!(should_log_apply("send", &held_only, &empty));
+        assert!(should_log_apply(
+            "observation",
+            &quiet,
+            &[AttemptFeedback {
+                operation_id: "op-3".to_owned(),
+                kind: AttemptKind::Transfer,
+                outcome: AttemptOutcome::PossiblyExecuted,
+                hold: None,
+            }]
+        ));
+        let writes = super::super::world_diff::ApplyStats {
+            geometry_writes: 1,
+            ..Default::default()
+        };
+        assert!(should_log_apply("observation", &writes, &empty));
+        let stopped = super::super::world_diff::ApplyStats {
+            stopped_mid_apply: true,
+            held: 1,
+            ..Default::default()
+        };
+        assert!(should_log_apply("observation", &stopped, &empty));
+    }
+
+    #[test]
+    fn diag_never_reports_applied_from_setter_counts() {
+        // Setter-side write counts with no diff feedback must not fabricate
+        // an applied row: only the diff's own feedback outcome speaks.
+        let reply = reply_shell();
+        let stats = super::super::world_diff::ApplyStats {
+            geometry_writes: 3,
+            held: 1,
+            ..Default::default()
+        };
+        let empty: Vec<AttemptFeedback> = Vec::new();
+        let value = apply_diag_value(12, &reply, "accepted", "send", &stats, &empty);
+        let rows = value["feedback"].as_array().expect("feedback rows");
+        assert!(rows.is_empty());
+        assert_eq!(value["feedback_omitted"], serde_json::json!(0));
+        assert_eq!(value["stats"]["geometry_writes"], serde_json::json!(3));
+        assert!(
+            !rows
+                .iter()
+                .any(|row| row["outcome"] == serde_json::json!("applied")),
+            "{rows:?}"
+        );
+    }
+
+    #[test]
+    fn diag_command_kind_is_redacted_vocab() {
+        let send = WorldCommand::Send {
+            window: WindowId("w1".to_owned()),
+            target_output: OutputId("o1".to_owned()),
+            target_workspace: "w2".to_owned(),
+            follow: true,
+        };
+        assert_eq!(world_command_kind(&send), "send");
+        let reply = reply_shell();
+        let stats = super::super::world_diff::ApplyStats::default();
+        let value = apply_diag_value(
+            13,
+            &reply,
+            "accepted",
+            world_command_kind(&send),
+            &stats,
+            &[],
+        );
+        assert_eq!(value["command"], serde_json::json!("send"));
+        let rendered = value.to_string();
+        assert!(!rendered.contains(".exe"));
+    }
+}

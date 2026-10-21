@@ -127,10 +127,6 @@ pub(super) fn is_zoomed_now(hwnd_u64: u64) -> bool {
 /// No window is touched: three bounded reads, no setters.
 #[must_use]
 pub fn live_overlay_flags(hwnd_u64: u64, fulls: &[Rect]) -> (bool, Option<bool>) {
-    #[cfg(test)]
-    if let Some(flags) = INJECTED_OVERLAY.with(|slot| slot.borrow_mut().pop_front()) {
-        return flags;
-    }
     let maximized = crate::ffi::is_zoomed(hwnd_u64);
     let style_opt = crate::ffi::window_style_checked(hwnd_u64);
     let style_ok = style_opt.is_some();

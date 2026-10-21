@@ -2,12 +2,12 @@
 //! Native tiling-only runtime (`cfg(windows)` only).
 //!
 //! One product loop: PMv2 awareness verified first, full `EnumWindows`
-//! enumeration per tick, retained [`tiler_core::engine::Engine`] as layout
-//! authority, `SetWindowPos` actuation with independent readback, and
-//! out-of-context `SetWinEventHook` callbacks delivered on the loop thread
-//! itself (the loop pumps messages; no hook thread, no join). Stop leaves all
-//! geometry untouched; there is no per-window geometry ledger and nothing is
-//! ever hidden.
+//! enumeration per tick, the retained core world engine as layout authority,
+//! `SetWindowPos` actuation with independent readback, and out-of-context
+//! `SetWinEventHook` callbacks delivered on the loop thread itself (the loop
+//! pumps messages; no hook thread, no join). Stop leaves all geometry
+//! untouched; there is no per-window geometry ledger and nothing is ever
+//! hidden.
 //!
 //! Production log vocabulary is structured JSON with opaque window tokens
 //! only: no HWNDs, pids, process creation strings, SIDs, paths, or titles.
@@ -18,8 +18,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use tiler_core::boundary::{CoreCommand, CoreReply, NoGroupReason};
-use tiler_core::directional::WindowId;
+use tiler_core::boundary::{CoreCommand, NoGroupReason};
 use tiler_core::geometry::Rect;
 use tiler_core::ids::{CorrelationId, GenerationId, OwnerId};
 use tiler_core::size_hints::WindowSizeHints;
@@ -31,30 +30,20 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOZORDER, WPF_ASYNCWINDOWPLACEMENT, WS_CAPTION,
     WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_THICKFRAME,
 };
-// `SWP_NOSIZE` is only read under `cfg(not(test))` (the output-migration
-// moves); a plain import would be unused when compiling the test target.
-#[cfg(not(test))]
-use windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOSIZE;
 
 use self::action_context::{ActionCtx, ActionLine, ActionTimings, SelectEffect, SendEffect};
 #[cfg(test)]
 use self::admission::admission_clear_planned;
 use self::admission::{
-    anchor_fallback_for, clear_maximize_at_admission, committed_ordinary_pin,
-    engine_is_automatic_fixed, engine_is_float, fixed_origin_provenance, fixed_predicate_for,
-    float_focus_candidates, float_send_admits, no_space_for, overlay_refusal_for,
+    clear_maximize_at_admission, engine_is_automatic_fixed, engine_is_float,
+    fixed_origin_provenance, fixed_predicate_for, float_focus_candidates, overlay_refusal_for,
 };
-use self::assignments::{
-    MAX_HIDE_DIAG_PER_SELECT, audit_hidden_claims, ensure_workspace_assignments,
-    workspace_close_cleanup, workspace_hide_one, workspace_proof_reveal_gate,
-};
-use self::capacity_floats::{
-    adopt_tick_capacity_floats, register_committed_capacity_floats,
-    reply_is_capacity_float_transfer,
-};
+#[cfg(test)]
+use self::assignments::MAX_HIDE_DIAG_PER_SELECT;
+use self::assignments::{ensure_workspace_assignments, workspace_close_cleanup};
 use self::chord_resolution::{
     ChordObserved, ChordTarget, chord_overlay_refusal, observe_chord_intent,
-    orientation_overlay_refusal, orientation_plan, resolve_chord_target, settle_chord_reject,
+    orientation_overlay_refusal, resolve_chord_target, settle_chord_reject,
 };
 use self::cli_directional::poll_directional_cli_request;
 use self::cli_resize::poll_resize_cli_request;
@@ -68,19 +57,10 @@ use self::cross_drag::{
     CrossDragSettle, DropDestination, resolve_drop_destination, settle_cross_drag_drop,
     snapshot_cross_drag,
 };
-use self::diag::{
-    WindowDiagSample, diag_identity_broke, diag_identity_rebound, drop_diag_sample,
-    flush_window_diag, stage_no_plan,
-};
-#[cfg(test)]
-use self::diag::{
-    clear_diag_classes, clear_diag_pids, diag_class_cached, inject_diag_class, inject_diag_pid,
-};
+use self::diag::{WindowDiagSample, diag_identity_broke, diag_identity_rebound, drop_diag_sample};
 use self::dir_watch::DirWatch;
 use self::directional_resolution::{
-    chord_output, directional_arrival_verified, directional_live, directional_outputs_from_areas,
-    directional_snapshot, drag_drop_live, output_for_point, output_for_rect,
-    resolve_directional_target, revision_for,
+    chord_output, drag_drop_live, drop_arrival_verified, output_for_point, output_for_rect,
 };
 pub use self::dispatch::{LaunchBackend, SystemLaunchBackend};
 use self::dispatch::{
@@ -90,8 +70,6 @@ use self::dispatch::{
 use self::drag_preview::refresh_drag_preview;
 use self::first_run::{FirstRunPending, resolve_first_run};
 pub use self::first_run::{FirstRunResolution, resolve_first_run_outcome};
-#[cfg(test)]
-use self::float_toggle::FreshFloatObservation;
 use self::float_toggle::{
     NativeUnfloatClear, UnfloatClearEffects, apply_float_from_tiled, apply_unfloat_to_tiled,
     clear_float_mark, clear_sticky_mark, restore_raised_band, unfloat_maximize_clear,
@@ -118,15 +96,12 @@ use self::group_underlay::{
     refresh_group_underlay,
 };
 use self::hints::{
-    HintCx, HintFallbackUse, HintOutcome, HintStats, LastGoodHint, hint_now, invalidate_last_good,
+    HintCx, HintFallbackUse, HintOutcome, LastGoodHint, hint_now, invalidate_last_good,
     note_last_good, timeout_candidate,
 };
 #[cfg(test)]
-use self::hints::{clear_test_hints, inject_hint_now, inject_test_hints, inject_test_outcome};
-use self::history::{
-    log_workspace_action, move_float_to_output, move_overlay_to_output, remap_placement_to_output,
-    workspace_history_tick, workspace_log,
-};
+use self::hints::{clear_test_hints, inject_hint_now, inject_test_hints};
+use self::history::{log_workspace_action, workspace_history_tick, workspace_log};
 use self::input::{
     InputBridge, log_input_faults, offer_input_control, offer_input_snapshot, poll_input_ack,
 };
@@ -137,12 +112,7 @@ use self::inspection::{hosted_gate_allows, medium_caller};
 use self::keyboard_resize::dispatch_resize_intent;
 use self::keyboard_tick::keyboard_tick;
 use self::migration::workspace_migrate_tick;
-#[cfg(test)]
-use self::migration::workspace_migrate_one;
-#[cfg(test)]
-use self::migration_run::migration_follow_tail;
-use self::migration_run::run_workspace_migrate;
-use self::minmax::{FreshHint, QueryCost, fixed_birth_for_slotless, hidden_hint_for, min_hint_for};
+use self::minmax::{FreshHint, fixed_birth_for_slotless, hidden_hint_for, min_hint_for};
 pub(crate) use self::monitors::ensure_pm_v2;
 use self::monitors::{MonitorArea, all_monitors, monitor_fulls};
 pub(crate) use self::monitors::{mark_monitor_dirty, take_monitor_dirty};
@@ -154,12 +124,9 @@ use self::observe::{
     HookEvent, InputWaitSplit, LoopEventSink, ObservedWindow, OwnerWaitCounts, RenderWaitSplit,
     class_of, drain_owner_messages, foreground_lifetime, hook_edges_pending, hook_queue,
     observe_window, pump_wait, pump_wait_with_intent, pump_waits_line, verify_proof_owned,
-    visibility_generation, window_identity,
+    window_identity,
 };
 pub use self::observe::{KnownIdentity, ObserveFailure};
-use self::output_send::run_output_send;
-#[cfg(test)]
-use self::output_sync::poll_foreground_workspace;
 use self::output_sync::{
     foreground_elevated, foreground_pager_elevated_detailed, sync_monitor_outputs,
     workspace_maintenance,
@@ -170,38 +137,19 @@ use self::owner_work::OwnerWorkGuard;
 use self::pending_drop::{PendingCrossDest, PendingDrop, queue_pending_drop, service_pending_drop};
 #[cfg(test)]
 use self::pending_seams::{
-    APPLY_WRITABLES, INJECTED_APPLY, INJECTED_AREAS, INJECTED_ELEV_PROBE, INJECTED_ELEVATED,
-    INJECTED_FLOAT_MOVE_OK, INJECTED_FLOAT_MOVES, INJECTED_FOCUS, INJECTED_ICONIC,
-    INJECTED_INVISIBLE, INJECTED_LIMITED_FG, INJECTED_NATIVE_MOVE_OK, INJECTED_NATIVE_TRANSFERS,
-    INJECTED_OBSERVE, INJECTED_OVERLAY, INJECTED_STOP, INJECTED_SUSPEND, INJECTED_UNREADABLE,
-    INJECTED_ZORDER, PENDING_COUNTERS, PendingCounters, clear_pending_seams, inject_monitor_areas,
-    inject_pending_apply, inject_pending_apply_seq, inject_pending_arrival,
-    inject_pending_arrival_placement, inject_pending_cloak_unreadable, inject_pending_cloaked,
+    INJECTED_AREAS, INJECTED_ELEV_PROBE, INJECTED_ELEVATED, INJECTED_OBSERVE, INJECTED_STOP,
+    INJECTED_SUSPEND, INJECTED_ZORDER, clear_pending_seams, inject_monitor_areas,
     inject_pending_elev_probe, inject_pending_elevated, inject_pending_fg_class,
-    inject_pending_float_move_ok, inject_pending_focus, inject_pending_foreground,
-    inject_pending_iconic, inject_pending_invisible, inject_pending_native_move_ok,
-    inject_pending_observe, inject_pending_overlay_seq, inject_pending_parents,
-    inject_pending_pids, inject_pending_placement_normal, inject_pending_recovery,
-    inject_pending_rescue_fail, inject_pending_stop, inject_pending_suspend, inject_pending_tag,
-    inject_pending_unreadable, inject_pending_zorder, pending_apply_writables, pending_counters,
-    pending_native_transfers,
+    inject_pending_foreground, inject_pending_observe, inject_pending_parents, inject_pending_stop,
+    inject_pending_suspend, inject_pending_tag, inject_pending_zorder,
 };
 use self::pending_seams::{
-    fresh_arrival_rect, live_cloaked, live_fg_class, live_is_iconic, live_is_visible,
-    live_is_window, live_member_tag, live_parent_of, live_query_recovery, live_window_pid,
-    rescue_read_failed,
+    live_cloaked, live_fg_class, live_foreground_window, live_is_iconic, live_is_visible,
+    live_is_window, live_member_tag, live_parent_of, live_window_pid,
 };
-#[cfg(not(test))]
-use self::placement::placement_is_workspace_coords;
-use self::placement::{
-    fresh_arrival_placement, live_placement_workspace_coords, screen_to_placement_raw,
-    translate_placement_normal_to_target,
-};
-#[cfg(test)]
-use self::placement::{live_placement_normal, placement_raw_to_screen};
 use self::preview::{
-    PreviewBound, PreviewFresh, PreviewGate, PreviewStartBinding, preview_hide_for_refusal,
-    preview_prior_desc, preview_same_size, preview_sample_gate,
+    PreviewBound, PreviewFresh, PreviewGate, PreviewStartBinding, preview_prior_desc,
+    preview_same_size, preview_sample_gate,
 };
 pub use self::probes::live_overlay_flags;
 use self::probes::{
@@ -211,9 +159,7 @@ use self::probes::{
 pub use self::proof_commands::{
     cmd_hide_proof, cmd_shortcut_proof, cmd_tile_proof, cmd_workspace_proof,
 };
-#[cfg(test)]
-use self::reconcile::sweep_retire_stale_fullscreen;
-use self::reconcile::{reconcile_limited_tick, reconcile_tick, writable_tokens};
+use self::reconcile::{reconcile_limited_tick, reconcile_tick};
 #[cfg(test)]
 use self::render_ack::{RENDER_FRAME_SCOPE, RENDER_SUMMARY_WINDOW, RenderFrameSample};
 use self::render_ack::{
@@ -228,10 +174,10 @@ use self::render_bridge::{
 use self::restart::{admit_born_fullscreen, admit_slotless_maximized, adopt_restart_markers};
 use self::retained::{HiddenRecord, PendingClosed, RetainedRow};
 use self::rows::{
-    drop_member_state, hold_band_target, hold_marker_target,
-    hydrate_tile_override_marker, install_float_mark_held, install_sticky_mark_held,
-    install_tile_override_mark_held, marker_tag_pid_fresh, prune_float_state,
-    remove_tile_override_mark_best_effort, retain_float_focus_validated,
+    drop_member_state, hold_band_target, hold_marker_target, hydrate_tile_override_marker,
+    install_float_mark_held, install_sticky_mark_held, install_tile_override_mark_held,
+    marker_tag_pid_fresh, prune_float_state, remove_tile_override_mark_best_effort,
+    retain_float_focus_validated,
 };
 use self::run_loop::run_tile_loop;
 use self::run_loop_intake::{Intake, pump_intake};
@@ -242,33 +188,25 @@ use self::run_loop_wait::{
     loop_exit_cause, owner_deadline_source, pump_waits_snapshots, tray_staged_pending,
 };
 use self::selection::workspace_do_select;
-use self::send_follow::workspace_send_follow;
-use self::send_native::workspace_do_send_native;
-use self::send_preflight::SendPreflight;
 use self::send_preflight::SendTarget;
-use self::send_stay::workspace_send_stay;
 use self::sends::workspace_do_send;
-#[cfg(test)]
-use self::settings::apply_live_settings;
 use self::settings::{
-    TileRun, geometry_write_allowed, is_limited_fullscreen, poll_live_settings, suspend_limited,
-    suspend_read, suspend_read_inner,
+    TileRun, is_limited_fullscreen, poll_live_settings, suspend_limited, suspend_read,
+    suspend_read_inner,
 };
 use self::shell::{exe_file_name, is_border_shell_popup, is_shell_class, rect_from_win};
 use self::trace::{log_json_at, log_mono_ms, refresh_border_timed};
-use self::visibility_batch::{
-    HideAttempt, PhaseBreakdown, action_clock, hide_phase, log_visibility_timing, reveal_phase,
-};
 #[cfg(test)]
 use self::visibility_diag::{
     REHIDE_DIAG_MAX_ENTRIES, REVEAL_DIAG_PER_SELECT, clear_visibility, inject_visibility,
 };
 use self::visibility_diag::{
     VisibilityDiagnostics, drop_visibility_sample, flush_exceptions, flush_rehide_diag,
-    flush_visibility, gesture_float_cause, note_hide_diag, note_rehide_diag, note_reveal_diag,
-    omission_summary, rehide_err_outcome, rehide_retired_detail, reveal_err_outcome,
-    reveal_log_line, reveal_outcome, rollback_newly_hidden, stage_exceptions, stage_visibility,
+    flush_visibility, gesture_float_cause, note_rehide_diag, rehide_err_outcome,
+    rehide_retired_detail, reveal_err_outcome, reveal_outcome, stage_exceptions, stage_visibility,
 };
+#[cfg(test)]
+use self::visibility_diag::{note_hide_diag, note_reveal_diag, omission_summary, reveal_log_line};
 use self::workspace_mode::read_topmost_now;
 use self::workspace_mode::set_topmost_band;
 use self::workspace_mode::toggle_workspace_tiling;
@@ -321,15 +259,15 @@ use crate::storage::LedgerStore;
 use crate::tiling::{
     AllowEntry, CaptureOptions, ChildrenOptions, DIRECTIONAL_REQUEST_FILE, DirectionalOptions,
     FrameInsets, GestureIntent, HideProofOptions, INNER_GAP, InspectOptions, OUTER_GAP, OWNER_ID,
-    ObservedTarget, ObservedTargetRef, RESIZE_REQUEST_FILE, ReadbackOutcome, RefusedTracker,
-    ResizeOptions, SEND_OUTPUT_REQUEST_FILE, ScopeHostChild, SendOutputOptions, SkipReason,
-    StatelessVerdict, TileOptions, TileProofOptions, TokenMap, WindowFacts, WorkspaceAction,
-    WorkspaceOptions, allow_match, allowlist_digest, classify, classify_focus, classify_gesture,
-    drop_point_in_domain, fingerprint, fullscreen_toggle_decision, hosted_child_allows,
+    ObservedTarget, ObservedTargetRef, RESIZE_REQUEST_FILE, ReadbackOutcome, ResizeOptions,
+    SEND_OUTPUT_REQUEST_FILE, ScopeHostChild, SendOutputOptions, SkipReason, StatelessVerdict,
+    TileOptions, TileProofOptions, TokenMap, WindowFacts, WorkspaceAction, WorkspaceOptions,
+    allow_match, allowlist_digest, classify, classify_focus, classify_gesture,
+    drop_point_in_domain, fullscreen_toggle_decision, hosted_child_allows,
     inspect_stateless_verdict, is_borderless_fullscreen, parse_allowlist,
     parse_directional_request, parse_resize_request, parse_send_output_request,
     parse_workspace_request, readback_outcome, scope_allows, scope_exe_basename,
-    tick_summary_signature, tiling_domain_bounds_with,
+    tiling_domain_bounds_with,
 };
 type DynError = Box<dyn std::error::Error>;
 type Result<T> = std::result::Result<T, DynError>;
@@ -361,7 +299,6 @@ struct TileLoop {
     /// only proven applied homes/views/claims plus output native-wire ids.
     world: world_owner::WorldOwner,
     tokens: TokenMap,
-    refused: RefusedTracker,
     /// Stable pre-gesture rectangles from the last reconcile observation.
     stable: HashMap<u64, Rect>,
     /// Managed HWNDs from the last reconcile observation.
@@ -406,7 +343,6 @@ struct TileLoop {
     /// full suspension and when active. Lets the resume/transition logs
     /// name the mode that is ending without re-reading the foreground.
     suspended_limited: bool,
-    last_summary: Option<String>,
     log_path: std::path::PathBuf,
     audit_path: Option<std::path::PathBuf>,
     /// Product keyboard policy for this run (takeover switch + Win+L opt-in).
@@ -692,25 +628,15 @@ struct TileLoop {
     /// marks it unknown (empty) until a trustworthy query re-binds. Pruned
     /// with membership.
     diag_class: HashMap<String, String>,
-    /// Last wall time a `window-diag` event emitted (test-pinned hint clock
-    /// in unit tests, live time in production). `None` until the first emit.
-    diag_last_emit: Option<Instant>,
     /// Fair emission order: per-token sequence of last emission (0/absent
     /// means never emitted). Never-emitted and oldest-emitted tokens emit
     /// first so a flapping head cannot starve the tail. Pruned with
     /// membership.
     diag_emit_seq: HashMap<String, u64>,
-    /// Monotonic clock for [`TileLoop::diag_emit_seq`].
-    diag_emit_clock: u64,
     /// Tokens merged by throttled rounds since the last emission (unique:
     /// a token counts once no matter how many rounds it waits through).
     /// Reported as `coalesced`, cleared on emit, pruned with membership.
     diag_coalesced: HashSet<String>,
-    /// Latest row-assembly hint-query elapsed milliseconds: advisory timing
-    /// for the whole assembly across every domain in the operation, carried
-    /// on the next `window-diag` event. Per-window native cost rides each
-    /// entry (`timeout_ms`, `query_us`) instead.
-    diag_query_ms: u64,
     /// Bounded normal-level visibility/exception diagnostics (latest samples,
     /// emitted baselines, throttle clocks, fair order, coalesced tokens, and
     /// lost-intermediate flags). Pruned by live membership like the hint
@@ -965,8 +891,6 @@ mod input_snapshot_offer_tests;
 
 mod scope_sends;
 
-mod scope_trailing;
-
 mod scope_hotplug;
 
 mod monitors;
@@ -978,8 +902,6 @@ mod observe;
 mod hints;
 
 mod pending_seams;
-
-mod placement;
 
 mod minmax;
 
@@ -1033,6 +955,10 @@ mod world_diff;
 // Production native actuator over the diff: the real NativeOps
 // plus truthful applied-receipt capture, wired through the tick.
 mod world_native;
+// Truthful applied-receipt capture for the world route: the
+// capture-facing `observed_workspace`/`observed_views` projections over
+// fresh visibility plus the owner tables (actuator stays in `world_native`).
+mod world_native_receipts;
 // Single runtime WorldEngine owner (stage 2b cutover): the in-process
 // holder over the sequencer above. All lifecycle/history/tiling/scope/
 // select/send/migration routes dispatch through it.
@@ -1079,8 +1005,6 @@ mod dispatch;
 
 mod directional_resolution;
 
-mod output_send;
-
 mod cross_drag;
 
 mod diag;
@@ -1095,17 +1019,13 @@ mod workspace_mode;
 
 mod selection;
 
-mod visibility_batch;
-
 mod send_preflight;
 
-mod send_native;
+#[cfg(test)]
+#[path = "tests_hint_fallback.rs"]
+mod hint_fallback_tests;
 
 mod sends;
-
-mod send_follow;
-
-mod send_stay;
 
 mod history;
 
@@ -1128,8 +1048,6 @@ mod workspace_navigation;
 mod workspace_send_tick;
 
 mod migration;
-
-mod migration_run;
 
 mod native_drag;
 
@@ -1235,3 +1153,10 @@ mod stage3_combined_tests;
 #[cfg(test)]
 #[path = "tests_limited_fullscreen.rs"]
 mod limited_fullscreen_tests;
+
+/// Pending-drop slot-machine regressions (offline, native-free): the bridged
+/// `queue_pending_drop` / `service_pending_drop` finish path over the current
+/// world route. See the module doc for the accepted-behavior map.
+#[cfg(test)]
+#[path = "tests_pending_drop.rs"]
+mod pending_drop_tests;

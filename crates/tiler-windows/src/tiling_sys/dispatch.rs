@@ -564,6 +564,7 @@ pub(super) fn dispatch_orientation_intent(
 /// `keyboard_tick` call site (see [`dispatch_launch_intent`]), so dispatch
 /// never depends on ambient foreground state and owner-dispatch tests stay
 /// deterministic on headless runners.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn dispatch_workspace_tiling_intent(
     state: &mut TileLoop,
     me: &ProcessIdentity,
@@ -1102,15 +1103,7 @@ fn sticky_off_to_current(
                 // the window in place with no transfer.
                 let foreground = crate::ffi::foreground_window();
                 let reply = super::world_tick::run_observation_tick(
-                    state,
-                    me,
-                    store,
-                    dir,
-                    observed,
-                    retained,
-                    areas,
-                    foreground,
-                    fulls,
+                    state, me, store, dir, observed, retained, areas, foreground, fulls,
                 );
                 let focus = match observed.iter().find(|w| w.hwnd == member_key.hwnd) {
                     Some(expected) => {

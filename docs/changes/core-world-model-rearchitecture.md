@@ -60,7 +60,7 @@ ownership before stage 1; accepted extractions are recorded below.
 | Platform | Current additional policy | Port requirement |
 | --- | --- | --- |
 | KDE | `kwin/src/born-maximized.ts`, `world-born-maximized.ts`, `fixed-size-predicate.ts`, `migration-source-refill.ts`, `world-drag.ts`, `world-observe.ts`, `world-apply.ts` | Port to world contract v2: screen/window facts and core logical ids replace native-derived domains/bindings. Enable `host_owned_workspace_domains` and `equal_workspace_count` for desktops spanning outputs; mechanically translate independently observed native membership/view into logical receipts. Missing native destination backing never holds logical mapping authority. Remove TypeScript admission/gesture/refill policy copies. Native pager maps the core model; held scope/member fences still apply. |
-| macOS | `crates/tiler-macos/src/classifier.rs`, `workspace_select.rs`, `workspace_send*.rs`, `drag_drop.rs`, `runtime.rs` coexist with `world_runtime.rs` | Port all consumers to world contract v2 and `host_owned_workspace_domains`; opt into equal counts only if the host requires them. AX/CG/Space facts, native-to-logical binding and coordinate/lifetime mechanics stay native. Translate observed Space membership/view into logical receipts, not desired-state echoes. Move classification, selection/send/trailing and drag policy to core. Report inability to create/transfer through truthful feedback, never fabricate backing, arrival or capability. |
+| macOS | `crates/tiler-macos/src/classifier.rs`, `workspace_select.rs`, `workspace_send*.rs`, `drag_drop.rs`, `runtime.rs` coexist with `world_runtime.rs` | Port all consumers to world contract v2 and `host_owned_workspace_domains`; opt into equal counts only if the host requires them. AX/CG/Space facts, native-to-logical binding and coordinate/lifetime mechanics stay native. Translate observed Space membership/view into logical receipts, not desired-state echoes. Move classification, selection/send/trailing and drag policy to core. The legacy drag consumers cannot access the now-internal Engine/CoreEvent/CoreReply boundary; use world commands and presentation instead. Report inability to create/transfer through truthful feedback, never fabricate backing, arrival or capability. |
 
 - Remove public portable per-domain `CoreEvent`/`CoreReply` application and
   session-query interfaces when Windows no longer needs them. Internal
@@ -589,4 +589,179 @@ tests above. No accepted product behavior is removed by that source split.
 - Next: inspect the current positive native-seam tests and receipt paths,
   finish the deletion/coverage and outcome audits, remove superseded APIs and
   obtain strict local gates before fixture-only native checks on both outputs.
-  Do not treat this partial checkpoint as a completed stage 2b slice.
+   Do not treat this partial checkpoint as a completed stage 2b slice.
+
+## Stage 2b continuation checkpoint (2026-10-22)
+
+This supersedes the implementation/gate gaps in the preceding checkpoint,
+not its historical evidence. Stage 2b is still **not accepted**: whole-workspace
+migration/refill has not passed the required native fixture leg. Stage 2c
+and the dual-output fresh-placement correction have not started.
+
+### Completed ownership and correctness work
+
+- Removed obsolete Windows send, migration, placement, trailing and visibility
+  helper routes and their dead imports/state. The sole production owner is
+  `WorldOwner`; all retained layout sessions remain internal to core.
+- Made `Engine`, `CoreEvent`, `CoreReply`, their plan carriers and the retained
+  Engine query/mutation interface crate-internal. Public world command/result
+  vocabulary remains. Removed obsolete Windows event builders and portable
+  per-domain diagnostic helpers. Pure layout regressions moved into core's
+  internal test modules; there is no public compatibility/test feature.
+- Removed unused `RestoredWorld` ingress and its protocol field. Windows never
+  populated it, and the replaced owner had no durable ring store. Startup and
+  restart mint logical rings and adopt native marker/recovery facts; they do
+  not promise persistent workspace order or hidden-view restoration.
+- Committed floats enter the same native marker/snapshot lane independently
+  of diagnostic `FloatOrigin`. Unsupported staged tiled-to-float output
+  crossings still discard the candidate without changing committed source
+  mapping/layout/focus.
+- Busy/catch-up commands return unverified rather than replaying an older
+  reply as success. Drop/pending-drop completion uses independently read
+  `effective_frame` or proven membership, never canonical `allocation`.
+- Fresh trailing sends stage the newly minted logical destination before
+  planning. Numbered workspace sends reject a foreign output before minting;
+  explicit versus directional cross-output policy remains unchanged.
+- Successful same-output follow sends publish the target logical view and a
+  separate retained follow-view operation. Stay sends leave the source view
+  unchanged. Member and view arrival still require independent receipts.
+  Merely updating the logical view without retaining its actuation flight
+  was a failed intermediate approach: frameless redirect rows deadlocked.
+  The retained-flight composition replaces that approach.
+- Native observations now distinguish the managed member lifetime stamp from
+  the legacy owned-helper proof tag. Generic applications have no helper tag;
+  that absence must not erase valid member/view receipts. Unknown membership
+  preimages hold rather than falsely proving external supersession. Helper
+  proof/allowlist identity checks remain separate and unchanged.
+- A stay-created hidden workspace can reconcile with no retained/staged focus
+  when no close is pending. Previously that valid focusless state held the
+  scope unreadable forever, blocking the reveal needed to make it focusable.
+  Focus is not invented; the explicit-close survivor hold remains covered.
+- Trace-only fresh-admission identity joins and bounded `world-apply` summaries
+  expose operation feedback, held scopes and clearly labeled desired transfers.
+  Selection diagnostics name the resolved output/core workspace ids rather
+  than a stale output cache. These are owner-side event-driven diagnostics,
+  not new input hooks, and do not turn accepted replies into native completion.
+
+### Deletion and regression coverage
+
+Core suite names in the earlier deletion table are historical integration
+filenames. White-box suites now live in `crates/tiler-core/src/*_tests.rs`;
+their internal Engine assertions were retained, not dropped to hide API
+breakage. Portable public-world suites remain under `tests/`. Removed restore
+ingress tests are superseded only where they exercised that unused input;
+quiet bootstrap/newcomer/trailing behavior remains covered.
+
+The following Windows paths are relative to `crates/tiler-windows/src/` unless
+an integration path is shown. Each deleted test file's retained behavior is
+mapped below; native-derived owner mechanics are superseded, not a second
+accepted route. Production coverage comes from the world/native seam, not the
+now-test-only `product_hide::batch` state machine.
+
+| Deleted test file | Retained behavior coverage / justified supersession |
+| --- | --- |
+| `tiling_sys/tests_admission_settings.rs` | Windows settings/admission projection and fixed-hint producer tests; core ordered window-policy fixtures. |
+| `tiling_sys/tests_born_maximized.rs` | Windows born-maximized/first-exit/restart tests and native-seam born-fullscreen/quiet-first-exit tests; core fixed-size/born-state suite. |
+| `tiling_sys/tests_capacity_floats.rs` | Core `world_capacity_diagnostic_tests`, capacity-admission suites and origin-parity regression; old adapter capacity policy is deleted. |
+| `tiling_sys/tests_capacity_recipe.rs` | Same core capacity/admission policy plus restored-routing capacity fallback; no adapter eviction policy retained. |
+| `tiling_sys/tests_cross_drag.rs` | Native route `drop_arrival_*`, core drag-preview/drop routing and Windows gesture-state tests. |
+| `tiling_sys/tests_d23_minimize.rs` | Core `minimize_restore_tests`, native capture minimized-omission and diff hidden/unreadable tests. |
+| `tiling_sys/tests_d23_minimize_hidden.rs` | Same minimized/hidden suites, native receipt and hidden-return composition regressions. |
+| `tiling_sys/tests_deferred_send.rs` | Core floating/deferred/slotless send suites and Windows membership-only float crossing tests. |
+| `tiling_sys/tests_directional_cross.rs` | Core session cross-output/restored-routing suites and native tiled-crossing-both-ways regression. |
+| `tiling_sys/tests_fixed_predicate.rs` | Core fixed-size admission/predicate suites and Windows normalized hint producer regressions. |
+| `tiling_sys/tests_float_nav.rs` | Windows float-focus projection and core float-focus/cross-output suites. |
+| `tiling_sys/tests_float_unfloat.rs` | Windows toggle/restart marker tests, core float membership/boundary suites and native marker-intent/forget-member regressions. Old marker sweep owner is superseded. |
+| `tiling_sys/tests_orientation.rs` | Core session toggle-orientation suite and world operation routing. |
+| `tiling_sys/tests_output_send.rs` | Core workspace/output send suites, native follow/stay/crossing tests and production-send route tests. |
+| `tiling_sys/tests_pending_drop.rs` | Restored production pending slot-machine suite (25 tests). Its module header maps all 29 old tests individually, including frame/readback/refusal coverage in native/diff suites and remaining physical-drag gaps. |
+| `tiling_sys/tests_scope.rs` | Core workspace-scope/modes/global-swap suites; adapter rings/history are superseded. |
+| `tiling_sys/tests_scope_hotplug.rs` | Core logical hotplug/displacement/return and modes suites; adapter displacement owner deleted. |
+| `tiling_sys/tests_scope_send.rs` | Core scope/send suites and native/production send routes. |
+| `tiling_sys/tests_select_repair.rs` | Core relocated gap-repair replay tests, Windows border-shell and reconcile projection coverage. |
+| `tiling_sys/tests_timeout_fallback.rs` | Restored `tests_hint_fallback.rs` (8 cases): fresh/timeout/empty/invalid/failed/budget/lifetime/token fallback table over the live hint consumer. |
+| `tiling_sys/tests_visibility_batch.rs` | Native-seam partial hide/reveal, lying setter, identity drift and truthful receipt tests; diff partial/invalidation tests. Old batch orchestration is superseded. |
+| `tiling_sys/tests_window_diag.rs` | Deleted batching has no production consumer; retained identity-break/rebind/drop-sample diagnostics are asserted in pending-drop tests. Visibility/exception telemetry suites remain. |
+| `tiling_sys/tests_workspace_migrate.rs` | Core logical/refusal/migration suites and native `source_refill_migration_*` plus diff migration tests. Whole-workspace native acceptance remains outstanding below. |
+| `workspace/tests.rs` | Core workspace-scope/modes/global-swap/logical lifecycle suites; native-desktop ring-floor and old preactivation machinery are superseded by logical ownership. |
+| `workspace_scope_owner.rs` (embedded tests) | Core workspace-scope/modes/logical history and trailing lifecycle; the adapter scope owner is deleted. |
+| `workspace_owner/fixed_admission_tests.rs` | Core fixed-size/capacity-admission suites and normalized Windows hint tests. |
+| `workspace_owner/tests.rs` | Core session lifecycle/send/movement, Windows `native_guards` identity/marker/fence tests and native world receipt tests. |
+| `workspace_owner/tests_float_send.rs` | Core floating-deferred send/float-boundary suites and native membership-only crossing cases. |
+| `workspace_owner/tests_hints_markers.rs` | Core size-hint/fixed-admission tests, retained Windows restart marker and hint fallback tests. |
+| `workspace_owner/tests_layout.rs` | Core session movement/lifecycle/gap-repair suites and native frame/write-readback composition. |
+| `workspace_owner/tests_send.rs` | Core send suites and native follow/stay/hidden-return composition. |
+| `workspace_owner/tests_send_follow.rs` | Core send focus/history tests and native `same_output_numbered_send_follow_selects_proves_and_settles` (no external select rescue), partial/lying-setter negatives. |
+| `workspace_owner/tests_toggle.rs` | Core orientation/float suites and Windows native marker/restart tests. |
+| `../tests/workspace_migration.rs` | Core migration mapping/refill/MRU/refusal tests plus native source-refill migration seam. |
+
+Additional final regressions pin generic-app member/helper-tag separation,
+unknown-preimage versus genuine external supersession, full
+follow/select-back/stay/hidden-return composition, and real claim
+hide/reveal/re-hide. The native test harness now snapshots observed frames as
+production does. A duplicated per-test ledger directory caused one parallel
+`LockContended` gate failure; the colliding test identity was separated rather
+than serializing or suppressing the test.
+
+- Final locked core/protocol/Windows build, tests and strict all-target clippy
+  pass: **2,202 passed, zero failed, one ignored across 48 suites**. Workspace
+  fmt and whitespace checks pass. The full parallel run includes the repaired
+  claim-cycle test. No dependencies, unsafe code or input hooks were added.
+- Independent source review checked the public-boundary removal, receipt
+  composition, helper/member-tag separation, unknown-preimage handling and
+  focusless/no-close convergence against the retained close-survivor fence.
+  KDE/macOS ports remain outside these gates; portable FFI checks through the
+  Windows tests are not a native KDE build.
+- Split native receipt capture from actuation and primitive seam tests from
+  world-composition tests at the file-size review boundary. Receipt functions
+  and assertions moved without semantic changes; full tests, strict clippy,
+  formatting and whitespace checks pass after the split.
+
+### Native evidence and limits
+
+- Fixture-only native Windows checks on both outputs passed admission,
+  numbered/relative/previous/trailing selection, sticky-anchor visibility,
+  same-output fresh trailing follow/stay sends, and positional return into
+  the stay-created hidden workspace. Member/HWND/process-lifetime joins,
+  PMv2 frames, visibility and foreground independently corroborated effects.
+- Both-direction explicit output follow/stay sends passed native frame/output
+  and focus checks, with the source survivor expanding. This is **single-window
+  send/source reflow**, not whole-workspace migration/refill acceptance.
+- Both outputs passed maximize/work-area coverage, borderless-fullscreen/full
+  monitor coverage and tiled return. Native coverage, not the fixture's unknown
+  fullscreen-mode field, was the oracle.
+- Restart preserved intentional float and sticky markers and held a running
+  fullscreen window without tiling it. Hidden members were revealed by recovery
+  and logical rings/views restarted; persistent hidden views were not an old
+  supported guarantee and are not introduced here. Tile-override restart remains
+  offline-covered but was not staged live.
+- Closing an intentional float preserved the neighboring tile; closing a tile
+  expanded its survivor. Exact stop/independent restore and fixture shutdown
+  left no owned process/window, ledger or pending controls; settings bytes,
+  relevant SPI/taskbar state and protected geometry matched their preimages.
+- Directional smoke passed local horizontal focus/move on each output,
+  cross-edge move and return, and cross-edge focus. All 11 dispatches were joined
+  to bounded world-apply evidence and independent PMv2 frame/foreground reads;
+  the final artifact's own hash was checked against the launched payload.
+- Three live product defects were reproduced, regression-fixed and rechecked:
+  fresh trailing target staging/follow view ownership; generic member-stamp
+  receipt capture; and focusless hidden stay-workspace return. Earlier first
+  selection attribution and mid-run Mouse Snap equality failures were oracle
+  errors, not product repairs. Mouse Snap intentionally changes during the
+  active session and must match baseline after teardown.
+- Whole-workspace migration/refill still needs a native fixture leg. Windows
+  currently exposes it only through a bindable, default-unbound physical chord;
+  the exact-owner CLI has no migration control. Do not substitute single-window
+  output sends or injected-key delivery for this check. Shared/global live mode
+  coverage and physical shortcut/drag acceptance are
+  separate outstanding evidence. The disabled drag driver remains disabled.
+
+### Next boundary
+
+- Finish the missing whole-workspace migration/refill
+  native control/acceptance path before accepting 2b or combining 2a+2b on the
+  Windows dogfood branch. Keep the existing parked focus/send questions unchanged.
+- After 2b acceptance, implement 2c retained cursor/settings/focus and approved
+  fresh-placement/switch policy, then the remaining convergence/presentation
+  stages. Startup/restart is not fresh placement. Three-way placement subsuming
+  launch targeting remains tentative, not selected by this checkpoint.

@@ -11,11 +11,13 @@
 /// One overall deadline (ms) per hide/reveal phase, including post work.
 /// The budget starts before native posts: a host that never confirms
 /// must not stall the owner indefinitely.
+#[cfg(test)]
 pub(crate) const BATCH_DEADLINE_MS: u64 = 2000;
 
 /// Per-window batch outcome. Observed success only; an event without a
 /// matching snapshot never confirms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(test)]
 pub(crate) enum BatchOutcome {
     /// Snapshot observed the expected visibility within the deadline.
     Confirmed,
@@ -33,6 +35,7 @@ pub(crate) enum BatchOutcome {
 
 /// Owner wait signal for one batch wait call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(test)]
 pub(crate) enum BatchSignal {
     /// A relevant SHOW/HIDE notification was dispatched; caller rechecks
     /// snapshots. State alone decides: a signal without a matching
@@ -47,6 +50,7 @@ pub(crate) enum BatchSignal {
 
 /// Injected native visibility boundary (fake in tests, `ShowWindowAsync`
 /// plus `IsWindowVisible`/`IsWindow` in production).
+#[cfg(test)]
 pub(crate) trait BatchNative {
     /// Post one visibility effect without blocking. `true` mirrors a
     /// nonzero `ShowWindowAsync`; `false` is a per-window post failure
@@ -60,6 +64,7 @@ pub(crate) trait BatchNative {
 /// Injected monotonic clock plus event-driven owner wait. `wait` pumps
 /// owner messages (delivering SHOW/HIDE callbacks) and blocks only for
 /// the remaining genuine budget; it never slices a fixed poll.
+#[cfg(test)]
 pub(crate) trait BatchWaitClock {
     /// Current monotonic time (ms).
     fn now_ms(&mut self) -> u64;
@@ -74,6 +79,7 @@ pub(crate) trait BatchWaitClock {
 /// rechecks run only after [`BatchSignal::Notified`], and one final
 /// snapshot runs at the deadline. Unrelated wakes neither confirm nor
 /// extend the deadline. Returns input order.
+#[cfg(test)]
 pub(crate) fn run_visibility_batch<D: BatchNative + BatchWaitClock>(
     hwnds: &[u64],
     hide: bool,

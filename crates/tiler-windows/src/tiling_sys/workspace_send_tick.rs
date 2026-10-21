@@ -12,9 +12,7 @@ use tiler_core::world_report::WorldCommand;
 /// Native device key for one send intent: the cached output when live, else
 /// the first live area. Pure native topology; never rings or views.
 fn send_device(state: &TileLoop, areas: &[MonitorArea]) -> Option<String> {
-    if !state.active_output.is_empty()
-        && areas.iter().any(|a| a.device == state.active_output)
-    {
+    if !state.active_output.is_empty() && areas.iter().any(|a| a.device == state.active_output) {
         return Some(state.active_output.clone());
     }
     areas.first().map(|a| a.device.clone())
@@ -363,12 +361,8 @@ pub(super) fn workspace_output_send_one(
         log_refuse("unmanaged");
         return "unmanaged";
     };
-    if !crate::native_guards::member_matches(
-        &mover_key,
-        origin.hwnd,
-        origin.pid,
-        &origin.creation,
-    ) {
+    if !crate::native_guards::member_matches(&mover_key, origin.hwnd, origin.pid, &origin.creation)
+    {
         log_refuse("foreground-changed");
         return "foreground-changed";
     }

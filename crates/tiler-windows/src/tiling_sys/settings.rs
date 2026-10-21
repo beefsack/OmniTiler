@@ -257,6 +257,7 @@ pub(super) fn is_limited_fullscreen(read: &ForegroundRead) -> bool {
 /// suspension nothing writes; under a limited unmanageable fullscreen only
 /// windows other than the foreground write. An unknown foreground (`0`)
 /// fails closed to no writes.
+#[cfg(test)]
 pub(super) fn geometry_write_allowed(
     read: &ForegroundRead,
     window_hw: u64,
@@ -288,13 +289,11 @@ pub(super) fn suspend_limited(
 ) -> (ForegroundRead, u64) {
     #[cfg(test)]
     if INJECTED_SUSPEND.with(|slot| slot.get()).is_some() {
+        // Offline suspension fixtures stay native-free: no foreground HWND
+        // is knowable without a native capture, so the limited lane reads
+        // unknown (0, fail closed to full suspension) here.
         let read = suspend_read(state, me, fulls);
-        let fg = if is_limited_fullscreen(&read) {
-            INJECTED_LIMITED_FG.with(|slot| slot.borrow().unwrap_or(0))
-        } else {
-            0
-        };
-        return (read, fg);
+        return (read, 0);
     }
     let foreground = crate::ffi::foreground_window();
     let read = suspend_read_inner(state, me, fulls, foreground);

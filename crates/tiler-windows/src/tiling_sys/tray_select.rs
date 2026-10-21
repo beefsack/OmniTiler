@@ -116,9 +116,8 @@ pub(super) fn poll_tray_select(
     if !crate::tray_pager::verify_select_scope(&request, focused.as_deref(), workspace_live) {
         let mut line = workspace_log(state, tick, "select", index, "tray", "refused-stale-scope");
         line["output"] = serde_json::Value::from(state.output_token(&request.output));
-        line["workspace"] = serde_json::Value::from(
-            state.workspace_token(&request.output, &request.workspace),
-        );
+        line["workspace"] =
+            serde_json::Value::from(state.workspace_token(&request.output, &request.workspace));
         log_json_at(&state.log_path, line);
         return;
     }

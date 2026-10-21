@@ -4,11 +4,11 @@ use super::*;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use crate::native_guards::WindowKey;
 use crate::pager::{
     OutputGeometry, OutputPager, PagerGate, TaskbarFacts, match_bars_to_outputs, pager_suppression,
 };
 use crate::pager_icons::IconImage;
-use crate::native_guards::WindowKey;
 
 /// Owner-creation retry when overlay registration fails: fixed 5s, forever,
 /// so a failed registration retries promptly without busy-looping pumps.
@@ -805,16 +805,11 @@ pub(super) fn poll_pager_select(
     // click on an unfocused output's strip still selects there. The
     // 1-based ordinal is logging only, never a positional fallback.
     let ring = state.workspace_ids(&request.output);
-    if !crate::pager::verify_output_scoped_select_keys(
-        &request,
-        &state.output_devices(),
-        &ring,
-    ) {
+    if !crate::pager::verify_output_scoped_select_keys(&request, &state.output_devices(), &ring) {
         let mut line = workspace_log(state, tick, "select", index, "pager", "refused-stale-scope");
         line["output"] = serde_json::Value::from(state.output_token(&request.output));
-        line["workspace"] = serde_json::Value::from(
-            state.workspace_token(&request.output, &request.workspace),
-        );
+        line["workspace"] =
+            serde_json::Value::from(state.workspace_token(&request.output, &request.workspace));
         log_json_at(&state.log_path, line);
         return;
     }
@@ -1045,10 +1040,7 @@ mod pager_host_tests {
         poll_pager_select(&mut state, &me, &store, &dir, &fulls, &areas);
         // Consumed once, never dispatched: no replay later.
         assert_eq!(pending_clicks(&state), 0);
-        assert_eq!(
-            state.active_view(&output).as_deref(),
-            Some(active.as_str())
-        );
+        assert_eq!(state.active_view(&output).as_deref(), Some(active.as_str()));
         clear_pending_seams();
     }
 
@@ -1062,10 +1054,7 @@ mod pager_host_tests {
             inject_pending_elevated(elevated);
             poll_pager_select(&mut state, &me, &store, &dir, &fulls, &areas);
             assert_eq!(pending_clicks(&state), 0);
-            assert_eq!(
-                state.active_view(&output).as_deref(),
-                Some(active.as_str())
-            );
+            assert_eq!(state.active_view(&output).as_deref(), Some(active.as_str()));
             clear_pending_seams();
         }
     }
@@ -1078,10 +1067,7 @@ mod pager_host_tests {
         open_gate();
         poll_pager_select(&mut state, &me, &store, &dir, &fulls, &[]);
         assert_eq!(pending_clicks(&state), 0);
-        assert_eq!(
-            state.active_view(&output).as_deref(),
-            Some(active.as_str())
-        );
+        assert_eq!(state.active_view(&output).as_deref(), Some(active.as_str()));
         clear_pending_seams();
     }
 
@@ -1096,10 +1082,7 @@ mod pager_host_tests {
         open_gate();
         poll_pager_select(&mut state, &me, &store, &dir, &fulls, &areas);
         assert_eq!(pending_clicks(&state), 0);
-        assert_eq!(
-            state.active_view(&output).as_deref(),
-            Some(active.as_str())
-        );
+        assert_eq!(state.active_view(&output).as_deref(), Some(active.as_str()));
         clear_pending_seams();
     }
 
@@ -1457,6 +1440,7 @@ mod pager_host_tests {
                 no_activate: false,
                 dialog: false,
             },
+            member_tag: None,
         };
         // A foreign window observes fine but is never a member: excluded.
         let foreign = mk_observed(703, "tok-foreign", 9, "creation-foreign");
@@ -1549,6 +1533,7 @@ mod pager_host_tests {
                 no_activate: false,
                 dialog: false,
             },
+            member_tag: None,
         }
     }
 

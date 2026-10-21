@@ -2,62 +2,6 @@
 use super::focus_actuation::overlay_expected;
 use super::*;
 
-/// World-owned writable tokens for one domain: eligible observed members
-/// only. Retained and hidden rows converge membership but never take
-/// geometry writes; hidden workspace geometry is not written until reveal.
-///
-/// Native HWND/PID/creation plus scope gates pre-filter here; the portable
-/// hidden/fresh exclusion rides [`crate::native_guards::writable_subset`].
-/// Float intent reads the last applied world reply plus the adapter intent
-/// lanes (never a local Engine session).
-pub(super) fn writable_tokens(
-    state: &TileLoop,
-    output: &str,
-    workspace: &str,
-    observed: &[ObservedWindow],
-) -> HashSet<String> {
-    let members = state.workspace_members(output, workspace);
-    let by_hwnd: HashMap<u64, &ObservedWindow> = observed.iter().map(|w| (w.hwnd, w)).collect();
-    let mut eligible: std::collections::BTreeMap<crate::native_guards::WindowKey, String> =
-        std::collections::BTreeMap::new();
-    for key in &members {
-        let Some(window) = by_hwnd.get(&key.hwnd) else {
-            continue;
-        };
-        if !crate::native_guards::member_matches(
-            key,
-            window.hwnd,
-            window.identity.pid,
-            &window.identity.process_creation,
-        ) {
-            continue;
-        }
-        if !scope_allows(&state.scope, &window.identity.exe_path) {
-            continue;
-        }
-        eligible.insert(key.clone(), window.token.clone());
-    }
-    let fresh: HashSet<String> = observed.iter().map(|w| w.token.clone()).collect();
-    // Floats converge membership but never take tiled geometry writes:
-    // intent reads the last applied world reply plus the adapter lanes.
-    let float_tokens: HashSet<String> = eligible
-        .values()
-        .filter(|token| state.core_is_float_token(token))
-        .cloned()
-        .collect();
-    eligible.retain(|_, token| !float_tokens.contains(token));
-    // Observation-scoped restart-hydration write barrier: a rejected staged
-    // float keeps no core exception and no intent lane, so the exclusion
-    // above cannot see it. Exact lifetime identity, never HWND alone.
-    eligible.retain(|key, _| !state.restart_reject_hold.contains(key));
-    crate::native_guards::writable_subset(
-        &members,
-        |k| state.is_hidden_member(k),
-        &eligible,
-        &fresh,
-    )
-}
-
 /// Auto-retire positively restored owned-fullscreen markers on verified
 /// workspace members through the shared exact-lifetime sequence, so no
 /// special clear action is needed to trigger it. Global game/elevated gate
@@ -121,9 +65,6 @@ pub(super) fn reconcile_tick(
 ) {
     #[cfg(test)]
     if INJECTED_OBSERVE.with(|slot| slot.borrow().is_some()) {
-        PENDING_COUNTERS.with(|slot| {
-            slot.borrow_mut().reconcile += 1;
-        });
         state.tick += 1;
         let _ = (me, fulls, areas);
         return;
@@ -200,23 +141,15 @@ pub(super) fn reconcile_tick(
     // One shared observation tick through the single world owner: the core
     // converges every monitor from this tick's screens plus window facts,
     // and the host diff applies every accepted reply with fresh proof.
-    // Committed capacity floats join the ordinary float lanes with markers.
+    // Committed floats join the ordinary float lanes with markers.
     let foreground = crate::ffi::foreground_window();
     if super::world_tick::run_observation_tick(
-        state,
-        me,
-        store,
-        dir,
-        &observed,
-        &retained,
-        areas,
-        foreground,
-        fulls,
+        state, me, store, dir, &observed, &retained, areas, foreground, fulls,
     )
     .is_some()
     {
         let correlation_str = correlation.as_str();
-        super::capacity_floats::adopt_capacity_from_reply(
+        super::capacity_floats::adopt_floats_from_reply(
             state,
             me,
             tick,

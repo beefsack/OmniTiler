@@ -89,7 +89,12 @@ impl WorldEngine {
     /// Shared view retention: latest view command wins per output. The
     /// output must be a live screen and the workspace must name a known
     /// logical id in its ring.
-    fn retain_view_inner(&mut self, output: &OutputId, workspace: &str, operation_id: String) {
+    pub(crate) fn retain_view_inner(
+        &mut self,
+        output: &OutputId,
+        workspace: &str,
+        operation_id: String,
+    ) {
         self.retained.retain(|r| {
             !(matches!(r.target.kind, TransferKind::View) && r.target.target_output == *output)
         });

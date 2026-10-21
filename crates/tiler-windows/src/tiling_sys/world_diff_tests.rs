@@ -17,8 +17,8 @@ use super::world_diff::{
 use super::world_sequencer::{AckOutcome, DispatchError, WorldSequencer};
 use super::{HiddenRecord, MonitorArea, ObservedWindow, PendingClosed, RetainedRow, TileLoop};
 use crate::model::{ProcessIdentity, WindowClaimKind, WindowIdentity, WindowShowState};
-use crate::tiling::{FrameInsets, ObservedTarget, WindowFacts};
 use crate::native_guards::WindowKey;
+use crate::tiling::{FrameInsets, ObservedTarget, WindowFacts};
 use std::collections::BTreeMap;
 use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::geometry::Rect;
@@ -82,9 +82,12 @@ fn observed_window(key: &WindowKey, token: &str, vis: Rect, facts: WindowFacts) 
             exe_path: EXE.to_owned(),
             user_sid: "S-1-5-21-1000".to_owned(),
             session_id: 1,
-            tag: "member-tag-1".to_owned(),
+            // Generic fixture-style identity: the proof-only helper tag is
+            // empty; managed membership rides `member_tag` below.
+            tag: String::new(),
         },
         facts,
+        member_tag: Some("member-tag-1".to_owned()),
     }
 }
 
@@ -134,6 +137,14 @@ fn rig() -> Rig {
     let k2 = win_key(1002, 2002, "proc-2");
     admit(&mut state, &k1, DEV1, &ws, "w1", false);
     admit(&mut state, &k2, DEV1, &ws, "w2", false);
+    // Proven receipts: both members home on the source view, so capture
+    // proves observed workspaces and baselines are known (never ""). Tests
+    // needing an unknown preimage construct their own FreshHost.
+    for token in ["w1", "w2"] {
+        state
+            .applied_homing
+            .insert(token.to_owned(), (out.clone(), ws.clone()));
+    }
     let observed = vec![
         observed_window(&k1, "w1", rect(0, 0, 800, 600), plain_facts()),
         observed_window(&k2, "w2", rect(0, 610, 800, 400), plain_facts()),
@@ -163,12 +174,8 @@ fn converted(rig: &Rig) -> (HostDiff, FreshHost, FakeNative) {
         1001,
     );
     assert!(captured.inventory_complete);
-    let fresh = FreshHost::from_sources(
-        &rig.state.inputs(),
-        &rig.observed,
-        &rig.retained,
-        &captured,
-    );
+    let fresh =
+        FreshHost::from_sources(&rig.state.inputs(), &rig.observed, &rig.retained, &captured);
     let native = FakeNative::seeded(&fresh);
     (diff_at(7), fresh, native)
 }
@@ -282,13 +289,7 @@ fn fingerprint(state: &TileLoop) -> (usize, usize, usize, usize) {
 #[test]
 fn failed_enumeration_holds_every_scope() {
     let rig = rig();
-    let captured = capture_world(
-        &rig.state.inputs(),
-        None,
-        &rig.retained,
-        &rig.areas,
-        1001,
-    );
+    let captured = capture_world(&rig.state.inputs(), None, &rig.retained, &rig.areas, 1001);
     assert!(!captured.inventory_complete);
     assert_eq!(captured.windows.len(), 2);
     for fact in &captured.windows {
@@ -419,13 +420,7 @@ fn minimized_omission_minimizes_frameless_holds() {
         fullscreen: false,
         facts: None,
     }];
-    let captured = capture_world(
-        &state.inputs(),
-        Some(&[]),
-        &retained,
-        &one_area(DEV1),
-        0,
-    );
+    let captured = capture_world(&state.inputs(), Some(&[]), &retained, &one_area(DEV1), 0);
     let w1 = captured
         .windows
         .iter()
@@ -478,13 +473,7 @@ fn retained_overlay_rides_slot_and_holds_tiled_write() {
         fullscreen: false,
         facts: Some(overlay),
     }];
-    let captured = capture_world(
-        &state.inputs(),
-        Some(&[]),
-        &retained,
-        &one_area(DEV1),
-        0,
-    );
+    let captured = capture_world(&state.inputs(), Some(&[]), &retained, &one_area(DEV1), 0);
     let fact = &captured.windows[0];
     assert_eq!(fact.rect, Some(slot));
     assert!(fact.maximized);
@@ -874,12 +863,8 @@ fn prune_bounds_generation_scoped_tables() {
         1001,
     );
     assert!(captured.inventory_complete);
-    let mut fresh = FreshHost::from_sources(
-        &rig.state.inputs(),
-        &rig.observed,
-        &rig.retained,
-        &captured,
-    );
+    let mut fresh =
+        FreshHost::from_sources(&rig.state.inputs(), &rig.observed, &rig.retained, &captured);
     fresh.views.insert(rig.out.clone(), rig.ws.clone());
     let mut native = FakeNative::seeded(&fresh);
     let mut diff = diff_at(7);
@@ -1649,12 +1634,8 @@ fn send_roundtrip_actuates_feedback_and_converges_without_remove() {
         &rig.areas,
         1001,
     );
-    let fresh = FreshHost::from_sources(
-        &rig.state.inputs(),
-        &rig.observed,
-        &rig.retained,
-        &captured,
-    );
+    let fresh =
+        FreshHost::from_sources(&rig.state.inputs(), &rig.observed, &rig.retained, &captured);
     let mut native = FakeNative::seeded(&fresh);
     let mut diff = HostDiff::new(ADAPTER, GENERATION);
     diff.gate.current_obs = seq.current_obs();

@@ -13,7 +13,6 @@ fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
 
 fn test_report() -> WorldReport {
     WorldReport {
-        restored: None,
         contract_version: WORLD_CONTRACT_VERSION,
         owner: "owner-a".to_owned(),
         adapter_incarnation: "adapter-1".to_owned(),
@@ -134,19 +133,6 @@ fn digest_covers_every_section() {
     let mut changed = base.clone();
     changed.request_seq = 2;
     assert_ne!(report_digest(&changed), digest);
-    // Restoration ingress alters the digest: duplicates compare typed
-    // equality, but the digest must never alias restored vs fresh inputs.
-    let mut changed = base.clone();
-    changed.restored = Some(RestoredWorld {
-        rings: vec![RestoredRing {
-            output: OutputId("out".to_owned()),
-            workspaces: vec!["ws-1".to_owned()],
-        }],
-        views: Vec::new(),
-        tiling: Vec::new(),
-        members: Vec::new(),
-    });
-    assert_ne!(report_digest(&changed), digest);
 }
 
 #[test]
@@ -246,29 +232,6 @@ fn validation_gates_shapes() {
     };
     bad.screens.extend((0..100).map(|_| filler.clone()));
     assert_eq!(validate_report_reason(&bad), Some("section-over-cap"));
-    // Restoration ingress validates when present.
-    let mut good = base.clone();
-    good.restored = Some(RestoredWorld {
-        rings: vec![RestoredRing {
-            output: OutputId("out".to_owned()),
-            workspaces: vec!["ws-1".to_owned()],
-        }],
-        views: Vec::new(),
-        tiling: Vec::new(),
-        members: vec![RestoredMember {
-            window: WindowId("win-a".to_owned()),
-            output: OutputId("out".to_owned()),
-            workspace: "ws-1".to_owned(),
-        }],
-    });
-    assert!(validate_report(&good));
-    // Restored members must ride the facts: unknown windows are stale.
-    let mut bad = good.clone();
-    bad.restored.as_mut().expect("restored").members[0].window = WindowId("win-gone".to_owned());
-    assert_eq!(
-        validate_report_reason(&bad),
-        Some("restored-member-unknown")
-    );
 }
 
 #[test]

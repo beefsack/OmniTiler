@@ -71,12 +71,8 @@ pub(super) fn resolve_chord_target(
         state.snap_advance = None;
         return Err(reject("unmanaged"));
     };
-    if !crate::native_guards::member_matches(
-        &member_key,
-        origin.hwnd,
-        origin.pid,
-        &origin.creation,
-    ) {
+    if !crate::native_guards::member_matches(&member_key, origin.hwnd, origin.pid, &origin.creation)
+    {
         state.snap_advance = None;
         return Err(reject("foreground-changed"));
     }
@@ -195,21 +191,5 @@ pub(super) fn orientation_overlay_refusal(
         tiler_core::window_policy::orientation_toggle_refusal(row.fullscreen, zoomed)
     } else {
         None
-    }
-}
-
-/// Accept only the matching orientation plan from one Engine reply: a `Tiled`
-/// plan of exactly `TiledKind::ToggleOrientation`. Lone root (`unchanged`),
-/// float/no-focus (`not-tiled`), and every other refusal return `None` so the
-/// caller settles with no writes and no focus mutation. Called by the native
-/// orientation route; pinned against real Engine replies below.
-pub(super) fn orientation_plan(reply: &CoreReply) -> Option<&tiler_core::boundary::TiledPlan> {
-    match reply {
-        CoreReply::Tiled(plan)
-            if plan.kind == tiler_core::boundary::TiledKind::ToggleOrientation =>
-        {
-            Some(plan)
-        }
-        _ => None,
     }
 }

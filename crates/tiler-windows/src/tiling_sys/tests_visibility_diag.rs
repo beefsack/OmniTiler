@@ -59,7 +59,11 @@ fn vd_member(
     key
 }
 
-fn vd_observed(token: &str, key: &crate::native_guards::WindowKey, cloaked: bool) -> ObservedWindow {
+fn vd_observed(
+    token: &str,
+    key: &crate::native_guards::WindowKey,
+    cloaked: bool,
+) -> ObservedWindow {
     ObservedWindow {
         hwnd: key.hwnd,
         token: token.to_owned(),
@@ -86,6 +90,7 @@ fn vd_observed(token: &str, key: &crate::native_guards::WindowKey, cloaked: bool
             tag: String::new(),
         },
         facts: vd_facts(cloaked),
+        member_tag: None,
     }
 }
 
@@ -1086,7 +1091,6 @@ fn rehide_retired_detail_names_phase_without_raw_text() {
     );
     vd_teardown();
 }
-
 
 #[test]
 fn sweep_reveal_lines_pin_maintenance_and_migrate_phases() {

@@ -43,14 +43,7 @@ fn refresh_cross_drag_preview(
         .find(|a| a.device == dest_output)
         .and_then(|area| tiling_domain_bounds_with(area.work, state.outer_gap));
     let inside_dest = dest_bounds.is_some_and(|bounds| {
-        crate::tiling::drop_point_in_domain(
-            bounds.x,
-            bounds.y,
-            bounds.w,
-            bounds.h,
-            x,
-            y,
-        )
+        crate::tiling::drop_point_in_domain(bounds.x, bounds.y, bounds.w, bounds.h, x, y)
     });
     // START-side invalidation exactly like the same-output path; only the
     // `inside` scope moves to the destination bounds.
@@ -76,9 +69,7 @@ fn refresh_cross_drag_preview(
             .get(key)
             .is_some_and(|token| token.as_str() == start.token.as_str())
     });
-    let loc = start_key
-        .as_ref()
-        .and_then(|key| state.member_home(key));
+    let loc = start_key.as_ref().and_then(|key| state.member_home(key));
     let loc_ok = loc
         .as_ref()
         .is_some_and(|loc| loc.output == start.output && loc.workspace == start.workspace);
@@ -198,16 +189,19 @@ fn refresh_cross_drag_preview(
             source: Some(source_key.clone()),
         }),
     );
-    let Some(preview) = reply.as_ref().and_then(|reply| match &reply.command_result {
-        Some(tiler_core::world_report::CommandResult::DragPreview {
-            rect,
-            hover,
-            domain,
-            source,
-            ..
-        }) if domain == &dest_key && source == &source_key => Some((*rect, hover.clone())),
-        _ => None,
-    }) else {
+    let Some(preview) = reply
+        .as_ref()
+        .and_then(|reply| match &reply.command_result {
+            Some(tiler_core::world_report::CommandResult::DragPreview {
+                rect,
+                hover,
+                domain,
+                source,
+                ..
+            }) if domain == &dest_key && source == &source_key => Some((*rect, hover.clone())),
+            _ => None,
+        })
+    else {
         if let Some(bound) = state.preview_bound.get_mut(&hwnd) {
             bound.hover_prior = None;
         }
@@ -223,90 +217,90 @@ fn refresh_cross_drag_preview(
         return;
     }
     {
-            let prior_desc = preview_prior_desc(&next_prior);
-            if let Some(bound) = state.preview_bound.get_mut(&hwnd) {
-                bound.hover_prior = next_prior;
-            }
-            if state.render_bridge.is_some() {
-                let lifetime = WindowLifetime {
-                    pid: live_frame.identity.pid,
-                    creation: live_frame.identity.process_creation.clone(),
-                    member_tag: crate::product_hide::sys::read_member_tag(hwnd),
-                };
-                post_preview_frame(
-                    state,
-                    rect,
-                    PREVIEW_DEFAULT_ARGB,
-                    &settle.mover_token,
-                    hwnd,
-                    lifetime,
-                    foreground_lifetime(me),
-                    correlation.as_str(),
-                    &prior_desc,
-                );
-                return;
-            }
-            let outcome = state.preview_overlay.show_fill_above(
+        let prior_desc = preview_prior_desc(&next_prior);
+        if let Some(bound) = state.preview_bound.get_mut(&hwnd) {
+            bound.hover_prior = next_prior;
+        }
+        if state.render_bridge.is_some() {
+            let lifetime = WindowLifetime {
+                pid: live_frame.identity.pid,
+                creation: live_frame.identity.process_creation.clone(),
+                member_tag: crate::product_hide::sys::read_member_tag(hwnd),
+            };
+            post_preview_frame(
+                state,
                 rect,
                 PREVIEW_DEFAULT_ARGB,
                 &settle.mover_token,
                 hwnd,
+                lifetime,
+                foreground_lifetime(me),
+                correlation.as_str(),
+                &prior_desc,
             );
-            let checksum = state.preview_overlay.snapshot()["dib_checksum"].clone();
-            let signature = format!(
-                "shown:{}:{},{},{},{}:{checksum}",
-                settle.mover_token, rect.x, rect.y, rect.w, rect.h
+            return;
+        }
+        let outcome = state.preview_overlay.show_fill_above(
+            rect,
+            PREVIEW_DEFAULT_ARGB,
+            &settle.mover_token,
+            hwnd,
+        );
+        let checksum = state.preview_overlay.snapshot()["dib_checksum"].clone();
+        let signature = format!(
+            "shown:{}:{},{},{},{}:{checksum}",
+            settle.mover_token, rect.x, rect.y, rect.w, rect.h
+        );
+        let changed = state.preview_last.as_deref() != Some(signature.as_str());
+        if changed {
+            state.preview_last = Some(signature);
+        }
+        // Routine same-mover repaints (per mouse move) aggregate into the
+        // per-carrier ~1s window; mover transitions log immediately below.
+        let outcome_name = match outcome {
+            OverlayOutcome::Shown => "shown",
+            OverlayOutcome::Redrew => "redrew",
+            OverlayOutcome::Moved => "moved",
+            OverlayOutcome::Unchanged => "unchanged",
+            OverlayOutcome::Hidden => "hidden",
+        };
+        if render_same_thread_gate(
+            state,
+            RenderCarrier::Preview,
+            settle.mover_token.as_str(),
+            Instant::now(),
+            changed || state.trace,
+            same_thread_sample(
+                outcome_name,
+                settle.mover_token.clone(),
+                [rect.x, rect.y, rect.w, rect.h],
+                String::new(),
+                checksum.as_str().unwrap_or_default().to_owned(),
+            ),
+        ) {
+            return;
+        }
+        if changed || state.trace {
+            log_json_at(
+                &state.log_path,
+                serde_json::json!({
+                    "event": "drag-preview",
+                    "tick": state.tick,
+                    "correlation": correlation.as_str(),
+                    "outcome": match outcome {
+                        OverlayOutcome::Shown => "shown",
+                        OverlayOutcome::Redrew => "redrew",
+                        OverlayOutcome::Moved => "moved",
+                        OverlayOutcome::Unchanged => "unchanged",
+                        OverlayOutcome::Hidden => "hidden",
+                    },
+                    "window": settle.mover_token,
+                    "rect": [rect.x, rect.y, rect.w, rect.h],
+                    "hover_prior": prior_desc,
+                    "cross_output": true,
+                }),
             );
-            let changed = state.preview_last.as_deref() != Some(signature.as_str());
-            if changed {
-                state.preview_last = Some(signature);
-            }
-            // Routine same-mover repaints (per mouse move) aggregate into the
-            // per-carrier ~1s window; mover transitions log immediately below.
-            let outcome_name = match outcome {
-                OverlayOutcome::Shown => "shown",
-                OverlayOutcome::Redrew => "redrew",
-                OverlayOutcome::Moved => "moved",
-                OverlayOutcome::Unchanged => "unchanged",
-                OverlayOutcome::Hidden => "hidden",
-            };
-            if render_same_thread_gate(
-                state,
-                RenderCarrier::Preview,
-                settle.mover_token.as_str(),
-                Instant::now(),
-                changed || state.trace,
-                same_thread_sample(
-                    outcome_name,
-                    settle.mover_token.clone(),
-                    [rect.x, rect.y, rect.w, rect.h],
-                    String::new(),
-                    checksum.as_str().unwrap_or_default().to_owned(),
-                ),
-            ) {
-                return;
-            }
-            if changed || state.trace {
-                log_json_at(
-                    &state.log_path,
-                    serde_json::json!({
-                        "event": "drag-preview",
-                        "tick": state.tick,
-                        "correlation": correlation.as_str(),
-                        "outcome": match outcome {
-                            OverlayOutcome::Shown => "shown",
-                            OverlayOutcome::Redrew => "redrew",
-                            OverlayOutcome::Moved => "moved",
-                            OverlayOutcome::Unchanged => "unchanged",
-                            OverlayOutcome::Hidden => "hidden",
-                        },
-                        "window": settle.mover_token,
-                        "rect": [rect.x, rect.y, rect.w, rect.h],
-                        "hover_prior": prior_desc,
-                        "cross_output": true,
-                    }),
-                );
-            }
+        }
     }
 }
 
@@ -523,9 +517,7 @@ pub(super) fn refresh_drag_preview(
             .get(key)
             .is_some_and(|token| token.as_str() == start.token.as_str())
     });
-    let loc = start_key
-        .as_ref()
-        .and_then(|key| state.member_home(key));
+    let loc = start_key.as_ref().and_then(|key| state.member_home(key));
     let loc_ok = loc
         .as_ref()
         .is_some_and(|loc| loc.output == start.output && loc.workspace == start.workspace);
@@ -540,16 +532,8 @@ pub(super) fn refresh_drag_preview(
         .iter()
         .find(|a| a.device == start.output)
         .and_then(|area| tiling_domain_bounds_with(area.work, state.outer_gap));
-    let inside = start_bounds.is_some_and(|bounds| {
-        drop_point_in_domain(
-            bounds.x,
-            bounds.y,
-            bounds.w,
-            bounds.h,
-            x,
-            y,
-        )
-    });
+    let inside = start_bounds
+        .is_some_and(|bounds| drop_point_in_domain(bounds.x, bounds.y, bounds.w, bounds.h, x, y));
     match preview_sample_gate(&PreviewFresh {
         dead: false,
         zero: !PreviewBound::sample_allowed(start_x, start_y, x, y, false),
@@ -648,15 +632,18 @@ pub(super) fn refresh_drag_preview(
     );
     // Source fence on the correlated result (START bound): a stale result
     // after Finish, drift, or a mover swap never renders.
-    let Some((rect, next_prior)) = reply.as_ref().and_then(|reply| match &reply.command_result {
-        Some(tiler_core::world_report::CommandResult::DragPreview {
-            rect,
-            hover,
-            source,
-            ..
-        }) if source == &source_key => Some((*rect, hover.clone())),
-        _ => None,
-    }) else {
+    let Some((rect, next_prior)) = reply
+        .as_ref()
+        .and_then(|reply| match &reply.command_result {
+            Some(tiler_core::world_report::CommandResult::DragPreview {
+                rect,
+                hover,
+                source,
+                ..
+            }) if source == &source_key => Some((*rect, hover.clone())),
+            _ => None,
+        })
+    else {
         if let Some(bound) = state.preview_bound.get_mut(&hwnd) {
             bound.hover_prior = None;
         }
@@ -696,12 +683,10 @@ pub(super) fn refresh_drag_preview(
         );
         return;
     }
-    let outcome = state.preview_overlay.show_fill_above(
-        rect,
-        PREVIEW_DEFAULT_ARGB,
-        &start.token,
-        hwnd,
-    );
+    let outcome =
+        state
+            .preview_overlay
+            .show_fill_above(rect, PREVIEW_DEFAULT_ARGB, &start.token, hwnd);
     let checksum = state.preview_overlay.snapshot()["dib_checksum"].clone();
     let signature = format!(
         "shown:{}:{},{},{},{}:{checksum}",

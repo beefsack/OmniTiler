@@ -10,8 +10,8 @@ use crate::model::{
     generate_claim_tag, product_show_restore, valid_claim_tag, watcher_may_restore,
 };
 use crate::native::{HeldProcess, IdentityError};
-use crate::storage::{LEDGER_FILE_NAME, LedgerStore};
 use crate::native_guards::MarkerSlot;
+use crate::storage::{LEDGER_FILE_NAME, LedgerStore};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -739,19 +739,6 @@ pub(crate) fn commit_hide_claim(
     result
 }
 
-/// Best-effort orphan cleanup for an admitted-but-uncommitted nonce (shared
-/// with [`hide_managed_claim`]): removes the window-lifetime nonce ONLY when
-/// the fresh committed ledger proves no same-HWND product claim exists AND
-/// the live window still carries the full expected process plus the exact
-/// nonce. Never fails: the caller's error stands.
-pub(crate) fn cleanup_orphan_nonce(
-    store: &LedgerStore,
-    owner: &ProcessIdentity,
-    claim: &WindowIdentity,
-) {
-    maybe_cleanup_orphan(store, owner, claim);
-}
-
 /// Post one async visibility effect without blocking or waiting:
 /// `ShowWindowAsync` queues behind earlier posts so per-window ordering is
 /// preserved and a hung target cannot wedge the caller. Shared by the
@@ -789,14 +776,6 @@ fn live_hwnd(hwnd_u64: u64) -> bool {
     }
     crate::ffi::is_window(hwnd_u64)
 }
-/// Post one hide effect without blocking or waiting (same async contract
-/// as the legacy poll's post, via the shared [`post_async`]); confirmation
-/// still requires an observed snapshot, never the post alone.
-pub(crate) fn batch_post_hide(hwnd_u64: u64) -> bool {
-    use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
-    post_async(hwnd_u64, SW_HIDE)
-}
-
 /// Nonactivating show command for one reveal, from the durable ledger
 /// preimage: originally minimized restores minimized (`SW_SHOWMINNOACTIVE`),
 /// otherwise `SW_SHOWNA`, which preserves native maximized placement. The
@@ -812,13 +791,6 @@ pub(crate) fn reveal_show_cmd(claim: &WindowIdentity, minimized: bool) -> i32 {
         ProductShowRestore::ShowMinimized => SW_SHOWMINNOACTIVE,
         ProductShowRestore::ShowNormal | ProductShowRestore::ShowMaximized => SW_SHOWNA,
     }
-}
-
-/// Post one reveal effect without blocking or waiting (same async contract
-/// as [`batch_post_hide`]). The caller computed `show_cmd` via
-/// [`reveal_show_cmd`].
-pub(crate) fn batch_post_reveal(hwnd_u64: u64, show_cmd: i32) -> bool {
-    post_async(hwnd_u64, show_cmd)
 }
 
 /// Fresh visibility readback for one batch member: `Some(visible)` on a
@@ -1227,10 +1199,8 @@ pub fn admit_managed_claim_for_hide(
     allow_project_topmost: bool,
 ) -> std::result::Result<WindowIdentity, ManagedAdmitError> {
     use ManagedAdmitError::{Absent, Refused, Uncertain, WrongIdentity};
-    if !crate::native_guards::visible_lifetime_ok(
-        member_tag,
-        read_member_tag(hwnd_u64).as_deref(),
-    ) {
+    if !crate::native_guards::visible_lifetime_ok(member_tag, read_member_tag(hwnd_u64).as_deref())
+    {
         return Err(WrongIdentity);
     }
     let snap = match classify_candidate_for_hide(hwnd_u64, owner, allow_project_topmost) {
@@ -1261,10 +1231,8 @@ pub fn admit_managed_claim_for_hide(
         let _ = remove_nonce_checked(hwnd_u64, &tag, &snap.process, owner);
         return Err(Uncertain);
     }
-    if !crate::native_guards::visible_lifetime_ok(
-        member_tag,
-        read_member_tag(hwnd_u64).as_deref(),
-    ) {
+    if !crate::native_guards::visible_lifetime_ok(member_tag, read_member_tag(hwnd_u64).as_deref())
+    {
         let _ = remove_nonce_checked(hwnd_u64, &tag, &snap.process, owner);
         return Err(WrongIdentity);
     }
@@ -1725,20 +1693,26 @@ pub(crate) mod fake {
         static FLOAT_MARKS: RefCell<HashMap<u64, u64>> = RefCell::new(HashMap::new());
     }
 
+    pub(crate) fn any_registered() -> bool {
+        WINDOWS.with(|map| !map.borrow().is_empty())
+    }
+
+    /// Test-only registration of one scripted native window behind the
+    /// shared hide/reveal/admit paths. The phase state machine, the ledger,
+    /// and the outcome vocabulary stay real; only the leaf OS reads/writes
+    /// consult the script. No production caller registers.
     pub(crate) fn register(hwnd: u64, window: FakeWindow) {
         WINDOWS.with(|map| map.borrow_mut().insert(hwnd, window));
     }
 
-    pub(crate) fn clear() {
+    /// Test-only teardown for [`register`]: drops every scripted window so
+    /// later tests on this thread observe the bare OS again.
+    pub(crate) fn unregister_all() {
         WINDOWS.with(|map| map.borrow_mut().clear());
+        FLOAT_MARKS.with(|map| map.borrow_mut().clear());
         POST_LOG.with(|log| log.borrow_mut().clear());
         SNAPSHOT_LOG.with(|log| log.borrow_mut().clear());
         OP_LOG.with(|log| log.borrow_mut().clear());
-        FLOAT_MARKS.with(|map| map.borrow_mut().clear());
-    }
-
-    pub(crate) fn any_registered() -> bool {
-        WINDOWS.with(|map| !map.borrow().is_empty())
     }
 
     pub(crate) fn active(hwnd: u64) -> bool {
@@ -1779,14 +1753,6 @@ pub(crate) mod fake {
         }
     }
 
-    pub(crate) fn post_log() -> Vec<(u64, bool)> {
-        POST_LOG.with(|log| log.borrow().clone())
-    }
-
-    pub(crate) fn snapshot_log() -> Vec<u64> {
-        SNAPSHOT_LOG.with(|log| log.borrow().clone())
-    }
-
     pub(crate) fn record_post(hwnd: u64, hide: bool) {
         POST_LOG.with(|log| log.borrow_mut().push((hwnd, hide)));
         OP_LOG.with(|log| log.borrow_mut().push(('p', hwnd)));
@@ -1795,10 +1761,6 @@ pub(crate) mod fake {
     pub(crate) fn record_snapshot(hwnd: u64) {
         SNAPSHOT_LOG.with(|log| log.borrow_mut().push(hwnd));
         OP_LOG.with(|log| log.borrow_mut().push(('s', hwnd)));
-    }
-
-    pub(crate) fn op_log() -> Vec<(char, u64)> {
-        OP_LOG.with(|log| log.borrow().clone())
     }
 
     pub(crate) fn snapshot(hwnd: u64) -> Option<ProductSnapshot> {

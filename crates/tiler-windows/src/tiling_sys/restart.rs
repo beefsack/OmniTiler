@@ -6,6 +6,7 @@ use super::*;
 /// plus its tiled rows); the cap keeps normal-log expansion bounded while
 /// `total`/`omitted` keep the count exact. Integer geometry plus opaque
 /// tokens only: no HWNDs, pids, paths, or titles.
+#[cfg(test)]
 pub(super) const RESTART_HYDRATION_DETAIL_CAP: usize = 8;
 
 /// Bounded candidate facts for a rejected hydration attempt, for the normal
@@ -13,6 +14,7 @@ pub(super) const RESTART_HYDRATION_DETAIL_CAP: usize = 8;
 /// [`RESTART_HYDRATION_DETAIL_CAP`] rows are carried and `omitted` counts
 /// the rest, so the record never grows with the domain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(test)]
 pub(super) struct HydrationCandidate<'a> {
     pub token: &'a str,
     pub rect: Rect,
@@ -20,6 +22,7 @@ pub(super) struct HydrationCandidate<'a> {
     pub hints: WindowSizeHints,
 }
 
+#[cfg(test)]
 pub(super) fn bounded_hydration_candidates(rows: &[HydrationCandidate<'_>]) -> serde_json::Value {
     let total = rows.len();
     let candidates: Vec<serde_json::Value> = rows
@@ -104,9 +107,7 @@ pub(super) fn admit_born_fullscreen(
         for dead in stale {
             drop_member_state(state, &dead);
         }
-        if state.member_home(&row.key).is_some()
-            || state.member_tokens.contains_key(&row.key)
-        {
+        if state.member_home(&row.key).is_some() || state.member_tokens.contains_key(&row.key) {
             continue;
         }
         let fresh_tag = match crate::product_hide::sys::install_member_tag(row.key.hwnd, me.pid) {
@@ -201,9 +202,7 @@ pub(super) fn admit_slotless_maximized(
         for dead in stale {
             drop_member_state(state, &dead);
         }
-        if state.member_home(&row.key).is_some()
-            || state.member_tokens.contains_key(&row.key)
-        {
+        if state.member_home(&row.key).is_some() || state.member_tokens.contains_key(&row.key) {
             continue;
         }
         let fresh_tag = match crate::product_hide::sys::install_member_tag(row.key.hwnd, me.pid) {

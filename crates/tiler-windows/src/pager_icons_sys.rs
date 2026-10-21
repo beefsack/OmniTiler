@@ -56,10 +56,10 @@ use std::sync::{
 
 use crate::ffi::{self, AppIcon};
 use crate::native::HeldProcess;
+use crate::native_guards::WindowKey;
 use crate::pager_icons::{
     ICON_RENDER_PX, IconChannel, IconImage, IconResult, IconSource, MINI_GRAY,
 };
-use crate::native_guards::WindowKey;
 
 /// `ApplicationFrameHost.exe` owns UWP windows; its exe icon is not the app.
 const FRAME_HOST_EXE: &str = "applicationframehost.exe";

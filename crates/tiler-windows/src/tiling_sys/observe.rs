@@ -48,11 +48,6 @@ pub(super) fn hook_queue() -> &'static Mutex<Vec<HookEvent>> {
 /// reconcile never run reentrantly inside a batch wait.
 static VISIBILITY_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// Current visibility generation (monotonic modulo 2^64).
-pub(super) fn visibility_generation() -> u64 {
-    VISIBILITY_GEN.load(std::sync::atomic::Ordering::SeqCst)
-}
-
 fn bump_visibility_generation() {
     VISIBILITY_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 }
@@ -427,6 +422,13 @@ pub(super) struct ObservedWindow {
     pub(super) insets: FrameInsets,
     pub(super) identity: ObservedTarget,
     pub(super) facts: WindowFacts,
+    /// Fresh visible-membership lifetime tag (`MEMBER_TAG_PROP`), read with
+    /// the same observation. This is the ONLY membership stamp the receipt
+    /// paths may compare against the stored tag: `identity.tag` is the
+    /// proof-only owned-helper token (`OmniTilerLifetime`, empty for generic
+    /// windows) and never proves managed membership. `None` reads as
+    /// unstamped (hold), never as proof.
+    pub(super) member_tag: Option<String>,
 }
 
 pub(super) fn class_of(hwnd: HWND) -> String {
@@ -643,5 +645,6 @@ pub(super) fn observe_window(
         insets: FrameInsets::measure(outer, visible),
         identity,
         facts,
+        member_tag: crate::product_hide::sys::read_member_tag(hwnd_u64),
     })
 }

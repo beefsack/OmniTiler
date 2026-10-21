@@ -15,10 +15,10 @@
 //! the last applied [`WorldReply`](tiler_core::world_report::WorldReply) is a
 //! read-only presentation projection, never a second policy.
 //!
-//! Durable restart: this carrier persists no logical rings, so the first
-//! report carries no restoration ingress (`None`) on fresh and staged
-//! states alike. Remaining windows admit as genuinely new through the
-//! ordinary path, and restart truth rides the native marker/recovery lanes
+//! Durable restart: this carrier persists no logical rings. Every report
+//! is a fresh-observation report: the core mints rings/views from the live
+//! screens, remaining windows admit as genuinely new through the ordinary
+//! path, and restart truth rides the native marker/recovery lanes
 //! (sticky/float/tile-override window markers plus the hide-claim ledger
 //! and the visible-membership lifetime tags), which capture consumes as
 //! ordinary facts/lanes on the first observation.
@@ -37,12 +37,10 @@
 use super::world_capture::OwnerInputs;
 use super::world_diff::{FreshHost, HostDiff, apply_world_reply};
 use super::world_sequencer::{AckOutcome, AckReceipt, DispatchError, WorldSequencer};
-use super::{MonitorArea, ObservedWindow, RetainedRow, TileLoop};
+use super::{MonitorArea, ObservedWindow, RetainedRow};
 use std::collections::{BTreeMap, HashMap};
 use tiler_core::world_engine::{WorldEngine, WorldOutcome};
-use tiler_core::world_report::{
-    AttemptFeedback, WorldCommand, WorldReply, WorldReport,
-};
+use tiler_core::world_report::{AttemptFeedback, WorldCommand, WorldReply, WorldReport};
 
 /// Single runtime world policy owner: bootstraps and sequences online.
 /// All production lifecycle/history/tiling/scope/select/send/migration
@@ -76,6 +74,7 @@ impl WorldOwner {
         })
     }
 
+    #[cfg(test)]
     pub(super) fn is_ready(&self) -> bool {
         self.seq.is_ready()
     }
@@ -234,6 +233,7 @@ impl WorldOwner {
     }
     /// Read-only reply-derived presentation projection (pager/border only):
     /// logical views per output. Never a second policy.
+    #[cfg(test)]
     pub(super) fn presentation(&self) -> Option<WorldPresentation> {
         let reply = self.last_reply.as_ref()?;
         let mut views: BTreeMap<String, String> = BTreeMap::new();
@@ -255,6 +255,7 @@ mod world_owner_tests;
 
 /// Read-only presentation snapshot derived from the last applied reply.
 #[derive(Debug, Clone, Default)]
+#[cfg(test)]
 pub(super) struct WorldPresentation {
     pub(super) views: BTreeMap<String, String>,
     pub(super) revision: u64,

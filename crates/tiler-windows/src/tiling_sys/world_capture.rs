@@ -121,9 +121,7 @@ use crate::native_guards::WindowKey;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::size_hints::WindowSizeHints;
-use tiler_core::world_report::{
-    RestoredWorld, ScreenReport, ScreenView, WindowFact,
-};
+use tiler_core::world_report::{ScreenReport, ScreenView, WindowFact};
 
 /// Field-input seam for the single runtime WorldEngine owner.
 ///
@@ -156,7 +154,6 @@ pub(super) struct OwnerInputs<'a> {
     pub minimized_omitted: &'a HashSet<WindowKey>,
     pub pending_closed: &'a BTreeMap<String, PendingClosed>,
     pub scope: &'a [String],
-    pub scope_hosts: &'a [ScopeHostChild],
     pub settings_live: &'a Option<LiveSettings>,
     /// Mechanical device-to-wire-output map (native device keys to opaque
     /// `oN` ids). Native-wire ids only, never rings/views/tiling/history.
@@ -198,7 +195,6 @@ impl TileLoop {
         minimized_omitted: &'a HashSet<WindowKey>,
         pending_closed: &'a BTreeMap<String, PendingClosed>,
         scope: &'a [String],
-        scope_hosts: &'a [ScopeHostChild],
         settings_live: &'a Option<LiveSettings>,
         output_tokens: &'a HashMap<String, String>,
         applied_homing: &'a HashMap<String, (String, String)>,
@@ -226,7 +222,6 @@ impl TileLoop {
             minimized_omitted,
             pending_closed,
             scope,
-            scope_hosts,
             settings_live,
             output_tokens,
             applied_homing,
@@ -240,6 +235,7 @@ impl TileLoop {
     /// Test/offline convenience: build the seam from a shared borrow.
     /// Production ticks use the disjoint associated function above to hold
     /// `&mut world` alongside; offline code holds no such split.
+    #[cfg(test)]
     pub(super) fn inputs(&self) -> OwnerInputs<'_> {
         OwnerInputs {
             member_tokens: &self.member_tokens,
@@ -260,7 +256,6 @@ impl TileLoop {
             minimized_omitted: &self.minimized_omitted,
             pending_closed: &self.pending_closed,
             scope: &self.scope,
-            scope_hosts: &self.scope_hosts,
             settings_live: &self.settings_live,
             output_tokens: &self.output_tokens,
             applied_homing: &self.applied_homing,
@@ -284,7 +279,7 @@ pub(super) struct CapturedWorld {
     pub(super) windows: Vec<WindowFact>,
     pub(super) closed: Vec<WindowId>,
     /// Adapter-observed applied logical views per screen (visibility-proven
-    /// receipts from `world_native::observed_view_receipts`). Empty means
+    /// receipts from `world_native_receipts::observed_view_receipts`). Empty means
     /// unknown: the core treats missing echoes as gaps and retains pending
     /// flights, never as proof.
     pub(super) observed_views: Vec<ScreenView>,
@@ -305,19 +300,12 @@ pub(super) struct CapturedWorld {
     #[allow(dead_code)]
     pub(super) dropped_stale_closed: Vec<String>,
     /// Closes homed on unknown workspaces: uncarried, retained by the caller.
+    #[cfg(test)]
     pub(super) unhomed_closed: Vec<String>,
     /// Member tokens withheld by unreadable facts (never silently dropped).
     /// (Read by the 2b owner cutover; capture retains the evidence meanwhile.)
     #[allow(dead_code)]
     pub(super) held_members: Vec<String>,
-    /// Bootstrap restoration ingress projected from the live owner tables
-    /// (workspace rings, active views, per-workspace tiling, member homing).
-    /// `None` when no workspace exists yet. The sequencer carries this only
-    /// on the first accepted report of an incarnation; the core adopts it
-    /// transactionally and refuses it on later reports. Native
-    /// identity/lifetime association stays adapter-mechanical (tokens bound
-    /// here to live member keys); the core owns the logical mapping.
-    pub(super) restored: Option<RestoredWorld>,
 }
 
 /// Bootstrap restoration ingress: none (deleted wrapper).
@@ -327,7 +315,11 @@ pub(super) struct CapturedWorld {
 /// floats unless a first-exit mark already returned the member to the tiled
 /// lane. Never inferred from hints alone. No legacy Engine exception lane:
 /// the core owns float exceptions outright.
-fn capture_floating(state: & OwnerInputs<'_>, key: & crate::native_guards::WindowKey, hidden: bool) -> bool {
+fn capture_floating(
+    state: &OwnerInputs<'_>,
+    key: &crate::native_guards::WindowKey,
+    hidden: bool,
+) -> bool {
     let sticky = state.sticky.contains_key(key);
     if sticky {
         return true;
@@ -352,7 +344,7 @@ fn capture_floating(state: & OwnerInputs<'_>, key: & crate::native_guards::Windo
 /// (`fixed_auto_seen`) reports only when neither sticky intent nor a
 /// durable win reframes it (production stamp parity: sticky dominates
 /// automatic origin and durable wins never acquire it).
-fn capture_fixed(state: & OwnerInputs<'_>, key: & crate::native_guards::WindowKey) -> (bool, bool) {
+fn capture_fixed(state: &OwnerInputs<'_>, key: &crate::native_guards::WindowKey) -> (bool, bool) {
     let durable =
         state.fixed_tile_overrides.contains(key) || state.fixed_origin_overrides.contains(key);
     let sticky = state.sticky.contains_key(key);
@@ -368,7 +360,7 @@ fn capture_fixed(state: & OwnerInputs<'_>, key: & crate::native_guards::WindowKe
 /// boundary (`observed_window_from_engine`), so carrying such a row as
 /// tiled would publish controlled frame authority for a window the adapter
 /// must not touch. Callers hold the domain instead.
-pub(super) fn capture_facts_rideable(facts: & WindowFacts) -> bool {
+pub(super) fn capture_facts_rideable(facts: &WindowFacts) -> bool {
     match crate::tiling::classify(facts) {
         Ok(()) => true,
         Err(SkipReason::Fullscreen | SkipReason::Maximized) => true,
@@ -387,14 +379,14 @@ pub(super) fn capture_facts_rideable(facts: & WindowFacts) -> bool {
 #[must_use]
 #[allow(clippy::too_many_lines)]
 pub(super) fn capture_world(
-    state: & OwnerInputs<'_>,
+    state: &OwnerInputs<'_>,
     observed: Option<&[ObservedWindow]>,
-    retained: & [RetainedRow],
-    areas: & [MonitorArea],
+    retained: &[RetainedRow],
+    areas: &[MonitorArea],
     foreground_hwnd: u64,
 ) -> CapturedWorld {
     let enum_failed = observed.is_none();
-    let observed: & [ObservedWindow] = observed.unwrap_or(&[]);
+    let observed: &[ObservedWindow] = observed.unwrap_or(&[]);
     // Liveness for stale-close detection: every member token plus every
     // carried observed/retained token. A queued close observed live again
     // is stale and drops; it never rides as a contradictory live+closed row.
@@ -493,8 +485,7 @@ pub(super) fn capture_world(
             primary: areas.first().is_some_and(|a| a.device == area.device),
         });
     }
-    let screen_outputs: HashSet<String> =
-        screens.iter().map(|s| s.output.0.clone()).collect();
+    let screen_outputs: HashSet<String> = screens.iter().map(|s| s.output.0.clone()).collect();
     let first_output: String = screens
         .first()
         .map(|s| s.output.0.clone())
@@ -502,7 +493,7 @@ pub(super) fn capture_world(
     // Output affinity for one frame: live placement geometry, never a
     // policy table. Unknown devices fall back to the first screen with
     // incompleteness marked by the caller.
-    let affinity_of = |rect: & Rect| -> String {
+    let affinity_of = |rect: &Rect| -> String {
         let device = super::directional_resolution::output_for_rect(areas, rect);
         state
             .output_tokens
@@ -581,8 +572,7 @@ pub(super) fn capture_world(
             // live identity for brand-new windows.
             let exe_path: Option<String> = match state.member_identity.get(&key) {
                 Some(identity)
-                    if identity.pid == key.pid
-                        && identity.process_creation == key.creation =>
+                    if identity.pid == key.pid && identity.process_creation == key.creation =>
                 {
                     Some(identity.exe_path.clone())
                 }
@@ -741,8 +731,7 @@ pub(super) fn capture_world(
         // Retained occupancy for bound members with no live row: overlay
         // slots ride their last-known allocation, frameless iconic omission
         // minimizes, everything else holds as unreadable.
-        let observed_tokens: HashSet<&str> =
-            observed.iter().map(|w| w.token.as_str()).collect();
+        let observed_tokens: HashSet<&str> = observed.iter().map(|w| w.token.as_str()).collect();
         for row in retained {
             if observed_tokens.contains(row.token.as_str()) {
                 continue;
@@ -900,9 +889,7 @@ pub(super) fn capture_world(
                 );
                 continue;
             }
-            if record.iconic
-                || record.claim.show.minimized
-                || state.minimized_omitted.contains(key)
+            if record.iconic || record.claim.show.minimized || state.minimized_omitted.contains(key)
             {
                 let mapped = state
                     .member_rects
@@ -941,8 +928,7 @@ pub(super) fn capture_world(
                 .map(|row| (row.fullscreen, row.maximized))
                 .unwrap_or((false, false));
             let maximized = record.claim.show.maximized || retained_overlay.1;
-            let fullscreen =
-                state.born_fullscreen.contains(key) || retained_overlay.0;
+            let fullscreen = state.born_fullscreen.contains(key) || retained_overlay.0;
             let hints = state
                 .hint_logged
                 .get(live_token)
@@ -983,12 +969,7 @@ pub(super) fn capture_world(
                 .get(live_token)
                 .map(affinity_of)
                 .unwrap_or_else(|| first_output.clone());
-            minimized_fact!(
-                facts,
-                live_token,
-                mapped,
-                state.sticky.contains_key(key)
-            );
+            minimized_fact!(facts, live_token, mapped, state.sticky.contains_key(key));
         }
         // Bound members with no live, retained, hidden, or minimized row
         // hold as unreadable: a successful enumeration that omits a bound
@@ -1085,12 +1066,20 @@ pub(super) fn capture_world(
     // empty workspace has no windows, so its view never proves here by
     // echo; the actuation batch proves it by hiding every prior member.
     let mut windows = facts;
-    super::world_native::attach_workspace_receipts(state, observed, retained, areas, &mut windows);
+    super::world_native_receipts::attach_workspace_receipts(
+        state,
+        observed,
+        retained,
+        areas,
+        &mut windows,
+    );
     CapturedWorld {
         screens,
         windows,
         closed,
-        observed_views: super::world_native::observed_view_receipts(state, observed, areas),
+        observed_views: super::world_native_receipts::observed_view_receipts(
+            state, observed, areas,
+        ),
         workspace_mode: crate::settings::startup_mode(state.settings_live.as_ref()),
         equal_workspace_count: false,
         inventory_complete,
@@ -1112,8 +1101,8 @@ pub(super) fn capture_world(
             .map(|live| live.settings.core.migration_source_refill_mode())
             .unwrap_or_default(),
         dropped_stale_closed,
+        #[cfg(test)]
         unhomed_closed,
         held_members,
-        restored: None,
     }
 }

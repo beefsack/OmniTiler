@@ -12,9 +12,7 @@ use tiler_core::world_report::WorldCommand;
 /// Native device key for one digit intent: the cached output when live,
 /// else the first live area. Pure native topology; never rings or views.
 fn digit_device(state: &TileLoop, areas: &[MonitorArea]) -> Option<String> {
-    if !state.active_output.is_empty()
-        && areas.iter().any(|a| a.device == state.active_output)
-    {
+    if !state.active_output.is_empty() && areas.iter().any(|a| a.device == state.active_output) {
         return Some(state.active_output.clone());
     }
     areas.first().map(|a| a.device.clone())

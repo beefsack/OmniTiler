@@ -136,6 +136,7 @@ pub(super) fn preview_same_size(
 /// Pure refusal-to-hide-reason mapping for Engine preview refusals:
 /// self/centre/outside refusals show no rectangle; every other kind rides
 /// through for attribution.
+#[cfg(test)]
 pub(super) fn preview_hide_for_refusal(kind: &str) -> &str {
     match kind {
         "unchanged" => "self",

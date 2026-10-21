@@ -108,7 +108,6 @@ pub(crate) const MSG_CREATION_EXHAUSTED: &str =
 pub(crate) const MSG_SELECT_UNKNOWN: &str = "selection target is not a known workspace";
 pub(crate) const MSG_MIGRATION: &str = "workspace migration refused by scope policy";
 pub(crate) const MSG_OPERATION: &str = "operation route refused without mutation";
-pub(crate) const MSG_RESTORED_STALE: &str = "restored ingress is only valid on the first report";
 pub(crate) const MSG_TILING_TARGET: &str = "tiling target is not a known live workspace";
 
 /// Inset one carried world domain by its outer gap (legacy planner-protocol
@@ -523,9 +522,10 @@ impl WorldEngine {
         self.last_adapter_incarnation = Some(adapter_incarnation.to_owned());
     }
 
-    /// Borrow the retained engine (read-only inspection for tests/callers).
+    /// Borrow the retained engine (read-only inspection for in-crate callers).
     #[must_use]
-    pub fn engine(&self) -> &Engine {
+    #[allow(dead_code)]
+    pub(crate) fn engine(&self) -> &Engine {
         &self.engine
     }
 
@@ -862,15 +862,6 @@ impl WorldEngine {
             }
             (None, None) => false,
         };
-        // Restoration ingress is first-report-only per incarnation: a later
-        // report carrying it is stale and refuses before any staging, so a
-        // retried or replayed restoration can never rewrite retained rings.
-        if report.restored.is_some() && has_last {
-            return WorldOutcome::Rejected {
-                kind: KIND_SNAPSHOT,
-                message: MSG_RESTORED_STALE,
-            };
-        }
         // Stage everything past this point on a clone. Exact-encoding
         // overflow (or any late failure) drops the candidate; `self` is
         // adopted only after the staged reply encodes within budget.
@@ -930,13 +921,6 @@ impl WorldEngine {
         // Logical rings/views converge first (bootstrap, hotplug, tiling
         // seeds) so staging assigns facts against this report's ownership.
         self.stage_facts(report);
-        // Restoration adoption precedes logical convergence: persisted rings,
-        // views, tiling, and homing arrive before bootstrap mints anything,
-        // so restored units are retained (never fresh placement). Stale
-        // ingress already refused above; only a first report reaches here.
-        if let Some(restored) = report.restored.as_ref() {
-            self.apply_restored(restored);
-        }
         self.converge_logical_pre(report);
         // View flights settle against raw echoes before staging: confirms
         // and external supersessions move core views, so homing assigns

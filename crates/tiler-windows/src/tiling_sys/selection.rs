@@ -75,11 +75,7 @@ pub(super) fn workspace_do_select(
             workspace: target.to_owned(),
         },
     );
-    let transition_ms = ctx
-        .start
-        .elapsed()
-        .as_millis()
-        .min(u128::from(u64::MAX)) as u64;
+    let transition_ms = ctx.start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
     match reply {
         Some(_) => SelectEffect {
             outcome: "ok",

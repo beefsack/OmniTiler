@@ -746,7 +746,8 @@ pub fn build_output_pager_from_parts(
     for (index, cell_rect) in cell_rects.into_iter().enumerate() {
         let workspace = &ids[index];
         let present = members_of(workspace);
-        let zset: std::collections::HashSet<&crate::native_guards::WindowKey> = zorder.iter().collect();
+        let zset: std::collections::HashSet<&crate::native_guards::WindowKey> =
+            zorder.iter().collect();
         let mut ordered: Vec<crate::native_guards::WindowKey> = present
             .iter()
             .filter(|key| !zset.contains(*key))
@@ -2121,8 +2122,8 @@ mod tests {
 
     #[test]
     fn icons_attach_by_identity_and_repaint() {
-        use crate::pager_icons::{IconImage, mix_mini_icon};
         use crate::native_guards::WindowKey;
+        use crate::pager_icons::{IconImage, mix_mini_icon};
         use std::collections::BTreeSet;
         use std::sync::Arc;
         let active = "ws-1";
@@ -2261,8 +2262,7 @@ mod tests {
             pid: 7,
             creation: "stack-bottom".to_owned(),
         };
-        let members: BTreeSet<WindowKey> =
-            [&bottom, &middle, &top].into_iter().cloned().collect();
+        let members: BTreeSet<WindowKey> = [&bottom, &middle, &top].into_iter().cloned().collect();
         let members_of = |workspace: &str| {
             if workspace == active {
                 members.clone()

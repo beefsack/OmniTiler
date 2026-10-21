@@ -75,7 +75,6 @@ fn report_obs(
     command: Option<WorldCommand>,
 ) -> WorldReport {
     WorldReport {
-        restored: None,
         contract_version: WORLD_CONTRACT_VERSION,
         owner: "owner-a".to_owned(),
         adapter_incarnation: "adapter-1".to_owned(),

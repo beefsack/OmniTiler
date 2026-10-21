@@ -12,21 +12,20 @@ pub const WORKSPACE_ID: &str = "workspace-0";
 /// Stable Engine owner token for this adapter.
 pub const OWNER_ID: &str = "tiler-windows";
 
-/// Adapter-side domain bounds: the protocol layer owns the outer inset
-/// (`tiler-protocol` applies `inset_bounds(carried, outer_gap)`), and this
-/// adapter constructs `CoreEvent` directly, so inset here. `None` when the
-/// work area cannot carry the margin: the caller skips the tick with retained
-/// Engine state rather than tiling an un-inset domain.
+/// Adapter-side domain bounds: the world route owns the outer inset
+/// (the sequencer applies `inset_bounds(carried, outer_gap)` when staging
+/// reports), so inset here before capture. `None` when the work area cannot
+/// carry the margin: the caller skips the tick with retained state rather
+/// than tiling an un-inset domain.
 #[must_use]
 pub fn tiling_domain_bounds(work: Rect) -> Option<Rect> {
     tiling_domain_bounds_with(work, OUTER_GAP)
 }
 
-/// Outer-gap-parameterized domain inset for live settings: the protocol
-/// layer owns the outer inset and this adapter constructs `CoreEvent`
-/// directly, so inset here. `None` when the work area cannot carry the
-/// margin: the caller skips the tick with retained Engine state rather than
-/// tiling an un-inset domain.
+/// Outer-gap-parameterized domain inset for live settings: the world route
+/// owns the outer inset, so inset here before capture. `None` when the work
+/// area cannot carry the margin: the caller skips the tick with retained
+/// state rather than tiling an un-inset domain.
 #[must_use]
 pub fn tiling_domain_bounds_with(work: Rect, outer_gap: i32) -> Option<Rect> {
     if outer_gap < 0 {

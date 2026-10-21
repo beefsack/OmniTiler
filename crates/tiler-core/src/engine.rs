@@ -53,7 +53,7 @@ const DIRECTION_MESSAGE: &str = "direction is invalid";
 
 /// Portable world engine: per-domain sessions plus binding state.
 #[derive(Debug, Clone)]
-pub struct Engine {
+pub(crate) struct Engine {
     /// Selected layout policy carried into every retained session. Stateless
     /// transactionally: cloning, backups, relocation, and canonical
     /// pair/split work carry it without touching revision, divergence,
@@ -157,7 +157,7 @@ pub struct Engine {
 /// Bounded correlated observation-convergence report for the protocol logging
 /// boundary. Counts only, no window/domain identifiers.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EngineConvergenceReport {
+pub(crate) struct EngineConvergenceReport {
     /// Validated correlation for this op (cross-service lookup key).
     pub correlation: CorrelationId,
     /// Single-domain op token (`reconcile`, `admit`, `remove`, ...).
@@ -174,7 +174,7 @@ pub struct EngineConvergenceReport {
 /// boundary (D1-D8). Counts plus the fixed decision token only, never
 /// native identifiers, geometry, or content.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EngineFixedAdmissionReport {
+pub(crate) struct EngineFixedAdmissionReport {
     /// Validated correlation for this op (cross-service lookup key).
     pub correlation: CorrelationId,
     /// Single-domain op token (`reconcile`, `admit`, ...).
@@ -193,7 +193,7 @@ pub struct EngineFixedAdmissionReport {
 /// completion. Counts plus direction/empty tokens only, never native
 /// identifiers, geometry, domains, owner, or payloads.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EngineMigrationReport {
+pub(crate) struct EngineMigrationReport {
     /// Validated correlation for this op (cross-service lookup key).
     pub correlation: CorrelationId,
     /// Requested direction token (`left`/`right`/`up`/`down`).
@@ -210,7 +210,7 @@ pub struct EngineMigrationReport {
 /// logging boundary. Closed stage vocabulary plus correlation only, never
 /// native identifiers, geometry, domains, owner, or payloads.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EngineDragPreviewStage {
+pub(crate) struct EngineDragPreviewStage {
     /// Validated correlation for this op (cross-service lookup key).
     pub correlation: CorrelationId,
     /// Failing stage token (`converge`, `begin`, `topology`,
@@ -223,7 +223,7 @@ pub struct EngineDragPreviewStage {
 /// Bounded correlated fresh adoption-fit report for the protocol logging
 /// boundary. Counts only, no window/domain identifiers.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EngineAdoptionFitReport {
+pub(crate) struct EngineAdoptionFitReport {
     /// Validated correlation for this op (cross-service lookup key).
     pub correlation: CorrelationId,
     /// `fitted` when the fit committed, else `fallback`.
@@ -239,9 +239,9 @@ pub struct EngineAdoptionFitReport {
 }
 
 /// Maximum carried inputs kept in a startup trace.
-pub const STARTUP_TRACE_MAX_RECTS: usize = 8;
+pub(crate) const STARTUP_TRACE_MAX_RECTS: usize = 8;
 /// Maximum characters kept in a startup tree description.
-pub const STARTUP_TRACE_MAX_TOPOLOGY: usize = 256;
+pub(crate) const STARTUP_TRACE_MAX_TOPOLOGY: usize = 256;
 
 /// Trace-only bounded startup placement diagnostic for the protocol
 /// trace boundary. Domain bounds plus capped carried inputs (opaque
@@ -249,13 +249,13 @@ pub const STARTUP_TRACE_MAX_TOPOLOGY: usize = 256;
 /// resulting ordered tree description with axes and nested shares.
 /// Integer geometry and opaque tokens only; never native identifiers.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StartupInput {
+pub(crate) struct StartupInput {
     pub window: WindowId,
     pub rect: Rect,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EngineStartupFitTrace {
+pub(crate) struct EngineStartupFitTrace {
     /// Validated correlation for this op (cross-service lookup key).
     pub correlation: CorrelationId,
     /// Complete carried window count.
@@ -288,7 +288,7 @@ pub struct EngineStartupFitTrace {
 /// `L` / `H[s,..]` / `V[s,..]` shape convention as the startup-trace
 /// topology, `-` when a domain holds no tree). Opaque tokens only.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EngineSendPlacementTrace {
+pub(crate) struct EngineSendPlacementTrace {
     /// Validated correlation for this op (cross-service lookup key).
     pub correlation: CorrelationId,
     /// Selected anchor branch (`remembered`/`mru`/`fallback`/`empty`).
@@ -327,7 +327,7 @@ enum ConvergeOutcome {
     Rejected(Box<CoreReply>),
 }
 
-pub fn session_domain_matches(session: &Session, domain: &OutputDomain) -> bool {
+pub(crate) fn session_domain_matches(session: &Session, domain: &OutputDomain) -> bool {
     session
         .domains()
         .iter()
@@ -337,7 +337,7 @@ pub fn session_domain_matches(session: &Session, domain: &OutputDomain) -> bool 
         })
 }
 
-pub fn session_usable(session: &Session) -> bool {
+pub(crate) fn session_usable(session: &Session) -> bool {
     session.divergence().is_none() && !session.has_pending()
 }
 
@@ -346,7 +346,7 @@ pub fn session_usable(session: &Session) -> bool {
 /// domain slot. A session holding only stored minimize slots is retained
 /// while a slot home domain still exists so a later native restore can
 /// return to the old slot; orphan-homed slots never retain.
-pub fn committed_session_is_empty(session: &Session) -> bool {
+pub(crate) fn committed_session_is_empty(session: &Session) -> bool {
     session.snapshot().windows.is_empty()
         && session.exception_count() == 0
         && !session.has_live_minimized_slot()
@@ -452,46 +452,41 @@ impl Default for Engine {
 impl Engine {
     /// Empty retained engine.
     #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
-    }
-
-    /// Retained engine carrying an explicit layout policy.
-    #[must_use]
-    pub fn with_policy(policy: std::sync::Arc<dyn LayoutPolicy>) -> Self {
-        Self {
-            policy,
-            ..Self::default()
-        }
     }
 
     /// Selected layout policy carried into retained sessions.
     #[must_use]
-    pub fn policy(&self) -> &std::sync::Arc<dyn LayoutPolicy> {
+    #[allow(dead_code)]
+    pub(crate) fn policy(&self) -> &std::sync::Arc<dyn LayoutPolicy> {
         &self.policy
     }
 
     /// Number of retained domains.
     #[must_use]
-    pub fn retained_domains(&self) -> usize {
+    #[allow(dead_code)]
+    pub(crate) fn retained_domains(&self) -> usize {
         self.sessions.len()
     }
 
     /// Retained owner binding, if any.
     #[must_use]
-    pub fn owner(&self) -> Option<&OwnerId> {
+    #[allow(dead_code)]
+    pub(crate) fn owner(&self) -> Option<&OwnerId> {
         self.owner.as_ref()
     }
 
     /// Retained generation binding, if any.
     #[must_use]
-    pub fn generation(&self) -> Option<&GenerationId> {
+    #[allow(dead_code)]
+    pub(crate) fn generation(&self) -> Option<&GenerationId> {
         self.generation.as_ref()
     }
 
     /// Binding sync: on owner/generation change (adapter restart) discard the
     /// world map and gap map, then rebind.
-    pub fn sync_binding(&mut self, owner: &OwnerId, generation: &GenerationId) {
+    pub(crate) fn sync_binding(&mut self, owner: &OwnerId, generation: &GenerationId) {
         let owner_changed = self
             .owner
             .as_ref()
@@ -511,20 +506,20 @@ impl Engine {
 
     /// Borrow a retained session.
     #[must_use]
-    pub fn session(&self, key: &DomainKey) -> Option<&Session> {
+    pub(crate) fn session(&self, key: &DomainKey) -> Option<&Session> {
         self.sessions.get(key)
     }
 
     /// Mutably borrow a retained session.
     #[must_use]
-    pub fn session_mut(&mut self, key: &DomainKey) -> Option<&mut Session> {
+    pub(crate) fn session_mut(&mut self, key: &DomainKey) -> Option<&mut Session> {
         self.sessions.get_mut(key)
     }
 
     /// D23 close cleanup: forget the stored minimize restore slot for a
     /// window on one retained domain (see [`Session::forget_minimized_slot`]).
     /// Returns false for unknown domains or absent slots.
-    pub fn forget_minimized_slot(&mut self, key: &DomainKey, window: &WindowId) -> bool {
+    pub(crate) fn forget_minimized_slot(&mut self, key: &DomainKey, window: &WindowId) -> bool {
         self.sessions
             .get_mut(key)
             .is_some_and(|session| session.forget_minimized_slot(window))
@@ -533,42 +528,45 @@ impl Engine {
     /// Whether a domain slot exists (including empty/stale slots owned by the
     /// normal seeding path).
     #[must_use]
-    pub fn contains(&self, key: &DomainKey) -> bool {
+    pub(crate) fn contains(&self, key: &DomainKey) -> bool {
         self.sessions.contains_key(key)
     }
 
     /// Borrowed ordered domain keys for relocation scans.
-    pub fn keys(&self) -> impl Iterator<Item = &DomainKey> {
+    #[allow(dead_code)]
+    pub(crate) fn keys(&self) -> impl Iterator<Item = &DomainKey> {
         self.sessions.keys()
     }
 
     /// Number of slots including stale ones (relocation capacity check).
     #[must_use]
-    pub fn len(&self) -> usize {
+    #[allow(dead_code)]
+    pub(crate) fn len(&self) -> usize {
         self.sessions.len()
     }
 
     /// Whether no domain slot is retained.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    #[allow(dead_code)]
+    pub(crate) fn is_empty(&self) -> bool {
         self.sessions.is_empty()
     }
 
     /// Ordered retained domain keys.
     #[must_use]
-    pub fn domain_keys(&self) -> Vec<DomainKey> {
+    pub(crate) fn domain_keys(&self) -> Vec<DomainKey> {
         self.sessions.keys().cloned().collect()
     }
 
     /// Retained outer gap for a domain, if any.
     #[must_use]
-    pub fn outer_gap(&self, key: &DomainKey) -> Option<i32> {
+    pub(crate) fn outer_gap(&self, key: &DomainKey) -> Option<i32> {
         self.outer_gaps.get(key).copied()
     }
 
     /// Borrowed outer-gap entry for protocol fence comparisons.
     #[must_use]
-    pub fn outer_gap_ref(&self, key: &DomainKey) -> Option<&i32> {
+    pub(crate) fn outer_gap_ref(&self, key: &DomainKey) -> Option<&i32> {
         self.outer_gaps.get(key)
     }
 
@@ -576,7 +574,8 @@ impl Engine {
     /// current [`Engine::handle`] converged before its ordinary operation.
     /// Bounded counts plus correlation/op only, never native identifiers.
     #[must_use]
-    pub fn last_convergence(&self) -> Option<&EngineConvergenceReport> {
+    #[allow(dead_code)]
+    pub(crate) fn last_convergence(&self) -> Option<&EngineConvergenceReport> {
         self.last_convergence.as_ref()
     }
 
@@ -584,7 +583,8 @@ impl Engine {
     /// [`Engine::handle`] attempted a fresh adoption. `None` for retained
     /// reconciliations so they stay silent.
     #[must_use]
-    pub fn last_adoption_fit(&self) -> Option<&EngineAdoptionFitReport> {
+    #[allow(dead_code)]
+    pub(crate) fn last_adoption_fit(&self) -> Option<&EngineAdoptionFitReport> {
         self.last_adoption_fit.as_ref()
     }
 
@@ -592,27 +592,30 @@ impl Engine {
     /// fresh adoption was attempted. Trace boundary only; `None` for
     /// retained reconciliations.
     #[must_use]
-    pub fn last_startup_fit_trace(&self) -> Option<&EngineStartupFitTrace> {
+    #[allow(dead_code)]
+    pub(crate) fn last_startup_fit_trace(&self) -> Option<&EngineStartupFitTrace> {
         self.last_startup_fit_trace.as_ref()
     }
 
     /// Trace-only send placement diagnostic for the current op, if a
     /// `MoveToWorkspace` plan was proposed. Trace boundary only.
     #[must_use]
-    pub fn last_send_placement(&self) -> Option<&EngineSendPlacementTrace> {
+    #[allow(dead_code)]
+    pub(crate) fn last_send_placement(&self) -> Option<&EngineSendPlacementTrace> {
         self.last_send_placement.as_ref()
     }
 
     /// Whether opt-in Q2 fixed-size float admission is enabled.
     #[must_use]
-    pub fn fixed_size_admission(&self) -> bool {
+    #[allow(dead_code)]
+    pub(crate) fn fixed_size_admission(&self) -> bool {
         self.fixed_size_admission
     }
 
     /// Enable or disable opt-in Q2 fixed-size float admission (D1-D8).
     /// Propagates to every retained session on store; fresh sessions
     /// adopt it at creation. Never touches topology or revision.
-    pub fn set_fixed_size_admission(&mut self, enabled: bool) {
+    pub(crate) fn set_fixed_size_admission(&mut self, enabled: bool) {
         self.fixed_size_admission = enabled;
         for session in self.sessions.values_mut() {
             session.set_fixed_size_admission(enabled);
@@ -621,14 +624,15 @@ impl Engine {
 
     /// Whether the opt-in G-06 maximized directional focus fence is enabled.
     #[must_use]
-    pub fn maximized_focus_fence(&self) -> bool {
+    #[allow(dead_code)]
+    pub(crate) fn maximized_focus_fence(&self) -> bool {
         self.maximized_focus_fence
     }
 
     /// Enable or disable the opt-in G-06 maximized directional focus fence
     /// (REQ-MAX-08). Propagates to every retained session on store; fresh
     /// sessions adopt it at creation. Never touches topology or revision.
-    pub fn set_maximized_focus_fence(&mut self, enabled: bool) {
+    pub(crate) fn set_maximized_focus_fence(&mut self, enabled: bool) {
         self.maximized_focus_fence = enabled;
         for session in self.sessions.values_mut() {
             session.set_maximized_focus_fence(enabled);
@@ -637,7 +641,8 @@ impl Engine {
 
     /// Whether deferred sends for automatic fixed-size floats are enabled.
     #[must_use]
-    pub fn fixed_send_admission(&self) -> bool {
+    #[allow(dead_code)]
+    pub(crate) fn fixed_send_admission(&self) -> bool {
         self.fixed_send_admission
     }
 
@@ -645,7 +650,7 @@ impl Engine {
     /// (Windows workspace sends). Propagates to every retained session on
     /// store; fresh sessions adopt it at creation. Never touches topology
     /// or revision.
-    pub fn set_fixed_send_admission(&mut self, enabled: bool) {
+    pub(crate) fn set_fixed_send_admission(&mut self, enabled: bool) {
         self.fixed_send_admission = enabled;
         for session in self.sessions.values_mut() {
             session.set_fixed_send_admission(enabled);
@@ -655,7 +660,8 @@ impl Engine {
     /// Current R-SPC-04 D1 fixed-size admission predicate. Both-axes
     /// default (current delivered behavior).
     #[must_use]
-    pub fn fixed_size_predicate(&self) -> crate::size_hints::FixedSizePredicate {
+    #[allow(dead_code)]
+    pub(crate) fn fixed_size_predicate(&self) -> crate::size_hints::FixedSizePredicate {
         self.fixed_size_predicate
     }
 
@@ -663,7 +669,10 @@ impl Engine {
     /// only. Propagates to every retained session on store; fresh sessions
     /// adopt it at creation. Never touches topology, revision, or existing
     /// automatic/override marks (D2: no reclassification).
-    pub fn set_fixed_size_predicate(&mut self, predicate: crate::size_hints::FixedSizePredicate) {
+    pub(crate) fn set_fixed_size_predicate(
+        &mut self,
+        predicate: crate::size_hints::FixedSizePredicate,
+    ) {
         self.fixed_size_predicate = predicate;
         for session in self.sessions.values_mut() {
             session.set_fixed_size_predicate(predicate);
@@ -672,7 +681,8 @@ impl Engine {
 
     /// Current D2 anchor fallback. Largest-splittable default.
     #[must_use]
-    pub fn anchor_fallback(&self) -> crate::admission::AnchorFallback {
+    #[allow(dead_code)]
+    pub(crate) fn anchor_fallback(&self) -> crate::admission::AnchorFallback {
         self.anchor_fallback
     }
 
@@ -680,7 +690,7 @@ impl Engine {
     /// only. Propagates to every retained session; fresh sessions adopt
     /// it at creation. Never touches topology, revision, or existing
     /// classifications: no reflow or retry on Apply (D10).
-    pub fn set_anchor_fallback(&mut self, fallback: crate::admission::AnchorFallback) {
+    pub(crate) fn set_anchor_fallback(&mut self, fallback: crate::admission::AnchorFallback) {
         self.anchor_fallback = fallback;
         for session in self.sessions.values_mut() {
             session.set_anchor_fallback(fallback);
@@ -689,7 +699,8 @@ impl Engine {
 
     /// Current D3 no-space result. Float default.
     #[must_use]
-    pub fn no_space_result(&self) -> crate::admission::NoSpaceResult {
+    #[allow(dead_code)]
+    pub(crate) fn no_space_result(&self) -> crate::admission::NoSpaceResult {
         self.no_space
     }
 
@@ -698,7 +709,7 @@ impl Engine {
     /// session; fresh sessions adopt it at creation. Never touches
     /// topology, revision, or existing classifications: retained overlap
     /// allocations stay valid until a real capacity decision (D10).
-    pub fn set_no_space_result(&mut self, result: crate::admission::NoSpaceResult) {
+    pub(crate) fn set_no_space_result(&mut self, result: crate::admission::NoSpaceResult) {
         self.no_space = result;
         for session in self.sessions.values_mut() {
             session.set_no_space_result(result);
@@ -709,7 +720,8 @@ impl Engine {
     /// current [`Engine::handle`] admitted automatic fixed floats.
     /// Bounded counts plus correlation/op/reason only.
     #[must_use]
-    pub fn last_fixed_admission(&self) -> Option<&EngineFixedAdmissionReport> {
+    #[allow(dead_code)]
+    pub(crate) fn last_fixed_admission(&self) -> Option<&EngineFixedAdmissionReport> {
         self.last_fixed_admission.as_ref()
     }
 
@@ -717,7 +729,8 @@ impl Engine {
     /// current [`Engine::handle`] completed an explicit migration.
     /// Bounded counts plus correlation/direction only.
     #[must_use]
-    pub fn last_migration(&self) -> Option<&EngineMigrationReport> {
+    #[allow(dead_code)]
+    pub(crate) fn last_migration(&self) -> Option<&EngineMigrationReport> {
         self.last_migration.as_ref()
     }
 
@@ -726,7 +739,8 @@ impl Engine {
     /// ambiguous kind. `None` otherwise so successes and distinctly-kinded
     /// refusals stay silent.
     #[must_use]
-    pub fn last_drag_preview_stage(&self) -> Option<&EngineDragPreviewStage> {
+    #[allow(dead_code)]
+    pub(crate) fn last_drag_preview_stage(&self) -> Option<&EngineDragPreviewStage> {
         self.last_drag_preview_stage.as_ref()
     }
 
@@ -1064,30 +1078,15 @@ impl Engine {
     }
 
     /// Remove a domain slot and its outer gap.
-    pub fn remove(&mut self, key: &DomainKey) {
+    pub(crate) fn remove(&mut self, key: &DomainKey) {
         self.sessions.remove(key);
         self.outer_gaps.remove(key);
-    }
-
-    /// Remember `window` as the last-active focus of the retained canonical
-    /// session for `key`, in process, without touching topology, membership,
-    /// revision, pending, gaps, or divergence state. The adapter calls this
-    /// with its freshly observed project MRU before a cross-output focus
-    /// request so the Engine plans toward the live target instead of a stale
-    /// remembered one; the ordinary focus fences still apply inside the
-    /// request. Returns `false` (no mutation) for unknown sessions or any
-    /// [`Session::remember_focus`] binding failure.
-    pub fn remember_domain_focus(&mut self, key: &DomainKey, window: &WindowId) -> bool {
-        let Some(session) = self.sessions.get_mut(key) else {
-            return false;
-        };
-        session.remember_focus(key, window)
     }
 
     /// Direct insert used only by pair-relocation paths that already validated
     /// on a clone and manage capacity explicitly. Normal commits must use
     /// [`Engine::store_committed`].
-    pub fn insert_raw(&mut self, key: DomainKey, mut session: Session, outer_gap: i32) {
+    pub(crate) fn insert_raw(&mut self, key: DomainKey, mut session: Session, outer_gap: i32) {
         // Retaining carries the selected policy and the fixed-size opt-in;
         // no revision, divergence, pending, gap, or topology state is touched.
         session.set_policy(self.policy.clone());
@@ -1097,23 +1096,9 @@ impl Engine {
         self.sessions.insert(key, session);
     }
 
-    /// Restore a session without an outer-gap entry (exact legacy restore
-    /// when the source had no gap recorded).
-    pub fn insert_session_only(&mut self, key: DomainKey, mut session: Session) {
-        session.set_policy(self.policy.clone());
-        self.adopt_session_policy(&mut session);
-        self.note_working_counter(&session);
-        self.sessions.insert(key, session);
-    }
-
-    /// Remove only the outer-gap entry (pair-relocation source teardown).
-    pub fn remove_outer_gap(&mut self, key: &DomainKey) {
-        self.outer_gaps.remove(key);
-    }
-
     /// Record an outer-gap change without touching the session (update-gaps
     /// commit path after `Session::update_domain_gaps` succeeds).
-    pub fn set_outer_gap(&mut self, key: DomainKey, outer_gap: i32) {
+    pub(crate) fn set_outer_gap(&mut self, key: DomainKey, outer_gap: i32) {
         self.outer_gaps.insert(key, outer_gap);
     }
 
@@ -1121,7 +1106,7 @@ impl Engine {
     /// exist, be divergence/pending free, match the observed domain exactly,
     /// and hold topology. Unusable or empty slots are retired lazily without
     /// proposing so a later admission can reuse the slot.
-    pub fn take_usable_session(
+    pub(crate) fn take_usable_session(
         &mut self,
         domain_key: &DomainKey,
         domain: &OutputDomain,
@@ -1146,7 +1131,12 @@ impl Engine {
 
     /// Store a committed session: empty results retire the slot, otherwise
     /// the slot and outer gap are recorded.
-    pub fn store_committed(&mut self, domain_key: DomainKey, mut session: Session, outer_gap: i32) {
+    pub(crate) fn store_committed(
+        &mut self,
+        domain_key: DomainKey,
+        mut session: Session,
+        outer_gap: i32,
+    ) {
         if committed_session_is_empty(&session) {
             self.sessions.remove(&domain_key);
             self.outer_gaps.remove(&domain_key);
@@ -1162,7 +1152,7 @@ impl Engine {
     /// Canonical component view: retained domain identity/bounds/gap with
     /// adjacency stripped for pair assembly.
     #[must_use]
-    pub fn canonical_component_domain(domain: &OutputDomain) -> OutputDomain {
+    pub(crate) fn canonical_component_domain(domain: &OutputDomain) -> OutputDomain {
         OutputDomain {
             id: domain.id.clone(),
             workspace: domain.workspace.clone(),
@@ -1176,7 +1166,10 @@ impl Engine {
     /// sharing the workspace id on a different output. `None` when missing or
     /// ambiguous (fail closed, no mutation).
     #[must_use]
-    pub fn find_unique_source_for_target(&self, target_key: &DomainKey) -> Option<DomainKey> {
+    pub(crate) fn find_unique_source_for_target(
+        &self,
+        target_key: &DomainKey,
+    ) -> Option<DomainKey> {
         let mut source_key: Option<DomainKey> = None;
         for key in self.sessions.keys() {
             if key.workspace == target_key.workspace && key.output != target_key.output {
@@ -1191,14 +1184,14 @@ impl Engine {
 
     /// Whether the retained outer gap for `key` equals the carried value.
     #[must_use]
-    pub fn outer_gap_matches(&self, key: &DomainKey, outer_gap: i32) -> bool {
+    pub(crate) fn outer_gap_matches(&self, key: &DomainKey, outer_gap: i32) -> bool {
         self.outer_gaps.get(key).copied() == Some(outer_gap)
     }
 
     /// Assemble a temporary directional view solely from canonical per-domain
     /// sessions. Never infers a tree from current geometry: selected
     /// cross-output paths require retained authoritative state.
-    pub fn assemble_directional_pair(
+    pub(crate) fn assemble_directional_pair(
         &self,
         source_domain: &OutputDomain,
         source_key: &DomainKey,
@@ -1249,7 +1242,7 @@ impl Engine {
 
     /// Return a terminal two-domain transaction to the sole canonical state
     /// authority. The pair is never retained after this boundary.
-    pub fn store_canonical_pair(
+    pub(crate) fn store_canonical_pair(
         &mut self,
         source_key: DomainKey,
         target_key: DomainKey,
@@ -1279,7 +1272,7 @@ impl Engine {
     /// Typed world-level entry point for the workspace-send, reconcile,
     /// update-gaps, and active-group request phases. Direct send/R4 request
     /// commits immediately with native assignment plus geometry.
-    pub fn handle(&mut self, event: &CoreEvent) -> CoreReply {
+    pub(crate) fn handle(&mut self, event: &CoreEvent) -> CoreReply {
         // Single-domain observation convergence before the ordinary operation:
         // one primitive with the complete current observation and focus keeps
         // survivor topology and preserves exact-match/fit/seed paths.
@@ -2535,6 +2528,20 @@ impl Engine {
                 // `focus-mismatch` (which would fence the return pair as
                 // `operation-refused`). A truly unknown focus still
                 // mismatches below.
+                None
+            }
+            (None, None)
+                if event.focused_window.0.is_empty() && event.closed_windows.is_empty() =>
+            {
+                // Focusless retained session with no staged focus and no
+                // close pending here (e.g. a stay-created domain whose sole
+                // member is hidden: nothing claims focus and nothing died).
+                // Converge projecting focus none instead of wedging the
+                // scope: the close-survivor hold still fires whenever a
+                // close is staged, and any later observed focus converges
+                // through the arms above. Without this a hidden sole member
+                // strands forever: the hold blocks the reveal that would
+                // make it focusable, and no report can resolve the focus.
                 None
             }
             _ => {
@@ -5448,7 +5455,7 @@ impl Engine {
     /// focus, exceptions, and revision. Target collision, unique source,
     /// capacity rollback, and empty-session rules match the legacy behavior
     /// exactly.
-    pub fn try_relocate_for_target(
+    pub(crate) fn try_relocate_for_target(
         &mut self,
         target_key: &DomainKey,
         target_domain: &OutputDomain,
@@ -5502,7 +5509,7 @@ impl Engine {
 
     /// Hotplug reprojection: update retained bounds for `key` without touching
     /// topology, shares, membership, focus, or revision. `false` when unknown.
-    pub fn reproject_retained(&mut self, key: &DomainKey, bounds: Rect) -> bool {
+    pub(crate) fn reproject_retained(&mut self, key: &DomainKey, bounds: Rect) -> bool {
         let Some(session) = self.sessions.get_mut(key) else {
             return false;
         };

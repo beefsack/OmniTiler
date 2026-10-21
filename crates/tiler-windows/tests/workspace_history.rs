@@ -13,7 +13,7 @@ use tiler_windows::settings::{
     compatible_disabled_ids,
 };
 use tiler_windows::snapkey::{
-    ChordAction, Classified, KeyboardConfig, SnapClassify, VK_CONTROL, VK_H, VK_J, VK_LWIN, VK_TAB,
+    ChordAction, Classified, KeyboardConfig, SnapClassify, VK_CONTROL, VK_H, VK_LWIN, VK_TAB,
     WorkspaceHistoryOp,
 };
 

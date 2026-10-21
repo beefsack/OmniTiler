@@ -1,11 +1,10 @@
 #![forbid(unsafe_code)]
-//! Offline host-diff/feedback facade (W2, corrected).
+//! Native host-diff/feedback facade for the single world owner.
 //!
-//! Test-only actuator over typed [`WorldReply`](tiler_core::world_report::WorldReply)
-//! facts against a fresh offline native facade. It never touches the running
-//! [`TileLoop`](super::TileLoop) owner, the recovery ledger, or the desktop:
-//! all setters and proof re-reads go through [`NativeOps`], implemented here
-//! by the in-memory [`FakeNative`]. Geometry converges from the core reply,
+//! Actuator over typed [`WorldReply`](tiler_core::world_report::WorldReply)
+//! facts against fresh native observations. All setters and proof re-reads
+//! go through [`NativeOps`], implemented by the production `LiveNative` and
+//! an in-memory fake in offline tests. Geometry converges from the core reply,
 //! never from a second policy: this module honors per-row authority, scope
 //! authority, holds, transfers, views, migrations, and one-shot effects
 //! exactly as the reply states them. Workspace lifecycle needs no
@@ -62,20 +61,14 @@
 //! - Desired absence is removal eligibility only: the facade requires a
 //!   managed, non-displaced binding plus fresh occupant/visibility proof.
 //!   Unknown occupancy keeps.
-//! - Stable logical creation binds at most one flight per id and adopts the
-//!   binding strictly from direct setter results or later reply rows. An
-//!   ambiguous create never steals an unrelated external workspace: binding
-//!   recovery comes from the next report, never from enumeration guessing.
-//!   Dependent membership waits for the binding; the logical token is never
-//!   used as a native id.
 //! - The writable frame target is `effective_frame` only: `allocation` is the
 //!   canonical slot, never a write target.
 //! - Partial results are reported honestly; nothing here claims atomicity.
 
 use super::world_capture::{CapturedWorld, OwnerInputs, capture_facts_rideable};
 use super::{ObservedWindow, RetainedRow};
-use crate::tiling::{ReadbackOutcome, RefusedTracker, WindowFacts, readback_outcome};
 use crate::native_guards::WindowKey;
+use crate::tiling::{ReadbackOutcome, RefusedTracker, WindowFacts, readback_outcome};
 use std::collections::{HashMap, HashSet};
 use tiler_core::geometry::Rect;
 use tiler_core::world_report::{
@@ -315,6 +308,7 @@ pub(super) trait NativeOps {
 /// In-memory offline native. Seeded from a [`FreshHost`] baseline (windows
 /// plus views); writes mutate the live maps so proof re-reads observe them.
 #[derive(Debug, Default)]
+#[cfg(test)]
 pub(super) struct FakeNative {
     pub(super) windows: HashMap<String, FreshWindow>,
     pub(super) views: HashMap<String, String>,
@@ -337,6 +331,7 @@ pub(super) struct FakeNative {
     pub(super) membership_writes: usize,
 }
 
+#[cfg(test)]
 impl FakeNative {
     pub(super) fn seeded(host: &FreshHost) -> Self {
         let mut native = Self::default();
@@ -350,6 +345,7 @@ impl FakeNative {
     fn note_write(&mut self) {}
 }
 
+#[cfg(test)]
 impl NativeOps for FakeNative {
     fn read_window(&mut self, token: &str) -> Option<FreshWindow> {
         self.windows.get(token).cloned()
@@ -499,8 +495,7 @@ impl EffectTracker {
     pub(super) fn mark_view_spent(&mut self, owning: &str) -> bool {
         self.spent_views.insert(owning.to_owned())
     }
-    // (No caller yet: the 2b owner cutover drives this on identity
-    // rotation alongside `HostDiff::reset_generation`.)
+    // Reset the generation-scoped tables together.
     #[allow(dead_code)]
     fn clear_generation(&mut self) {
         self.ambiguous.clear();
@@ -545,8 +540,6 @@ impl HostDiff {
     /// (reused operation ids must never inherit spent/ambiguous/applied
     /// state) and the refusal memory (no stale suppression under a fresh
     /// world). The caller re-derives the watermark from the new bootstrap.
-    /// (No caller yet: the 2b owner cutover drives resets on identity
-    /// rotation. Retained as the sole reset path, never a second one.)
     #[allow(dead_code)]
     pub(super) fn reset_generation(&mut self, generation: &str) {
         self.gate.reset_generation(generation);
@@ -1245,6 +1238,7 @@ pub(super) fn apply_world_reply(
         if let Some((applied_op, applied_out, applied_ws)) =
             effects.applied_window.get(&row.lifetime.0)
             && applied_op == &op
+            && !base.workspace.is_empty()
             && (base.output != *applied_out || base.workspace != *applied_ws)
         {
             // Same operation already applied elsewhere, but the current
@@ -1264,6 +1258,14 @@ pub(super) fn apply_world_reply(
             continue;
         };
         let base_home = (base.output.clone(), base.workspace.clone());
+        if base.workspace.is_empty() {
+            // Unknown preimage (missing receipts): never positive
+            // third-location evidence. Hold for the next proven observation
+            // instead of misclassifying unknown as external; the transfer
+            // stays retained and retries.
+            stats.held += 1;
+            continue;
+        }
         let at_source = home == base_home;
         let partial = (home.0 == target_out && home.1 == base_home.1)
             || (home.0 == base_home.0 && home.1 == target_ws);
@@ -1314,7 +1316,13 @@ pub(super) fn apply_world_reply(
             row.effective_frame
         };
         let remap = !row.floating && !base.floating;
-        let moved = ops.move_membership(&row.lifetime.0, &target_out, &target_ws, frame_target, remap);
+        let moved = ops.move_membership(
+            &row.lifetime.0,
+            &target_out,
+            &target_ws,
+            frame_target,
+            remap,
+        );
         if gate.current_obs != entry_obs {
             stats.held += 1;
             stats.stopped_mid_apply = true;
@@ -1353,8 +1361,8 @@ pub(super) fn apply_world_reply(
                     None,
                 ));
             }
-            (Ok(true), false) if base.floating
-                && float_no_effect_proven(ops, base, &fresh.stored_tags) =>
+            (Ok(true), false)
+                if base.floating && float_no_effect_proven(ops, base, &fresh.stored_tags) =>
             {
                 // Existing-float crossing: membership-only, physical
                 // rectangle preserved. The logical arrival settles on
@@ -1812,6 +1820,14 @@ pub(super) fn apply_world_reply(
             };
             if home.0 == out && home.1 == ws {
                 continue;
+            }
+            if base.workspace.is_empty() {
+                // Unknown preimage (missing receipts): never positive
+                // third-location evidence. Hold without settling so the
+                // migration retries on the next proven observation.
+                stats.held += 1;
+                superseded = true;
+                break;
             }
             let at_source = home.0 == base.output && home.1 == base.workspace;
             let partial_progress = (home.0 == out && home.1 == base.workspace)

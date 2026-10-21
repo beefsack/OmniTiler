@@ -430,49 +430,8 @@ pub fn report_estimate(report: &WorldReport) -> usize {
             + json_string_len(feedback.outcome.as_str())
             + json_string_len(feedback.hold.map_or("", HoldReason::as_str));
     }
-    // `"restored":null` (16 with the entry comma) when absent; the adapter
-    // omits the key when there is nothing to restore, so this stays
-    // conservative either way. A present restoration counts its full object.
-    bytes += 16;
-    if let Some(restored) = report.restored.as_ref() {
-        bytes += restored_estimate(restored);
-    }
-    bytes
-}
-
-/// Structural size estimate for bootstrap restoration ingress: the
-/// `{"rings":[],"views":[],"tiling":[],"members":[]}` object (44 fixed
-/// plus per-entry shapes) beyond the absent-entry bytes counted above.
-#[must_use]
-pub fn restored_estimate(restored: &crate::world_report::RestoredWorld) -> usize {
-    // Object plus four section keys: {"rings":[],"views":[],"tiling":[],
-    // "members":[]} = 44 punctuation.
-    let mut bytes = 44;
-    for ring in &restored.rings {
-        // {"out":S,"ws":[S...]} = 17 fixed plus strings and commas.
-        bytes += 17 + json_string_len(&ring.output.0);
-        for id in &ring.workspaces {
-            bytes += json_string_len(id) + 1;
-        }
-    }
-    for view in &restored.views {
-        // {"out":S,"view":S} = 17 fixed.
-        bytes += 17 + json_string_len(&view.output.0) + json_string_len(&view.view);
-    }
-    for entry in &restored.tiling {
-        // {"out":S,"ws":S,"tiled":B} = 26 fixed plus the bool.
-        bytes += 26
-            + json_string_len(&entry.output.0)
-            + json_string_len(&entry.workspace)
-            + bool_len(entry.tiled);
-    }
-    for member in &restored.members {
-        // {"win":S,"out":S,"ws":S} = 24 fixed.
-        bytes += 24
-            + json_string_len(&member.window.0)
-            + json_string_len(&member.output.0)
-            + json_string_len(&member.workspace);
-    }
+    // No restoration ingress exists on the wire: every report is a
+    // fresh-observation report and the adapter sends no restoration key.
     bytes
 }
 

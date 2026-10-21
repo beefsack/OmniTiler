@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Production native actuator plus truthful applied-receipt capture (standby).
+//! Production native actuator plus truthful applied-receipt capture.
 //!
 //! [`LiveNative`] is the real [`NativeOps`](super::world_diff::NativeOps)
 //! implementation for the world route: every read is a fresh native
@@ -7,18 +7,19 @@
 //! existing identity/claim-verified mechanisms, and every receipt is proven
 //! by a fresh read afterward. The setter boolean is never proof.
 //!
-//! Standby status: this module compiles against production but no runtime
-//! tick or command route constructs it yet; the follow-up cutover unit
-//! wires it (single active owner, legacy path deleted). Nothing here runs
-//! live effects behind the current tests.
+//! Owner route: both world-tick entry points (`run_observation_tick` and
+//! `run_world_command` in [`super::world_tick`]) assemble it per turn via
+//! [`LiveNative::assemble`] with [`NativePrimitives::default()`], apply the
+//! accepted reply through it, and merge only the proven receipt updates
+//! into the adapter's applied homing/views. Nothing here runs outside an
+//! owner tick or command.
 //!
 //! Native rules reused, never reinvented:
 //! - Hide/reveal run the accepted `product_hide::sys` claim path
 //!   (`admit_managed_claim_for_hide` + `hide_managed_claim` /
-//!   `reveal_product_claim_to`) with the same admission fences as the
-//!   single-window and batch phases (allowlist/proof, scope, hosted child,
-//!   visible lifetime, topmost exception). Commit owns the claim before any
-//!   post; mechanical caches (`workspaces` assignment, `hidden_claims`)
+//!   `reveal_product_claim_to`) with the same admission fences as the hide
+//!   effects (allowlist/proof, scope, hosted child, visible lifetime,
+//!   topmost exception). Commit owns the claim before any post; mechanical caches (`workspaces` assignment, `hidden_claims`)
 //!   update only at commit, and visibility proof afterwards decides the
 //!   receipt. A mismatch between cache and live visibility reads back as
 //!   unknown (hold), never as a fabricated Applied.
@@ -31,8 +32,9 @@
 //!   readback only (no pumped settle: a miss holds and converges next
 //!   tick, never a foreign wait on this path).
 //! - The core is the sole logical authority. No native workspace property
-//!   is written or read as policy: views and membership live in the owner
-//!   tables and prove through live visibility plus claim/identity reads.
+//!   is written or read as policy: views and membership live in the core,
+//!   and the adapter retains only proven applied homes/views plus output
+//!   wire ids, proved through live visibility plus claim/identity reads.
 //! - Invalidation is polled before every native effect; at-most-once
 //!   ambiguity follows the shared [`NativeOps`](super::world_diff::NativeOps)
 //!   contract (throw/uncertain map to `Err`, explicit refusal to
@@ -45,34 +47,31 @@
 //! fullscreen/hidden holds, and racing invalidation are proven offline
 //! against this exact type. The defaults are the auditable call sites.
 //!
-//! Receipt capture: [`observed_view_receipts`] and
-//! [`attach_workspace_receipts`] derive the capture's `observed_views` and
-//! per-window `observed_workspace` from fresh visibility plus owner tables.
-//! Only exactly-one-visible-workspace (non-sticky) views prove, plus the
+//! Receipt capture lives in [`super::world_native_receipts`]:
+//! [`attach_workspace_receipts`](super::world_native_receipts::attach_workspace_receipts)
+//! and [`observed_view_receipts`](super::world_native_receipts::observed_view_receipts)
+//! derive the capture's `observed_views` and per-window `observed_workspace`
+//! from fresh visibility plus owner tables. Only exactly-one-visible-workspace (non-sticky) views prove, plus the
 //! memberless-active-with-zero-visible batch-completion case; an empty
 //! workspace never proves by echoing desired state. Unknown stays unknown
 //! so the core retains pending flights instead of settling on a guess.
 
-use super::world_capture::OwnerInputs;
 use super::world_diff::{FreshWindow, NativeOps};
-use super::{
-    AllowEntry, HiddenRecord, MonitorArea, ObservedWindow, RetainedRow, ScopeHostChild, TokenMap,
-};
+use super::{AllowEntry, HiddenRecord, MonitorArea, ObservedWindow, ScopeHostChild, TokenMap};
 use crate::model::{ProcessIdentity, WindowIdentity};
 use crate::native::HeldProcess;
-use crate::storage::LedgerStore;
 use crate::native_guards::WindowKey;
+use crate::storage::LedgerStore;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use tiler_core::geometry::Rect;
-use tiler_core::world_report::ScreenView;
 use windows_sys::Win32::Foundation::HWND;
 
-/// Outcome classes for one hide admission, mirroring
-/// `visibility_batch::admit_hide_item` without its `&mut TileLoop` borrow.
+/// Outcome classes for one hide admission, mirroring the hide-effect
+/// admission fences without the owner borrow: proof-mode gate, scope,
+/// hosted child, visible lifetime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum AdmitOutcome {
-    Admitted,
     OriginVanished,
     Uncertain,
     IdentityChanged,
@@ -89,7 +88,6 @@ fn settle_commit(result: Result<(), AdmitOutcome>) -> Result<bool, ()> {
         Ok(()) => Ok(true),
         Err(AdmitOutcome::Refused) | Err(AdmitOutcome::OriginVanished) => Ok(false),
         Err(AdmitOutcome::Uncertain) | Err(AdmitOutcome::IdentityChanged) => Err(()),
-        Err(AdmitOutcome::Admitted) => Ok(true),
     }
 }
 
@@ -111,8 +109,6 @@ pub(super) struct NativePrimitives {
     pub window_pid: fn(u64) -> u32,
     pub is_visible: fn(u64) -> bool,
     pub is_iconic: fn(u64) -> bool,
-    pub is_zoomed: fn(u64) -> bool,
-    pub outer_rect: fn(u64) -> Option<Rect>,
     pub set_outer: fn(u64, Rect) -> bool,
     pub foreground: fn() -> u64,
     pub focus: fn(u64) -> bool,
@@ -165,15 +161,6 @@ fn real_is_visible(hwnd: u64) -> bool {
 
 fn real_is_iconic(hwnd: u64) -> bool {
     super::pending_seams::live_is_iconic(hwnd)
-}
-
-fn real_is_zoomed(hwnd: u64) -> bool {
-    crate::ffi::is_zoomed(hwnd)
-}
-
-fn real_outer_rect(hwnd: u64) -> Option<Rect> {
-    let raw = crate::ffi::window_rect(hwnd)?;
-    super::shell::rect_from_win(raw)
 }
 
 fn real_set_outer(hwnd: u64, outer: Rect) -> bool {
@@ -272,8 +259,6 @@ impl Default for NativePrimitives {
             window_pid: real_window_pid,
             is_visible: real_is_visible,
             is_iconic: real_is_iconic,
-            is_zoomed: real_is_zoomed,
-            outer_rect: real_outer_rect,
             set_outer: real_set_outer,
             foreground: real_foreground,
             focus: real_focus,
@@ -330,7 +315,6 @@ pub(super) struct LiveNative<'a> {
     pub proven_homing: HashMap<String, (String, String)>,
     /// Retained actually applied views per output (proven only).
     pub proven_views: HashMap<String, String>,
-    pub member_tokens: &'a BTreeMap<WindowKey, String>,
     pub member_tags: &'a BTreeMap<WindowKey, String>,
     pub member_identity: &'a BTreeMap<WindowKey, ProcessIdentity>,
     pub hidden_claims: &'a mut BTreeMap<WindowKey, HiddenRecord>,
@@ -396,7 +380,6 @@ impl<'a> LiveNative<'a> {
             core_views,
             proven_homing,
             proven_views,
-            member_tokens,
             member_tags,
             member_identity,
             hidden_claims,
@@ -464,9 +447,8 @@ impl<'a> LiveNative<'a> {
         crate::native_guards::visible_lifetime_ok(&stored, live.as_deref())
     }
 
-    /// Shared admission fences for one hide, mirroring
-    /// `visibility_batch::admit_hide_item` without its `&mut TileLoop`
-    /// borrow: proof-mode gate, scope, hosted child, visible lifetime.
+    /// Shared admission fences for one hide (proof-mode gate, scope,
+    /// hosted child, visible lifetime).
     fn admit_gates(
         &mut self,
         key: &WindowKey,
@@ -518,10 +500,6 @@ impl<'a> LiveNative<'a> {
             Ok(w) => w.facts.captionless_fullscreen,
             Err(_) => true,
         }
-    }
-
-    fn fresh_visible(&mut self, hwnd: u64) -> Option<ObservedWindow> {
-        (self.prims.observe)(hwnd, self.me, self.fulls, &mut self.tokens).ok()
     }
 
     /// Screen-affinity arrival: the live frame sits on the desired wire
@@ -646,9 +624,7 @@ impl<'a> LiveNative<'a> {
             && self.core_homing.get(token).is_some_and(|d| d == &homing)
         {
             let live = self.read_frame(token)?;
-            if live != target
-                || self.affinity_of(&live).as_deref() != Some(homing.0.as_str())
-            {
+            if live != target || self.affinity_of(&live).as_deref() != Some(homing.0.as_str()) {
                 return None;
             }
         }
@@ -1128,7 +1104,10 @@ impl NativeOps for LiveNative<'_> {
         // (retained re-proof or fresh desired arrival). Desired core
         // targets never short-circuit by echo: incorporation is not
         // native arrival.
-        if self.read_homing(token).is_some_and(|(o, w)| o == out && w == ws) {
+        if self
+            .read_homing(token)
+            .is_some_and(|(o, w)| o == out && w == ws)
+        {
             return Ok(true);
         }
         // Sticky members never hide: physical visibility stays unchanged.
@@ -1348,10 +1327,7 @@ impl<'a> LiveNative<'a> {
         }
         let hidden = self.committed_hidden(key);
         let visible = (self.prims.is_visible)(key.hwnd);
-        let expected = self.expected_visible(
-            key,
-            &(row.output.0.clone(), row.workspace.clone()),
-        );
+        let expected = self.expected_visible(key, &(row.output.0.clone(), row.workspace.clone()));
         if hidden {
             return !visible && !expected;
         }
@@ -1400,10 +1376,7 @@ impl<'a> LiveNative<'a> {
     pub(super) fn receipt_updates(
         &mut self,
         reply: &tiler_core::world_report::WorldReply,
-    ) -> (
-        HashMap<String, (String, String)>,
-        HashMap<String, String>,
-    ) {
+    ) -> (HashMap<String, (String, String)>, HashMap<String, String>) {
         let mut homing = HashMap::new();
         for row in &reply.windows {
             let token = row.lifetime.0.as_str();
@@ -1482,208 +1455,6 @@ impl<'a> LiveNative<'a> {
         }
         (homing, views)
     }
-}
-
-/// Per-window applied-membership receipt for capture: the stable logical
-/// workspace only where fresh identity/visibility proves it. Visible
-/// windows prove through a matching live observed row plus a stamped
-/// lifetime tag plus screen-affinity arrival on the applied output (plain
-/// visibility never proves cross-output arrival); hidden windows prove
-/// through the claim association (well formed tag, claim identity equals
-/// the member key, tag present) plus continued invisibility. Anything else
-/// is unknown (`None`), never a proof of absence. Hidden, fullscreen,
-/// minimized, and unreadable truth preserved; omission never a close.
-pub(super) fn attach_workspace_receipts(
-    inputs: &OwnerInputs<'_>,
-    observed: &[ObservedWindow],
-    retained: &[RetainedRow],
-    areas: &[super::MonitorArea],
-    facts: &mut [tiler_core::world_report::WindowFact],
-) {
-    let by_token: HashMap<&str, &WindowKey> = inputs
-        .member_tokens
-        .iter()
-        .map(|(key, token)| (token.as_str(), key))
-        .collect();
-    let affinity_of = |rect: &tiler_core::geometry::Rect| -> Option<String> {
-        let device = super::directional_resolution::output_for_rect(areas, rect);
-        inputs.output_tokens.get(&device).cloned()
-    };
-    for fact in facts.iter_mut() {
-        let Some(key) = by_token.get(fact.window.0.as_str()).copied() else {
-            fact.observed_workspace = None;
-            continue;
-        };
-        // Retained proven homing: receipts prove this commitment with fresh
-        // evidence, never a policy-table read and never core desire.
-        let Some((applied_out, applied_ws)) = inputs.applied_homing.get(fact.window.0.as_str())
-        else {
-            fact.observed_workspace = None;
-            continue;
-        };
-        let hidden = inputs.hidden_claims.contains_key(key);
-        let tag_ok = inputs
-            .member_tags
-            .get(key)
-            .is_some_and(|tag| !tag.is_empty());
-        if !tag_ok {
-            fact.observed_workspace = None;
-            continue;
-        }
-        if hidden {
-            let proven = inputs.hidden_claims.get(key).is_some_and(|record| {
-                crate::model::valid_claim_tag(&record.claim.tag)
-                    && record.claim.hwnd == key.hwnd
-                    && record.claim.process.pid == key.pid
-                    && record.claim.process.process_creation == key.creation
-            });
-            // External reveal or HWND-recycle drift (any live observation of
-            // the number while logically hidden) proves nothing: unknown,
-            // never the stale homing. Same-pid creation drift is drift too,
-            // so the check is HWND-only, never identity-gated.
-            let drifted = observed.iter().any(|w| w.hwnd == key.hwnd);
-            fact.observed_workspace = if proven && !drifted {
-                Some(applied_ws.clone())
-            } else {
-                None
-            };
-            continue;
-        }
-        // Visible lane: a matching live observed row with full identity plus
-        // a stamped lifetime tag plus affinity on the applied output, or a
-        // retained row with a fresh frame on the applied output (overlay
-        // members ride retained rows). Floating logical crossings preserve
-        // the physical frame, so floating facts skip the affinity check:
-        // the identity plus preserved visibility proves the logical
-        // receipt while the physical screen stays put (the core homes
-        // floating receipts on their owning screen). Stale,
-        // tag-mismatched, token-mismatched, or wrong-output rows prove
-        // nothing.
-        let stored_tag = inputs.member_tags.get(key).cloned().unwrap_or_default();
-        let expected = inputs.member_identity.get(key).cloned();
-        let live_observed = observed.iter().any(|w| {
-            w.hwnd == key.hwnd
-                && w.identity.pid == key.pid
-                && w.identity.process_creation == key.creation
-                && w.token == fact.window.0
-                && !w.identity.tag.is_empty()
-                && w.identity.tag == stored_tag
-                && expected.as_ref().is_some_and(|ident| {
-                    w.identity.exe_path == ident.exe_path
-                        && w.identity.user_sid == ident.user_sid
-                        && w.identity.session_id == ident.session_id
-                })
-                && (fact.floating
-                    || affinity_of(&w.visible).as_deref() == Some(applied_out.as_str()))
-        });
-        let live_retained = !live_observed
-            && retained.iter().any(|row| {
-                row.key == *key
-                    && row.token == fact.window.0
-                    && row.rect.is_some_and(|rect| {
-                        affinity_of(&rect).as_deref() == Some(applied_out.as_str())
-                    })
-            });
-        fact.observed_workspace = if live_observed || live_retained {
-            Some(applied_ws.clone())
-        } else {
-            None
-        };
-    }
-}
-
-/// Per-screen applied-view receipts: exactly one non-sticky applied
-/// workspace with fresh visible members proves the applied view; a
-/// memberless applied view with zero visible members on the output proves
-/// batch completion only with explicit prior proof (never inferred over
-/// zero windows). Sticky members ride every view and are never evidence.
-/// Unknown stays unknown: the core retains pending flights rather than
-/// settling on an echo of desire. Proven against the adapter-retained
-/// last applied views with native observation revalidation, never a
-/// policy-table read and never core desire.
-pub(super) fn observed_view_receipts(
-    inputs: &OwnerInputs<'_>,
-    observed: &[ObservedWindow],
-    areas: &[super::MonitorArea],
-) -> Vec<ScreenView> {
-    // Visible members grouped by (output, applied workspace), gated on
-    // screen-affinity arrival: plain visibility never proves cross-output
-    // arrival, and minimized/unreadable rows never count.
-    let mut visible: HashSet<(String, String)> = HashSet::new();
-    for w in observed {
-        if w.facts.minimized {
-            continue;
-        }
-        let key = WindowKey {
-            hwnd: w.hwnd,
-            pid: w.identity.pid,
-            creation: w.identity.process_creation.clone(),
-        };
-        if inputs.sticky.contains_key(&key) {
-            continue;
-        }
-        let Some(token) = inputs.member_tokens.get(&key) else {
-            continue;
-        };
-        if token != &w.token {
-            continue;
-        }
-        // Full creation+tag plus identity proof: the observed row must carry
-        // the stamped lifetime tag and the expected process identity, so a
-        // same-HWND recycle never proves the prior view.
-        let Some(stored) = inputs.member_tags.get(&key) else {
-            continue;
-        };
-        if stored.is_empty() || w.identity.tag != *stored {
-            continue;
-        }
-        let Some(expected) = inputs.member_identity.get(&key) else {
-            continue;
-        };
-        if w.identity.exe_path != expected.exe_path
-            || w.identity.user_sid != expected.user_sid
-            || w.identity.session_id != expected.session_id
-        {
-            continue;
-        }
-        let Some((applied_out, applied_ws)) = inputs.applied_homing.get(token.as_str()) else {
-            continue;
-        };
-        // Screen-affinity arrival: the live frame must sit on the applied
-        // output, or a cross-output visible window would prove the wrong view.
-        let device = super::directional_resolution::output_for_rect(areas, &w.visible);
-        if inputs.output_tokens.get(&device) != Some(applied_out) {
-            continue;
-        }
-        visible.insert((applied_out.clone(), applied_ws.clone()));
-    }
-    let mut out = Vec::new();
-    for (output, active) in inputs.applied_views {
-        let shown: Vec<&(String, String)> =
-            visible.iter().filter(|(dev, _)| dev == output).collect();
-        if shown.is_empty() {
-            // Memberless-applied batch completion only: no visible member on
-            // the whole output while the applied view holds nothing.
-            let holds_anything = inputs
-                .applied_homing
-                .values()
-                .any(|(dev, _)| dev == output);
-            if !holds_anything {
-                out.push(ScreenView {
-                    output: tiler_core::directional::OutputId(output.clone()),
-                    view: active.clone(),
-                });
-            }
-            continue;
-        }
-        if shown.len() == 1 && shown[0].1 == *active {
-            out.push(ScreenView {
-                output: tiler_core::directional::OutputId(output.clone()),
-                view: active.clone(),
-            });
-        }
-    }
-    out
 }
 
 #[cfg(test)]

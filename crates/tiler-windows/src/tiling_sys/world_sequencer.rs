@@ -73,7 +73,9 @@
 
 use super::world_capture::{CapturedWorld, OwnerInputs, capture_world};
 use super::{MonitorArea, ObservedWindow, PendingClosed, RetainedRow};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
+#[cfg(test)]
+use std::collections::BTreeSet;
 use tiler_core::ids::{GenerationId, OwnerId};
 use tiler_core::world_engine::{WorldEngine, WorldEngineConfig, WorldOutcome};
 use tiler_core::world_report::{
@@ -213,6 +215,7 @@ impl WorldSequencer {
     /// Discovery reply: generation/capabilities with `ready=false` and no
     /// applicable desired state, straight from the bound engine.
     #[must_use]
+    #[cfg(test)]
     pub(super) fn bootstrap_reply(&self, request_id: &str) -> WorldReply {
         self.engine
             .bootstrap_reply(&self.adapter_incarnation, request_id)
@@ -242,6 +245,7 @@ impl WorldSequencer {
     /// no shadow ack history: they clear only when the native queue applies
     /// an ack receipt. Unhomed facts stay dirty with no extra invalidation.
     #[must_use]
+    #[cfg(test)]
     pub(super) fn outstanding_closes(&self, captured: &CapturedWorld) -> Vec<String> {
         let mut out: BTreeSet<String> = BTreeSet::new();
         for id in &captured.closed {
@@ -257,6 +261,7 @@ impl WorldSequencer {
     /// Event-driven catch-up wants the next trigger while any holds; nothing
     /// here polls or spins.
     #[must_use]
+    #[cfg(test)]
     pub(super) fn is_dirty(&self, captured: &CapturedWorld) -> bool {
         self.obs_dirty
             || !self.pending_feedback.is_empty()
@@ -285,19 +290,11 @@ impl WorldSequencer {
         // Observed applied views from capture (unknown when the facade has
         // no readback); never the last desired snapshot.
         let views: Vec<ScreenView> = captured.observed_views.clone();
-        // Restoration rides only until the first applied acknowledgement:
-        // a fresh bootstrap adopts persisted rings/views/tiling/homing, and
-        // every later report is a fresh-observation report (the core refuses
-        // restoration past the first report, so a replay can never rewrite
-        // retained rings). A rejected or lost first flight retries with the
-        // restoration intact because nothing was accepted yet.
-        let restored = if self.has_accepted {
-            None
-        } else {
-            captured.restored.clone()
-        };
+        // No restoration ingress exists: every report is a fresh-observation
+        // report and the core mints rings/views from the live screens.
+        // Restart truth rides the native marker/recovery lanes, which
+        // capture consumes as ordinary facts/lanes on the first observation.
         WorldReport {
-            restored,
             contract_version: WORLD_CONTRACT_VERSION,
             owner: WINDOWS_OWNER.to_owned(),
             adapter_incarnation: self.adapter_incarnation.clone(),
@@ -602,6 +599,7 @@ impl WorldSequencer {
     }
 
     #[must_use]
+    #[cfg(test)]
     pub(super) fn adapter_incarnation(&self) -> &str {
         &self.adapter_incarnation
     }
@@ -617,27 +615,32 @@ impl WorldSequencer {
     }
 
     #[must_use]
+    #[cfg(test)]
     pub(super) fn next_request_seq(&self) -> u64 {
         self.next_request_seq
     }
 
     #[must_use]
+    #[cfg(test)]
     pub(super) fn next_command_seq(&self) -> u64 {
         self.next_command_seq
     }
 
     #[must_use]
+    #[cfg(test)]
     pub(super) fn has_flight(&self) -> bool {
         self.flight.is_some()
     }
 
     #[must_use]
+    #[cfg(test)]
     pub(super) fn in_catchup(&self) -> bool {
         self.observation_only_catchup
     }
 
     /// Readiness: bound identities plus at least one applied acknowledgement.
     #[must_use]
+    #[cfg(test)]
     pub(super) fn is_ready(&self) -> bool {
         self.has_accepted
     }
@@ -782,36 +785,43 @@ impl WorldSequencer {
     }
 
     #[must_use]
+    #[cfg(test)]
     pub(super) fn last_desired(&self) -> Option<&WorldReply> {
         self.last_desired.as_ref()
     }
 
     #[must_use]
+    #[cfg(test)]
     pub(super) fn pending_feedback_len(&self) -> usize {
         self.pending_feedback.len()
     }
 
     #[must_use]
+    #[cfg(test)]
     pub(super) fn flight_command_seq(&self) -> Option<u64> {
         self.flight.as_ref().and_then(|flight| flight.command_seq)
     }
 
     #[must_use]
+    #[cfg(test)]
     pub(super) fn last_accepted_obs(&self) -> u64 {
         self.last_accepted_obs
     }
 
     #[must_use]
+    #[cfg(test)]
     pub(super) fn last_accepted_rev(&self) -> u64 {
         self.last_accepted_rev
     }
 
     #[must_use]
+    #[cfg(test)]
     pub(super) fn last_accepted_req(&self) -> &str {
         &self.last_accepted_req
     }
 
     #[must_use]
+    #[cfg(test)]
     pub(super) fn has_pending_feedback(&self) -> bool {
         !self.pending_feedback.is_empty()
     }
