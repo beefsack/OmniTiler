@@ -27,7 +27,7 @@ pub(super) fn ensure_workspace_assignments(
         if !scope_allows(&state.scope, &window.identity.exe_path) {
             continue;
         }
-        let key = crate::workspace::WindowKey {
+        let key = crate::native_guards::WindowKey {
             hwnd: window.hwnd,
             pid: window.identity.pid,
             creation: window.identity.process_creation.clone(),
@@ -48,7 +48,7 @@ pub(super) fn ensure_workspace_assignments(
         // whose number the OS recycled while visible) drop here instead of
         // stalling Engine convergence with a viewless member. Live hidden
         // claims never drop here; they retire through the ledger/audit path.
-        let stale = crate::workspace_owner::reused_hwnd_stale(
+        let stale = crate::native_guards::reused_hwnd_stale(
             &state.member_tokens.keys().cloned().collect::<Vec<_>>(),
             &state.hidden_claims.keys().cloned().collect(),
             &key,
@@ -64,12 +64,12 @@ pub(super) fn ensure_workspace_assignments(
         // fixture seam is inactive).
         let live_tag = live_member_tag(window.hwnd);
         let lifetime_ok = state.member_tags.get(&key).is_some_and(|stored| {
-            crate::workspace_owner::visible_lifetime_ok(stored, live_tag.as_deref())
+            crate::native_guards::visible_lifetime_ok(stored, live_tag.as_deref())
         });
         if !lifetime_ok {
             drop_member_state(state, &key);
         }
-        if !lifetime_ok || state.workspaces.member_loc(&key).is_none() {
+        if !lifetime_ok || state.member_home(&key).is_none() {
             // Fresh admission binds the stamp to the expected full identity:
             // the live window is re-read (identity, eligibility, hosted
             // children) and exact proof ownership is re-verified before any
@@ -125,20 +125,15 @@ pub(super) fn ensure_workspace_assignments(
                 .reissue(window.hwnd, &window.identity.process_creation);
             window.token = fresh_token.clone();
             let output = output_for_rect(areas, &window.visible);
-            state.workspaces.ensure_output(&output);
-            let Some(active) = state.workspaces.active_id(&output) else {
-                continue;
-            };
-            if state
-                .workspaces
-                .assign(key.clone(), &output, &active, false)
-            {
-                state.member_tokens.insert(key.clone(), fresh_token.clone());
-                state.member_rects.insert(fresh_token, window.visible);
-                state.member_identity.insert(key.clone(), identity);
-                state.member_tags.insert(key, fresh_tag);
-                admitted_outputs.push(output);
-            }
+            state.ensure_device(&output);
+            // Membership homing is core-owned (logical rings/views from the
+            // first report screens): the adapter binds only the mechanical
+            // token/identity/tag triple, never a workspace.
+            state.member_tokens.insert(key.clone(), fresh_token.clone());
+            state.member_rects.insert(fresh_token, window.visible);
+            state.member_identity.insert(key.clone(), identity);
+            state.member_tags.insert(key, fresh_tag);
+            admitted_outputs.push(output);
             continue;
         }
         let identity = ProcessIdentity {
@@ -156,10 +151,10 @@ pub(super) fn ensure_workspace_assignments(
             .insert(window.token.clone(), window.visible);
         state.member_identity.insert(key, identity);
     }
-    // Born-held first-seen fullscreen members join the workspace slotless
-    // (floating Engine observation, no tile slot); later fullscreen on a
-    // slotted or lifetime-known window stays a managed overlay transition.
-    admitted_outputs.extend(admit_born_fullscreen(state, me, retained, areas));
+    // Born-held first-seen fullscreen members join slotless the same way
+    // (membership without homing); later fullscreen on a lifetime-known
+    // window stays a managed overlay transition.
+    let _ = admit_born_fullscreen(state, me, retained, areas);
     // One aggregate hint-query budget for the whole preamble (item 13):
     // the slotless fixed verdicts and the restart-adoption assemblies below
     // share it, so many fresh maximized windows cannot reset the timer per
@@ -167,22 +162,14 @@ pub(super) fn ensure_workspace_assignments(
     // coupling multi-intent ticks (notably keyboard_tick) to this timer
     // would change pre-existing move/focus budget behavior.
     let mut hint_cx = HintCx::new();
-    // First-seen maximized members join slotless the same way (membership
-    // without a tile slot); the mode-gated clear restores them on tiled.
-    admitted_outputs.extend(admit_slotless_maximized(
-        state,
-        me,
-        retained,
-        areas,
-        &mut hint_cx,
-    ));
+    // First-seen maximized members bind slotless the same way; the
+    // mode-gated clear restores them on tiled.
+    let _ = admit_slotless_maximized(state, me, retained, areas, &mut hint_cx);
     adopt_restart_markers(state, me, observed, retained, areas, &mut hint_cx);
-    // Admission-filled trailing empties mint the next spare now (same tick,
-    // gated on successful admission only: observation-only ticks never
-    // churn). Restart adoption grants no membership, so it never admits.
-    scope_trailing::converge_admitted(state, &admitted_outputs);
+    // Trailing lifecycle is core-owned: the adapter mints nothing here.
+    let _ = admitted_outputs;
     if state.active_output.is_empty()
-        && let Some(first) = state.workspaces.output_keys().into_iter().next()
+        && let Some(first) = state.output_devices().into_iter().next()
     {
         state.active_output = first;
     }
@@ -216,7 +203,7 @@ pub(super) fn ensure_workspace_assignments(
 /// cap: each claim retires at most once, and uncertain claims retain
 /// silently.
 pub(super) fn audit_hidden_claims(state: &mut TileLoop, me: &ProcessIdentity, store: &LedgerStore) {
-    let keys: Vec<crate::workspace::WindowKey> = state.hidden_claims.keys().cloned().collect();
+    let keys: Vec<crate::native_guards::WindowKey> = state.hidden_claims.keys().cloned().collect();
     let mut retired_any = false;
     for key in keys {
         let Some(record) = state.hidden_claims.get(&key).cloned() else {
@@ -311,11 +298,10 @@ pub(super) fn audit_hidden_claims(state: &mut TileLoop, me: &ProcessIdentity, st
             }
         }
     }
-    if retired_any {
-        // Trailing convergence through the shared scope contract (item 12
-        // stage B): local keeps the exact legacy per-output loop.
-        scope_trailing::converge_all(state);
-    }
+    // Trailing convergence is core-owned: retirements ride the next report
+    // and the core reprunes. The flag below only records that a retirement
+    // happened this pass.
+    let _ = retired_any;
 }
 
 /// D23 close-versus-minimize classification at the observation/lifetime
@@ -332,14 +318,14 @@ pub(super) fn audit_hidden_claims(state: &mut TileLoop, me: &ProcessIdentity, st
 /// fixture. Homing is read now, while the member still has a workspace
 /// location, and covers hidden workspaces and every domain, so multi-domain
 /// close bursts all queue before their member state drops.
-fn queue_verified_close(state: &mut TileLoop, key: &crate::workspace::WindowKey) {
+fn queue_verified_close(state: &mut TileLoop, key: &crate::native_guards::WindowKey) {
     let Some(token) = state.member_tokens.get(key).cloned() else {
         return;
     };
     if token.is_empty() {
         return;
     }
-    let Some(loc) = state.workspaces.member_loc(key).cloned() else {
+    let Some(loc) = state.member_home(key) else {
         return;
     };
     let Some(stored) = state.member_tags.get(key).cloned() else {
@@ -348,7 +334,7 @@ fn queue_verified_close(state: &mut TileLoop, key: &crate::workspace::WindowKey)
     if stored.is_empty() {
         return;
     }
-    if crate::workspace_owner::visible_lifetime_ok(&stored, live_member_tag(key.hwnd).as_deref()) {
+    if crate::native_guards::visible_lifetime_ok(&stored, live_member_tag(key.hwnd).as_deref()) {
         return;
     }
     state.pending_closed.insert(
@@ -387,7 +373,7 @@ fn queue_verified_close(state: &mut TileLoop, key: &crate::workspace::WindowKey)
 /// the uncertain-hide hold (never a close). Restart needs no marker:
 /// ledger-hidden windows cannot admit while invisible, and the tagged
 /// lifetime fences already hold.
-fn external_hide_candidate(state: &TileLoop, key: &crate::workspace::WindowKey) -> bool {
+fn external_hide_candidate(state: &TileLoop, key: &crate::native_guards::WindowKey) -> bool {
     if state.hidden_claims.contains_key(key)
         || state.hidden_claims.keys().any(|k| k.hwnd == key.hwnd)
     {
@@ -426,14 +412,14 @@ fn external_hide_candidate(state: &TileLoop, key: &crate::workspace::WindowKey) 
     if stored.is_empty() {
         return false;
     }
-    if !crate::workspace_owner::visible_lifetime_ok(stored, live_member_tag(key.hwnd).as_deref()) {
+    if !crate::native_guards::visible_lifetime_ok(stored, live_member_tag(key.hwnd).as_deref()) {
         return false;
     }
     let pid = live_window_pid(key.hwnd);
     if pid == 0 || pid != key.pid {
         return false;
     }
-    state.workspaces.member_loc(key).is_some()
+    state.member_home(key).is_some()
 }
 
 /// Queue one app-initiated hide as a verified close through the existing
@@ -441,14 +427,14 @@ fn external_hide_candidate(state: &TileLoop, key: &crate::workspace::WindowKey) 
 /// tag presence as the destroyed path, but requires the tag to still read
 /// live (the window is alive and hidden, not destroyed). Empty ids never
 /// queue.
-fn queue_external_hide_close(state: &mut TileLoop, key: &crate::workspace::WindowKey) {
+fn queue_external_hide_close(state: &mut TileLoop, key: &crate::native_guards::WindowKey) {
     let Some(token) = state.member_tokens.get(key).cloned() else {
         return;
     };
     if token.is_empty() {
         return;
     }
-    let Some(loc) = state.workspaces.member_loc(key).cloned() else {
+    let Some(loc) = state.member_home(key) else {
         return;
     };
     let Some(stored) = state.member_tags.get(key).cloned() else {
@@ -457,7 +443,7 @@ fn queue_external_hide_close(state: &mut TileLoop, key: &crate::workspace::Windo
     if stored.is_empty() {
         return;
     }
-    if !crate::workspace_owner::visible_lifetime_ok(&stored, live_member_tag(key.hwnd).as_deref()) {
+    if !crate::native_guards::visible_lifetime_ok(&stored, live_member_tag(key.hwnd).as_deref()) {
         return;
     }
     state.pending_closed.insert(
@@ -485,7 +471,7 @@ fn queue_external_hide_close(state: &mut TileLoop, key: &crate::workspace::Windo
 /// enumerated (present in the inventory), and members without a stored tag
 /// keep the existing drop-only behavior.
 pub(super) fn workspace_close_cleanup(state: &mut TileLoop) {
-    let gone: Vec<crate::workspace::WindowKey> = state
+    let gone: Vec<crate::native_guards::WindowKey> = state
         .member_tokens
         .keys()
         .filter(|k| !state.last_hwnds.contains(&k.hwnd) && !state.hidden_claims.contains_key(k))
@@ -512,7 +498,7 @@ pub(super) fn workspace_close_cleanup(state: &mut TileLoop) {
     // `closed_windows` path and drop member state, so survivors reflow and
     // reshow is a fresh admission. Unknown/unreadable (cloak/tag/pid) and
     // tiler workspace hides hold with retained membership.
-    let hidden_close: Vec<crate::workspace::WindowKey> = state
+    let hidden_close: Vec<crate::native_guards::WindowKey> = state
         .member_tokens
         .keys()
         .filter(|k| external_hide_candidate(state, k))
@@ -565,8 +551,8 @@ pub(super) fn workspace_close_cleanup(state: &mut TileLoop) {
     {
         let mut live: std::collections::BTreeSet<(String, String)> =
             std::collections::BTreeSet::new();
-        for output in state.workspaces.output_keys() {
-            for id in state.workspaces.workspace_ids(&output) {
+        for output in state.output_devices() {
+            for id in state.workspace_ids(&output) {
                 live.insert((output.clone(), id));
             }
         }
@@ -601,7 +587,7 @@ pub(super) fn workspace_hide_one(
     me: &ProcessIdentity,
     store: &LedgerStore,
     dir: &Path,
-    key: &crate::workspace::WindowKey,
+    key: &crate::native_guards::WindowKey,
     expected: &ProcessIdentity,
     iconic: bool,
 ) -> (&'static str, Option<&'static str>) {

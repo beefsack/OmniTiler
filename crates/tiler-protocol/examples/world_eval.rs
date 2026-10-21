@@ -47,14 +47,13 @@ fn main() {
     let mut engine: Option<WorldEngine> = None;
     let mut generation = generation_for(0);
     let mut discoveries: u64 = 0;
-    // Test-only platform selection (never a user setting): the KDE
-    // production service enables the aligned per-output model at
-    // construction, so the eval seam mirrors it on request. Unset keeps
-    // the default disjoint model every existing fixture assumes.
-    let aligned = std::env::var_os("WORLD_EVAL_ALIGNED").is_some_and(|v| v == "1");
-    let config = if aligned {
+    // Test-only platform selection (never a user setting): carriers may
+    // enable the fixed-send admission at construction; unset keeps the
+    // default disjoint model every existing fixture assumes.
+    let fixed_send = std::env::var_os("WORLD_EVAL_FIXED_SEND").is_some_and(|v| v == "1");
+    let config = if fixed_send {
         WorldEngineConfig {
-            aligned_per_output_workspaces: true,
+            fixed_send_admission: true,
             ..WorldEngineConfig::default()
         }
     } else {

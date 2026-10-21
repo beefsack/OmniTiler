@@ -58,7 +58,7 @@ pub(super) fn revalidate_target(
     let Some(stored) = member_tag else {
         return Err("identity-changed");
     };
-    if !crate::workspace_owner::visible_lifetime_ok(stored, live_tag.as_deref()) {
+    if !crate::native_guards::visible_lifetime_ok(stored, live_tag.as_deref()) {
         return Err("identity-changed");
     }
     // Hosted-child fence, fresh (never from the tick's observation): a newly

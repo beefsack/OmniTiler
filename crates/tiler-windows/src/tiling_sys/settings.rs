@@ -3,11 +3,11 @@ use super::*;
 
 /// Native foreground veto read: one fresh pass over the live foreground with
 /// exact desktop identity, fresh visibility, caption, DWM frame, and DWM
-/// cloak facts fed into the portable [`crate::workspace_owner::classify_foreground`] policy.
+/// cloak facts fed into the portable [`crate::native_guards::classify_foreground`] policy.
 /// No titles, paths, PIDs, or content leave this function; the caller logs
 /// only the returned reason plus booleans. Pure reads, never IO.
 pub(super) struct ForegroundRead {
-    pub(super) veto: crate::workspace_owner::ForegroundVeto,
+    pub(super) veto: crate::native_guards::ForegroundVeto,
     pub(super) desktop: bool,
     pub(super) visible: bool,
     pub(super) captioned: bool,
@@ -16,8 +16,8 @@ pub(super) struct ForegroundRead {
 }
 
 fn foreground_read(foreground: u64, fulls: &[Rect]) -> ForegroundRead {
-    use crate::workspace_owner::{ForegroundFacts, ForegroundVetoReason, classify_foreground};
-    let settled = |veto: crate::workspace_owner::ForegroundVeto,
+    use crate::native_guards::{ForegroundFacts, ForegroundVetoReason, classify_foreground};
+    let settled = |veto: crate::native_guards::ForegroundVeto,
                    desktop: bool,
                    visible: bool,
                    captioned: bool,
@@ -39,7 +39,7 @@ fn foreground_read(foreground: u64, fulls: &[Rect]) -> ForegroundRead {
                  dwm_readable: bool,
                  cloaked: bool| {
         settled(
-            crate::workspace_owner::ForegroundVeto {
+            crate::native_guards::ForegroundVeto {
                 block: false,
                 reason,
             },
@@ -65,7 +65,7 @@ fn foreground_read(foreground: u64, fulls: &[Rect]) -> ForegroundRead {
         // `IsWindowVisible` returns false for invalid handles, so validity is
         // checked first and fails closed.
         return settled(
-            crate::workspace_owner::ForegroundVeto {
+            crate::native_guards::ForegroundVeto {
                 block: true,
                 reason: ForegroundVetoReason::Invalid,
             },
@@ -101,7 +101,7 @@ fn foreground_read(foreground: u64, fulls: &[Rect]) -> ForegroundRead {
     let cloak_val = cloak.is_some_and(|cloaked| cloaked);
     if !crate::ffi::is_window(foreground) {
         return settled(
-            crate::workspace_owner::ForegroundVeto {
+            crate::native_guards::ForegroundVeto {
                 block: true,
                 reason: ForegroundVetoReason::Invalid,
             },
@@ -155,7 +155,7 @@ pub(super) fn suspend_read_inner(
     fulls: &[Rect],
     foreground: u64,
 ) -> ForegroundRead {
-    use crate::workspace_owner::ForegroundVetoReason;
+    use crate::native_guards::ForegroundVetoReason;
     let raw = foreground_read(foreground, fulls);
     if !raw.veto.block {
         return raw;
@@ -167,7 +167,7 @@ pub(super) fn suspend_read_inner(
         return raw;
     }
     let managed = || ForegroundRead {
-        veto: crate::workspace_owner::ForegroundVeto {
+        veto: crate::native_guards::ForegroundVeto {
             block: false,
             reason: ForegroundVetoReason::ManagedOverlay,
         },
@@ -183,10 +183,10 @@ pub(super) fn suspend_read_inner(
     let tag_ok = {
         let live_tag = crate::product_hide::sys::read_member_tag(foreground);
         state.member_tags.get(&held_key).is_some_and(|stored| {
-            crate::workspace_owner::visible_lifetime_ok(stored, live_tag.as_deref())
+            crate::native_guards::visible_lifetime_ok(stored, live_tag.as_deref())
         })
     };
-    if state.workspaces.member_loc(&held_key).is_some()
+    if state.member_home(&held_key).is_some()
         && state.member_tokens.contains_key(&held_key)
         && tag_ok
     {
@@ -213,11 +213,11 @@ pub(super) fn suspend_read(
 ) -> ForegroundRead {
     #[cfg(test)]
     if let Some(blocked) = INJECTED_SUSPEND.with(|slot| slot.get()) {
-        use crate::workspace_owner::ForegroundVetoReason;
+        use crate::native_guards::ForegroundVetoReason;
         let _ = (state, me, fulls);
         if blocked {
             return ForegroundRead {
-                veto: crate::workspace_owner::ForegroundVeto {
+                veto: crate::native_guards::ForegroundVeto {
                     block: true,
                     reason: ForegroundVetoReason::Fullscreen,
                 },
@@ -229,7 +229,7 @@ pub(super) fn suspend_read(
             };
         }
         return ForegroundRead {
-            veto: crate::workspace_owner::ForegroundVeto {
+            veto: crate::native_guards::ForegroundVeto {
                 block: false,
                 reason: ForegroundVetoReason::None,
             },
@@ -249,7 +249,7 @@ pub(super) fn suspend_read(
 /// (`Invalid`/`Unreadable`) stays a full suspension. Only this shape may
 /// take the limited lane (geometry for other windows, focus/overlays off).
 pub(super) fn is_limited_fullscreen(read: &ForegroundRead) -> bool {
-    read.veto.block && read.veto.reason == crate::workspace_owner::ForegroundVetoReason::Fullscreen
+    read.veto.block && read.veto.reason == crate::native_guards::ForegroundVetoReason::Fullscreen
 }
 
 /// Non-activating geometry gate for one window under a suspend read: when
@@ -400,12 +400,10 @@ pub(super) fn apply_live_settings(
         lanes.push("gaps");
         changed = true;
     }
-    // Live default edits adopt for future workspaces only: existing session
-    // overrides keep their state, exactly like startup seeding.
-    if state
-        .workspaces
-        .set_default_tiled(settings.core.workspace.default_tiled)
-    {
+    // Live default edits seed future workspaces only (the core reads the
+    // default from every report ingress): existing logical workspaces keep
+    // their retained modes. No adapter session state exists to set.
+    if state.default_tiled_seed() != settings.core.workspace.default_tiled {
         lanes.push("workspace-default");
         changed = true;
         log_json_at(
@@ -421,12 +419,24 @@ pub(super) fn apply_live_settings(
     // Item 12 stage B: a saved scope-mode change never adopts live. The
     // pending choice stays in the saved document (assigned to `live.settings`
     // below) and takes effect only on the next owner restart; the drift lane
-    // is informational and never wakes the pump.
-    if let Some((lane, event)) =
-        crate::workspace_scope_owner::pending_scope_lane(&state.scope_owner, &settings)
+    // is informational and never wakes the pump. The core reads the mode
+    // from every report ingress, so dispatch needs no mutation here.
     {
-        log_json_at(&log_path, event);
-        lanes.push(lane);
+        let saved = crate::settings::saved_mode(&settings);
+        if saved != state.scope_adopted {
+            lanes.push("workspace-scope");
+            log_json_at(
+                &log_path,
+                serde_json::json!({
+                    "event": "workspace-scope",
+                    "adopted": tiler_core::workspace_scope::mode_token(state.scope_adopted),
+                    "saved": tiler_core::workspace_scope::mode_token(saved),
+                    "revision": settings.revision,
+                    "outcome": "restart-required",
+                    "scope": "live-pending",
+                }),
+            );
+        }
     }
     if base.border != state.border {
         state.border = base.border;
@@ -524,15 +534,16 @@ pub(super) fn apply_live_settings(
     // rebuild, and already-bound lifetimes plus previously admitted clients
     // keep their slots and topology.
     // R-SPC-04 D1/D2: the fixed-size predicate adopts here for subsequent
-    // admissions only. The Engine propagates the value to every retained
-    // session without touching topology, revision, or existing
-    // automatic/override marks (admission-only classification); the D4/D5
-    // admission gates read it per fresh lifetime through the same
-    // assignment. A change to only this field returns false, so no tree
+    // admissions only. The core reads it from every report ingress without
+    // touching retained topology or existing marks (admission-only
+    // classification). A change to only this field returns false, so no
     // rebuild or resync follows.
     let predicate = settings.core.fixed_size_predicate_mode();
-    if state.engine.fixed_size_predicate() != predicate {
-        state.engine.set_fixed_size_predicate(predicate);
+    let last_predicate = state
+        .settings_live
+        .as_ref()
+        .map(|live| live.settings.core.fixed_size_predicate_mode());
+    if last_predicate != Some(predicate) {
         log_json_at(
             &log_path,
             serde_json::json!({
@@ -544,14 +555,15 @@ pub(super) fn apply_live_settings(
         );
     }
     // Best-effort admission D2/D3: adopt for subsequent capacity decisions
-    // only. The Engine propagates the values to every retained session
-    // without touching topology, revision, or existing tile/float marks
-    // (no reflow, no retry on Apply); the admission and shrink-repair
-    // gates read them per decision through the same assignment. A change
-    // to only these fields returns false, so no tree rebuild follows.
+    // only. The core reads them from every report ingress without touching
+    // retained topology or existing tile/float marks (no reflow, no retry).
+    // A change to only these fields returns false, so no rebuild follows.
     let anchor = settings.core.anchor_fallback_mode();
-    if state.engine.anchor_fallback() != anchor {
-        state.engine.set_anchor_fallback(anchor);
+    let last_anchor = state
+        .settings_live
+        .as_ref()
+        .map(|live| live.settings.core.anchor_fallback_mode());
+    if last_anchor != Some(anchor) {
         log_json_at(
             &log_path,
             serde_json::json!({
@@ -563,8 +575,11 @@ pub(super) fn apply_live_settings(
         );
     }
     let no_space = settings.core.no_space_result_mode();
-    if state.engine.no_space_result() != no_space {
-        state.engine.set_no_space_result(no_space);
+    let last_no_space = state
+        .settings_live
+        .as_ref()
+        .map(|live| live.settings.core.no_space_result_mode());
+    if last_no_space != Some(no_space) {
         log_json_at(
             &log_path,
             serde_json::json!({
@@ -576,8 +591,15 @@ pub(super) fn apply_live_settings(
         );
     }
     if let Some(live) = state.settings_live.as_mut() {
-        let saved_scope = crate::workspace_scope_owner::saved_mode(&settings);
-        let status = state.scope_owner.status_for(revision, saved_scope);
+        let saved_scope = crate::settings::saved_mode(&settings);
+        let status = if saved_scope == state.scope_adopted {
+            format!("saved:{revision}")
+        } else {
+            format!(
+                "saved:{revision}+scope-restart:{}",
+                tiler_core::workspace_scope::mode_token(saved_scope)
+            )
+        };
         live.settings = settings;
         live.mtime = mtime;
         live.status = status;

@@ -1,11 +1,16 @@
 //! Deterministic world transition over the stateful Engine (D1-D5).
 //!
-//! [`WorldEngine`] retains the [`crate::engine::Engine`] (D1=A) and accepts
-//! one complete [`WorldReport`] per call, reconciling every readable domain
-//! through the existing [`Engine::handle`] sweep, holding unreadable scopes
-//! explicitly, projecting full desired geometry with the existing projector,
-//! and applying the shared trailing workspace policy in all three modes.
-//! The protocol maps transport observations into this typed boundary.
+//! [`WorldEngine`] retains the [`crate::engine::Engine`] (D1=A) and owns the
+//! logical workspace model outright: stable core workspace ids, per-screen
+//! rings, views, members, history, lifecycle, and trailing. It accepts one
+//! complete [`WorldReport`] per call — screens (FULL rectangles plus work
+//! areas) and window facts are the only observation prerequisites — assigns
+//! every fact to a logical workspace, projects each logical workspace into
+//! its Engine session through the existing [`Engine::handle`] sweep, holds
+//! unreadable scopes explicitly, publishes full desired geometry with the
+//! existing projector, and applies the shared trailing workspace policy.
+//! Native workspace domains are an explicit capability-named opt-in
+//! observation and never authorize mapping, membership, or commands.
 //!
 //! Ordering (see `docs/changes/archive/core-full-state-replies.md`): one globally
 //! monotonic `state_revision` per accepted report (even a no-op); an
@@ -18,11 +23,12 @@
 //!
 //! Transfers (D3=A) stay outstanding until confirmed by observation,
 //! superseded by newer external input, or settled by proven refusal. While
-//! outstanding, the window is shielded from convergence (stripped from the
-//! source observation, presented at the target) so the committed retained
-//! topology does not flap back during actuation lag. Possibly-executed
-//! feedback holds the target without re-actuation. Views use the same
-//! retention without any window. Focus/raise/stacking are one-shot effects.
+//! outstanding, an in-flight window homes to its retained target logical
+//! workspace (stripped from the source observation, presented at the target)
+//! so the committed retained topology does not flap back during actuation
+//! lag. Possibly-executed feedback holds the target without re-actuation.
+//! Views use the same retention without any window. Focus/raise/stacking are
+//! one-shot effects.
 //!
 //! Budget: the 4 MiB request estimate gates before any convergence; a
 //! conservative reply upper bound gates before any mutation; the staged
@@ -35,7 +41,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::boundary::{CoreCommand, CoreEvent, CoreReply};
 use crate::directional::{OutputId, WindowId, WorkspaceId};
 use crate::engine::Engine;
 use crate::geometry::Rect;
@@ -44,12 +49,11 @@ use crate::seed::EngineWindow;
 use crate::session::{DomainKey, OutputDomain};
 use crate::workspace_scope::ScopeHistory;
 use crate::world_commands::CommandApplied;
-use crate::world_publish::{current_view, migration_confirmed, observed_closed, observed_homing};
 use crate::world_report::{
-    AttemptOutcome, CommandResult, EffectKind, HoldReason, OneShotEffect, ScopeAuthority,
-    TilingMode, TransferKind, TransferTarget, WORLD_CONTRACT_VERSION, WORLD_MAX_REPLY_BYTES,
-    WORLD_MAX_REQUEST_BYTES, WorldReply, WorldReport, encode_reply_canonical, reply_estimate,
-    reply_upper_bound, report_digest, report_estimate, validate_report_reason,
+    CommandResult, HoldReason, TilingMode, TransferKind, TransferTarget, WORLD_CONTRACT_VERSION,
+    WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES, WorldReply, WorldReport,
+    encode_reply_canonical, reply_estimate, reply_upper_bound, report_digest, report_estimate,
+    validate_report_reason,
 };
 
 pub(crate) const KIND_VERSION: &str = "unsupported-version";
@@ -104,6 +108,7 @@ pub(crate) const MSG_CREATION_EXHAUSTED: &str =
 pub(crate) const MSG_SELECT_UNKNOWN: &str = "selection target is not a known workspace";
 pub(crate) const MSG_MIGRATION: &str = "workspace migration refused by scope policy";
 pub(crate) const MSG_OPERATION: &str = "operation route refused without mutation";
+pub(crate) const MSG_RESTORED_STALE: &str = "restored ingress is only valid on the first report";
 pub(crate) const MSG_TILING_TARGET: &str = "tiling target is not a known live workspace";
 
 /// Inset one carried world domain by its outer gap (legacy planner-protocol
@@ -137,8 +142,7 @@ pub enum StaySourceFocus {
 /// settlement. The reply projects only the [`TransferTarget`]. Policy
 /// transfers (hotplug displacement/return member moves) share the exact
 /// settlement/shielding path as command transfers; their target rows may
-/// name live-but-not-yet-reported homings, which the adapter resolves
-/// natively and holds when unresolvable.
+/// name live-but-not-yet-observed homings, which hold when unresolvable.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RetainedTransfer {
     pub(crate) target: TransferTarget,
@@ -146,24 +150,38 @@ pub(crate) struct RetainedTransfer {
     pub(crate) policy: bool,
     pub(crate) source_output: OutputId,
     pub(crate) source_workspace: String,
-    /// Outstanding whole-workspace migration members (aligned mode only):
-    /// the relocated member set awaiting arrival at the target homing.
-    /// Empty for every other transfer kind and for disjoint-model
-    /// migrations (those settle through the scoped topology instead).
-    /// Surviving members only: arrived plus still-outstanding. Explicitly
-    /// closed and externally-moved members drop (never fought); absent
-    /// without a close stays outstanding (never inferred closed).
+    /// Outstanding whole-workspace migration members: the relocated member
+    /// set awaiting arrival at the target homing. Empty for every other
+    /// transfer kind. Surviving members only: arrived plus
+    /// still-outstanding. Explicitly closed and externally-moved members
+    /// drop (never fought); absent without a close stays outstanding
+    /// (never inferred closed).
     pub(crate) members: Vec<WindowId>,
-    /// Expected D5 refill native for an aligned Migration, stored at commit
+    /// Expected source-refill logical view for a Migration, stored at commit
     /// so settlement survives early refill-child settlement. `None` when no
     /// refill was selected or for non-migration transfers.
     pub(crate) migration_refill: Option<String>,
-    /// True when an aligned Migration committed with zero members
+    /// True when a Migration committed with zero members
     /// (originally empty). Distinguishes empty migrations (must still verify
-    /// target follow plus source refill) from migrations whose members all
+    /// target view plus source refill) from migrations whose members all
     /// externally superseded/closed (settle to observed without fighting
     /// newer input).
     pub(crate) migration_initial_empty: bool,
+    /// Source ring index of the migrated id at commit, for refusal
+    /// rollback position restore (never wraps; clamped on reinsert).
+    pub(crate) migration_source_index: Option<usize>,
+    /// Core views at commit for refusal rollback reconciliation.
+    pub(crate) migration_source_view: Option<String>,
+    pub(crate) migration_target_view: Option<String>,
+    /// Latched terminal migration outcome (proven refusal or external
+    /// supersession) retained under the operation identity after its
+    /// feedback row is acknowledged. Separate from the no-retry
+    /// `TransferTarget.held` authority: `held` alone cannot distinguish a
+    /// possibly-executed attempt from a proven terminal one. Only
+    /// `RefusedProven`/`SupersededExternal` latch here; later readable
+    /// evidence reconciles against the latched outcome. `None` until a
+    /// terminal feedback row arrives.
+    pub(crate) migration_terminal: Option<crate::world_report::AttemptOutcome>,
 }
 
 /// Retained explicit float-placement target: one outstanding authorized
@@ -184,47 +202,13 @@ pub(crate) struct RetainedFloat {
     pub(crate) source: Option<crate::geometry::Rect>,
     pub(crate) output: OutputId,
     pub(crate) workspace: String,
-}
-
-/// Pending logical workspace creation: at most one per output, stable
-/// across snapshots until binding or cancellation.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PendingCreation {
-    pub(crate) logical_id: String,
-    pub(crate) output: OutputId,
-}
-
-/// Pending numbered-send intent against an unbound logical workspace: the
-/// trailing-create path of [`crate::world_report::WorldCommand::SendNumbered`]
-/// minted `logical_id` and the engine send starts once the binding is
-/// reported. Stable operation identity, no view target, never the token as
-/// a native id. Drained in report order once bound; dropped when the window
-/// closes or moves elsewhere.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PendingSend {
-    pub(crate) operation_id: String,
-    pub(crate) logical_id: String,
-    pub(crate) output: OutputId,
-    pub(crate) window: WindowId,
-    pub(crate) follow: bool,
-    pub(crate) source_output: OutputId,
-    pub(crate) source_workspace: String,
-}
-
-/// Pending whole-workspace migration against an unbound destination
-/// (aligned mode only): the destination trailing-create path minted
-/// `logical_id` for the target output and the migration commits once the
-/// binding names the native id. Stable operation identity, no view target,
-/// never the token as a native id. Drained in report order once bound;
-/// dropped when the source native leaves the live set or the target
-/// output disconnects.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PendingMigration {
-    pub(crate) operation_id: String,
-    pub(crate) logical_id: String,
-    pub(crate) target_output: OutputId,
-    pub(crate) source_output: OutputId,
-    pub(crate) source_workspace: String,
+    /// Latched ambiguity from a `PossiblyExecuted` attempt row. Survives
+    /// the feedback row being acknowledged so a third frame (matching
+    /// neither source nor target) keeps holding instead of being
+    /// misclassified as newer external input. Clears only on settlement
+    /// (confirmation, explicit close, proven refusal/supersession, or a
+    /// newer intent replacing it).
+    pub(crate) ambiguous: bool,
 }
 
 /// Bounded outcome of one [`WorldEngine::handle_report`] call.
@@ -240,6 +224,56 @@ pub enum WorldOutcome {
         kind: &'static str,
         message: &'static str,
     },
+}
+
+/// One logical workspace projected into an Engine session: the stable core
+/// id, its owning screen, and the per-report staged observation assigned by
+/// [`WorldEngine::build_staged_domains`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StagedDomain {
+    pub(crate) key: DomainKey,
+    pub(crate) bounds: Rect,
+    pub(crate) gap: i32,
+    pub(crate) outer_gap: i32,
+    /// Homed non-minimized facts with readable frames, as Engine carriers.
+    pub(crate) windows: Vec<EngineWindow>,
+    /// Adapter-observed focused lifetime homed here (empty when none):
+    /// the staged focus proof for this domain.
+    pub(crate) focused: WindowId,
+    /// Homed minimized facts (kept out of the Engine carriers; the sweep
+    /// retains their slots and publish emits explicit minimized rows).
+    pub(crate) minimized: Vec<WindowId>,
+    /// Homed facts with unreadable frames: the scope holds instead of
+    /// authorizing geometry, never a silent absence.
+    pub(crate) unreadable: Vec<WindowId>,
+    /// Explicit closes homed here.
+    pub(crate) closed: Vec<WindowId>,
+    /// False when the owning screen is incomplete or carries an unreadable
+    /// window fact: the scope becomes an explicit hold and its rows
+    /// authorize nothing.
+    pub(crate) readable: bool,
+    pub(crate) hold: Option<HoldReason>,
+}
+
+/// Per-report staged observation: screens as reported, one
+/// [`StagedDomain`] per known logical workspace, adapter view echoes, and
+/// the raw fact index the settlement path proves against.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct StagedReport {
+    pub(crate) screens: Vec<crate::world_report::ScreenReport>,
+    pub(crate) domains: Vec<StagedDomain>,
+    /// Non-empty adapter view echoes by output.
+    pub(crate) echoes: BTreeMap<String, String>,
+    /// Raw observed screen per fact, before any logical assignment.
+    pub(crate) fact_output: BTreeMap<WindowId, OutputId>,
+    /// Full raw facts by window id.
+    pub(crate) facts: BTreeMap<WindowId, crate::world_report::WindowFact>,
+    /// Raw explicit closes.
+    pub(crate) closes: BTreeSet<WindowId>,
+    /// Staged logical homing per window.
+    pub(crate) homing: BTreeMap<WindowId, DomainKey>,
+    /// Carried gesture barrier for the staged run.
+    pub(crate) gesture_barrier: bool,
 }
 
 /// Stateful world boundary around the retained [`Engine`].
@@ -259,7 +293,7 @@ pub struct WorldEngine {
     last_report: Option<WorldReport>,
     last_observation_seq: u64,
     last_adapter_incarnation: Option<String>,
-    last_reply: Option<WorldReply>,
+    pub(crate) last_reply: Option<WorldReply>,
     /// Monotonic command high-watermark per (incarnation, generation):
     /// any `command_seq` at or below it is already consumed, so eviction
     /// can never resurrect a sequence. Commandless reports never move it.
@@ -268,50 +302,36 @@ pub struct WorldEngine {
     /// Outstanding explicit float-placement targets, at most one per window.
     /// Bounded by the window inventory itself.
     pub(crate) retained_floats: Vec<RetainedFloat>,
-    pub(crate) pending_creations: Vec<PendingCreation>,
     pub(crate) creation_counter: u64,
-    last_views: BTreeMap<OutputId, String>,
-    /// Planner-owned scoped workspace assignment (D2): per-output lists
-    /// for local/global-unique, rebuilt every accepted report through
-    /// [`rebuild_local_mapping`]/[`rebuild_global_mapping`].
+    pub(crate) last_views: BTreeMap<OutputId, String>,
+    /// Core-owned logical workspace rings (D2): per-screen ordered lists of
+    /// stable logical workspace ids, retained across reports. Rings converge
+    /// every accepted report through lifecycle (trailing creation/removal),
+    /// hotplug displacement, and commands (migration moves the logical id
+    /// between screens). Native observations never move ownership.
     pub(crate) mapping: BTreeMap<String, Vec<String>>,
-    /// Planner-owned shared order (D2): the live native order itself.
-    pub(crate) shared_order: Vec<String>,
-    /// Planner-owned previous-view history (D2): per-output entries plus
-    /// one shared entry, observed from verified views only.
+    /// Core-owned current view per screen: the stable logical workspace id
+    /// shown, retained across reports. Commands and policy moves update it;
+    /// adapter echoes prove it.
+    pub(crate) views: BTreeMap<String, String>,
+    /// Planner-owned previous-view history (D2): per-output entries
+    /// observed from verified views only.
     pub(crate) history: ScopeHistory,
-    /// Planner-owned hotplug displacement (D2, local/global-unique only):
-    /// removed origins mapped to their preserved workspace units plus the
-    /// hosting survivor. Shared mode never displaces.
+    /// Planner-owned hotplug displacement: removed screens mapped to their
+    /// preserved logical workspace units plus the hosting survivor.
     pub(crate) displaced: BTreeMap<String, crate::workspace_scope::DisplacedEntry>,
-    /// Planner-owned per-output-local startup conversion: outputs still
-    /// showing a foreign-owned shared current, mapped to that shared
-    /// native id. Each receives its own fresh backing plus membership-only
-    /// conversion of its non-sticky windows, then the entry clears (view
-    /// moved on, output disconnected, or conversion fired). Entries are
-    /// only ever created while [`WorldEngine::startup_pending`] holds, so
-    /// post-startup explicit views are never converted. Unused in aligned
-    /// mode (startup adopts the grid without conversion); retained for the
-    /// default disjoint model.
-    pub(crate) startup_conversion: BTreeMap<OutputId, String>,
-    /// True until the startup conversion pass runs on a complete report.
-    /// Survives incomplete startup reports so delayed readback still
-    /// converts; cleared once the pass runs. Incarnation resets re-arm.
-    pub(crate) startup_pending: bool,
-    /// Last observed native output facts by stable output key (geometry
-    /// plus active-screen primary). Updated for every live output on
-    /// every accepted report; removed origins keep their disconnect-time
-    /// facts while a displacement record needs placement. Never a window
-    /// frame proxy.
+    /// Last observed screen facts by stable output key (FULL rectangle,
+    /// work area, plus active-screen primary). Updated for every live
+    /// screen on every accepted report; removed screens keep their
+    /// disconnect-time facts while a displacement record needs placement.
+    /// Never a window frame proxy.
     pub(crate) output_facts: BTreeMap<String, crate::workspace_scope::OutputFacts>,
-    /// Core-owned live output topology: validated FULL native rectangles by
-    /// stable output id, retained from the last accepted report claiming
-    /// complete topology in EVERY workspace mode (never tied to hotplug
-    /// displacement: shared mode retains exactly like local modes).
-    /// Directional world commands resolve against this map through the
-    /// shared strict unique-reciprocal helper, never the carried adapter
-    /// adjacency. A report with empty topology, any incomplete topology
-    /// entry, or a missing/invalid/duplicate FULL rect clears the map, so
+    /// Core-owned live output topology: validated FULL rectangles by stable
+    /// output id, retained from the last accepted report claiming complete
+    /// screens. Directional world commands resolve against this map through
+    /// the shared strict unique-reciprocal helper, never any carried
+    /// adjacency. A report with no screens, any incomplete screen, or a
+    /// missing/invalid/duplicate FULL rect clears the map, so
     /// topology-dependent crossing, migration, and remap fence narrowly
     /// until the next complete report instead of actuating on stale edges.
     /// Unrelated window-inventory incompleteness never clears this map.
@@ -325,15 +345,16 @@ pub struct WorldEngine {
     /// Floating workspaces skip convergence and publish explicit untouched
     /// rows (no frame writes while floating).
     pub(crate) tiling: BTreeMap<DomainKey, TilingMode>,
+    /// Core-owned logical membership (D2): stable window-lifetime homing
+    /// independent of layout sessions. The single homing owner: floating
+    /// release, minimized/unreadable holds, and view switches never move
+    /// members except through explicit commits, truthful receipts, or
+    /// observed cross-output moves. See [`crate::world_members`].
+    pub(crate) members: BTreeMap<WindowId, crate::world_members::MemberState>,
     /// Floating scopes for the report currently being staged: derived from
     /// [`WorldEngine::tiling`] at the start of every accepted run, read by
     /// the command gates and publishing.
     pub(crate) floating_scopes: BTreeSet<DomainKey>,
-    /// Pending numbered-send intents against unbound logical workspaces.
-    pub(crate) pending_sends: Vec<PendingSend>,
-    /// Pending whole-workspace migrations against unbound destinations
-    /// (aligned trailing-create path).
-    pub(crate) pending_migrations: Vec<PendingMigration>,
     /// Per-scope sweep failure classification for the report currently
     /// being staged: [`WorldEngine::classify_sweep_hold`] reasons for scope
     /// keys in the staged held set. Cleared at the start of every accepted
@@ -343,20 +364,7 @@ pub struct WorldEngine {
     /// Minimize slots to forget after the sweep (proven-refusal cleanup:
     /// converge may re-store the slot during the unshielded sweep, so the
     /// forget runs after, never before).
-    pending_forget: Vec<(DomainKey, WindowId)>,
-    /// Aligned per-output-local platform opt-in (see
-    /// [`WorldEngineConfig::aligned_per_output_workspaces`]). Retained at
-    /// construction; incarnation resets keep it.
-    pub(crate) aligned_per_output: bool,
-    /// Aligned logical identity per (output, native): the stable logical
-    /// workspace id for one output's cell on one native desktop. Minted on
-    /// first observation, retained while the output and native stay live,
-    /// never derived from the reported bindings (replicated aligned
-    /// bindings must not collapse through a generic native->logical map).
-    /// Whole-workspace migration rebinds a logical unit onto the
-    /// destination trailing native without changing this id and mints a
-    /// fresh identity for the emptied source cell.
-    pub(crate) aligned_logical: BTreeMap<(String, String), String>,
+    pub(crate) pending_forget: Vec<(DomainKey, WindowId)>,
     /// Correlated per-command outcome staged by the command path below and
     /// consumed once by [`WorldEngine::publish`] for the reply being built.
     /// `None` for observation-only replies and for operations whose result
@@ -369,7 +377,13 @@ pub struct WorldEngine {
     /// again as a fresh newcomer. Survives incarnation resets within the
     /// generation (retained sessions persist there too); a new generation
     /// constructs a new [`WorldEngine`].
-    admission_focus_spent: BTreeSet<String>,
+    pub(crate) admission_focus_spent: BTreeSet<String>,
+    /// Staged logical observation for the report currently being staged:
+    /// screens, one domain per known logical workspace, view echoes, raw
+    /// facts, homing, and the carried gesture barrier. Built once per
+    /// accepted run and read by settling, sweeping, commands, and
+    /// publishing; never survives across runs.
+    pub(crate) staged: StagedReport,
 }
 
 /// Platform opt-ins for [`WorldEngine`] construction: the only Engine
@@ -383,21 +397,15 @@ pub struct WorldEngineConfig {
     /// G-06 maximized directional focus fence (REQ-MAX-08). On by default
     /// (Linux route); the Windows carrier disables it.
     pub maximized_focus_fence: bool,
-    /// Aligned per-output-local workspaces: every output owns the full
-    /// native-position ring and logical identity is per (output, native).
-    /// Off by default (disjoint per-output sets); the KDE carrier enables
-    /// it. Not a user setting.
-    pub aligned_per_output_workspaces: bool,
 }
 
 impl Default for WorldEngineConfig {
     /// Exactly the historical [`WorldEngine::new`] semantics: automatic
-    /// fixed-float sends off, maximized focus fence on, disjoint mapping.
+    /// fixed-float sends off, maximized focus fence on.
     fn default() -> Self {
         Self {
             fixed_send_admission: false,
             maximized_focus_fence: true,
-            aligned_per_output_workspaces: false,
         }
     }
 }
@@ -440,37 +448,23 @@ impl WorldEngine {
             command_highwater: None,
             retained: Vec::new(),
             retained_floats: Vec::new(),
-            pending_creations: Vec::new(),
             creation_counter: 0,
             last_views: BTreeMap::new(),
             mapping: BTreeMap::new(),
-            shared_order: Vec::new(),
+            views: BTreeMap::new(),
             history: ScopeHistory::new(),
             displaced: BTreeMap::new(),
-            startup_conversion: BTreeMap::new(),
-            startup_pending: true,
             output_facts: BTreeMap::new(),
             live_topology: BTreeMap::new(),
             tiling: BTreeMap::new(),
+            members: BTreeMap::new(),
             floating_scopes: BTreeSet::new(),
-            pending_sends: Vec::new(),
-            pending_migrations: Vec::new(),
             hold_reasons: BTreeMap::new(),
             pending_forget: Vec::new(),
             command_result: None,
             admission_focus_spent: BTreeSet::new(),
-            aligned_per_output: config.aligned_per_output_workspaces,
-            aligned_logical: BTreeMap::new(),
+            staged: StagedReport::default(),
         })
-    }
-
-    /// True when the aligned per-output-local model applies to this report:
-    /// platform opt-in on plus `per-output-local` mode. All other modes and
-    /// the default disjoint model are unchanged.
-    #[must_use]
-    pub(crate) fn is_aligned(&self, report: &WorldReport) -> bool {
-        self.aligned_per_output
-            && report.workspace_mode == crate::workspace_scope::WorkspaceMode::PerOutputLocal
     }
 
     /// Bootstrap reply for discovery: generation/capabilities with
@@ -514,22 +508,18 @@ impl WorldEngine {
         self.command_highwater = None;
         self.retained.clear();
         self.retained_floats.clear();
-        self.pending_creations.clear();
-        self.pending_sends.clear();
-        self.pending_migrations.clear();
         self.tiling.clear();
+        self.members.clear();
         self.floating_scopes.clear();
         self.last_views.clear();
         self.mapping.clear();
-        self.shared_order.clear();
+        self.views.clear();
         self.history = ScopeHistory::new();
         self.displaced.clear();
-        self.startup_conversion.clear();
-        self.startup_pending = true;
-        self.aligned_logical.clear();
         self.output_facts.clear();
         self.live_topology.clear();
         self.command_result = None;
+        self.staged = StagedReport::default();
         self.last_adapter_incarnation = Some(adapter_incarnation.to_owned());
     }
 
@@ -635,53 +625,73 @@ impl WorldEngine {
         self.state_revision
     }
 
-    /// Retain (or fence) the core-owned live output topology from one
-    /// accepted report, before any command planning on that same report.
-    /// A report with every topology entry complete and carrying a valid
-    /// FULL rectangle replaces the map; anything else (empty topology,
-    /// incomplete entries, missing or invalid rectangles, duplicate output
-    /// ids) clears it, so topology-dependent operations fence until the
-    /// next complete report. Monitor completeness is independent of
-    /// unrelated window-read failures: `inventory_complete` (window
-    /// inventory) never gates topology retention. Never infers geometry
-    /// from work areas or window frames.
-    pub(crate) fn retain_live_topology(&mut self, report: &WorldReport) {
-        let mut fresh: BTreeMap<String, Rect> = BTreeMap::new();
-        let mut complete = !report.topology.is_empty();
-        for topology in &report.topology {
-            if !topology.complete {
-                complete = false;
-                break;
-            }
-            let Some(rect) = topology.geometry else {
-                complete = false;
-                break;
-            };
-            if topology.output.0.is_empty()
-                || !crate::bounds::valid_carried_rect(rect.x, rect.y, rect.w, rect.h)
-                || fresh.insert(topology.output.0.clone(), rect).is_some()
-            {
-                complete = false;
-                break;
-            }
-        }
-        if complete {
-            self.live_topology = fresh;
-        } else {
-            self.live_topology.clear();
-        }
+    /// Adapter routing projection (read-only, never a second policy):
+    /// ordered logical outputs known to the core.
+    #[must_use]
+    pub fn logical_outputs(&self) -> Vec<String> {
+        let mut out: Vec<String> = self.mapping.keys().cloned().collect();
+        out.sort();
+        out
     }
 
-    /// Live FULL rectangles as shared selector entries, in stable output
-    /// order. Empty when no complete topology is retained.
-    pub(crate) fn live_topology_entries(&self) -> Vec<crate::output_selection::OutputEntry> {
-        self.live_topology
+    /// Adapter routing projection: ordered logical ring for one output.
+    #[must_use]
+    pub fn logical_ring(&self, output: &str) -> Vec<String> {
+        self.mapping.get(output).cloned().unwrap_or_default()
+    }
+
+    /// Adapter routing projection: retained logical view for one output.
+    #[must_use]
+    pub fn logical_view(&self, output: &str) -> Option<String> {
+        self.views.get(output).cloned()
+    }
+
+    /// Adapter routing projection: retained tiling mode (absent seeds tiled).
+    #[must_use]
+    pub fn logical_tiling(&self, output: &str, workspace: &str) -> TilingMode {
+        let key = DomainKey {
+            output: OutputId(output.to_owned()),
+            workspace: crate::directional::WorkspaceId(workspace.to_owned()),
+        };
+        self.tiling.get(&key).copied().unwrap_or(TilingMode::Tiled)
+    }
+
+    /// Adapter routing projection: members homed to one logical workspace.
+    #[must_use]
+    pub fn logical_members(&self, output: &str, workspace: &str) -> Vec<WindowId> {
+        let mut out: Vec<WindowId> = self
+            .members
             .iter()
-            .map(|(id, rect)| crate::output_selection::OutputEntry {
-                id: OutputId(id.clone()),
-                rect: *rect,
+            .filter(|(_, state)| {
+                state.home.output.0 == output && state.home.workspace.0 == workspace
             })
-            .collect()
+            .map(|(window, _)| window.clone())
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// Adapter routing projection: retained logical homing for one lifetime.
+    #[must_use]
+    pub fn adapter_homing(&self, window: &WindowId) -> Option<(String, String)> {
+        self.members
+            .get(window)
+            .map(|state| (state.home.output.0.clone(), state.home.workspace.0.clone()))
+    }
+
+    /// Adapter routing projection: all known lifetimes (sorted).
+    #[must_use]
+    pub fn logical_members_all(&self) -> Vec<WindowId> {
+        let mut out: Vec<WindowId> = self.members.keys().cloned().collect();
+        out.sort();
+        out
+    }
+
+    /// Adapter routing projection: retained previous-view history per output
+    /// (observed views only, never desires).
+    #[must_use]
+    pub fn logical_previous(&self, output: &str) -> Option<String> {
+        self.history.previous(output)
     }
 
     /// Accept one complete report and publish one globally ordered reply.
@@ -802,19 +812,21 @@ impl WorldEngine {
         // and creations, so the bound uses the staged (zeroed) lens for
         // those; retained sessions persist across incarnations, so their
         // lens stays exact.
-        let (retained_len, pending_len) = if is_new_incarnation {
+        let (retained_len, created_len) = if is_new_incarnation {
             (0, 0)
         } else {
             (
                 self.retained.len() + self.retained_floats.len(),
-                self.pending_creations.len(),
+                // New logical workspaces per report are bounded by the live
+                // screens (at most one trailing creation each).
+                report.screens.len(),
             )
         };
         if reply_upper_bound(
             report,
             retained_len,
             self.engine.domain_keys().len(),
-            pending_len,
+            created_len,
         ) > WORLD_MAX_REPLY_BYTES
         {
             return WorldOutcome::Rejected {
@@ -850,6 +862,15 @@ impl WorldEngine {
             }
             (None, None) => false,
         };
+        // Restoration ingress is first-report-only per incarnation: a later
+        // report carrying it is stale and refuses before any staging, so a
+        // retried or replayed restoration can never rewrite retained rings.
+        if report.restored.is_some() && has_last {
+            return WorldOutcome::Rejected {
+                kind: KIND_SNAPSHOT,
+                message: MSG_RESTORED_STALE,
+            };
+        }
         // Stage everything past this point on a clone. Exact-encoding
         // overflow (or any late failure) drops the candidate; `self` is
         // adopted only after the staged reply encodes within budget.
@@ -893,8 +914,9 @@ impl WorldEngine {
         }
     }
 
-    /// Run one accepted report on the staged candidate: settle retained
-    /// state, sweep every readable domain, execute at most one command, and
+    /// Run one accepted report on the staged candidate: converge logical
+    /// rings/views, stage the observation, settle retained state, sweep
+    /// every readable logical workspace, execute at most one command, and
     /// publish one globally monotonic revision. Called only on the clone;
     /// the caller adopts the candidate after the exact-encoding gate.
     fn run_accepted(
@@ -905,15 +927,33 @@ impl WorldEngine {
         digest: u64,
         consumed: bool,
     ) -> WorldOutcome {
-        // Observation index for shielding/settlement, built from the raw
-        // report before any mutation.
-        let mut by_id: BTreeMap<&WindowId, &EngineWindow> = BTreeMap::new();
-        for domain in &report.domains {
-            for window in &domain.windows {
-                by_id.insert(&window.window, window);
-            }
+        // Logical rings/views converge first (bootstrap, hotplug, tiling
+        // seeds) so staging assigns facts against this report's ownership.
+        self.stage_facts(report);
+        // Restoration adoption precedes logical convergence: persisted rings,
+        // views, tiling, and homing arrive before bootstrap mints anything,
+        // so restored units are retained (never fresh placement). Stale
+        // ingress already refused above; only a first report reaches here.
+        if let Some(restored) = report.restored.as_ref() {
+            self.apply_restored(restored);
         }
-        self.settle_retained(report);
+        self.converge_logical_pre(report);
+        // View flights settle against raw echoes before staging: confirms
+        // and external supersessions move core views, so homing assigns
+        // against adapter truth, never a stale desire.
+        self.settle_views_pre(report);
+        // Stage the observation: homing plus one domain per known logical
+        // workspace.
+        self.build_staged_domains(report);
+        // Remaining flights (window, migration, floats) settle against the
+        // staged homing and echoes. Settlement classifies against the
+        // pre-settlement staged homing (raw observation versus the
+        // authoritative desired projection); a proven migration refusal can
+        // roll back mapping/members/views/session ownership, so restage
+        // afterwards: the sweep and publish below must use post-rollback
+        // domains, never the pre-rollback ones.
+        self.settle_rest(report);
+        self.build_staged_domains(report);
         // Bind the engine owner/generation (rebinding clears sessions).
         self.engine.sync_binding(owner, &self.core_generation);
         // Ingress settings: the reported fixed-size predicate selects
@@ -924,66 +964,59 @@ impl WorldEngine {
             .set_fixed_size_predicate(report.fixed_size_predicate);
         self.engine.set_anchor_fallback(report.anchor_fallback);
         self.engine.set_no_space_result(report.no_space_result);
-        // Seed planner-owned per-workspace tiling for newly observed
-        // natives from the reported saved default: startup seeds all live
-        // workspaces; live default changes seed only subsequently observed
-        // ones. Keys already present (manual toggles, earlier seeds) never
-        // reseed, and keys for no-longer-live natives (outside retained
-        // pinned/displaced bindings) prune so a reused native id reseeds
-        // instead of inheriting a stale mode.
-        self.seed_workspace_tiling(report);
         // Floating workspaces skip convergence entirely: no session is
         // created or converged there, and no frame writes publish for them.
-        self.floating_scopes = report
+        self.floating_scopes = self
+            .staged
             .domains
             .iter()
-            .map(|domain| domain.domain.key())
+            .map(|domain| domain.key.clone())
             .filter(|key| {
                 self.tiling
                     .get(key)
                     .is_some_and(|mode| *mode == TilingMode::Floating)
             })
             .collect();
-        // Planner-owned workspace mapping/history converge before the sweep
-        // so lifecycle rows and selection rings see this report's topology.
-        self.converge_workspace_policy(report);
-        // Core-owned live output topology retains before the sweep so the
-        // same report's commands resolve against its own geometry.
+        // Trailing lifecycle and history converge after staging so they see
+        // homed occupancy; core-owned topology retains so the same report's
+        // commands resolve against its own geometry.
+        self.converge_logical_post(report);
         self.retain_live_topology(report);
         // Retained membership before the sweep, per swept domain: the
         // admission-focus pass diffs this against converged state to find
         // genuinely new lifetimes. Only domains with a retained session
-        // count; fresh seeds (startup, restart, disable/enable
+        // count; fresh seeds (bootstrap, restart, disable/enable
         // re-adoption) never mint admission intents.
         let mut known_before: BTreeMap<DomainKey, BTreeSet<String>> = BTreeMap::new();
-        for domain in &report.domains {
+        for domain in &self.staged.domains {
             if !domain.readable {
                 continue;
             }
-            let key = domain.domain.key();
-            if self.floating_scopes.contains(&key) {
+            if self.floating_scopes.contains(&domain.key) {
                 continue;
             }
-            let Some(session) = self.engine.session(&key) else {
+            let Some(session) = self.engine.session(&domain.key) else {
                 continue;
             };
             let mut known = BTreeSet::new();
             for link in session.snapshot().windows {
-                if link.output == key.output && link.workspace == key.workspace {
+                if link.output == domain.key.output && link.workspace == domain.key.workspace {
                     known.insert(link.window.0.clone());
                 }
             }
             for observed in session.exception_observed() {
-                if observed.output == key.output && observed.workspace == key.workspace {
+                if observed.output == domain.key.output
+                    && observed.workspace == domain.key.workspace
+                {
                     known.insert(observed.window.0.clone());
                 }
             }
             for (window, output, workspace) in session.minimized_entries() {
-                if output == key.output && workspace == key.workspace {
+                if output == domain.key.output && workspace == domain.key.workspace {
                     known.insert(window.0.clone());
                 }
             }
-            known_before.insert(key, known);
+            known_before.insert(domain.key.clone(), known);
         }
         // Reconcile every readable tiled domain; hold the rest explicitly.
         // Floating domains skip convergence (untouched, never held).
@@ -991,40 +1024,52 @@ impl WorldEngine {
         // recovered scope never inherits a previous hold.
         self.hold_reasons.clear();
         let mut held_scopes: BTreeSet<DomainKey> = BTreeSet::new();
-        for domain in &report.domains {
+        // Clone the staged domains for iteration: sweeps borrow `self`
+        // mutably while reading staged homing.
+        let domains = self.staged.domains.clone();
+        for domain in &domains {
             if !domain.readable {
                 continue;
             }
-            let key = domain.domain.key();
-            if self.floating_scopes.contains(&key) {
+            if self.floating_scopes.contains(&domain.key) {
                 continue;
             }
-            self.sweep_domain(
-                domain,
-                &by_id,
-                owner,
-                correlation,
-                &mut held_scopes,
-                report.gesture_barrier,
-            );
+            // Gap preservation: incomplete inventory never infers
+            // minimize/close from absence. Outstanding migration source and
+            // target scopes hold explicitly so the retained sessions (tree,
+            // shares, focus) survive the gap; settlement already holds the
+            // flight narrowly.
+            if !report.inventory_complete
+                && self.retained.iter().any(|r| {
+                    matches!(&r.target.kind, TransferKind::Migration)
+                        && (DomainKey {
+                            output: r.source_output.clone(),
+                            workspace: crate::directional::WorkspaceId(r.source_workspace.clone()),
+                        } == domain.key
+                            || DomainKey {
+                                output: r.target.target_output.clone(),
+                                workspace: crate::directional::WorkspaceId(
+                                    r.target.target_workspace.clone(),
+                                ),
+                            } == domain.key)
+                })
+            {
+                self.hold_reasons.insert(
+                    domain.key.clone(),
+                    crate::world_report::HoldReason::IncompleteInventory,
+                );
+                held_scopes.insert(domain.key.clone());
+                continue;
+            }
+            self.sweep_domain(domain, owner, correlation, &mut held_scopes);
         }
         for (key, window) in std::mem::take(&mut self.pending_forget) {
             self.engine.forget_minimized_slot(&key, &window);
         }
         // Fresh-admission focus intent for this report's sweep, if any.
-        // Computed before pending sends and command execution (neither
-        // mints newcomers) so every publish below shares it.
-        let admission_effects = self.take_admission_focus(report, &known_before, &held_scopes);
-        // Pending numbered sends against newly bound workspaces start now:
-        // the binding resolved the logical token to a native id, so the
-        // engine send runs against the observed target domain. Unbound
-        // intents persist without any view switch or token-as-native write.
-        // Committed intents contribute their deferred one-shot focus here.
-        let mut effects = admission_effects;
-        effects.extend(self.drain_pending_sends(report, &by_id, &held_scopes));
-        // Pending aligned migrations against newly bound trailing
-        // workspaces commit now under the same token-never-native rule.
-        self.drain_pending_migrations(report, &by_id, &held_scopes);
+        // Command execution mints no newcomers, so every publish below
+        // shares it.
+        let mut effects = self.take_admission_focus(report, &known_before, &held_scopes);
         // Command path: consumed sequences reconcile only, never re-execute.
         // A consumed command never re-executes, so its result never
         // re-emits either: consumed replies carry no result.
@@ -1036,20 +1081,24 @@ impl WorldEngine {
         if let Some(command) = report.command.as_ref() {
             let command_seq = report.command_seq.expect("validated pair");
             let was_floating = self.floating_scopes.clone();
-            match self.execute_command(report, command_seq, command, &by_id, &held_scopes) {
+            match self.execute_command(report, command_seq, command, &held_scopes) {
                 CommandApplied::Effect(effect) => {
                     self.resweep_retiled(
                         report,
-                        &by_id,
                         owner,
                         correlation,
                         &mut held_scopes,
                         &was_floating,
                     );
                     let result = self.command_result.take();
-                    // Admission intent first, then deferred pending focus:
-                    // an explicit command focuses after both, so user
-                    // intent wins when they coincide.
+                    // Commands move rings/views; restage so publishing
+                    // assigns facts against the committed ownership.
+                    // Homing stays truthful: echoes still gate views, and
+                    // in-flight members home by raw screen.
+                    self.build_staged_domains(report);
+                    // Admission intent first: an explicit command
+                    // focuses after it, so user intent wins when they
+                    // coincide.
                     effects.push(effect);
                     let reply = self.publish(report, false, effects, result, &held_scopes);
                     return self.finish(report, digest, reply);
@@ -1057,12 +1106,13 @@ impl WorldEngine {
                 CommandApplied::NoEffect => {
                     self.resweep_retiled(
                         report,
-                        &by_id,
                         owner,
                         correlation,
                         &mut held_scopes,
                         &was_floating,
                     );
+                    // See above: restage against committed ownership.
+                    self.build_staged_domains(report);
                     let result = self.command_result.take();
                     let reply = self.publish(report, false, effects, result, &held_scopes);
                     return self.finish(report, digest, reply);
@@ -1081,6 +1131,25 @@ impl WorldEngine {
     /// semantic no-op. The revision cannot wrap: exhaustion is refused
     /// before staging.
     fn finish(&mut self, report: &WorldReport, digest: u64, mut reply: WorldReply) -> WorldOutcome {
+        // Membership owner settles last on the staged candidate so the next
+        // report homes through retained truth (floating release, minimized
+        // and unreadable holds, view-switch stability). Included in the
+        // adopted candidate, never a separate commit.
+        self.reconcile_members(report);
+        // Drop membership for workspaces lifecycle just removed (empty only,
+        // so this is a backstop, never a live-member delete).
+        let mut ringed: BTreeSet<DomainKey> = BTreeSet::new();
+        for (output, ring) in &self.mapping {
+            for id in ring {
+                ringed.insert(DomainKey {
+                    output: OutputId(output.clone()),
+                    workspace: WorkspaceId(id.clone()),
+                });
+            }
+        }
+        self.members.retain(|_, state| {
+            ringed.contains(&state.home) || self.displaced.contains_key(&state.home.output.0)
+        });
         self.state_revision += 1;
         reply.state_revision = self.state_revision;
         if report.observation_seq > self.last_observation_seq || !self.has_last {
@@ -1090,9 +1159,12 @@ impl WorldEngine {
         self.last_request_seq = report.request_seq;
         self.last_digest = digest;
         self.last_report = Some(report.clone());
-        for topology in &report.topology {
+        for view in &report.views {
+            if view.view.is_empty() {
+                continue;
+            }
             self.last_views
-                .insert(topology.output.clone(), topology.current_native.clone());
+                .insert(view.output.clone(), view.view.clone());
         }
         if reply.command_consumed {
             WorldOutcome::CommandConsumed(reply)
@@ -1100,1085 +1172,4 @@ impl WorldEngine {
             WorldOutcome::Accepted(reply)
         }
     }
-
-    /// Settle outstanding transfers/views against the raw observation and
-    /// explicit attempt feedback before the sweep.
-    fn settle_retained(&mut self, report: &WorldReport) {
-        let mut keep: Vec<RetainedTransfer> = Vec::new();
-        for retained in std::mem::take(&mut self.retained) {
-            let feedback = report
-                .feedback
-                .iter()
-                .find(|f| f.operation_id == retained.target.operation_id);
-            let refused = matches!(
-                feedback.map(|f| f.outcome),
-                Some(AttemptOutcome::RefusedProven)
-            );
-            if refused && let TransferKind::Window(window) = &retained.target.kind {
-                // Deferred until after the sweep: the unshielded sweep may
-                // re-store the slot while converging back to observed.
-                self.pending_forget.push((
-                    DomainKey {
-                        output: retained.target.target_output.clone(),
-                        workspace: crate::directional::WorkspaceId(
-                            retained.target.target_workspace.clone(),
-                        ),
-                    },
-                    window.clone(),
-                ));
-            }
-            match &retained.target.kind {
-                TransferKind::Window(window) => {
-                    let homing = observed_homing(report, window);
-                    let closed = observed_closed(report, window);
-                    let source_key = DomainKey {
-                        output: retained.source_output.clone(),
-                        workspace: crate::directional::WorkspaceId(
-                            retained.source_workspace.clone(),
-                        ),
-                    };
-                    let target_key = DomainKey {
-                        output: retained.target.target_output.clone(),
-                        workspace: crate::directional::WorkspaceId(
-                            retained.target.target_workspace.clone(),
-                        ),
-                    };
-                    if matches!(
-                        feedback.map(|f| f.outcome),
-                        Some(AttemptOutcome::RefusedProven | AttemptOutcome::SupersededExternal)
-                    ) {
-                        // Dropped above; refusal slot cleanup already queued.
-                    } else if homing.as_ref() == Some(&target_key) {
-                        // Confirmed by observation.
-                    } else if closed {
-                        // Explicit close settles; the sweep forgets the slot.
-                    } else if let Some(key) = homing {
-                        if key != source_key {
-                            // Newer external input moved it elsewhere: newer
-                            // input wins.
-                        } else if matches!(
-                            feedback.map(|f| f.outcome),
-                            Some(AttemptOutcome::PossiblyExecuted)
-                        ) {
-                            let mut held = retained;
-                            held.target.held = true;
-                            keep.push(held);
-                        } else {
-                            keep.push(retained);
-                        }
-                    } else if matches!(
-                        feedback.map(|f| f.outcome),
-                        Some(AttemptOutcome::PossiblyExecuted)
-                    ) {
-                        let mut held = retained;
-                        held.target.held = true;
-                        keep.push(held);
-                    } else {
-                        // Absent everywhere and not closed: never infer a
-                        // close; retain across the gap.
-                        keep.push(retained);
-                    }
-                }
-                TransferKind::View => {
-                    let current = current_view(report, &retained.target.target_output);
-                    if current == Some(retained.target.target_workspace.as_str()) {
-                        // View confirmed.
-                    } else if matches!(
-                        feedback.map(|f| f.outcome),
-                        Some(AttemptOutcome::RefusedProven | AttemptOutcome::SupersededExternal)
-                    ) {
-                        // Settle to observed.
-                    } else {
-                        let last = self
-                            .last_views
-                            .get(&retained.target.target_output)
-                            .map(String::as_str);
-                        if current != last {
-                            // External view input supersedes.
-                        } else {
-                            keep.push(retained);
-                        }
-                    }
-                }
-                TransferKind::Migration => {
-                    if self.is_aligned(report) {
-                        self.settle_aligned_migration(report, retained, &mut keep);
-                        continue;
-                    }
-                    if migration_confirmed(report, &retained.source_output, &retained.target) {
-                        // Topology shows the workspace under the target
-                        // scope and no longer under the source.
-                    } else if matches!(
-                        feedback.map(|f| f.outcome),
-                        Some(AttemptOutcome::RefusedProven | AttemptOutcome::SupersededExternal)
-                    ) {
-                        // Settle to observed; the mapping reconverges below.
-                    } else {
-                        keep.push(retained);
-                    }
-                }
-            }
-        }
-        self.retained = keep;
-        self.settle_floats(report);
-    }
-
-    /// Settle one outstanding aligned whole-workspace migration against
-    /// member homing plus both view proofs (D6, no premature settlement):
-    /// every surviving member is at the target key, externally superseded,
-    /// or explicitly closed; the target output shows the destination
-    /// native; and the source output shows the stored D5 refill (when one
-    /// was selected). The shared native grid cannot confirm through the
-    /// scoped topology (every output lists every native), so each member
-    /// proves its own arrival: homed at the target key settles it into the
-    /// surviving set, an explicit close drops it in either direction, and a
-    /// homing at neither source nor target drops it as newer external input
-    /// (never fought). Members still homed at the source (delayed arrival)
-    /// or absent everywhere without a close (partial/unreadable arrival)
-    /// stay outstanding with arrived members preserved, and so does a
-    /// migration whose members arrived but either view is still old: the
-    /// transfer is never settled prematurely and never re-actuated. The
-    /// expected refill rides the parent (never the retained refill child),
-    /// so refill-child settlement before the parent never loses the proof.
-    /// An originally-empty migration still verifies target follow plus the
-    /// explicit source refill; a non-empty migration whose members all
-    /// externally superseded/closed settles to observed without yanking
-    /// either view after newer input won. A view that moved externally
-    /// (current differs from both the expectation and the last view)
-    /// settles the parent instead of fighting newer native input, and a
-    /// settled parent never reactivates. Proven refusal or external
-    /// supersession feedback settles the whole transfer to observed;
-    /// possibly-executed holds it without re-actuation.
-    fn settle_aligned_migration(
-        &self,
-        report: &WorldReport,
-        retained: RetainedTransfer,
-        keep: &mut Vec<RetainedTransfer>,
-    ) {
-        let feedback = report
-            .feedback
-            .iter()
-            .find(|f| f.operation_id == retained.target.operation_id);
-        if matches!(
-            feedback.map(|f| f.outcome),
-            Some(AttemptOutcome::RefusedProven | AttemptOutcome::SupersededExternal)
-        ) {
-            return;
-        }
-        // Paired refill-child presence (child pushed before the parent, so a
-        // held child is already in `keep`; a settled child is gone). Computed
-        // before the `hold` closure borrows `keep`.
-        let refill_child_op = format!("{}-refill", retained.target.operation_id);
-        let refill_child_held = keep.iter().any(|r| {
-            matches!(&r.target.kind, TransferKind::View) && r.target.operation_id == refill_child_op
-        });
-        let mut hold = |mut held: RetainedTransfer| {
-            if matches!(
-                feedback.map(|f| f.outcome),
-                Some(AttemptOutcome::PossiblyExecuted)
-            ) {
-                held.target.held = true;
-            }
-            keep.push(held);
-        };
-        // Fresh-report bar: partial inventory, an incomplete topology on
-        // either output, or an unreadable domain at either key holds the
-        // transfer with identities preserved, never settles from a gap.
-        if !report.inventory_complete
-            || report
-                .topology
-                .iter()
-                .filter(|t| {
-                    t.output == retained.target.target_output || t.output == retained.source_output
-                })
-                .any(|t| !t.complete)
-        {
-            hold(retained);
-            return;
-        }
-        let source_key = DomainKey {
-            output: retained.source_output.clone(),
-            workspace: crate::directional::WorkspaceId(retained.source_workspace.clone()),
-        };
-        let target_key = DomainKey {
-            output: retained.target.target_output.clone(),
-            workspace: crate::directional::WorkspaceId(retained.target.target_workspace.clone()),
-        };
-        if report
-            .domains
-            .iter()
-            .any(|d| (d.domain.key() == source_key || d.domain.key() == target_key) && !d.readable)
-        {
-            hold(retained);
-            return;
-        }
-        let mut outstanding = Vec::new();
-        let mut surviving = Vec::new();
-        for member in &retained.members {
-            if observed_closed(report, member) {
-                continue;
-            }
-            match observed_homing(report, member) {
-                Some(key) if key == target_key => {
-                    surviving.push(member.clone());
-                }
-                Some(key) if key == source_key => {
-                    outstanding.push(member.clone());
-                    surviving.push(member.clone());
-                }
-                Some(_) => {}
-                None => {
-                    outstanding.push(member.clone());
-                    surviving.push(member.clone());
-                }
-            }
-        }
-        surviving.sort();
-        // Deterministic outstanding order for stable retained state.
-        outstanding.sort();
-        if !outstanding.is_empty() {
-            let mut held = retained;
-            held.members = surviving;
-            hold(held);
-            return;
-        }
-        // No outstanding members: all surviving arrived, all settled
-        // externally/closed, or originally empty. A non-empty migration with
-        // no survivors settled every member through newer input or close:
-        // settle to observed without fighting either view.
-        if surviving.is_empty() && !retained.migration_initial_empty {
-            return;
-        }
-        // Both views (D6): the adapter actuates the destination follow and
-        // the stored source refill; settlement waits for each read-back
-        // proof. Empty migrations verify both views exactly like arrived
-        // ones. The expected refill rides the parent, so refill-child
-        // settlement before the parent never loses the proof: when the child
-        // is gone (settled) but the source does not show the refill, the
-        // source moved externally and the parent settles instead of holding
-        // forever waiting for a refill that will never be re-actuated (no
-        // reactivation, never fighting newer input). When the child is still
-        // held (true lag, views never proven), the parent holds and waits.
-        // A target view that moved externally (current differs from both the
-        // expectation and the last view) settles instead of fighting.
-        if let Some(refill) = retained.migration_refill.as_deref() {
-            let source_current = current_view(report, &retained.source_output);
-            if !refill_child_held && source_current != Some(refill) {
-                return;
-            }
-        }
-        let target_current = current_view(report, &retained.target.target_output);
-        if target_current != Some(retained.target.target_workspace.as_str()) {
-            let last = self
-                .last_views
-                .get(&retained.target.target_output)
-                .map(String::as_str);
-            if target_current != last {
-                return;
-            }
-            let mut held = retained;
-            held.members = surviving;
-            hold(held);
-            return;
-        }
-        if let Some(refill) = retained.migration_refill.as_deref()
-            && current_view(report, &retained.source_output) != Some(refill)
-        {
-            let mut held = retained;
-            held.members = surviving;
-            hold(held);
-        }
-    }
-
-    /// Settle outstanding explicit float-placement targets against the raw
-    /// observation and explicit property feedback before the sweep. Accepted
-    /// (`Applied`) feedback is recorded by the adapter's read-back proof;
-    /// here only the terminal outcomes and observation proofs settle:
-    /// confirmation (observed frame equals the target), proven refusal or
-    /// external supersession feedback, explicit close, or a native frame
-    /// that matches neither the command-time source nor the target (newer
-    /// input wins, never fought). Possibly-executed holds the target
-    /// without re-actuation; absence without a close retains across the gap.
-    fn settle_floats(&mut self, report: &WorldReport) {
-        let mut observed: BTreeMap<&WindowId, &crate::seed::EngineWindow> = BTreeMap::new();
-        for domain in &report.domains {
-            for window in &domain.windows {
-                observed.insert(&window.window, window);
-            }
-        }
-        let mut keep: Vec<RetainedFloat> = Vec::new();
-        for retained in std::mem::take(&mut self.retained_floats) {
-            let feedback = report
-                .feedback
-                .iter()
-                .find(|f| f.operation_id == retained.operation_id);
-            if matches!(
-                feedback.map(|f| f.outcome),
-                Some(AttemptOutcome::RefusedProven | AttemptOutcome::SupersededExternal)
-            ) {
-                continue;
-            }
-            if observed_closed(report, &retained.window) {
-                continue;
-            }
-            match observed.get(&retained.window) {
-                None => {
-                    // Absent everywhere and not closed: never infer a
-                    // close; retain across the gap.
-                    keep.push(retained);
-                }
-                Some(current) => {
-                    if current.rect == retained.target {
-                        // Confirmed by observation.
-                    } else if matches!(
-                        feedback.map(|f| f.outcome),
-                        Some(AttemptOutcome::PossiblyExecuted)
-                    ) {
-                        // Ambiguous actuation (a clamp/partial setter can
-                        // leave a frame matching neither source nor
-                        // target): hold the target without re-actuation
-                        // until confirmation, proven refusal, explicit
-                        // external supersession, or close — exactly like a
-                        // possibly-executed transfer. Never mistake the
-                        // ambiguity for newer input.
-                        keep.push(retained);
-                    } else if retained.source.is_some_and(|source| current.rect != source) {
-                        // Native frame matches neither the command-time
-                        // source nor the target: newer external input
-                        // (manual move/resize) wins; the stale target drops
-                        // rather than fighting it.
-                    } else {
-                        keep.push(retained);
-                    }
-                }
-            }
-        }
-        self.retained_floats = keep;
-    }
-
-    /// At-most-once fresh-admission focus intent (D4): the genuinely new
-    /// lifetime admitted by this report's sweep, tiled or floated alike,
-    /// carries one Focus effect even when the incoming native report still
-    /// focuses the previous tile. The adapter owns native activation
-    /// through the existing one-shot machinery (`issued_revision`
-    /// watermark, spent-before-dispatch, lost/stale drops); no persistent
-    /// focus desired exists.
-    ///
-    /// At most one candidate per report: the last newcomer in report order
-    /// (new birth order; the D2 fallback anchor is retained state, never a
-    /// candidate). Fresh seeds emit nothing (no retained session means
-    /// startup, restart, or disable/enable re-adoption, where the observed
-    /// native focus stays authoritative), except the first fresh map into
-    /// a previously reported empty readable controlled tiled domain: the
-    /// prior accepted report proves the empty roster there, so the newly
-    /// arrived lifetime focuses once. A workspace with no prior roster, a
-    /// recovered unreadable scope, or a prior held/untouched scope never
-    /// infers birth by absence. Re-observation, shrink evictions
-    /// (D7 victims are retained), closes, gap/bounds edits, settings Apply,
-    /// explicit tile retries, held scopes, and floating scopes emit
-    /// nothing: only a retained domain gaining an unknown lifetime.
-    /// A mid-gesture newcomer spends without emitting (never replayed),
-    /// and an unexplained fit-excluded newcomer (game/overlay with no
-    /// floating, fullscreen, or maximized origin) never takes automatic
-    /// activation; normalized ordinary floats stay eligible.
-    /// D01 native activation ownership: a newcomer admitted behind a
-    /// fullscreen/maximized sibling never takes automatic activation
-    /// either (the host owns activation away from a protected overlay);
-    /// the suppressed intent spends without emitting, never retried.
-    /// Windows under an outstanding transfer never count (cross-domain
-    /// arrivals settle through the transfer, never a focus steal). Spent
-    /// intents prune on close, so a reused id focuses again as a fresh
-    /// newcomer. The `af-<window>` id marks admission intent so the adapter
-    /// applies its float-tolerant guard only there; diagnostic float
-    /// origin is never consulted.
-    fn take_admission_focus(
-        &mut self,
-        report: &WorldReport,
-        known_before: &BTreeMap<DomainKey, BTreeSet<String>>,
-        held_scopes: &BTreeSet<DomainKey>,
-    ) -> Vec<OneShotEffect> {
-        let mut known_now: BTreeSet<String> = BTreeSet::new();
-        let mut current: BTreeMap<DomainKey, BTreeSet<String>> = BTreeMap::new();
-        for key in self.engine.domain_keys() {
-            let Some(session) = self.engine.session(&key) else {
-                continue;
-            };
-            let mut known = BTreeSet::new();
-            for link in session.snapshot().windows {
-                known.insert(link.window.0.clone());
-                known_now.insert(link.window.0.clone());
-            }
-            for observed in session.exception_observed() {
-                known.insert(observed.window.0.clone());
-                known_now.insert(observed.window.0.clone());
-            }
-            for (window, _, _) in session.minimized_entries() {
-                known_now.insert(window.0.clone());
-            }
-            current.insert(key, known);
-        }
-        self.admission_focus_spent
-            .retain(|id| known_now.contains(id));
-        let transferred: BTreeSet<&str> = self
-            .retained
-            .iter()
-            .flat_map(|retained| match &retained.target.kind {
-                TransferKind::Window(window) => vec![window.0.as_str()],
-                // Outstanding whole-workspace migration members (aligned
-                // mode) settle through the transfer, never a focus steal:
-                // disjoint migrations retain no members, so this arm is
-                // empty there.
-                TransferKind::Migration => retained
-                    .members
-                    .iter()
-                    .map(|window| window.0.as_str())
-                    .collect(),
-                TransferKind::View => Vec::new(),
-            })
-            .collect();
-        let mut newcomer: Option<(WindowId, DomainKey)> = None;
-        for domain in &report.domains {
-            let key = domain.domain.key();
-            if !domain.readable || self.floating_scopes.contains(&key) || held_scopes.contains(&key)
-            {
-                continue;
-            }
-            // A domain with no retained session is a fresh seed (startup,
-            // restart, disable/enable re-adoption) with one exception: a
-            // previously reported empty readable controlled tiled domain
-            // proves its empty roster through the prior accepted report,
-            // so the first fresh map there still counts as admission.
-            let known = known_before.get(&key);
-            if known.is_none() && !self.prior_empty_controlled(&key) {
-                continue;
-            }
-            let empty = BTreeSet::new();
-            let before: &BTreeSet<String> = known.unwrap_or(&empty);
-            let converged = current.get(&key);
-            for window in &domain.windows {
-                let id = window.window.0.as_str();
-                if before.contains(id) || transferred.contains(id) {
-                    continue;
-                }
-                // Safety priority: an unexplained fit-excluded newcomer
-                // (game/overlay with no floating, fullscreen, or
-                // maximized origin) never takes automatic activation,
-                // mirroring the send path's no-automatic-permission
-                // refusal. A normalized ordinary float (floating with an
-                // origin) stays eligible, capacity floats alike; only
-                // the unsafe shape is skipped, never the latest
-                // eligible newcomer.
-                if window.fit_excluded
-                    && !window.floating
-                    && !window.fullscreen
-                    && !window.maximized
-                {
-                    continue;
-                }
-                if converged.is_some_and(|known| known.contains(id)) {
-                    newcomer = Some((window.window.clone(), key.clone()));
-                }
-            }
-        }
-        let Some((target, target_key)) = newcomer else {
-            return Vec::new();
-        };
-        // D01 native activation ownership: never force activation away
-        // from a protected overlay. A fullscreen/maximized sibling in the
-        // newcomer's own domain owns host activation, denial, and
-        // explicit switching; the automatic intent spends without
-        // emitting and is never retried. Explicit user focus/send
-        // shortcuts ride commands, never this path.
-        if report.domains.iter().any(|domain| {
-            domain.domain.key() == target_key
-                && domain.windows.iter().any(|window| {
-                    window.window != target && (window.fullscreen || window.maximized)
-                })
-        }) {
-            self.admission_focus_spent.insert(target.0.clone());
-            return Vec::new();
-        }
-        // The gesture barrier spends honestly: a newcomer arriving
-        // mid-gesture drops its activation here and never replays it on
-        // a later report (safety over liveness; the at-most-once
-        // watermark still records it as spent).
-        if report.gesture_barrier {
-            self.admission_focus_spent.insert(target.0.clone());
-            return Vec::new();
-        }
-        if !self.admission_focus_spent.insert(target.0.clone()) {
-            return Vec::new();
-        }
-        vec![OneShotEffect {
-            id: format!("af-{}", target.0),
-            kind: EffectKind::Focus,
-            target,
-            issued_revision: self.state_revision + 1,
-        }]
-    }
-
-    /// Prior-report proof that `key` was a readable, controlled, tiled,
-    /// empty domain: the last accepted report carried the domain readable
-    /// with no windows, and the last accepted reply published it
-    /// controlled. Covers the first fresh map into a previously reported
-    /// empty domain, which carries no retained session to diff against.
-    /// Anything else (no prior report, prior domain absent/unreadable,
-    /// prior roster non-empty, prior held/untouched scope) is not birth
-    /// evidence: truly unknown rosters never infer admission by absence.
-    /// Restart/incarnation resets clear the retained reports, so fresh
-    /// adoption stays quiet; disable/enable adoption replays a prior
-    /// untouched scope, never a controlled empty one.
-    fn prior_empty_controlled(&self, key: &DomainKey) -> bool {
-        let Some(last) = self.last_report.as_ref() else {
-            return false;
-        };
-        let Some(prior) = last
-            .domains
-            .iter()
-            .find(|domain| domain.domain.key() == *key)
-        else {
-            return false;
-        };
-        if !prior.readable || !prior.windows.is_empty() {
-            return false;
-        }
-        let Some(reply) = self.last_reply.as_ref() else {
-            return false;
-        };
-        let scope = format!("{}/{}", key.output.0, key.workspace.0);
-        reply
-            .scopes
-            .iter()
-            .any(|status| status.scope == scope && status.authority == ScopeAuthority::Controlled)
-    }
-
-    /// Reconcile one readable domain through the retained engine sweep.
-    /// Failures hold the scope explicitly; floating callers never reach
-    /// here. A native gesture (`gesture_barrier`) without an explicit
-    /// Session drag defers geometric capacity repair (D7): when the
-    /// carried bounds/gaps changed, membership still converges at the
-    /// retained geometry, but gap adoption and victim repair wait for the
-    /// first report after the gesture clears. The scope holds as
-    /// [`HoldReason::GestureBarrier`] with topology/order retained, so no
-    /// float intent persists mid-gesture and no classification runs.
-    /// Unchanged shapes converge exactly as without the barrier.
-    pub(crate) fn sweep_domain(
-        &mut self,
-        domain: &crate::world_report::DomainReport,
-        by_id: &BTreeMap<&WindowId, &EngineWindow>,
-        owner: &OwnerId,
-        correlation: &CorrelationId,
-        held_scopes: &mut BTreeSet<DomainKey>,
-        gesture_barrier: bool,
-    ) {
-        let key = domain.domain.key();
-        // Legacy parity: the Engine retains the outer-inset work area.
-        // Inset exhaustion holds geometrically (capacity B), never seeds
-        // an empty domain or drops retained topology. This protected hold
-        // stands even mid-gesture: the barrier defers repair, never
-        // exhaustion.
-        let Some(inset) = inset_world_domain(&domain.domain, domain.outer_gap) else {
-            self.hold_reasons
-                .insert(key.clone(), HoldReason::ConstraintClamp);
-            held_scopes.insert(key);
-            return;
-        };
-        if gesture_barrier
-            && self.defer_gesture_repair(domain, &inset, by_id, owner, correlation, held_scopes)
-        {
-            return;
-        }
-        let windows = self.shielded_windows(&key, &domain.windows, by_id);
-        let accepted = self
-            .engine
-            .session(&key)
-            .map(|s| (s.accepted_revision(), s.accepted_fingerprint()));
-        let (revision, fingerprint) = accepted.unwrap_or((0, 0));
-        // Gap/bounds changes adopt through the topology-preserving
-        // update-gaps path (legacy parity); unchanged shapes reconcile.
-        // Unknown sessions reconcile (fresh seed), never update-gaps
-        // (which refuses unknown domains so the fresh route seeds them).
-        let command = match self.engine.session(&key) {
-            Some(session) => {
-                let retained_gap = session
-                    .domains()
-                    .iter()
-                    .find(|d| d.key() == key)
-                    .map(|d| (d.bounds, d.gap));
-                let retained_outer = self.engine.outer_gap(&key);
-                match (retained_gap, retained_outer) {
-                    (Some((bounds, gap)), Some(outer))
-                        if bounds == inset.bounds
-                            && gap == inset.gap
-                            && outer == domain.outer_gap =>
-                    {
-                        CoreCommand::Reconcile
-                    }
-                    (Some(_), Some(_)) => CoreCommand::UpdateGaps,
-                    _ => CoreCommand::Reconcile,
-                }
-            }
-            None => CoreCommand::Reconcile,
-        };
-        let event = CoreEvent {
-            owner: owner.clone(),
-            generation: self.core_generation.clone(),
-            correlation: correlation.clone(),
-            revision,
-            fingerprint,
-            domain: Engine::canonical_component_domain(&inset),
-            domain_key: key.clone(),
-            outer_gap: domain.outer_gap,
-            focused_window: domain.focused.clone(),
-            windows,
-            closed_windows: domain.closed.clone(),
-            directional: None,
-            directional_target_outer_gap: None,
-            target_domain: None,
-            target_windows: Vec::new(),
-            command,
-        };
-        match self.engine.handle(&event) {
-            CoreReply::Projection(_)
-            | CoreReply::Tiled(_)
-            | CoreReply::Released
-            | CoreReply::NoGroup { .. } => {}
-            refused => {
-                // Single-policy classification (capacity B): the staged
-                // reason publishes with the held scope and its rows.
-                self.hold_reasons
-                    .insert(key.clone(), Self::classify_sweep_hold(&refused));
-                held_scopes.insert(key);
-            }
-        }
-    }
-
-    /// Gesture repair deferral for one domain (D7): true when the barrier
-    /// owned this domain (the caller returns without sweeping further).
-    /// Convergence-only at the retained bounds/gaps when those changed:
-    /// membership still reconciles through the ordinary [`Engine::handle`]
-    /// path at retained geometry (a `Reconcile` there never adopts gaps or
-    /// repairs), then the scope holds as [`HoldReason::GestureBarrier`]
-    /// with retained topology, order, focus, and float state untouched.
-    /// Unchanged shapes return false so the ordinary sweep converges them
-    /// fully (the barrier only withholds frame writes at publish). Fresh
-    /// seeds (no retained session) also return false. A failed
-    /// convergence keeps its classified hold: the barrier postpones
-    /// repair, never real failures.
-    fn defer_gesture_repair(
-        &mut self,
-        domain: &crate::world_report::DomainReport,
-        inset: &OutputDomain,
-        by_id: &BTreeMap<&WindowId, &EngineWindow>,
-        owner: &OwnerId,
-        correlation: &CorrelationId,
-        held_scopes: &mut BTreeSet<DomainKey>,
-    ) -> bool {
-        let key = domain.domain.key();
-        let retained = self.engine.session(&key).and_then(|session| {
-            let geometry = session
-                .domains()
-                .iter()
-                .find(|d| d.key() == key)
-                .map(|d| (d.bounds, d.gap))?;
-            let outer = self.engine.outer_gap(&key)?;
-            Some((
-                geometry.0,
-                geometry.1,
-                outer,
-                session.accepted_revision(),
-                session.accepted_fingerprint(),
-            ))
-        });
-        let Some((bounds, gap, outer, revision, fingerprint)) = retained else {
-            return false;
-        };
-        if bounds == inset.bounds && gap == inset.gap && outer == domain.outer_gap {
-            return false;
-        }
-        let windows = self.shielded_windows(&key, &domain.windows, by_id);
-        let retained_domain = OutputDomain {
-            id: key.output.clone(),
-            workspace: key.workspace.clone(),
-            bounds,
-            gap,
-            adjacent: BTreeMap::new(),
-        };
-        let event = CoreEvent {
-            owner: owner.clone(),
-            generation: self.core_generation.clone(),
-            correlation: correlation.clone(),
-            revision,
-            fingerprint,
-            domain: Engine::canonical_component_domain(&retained_domain),
-            domain_key: key.clone(),
-            outer_gap: outer,
-            focused_window: domain.focused.clone(),
-            windows,
-            closed_windows: domain.closed.clone(),
-            directional: None,
-            directional_target_outer_gap: None,
-            target_domain: None,
-            target_windows: Vec::new(),
-            command: CoreCommand::Reconcile,
-        };
-        match self.engine.handle(&event) {
-            CoreReply::Projection(_)
-            | CoreReply::Tiled(_)
-            | CoreReply::Released
-            | CoreReply::NoGroup { .. } => {}
-            refused => {
-                // Single-policy classification (capacity B): the staged
-                // reason publishes with the held scope and its rows.
-                self.hold_reasons
-                    .insert(key.clone(), Self::classify_sweep_hold(&refused));
-                held_scopes.insert(key);
-                return true;
-            }
-        }
-        self.hold_reasons
-            .insert(key.clone(), HoldReason::GestureBarrier);
-        held_scopes.insert(key);
-        true
-    }
-
-    /// Re-sweep domains a command just re-tiled: the pre-command floating
-    /// set skipped them, so without this pass a floating-to-tiled flip
-    /// would publish no session rows until the next report. Only domains
-    /// floating before the command and tiled after sweep here, so command
-    /// releases and ordinary failures are never resurrected.
-    pub(crate) fn resweep_retiled(
-        &mut self,
-        report: &WorldReport,
-        by_id: &BTreeMap<&WindowId, &EngineWindow>,
-        owner: &OwnerId,
-        correlation: &CorrelationId,
-        held_scopes: &mut BTreeSet<DomainKey>,
-        was_floating: &BTreeSet<DomainKey>,
-    ) {
-        let gesture_barrier = report.gesture_barrier;
-        for domain in &report.domains {
-            if !domain.readable {
-                continue;
-            }
-            let key = domain.domain.key();
-            if !was_floating.contains(&key)
-                || self.floating_scopes.contains(&key)
-                || held_scopes.contains(&key)
-                || self.engine.contains(&key)
-            {
-                continue;
-            }
-            self.sweep_domain(
-                domain,
-                by_id,
-                owner,
-                correlation,
-                held_scopes,
-                gesture_barrier,
-            );
-        }
-    }
-
-    /// Start pending numbered sends whose logical token just bound to a
-    /// native id. Unbound intents persist across the gap (never inferred
-    /// closed, never view-switching, never the token as a native id);
-    /// explicit closes and external moves settle them. Deterministic engine
-    /// refusals settle; only unobservable targets (unbound, unreadable, or
-    /// held) keep pending. Committed sends propagate the engine focus
-    /// result exactly like the immediate path (stay: source MRU survivor,
-    /// follow: mover, emptied source: nothing), minted once under the
-    /// original stable operation identity.
-    pub(crate) fn drain_pending_sends(
-        &mut self,
-        report: &WorldReport,
-        by_id: &BTreeMap<&WindowId, &EngineWindow>,
-        held_scopes: &BTreeSet<DomainKey>,
-    ) -> Vec<OneShotEffect> {
-        let mut effects = Vec::new();
-        let pending = std::mem::take(&mut self.pending_sends);
-        for intent in pending {
-            let Some(native) = report
-                .bindings
-                .iter()
-                .find(|binding| {
-                    binding.logical_id == intent.logical_id && binding.output == intent.output
-                })
-                .map(|binding| binding.native_id.clone())
-            else {
-                self.pending_sends.push(intent);
-                continue;
-            };
-            if observed_closed(report, &intent.window) {
-                continue;
-            }
-            let source_key = DomainKey {
-                output: intent.source_output.clone(),
-                workspace: WorkspaceId(intent.source_workspace.clone()),
-            };
-            match observed_homing(report, &intent.window) {
-                None => {
-                    // Absent everywhere and not closed: retain across gap.
-                    self.pending_sends.push(intent);
-                    continue;
-                }
-                Some(key) if key != source_key => continue,
-                Some(_) => {}
-            }
-            if held_scopes.contains(&source_key) {
-                self.pending_sends.push(intent);
-                continue;
-            }
-            if self.retained.iter().any(|r| match &r.target.kind {
-                TransferKind::Window(w) => w == &intent.window,
-                TransferKind::View | TransferKind::Migration => false,
-            }) {
-                continue;
-            }
-            let target_key = DomainKey {
-                output: intent.output.clone(),
-                workspace: WorkspaceId(native.clone()),
-            };
-            if !report
-                .domains
-                .iter()
-                .any(|d| d.readable && d.domain.key() == target_key)
-                || held_scopes.contains(&target_key)
-            {
-                self.pending_sends.push(intent);
-                continue;
-            }
-            let window = intent.window.clone();
-            // Pending trailing commits retain the transfer exactly like the
-            // command path and propagate the one-shot engine focus result
-            // under the original stable identity, emitted once here (the
-            // pend itself carried no effect), preserving at-most-once.
-            if let Ok((retained, focus)) = self.execute_send(
-                report,
-                &intent.operation_id,
-                &window,
-                &intent.output,
-                &native,
-                intent.follow,
-                by_id,
-                held_scopes,
-            ) {
-                if let Some(target) = focus
-                    && let Some(seq) = intent
-                        .operation_id
-                        .strip_prefix("op-")
-                        .and_then(|s| s.parse::<u64>().ok())
-                {
-                    effects.push(OneShotEffect::explicit_focus(
-                        seq,
-                        target,
-                        self.state_revision + 1,
-                    ));
-                }
-                self.retained.push(retained);
-            }
-        }
-        effects
-    }
-
-    /// Commit pending aligned migrations whose destination token just bound
-    /// to a native id. Unbound intents persist across the gap (never
-    /// inferred dropped, never the token as a native id); the commit runs
-    /// the same cross-native path as the command, retaining the migration
-    /// transfer only (no staged result: the command reply already
-    /// consumed). Intents whose source is unreadable, held, or no longer
-    /// live persist; an Engine-level refusal keeps the intent for a later
-    /// report rather than dropping the move silently.
-    pub(crate) fn drain_pending_migrations(
-        &mut self,
-        report: &WorldReport,
-        by_id: &BTreeMap<&WindowId, &EngineWindow>,
-        held_scopes: &BTreeSet<DomainKey>,
-    ) {
-        if self.pending_migrations.is_empty() || !self.is_aligned(report) {
-            return;
-        }
-        let pending = std::mem::take(&mut self.pending_migrations);
-        for intent in pending {
-            let Some(native) = report
-                .bindings
-                .iter()
-                .find(|binding| {
-                    binding.logical_id == intent.logical_id
-                        && binding.output == intent.target_output
-                })
-                .map(|binding| binding.native_id.clone())
-            else {
-                self.pending_migrations.push(intent);
-                continue;
-            };
-            let live: BTreeSet<&str> = report
-                .topology
-                .iter()
-                .flat_map(|topology| topology.native_order.iter().map(String::as_str))
-                .collect();
-            let source_key = DomainKey {
-                output: intent.source_output.clone(),
-                workspace: WorkspaceId(intent.source_workspace.clone()),
-            };
-            if !live.contains(native.as_str())
-                || held_scopes.contains(&source_key)
-                || !report
-                    .domains
-                    .iter()
-                    .any(|d| d.readable && d.domain.key() == source_key)
-                || !report
-                    .topology
-                    .iter()
-                    .any(|topology| topology.output == intent.target_output)
-            {
-                self.pending_migrations.push(intent);
-                continue;
-            }
-            let target_key = DomainKey {
-                output: intent.target_output.clone(),
-                workspace: WorkspaceId(native.clone()),
-            };
-            // Target reservation mirrors the command path: an outstanding
-            // transfer already owns this cell until arrival, so the drain
-            // waits instead of double-booking it.
-            if self.retained.iter().any(|r| {
-                r.target.target_output == intent.target_output
-                    && r.target.target_workspace == native
-            }) {
-                self.pending_migrations.push(intent);
-                continue;
-            }
-            if report
-                .domains
-                .iter()
-                .any(|d| d.domain.key() == target_key && (!d.readable || !d.windows.is_empty()))
-                || report.minimized.iter().any(|entry| {
-                    entry.output == intent.target_output && entry.workspace.0 == native
-                })
-            {
-                self.pending_migrations.push(intent);
-                continue;
-            }
-            if !self.commit_aligned_migration(
-                report,
-                &intent.operation_id,
-                &source_key,
-                &intent.target_output,
-                &native,
-                false,
-                by_id,
-            ) {
-                self.pending_migrations.push(intent);
-            }
-        }
-    }
-
-    /// Observation presented to convergence for one domain: outstanding
-    /// transfer windows are stripped from their source and presented at
-    /// their target so committed retained topology survives actuation lag.
-    /// Whole-workspace migration members shield per member: delayed members
-    /// still observed at the source strip there and inject at the target so
-    /// the relocated tree/order/shares survive; arrived members already at
-    /// the target stay (never duplicated); explicitly closed and externally
-    /// moved members never inject (newer input wins, never fought). Absent
-    /// members without a close carry no geometry and never infer closure.
-    /// Windows with an outstanding explicit float-placement target are
-    /// presented as floating so convergence retains the committed
-    /// exception (and its exact geometry) instead of re-admitting them
-    /// tiled from a stale non-floating observation: a lost placement
-    /// reply must not dissolve the target it never delivered.
-    pub(crate) fn shielded_windows(
-        &self,
-        key: &DomainKey,
-        windows: &[EngineWindow],
-        by_id: &BTreeMap<&WindowId, &EngineWindow>,
-    ) -> Vec<EngineWindow> {
-        let mut out: Vec<EngineWindow> = windows
-            .iter()
-            .filter(|window| {
-                if self.retained.iter().any(|r| match &r.target.kind {
-                    TransferKind::Window(w) => {
-                        w.0 == window.window.0
-                            && r.source_output == key.output
-                            && r.source_workspace == key.workspace.0
-                    }
-                    TransferKind::View | TransferKind::Migration => false,
-                }) {
-                    return false;
-                }
-                // Migration source shielding: strip surviving members still
-                // listed at the source so delayed/partial observations never
-                // rebuild the emptied source cell. Closed/externally-moved
-                // members already dropped from `members`, and arrived members
-                // are already absent here.
-                !self.retained.iter().any(|r| {
-                    matches!(&r.target.kind, TransferKind::Migration)
-                        && r.source_output == key.output
-                        && r.source_workspace == key.workspace.0
-                        && r.members.iter().any(|m| m.0 == window.window.0)
-                })
-            })
-            .cloned()
-            .collect();
-        for entry in &mut out {
-            if self
-                .retained_floats
-                .iter()
-                .any(|held| held.window == entry.window)
-            {
-                entry.floating = true;
-            }
-        }
-        for retained in &self.retained {
-            if let TransferKind::Window(window) = &retained.target.kind
-                && retained.target.target_output == key.output
-                && retained.target.target_workspace == key.workspace.0
-                && !out.iter().any(|entry| entry.window == *window)
-                && let Some(source) = by_id.get(window)
-            {
-                let mut injected = (*source).clone();
-                injected.output = key.output.clone();
-                injected.workspace = key.workspace.clone();
-                out.push(injected);
-            }
-        }
-        for retained in &self.retained {
-            if !matches!(&retained.target.kind, TransferKind::Migration) {
-                continue;
-            }
-            if retained.target.target_output != key.output
-                || retained.target.target_workspace != key.workspace.0
-            {
-                continue;
-            }
-            let source_key = DomainKey {
-                output: retained.source_output.clone(),
-                workspace: crate::directional::WorkspaceId(retained.source_workspace.clone()),
-            };
-            for member in &retained.members {
-                if out.iter().any(|entry| entry.window == *member) {
-                    continue;
-                }
-                let Some(observed) = by_id.get(member) else {
-                    continue;
-                };
-                let observed_key = DomainKey {
-                    output: observed.output.clone(),
-                    workspace: observed.workspace.clone(),
-                };
-                if observed_key == source_key {
-                    let mut injected = (*observed).clone();
-                    injected.output = key.output.clone();
-                    injected.workspace = key.workspace.clone();
-                    out.push(injected);
-                }
-            }
-        }
-        out
-    }
 }
-
-#[cfg(test)]
-#[path = "world_engine_tests.rs"]
-mod tests;

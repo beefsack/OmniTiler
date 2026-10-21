@@ -13,7 +13,7 @@ pub struct SnapCounts {
 
 /// Workspace digit op: unshifted selects an existing workspace, Shift sends
 /// the focused tiled window. Single definition for hook dispatch and the
-/// portable session policy (re-exported through `workspace::DigitOp`).
+/// portable session policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkspaceOp {
     Select,

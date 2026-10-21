@@ -85,7 +85,7 @@ fn drop_blocked_intents(
     tray: &mut Option<crate::tray_sys::TrayOwner>,
 ) {
     if !snap_events.is_empty() {
-        keyboard_tick(state, me, fulls, areas, snap_events, Some("suspended"));
+        keyboard_tick(state, me, store, dir, fulls, areas, snap_events, Some("suspended"));
     }
     if !workspace_events.is_empty() {
         workspace_tick(
@@ -112,7 +112,7 @@ fn drop_blocked_intents(
         );
     }
     if !output_events.is_empty() {
-        workspace_output_send_tick(state, me, fulls, areas, output_events, Some("suspended"));
+        workspace_output_send_tick(state, me, store, dir, fulls, areas, output_events, Some("suspended"));
     }
     if !migrate_events.is_empty() {
         workspace_migrate_tick(
@@ -146,9 +146,9 @@ fn drop_blocked_intents(
     poll_workspace_cli_request(state, me, store, dir, fulls, areas);
     tray_select::poll_tray_select(state, me, store, dir, fulls, areas, tray);
     poll_pager_select(state, me, store, dir, fulls, areas);
-    poll_resize_cli_request(state, me, dir, fulls, areas);
-    poll_directional_cli_request(state, me, dir, fulls, areas);
-    poll_send_output_cli_request(state, me, dir, fulls, areas);
+    poll_resize_cli_request(state, me, store, dir, fulls, areas);
+    poll_directional_cli_request(state, me, store, dir, fulls, areas);
+    poll_send_output_cli_request(state, me, store, dir, fulls, areas);
 }
 
 /// Clear held-gesture and preview state on a blocked turn plus the
@@ -238,22 +238,11 @@ pub(super) fn run_active_tick(
             *areas = fresh;
             *monitor = areas[0].clone();
             *monitor_count = areas.len();
-            // Arrival/removal relocates whole-workspace Engine
-            // sessions; bounds-only changes reproject retained
-            // sessions without touching topology.
+            // Arrival/removal plus bounds changes are core-owned topology:
+            // the mechanical device-to-wire sync runs, and the next world
+            // report carries the fresh screens for the core to reproject
+            // against. No adapter session mutation.
             sync_monitor_outputs(state, areas);
-            for output in state.workspaces.output_keys() {
-                let Some(active) = state.workspaces.active_id(&output) else {
-                    continue;
-                };
-                if let Some((_, key)) =
-                    workspace_domain_for(&output, &active, areas, state.inner_gap, state.outer_gap)
-                    && let Some(area) = areas.iter().find(|a| a.device == output)
-                    && let Some(bounds) = tiling_domain_bounds_with(area.work, state.outer_gap)
-                {
-                    state.engine.reproject_retained(&key, bounds);
-                }
-            }
             log_json_at(
                 log_path,
                 serde_json::json!({
@@ -405,7 +394,7 @@ pub(super) fn run_active_tick(
             // forced off in planning, and no admission, un-maximize,
             // marker, visibility, close, or overlay effect runs. Intents
             // above already dropped; overlays below stay hidden.
-            reconcile_limited_tick(state, me, &fulls, areas, suspend_fg);
+            reconcile_limited_tick(state, me, store, dir, &fulls, areas, suspend_fg);
         }
         hide_border(state, "suspended");
         hide_underlay(state, "suspended");
@@ -456,7 +445,7 @@ pub(super) fn run_active_tick(
     refresh_border_timed(state, me, &fulls, owner_work);
     // The group fill follows on the same wake: chord/move trigger over
     // the Engine-projected source union, same freshness contract.
-    refresh_group_underlay(state, me, &fulls, areas);
+    refresh_group_underlay(state, me, store, dir, &fulls, areas);
     // Only gestures on managed windows pause tiling; unrelated
     // windows never stall the loop.
     let ended: Vec<u64> = state
@@ -576,7 +565,7 @@ pub(super) fn run_active_tick(
         // and drop safely.
         state.snap_advance = None;
         if !snap_events.is_empty() {
-            keyboard_tick(state, me, &fulls, areas, snap_events, Some("gesture"));
+            keyboard_tick(state, me, store, dir, &fulls, areas, snap_events, Some("gesture"));
         }
         if !workspace_events.is_empty() {
             workspace_tick(
@@ -603,7 +592,7 @@ pub(super) fn run_active_tick(
             );
         }
         if !output_events.is_empty() {
-            workspace_output_send_tick(state, me, &fulls, areas, output_events, Some("gesture"));
+            workspace_output_send_tick(state, me, store, dir, &fulls, areas, output_events, Some("gesture"));
         }
         if !migrate_events.is_empty() {
             workspace_migrate_tick(
@@ -632,7 +621,7 @@ pub(super) fn run_active_tick(
         // Drop-preview track on the armed gesture-sampling deadline while
         // held: fresh observation plus the shared Engine resolver per moved
         // pointer. No focus, no geometry writes.
-        refresh_drag_preview(state, me, &fulls, areas);
+        refresh_drag_preview(state, me, store, dir, &fulls, areas);
         // Due routine-frame summaries flush on this existing turn so
         // per-move preview aggregates never strand behind the hold.
         {
@@ -652,7 +641,7 @@ pub(super) fn run_active_tick(
             && migrate_events.is_empty()
             && history_events.is_empty()
         {
-            reconcile_tick(state, me, &fulls, areas);
+            reconcile_tick(state, me, store, dir, &fulls, areas);
             if state.restore_wake.is_some() {
                 let (expired, lost, done) = restore_wake_probe(
                     state,
@@ -672,12 +661,12 @@ pub(super) fn run_active_tick(
             poll_workspace_cli_request(state, me, store, dir, &fulls, areas);
             tray_select::poll_tray_select(state, me, store, dir, &fulls, areas, tray);
             poll_pager_select(state, me, store, dir, &fulls, areas);
-            poll_resize_cli_request(state, me, dir, &fulls, areas);
-            poll_directional_cli_request(state, me, dir, &fulls, areas);
-            poll_send_output_cli_request(state, me, dir, &fulls, areas);
+            poll_resize_cli_request(state, me, store, dir, &fulls, areas);
+            poll_directional_cli_request(state, me, store, dir, &fulls, areas);
+            poll_send_output_cli_request(state, me, store, dir, &fulls, areas);
         } else {
             if !snap_events.is_empty() {
-                keyboard_tick(state, me, &fulls, areas, snap_events, None);
+                keyboard_tick(state, me, store, dir, &fulls, areas, snap_events, None);
             }
             if !workspace_events.is_empty() {
                 workspace_tick(state, me, store, dir, &fulls, areas, workspace_events, None);
@@ -695,7 +684,7 @@ pub(super) fn run_active_tick(
                 );
             }
             if !output_events.is_empty() {
-                workspace_output_send_tick(state, me, &fulls, areas, output_events, None);
+                workspace_output_send_tick(state, me, store, dir, &fulls, areas, output_events, None);
             }
             if !migrate_events.is_empty() {
                 workspace_migrate_tick(state, me, store, dir, &fulls, areas, migrate_events, None);
@@ -706,15 +695,15 @@ pub(super) fn run_active_tick(
             poll_workspace_cli_request(state, me, store, dir, &fulls, areas);
             tray_select::poll_tray_select(state, me, store, dir, &fulls, areas, tray);
             poll_pager_select(state, me, store, dir, &fulls, areas);
-            poll_directional_cli_request(state, me, dir, &fulls, areas);
-            poll_send_output_cli_request(state, me, dir, &fulls, areas);
+            poll_directional_cli_request(state, me, store, dir, &fulls, areas);
+            poll_send_output_cli_request(state, me, store, dir, &fulls, areas);
         }
     } else {
         // A just-ended managed gesture settles before keyboard
         // continuation resumes.
         state.snap_advance = None;
         if !snap_events.is_empty() {
-            keyboard_tick(state, me, &fulls, areas, snap_events, Some("gesture"));
+            keyboard_tick(state, me, store, dir, &fulls, areas, snap_events, Some("gesture"));
         }
         if !workspace_events.is_empty() {
             workspace_tick(
@@ -741,7 +730,7 @@ pub(super) fn run_active_tick(
             );
         }
         if !output_events.is_empty() {
-            workspace_output_send_tick(state, me, &fulls, areas, output_events, Some("gesture"));
+            workspace_output_send_tick(state, me, store, dir, &fulls, areas, output_events, Some("gesture"));
         }
         if !migrate_events.is_empty() {
             workspace_migrate_tick(
@@ -767,12 +756,12 @@ pub(super) fn run_active_tick(
                 Some("gesture"),
             );
         }
-        gesture_tick(state, me, &fulls, areas, &ended);
+        gesture_tick(state, me, store, dir, &fulls, areas, &ended);
         poll_workspace_cli_request(state, me, store, dir, &fulls, areas);
         tray_select::poll_tray_select(state, me, store, dir, &fulls, areas, tray);
         poll_pager_select(state, me, store, dir, &fulls, areas);
-        poll_directional_cli_request(state, me, dir, &fulls, areas);
-        poll_send_output_cli_request(state, me, dir, &fulls, areas);
+        poll_directional_cli_request(state, me, store, dir, &fulls, areas);
+        poll_send_output_cli_request(state, me, store, dir, &fulls, areas);
     }
     // Post-mutation border refresh: reconciliation may have moved the
     // target this tick, so re-read the fresh frame instead of leaving
@@ -781,7 +770,7 @@ pub(super) fn run_active_tick(
     refresh_border_timed(state, me, &fulls, owner_work);
     // Same for the group fill: a moved target may have joined another
     // group, so the projected union re-resolves instead of lingering.
-    refresh_group_underlay(state, me, &fulls, areas);
+    refresh_group_underlay(state, me, store, dir, &fulls, areas);
     // End-of-turn health commit: records the armed owner sample
     // (pre-log exclusive span, including this turn's refreshes)
     // and flushes due summaries, plus trailing activity on

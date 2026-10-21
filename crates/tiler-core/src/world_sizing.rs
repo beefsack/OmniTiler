@@ -8,7 +8,6 @@
 
 use crate::boundary::CoreCommand;
 use crate::directional::Direction;
-use crate::workspace_scope::mode_token;
 use crate::world_report::{
     CommandResult, FloatOrigin, HoldReason, TransferKind, WorldCommand, WorldReply, WorldReport,
 };
@@ -101,13 +100,12 @@ pub fn reply_estimate(reply: &WorldReply) -> usize {
     // One comma between adjacent rows of every non-empty array.
     bytes += reply.scopes.len().saturating_sub(1);
     for workspace in &reply.workspaces {
-        // {"id":,"out":,"bind":,"logical":,"scope":,"order":,"mode":,
-        // "exist":,"hold":} = 75 punctuation plus up to 5 for exist.
-        bytes += 80
+        // {"id":,"out":,"bind":,"scope":,"order":,"mode":,
+        // "exist":,"hold":} = 60 punctuation plus up to 5 for exist.
+        bytes += 65
             + json_string_len(&workspace.id)
             + json_string_len(&workspace.output.0)
             + json_string_len(workspace.native_binding.as_deref().unwrap_or_default())
-            + json_string_len(workspace.logical_id.as_deref().unwrap_or_default())
             + json_string_len(&workspace.scope)
             + usize_len(workspace.order)
             + json_string_len(workspace.tiling_mode.as_str())
@@ -330,28 +328,30 @@ pub fn command_result_estimate(result: &Option<CommandResult>) -> usize {
 /// carried string through [`json_string_len`], exact numeric widths, and
 /// per-row overhead derived field-by-field from the protocol wire layout
 /// (`v`, `owner`, `adapter`, `gen`, `obs`/`reqSeq`/`cmdSeq` decimal strings,
-/// nullable command, `mode`, `topology`, `bindings`, `domains`,
-/// `minimized`, `predicate`, `refill`, `defaultTiled`/`focused`/`complete`/`gesture`
-/// values, `feedback`).
+/// nullable command, `screens`, `windows`, `views`, `closed`, capability
+/// flags, `native`, `predicate`, `refill`, `defaultTiled`/`focused`/
+/// `complete`/`gesture` values, `feedback`).
 /// Conservative: any compact encoding of the report fits within this
 /// bound (locked by `request_estimate_bounds_actual_wire_bytes`). The
 /// adapter must emit compact JSON with no whitespace; key order does not
 /// matter because commas and keys count the same in any order.
 #[must_use]
 pub fn report_estimate(report: &WorldReport) -> usize {
-    // Envelope fixed bytes: {"v":1,"owner":,"adapter":,"gen":,"obs":"","reqSeq":"",
-    // "req":,"cmdSeq":,"command":,"mode":,"topology":[],"bindings":[],"domains":[],
-    // "minimized":[],"predicate":,"refill":,"defaultTiled":,"complete":,"gesture":,"feedback":[]} = 222
-    // plus the version digits, and the "focused" key (,"focused": = 11)
-    // with its string value below. Values counted separately below; nullable
-    // command slots count `null` (4) when absent.
-    let mut bytes = 223
+    // Envelope fixed bytes: {"v":2,"owner":,"adapter":,"gen":,"obs":"","reqSeq":"",
+    // "req":,"cmdSeq":,"command":,"screens":[],"windows":[],"views":[],"closed":[],
+    // "hostOwned":,"equalCount":,"native":[],"predicate":,"refill":,"defaultTiled":,
+    // "complete":,"gesture":,"feedback":[]} = 233
+    // plus the version digits. Values counted separately below; nullable
+    // command slots count `null` (4) when absent. The workspace mode token
+    // rides as `"mode":S` (9 fixed plus the token); membership evidence
+    // rides per fact below (absent counts `null`).
+    let mut bytes = 243
         + usize_len(report.contract_version as usize)
         + json_string_len(&report.owner)
         + json_string_len(&report.adapter_incarnation)
         + json_string_len(&report.core_generation)
         + json_string_len(&report.request_id)
-        + json_string_len(mode_token(report.workspace_mode))
+        + json_string_len(crate::workspace_scope::mode_token(report.workspace_mode))
         + json_string_len(report.fixed_size_predicate.as_wire_str())
         + json_string_len(report.migration_source_refill.as_wire_str())
         + json_string_len(report.anchor_fallback.as_wire_str())
@@ -361,101 +361,64 @@ pub fn report_estimate(report: &WorldReport) -> usize {
         + report.command_seq.map_or(4, |seq| 2 + u64_len(seq))
         + report.command.as_ref().map_or(4, command_estimate_owned)
         + bool_len(report.default_tiled)
+        + bool_len(report.host_owned_workspace_domains)
+        + bool_len(report.equal_workspace_count)
         + json_string_len(&report.focused_global)
         + bool_len(report.inventory_complete)
         + bool_len(report.gesture_barrier);
-    for entry in &report.minimized {
-        // {"win":S,"out":S,"ws":S,"sticky":B} = 31 punctuation plus one
-        // comma and the exact bool width.
-        bytes += 32
-            + bool_len(entry.sticky)
-            + json_string_len(&entry.window.0)
-            + json_string_len(&entry.output.0)
-            + json_string_len(&entry.workspace.0);
+    for screen in &report.screens {
+        // {"out":S,"full":R|null,"work":R|null,"gap":N,"outer":N,
+        // "complete":B,"primary":B} = 72 fixed plus rect digits, gap
+        // widths, and bools.
+        bytes += 72
+            + rect_len(screen.full_rect)
+            + rect_len(screen.work_area)
+            + int_len(screen.gap)
+            + int_len(screen.outer_gap)
+            + bool_len(screen.complete)
+            + bool_len(screen.primary)
+            + json_string_len(&screen.output.0);
     }
-    // "minimized" key plus array brackets (,"minimized":[] = 15), the
-    // "predicate" key (,"predicate": = 13), the "refill" key
-    // (,"refill": = 10), the "anchorFallback" key (,"anchorFallback": = 18),
-    // the "noSpaceResult" key (,"noSpaceResult": = 17), and the
-    // "defaultTiled" key (,"defaultTiled": = 16); values counted above.
-    // The "focused" key (11) counts in the envelope above; its string
-    // value counts below.
-    bytes += 54 + 18 + 17;
-    for topology in &report.topology {
-        // {"out":S,"order":[S...],"current":S,"complete":B,"rect":R|null,"primary":B}
-        // = 61 fixed plus the bool widths, the rect ints (or `null`),
-        // and the native strings.
-        bytes += 61
-            + bool_len(topology.complete)
-            + bool_len(topology.primary)
-            + rect_len(topology.geometry)
-            + json_string_len(&topology.output.0)
-            + json_string_len(&topology.current_native);
-        for native in &topology.native_order {
-            bytes += json_string_len(native) + 1;
-        }
+    for fact in &report.windows {
+        // {"win":S,"out":S,"rect":R|null,"floating":B,
+        // "fitExcluded":B,"fullscreen":B,"maximized":B,"sticky":B,
+        // "fixedAuto":B,"fixedSuppress":B,"minimized":B,
+        // "observedWs":S|null,
+        // "hints":{"minW":N,"minH":N,"maxW":N,"maxH":N}} = 240 fixed
+        // plus ids, rect digits, and hint bounds (`null` counts 4).
+        bytes += 240
+            + json_string_len(&fact.window.0)
+            + json_string_len(&fact.output.0)
+            + rect_len(fact.rect)
+            + bool_len(fact.floating)
+            + bool_len(fact.fit_excluded)
+            + bool_len(fact.fullscreen)
+            + bool_len(fact.maximized)
+            + bool_len(fact.sticky)
+            + bool_len(fact.fixed_auto)
+            + bool_len(fact.fixed_suppress)
+            + bool_len(fact.minimized)
+            + fact
+                .observed_workspace
+                .as_deref()
+                .map_or(4, json_string_len)
+            + fact.hints.min_w.map_or(4, int_len)
+            + fact.hints.min_h.map_or(4, int_len)
+            + fact.hints.max_w.map_or(4, int_len)
+            + fact.hints.max_h.map_or(4, int_len);
     }
-    for binding in &report.bindings {
-        // {"logical":S,"native":S,"out":S,"pin":B,"disp":B,"managed":B} =
-        // 55 fixed plus exact bool widths.
-        bytes += 55
-            + bool_len(binding.pinned)
-            + bool_len(binding.displaced)
-            + bool_len(binding.managed)
-            + json_string_len(&binding.logical_id)
-            + json_string_len(&binding.native_id)
-            + json_string_len(&binding.output.0);
+    for view in &report.views {
+        // {"out":S,"view":S} = 17 fixed.
+        bytes += 17 + json_string_len(&view.output.0) + json_string_len(&view.view);
     }
-    for domain in &report.domains {
-        // {"id":S,"ws":S,"bounds":[N,N,N,N],"gap":N,"outer":N,
-        // "focused":S,"readable":B,"hold":S,"adjacent":{...},
-        // "windows":[...],"closed":[...]} = 114 fixed plus the readable
-        // bool, the hold token, per-entry adjacency, and values.
-        bytes += 114
-            + bool_len(domain.readable)
-            + json_string_len(domain.hold.map_or("", HoldReason::as_str))
-            + json_string_len(&domain.domain.id.0)
-            + json_string_len(&domain.domain.workspace.0)
-            + int_len(domain.domain.bounds.x)
-            + int_len(domain.domain.bounds.y)
-            + int_len(domain.domain.bounds.w)
-            + int_len(domain.domain.bounds.h)
-            + int_len(domain.domain.gap)
-            + int_len(domain.outer_gap)
-            + json_string_len(&domain.focused.0);
-        for (direction, target) in &domain.domain.adjacent {
-            // "dir":S plus one comma (the last comma overcounts by one,
-            // conservative).
-            bytes += json_string_len(direction_token(*direction)) + json_string_len(&target.0) + 1;
-        }
-        for window in &domain.windows {
-            // {"win":S,"out":S,"ws":S,"rect":[N,N,N,N],"floating":B,
-            // "fitExcluded":B,"fullscreen":B,"maximized":B,"sticky":B,
-            // "fixedAuto":B,"fixedSuppress":B,
-            // "hints":{"minW":N,"minH":N,"maxW":N,"maxH":N}} = 204 fixed
-            // plus ids, rect digits, and hint bounds (`null` counts 4).
-            bytes += 204
-                + json_string_len(&window.window.0)
-                + json_string_len(&window.output.0)
-                + json_string_len(&window.workspace.0)
-                + int_len(window.rect.x)
-                + int_len(window.rect.y)
-                + int_len(window.rect.w)
-                + int_len(window.rect.h)
-                + bool_len(window.floating)
-                + bool_len(window.fit_excluded)
-                + bool_len(window.fullscreen)
-                + bool_len(window.maximized)
-                + bool_len(window.sticky)
-                + bool_len(window.fixed_auto)
-                + bool_len(window.fixed_suppress)
-                + window.hints.min_w.map_or(4, int_len)
-                + window.hints.min_h.map_or(4, int_len)
-                + window.hints.max_w.map_or(4, int_len)
-                + window.hints.max_h.map_or(4, int_len);
-        }
-        for id in &domain.closed {
-            bytes += json_string_len(&id.0) + 1;
+    for id in &report.closed {
+        bytes += json_string_len(&id.0) + 1;
+    }
+    for native in &report.native {
+        // {"out":S,"order":[S...],"current":S} = 32 fixed plus strings.
+        bytes += 32 + json_string_len(&native.output.0) + json_string_len(&native.current_native);
+        for id in &native.native_order {
+            bytes += json_string_len(id) + 1;
         }
     }
     for feedback in &report.feedback {
@@ -466,6 +429,49 @@ pub fn report_estimate(report: &WorldReport) -> usize {
             + json_string_len(feedback.kind.as_str())
             + json_string_len(feedback.outcome.as_str())
             + json_string_len(feedback.hold.map_or("", HoldReason::as_str));
+    }
+    // `"restored":null` (16 with the entry comma) when absent; the adapter
+    // omits the key when there is nothing to restore, so this stays
+    // conservative either way. A present restoration counts its full object.
+    bytes += 16;
+    if let Some(restored) = report.restored.as_ref() {
+        bytes += restored_estimate(restored);
+    }
+    bytes
+}
+
+/// Structural size estimate for bootstrap restoration ingress: the
+/// `{"rings":[],"views":[],"tiling":[],"members":[]}` object (44 fixed
+/// plus per-entry shapes) beyond the absent-entry bytes counted above.
+#[must_use]
+pub fn restored_estimate(restored: &crate::world_report::RestoredWorld) -> usize {
+    // Object plus four section keys: {"rings":[],"views":[],"tiling":[],
+    // "members":[]} = 44 punctuation.
+    let mut bytes = 44;
+    for ring in &restored.rings {
+        // {"out":S,"ws":[S...]} = 17 fixed plus strings and commas.
+        bytes += 17 + json_string_len(&ring.output.0);
+        for id in &ring.workspaces {
+            bytes += json_string_len(id) + 1;
+        }
+    }
+    for view in &restored.views {
+        // {"out":S,"view":S} = 17 fixed.
+        bytes += 17 + json_string_len(&view.output.0) + json_string_len(&view.view);
+    }
+    for entry in &restored.tiling {
+        // {"out":S,"ws":S,"tiled":B} = 26 fixed plus the bool.
+        bytes += 26
+            + json_string_len(&entry.output.0)
+            + json_string_len(&entry.workspace)
+            + bool_len(entry.tiled);
+    }
+    for member in &restored.members {
+        // {"win":S,"out":S,"ws":S} = 24 fixed.
+        bytes += 24
+            + json_string_len(&member.window.0)
+            + json_string_len(&member.output.0)
+            + json_string_len(&member.workspace);
     }
     bytes
 }
@@ -882,11 +888,6 @@ pub fn encode_reply_canonical(reply: &WorldReply) -> String {
             &mut out,
             workspace.native_binding.as_deref().unwrap_or_default(),
         );
-        out.push_str(",\"logical\":");
-        push_json_string(
-            &mut out,
-            workspace.logical_id.as_deref().unwrap_or_default(),
-        );
         out.push_str(",\"scope\":");
         push_json_string(&mut out, &workspace.scope);
         out.push_str(",\"order\":");
@@ -1219,9 +1220,9 @@ pub fn reply_exact_bytes(reply: &WorldReply) -> usize {
 /// (128) identifiers:
 /// - retained transfer row: 63 punctuation + `op-<u64>` (25) + kind (11)
 ///   + three max ids (390) = 489, rounded to 512;
-/// - pending-creation workspace row: 80 punctuation + token (25) + output
-///   (130) + empty binding (2) + logical (25) + scope (130) + order (20) +
-///   mode (7) + hold (23) = 442, rounded to 448;
+/// - created logical workspace row: 65 punctuation + id (132) + output
+///   (130) + empty binding (2) + scope (130) + order (20) + mode (7) +
+///   hold (23) = 509, rounded to 512;
 /// - retained-missing held scope row: 28 punctuation + `output/workspace`
 ///   (259) + authority (12) + reason (23) = 322, rounded to 336;
 /// - one emitted effect row (at most one per command): 32 + id (25) +
@@ -1235,19 +1236,14 @@ pub fn reply_exact_bytes(reply: &WorldReply) -> usize {
 pub fn reply_upper_bound(
     report: &WorldReport,
     retained_transfers: usize,
-    retained_sessions: usize,
-    pending_creations: usize,
+    logical_workspaces: usize,
+    created_workspaces: usize,
 ) -> usize {
-    let report_windows: usize = report
-        .domains
-        .iter()
-        .map(|domain| domain.windows.len())
-        .sum::<usize>()
-        .saturating_add(report.minimized.len());
+    let report_windows: usize = report.windows.len().saturating_add(report.closed.len());
     report_estimate(report)
         .saturating_add(retained_transfers.saturating_mul(512))
-        .saturating_add(pending_creations.saturating_mul(448))
-        .saturating_add(retained_sessions.saturating_mul(336))
+        .saturating_add(created_workspaces.saturating_mul(512))
+        .saturating_add(logical_workspaces.saturating_mul(336))
         .saturating_add(4096)
         .saturating_add(256)
         .saturating_add(2048)

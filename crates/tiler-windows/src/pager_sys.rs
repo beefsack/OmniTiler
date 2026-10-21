@@ -774,7 +774,7 @@ impl Drop for PagerOverlays {
 mod tests {
     use super::*;
     use crate::pager_icons::IconImage;
-    use crate::workspace::WindowKey;
+    use crate::native_guards::WindowKey;
     use tiler_core::geometry::Rect;
 
     fn empty_overlays() -> PagerOverlays {

@@ -38,7 +38,6 @@ mod effective;
 mod persistence;
 mod presets;
 mod schema;
-mod tile_bridge;
 mod validation;
 mod windows_catalog;
 
@@ -85,7 +84,6 @@ pub use schema::{
     fixed_size_predicate_options, migration_source_refill_options, no_space_options,
     same_axis_move_options, workspace_mode_options,
 };
-pub use tile_bridge::{retained_gaps_match, tile_options_from_settings};
 pub use validation::{gap_valid, validate_settings};
 pub use windows_catalog::{
     FieldStorageMap, NATIVE_PANELS, SECTION_DESKTOP_PAGER, SECTION_DESKTOP_SNAP,
@@ -95,6 +93,64 @@ pub use windows_catalog::{
     WINDOWS_ONLY_CAPS, WINDOWS_ONLY_FIELDS, WINDOWS_SECTIONS, WINDOWS_UNSUPPORTED_FIELDS,
     WindowsValue, stage_windows_field_value, windows_field_def, windows_field_value,
 };
+
+/// Portable `TileOptions` construction from settings. Every explicit CLI
+/// switch later overrides its corresponding value (the parser starts from
+/// this base), so saved values are defaults, never fences.
+#[must_use]
+pub fn tile_options_from_settings(settings: &schema::Settings) -> crate::tiling::TileOptions {
+    let core = &settings.core;
+    crate::tiling::TileOptions {
+        seconds: None,
+        trace: false,
+        user_start: true,
+        no_keyboard_snap_takeover: !core.keyboard.takeover,
+        allow_win_l: core.keyboard.allow_win_l,
+        no_mouse_snap_prevention: !core.mouse.snap_prevention,
+        border: crate::active_border::ActiveBorderOptions {
+            enabled: core.border.enabled,
+            style: crate::active_border::ActiveBorderStyle {
+                width: core.border.width,
+                gap: core.border.gap,
+                radius: core.border.radius,
+                color: crate::active_border::parse_color(&core.border.color)
+                    .unwrap_or(crate::active_border::DEFAULT_COLOR_RGB),
+                use_theme: core.border.use_theme,
+            },
+        },
+        underlay: crate::group_underlay::GroupUnderlayOptions {
+            enabled: core.underlay.enabled,
+            style: crate::group_underlay::GroupUnderlayStyle {
+                color: crate::group_underlay::parse_color_argb(&core.underlay.color)
+                    .map(|(rgb, _)| rgb)
+                    .unwrap_or((0x2a, 0x82, 0xda)),
+                alpha: crate::group_underlay::parse_color_argb(&core.underlay.color)
+                    .map(|(_, alpha)| alpha)
+                    .unwrap_or(0x66),
+                extension: core.underlay.extension,
+            },
+        },
+        inner_gap: core.inner_gap,
+        outer_gap: core.outer_gap,
+        scope_exes: Vec::new(),
+        scope_hosts: Vec::new(),
+    }
+}
+
+/// Startup mode for one owner run: the validated saved mode, or the default
+/// local mode when there are no live settings (proof owners) or the document
+/// carries the backfilled default.
+#[must_use]
+pub fn startup_mode(live: Option<&persistence::LiveSettings>) -> tiler_core::workspace_scope::WorkspaceMode {
+    live.map(|live| live.settings.core.workspace.mode_enum())
+        .unwrap_or(tiler_core::workspace_scope::DEFAULT_WORKSPACE_MODE)
+}
+
+/// Saved mode of one validated settings document.
+#[must_use]
+pub fn saved_mode(settings: &schema::Settings) -> tiler_core::workspace_scope::WorkspaceMode {
+    settings.core.workspace.mode_enum()
+}
 
 #[cfg(test)]
 mod tests;

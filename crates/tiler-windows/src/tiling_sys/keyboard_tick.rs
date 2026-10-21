@@ -6,6 +6,8 @@ use super::*;
 pub(super) fn keyboard_tick(
     state: &mut TileLoop,
     me: &ProcessIdentity,
+    store: &LedgerStore,
+    dir: &Path,
     fulls: &[Rect],
     areas: &[MonitorArea],
     events: Vec<QueuedSnapEvent>,
@@ -81,13 +83,13 @@ pub(super) fn keyboard_tick(
                 );
             }
             QueuedSnapEvent::Intent(intent) => {
-                dispatch_directional_intent(state, me, fulls, areas, intent, &log_path);
+                dispatch_directional_intent(state, me, store, dir, fulls, areas, intent, &log_path);
             }
             QueuedSnapEvent::Maximize(intent) => {
-                dispatch_maximize_intent(state, me, fulls, areas, intent, &log_path);
+                dispatch_maximize_intent(state, me, store, dir, fulls, areas, intent, &log_path);
             }
             QueuedSnapEvent::Fullscreen(intent) => {
-                dispatch_fullscreen_intent(state, me, fulls, areas, intent, &log_path);
+                dispatch_fullscreen_intent(state, me, store, dir, fulls, areas, intent, &log_path);
             }
             QueuedSnapEvent::Workspace(intent) => {
                 // Routed to workspace_tick by the caller; defensive drop here
@@ -178,13 +180,13 @@ pub(super) fn keyboard_tick(
                 }
             }
             QueuedSnapEvent::Float(intent) => {
-                dispatch_float_intent(state, me, fulls, areas, intent);
+                dispatch_float_intent(state, me, store, dir, fulls, areas, intent);
             }
             QueuedSnapEvent::Resize(intent) => {
-                dispatch_resize_intent(state, me, fulls, areas, intent);
+                dispatch_resize_intent(state, me, store, dir, fulls, areas, intent);
             }
             QueuedSnapEvent::Orientation(intent) => {
-                dispatch_orientation_intent(state, me, fulls, areas, intent);
+                dispatch_orientation_intent(state, me, store, dir, fulls, areas, intent);
             }
             QueuedSnapEvent::WorkspaceTiling(intent) => {
                 // The suspend/elevated fence reads live foreground state, so
@@ -196,10 +198,10 @@ pub(super) fn keyboard_tick(
                     suspend_read(state, me, fulls).veto.block,
                     foreground_elevated(me),
                 );
-                dispatch_workspace_tiling_intent(state, me, fulls, areas, intent, gate);
+                dispatch_workspace_tiling_intent(state, me, store, dir, fulls, areas, intent, gate);
             }
             QueuedSnapEvent::Sticky(intent) => {
-                dispatch_sticky_intent(state, me, fulls, areas, intent);
+                dispatch_sticky_intent(state, me, store, dir, fulls, areas, intent);
             }
             QueuedSnapEvent::Launch(intent) => {
                 // The suspend/elevated fence reads live foreground state, so

@@ -36,7 +36,7 @@ impl TileLoop {
     /// be idempotent); the hide-time record itself is never rewritten, so
     /// the reveal preimage stays intact.
     fn refresh_hidden_iconic(&mut self) {
-        let keys: Vec<crate::workspace::WindowKey> = self.hidden_claims.keys().cloned().collect();
+        let keys: Vec<crate::native_guards::WindowKey> = self.hidden_claims.keys().cloned().collect();
         for key in keys {
             if !self.last_hwnds.contains(&key.hwnd) {
                 continue;
@@ -46,7 +46,7 @@ impl TileLoop {
             }
             let owned = self.member_tags.get(&key).is_some_and(|stored| {
                 !stored.is_empty()
-                    && crate::workspace_owner::visible_lifetime_ok(
+                    && crate::native_guards::visible_lifetime_ok(
                         stored,
                         live_member_tag(key.hwnd).as_deref(),
                     )
@@ -139,12 +139,12 @@ impl TileLoop {
             // `EnumWindows` enumeration; fixtures either script it
             // explicitly (retained overlays interleaved in native position)
             // or fall back to observed-then-retained exactly as before.
-            let visible: Vec<crate::workspace::WindowKey> = INJECTED_ZORDER
+            let visible: Vec<crate::native_guards::WindowKey> = INJECTED_ZORDER
                 .with(|slot| slot.borrow().clone())
                 .unwrap_or_else(|| {
                     let mut fallback = Vec::with_capacity(observed.len() + retained.len());
                     for window in observed.iter() {
-                        fallback.push(crate::workspace::WindowKey {
+                        fallback.push(crate::native_guards::WindowKey {
                             hwnd: window.hwnd,
                             pid: window.identity.pid,
                             creation: window.identity.process_creation.clone(),
@@ -182,7 +182,7 @@ impl TileLoop {
         // fresh frames. Frameless rows (minimized, hosted-gate refusals) never
         // enter: they keep their retained stacking slot instead. This is the
         // only native order read; the pager never queries z-order itself.
-        let mut zorder: Vec<crate::workspace::WindowKey> = Vec::new();
+        let mut zorder: Vec<crate::native_guards::WindowKey> = Vec::new();
         for raw in hwnds {
             // The process-owned border overlay is never a tile target, a
             // token source, or an unreadable count: skip it before any query.
@@ -227,7 +227,7 @@ impl TileLoop {
                     }
                     skipped.push((known.token.clone(), reason.as_str().to_owned()));
                     if reason == SkipReason::Minimized {
-                        self.minimized_omitted.insert(crate::workspace::WindowKey {
+                        self.minimized_omitted.insert(crate::native_guards::WindowKey {
                             hwnd: known.identity.hwnd,
                             pid: known.identity.pid,
                             creation: known.identity.process_creation.clone(),
@@ -235,7 +235,7 @@ impl TileLoop {
                         continue;
                     }
                     retained.push(RetainedRow {
-                        key: crate::workspace::WindowKey {
+                        key: crate::native_guards::WindowKey {
                             hwnd: known.identity.hwnd,
                             pid: known.identity.pid,
                             creation: known.identity.process_creation.clone(),
@@ -291,7 +291,7 @@ impl TileLoop {
                     ) {
                         skipped.push((window.token.clone(), "scope-excluded".to_owned()));
                         retained.push(RetainedRow {
-                            key: crate::workspace::WindowKey {
+                            key: crate::native_guards::WindowKey {
                                 hwnd: window.identity.hwnd,
                                 pid: window.identity.pid,
                                 creation: window.identity.process_creation.clone(),
@@ -304,7 +304,7 @@ impl TileLoop {
                         });
                         continue;
                     }
-                    zorder.push(crate::workspace::WindowKey {
+                    zorder.push(crate::native_guards::WindowKey {
                         hwnd: window.hwnd,
                         pid: window.identity.pid,
                         creation: window.identity.process_creation.clone(),
@@ -318,7 +318,7 @@ impl TileLoop {
                     // inside Engine membership with no geometry writes. The
                     // fresh overlay flags ride along so move/pointer routes
                     // refuse before mutation and admission clears once.
-                    let retained_key = crate::workspace::WindowKey {
+                    let retained_key = crate::native_guards::WindowKey {
                         hwnd: window.hwnd,
                         pid: window.identity.pid,
                         creation: window.identity.process_creation.clone(),
@@ -412,31 +412,31 @@ impl TileLoop {
         &mut self,
         observed: &[ObservedWindow],
         retained: &[RetainedRow],
-        visible_top_to_bottom: &[crate::workspace::WindowKey],
+        visible_top_to_bottom: &[crate::native_guards::WindowKey],
     ) {
-        let mut live: HashMap<crate::workspace::WindowKey, Rect> = HashMap::new();
+        let mut live: HashMap<crate::native_guards::WindowKey, Rect> = HashMap::new();
         for window in observed {
-            let key = crate::workspace::WindowKey {
+            let key = crate::native_guards::WindowKey {
                 hwnd: window.hwnd,
                 pid: window.identity.pid,
                 creation: window.identity.process_creation.clone(),
             };
-            if self.workspaces.member_loc(&key).is_some() {
+            if self.member_home(&key).is_some() {
                 live.insert(key, window.visible);
             }
         }
         for row in retained {
             if let Some(rect) = row.rect
-                && self.workspaces.member_loc(&row.key).is_some()
+                && self.member_home(&row.key).is_some()
             {
                 live.entry(row.key.clone()).or_insert(rect);
             }
         }
         self.pager_live = live;
-        let mut members: BTreeSet<crate::workspace::WindowKey> = BTreeSet::new();
-        for output in self.workspaces.output_keys() {
-            for id in self.workspaces.workspace_ids(&output) {
-                members.extend(self.workspaces.workspace_members(&output, &id));
+        let mut members: BTreeSet<crate::native_guards::WindowKey> = BTreeSet::new();
+        for output in self.output_devices() {
+            for id in self.workspace_ids(&output) {
+                members.extend(self.workspace_members(&output, &id));
             }
         }
         // Union the fresh visible keys: observe runs before assignment, so a

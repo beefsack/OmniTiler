@@ -5,6 +5,8 @@ use crate::snapkey::QueuedIntent;
 pub(super) fn dispatch_directional_intent(
     state: &mut TileLoop,
     me: &ProcessIdentity,
+    store: &LedgerStore,
+    dir: &Path,
     fulls: &[Rect],
     areas: &[MonitorArea],
     intent: QueuedIntent,
@@ -139,7 +141,7 @@ pub(super) fn dispatch_directional_intent(
         );
         return;
     };
-    if !crate::workspace_owner::member_matches(
+    if !crate::native_guards::member_matches(
         &member_key,
         origin.hwnd,
         origin.pid,
@@ -162,7 +164,7 @@ pub(super) fn dispatch_directional_intent(
         );
         return;
     }
-    let Some(mut loc) = state.workspaces.member_loc(&member_key).cloned() else {
+    let Some(mut loc) = state.member_home(&member_key) else {
         state.snap_advance = None;
         log_json_at(
             log_path,
@@ -189,18 +191,12 @@ pub(super) fn dispatch_directional_intent(
     // home-domain routing.
     let sticky_subject = state.sticky.contains_key(&member_key);
     if sticky_subject
-        && let Some(active) = state.workspaces.active_id(&home.output)
+        && let Some(active) = state.active_view(&home.output)
         && active != loc.workspace
     {
         loc.workspace = active;
     }
-    let Some((domain, domain_key)) = workspace_domain_for(
-        &loc.output,
-        &loc.workspace,
-        areas,
-        state.inner_gap,
-        state.outer_gap,
-    ) else {
+    if !areas.iter().any(|a| a.device == loc.output) {
         log_json_at(
             log_path,
             serde_json::json!({
@@ -257,7 +253,7 @@ pub(super) fn dispatch_directional_intent(
     // Floating workspaces run no tile layout: both focus and move
     // refuse with the matching workspace-floating vocabulary (KDE
     // plan-adapter parity). Frames stay native.
-    if let Some(outcome) = crate::workspace_owner::directional_workspace_refusal(
+    if let Some(outcome) = crate::native_guards::directional_workspace_refusal(
         intent.op,
         workspace_mode_tiled(state, &loc.output, &loc.workspace),
     ) {
@@ -437,13 +433,11 @@ pub(super) fn dispatch_directional_intent(
         // before the write: a veto authorizes no clear and no
         // move. Games and elevated foregrounds stay untouched.
         let same_home = state
-            .workspaces
-            .member_loc(&member_key)
+            .member_home(&member_key)
             .is_some_and(|fresh| fresh.output == home.output && fresh.workspace == home.workspace);
         let same_view = if sticky_subject {
             state
-                .workspaces
-                .active_id(&home.output)
+                .active_view(&home.output)
                 .is_some_and(|active| active == loc.workspace)
         } else {
             true
@@ -599,13 +593,11 @@ pub(super) fn dispatch_directional_intent(
         // (and, for sticky subjects, the displayed workspace)
         // must never drive the move.
         let same_domain = state
-            .workspaces
-            .member_loc(&member_key)
+            .member_home(&member_key)
             .is_some_and(|fresh| fresh.output == home.output && fresh.workspace == home.workspace);
         let same_view_post = !sticky_subject
             || state
-                .workspaces
-                .active_id(&home.output)
+                .active_view(&home.output)
                 .is_some_and(|active| active == loc.workspace);
         let same_focus = crate::ffi::foreground_window() == member_key.hwnd;
         // Post-clear fullscreen fence through the shared
@@ -671,9 +663,9 @@ pub(super) fn dispatch_directional_intent(
         // Route below on the fresh observation.
         observed = observed_fresh;
         retained = retained_fresh;
-        skipped = skipped_fresh;
+        let _ = skipped_fresh;
     }
-    let mut hint_cx = HintCx::new();
+    let hint_cx = HintCx::new();
     // Float-origin directional commands (R-FLT-07..11): local
     // synchronous routing over same-domain observed floats with
     // exactly one native actuation and no Engine admission. Tile
@@ -878,7 +870,7 @@ pub(super) fn dispatch_directional_intent(
         };
         // Revalidate immediately before the single write, mirroring
         // the shared write path minus the tile-membership fences.
-        let member_key_float = crate::workspace::WindowKey {
+        let member_key_float = crate::native_guards::WindowKey {
             hwnd: subject.hwnd,
             pid: subject.identity.pid,
             creation: subject.identity.process_creation.clone(),
@@ -1046,34 +1038,7 @@ pub(super) fn dispatch_directional_intent(
         );
         return;
     }
-    let Some(rows) = assemble_domain_rows(
-        state,
-        &loc.output,
-        &loc.workspace,
-        &observed,
-        &retained,
-        "directional",
-        correlation.as_str(),
-        &mut hint_cx,
-    ) else {
-        state.snap_advance = None;
-        log_json_at(
-            log_path,
-            serde_json::json!({
-                "event": "snap",
-                "tick": tick,
-                "correlation": correlation.as_str(),
-                "op": intent.op.as_str(),
-                "direction": direction_name(intent.direction),
-                "edge": intent.edge.as_str(),
-                "disposition": "consumed",
-                "outcome": "deferred",
-                "origin": origin.token,
-            }),
-        );
-        return;
-    };
-    if !rows.iter().any(|r| r.token == from) {
+    if !state.member_tokens.values().any(|token| token == &from) {
         state.snap_advance = None;
         log_json_at(
             log_path,
@@ -1091,122 +1056,96 @@ pub(super) fn dispatch_directional_intent(
         );
         return;
     }
-    // Multi-output directional target (REQ-OUT-01..03, REQ-MOV-08):
-    // window-based FULL-rectangle selection into the destination
-    // output's current view. `None` keeps the local path below
-    // (no candidate, floating target, vertical focus, or an
-    // unreadable destination which must never refuse an
-    // otherwise valid local command).
-    let is_focus = intent.op == SnapOp::Focus;
-    let mover_rect = rows.iter().find(|r| r.token == from).map(|r| r.rect);
-    let directional_target = mover_rect.and_then(|rect| {
-        resolve_directional_target(state, areas, &loc.output, intent.direction, &rect, is_focus)
-    });
-    if let Some((target_output, target_workspace)) = directional_target {
-        let outcome = run_directional_cross(
-            state,
-            me,
-            fulls,
-            areas,
-            &observed,
-            &retained,
-            &mut hint_cx,
-            &loc,
-            &home,
-            &member_key,
-            &from,
-            &rows,
-            &target_output,
-            &target_workspace,
-            &intent,
-            &origin,
-            tick,
-            &correlation,
-            correlation.as_str(),
-            continued,
-            skipped,
-            subject_maximized,
-            subject_fullscreen,
+    // Direction-only world dispatch: the core owns topology (strict
+    // unique-reciprocal cross targets, local R1-R3 moves, vertical
+    // focus locality), so the adapter names the window, direction, and
+    // float subject only. The applied reply IS the outcome.
+    let direction = direction_name(intent.direction).to_owned();
+    // Fresh veto re-check before dispatch: validation may have taken
+    // time, and a vetoing foreground authorizes no dispatch.
+    if suspend_read(state, me, fulls).veto.block {
+        state.snap_advance = None;
+        log_json_at(
+            log_path,
+            serde_json::json!({
+                "event": "snap",
+                "tick": tick,
+                "correlation": correlation.as_str(),
+                "op": intent.op.as_str(),
+                "direction": direction_name(intent.direction),
+                "edge": intent.edge.as_str(),
+                "disposition": "consumed",
+                "outcome": "suspended",
+                "origin": origin.token,
+                "window": from,
+                "continued": continued,
+            }),
         );
-        if outcome != "focus-ok" && outcome != "move-applied" {
-            state.snap_advance = None;
-        }
-        // `run_directional_cross` logs the full action line.
         return;
     }
-    let windows: Vec<(WindowId, Rect, WindowSizeHints, bool)> = rows
-        .iter()
-        .map(|r| (WindowId(r.token.clone()), r.rect, r.hints, r.floating))
-        .collect();
-    let fp = fingerprint(
-        &rows
-            .iter()
-            .map(|r| (r.token.clone(), r.rect))
-            .collect::<Vec<_>>(),
-    );
-    // `from` is the origin-verified token, never blind foreground.
-    let from = WindowId(from);
-    // Live gap edits adopt here so the focus/move convergence
-    // below sees matching gaps instead of refusing the keypress.
-    {
-        let revision = revision_for(state, &loc.output, &loc.workspace);
-        let outer_gap = state.outer_gap;
-        adopt_gaps_for_route(
-            state,
-            &domain,
-            &domain_key,
-            outer_gap,
-            &windows,
-            Some(&from),
-            revision,
-            fp,
-            &correlation,
+    if foreground_elevated(me) {
+        state.snap_advance = None;
+        log_json_at(
+            log_path,
+            serde_json::json!({
+                "event": "snap",
+                "tick": tick,
+                "correlation": correlation.as_str(),
+                "op": intent.op.as_str(),
+                "direction": direction_name(intent.direction),
+                "edge": intent.edge.as_str(),
+                "disposition": "consumed",
+                "outcome": "elevated-foreground",
+                "origin": origin.token,
+                "window": from,
+                "continued": continued,
+            }),
         );
+        return;
     }
-    let mut event = crate::tiling::build_reconcile_event_for_floating(
-        &state.owner,
-        &state.generation,
-        &correlation,
-        revision_for(state, &loc.output, &loc.workspace),
-        fp,
-        &domain,
-        &domain_key,
-        state.outer_gap,
-        &windows,
-        Some(&from),
-    );
-    let direction = direction_name(intent.direction).to_owned();
-    event.command = match intent.op {
-        SnapOp::Focus => CoreCommand::Focus {
-            window: from.0.clone(),
-            direction,
-            cross_output_transfer: false,
-            float_subject: false,
+    let foreground = crate::ffi::foreground_window();
+    let command = match intent.op {
+        SnapOp::Focus => tiler_core::world_report::WorldCommand::FocusDirectional {
+            window: tiler_core::directional::WindowId(from.clone()),
+            direction: direction.clone(),
+            float_subject: float_origin,
         },
-        SnapOp::Move => CoreCommand::Move {
-            window: from.0.clone(),
-            direction,
-            cross_output_transfer: false,
-            // R-MOV-03: last-good live setting, read per move so
-            // Apply changes subsequent moves only. Proof owners
-            // carry no live settings and keep the default wrap.
-            same_axis_move: same_axis_move_for(state.settings_live.as_ref()),
+        SnapOp::Move => tiler_core::world_report::WorldCommand::MoveDirectional {
+            window: tiler_core::directional::WindowId(from.clone()),
+            direction: direction.clone(),
+            same_axis: same_axis_move_for(state.settings_live.as_ref()),
         },
     };
-    // Single-domain observations run the local retained
-    // propose/commit path; Core owns direction semantics.
-    let reply = handle_engine_event(state, &mut event);
-    let outcome = match intent.op {
+    let reply = super::world_tick::run_world_command(
+        state,
+        me,
+        store,
+        dir,
+        &observed,
+        &retained,
+        areas,
+        foreground,
+        fulls,
+        command,
+    );
+    // Resolve the world outcome into the snap vocabulary. Focus actuates
+    // the core's explicit target and syncs the advance chain only on
+    // verified focus; moves prove arrival before follow focus.
+    let outcome: &'static str = match intent.op {
         SnapOp::Focus => {
-            if let CoreReply::FocusDirectional(plan) = &reply {
-                let to = plan.to_window.0.clone();
-                let actuation = actuate_focus(state, me, fulls, &observed, &retained, &to);
-                let outcome = actuation.outcome;
-                if outcome == "focus-ok" {
-                    note_focus_advance(state, &observed, &retained, &to);
-                } else {
-                    state.snap_advance = None;
-                }
+            let Some(target) = reply.as_ref().and_then(|reply| {
+                reply
+                    .effects
+                    .iter()
+                    .find(|effect| {
+                        effect.kind == tiler_core::world_report::EffectKind::Focus
+                            && effect.id.starts_with("fx-")
+                    })
+                    .map(|effect| effect.target.0.clone())
+            }) else {
+                // No explicit focus effect: the core planned no focus
+                // change (local no-op or silent refusal).
+                state.snap_advance = None;
                 log_json_at(
                     log_path,
                     serde_json::json!({
@@ -1217,53 +1156,155 @@ pub(super) fn dispatch_directional_intent(
                         "direction": direction_name(intent.direction),
                         "edge": intent.edge.as_str(),
                         "disposition": "consumed",
-                        "outcome": outcome,
-                        "setter_accepted": actuation.setter_accepted,
-                        "prime_inserted": actuation.prime_inserted,
-                        "attach_ok": actuation.attach_ok,
-                        "eventual": actuation.eventual,
-                        "deferred": actuation.deferred,
+                        "outcome": "unchanged",
                         "origin": origin.token,
-                        "window": from.0,
+                        "window": from,
+                        "continued": continued,
+                    }),
+                );
+                return;
+            };
+            let actuation = actuate_focus(state, me, fulls, &observed, &retained, &target);
+            let outcome = actuation.outcome;
+            if outcome == "focus-ok" {
+                note_focus_advance(state, &observed, &retained, &target);
+            } else {
+                state.snap_advance = None;
+            }
+            log_json_at(
+                log_path,
+                serde_json::json!({
+                    "event": "snap",
+                    "tick": tick,
+                    "correlation": correlation.as_str(),
+                    "op": intent.op.as_str(),
+                    "direction": direction_name(intent.direction),
+                    "edge": intent.edge.as_str(),
+                    "disposition": "consumed",
+                    "outcome": outcome,
+                    "setter_accepted": actuation.setter_accepted,
+                    "prime_inserted": actuation.prime_inserted,
+                    "attach_ok": actuation.attach_ok,
+                    "eventual": actuation.eventual,
+                    "deferred": actuation.deferred,
+                    "origin": origin.token,
+                    "window": from,
+                    "continued": continued,
+                }),
+            );
+            return;
+        }
+        SnapOp::Move => {
+            let Some(reply) = reply.as_ref() else {
+                state.snap_advance = None;
+                log_json_at(
+                    log_path,
+                    serde_json::json!({
+                        "event": "snap",
+                        "tick": tick,
+                        "correlation": correlation.as_str(),
+                        "op": intent.op.as_str(),
+                        "direction": direction_name(intent.direction),
+                        "edge": intent.edge.as_str(),
+                        "disposition": "consumed",
+                        "outcome": "move-unverified",
+                        "origin": origin.token,
+                        "window": from,
+                        "continued": continued,
+                    }),
+                );
+                return;
+            };
+            // Arrival proof: the mover's desired allocation reads back live
+            // on its homed output. Allocation changes also separate applied
+            // from no-op.
+            let Some((alloc, wire)) = reply
+                .windows
+                .iter()
+                .find(|w| w.lifetime.0 == from)
+                .and_then(|row| row.allocation.map(|alloc| (alloc, row.output.0.clone())))
+            else {
+                state.snap_advance = None;
+                log_json_at(
+                    log_path,
+                    serde_json::json!({
+                        "event": "snap",
+                        "tick": tick,
+                        "correlation": correlation.as_str(),
+                        "op": intent.op.as_str(),
+                        "direction": direction_name(intent.direction),
+                        "edge": intent.edge.as_str(),
+                        "disposition": "consumed",
+                        "outcome": "move-unverified",
+                        "origin": origin.token,
+                        "window": from,
+                        "continued": continued,
+                    }),
+                );
+                return;
+            };
+            let homed_device = state.device_of(&wire);
+            let arrived = state
+                .readback_frame(me, fulls, member_key.hwnd)
+                .is_some_and(|rect| {
+                    rect == alloc
+                        && homed_device.is_some_and(|device| {
+                            output_for_rect(areas, &rect) == device
+                        })
+                });
+            if !arrived {
+                state.snap_advance = None;
+                log_json_at(
+                    log_path,
+                    serde_json::json!({
+                        "event": "snap",
+                        "tick": tick,
+                        "correlation": correlation.as_str(),
+                        "op": intent.op.as_str(),
+                        "direction": direction_name(intent.direction),
+                        "edge": intent.edge.as_str(),
+                        "disposition": "consumed",
+                        "outcome": "move-unverified",
+                        "origin": origin.token,
+                        "window": from,
                         "continued": continued,
                     }),
                 );
                 return;
             }
-            reply_outcome(&reply)
-        }
-        SnapOp::Move => {
-            if let CoreReply::MoveDirectional(_) = &reply {
-                let writable = writable_tokens(state, &loc.output, &loc.workspace, &observed);
-                let summary = apply_geometry(
-                    state,
-                    ApplyInput {
-                        me,
-                        fulls,
-                        reply: &reply,
-                        observed: &observed,
-                        op: "move",
-                        tick,
-                        correlation: correlation.as_str(),
-                        skipped,
-                        writable: &writable,
-                        output_token: state.workspaces.output_token(&loc.output),
-                        workspace_token: state
-                            .workspaces
-                            .workspace_token(&loc.output, &loc.workspace),
-                        revision: revision_for(state, &loc.output, &loc.workspace),
-                    },
+            let changed = observed
+                .iter()
+                .find(|w| w.token == from)
+                .is_none_or(|w| w.visible != alloc);
+            if !changed {
+                state.snap_advance = None;
+                log_json_at(
+                    log_path,
+                    serde_json::json!({
+                        "event": "snap",
+                        "tick": tick,
+                        "correlation": correlation.as_str(),
+                        "op": intent.op.as_str(),
+                        "direction": direction_name(intent.direction),
+                        "edge": intent.edge.as_str(),
+                        "disposition": "consumed",
+                        "outcome": "move-noop",
+                        "origin": origin.token,
+                        "window": from,
+                        "continued": continued,
+                    }),
                 );
-                match summary {
-                    Some(s) if !s.readback_ok => "move-unverified",
-                    Some(s) if s.mismatched > 0 => "move-mismatch",
-                    Some(s) if s.applied > 0 => "move-applied",
-                    Some(_) => "move-noop",
-                    None => reply_outcome(&reply),
-                }
-            } else {
-                reply_outcome(&reply)
+                return;
             }
+            // Follow focus without hiding: the arrival is already placed,
+            // so only foreground the mover.
+            let actuation = actuate_focus(state, me, fulls, &observed, &retained, &from);
+            if actuation.outcome != "focus-ok" {
+                state.snap_advance = None;
+            } else {
+                note_focus_advance(state, &observed, &retained, &from);
+            }
+            "move-applied"
         }
     };
     log_json_at(
@@ -1278,7 +1319,7 @@ pub(super) fn dispatch_directional_intent(
             "disposition": "consumed",
             "outcome": outcome,
             "origin": origin.token,
-            "window": from.0,
+            "window": from,
             "continued": continued,
         }),
     );

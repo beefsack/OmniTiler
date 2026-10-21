@@ -63,7 +63,8 @@ fn directional_proof_owner_consumes_with_refused_proof() {
     state.allowlist = Some(Vec::new());
     let me = fake_me();
     write_request(&dir, &owner_body(&me, me.pid));
-    poll_directional_cli_request(&mut state, &me, &dir, &[], &[]);
+    let store = crate::storage::LedgerStore::open(&dir.join("ledger")).expect("ledger");
+    poll_directional_cli_request(&mut state, &me, &store, &dir, &[], &[]);
     assert!(
         !dir.join(crate::tiling::DIRECTIONAL_REQUEST_FILE).exists(),
         "proof refusal still consumes the request"
@@ -88,7 +89,8 @@ fn directional_malformed_body_consumes_with_refused() {
     state.log_path = dir.join("owner.log");
     let me = fake_me();
     write_request(&dir, "not json");
-    poll_directional_cli_request(&mut state, &me, &dir, &[], &[]);
+    let store = crate::storage::LedgerStore::open(&dir.join("ledger")).expect("ledger");
+    poll_directional_cli_request(&mut state, &me, &store, &dir, &[], &[]);
     assert!(
         !dir.join(crate::tiling::DIRECTIONAL_REQUEST_FILE).exists(),
         "malformed body still consumes the request"
@@ -111,7 +113,8 @@ fn directional_owner_mismatch_consumes_with_refused() {
     state.log_path = dir.join("owner.log");
     let me = fake_me();
     write_request(&dir, &owner_body(&me, me.pid + 1));
-    poll_directional_cli_request(&mut state, &me, &dir, &[], &[]);
+    let store = crate::storage::LedgerStore::open(&dir.join("ledger")).expect("ledger");
+    poll_directional_cli_request(&mut state, &me, &store, &dir, &[], &[]);
     assert!(
         !dir.join(crate::tiling::DIRECTIONAL_REQUEST_FILE).exists(),
         "mismatched owner still consumes the request"
@@ -138,9 +141,12 @@ fn directional_cli_intent_routes_through_production_dispatch() {
     let mut state = test_state();
     state.log_path = dir.join("owner.log");
     let me = fake_me();
+    let store = crate::storage::LedgerStore::open(&dir.join("ledger")).expect("ledger");
     keyboard_tick(
         &mut state,
         &me,
+        &store,
+        &dir,
         &[],
         &[],
         vec![crate::snapkey::QueuedSnapEvent::Intent(

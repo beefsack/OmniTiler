@@ -141,6 +141,8 @@ pub(super) fn dispatch_launch_intent(
 pub(super) fn dispatch_float_intent(
     state: &mut TileLoop,
     me: &ProcessIdentity,
+    store: &LedgerStore,
+    dir: &Path,
     fulls: &[Rect],
     areas: &[MonitorArea],
     intent: crate::snapkey::QueuedFloatIntent,
@@ -291,6 +293,8 @@ pub(super) fn dispatch_float_intent(
         sticky_off_to_current(
             state,
             me,
+            store,
+            dir,
             fulls,
             areas,
             &observed,
@@ -320,6 +324,8 @@ pub(super) fn dispatch_float_intent(
         apply_unfloat_to_tiled(
             state,
             me,
+            store,
+            dir,
             fulls,
             areas,
             &observed,
@@ -343,6 +349,8 @@ pub(super) fn dispatch_float_intent(
     apply_float_from_tiled(
         state,
         me,
+        store,
+        dir,
         fulls,
         areas,
         &observed,
@@ -374,6 +382,8 @@ pub(super) fn dispatch_float_intent(
 pub(super) fn dispatch_orientation_intent(
     state: &mut TileLoop,
     me: &ProcessIdentity,
+    store: &LedgerStore,
+    dir: &Path,
     fulls: &[Rect],
     areas: &[MonitorArea],
     intent: crate::snapkey::QueuedOrientationIntent,
@@ -437,7 +447,7 @@ pub(super) fn dispatch_orientation_intent(
     let ChordObserved {
         observed,
         retained,
-        skipped,
+        skipped: _,
     } = chord;
     let ChordTarget {
         from,
@@ -486,122 +496,56 @@ pub(super) fn dispatch_orientation_intent(
         log_json_at(&log_path, line);
         return;
     }
-    let mut hint_cx = HintCx::new();
-    let Some(rows) = assemble_domain_rows(
-        state,
-        &loc.output,
-        &loc.workspace,
-        &observed,
-        &retained,
-        "orientation",
-        correlation.as_str(),
-        &mut hint_cx,
-    ) else {
-        let mut line = settle("deferred");
-        line["origin"] = serde_json::Value::from(origin.token.clone());
-        log_json_at(&log_path, line);
-        return;
-    };
-    if !rows.iter().any(|r| r.token == from) {
+    if !state.member_tokens.values().any(|token| token == &from) {
         let mut line = settle("unmanaged");
         line["origin"] = serde_json::Value::from(origin.token.clone());
         log_json_at(&log_path, line);
         return;
     }
-    let windows: Vec<(WindowId, Rect, WindowSizeHints, bool)> = rows
-        .iter()
-        .map(|r| (WindowId(r.token.clone()), r.rect, r.hints, r.floating))
-        .collect();
-    let fp = fingerprint(
-        &rows
-            .iter()
-            .map(|r| (r.token.clone(), r.rect))
-            .collect::<Vec<_>>(),
-    );
-    let from_id = WindowId(from.clone());
-    let Some((domain, domain_key)) = workspace_domain_for(
-        &loc.output,
-        &loc.workspace,
-        areas,
-        state.inner_gap,
-        state.outer_gap,
-    ) else {
+    let known_output = areas.iter().any(|a| a.device == loc.output);
+    if !known_output {
         let mut line = settle("unknown-output");
         line["origin"] = serde_json::Value::from(origin.token.clone());
         log_json_at(&log_path, line);
         return;
     };
-    // Live gap edits adopt here so the toggle converges against matching gaps
-    // instead of refusing the keypress.
-    {
-        let revision = revision_for(state, &loc.output, &loc.workspace);
-        let outer_gap = state.outer_gap;
-        adopt_gaps_for_route(
-            state,
-            &domain,
-            &domain_key,
-            outer_gap,
-            &windows,
-            Some(&from_id),
-            revision,
-            fp,
-            &correlation,
-        );
-    }
-    let mut event = crate::tiling::build_reconcile_event_for_floating(
-        &state.owner,
-        &state.generation,
-        &correlation,
-        revision_for(state, &loc.output, &loc.workspace),
-        fp,
-        &domain,
-        &domain_key,
-        state.outer_gap,
-        &windows,
-        Some(&from_id),
-    );
-    event.command = CoreCommand::ToggleOrientation {
-        window: from.clone(),
-    };
-    let reply = handle_engine_event(state, &mut event);
-    if orientation_plan(&reply).is_none() {
-        // Lone root (`unchanged`), float/no-focus (`not-tiled`), and every
-        // other refusal settle here with no writes and no focus mutation.
-        let mut line = settle(reply_outcome(&reply));
-        line["origin"] = serde_json::Value::from(origin.token.clone());
-        line["window"] = serde_json::Value::from(from.clone());
-        log_json_at(&log_path, line);
-        return;
-    }
-    let writable = writable_tokens(state, &loc.output, &loc.workspace, &observed);
-    let summary = apply_geometry(
+    // World-routed toggle: the core owns orientation planning and the host
+    // diff applies the accepted reply (sibling reflow included) with fresh
+    // proof. No focus or view mutation. The applied reply IS the outcome:
+    // changed allocations report applied, identical ones a no-op, and a
+    // rejected or lost command reports unverified.
+    let foreground = crate::ffi::foreground_window();
+    let reply = super::world_tick::run_world_command(
         state,
-        ApplyInput {
-            me,
-            fulls,
-            reply: &reply,
-            observed: &observed,
-            op: "orientation",
-            tick,
-            correlation: correlation.as_str(),
-            skipped,
-            writable: &writable,
-            output_token: state.workspaces.output_token(&loc.output),
-            workspace_token: state
-                .workspaces
-                .workspace_token(&loc.output, &loc.workspace),
-            revision: revision_for(state, &loc.output, &loc.workspace),
-        },
+        me,
+        store,
+        dir,
+        &observed,
+        &retained,
+        areas,
+        foreground,
+        fulls,
+        tiler_core::world_report::WorldCommand::Operation(CoreCommand::ToggleOrientation {
+            window: from.clone(),
+        }),
     );
-    // Sibling overlays reprojected as reserved slots skip native writes
-    // through the writable fence above; only verified writes count here.
-    // Focus stays on the same window: no focus setter, no view switch.
-    let outcome = match summary {
-        Some(s) if !s.readback_ok => "orientation-unverified",
-        Some(s) if s.mismatched > 0 => "orientation-mismatch",
-        Some(s) if s.applied > 0 => "orientation-applied",
-        Some(_) => "orientation-noop",
-        None => reply_outcome(&reply),
+    let outcome = match reply {
+        Some(reply) => {
+            let changed = reply.windows.iter().any(|row| {
+                row.allocation.is_some_and(|alloc| {
+                    observed
+                        .iter()
+                        .find(|w| w.token == row.lifetime.0)
+                        .is_none_or(|w| w.visible != alloc)
+                })
+            });
+            if changed {
+                "orientation-applied"
+            } else {
+                "orientation-noop"
+            }
+        }
+        None => "orientation-unverified",
     };
     let mut line = settle(outcome);
     line["origin"] = serde_json::Value::from(origin.token.clone());
@@ -623,6 +567,8 @@ pub(super) fn dispatch_orientation_intent(
 pub(super) fn dispatch_workspace_tiling_intent(
     state: &mut TileLoop,
     me: &ProcessIdentity,
+    store: &LedgerStore,
+    dir: &Path,
     fulls: &[Rect],
     areas: &[MonitorArea],
     intent: crate::snapkey::QueuedWorkspaceTilingIntent,
@@ -684,7 +630,7 @@ pub(super) fn dispatch_workspace_tiling_intent(
         log_json_at(&log_path, line);
         return;
     }
-    toggle_workspace_tiling(state, me, fulls, areas, &output);
+    toggle_workspace_tiling(state, me, store, dir, fulls, areas, &output);
 }
 
 /// Cross-domain sticky-off to the current workspace: drop the float exception
@@ -697,18 +643,20 @@ pub(super) fn dispatch_workspace_tiling_intent(
 fn sticky_rehome_to_current(
     state: &mut TileLoop,
     me: &ProcessIdentity,
+    store: &LedgerStore,
+    dir: &Path,
     fulls: &[Rect],
     areas: &[MonitorArea],
     observed: &[ObservedWindow],
     retained: &[RetainedRow],
-    member_key: &crate::workspace::WindowKey,
+    member_key: &crate::native_guards::WindowKey,
     from: &str,
-    loc: &crate::workspace::MemberLoc,
+    loc: &super::world_reads::Home,
     current_ws: &str,
     origin: &SnapOrigin,
     settle: &dyn Fn(&'static str) -> serde_json::Value,
     log_path: &Path,
-    correlation: &CorrelationId,
+    _correlation: &CorrelationId,
     floating: bool,
 ) {
     let target = if floating { "float" } else { "unfloated" };
@@ -730,140 +678,12 @@ fn sticky_rehome_to_current(
         log_json_at(log_path, line);
         return;
     };
-    let mut hint_cx = HintCx::new();
-    let Some(old_rows) = assemble_domain_rows(
-        state,
-        &loc.output,
-        &loc.workspace,
-        observed,
-        retained,
-        "sticky",
-        correlation.as_str(),
-        &mut hint_cx,
-    ) else {
-        let mut line = settle("deferred");
-        line["origin"] = serde_json::Value::from(origin.token.clone());
-        log_json_at(log_path, line);
-        return;
-    };
-    let Some((old_domain, old_key)) = workspace_domain_for(
-        &loc.output,
-        &loc.workspace,
-        areas,
-        state.inner_gap,
-        state.outer_gap,
-    ) else {
+    if !areas.iter().any(|a| a.device == loc.output) {
         let mut line = settle("unknown-output");
         line["origin"] = serde_json::Value::from(origin.token.clone());
         log_json_at(log_path, line);
         return;
     };
-    let old_windows: Vec<(WindowId, Rect, WindowSizeHints, bool)> = old_rows
-        .iter()
-        .filter(|r| r.token != from)
-        .map(|r| (WindowId(r.token.clone()), r.rect, r.hints, r.floating))
-        .collect();
-    let old_fp = fingerprint(
-        &old_windows
-            .iter()
-            .map(|(w, r, _, _)| (w.0.clone(), *r))
-            .collect::<Vec<_>>(),
-    );
-    let Some((cur_domain, cur_key)) = workspace_domain_for(
-        &loc.output,
-        current_ws,
-        areas,
-        state.inner_gap,
-        state.outer_gap,
-    ) else {
-        let mut line = settle("unknown-output");
-        line["origin"] = serde_json::Value::from(origin.token.clone());
-        log_json_at(log_path, line);
-        return;
-    };
-    let mut hint_cx = HintCx::new();
-    let Some(cur_rows) = assemble_domain_rows(
-        state,
-        &loc.output,
-        current_ws,
-        observed,
-        retained,
-        "sticky",
-        correlation.as_str(),
-        &mut hint_cx,
-    ) else {
-        let mut line = settle("deferred");
-        line["origin"] = serde_json::Value::from(origin.token.clone());
-        log_json_at(log_path, line);
-        return;
-    };
-    let mut cur_windows: Vec<(WindowId, Rect, WindowSizeHints, bool)> = cur_rows
-        .iter()
-        .map(|r| (WindowId(r.token.clone()), r.rect, r.hints, r.floating))
-        .collect();
-    cur_windows.push((
-        WindowId(from.to_owned()),
-        live_frame,
-        WindowSizeHints::none(),
-        floating,
-    ));
-    let cur_fp = fingerprint(
-        &cur_windows
-            .iter()
-            .map(|(w, r, _, _)| (w.0.clone(), *r))
-            .collect::<Vec<_>>(),
-    );
-    let mut candidate = state.engine.clone();
-    let mut old_event = crate::tiling::build_reconcile_event_for_floating(
-        &state.owner,
-        &state.generation,
-        correlation,
-        revision_for(state, &loc.output, &loc.workspace),
-        old_fp,
-        &old_domain,
-        &old_key,
-        OUTER_GAP,
-        &old_windows,
-        None,
-    );
-    stamp_engine_event(state, &mut old_event);
-    let old_reply = candidate.handle(&old_event);
-    if matches!(
-        old_reply,
-        CoreReply::Rejected { .. } | CoreReply::Diverged(_) | CoreReply::SnapshotInvalid { .. }
-    ) {
-        let mut line = settle(reply_outcome(&old_reply));
-        line["origin"] = serde_json::Value::from(origin.token.clone());
-        line["window"] = serde_json::Value::from(from.to_owned());
-        line["target"] = serde_json::Value::from(target);
-        log_json_at(log_path, line);
-        return;
-    }
-    let mut cur_event = crate::tiling::build_reconcile_event_for_floating(
-        &state.owner,
-        &state.generation,
-        correlation,
-        revision_for(state, &loc.output, current_ws),
-        cur_fp,
-        &cur_domain,
-        &cur_key,
-        OUTER_GAP,
-        &cur_windows,
-        None,
-    );
-    stamp_engine_event(state, &mut cur_event);
-    let cur_reply = candidate.handle(&cur_event);
-    if matches!(
-        cur_reply,
-        CoreReply::Rejected { .. } | CoreReply::Diverged(_) | CoreReply::SnapshotInvalid { .. }
-    ) {
-        let mut line = settle(reply_outcome(&cur_reply));
-        line["origin"] = serde_json::Value::from(origin.token.clone());
-        line["window"] = serde_json::Value::from(from.to_owned());
-        line["target"] = serde_json::Value::from(target);
-        log_json_at(log_path, line);
-        return;
-    }
     let topmost_restored = if floating {
         true
     } else {
@@ -898,11 +718,14 @@ fn sticky_rehome_to_current(
     {
         return;
     }
-    // R-SPC-04 D7 provenance: capture BEFORE the assignment below commits.
+    // R-SPC-04 D7 provenance: capture BEFORE the world commit below.
     // Sticky intent withdrew latch/override lanes at sticky-on, so only a
     // surviving durable record or marker still proves fixed origin here.
     let fixed_win = fixed_origin_provenance(state, member_key);
-    state.engine = candidate;
+    // World-owned lanes first: sticky leaves, and the float lanes settle by
+    // destination (ordinary float rides on, tile clears). The send below
+    // carries these facts, so the core homes the now-ordinary window.
+    state.sticky.remove(member_key);
     if floating {
         // Sticky-off preserving a prior float: ordinary intent rides on and
         // any explicit tile win withdraws (R-SPC-04 D3/D7), like a settled
@@ -933,12 +756,7 @@ fn sticky_rehome_to_current(
             line["target"] = serde_json::Value::from(target);
             line["focus"] = serde_json::Value::from(focus);
             log_json_at(log_path, line);
-            state.sticky.remove(member_key);
-            state.workspaces.remove_window(member_key);
-            state.workspaces.ensure_output(&loc.output);
-            state
-                .workspaces
-                .assign(member_key.clone(), &loc.output, current_ws, false);
+            state.ensure_device(&loc.output);
             return;
         }
     } else {
@@ -965,18 +783,45 @@ fn sticky_rehome_to_current(
             }
         }
     }
-    state.sticky.remove(member_key);
-    state.workspaces.remove_window(member_key);
-    state.workspaces.ensure_output(&loc.output);
-    state
-        .workspaces
-        .assign(member_key.clone(), &loc.output, current_ws, false);
+    // The core owns the rehome transfer: the facts above (sticky cleared,
+    // float lanes settled) home this now-ordinary window, and the send
+    // retains the transfer to the current view. The host diff applies it
+    // with fresh proof; focus stays explicit below.
+    let Some(wire) = state.wire_of(&loc.output) else {
+        let mut line = settle("unknown-output");
+        line["origin"] = serde_json::Value::from(origin.token.clone());
+        line["window"] = serde_json::Value::from(from.to_owned());
+        line["target"] = serde_json::Value::from(target);
+        log_json_at(log_path, line);
+        return;
+    };
+    let foreground = crate::ffi::foreground_window();
+    let reply = super::world_tick::run_world_command(
+        state,
+        me,
+        store,
+        dir,
+        observed,
+        retained,
+        areas,
+        foreground,
+        fulls,
+        tiler_core::world_report::WorldCommand::Send {
+            window: tiler_core::directional::WindowId(from.to_owned()),
+            target_output: tiler_core::directional::OutputId(wire),
+            target_workspace: current_ws.to_owned(),
+            follow: false,
+        },
+    );
     let focus = match observed.iter().find(|w| w.hwnd == member_key.hwnd) {
         Some(expected) => retain_float_focus_validated(state, me, fulls, expected, member_key),
         None => "float-focus-failed",
     };
     if floating {
-        let mut line = settle("sticky-applied");
+        let mut line = settle(match reply {
+            Some(_) => "sticky-applied",
+            None => "sticky-unverified",
+        });
         line["origin"] = serde_json::Value::from(origin.token.clone());
         line["window"] = serde_json::Value::from(from.to_owned());
         line["target"] = serde_json::Value::from(target);
@@ -984,29 +829,9 @@ fn sticky_rehome_to_current(
         log_json_at(log_path, line);
         return;
     }
-    let writable = writable_tokens(state, &loc.output, current_ws, observed);
-    let summary = apply_geometry(
-        state,
-        ApplyInput {
-            me,
-            fulls,
-            reply: &cur_reply,
-            observed,
-            op: "sticky",
-            tick: state.tick,
-            correlation: correlation.as_str(),
-            skipped: Vec::new(),
-            writable: &writable,
-            output_token: state.workspaces.output_token(&loc.output),
-            workspace_token: state.workspaces.workspace_token(&loc.output, current_ws),
-            revision: revision_for(state, &loc.output, current_ws),
-        },
-    );
-    let outcome: &'static str = match summary {
-        Some(s) if !s.readback_ok => "unfloat-unverified",
-        Some(s) if s.mismatched > 0 => "unfloat-mismatch",
+    let outcome: &'static str = match reply {
         Some(_) => "unfloat-applied",
-        None => reply_outcome(&cur_reply),
+        None => "unfloat-unverified",
     };
     let mut line = settle(outcome);
     line["origin"] = serde_json::Value::from(origin.token.clone());
@@ -1024,6 +849,8 @@ fn sticky_rehome_to_current(
 pub(super) fn dispatch_sticky_intent(
     state: &mut TileLoop,
     me: &ProcessIdentity,
+    store: &LedgerStore,
+    dir: &Path,
     fulls: &[Rect],
     areas: &[MonitorArea],
     intent: crate::snapkey::QueuedStickyIntent,
@@ -1120,6 +947,8 @@ pub(super) fn dispatch_sticky_intent(
         sticky_off_to_current(
             state,
             me,
+            store,
+            dir,
             fulls,
             areas,
             &observed,
@@ -1172,6 +1001,8 @@ pub(super) fn dispatch_sticky_intent(
     apply_float_from_tiled(
         state,
         me,
+        store,
+        dir,
         fulls,
         areas,
         &observed,
@@ -1207,13 +1038,15 @@ enum StickyOffMode {
 fn sticky_off_to_current(
     state: &mut TileLoop,
     me: &ProcessIdentity,
+    store: &LedgerStore,
+    dir: &Path,
     fulls: &[Rect],
     areas: &[MonitorArea],
     observed: &[ObservedWindow],
     retained: &[RetainedRow],
-    member_key: &crate::workspace::WindowKey,
+    member_key: &crate::native_guards::WindowKey,
     from: &str,
-    loc: &crate::workspace::MemberLoc,
+    loc: &super::world_reads::Home,
     origin: &SnapOrigin,
     settle: &dyn Fn(&'static str) -> serde_json::Value,
     log_path: &Path,
@@ -1222,7 +1055,7 @@ fn sticky_off_to_current(
 ) {
     let prior = state.sticky.get(member_key).copied().unwrap_or(false);
     let to_float = mode == StickyOffMode::PreservePrior && prior;
-    let Some(current_ws) = state.workspaces.active_id(&loc.output) else {
+    let Some(current_ws) = state.active_view(&loc.output) else {
         let mut line = settle("unknown-output");
         line["origin"] = serde_json::Value::from(origin.token.clone());
         line["window"] = serde_json::Value::from(from.to_owned());
@@ -1264,13 +1097,31 @@ fn sticky_off_to_current(
                 state.fixed_auto_seen.remove(member_key);
                 state.born_first_exit.remove(member_key);
                 remove_tile_override_mark_best_effort(state, me, member_key, log_path, from);
+                // Same-workspace settle converges through one observation
+                // tick: the cleared sticky plus ordinary float intent homes
+                // the window in place with no transfer.
+                let foreground = crate::ffi::foreground_window();
+                let reply = super::world_tick::run_observation_tick(
+                    state,
+                    me,
+                    store,
+                    dir,
+                    observed,
+                    retained,
+                    areas,
+                    foreground,
+                    fulls,
+                );
                 let focus = match observed.iter().find(|w| w.hwnd == member_key.hwnd) {
                     Some(expected) => {
                         retain_float_focus_validated(state, me, fulls, expected, member_key)
                     }
                     None => "float-focus-failed",
                 };
-                let mut line = settle("sticky-applied");
+                let mut line = settle(match reply {
+                    Some(_) => "sticky-applied",
+                    None => "sticky-unverified",
+                });
                 line["origin"] = serde_json::Value::from(origin.token.clone());
                 line["window"] = serde_json::Value::from(from.to_owned());
                 line["target"] = serde_json::Value::from("float");
@@ -1282,6 +1133,8 @@ fn sticky_off_to_current(
         sticky_rehome_to_current(
             state,
             me,
+            store,
+            dir,
             fulls,
             areas,
             observed,
@@ -1312,6 +1165,8 @@ fn sticky_off_to_current(
         apply_unfloat_to_tiled(
             state,
             me,
+            store,
+            dir,
             fulls,
             areas,
             observed,
@@ -1335,6 +1190,8 @@ fn sticky_off_to_current(
     sticky_rehome_to_current(
         state,
         me,
+        store,
+        dir,
         fulls,
         areas,
         observed,

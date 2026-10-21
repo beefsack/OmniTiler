@@ -205,13 +205,28 @@ pub struct MinimizedSlot {
     pub tree: Node,
 }
 
+/// Carried sticky-float state for swap relocation: the exception record
+/// plus every per-window mark the session otherwise keys by lifetime.
+/// `Session::insert_exception_floats` restores all of them, so a later
+/// retile or fixed-size predicate sees exactly the pre-swap marks
+/// (retained geometry, automatic-fixed classification, explicit tile
+/// wins, capacity origin, and admission order).
+#[derive(Debug, Clone)]
+pub(crate) struct StickyFloatCarry {
+    pub(crate) record: ExceptionRecord,
+    pub(crate) geometry: Option<Rect>,
+    pub(crate) automatic_fixed: bool,
+    pub(crate) fixed_tile_override: bool,
+    pub(crate) capacity_float: bool,
+    pub(crate) admission_order: Option<u64>,
+}
+
 impl super::Session {
     /// Logical domains in deterministic construction order.
     #[must_use]
     pub fn domains(&self) -> &[OutputDomain] {
         &self.domains
     }
-
     /// Update one retained domain's projected work area without changing its
     /// topology, shares, membership, focus, or accepted revision.
     pub fn reproject_domain(&mut self, key: &DomainKey, bounds: Rect) {
@@ -361,6 +376,149 @@ impl super::Session {
         }
         *self = backup;
         false
+    }
+
+    /// Extract the listed exception windows, returning each record with its
+    /// full per-window state. Tiled links are untouched; callers identify
+    /// sticky floats via staged facts (session records never carry the
+    /// sticky flag). Missing ids are skipped.
+    pub(crate) fn extract_exception_floats(
+        &mut self,
+        ids: &BTreeSet<WindowId>,
+    ) -> Vec<StickyFloatCarry> {
+        let mut out = Vec::new();
+        for id in ids {
+            let Some(record) = self.exceptions.remove(id) else {
+                continue;
+            };
+            out.push(StickyFloatCarry {
+                record,
+                geometry: self.retained_float_geometry.remove(id),
+                automatic_fixed: self.automatic_fixed.remove(id),
+                fixed_tile_override: self.fixed_tile_override.remove(id),
+                capacity_float: self.capacity_floats.remove(id),
+                admission_order: self.admission_order.remove(id),
+            });
+        }
+        out
+    }
+
+    /// Insert previously extracted sticky floats, rehomed onto `target`.
+    /// Restores flags, floating geometry, and every per-window mark;
+    /// skips ids already present. Transient/diagnostic session state
+    /// (pending, drag, preview) is untouched.
+    pub(crate) fn insert_exception_floats(
+        &mut self,
+        carried: Vec<StickyFloatCarry>,
+        target: &DomainKey,
+    ) {
+        for mut carry in carried {
+            if self.exceptions.contains_key(&carry.record.window)
+                || self.windows.contains_key(&carry.record.window)
+            {
+                continue;
+            }
+            carry.record.output = target.output.clone();
+            carry.record.workspace = target.workspace.clone();
+            if let Some(geometry) = carry.geometry {
+                self.retained_float_geometry
+                    .insert(carry.record.window.clone(), geometry);
+            }
+            if carry.automatic_fixed {
+                self.automatic_fixed.insert(carry.record.window.clone());
+            }
+            if carry.fixed_tile_override {
+                self.fixed_tile_override.insert(carry.record.window.clone());
+            }
+            if carry.capacity_float {
+                self.capacity_floats.insert(carry.record.window.clone());
+            }
+            if let Some(order) = carry.admission_order {
+                self.admission_order
+                    .insert(carry.record.window.clone(), order);
+            }
+            self.exceptions
+                .insert(carry.record.window.clone(), carry.record);
+        }
+        debug_assert!(self.validate_current_topology());
+    }
+
+    /// Derive a sticky-only stay session rehomed same-output onto `target`
+    /// from actual source state (never a fresh session, never tree
+    /// surgery: callers fence tiled/minimized sticky before calling, so
+    /// the source holds no tiled links for these lifetimes). Drops every
+    /// non-sticky lifetime — tiled links, minimized slots, and unrelated
+    /// exceptions ride the cross-output moved part instead — prunes the
+    /// per-window maps to the sticky set, and rekeys the single domain
+    /// (identity/bounds/gap; adjacency preserved like `relocate_domain`)
+    /// with the exceptions. Focus clears (no tiled leaf survives).
+    /// Returns `None` when the set is empty, any id is not an exception
+    /// here, homing disagrees, the session is not single-domain, or
+    /// validation fails.
+    pub(crate) fn split_sticky_stay(
+        &self,
+        sticky_ids: &BTreeSet<WindowId>,
+        target: &DomainKey,
+        bounds: Rect,
+        gap: i32,
+    ) -> Option<Self> {
+        if sticky_ids.is_empty() {
+            return None;
+        }
+        if !sticky_ids.iter().all(|id| self.exceptions.contains_key(id)) {
+            return None;
+        }
+        if self.domains.len() != 1 {
+            return None;
+        }
+        let source_key = self.domains[0].key();
+        if source_key.output != target.output {
+            return None;
+        }
+        if bounds.w <= 0 || bounds.h <= 0 || !(0..=64).contains(&gap) {
+            return None;
+        }
+        if self.reconciler.divergence().is_some()
+            || self.has_pending()
+            || self.has_pending_desired()
+            || self.drag.is_some()
+        {
+            return None;
+        }
+        if !self.validate_current_topology() {
+            return None;
+        }
+        let mut stay = self.clone();
+        stay.windows.clear();
+        stay.trees.clear();
+        stay.minimized_slots.clear();
+        stay.focused_domain = None;
+        stay.focused_leaf = None;
+        stay.focus_stack.clear();
+        stay.last_active.clear();
+        stay.exceptions.retain(|id, _| sticky_ids.contains(id));
+        stay.retained_float_geometry
+            .retain(|id, _| sticky_ids.contains(id));
+        stay.automatic_fixed.retain(|id| sticky_ids.contains(id));
+        stay.fixed_tile_override
+            .retain(|id| sticky_ids.contains(id));
+        stay.capacity_floats.retain(|id| sticky_ids.contains(id));
+        stay.admission_order.retain(|id, _| sticky_ids.contains(id));
+        stay.overlap_accepted.remove(&source_key);
+        stay.domains[0].id = target.output.clone();
+        stay.domains[0].workspace = target.workspace.clone();
+        stay.domains[0].bounds = bounds;
+        stay.domains[0].gap = gap;
+        stay.trees.insert(target.clone(), None);
+        for record in stay.exceptions.values_mut() {
+            record.output = target.output.clone();
+            record.workspace = target.workspace.clone();
+        }
+        if stay.validate_current_topology() {
+            Some(stay)
+        } else {
+            None
+        }
     }
 
     /// Current authoritative portable snapshot (domain order; windows sorted

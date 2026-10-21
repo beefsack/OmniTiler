@@ -354,7 +354,7 @@ pub(super) fn poll_foreground_workspace(
     let record = state.hidden_claims.get(&key).cloned()?;
     // Exact verification: live PID, full process identity, exact nonce.
     let snap = crate::product_hide::sys::query_recovery(foreground, me).ok()?;
-    if !crate::workspace_owner::member_matches(
+    if !crate::native_guards::member_matches(
         &key,
         foreground,
         snap.pid,
@@ -364,15 +364,17 @@ pub(super) fn poll_foreground_workspace(
     {
         return None;
     }
-    // Externally foregrounded: this is genuinely the member's workspace.
-    let loc = state.workspaces.member_loc(&key).cloned()?;
-    if !loc.hidden {
-        return None;
-    }
-    let output = loc.output.clone();
-    let workspace = loc.workspace.clone();
-    // No queued chord here: the external foreground is the trigger, so the
-    // queue wait is zero by construction.
+    // Externally foregrounded: route the member's applied homing (wire
+    // output plus logical workspace receipts, never a second policy)
+    // through the world owner. No queued chord here: the external
+    // foreground is the trigger, so the queue wait is zero by construction.
+    let token = state.member_tokens.get(&key).cloned()?;
+    let (wire, workspace) = state.applied_homing.get(&token).cloned()?;
+    let output = state
+        .output_tokens
+        .iter()
+        .find(|(_, id)| *id == &wire)
+        .map(|(device, _)| device.clone())?;
     state.tick += 1;
     let tick = state.tick;
     let start = Instant::now();
@@ -428,7 +430,7 @@ pub(super) fn poll_foreground_workspace(
 /// reveal outcome rides the detail; anything else names the failing leg.
 fn rehide_pass(state: &mut TileLoop, me: &ProcessIdentity, store: &LedgerStore) {
     let foreground = crate::ffi::foreground_window();
-    let keys: Vec<crate::workspace::WindowKey> = state.hidden_claims.keys().cloned().collect();
+    let keys: Vec<crate::native_guards::WindowKey> = state.hidden_claims.keys().cloned().collect();
     for key in keys {
         if key.hwnd == foreground {
             continue;
@@ -445,7 +447,7 @@ fn rehide_pass(state: &mut TileLoop, me: &ProcessIdentity, store: &LedgerStore) 
             Ok(s) => s,
             Err(_) => continue,
         };
-        if !crate::workspace_owner::member_matches(
+        if !crate::native_guards::member_matches(
             &key,
             key.hwnd,
             snap.pid,
@@ -496,284 +498,18 @@ fn rehide_pass(state: &mut TileLoop, me: &ProcessIdentity, store: &LedgerStore) 
         log_json_at(&state.log_path.clone(), line);
     }
 }
-/// Sync monitor arrivals/removals with whole-workspace displacement/return:
-/// displaced layouts are never merged, hidden windows never lost, and on
-/// return the workspaces come back with then-current contents. Focus
-/// preserves the surviving view unless the removed monitor held focus.
-/// Mode-aware monitor topology sync (item 12 stage C): thin dispatcher into
-/// [`scope_hotplug`]. Local keeps the legacy body below unchanged;
-/// global-unique adds scoped history/trailing and shared skips displacement.
+/// Mechanical monitor topology sync: stable device-to-wire output ids plus
+/// known-geometry/active-output bookkeeping. Displacement, return mapping,
+/// and lifecycle are core policy from live screens now.
 pub(super) fn sync_monitor_outputs(state: &mut TileLoop, areas: &[MonitorArea]) {
     scope_hotplug::sync_monitor_outputs(state, areas);
 }
 
-pub(super) fn sync_monitor_outputs_local(state: &mut TileLoop, areas: &[MonitorArea]) {
-    let current: Vec<String> = areas.iter().map(|a| a.device.clone()).collect();
-    // Returning displaced origins are recreated by `reconnect_output` without
-    // baseline empties below: never `ensure_output` them here, or a duplicate
-    // trailing/minimum pair appears beside the returning workspaces.
-    let displaced_origins: Vec<String> = state
-        .workspaces
-        .displaced_snapshot()
-        .keys()
-        .cloned()
-        .collect();
-    for key in &current {
-        if displaced_origins.contains(key) {
-            continue;
-        }
-        state.workspaces.ensure_output(key);
-    }
-    let gone: Vec<String> = state
-        .known_outputs
-        .iter()
-        .filter(|k| !current.contains(k))
-        .cloned()
-        .collect();
-    // Actual-foreground member view at disconnect time: when the removed
-    // monitor held focus, the survivor shows that member's workspace instead
-    // of an arbitrary one. Otherwise the surviving view keeps focus untouched.
-    // The foreground key must also pass the visible lifetime gate, so a
-    // same-process HWND reuse racing the disconnect never activates the wrong
-    // workspace.
-    let fg_workspace: Option<(String, String)> = {
-        let fg = crate::ffi::foreground_window();
-        let fg_tag = crate::product_hide::sys::read_member_tag(fg);
-        state
-            .member_tokens
-            .iter()
-            .find(|(k, _)| {
-                k.hwnd == fg
-                    && state.member_tags.get(*k).is_some_and(|stored| {
-                        crate::workspace_owner::visible_lifetime_ok(stored, fg_tag.as_deref())
-                    })
-            })
-            .and_then(|(k, _)| state.workspaces.member_loc(k).cloned())
-            .map(|loc| (loc.output, loc.workspace))
-    };
-    let mut deferred: Vec<String> = Vec::new();
-    for origin in gone {
-        // Disconnect-time geometry decides the survivor: the origin's own
-        // last-seen rectangle first, never post-disconnect frames as proxy;
-        // then active output, then ordering. Never merge into a new split.
-        let reference = state
-            .last_areas
-            .iter()
-            .find(|a| a.device == origin)
-            .or_else(|| state.last_areas.first())
-            .map(|a| tiler_core::workspace::DisplacedRect {
-                x: a.full.x,
-                y: a.full.y,
-                w: a.full.w,
-                h: a.full.h,
-            });
-        let survivors: Vec<tiler_core::workspace::Survivor> = current
-            .iter()
-            .map(|k| {
-                let rect = areas.iter().find(|a| &a.device == k).map(|a| {
-                    tiler_core::workspace::DisplacedRect {
-                        x: a.full.x,
-                        y: a.full.y,
-                        w: a.full.w,
-                        h: a.full.h,
-                    }
-                });
-                tiler_core::workspace::Survivor {
-                    key: k.clone(),
-                    rect,
-                }
-            })
-            .collect();
-        let active = if state.active_output.is_empty() {
-            None
-        } else {
-            Some(state.active_output.as_str())
-        };
-        if let Some(dest) =
-            tiler_core::workspace::choose_displaced_destination(&survivors, active, reference)
-        {
-            // Relocate retained Engine sessions first so layout trees,
-            // contents, and focus move with the workspaces instead of
-            // reseeding on the survivor. Empty or unusable sessions stay;
-            // the outcome counts below stay opaque.
-            let mut relocated = 0u32;
-            let mut retained_count = 0u32;
-            // Membership entries move below; Engine sessions follow per
-            // workspace id through the existing relocation operation.
-            let before: Vec<String> = state.workspaces.workspace_ids(&origin);
-            for ws in &before {
-                let target_key = tiler_core::session::DomainKey {
-                    output: tiler_core::directional::OutputId(dest.clone()),
-                    workspace: tiler_core::directional::WorkspaceId(ws.clone()),
-                };
-                let bounds = areas
-                    .iter()
-                    .find(|a| a.device == dest)
-                    .and_then(|a| tiling_domain_bounds_with(a.work, state.outer_gap));
-                let Some(bounds) = bounds else {
-                    retained_count += 1;
-                    continue;
-                };
-                let target_domain = tiler_core::session::OutputDomain {
-                    id: tiler_core::directional::OutputId(dest.clone()),
-                    workspace: tiler_core::directional::WorkspaceId(ws.clone()),
-                    bounds,
-                    gap: state.inner_gap,
-                    adjacent: std::collections::BTreeMap::new(),
-                };
-                if state.engine.try_relocate_for_target(
-                    &target_key,
-                    &target_domain,
-                    state.outer_gap,
-                ) {
-                    relocated += 1;
-                } else {
-                    retained_count += 1;
-                }
-            }
-            state.workspaces.displace_output_to(&origin, &dest);
-            if state.active_output == origin {
-                state.active_output = dest.clone();
-            }
-            // The removed monitor held focus: show that member's workspace on
-            // the survivor with its actual focus preserved. Any other case
-            // keeps the survivor view with no stealing.
-            if let Some((fg_output, fg_workspace)) = fg_workspace.clone()
-                && fg_output == origin
-            {
-                state.workspaces.activate(&dest, &fg_workspace);
-                if let Some(fg_key) = state
-                    .member_tokens
-                    .keys()
-                    .find(|k| {
-                        state
-                            .workspaces
-                            .member_loc(k)
-                            .is_some_and(|l| l.output == dest && l.workspace == fg_workspace)
-                    })
-                    .cloned()
-                {
-                    state.workspaces.note_foreground(&fg_key);
-                }
-            }
-            log_json_at(
-                &state.log_path,
-                serde_json::json!({
-                    "event": "workspace-displace",
-                    "output": state.workspaces.output_token(&dest),
-                    "relocated": relocated,
-                    "retained": retained_count,
-                }),
-            );
-            // Hotplug-driven observed change records like any other: observe
-            // the survivor's post-actuation view so a later toggle returns
-            // to the actual preceding view. `displace_output_to` already
-            // discarded the removed origin's history.
-            if let Some(active) = state.workspaces.active_id(&dest) {
-                state.workspaces.observe_workspace_change(&dest, &active);
-            }
-        } else {
-            // No survivor: defer with known origins kept, never drop the
-            // workspaces or their Engine sessions. The disconnected output's
-            // history is still discarded with the output.
-            state.workspaces.discard_output_history(&origin);
-            deferred.push(origin);
-        }
-    }
-    // Reconnect returns displaced workspaces to the exact origin key with
-    // then-current contents; Engine sessions relocate back first so the
-    // returning monitor shows then-current trees, not saved snapshots.
-    // The active view shows the returning workspace only when it holds the
-    // focused window, otherwise the surviving view keeps focus with no
-    // stealing (best-effort: preserve active output).
-    let displaced: Vec<String> = state
-        .workspaces
-        .displaced_snapshot()
-        .keys()
-        .cloned()
-        .collect();
-    for origin in displaced {
-        if current.contains(&origin) {
-            let dest_key = state
-                .workspaces
-                .displaced_snapshot()
-                .get(&origin)
-                .map(|r| r.dest_key.clone());
-            if let Some(record) = state.workspaces.displaced_snapshot().get(&origin).cloned() {
-                let bounds = areas
-                    .iter()
-                    .find(|a| a.device == origin)
-                    .and_then(|a| tiling_domain_bounds_with(a.work, state.outer_gap));
-                if let Some(bounds) = bounds {
-                    for ws in &record.workspace_ids {
-                        let target_key = tiler_core::session::DomainKey {
-                            output: tiler_core::directional::OutputId(origin.clone()),
-                            workspace: tiler_core::directional::WorkspaceId(ws.clone()),
-                        };
-                        let target_domain = tiler_core::session::OutputDomain {
-                            id: tiler_core::directional::OutputId(origin.clone()),
-                            workspace: tiler_core::directional::WorkspaceId(ws.clone()),
-                            bounds,
-                            gap: state.inner_gap,
-                            adjacent: std::collections::BTreeMap::new(),
-                        };
-                        state.engine.try_relocate_for_target(
-                            &target_key,
-                            &target_domain,
-                            OUTER_GAP,
-                        );
-                    }
-                }
-            }
-            state.workspaces.reconnect_output(&origin);
-            // Reconnect primes a fresh baseline at the returning view and
-            // never consults history for selection (see `reconnect_output`).
-            // Record any subsequently observed survivor displacement here so
-            // two changes in one handler leave the actual immediately
-            // preceding view: the survivor's post-return view observes
-            // against its pre-return baseline.
-            let dest_key = dest_key.unwrap_or_else(|| state.active_output.clone());
-            if !dest_key.is_empty()
-                && let Some(active) = state.workspaces.active_id(&dest_key)
-            {
-                state
-                    .workspaces
-                    .observe_workspace_change(&dest_key, &active);
-            }
-        }
-    }
-    // Deferred no-survivor origins stay known with their last geometry until
-    // a survivor exists; their workspaces and Engine sessions are untouched.
-    let mut known = current.clone();
-    for origin in &deferred {
-        if !known.contains(origin) {
-            known.push(origin.clone());
-        }
-    }
-    state.known_outputs = known;
-    let mut last = areas.to_vec();
-    for origin in &deferred {
-        if !last.iter().any(|a| &a.device == origin)
-            && let Some(area) = state
-                .last_areas
-                .iter()
-                .find(|a| &a.device == origin)
-                .cloned()
-        {
-            last.push(area);
-        }
-    }
-    state.last_areas = last;
-    if state.active_output.is_empty()
-        && let Some(first) = state.known_outputs.first().cloned()
-    {
-        state.active_output = first;
-    }
-}
-
-/// Per-tick workspace maintenance on quiet ticks: monitor sync, new-window
-/// assignment, close cleanup, foreground-driven select, and same-claim
-/// rehide of externally revealed hidden windows.
+/// Per-tick workspace maintenance on quiet ticks: mechanical output sync,
+/// one world observation tick through the single owner, a foreground-driven
+/// select on an actual foreground change to a verified hidden member, and
+/// the same-claim rehide sweep. Admission, assignment, and close cleanup
+/// ride the world observation path now.
 pub(super) fn workspace_maintenance(
     state: &mut TileLoop,
     me: &ProcessIdentity,
@@ -788,33 +524,18 @@ pub(super) fn workspace_maintenance(
     let Some(mut observed) = state.observe(me, fulls, &mut skipped, &mut retained) else {
         return;
     };
-    publish_managed(state, me, &observed, &retained);
-    ensure_workspace_assignments(state, me, &mut observed, &retained, areas);
-    // First-seen maximized windows restore once here: lifetime tags are
-    // stamped, and the cleared window converges as eligible next tick.
-    clear_maximize_at_admission(state, me, &retained);
-    workspace_close_cleanup(state);
-    // Bounded normal-level visibility/exception snapshots over the
-    // maintenance observation just taken (same boundary as `reconcile_tick`):
-    // maintenance re-observes after reconcile on the same quiet turn, so
-    // without this its fresher facts would bypass diagnostics until the next
-    // tick. Mutations below converge next tick; the per-second throttle
-    // bounds volume and logging never affects behavior. Opaque tokens only.
-    stage_visibility(state, &observed, &retained, &skipped);
-    stage_exceptions(state);
-    if let Some(event) = flush_visibility(state) {
-        log_json_at(&state.log_path.clone(), event);
-    }
-    if let Some(event) = flush_exceptions(state) {
-        log_json_at(&state.log_path.clone(), event);
-    }
-    // Unconfirmed toggle releases retry here on the maintenance observation
-    // (no second enumeration): the fingerprint gate inside fires only on a
-    // real topology edge, so quiet ticks never poll or log.
-    retry_pending_releases(state, me, fulls, areas, &observed, &retained);
-    // Periodic hidden-claim retirement before any foreground-driven switch so
-    // dead claims never select.
-    audit_hidden_claims(state, me, store);
+    let foreground = crate::ffi::foreground_window();
+    let _ = super::world_tick::run_observation_tick(
+        state,
+        me,
+        store,
+        dir,
+        &observed,
+        &retained,
+        areas,
+        foreground,
+        fulls,
+    );
     // Foreground-driven select only on an actual foreground change to an
     // exactly verified hidden member; event-only wakes never switch.
     if poll_foreground_workspace(state, me, store, dir, fulls, areas, &mut observed).is_some() {

@@ -14,10 +14,10 @@ use tiler_core::geometry::{Rect, project};
 use tiler_core::ids::{CorrelationId, GenerationId, OwnerId};
 use tiler_core::session::{DomainKey, OutputDomain};
 use tiler_core::size_hints::{WindowSizeHints, project_with_hints};
+use tiler_core::directional::{OutputId, WorkspaceId};
 use tiler_windows::tiling::{
     build_reconcile_event_for_floating, fingerprint, tiling_domain_bounds_with,
 };
-use tiler_windows::workspace_owner::workspace_domain;
 
 const OUTPUT: &str = "display-0";
 const WORKSPACE: &str = "ws-1";
@@ -65,8 +65,23 @@ fn carried_rows() -> Vec<(WindowId, Rect, WindowSizeHints, bool)> {
 }
 
 fn domain_for(inner_gap: i32) -> (OutputDomain, DomainKey) {
+    domain_for_output(OUTPUT, WORKSPACE, inner_gap)
+}
+
+fn domain_for_output(output: &str, workspace: &str, inner_gap: i32) -> (OutputDomain, DomainKey) {
     let bounds = tiling_domain_bounds_with(work_area(), inner_gap).expect("positive inset bounds");
-    workspace_domain(OUTPUT, WORKSPACE, bounds, inner_gap)
+    let key = DomainKey {
+        output: OutputId(output.to_owned()),
+        workspace: WorkspaceId(workspace.to_owned()),
+    };
+    let domain = OutputDomain {
+        id: OutputId(output.to_owned()),
+        workspace: WorkspaceId(workspace.to_owned()),
+        bounds,
+        gap: inner_gap,
+        adjacent: std::collections::BTreeMap::new(),
+    };
+    (domain, key)
 }
 
 fn owner() -> OwnerId {
@@ -450,12 +465,11 @@ fn balanced_tree(n: usize) -> Node {
 mod hidden_reveal_route {
     use super::{
         EXPECTED_AT_64, FocusRule, ROSTER, admission_sequences, admit_roster,
-        build_reconcile_event_for_floating, capacity_victims, correlation, domain_for, fingerprint,
-        generation, newest_suffix, owner, project, reconcile, retained_tree, tiled_links,
-        tiling_domain_bounds_with, token, update_gaps, work_area,
+        build_reconcile_event_for_floating, capacity_victims, correlation, domain_for,
+        domain_for_output, fingerprint, generation, newest_suffix, owner, project, reconcile,
+        retained_tree, tiled_links, tiling_domain_bounds_with, token, update_gaps, work_area,
     };
     use tiler_core::boundary::{CoreCommand, CoreReply};
-    use tiler_windows::workspace_owner::workspace_domain;
 
     #[test]
     fn reveal_adopts_then_reconciles_without_hidden_commits() {
@@ -474,10 +488,9 @@ mod hidden_reveal_route {
         // Hidden period: the adapter runs no tick legs for hidden domains, so
         // nothing dispatches here. A gap adoption on an unknown domain (the
         // active empty workspace) refuses and commits nothing anywhere.
-        let (other_domain, other_key) = workspace_domain(
+        let (other_domain, other_key) = domain_for_output(
             "display-0",
             "ws-0",
-            tiling_domain_bounds_with(work_area(), 64).expect("bounds"),
             64,
         );
         let mut event = build_reconcile_event_for_floating(

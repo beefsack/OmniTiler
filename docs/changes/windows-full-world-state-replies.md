@@ -617,11 +617,15 @@
   not runtime acceptance; it remains test-only and unwired.
   Migration requires rework under the core-owned mapping direction above. No core,
   protocol, runtime-owner or native behavior change; W2/W3 remain unaccepted.
-- `WorldSequencer::deliver_staged` is an opt-in offline test entry; raw
-  `deliver` and its parity-gap diagnostic stay unchanged. A fresh candidate
-  evaluates the exact report once, then adopts a supported outcome or drops
-  an unsupported crossing before returning local `float-no-remap`. Callers
-  release the refused flight and catch up observation-only without replay.
+- `WorldSequencer::deliver_production` is now called by the incomplete
+  [world-owner cutover](core-world-model-rearchitecture.md#stage-2b-partial-implementation-checkpoint-2026-10-21),
+  not an accepted native runtime. The `#[cfg(test)]` `deliver_staged` is a
+  thin branch-indicator wrapper over it, never a second staging route. A
+  fresh candidate evaluates the exact report once, then adopts a supported
+  outcome (accepted/consumed/duplicate adopt the candidate exactly once;
+  rejection preserves the committed engine) or drops an unsupported
+  crossing before returning local `float-no-remap`. Callers release the
+  refused flight and catch up observation-only without replay.
 - Classification uses a newly Accepted command's exact `op-<command_seq>`
   Window transfer, source output/floating fact and desired mover floating
   state. No `FloatOrigin`, target selection or capacity projection rule is
@@ -635,8 +639,9 @@
   still pays that clone when core ultimately chooses a local move; Windows
   does not predict core's result. Observation-only, focus, local-only
   Operation and whole-workspace migration routes add no clone. The world's
-  existing internal staging is unchanged. Both modules remain `#[cfg(test)]`,
-  so this adds no running-owner idle/game code, polling or timer. Counts are
+  existing internal staging is unchanged. The staged classifier lives in
+  the production sequencer body (single site); the test wrapper and the
+  owner delegate to it. Counts are
   structural plus tested branch indicators, not a measured latency budget.
 
 | Offline discriminator | Accepted evidence |
@@ -665,6 +670,6 @@
   formatting checks report pre-existing differences outside this
   increment; no unrelated reformatting was applied. Four-package native gates
   and physical remap/shortcut/game acceptance are not claimed.
-- **Next:** present this bounded offline proof and the explicit-target
-  limitation alongside the core-owned mapping rework. Keep the staged entry
-  test-only; no runtime cutover or shared-core addition follows implicitly.
+- **Next:** complete the linked world-owner cutover's strict gates, deletion
+  audit and native verification. This historical offline proof does not
+  establish acceptance of the currently incomplete runtime integration.

@@ -132,7 +132,7 @@ thread_local! {
     /// injected observed/retained frames; non-members are ignored by the same
     /// retain rule as production. Cleared by [`clear_pending_seams`].
     pub(super) static INJECTED_ZORDER: std::cell::RefCell<
-        Option<Vec<crate::workspace::WindowKey>>,
+        Option<Vec<crate::native_guards::WindowKey>>,
     > = const { std::cell::RefCell::new(None) };
     /// Scripted hidden-claim recovery verdicts per HWND: `Ok` snapshots
     /// flow through the real audit classification (process/nonce compared
@@ -433,7 +433,7 @@ pub(super) fn inject_pending_parents(parents: Vec<(u64, u64)>) {
 /// Script the visible stacking sequence (top-to-bottom) for the next
 /// injected observation (test-only). Cleared by [`clear_pending_seams`].
 #[cfg(test)]
-pub(super) fn inject_pending_zorder(order: Vec<crate::workspace::WindowKey>) {
+pub(super) fn inject_pending_zorder(order: Vec<crate::native_guards::WindowKey>) {
     INJECTED_ZORDER.with(|slot| {
         *slot.borrow_mut() = Some(order);
     });

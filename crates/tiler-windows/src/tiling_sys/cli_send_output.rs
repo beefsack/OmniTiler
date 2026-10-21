@@ -18,6 +18,7 @@ use super::*;
 pub(super) fn poll_send_output_cli_request(
     state: &mut TileLoop,
     me: &ProcessIdentity,
+    store: &LedgerStore,
     dir: &Path,
     fulls: &[Rect],
     areas: &[MonitorArea],
@@ -154,7 +155,7 @@ pub(super) fn poll_send_output_cli_request(
         log_json_at(&log_path, cli_line(tick, "unknown-output"));
         return;
     };
-    state.workspaces.ensure_output(&output);
+    state.ensure_device(&output);
     state.tick += 1;
     let tick = state.tick;
     let mut skipped: Vec<(String, String)> = Vec::new();
@@ -185,6 +186,8 @@ pub(super) fn poll_send_output_cli_request(
     workspace_output_send_one(
         state,
         me,
+        store,
+        dir,
         fulls,
         areas,
         &mut observed,

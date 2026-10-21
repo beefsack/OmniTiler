@@ -12,30 +12,28 @@ use super::*;
 /// state is invented here).
 pub(super) fn committed_ordinary_pin(
     state: &TileLoop,
-    key: &crate::workspace::WindowKey,
+    key: &crate::native_guards::WindowKey,
     token: &str,
 ) -> bool {
-    let Some(loc) = state.workspaces.member_loc(key) else {
+    let Some(loc) = state.member_home(key) else {
         return false;
     };
-    let domain_key = tiler_core::session::DomainKey {
-        output: tiler_core::directional::OutputId(loc.output.clone()),
-        workspace: tiler_core::directional::WorkspaceId(loc.workspace.clone()),
-    };
-    let id = tiler_core::directional::WindowId(token.to_owned());
-    let Some(session) = state.engine.session(&domain_key) else {
-        return false;
-    };
-    if state.fixed_tile_overrides.contains(key) || session.has_fixed_tile_override(&id) {
+    // D2 admission pin over the last applied world reply: the token rides
+    // ordinary/tiled (present, not floating, not automatic) on its homed
+    // logical workspace. The core snapshot IS the committed record now;
+    // hint drift must never reclassify retained admission.
+    if state.fixed_tile_overrides.contains(key) {
         return false;
     }
-    !session.is_automatic_fixed_float(&id)
-        && !session.is_exception(&id)
-        && session
-            .snapshot()
-            .windows
-            .iter()
-            .any(|link| link.window == id)
+    let Some(reply) = state.world.last_reply() else {
+        return false;
+    };
+    reply.windows.iter().any(|row| {
+        row.lifetime.0 == token
+            && row.output.0 == state.wire_of(&loc.output).as_deref().unwrap_or("")
+            && row.workspace == loc.workspace
+            && !row.floating
+    }) && !state.core_is_automatic_token(token)
 }
 
 /// Fresh classify-before-clear disposition for one retained maximized row
@@ -75,8 +73,7 @@ pub(super) fn admission_clear_planned(
         return false;
     }
     let tiled = state
-        .workspaces
-        .member_loc(&row.key)
+        .member_home(&row.key)
         .and_then(|loc| workspace_mode_known(state, &loc.output, &loc.workspace));
     if !matches!(tiled, Some(true)) {
         return false;
@@ -196,8 +193,7 @@ pub(super) fn clear_maximize_at_admission(
         // closed: `ensure_workspace_assignments` owns membership and runs
         // before this clear on every path.
         let domain_tiled = state
-            .workspaces
-            .member_loc(&row.key)
+            .member_home(&row.key)
             .and_then(|loc| workspace_mode_known(state, &loc.output, &loc.workspace));
         let tiled = matches!(domain_tiled, Some(true));
         if !row
@@ -304,7 +300,7 @@ pub(super) fn clear_maximize_at_admission(
         }
         let live_pid = crate::ffi::window_pid(hwnd_u64);
         live_pid == pid_u32 && {
-            let key = crate::workspace::WindowKey {
+            let key = crate::native_guards::WindowKey {
                 hwnd: hwnd_u64,
                 pid: pid_u32,
                 creation: creation.to_owned(),
@@ -331,20 +327,16 @@ pub(super) fn overlay_refusal_for(row: &RetainedRow) -> Option<&'static str> {
 /// its domain session (floated windows hold no tile slot). Born-fullscreen
 /// holds are exceptions too; the intentional lane additionally keys off the
 /// `float_topmost_prev` preimage map. `false` when the session is unknown.
+///
+/// World-owned: the last applied reply row plus the adapter intent lanes
+/// (`floated`, `sticky`) carry the answer; no local session exists.
 pub(super) fn engine_is_float(
     state: &TileLoop,
-    output: &str,
-    workspace: &str,
+    _output: &str,
+    _workspace: &str,
     token: &str,
 ) -> bool {
-    let key = tiler_core::session::DomainKey {
-        output: tiler_core::directional::OutputId(output.to_owned()),
-        workspace: tiler_core::directional::WorkspaceId(workspace.to_owned()),
-    };
-    state
-        .engine
-        .session(&key)
-        .is_some_and(|session| session.is_exception(&WindowId(token.to_owned())))
+    state.core_is_float_token(token)
 }
 
 /// Whether one Engine token floats by automatic fixed-size classification
@@ -354,31 +346,11 @@ pub(super) fn engine_is_float(
 /// `false` when the session is unknown.
 pub(super) fn engine_is_automatic_fixed(
     state: &TileLoop,
-    output: &str,
-    workspace: &str,
+    _output: &str,
+    _workspace: &str,
     token: &str,
 ) -> bool {
-    let key = tiler_core::session::DomainKey {
-        output: tiler_core::directional::OutputId(output.to_owned()),
-        workspace: tiler_core::directional::WorkspaceId(workspace.to_owned()),
-    };
-    state
-        .engine
-        .session(&key)
-        .is_some_and(|session| session.is_automatic_fixed_float(&WindowId(token.to_owned())))
-}
-
-/// Whether one Engine token floats by automatic fixed-size classification
-/// in one domain session. `false` without a retained session.
-pub(super) fn is_automatic_in(
-    state: &TileLoop,
-    domain_key: &tiler_core::session::DomainKey,
-    token: &str,
-) -> bool {
-    state
-        .engine
-        .session(domain_key)
-        .is_some_and(|session| session.is_automatic_fixed_float(&WindowId(token.to_owned())))
+    state.core_is_automatic_token(token)
 }
 
 /// Whether one intentional-float mover may send tiled-to-tiled through the
@@ -395,7 +367,7 @@ pub(super) fn is_automatic_in(
 /// calls.
 pub(super) fn float_send_admits(
     state: &TileLoop,
-    mover_key: &crate::workspace::WindowKey,
+    mover_key: &crate::native_guards::WindowKey,
     output: &str,
     workspace: &str,
     token: &str,
@@ -436,12 +408,12 @@ pub(super) fn float_focus_candidates(
     /// in the strict subject domain; automatic fixed never qualifies.
     fn gate(
         state: &TileLoop,
-        key: &crate::workspace::WindowKey,
+        key: &crate::native_guards::WindowKey,
         token: &str,
         output: &str,
         workspace: &str,
     ) -> Option<bool> {
-        let home = state.workspaces.member_loc(key)?;
+        let home = state.member_home(key)?;
         let sticky_candidate = state.sticky.contains_key(key);
         if sticky_candidate {
             if home.output != output {
@@ -466,7 +438,7 @@ pub(super) fn float_focus_candidates(
         if window.token == from {
             continue;
         }
-        let key = crate::workspace::WindowKey {
+        let key = crate::native_guards::WindowKey {
             hwnd: window.hwnd,
             pid: window.identity.pid,
             creation: window.identity.process_creation.clone(),
@@ -517,11 +489,11 @@ pub(super) fn float_focus_candidates(
 /// Whether one member key floats by automatic fixed-size classification in
 /// its workspace domain. Resolves the domain from live membership; `false`
 /// without membership or without a retained session.
-fn member_is_automatic_fixed(state: &TileLoop, key: &crate::workspace::WindowKey) -> bool {
+fn member_is_automatic_fixed(state: &TileLoop, key: &crate::native_guards::WindowKey) -> bool {
     let Some(token) = state.member_tokens.get(key).cloned() else {
         return false;
     };
-    let Some(loc) = state.workspaces.member_loc(key) else {
+    let Some(loc) = state.member_home(key) else {
         return false;
     };
     engine_is_automatic_fixed(state, &loc.output, &loc.workspace, &token)
@@ -542,7 +514,7 @@ fn member_is_automatic_fixed(state: &TileLoop, key: &crate::workspace::WindowKey
 /// Call BEFORE the winning Engine assignment commits: the assignment
 /// withdraws the automatic mark, so a later read would lose the evidence.
 /// Takes no native reads and performs no writes.
-pub(super) fn fixed_origin_provenance(state: &TileLoop, key: &crate::workspace::WindowKey) -> bool {
+pub(super) fn fixed_origin_provenance(state: &TileLoop, key: &crate::native_guards::WindowKey) -> bool {
     if state.fixed_auto_seen.contains(key) || state.fixed_origin_overrides.contains(key) {
         return true;
     }
@@ -582,281 +554,12 @@ pub(super) fn no_space_for(live: Option<&LiveSettings>) -> tiler_core::admission
         .unwrap_or_default()
 }
 
-/// Stamp the fixed-size admission observation flags onto one Engine event
-/// from live adapter state, then dispatch it. Every production Engine
-/// handle path funnels through here so the classifier sees the same
-/// lifetime-bound origin and override the adapter owns:
-///
-/// - `fullscreen` from the per-tick overlay snapshot (D5 routing and
-///   brand-new fullscreen holds; sticky/maximized keep adapter lanes);
-/// - `fixed_auto` for D4-latched fixed max-births (never inferred from an
-///   intentional flag or hints alone);
-/// - `fixed_suppress` for explicit tile overrides (D3/D6/D7).
-///
-/// Stamping changes no rectangle, focus, topology, or revision binding: with
-/// the opt-in on, only the portable floating flag binds convergence, so
-/// flag-only drift never diverges a session.
-pub(super) fn handle_engine_event(state: &mut TileLoop, event: &mut CoreEvent) -> CoreReply {
-    #[cfg(test)]
-    PENDING_COUNTERS.with(|slot| {
-        slot.borrow_mut().engine += 1;
-    });
-    stamp_engine_event(state, event);
-    stamp_closed_windows(state, event);
-    let reply = state.engine.handle(event);
-    drain_closed_windows(state, event, &reply);
-    reply
-}
-
-/// D23: carry queued verified closes on one valid single-domain observation
-/// (`Reconcile`/`UpdateGaps` only). Ids homed on the event's domain ride as
-/// `closed_windows` so convergence forgets their slots; every other queued id
-/// stays pending for its own domain's observation (hidden and multi-domain
-/// bursts drain through their own legs). An id observed live again is stale
-/// (same-token reuse): it drops here so the wire never carries a
-/// contradictory live+closed row. Cross-output/pair legs keep their existing
-/// empty shape. Never fabricates membership: only queued ids ride, and an
-/// unreadable domain (no valid observation) dispatches nothing.
-fn stamp_closed_windows(state: &mut TileLoop, event: &mut CoreEvent) {
-    if !matches!(
-        event.command,
-        CoreCommand::Reconcile | CoreCommand::UpdateGaps
-    ) {
-        return;
-    }
-    let output = event.domain_key.output.0.as_str();
-    let workspace = event.domain_key.workspace.0.as_str();
-    let live: HashSet<&str> = event
-        .windows
-        .iter()
-        .map(|window| window.window.0.as_str())
-        .chain(
-            event
-                .target_windows
-                .iter()
-                .map(|window| window.window.0.as_str()),
-        )
-        .collect();
-    let mut scoped: Vec<WindowId> = Vec::new();
-    let mut stale: Vec<String> = Vec::new();
-    for (id, homing) in state.pending_closed.iter() {
-        if homing.output != output || homing.workspace != workspace {
-            continue;
-        }
-        if live.contains(id.as_str()) {
-            stale.push(id.clone());
-        } else {
-            scoped.push(WindowId(id.clone()));
-        }
-    }
-    for id in stale {
-        state.pending_closed.remove(&id);
-    }
-    scoped.sort_by(|a, b| a.0.cmp(&b.0));
-    event.closed_windows = scoped;
-}
-
-/// D23: drop delivered closes only on Engine acceptance. Rejected,
-/// snapshot-invalid, and diverged observations retain every stamped id for
-/// the next ordinary signal (never a retry ledger, never a poll); delivered
-/// ids clear only while still homed where they were sent, so an id re-queued
-/// under new homing keeps its newer record.
-fn drain_closed_windows(state: &mut TileLoop, event: &CoreEvent, reply: &CoreReply) {
-    if matches!(
-        reply,
-        CoreReply::Rejected { .. } | CoreReply::SnapshotInvalid { .. } | CoreReply::Diverged(_)
-    ) {
-        return;
-    }
-    let output = event.domain_key.output.0.as_str();
-    let workspace = event.domain_key.workspace.0.as_str();
-    for window in &event.closed_windows {
-        let homed_here = state
-            .pending_closed
-            .get(&window.0)
-            .is_some_and(|homing| homing.output == output && homing.workspace == workspace);
-        if homed_here {
-            state.pending_closed.remove(&window.0);
-        }
-    }
-}
-
-/// D23 ordinary-observation close-drain fanout: hidden closes wait for a
-/// covering select/send, but a workspace may be pruned before one arrives,
-/// stranding the Engine slot plus the queue entry. After the tick's active
-/// legs, fan out over every queued domain OUTSIDE the selected set through
-/// the existing assemble + handle path, so close reports converge (forgetting
-/// slots, retiring slot-only sessions) before registry pruning can strand
-/// them. Active domains rode the tick legs above and are excluded here;
-/// their rejections retain for the next ordinary tick.
-///
-/// Hidden legs commit Engine state only: no geometry application, no focus
-/// actuation, no writes of any kind. Domains that fail to assemble
-/// (unreadable evidence) or reject retain their queues, and entries homed
-/// on domains with no Engine session drop (no session holds no slot, so no
-/// ghost is left). No poll, no retry ledger, no timer: this runs inline on
-/// ordinary tick evidence, matching the shared drain-before-retirement
-/// contract the KDE refresh chain already implements adapter-side.
-pub(super) fn fanout_pending_closed(
-    state: &mut TileLoop,
-    me: &ProcessIdentity,
-    areas: &[MonitorArea],
-    observed: &[ObservedWindow],
-    retained: &[RetainedRow],
-    correlation: &str,
-) {
-    if state.pending_closed.is_empty() {
-        return;
-    }
-    let mut active: HashSet<(String, String)> = HashSet::new();
-    for area in areas {
-        if let Some(id) = state.workspaces.active_id(&area.device) {
-            active.insert((area.device.clone(), id));
-        }
-    }
-    let mut domains: BTreeSet<(String, String)> = BTreeSet::new();
-    for homing in state.pending_closed.values() {
-        let domain = (homing.output.clone(), homing.workspace.clone());
-        if !active.contains(&domain) {
-            domains.insert(domain);
-        }
-    }
-    let mut hint_cx = HintCx::new();
-    for (output, workspace) in domains {
-        let Some((domain, domain_key)) =
-            workspace_domain_for(&output, &workspace, areas, state.inner_gap, state.outer_gap)
-        else {
-            continue;
-        };
-        // No session holds no slot: a queue entry without its session is
-        // stale (never seeded, or torn down by a path that already dropped
-        // homed entries), so it drops here rather than growing.
-        if state.engine.session(&domain_key).is_none() {
-            state
-                .pending_closed
-                .retain(|_, homing| homing.output != output || homing.workspace != workspace);
-            continue;
-        }
-        let Some(rows) = assemble_domain_rows(
-            state,
-            &output,
-            &workspace,
-            observed,
-            retained,
-            "close-drain",
-            correlation,
-            &mut hint_cx,
-        ) else {
-            continue;
-        };
-        let carried: Vec<(WindowId, Rect, WindowSizeHints, bool)> = rows
-            .iter()
-            .map(|row| {
-                (
-                    WindowId(row.token.clone()),
-                    row.rect,
-                    row.hints,
-                    row.floating,
-                )
-            })
-            .collect();
-        let fp = fingerprint(
-            &rows
-                .iter()
-                .map(|row| (row.token.clone(), row.rect))
-                .collect::<Vec<_>>(),
-        );
-        let Some(correlation_id) = CorrelationId::parse(correlation) else {
-            continue;
-        };
-        let mut event = crate::tiling::build_reconcile_event_for_floating(
-            &state.owner,
-            &state.generation,
-            &correlation_id,
-            revision_for(state, &output, &workspace),
-            fp,
-            &domain,
-            &domain_key,
-            state.outer_gap,
-            &carried,
-            None,
-        );
-        // Same gap-adoption branch as the active reconcile legs: retained
-        // gap drift converges through the topology-preserving update-gaps
-        // path, since plain reconcile refuses domain-mismatch instead of
-        // adopting it. Without this, drifted gaps reject the drain forever.
-        if !crate::settings::retained_gaps_match(
-            &state.engine,
-            &domain_key,
-            state.inner_gap,
-            state.outer_gap,
-        ) {
-            event.command = CoreCommand::UpdateGaps;
-        }
-        // Engine commit only: deliberately no `apply_geometry`, no focus
-        // actuation, no writes. Stamping scopes the domain's queued closes
-        // onto the wire; acceptance drains them, rejection retains them.
-        // Hidden-domain capacity adoption: a shrunken hidden domain can
-        // repair-evict here, so register victims like the tick legs.
-        let reply = handle_engine_event(state, &mut event);
-        adopt_tick_capacity_floats(
-            state,
-            me,
-            state.tick,
-            correlation,
-            &reply,
-            observed,
-            &domain_key,
-        );
-    }
-}
-
-/// Stamp the fixed-size admission observation flags onto one Engine event
-/// from live adapter state without dispatching. Candidate-engine pre-checks
-/// (which must not commit) stamp through here, then handle on their clone.
-pub(super) fn stamp_engine_event(state: &TileLoop, event: &mut CoreEvent) {
-    let by_token: std::collections::HashMap<&str, &crate::workspace::WindowKey> = state
-        .member_tokens
-        .iter()
-        .map(|(key, token)| (token.as_str(), key))
-        .collect();
-    let mut flags: std::collections::HashMap<
-        WindowId,
-        crate::workspace_owner::FixedAdmissionFlags,
-    > = std::collections::HashMap::new();
-    let mut stamp = |token: &str| {
-        let flagged = flags.entry(WindowId(token.to_owned())).or_default();
-        flagged.fullscreen = state
-            .overlay_now
-            .get(token)
-            .is_some_and(|(_, fullscreen)| *fullscreen);
-        if let Some(key) = by_token.get(token) {
-            // Sticky dominates automatic origin (core never marks automatic
-            // for a sticky observation): a sticky window never carries the
-            // fixed_auto signal, so sticky intent is never mistaken for
-            // automatic classification. Sticky/maximized Engine flags stay
-            // adapter-owned (false); see the ToggleFloat binding analysis on
-            // `stamp_fixed_admission_flags`.
-            let sticky = state.sticky.contains_key(*key);
-            // Durable fixed-origin overrides never acquire automatic origin:
-            // the explicit win dominates even if a stale D4 latch survived
-            // beside it (every lane clears the latch on win, but the stamp
-            // refuses to assert both regardless).
-            let durable = state.fixed_origin_overrides.contains(*key);
-            if !sticky && !durable && state.fixed_auto_seen.contains(*key) {
-                flagged.fixed_auto = true;
-            }
-            if state.fixed_tile_overrides.contains(*key) {
-                flagged.fixed_suppress = true;
-            }
-        }
-    };
-    for window in event.windows.iter() {
-        stamp(&window.window.0.clone());
-    }
-    for window in event.target_windows.iter() {
-        stamp(&window.window.0.clone());
-    }
-    crate::workspace_owner::stamp_fixed_admission_flags(&mut event.windows, &flags);
-    crate::workspace_owner::stamp_fixed_admission_flags(&mut event.target_windows, &flags);
-}
+// D23 ordinary-observation close-drain fanout: deleted. The core owns
+// close convergence outright: every world report carries the queued
+// `pending_closed` obligations on its global close list, and the ack
+// prunes them on receipt. No adapter fanout exists: fixed-size admission
+// observation flags are deleted with the Engine-event path. The core
+// reads fullscreen, fixed-auto, and fixed-suppress truth from every world
+// report's window facts plus the adapter intent lanes
+// (`fixed_auto_seen`, `fixed_tile_overrides`, `overlay_now`); no adapter
+// stamping exists.

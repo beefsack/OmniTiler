@@ -347,7 +347,7 @@ fn icon_service_completion_handle_signals_on_result() {
     let handle = service.completion_handle().expect("completion event");
     let signaled = || crate::ffi::event_signaled(handle);
     assert!(!signaled(), "no spurious completion wake");
-    service.request(vec![crate::workspace::WindowKey {
+    service.request(vec![crate::native_guards::WindowKey {
         hwnd: 0,
         pid: 0,
         creation: "test-none".to_owned(),

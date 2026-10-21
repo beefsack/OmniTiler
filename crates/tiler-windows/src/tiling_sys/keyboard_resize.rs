@@ -22,6 +22,8 @@ use super::*;
 pub(super) fn dispatch_resize_intent(
     state: &mut TileLoop,
     me: &ProcessIdentity,
+    store: &LedgerStore,
+    dir: &Path,
     fulls: &[Rect],
     areas: &[MonitorArea],
     intent: crate::snapkey::QueuedResizeIntent,
@@ -96,7 +98,7 @@ pub(super) fn dispatch_resize_intent(
     let ChordObserved {
         observed,
         retained,
-        skipped,
+        skipped: _,
     } = chord;
     let ChordTarget {
         from,
@@ -152,25 +154,27 @@ pub(super) fn dispatch_resize_intent(
         log_json_at(&log_path, line);
         return;
     }
-    let Some((domain, domain_key)) = workspace_domain_for(
-        &loc.output,
-        &loc.workspace,
-        areas,
-        state.inner_gap,
-        state.outer_gap,
-    ) else {
+    // Topology must name a live output for the mover; gaps ride
+    // the report screens so no per-route adoption exists.
+    if !areas.iter().any(|a| a.device == loc.output) {
         let mut line = settle("unknown-output");
         line["origin"] = serde_json::Value::from(origin.token.clone());
         log_json_at(&log_path, line);
         return;
     };
-    // KDE `inFlight`/`r4Flight` parity: a staged-but-unverified plan or an
-    // open drag holds the domain. The Engine would refuse `pending-exists`
-    // anyway; the pre-dispatch refusal keeps the outcome vocabulary exact
-    // and the repeat tracker untouched.
-    let busy = state.engine.session(&domain_key).is_some_and(|session| {
-        session.has_pending() || session.has_pending_desired() || session.has_drag()
-    });
+    // KDE `inFlight`/`r4Flight` parity: an outstanding retained window
+    // transfer for the mover holds the domain. The core would retain the
+    // conflicting intent anyway; the pre-dispatch refusal keeps the
+    // outcome vocabulary exact and the repeat tracker untouched.
+    let busy = state
+        .world
+        .engine()
+        .retained_transfers()
+        .iter()
+        .any(|target| match &target.kind {
+            tiler_core::world_report::TransferKind::Window(window) => window.0 == from,
+            _ => false,
+        });
     if busy {
         let mut line = settle("resize-refused-busy");
         line["origin"] = serde_json::Value::from(origin.token.clone());
@@ -178,116 +182,45 @@ pub(super) fn dispatch_resize_intent(
         log_json_at(&log_path, line);
         return;
     }
-    let mut hint_cx = HintCx::new();
-    let Some(rows) = assemble_domain_rows(
-        state,
-        &loc.output,
-        &loc.workspace,
-        &observed,
-        &retained,
-        "resize",
-        correlation.as_str(),
-        &mut hint_cx,
-    ) else {
-        let mut line = settle("deferred");
-        line["origin"] = serde_json::Value::from(origin.token.clone());
-        log_json_at(&log_path, line);
-        return;
-    };
-    if !rows.iter().any(|r| r.token == from) {
+    if !state.member_tokens.values().any(|token| token == &from) {
         let mut line = settle("unmanaged");
         line["origin"] = serde_json::Value::from(origin.token.clone());
         log_json_at(&log_path, line);
         return;
     }
-    let windows: Vec<(WindowId, Rect, WindowSizeHints, bool)> = rows
-        .iter()
-        .map(|r| (WindowId(r.token.clone()), r.rect, r.hints, r.floating))
-        .collect();
-    let fp = fingerprint(
-        &rows
-            .iter()
-            .map(|r| (r.token.clone(), r.rect))
-            .collect::<Vec<_>>(),
-    );
-    let from_id = WindowId(from.clone());
-    // Live gap edits adopt here so the resize converges against matching
-    // gaps instead of refusing the keypress.
-    {
-        let revision = revision_for(state, &loc.output, &loc.workspace);
-        let outer_gap = state.outer_gap;
-        adopt_gaps_for_route(
-            state,
-            &domain,
-            &domain_key,
-            outer_gap,
-            &windows,
-            Some(&from_id),
-            revision,
-            fp,
-            &correlation,
-        );
-    }
     // Exact KDE repeat tracker: continued only on a focused/direction/mode
-    // match, restarted otherwise, advanced before the Engine dispatch.
+    // match, restarted otherwise, advanced before the world dispatch.
     // `from` is the origin-verified token, never blind foreground.
     let direction = direction_name(intent.direction).to_owned();
     let mode = intent.mode.as_str().to_owned();
     let (press_index, repeat) =
         crate::tiling::resize_repeat_next(state.resize_repeat.clone(), &from, &direction, &mode);
     state.resize_repeat = Some(repeat);
-    let mut event = crate::tiling::build_reconcile_event_for_floating(
-        &state.owner,
-        &state.generation,
-        &correlation,
-        revision_for(state, &loc.output, &loc.workspace),
-        fp,
-        &domain,
-        &domain_key,
-        state.outer_gap,
-        &windows,
-        Some(&from_id),
+    // Single-domain resizes run the world operation route: the core owns
+    // direction semantics and the host diff applies the accepted reply
+    // with fresh proof. No focus, order, or topology mutation beyond the
+    // two adjacent shares.
+    let foreground = crate::ffi::foreground_window();
+    let reply = super::world_tick::run_world_command(
+        state,
+        me,
+        store,
+        dir,
+        &observed,
+        &retained,
+        areas,
+        foreground,
+        fulls,
+        tiler_core::world_report::WorldCommand::Operation(CoreCommand::Resize {
+            window: from.clone(),
+            direction,
+            mode,
+            press_index,
+        }),
     );
-    event.command = CoreCommand::Resize {
-        window: from.clone(),
-        direction,
-        mode,
-        press_index,
-    };
-    // Single-domain observations run the local retained propose/commit
-    // path; Core owns direction semantics. The reply carries complete
-    // desired geometry through `planned_writes`, exactly like Move.
-    let reply = handle_engine_event(state, &mut event);
-    let outcome = if let CoreReply::Resize(_) = &reply {
-        let writable = writable_tokens(state, &loc.output, &loc.workspace, &observed);
-        let summary = apply_geometry(
-            state,
-            ApplyInput {
-                me,
-                fulls,
-                reply: &reply,
-                observed: &observed,
-                op: "resize",
-                tick,
-                correlation: correlation.as_str(),
-                skipped,
-                writable: &writable,
-                output_token: state.workspaces.output_token(&loc.output),
-                workspace_token: state
-                    .workspaces
-                    .workspace_token(&loc.output, &loc.workspace),
-                revision: revision_for(state, &loc.output, &loc.workspace),
-            },
-        );
-        match summary {
-            Some(s) if !s.readback_ok => "resize-unverified",
-            Some(s) if s.mismatched > 0 => "resize-mismatch",
-            Some(s) if s.applied > 0 => "resize-applied",
-            Some(_) => "resize-noop",
-            None => reply_outcome(&reply),
-        }
-    } else {
-        reply_outcome(&reply)
+    let outcome = match reply {
+        Some(_) => "resize-applied",
+        None => "resize-unverified",
     };
     let mut line = settle(outcome);
     line["origin"] = serde_json::Value::from(origin.token.clone());

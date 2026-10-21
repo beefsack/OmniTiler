@@ -7654,6 +7654,206 @@ mod tests {
         out
     }
 
+    fn float_observed(window: &str, output: &str, workspace: &str) -> ObservedWindow {
+        ObservedWindow {
+            window: WindowId(window.to_owned()),
+            output: OutputId(output.to_owned()),
+            workspace: WorkspaceId(workspace.to_owned()),
+            floating: true,
+            fullscreen: false,
+            maximized: false,
+            sticky: false,
+            fixed_auto: false,
+            fixed_suppress: false,
+            hints: crate::size_hints::WindowSizeHints::none(),
+        }
+    }
+
+    fn converge_observed_list(session: &mut Session, windows: Vec<ObservedWindow>) {
+        let rev = session.accepted_revision();
+        session
+            .converge_observation(
+                &SessionObservation {
+                    observation: Observation::new(owner(), generation(), rev, 100 + rev),
+                    windows,
+                },
+                None,
+            )
+            .expect("converge");
+    }
+
+    #[test]
+    fn swap_carry_preserves_float_metadata_roundtrip() {
+        // Before the carry fix, extraction deleted automatic-fixed, tile
+        // override, capacity, and admission marks while returning only the
+        // record plus geometry, so insertion could never restore them.
+        let mut session = Session::new(owner(), generation(), 0, 7, vec![domain()]).expect("new");
+        converge_observed_list(&mut session, vec![float_observed("win-f", "out-1", "ws-1")]);
+        assert!(session.is_exception(&WindowId("win-f".to_owned())));
+        let win = WindowId("win-f".to_owned());
+        let geometry = Rect {
+            x: 1,
+            y: 2,
+            w: 3,
+            h: 4,
+        };
+        session
+            .retained_float_geometry
+            .insert(win.clone(), geometry);
+        session.automatic_fixed.insert(win.clone());
+        session.fixed_tile_override.insert(win.clone());
+        session.capacity_floats.insert(win.clone());
+        session.admission_order.insert(win.clone(), 41);
+        let mut ids = BTreeSet::new();
+        ids.insert(win.clone());
+        let carried = session.extract_exception_floats(&ids);
+        assert_eq!(carried.len(), 1);
+        assert!(!session.is_exception(&win), "extracted");
+        assert!(
+            !session.retained_float_geometry.contains_key(&win)
+                && !session.automatic_fixed.contains(&win)
+                && !session.fixed_tile_override.contains(&win)
+                && !session.capacity_floats.contains(&win)
+                && !session.admission_order.contains_key(&win),
+            "all marks travel with the carry"
+        );
+        let carry = &carried[0];
+        assert_eq!(carry.geometry, Some(geometry));
+        assert!(carry.automatic_fixed);
+        assert!(carry.fixed_tile_override);
+        assert!(carry.capacity_float);
+        assert_eq!(carry.admission_order, Some(41));
+        // Insert back at the homed domain (production inserts into the
+        // relocated moved session already keyed at the target).
+        let home = domain();
+        let home_key = DomainKey {
+            output: home.id.clone(),
+            workspace: home.workspace.clone(),
+        };
+        session.insert_exception_floats(carried, &home_key);
+        assert!(session.is_exception(&win), "restored");
+        let record = session.exceptions.get(&win).expect("record");
+        assert_eq!(record.output, home_key.output);
+        assert_eq!(record.workspace, home_key.workspace);
+        assert_eq!(session.retained_float_geometry.get(&win), Some(&geometry));
+        assert!(session.automatic_fixed.contains(&win));
+        assert!(session.fixed_tile_override.contains(&win));
+        assert!(session.capacity_floats.contains(&win));
+        assert_eq!(session.admission_order.get(&win), Some(&41));
+    }
+
+    #[test]
+    fn split_sticky_stay_rehomes_same_output_without_tiled_state() {
+        // Stay derivation keeps only the listed sticky exceptions, drops
+        // every tiled/minimized/focus trace, prunes per-window maps, and
+        // rekeys the single domain same-output. Empty or unknown sets,
+        // multi-domain sessions, and cross-output targets refuse.
+        let mut session = Session::new(owner(), generation(), 0, 7, vec![domain()]).expect("new");
+        converge_observed_list(
+            &mut session,
+            vec![
+                ObservedWindow {
+                    floating: false,
+                    ..float_observed("win-t", "out-1", "ws-1")
+                },
+                float_observed("win-f", "out-1", "ws-1"),
+            ],
+        );
+        assert!(!session.snapshot().windows.is_empty(), "tiled present");
+        let win = WindowId("win-f".to_owned());
+        session
+            .admission_order
+            .insert(WindowId("win-t".to_owned()), 7);
+        session.admission_order.insert(win.clone(), 9);
+        let target = DomainKey {
+            output: OutputId("out-1".to_owned()),
+            workspace: WorkspaceId("ws-2".to_owned()),
+        };
+        let mut ids = BTreeSet::new();
+        ids.insert(win.clone());
+        let stay = session
+            .split_sticky_stay(
+                &ids,
+                &target,
+                Rect {
+                    x: 0,
+                    y: 0,
+                    w: 120,
+                    h: 80,
+                },
+                0,
+            )
+            .expect("stay");
+        assert!(stay.snapshot().windows.is_empty(), "no tiled rides");
+        assert!(stay.minimized_entries().is_empty());
+        assert_eq!(stay.tree_for(&target), None);
+        assert_eq!(stay.domains.len(), 1);
+        assert_eq!(stay.domains[0].key(), target);
+        let record = stay.exceptions.get(&win).expect("sticky kept");
+        assert_eq!(record.output, target.output);
+        assert_eq!(record.workspace, target.workspace);
+        assert_eq!(stay.admission_order.get(&win), Some(&9));
+        assert!(
+            !stay
+                .admission_order
+                .contains_key(&WindowId("win-t".to_owned())),
+            "non-sticky marks pruned"
+        );
+        assert_eq!(stay.focus(), (None, None));
+        // Refusals: empty set, unknown id, cross-output target.
+        assert!(
+            session
+                .split_sticky_stay(
+                    &BTreeSet::new(),
+                    &target,
+                    Rect {
+                        x: 0,
+                        y: 0,
+                        w: 120,
+                        h: 80,
+                    },
+                    0,
+                )
+                .is_none()
+        );
+        let mut unknown = BTreeSet::new();
+        unknown.insert(WindowId("win-zzz".to_owned()));
+        assert!(
+            session
+                .split_sticky_stay(
+                    &unknown,
+                    &target,
+                    Rect {
+                        x: 0,
+                        y: 0,
+                        w: 120,
+                        h: 80,
+                    },
+                    0,
+                )
+                .is_none()
+        );
+        let cross = DomainKey {
+            output: OutputId("out-9".to_owned()),
+            workspace: WorkspaceId("ws-2".to_owned()),
+        };
+        assert!(
+            session
+                .split_sticky_stay(
+                    &ids,
+                    &cross,
+                    Rect {
+                        x: 0,
+                        y: 0,
+                        w: 120,
+                        h: 80,
+                    },
+                    0,
+                )
+                .is_none()
+        );
+    }
+
     #[test]
     fn canonical_pair_round_trip_nested_unequal() {
         // Source: nested deep tree plus a live float (geometry + retained),

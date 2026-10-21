@@ -2,7 +2,7 @@
 //! Background icon lookup (`cfg(windows)` only).
 //!
 //! One worker thread serves the tile loop's [`IconChannel`]: it pops one
-//! [`WindowKey`](crate::workspace::WindowKey) at a time, resolves the
+//! [`WindowKey`](crate::native_guards::WindowKey) at a time, resolves the
 //! artwork with no shared lock held, and pushes one owned [`IconImage`]
 //! (or a miss). The worker sleeps on a wake signal when no work is queued:
 //! no periodic wakes while idle or suppressed. Lookup chain per window:
@@ -59,7 +59,7 @@ use crate::native::HeldProcess;
 use crate::pager_icons::{
     ICON_RENDER_PX, IconChannel, IconImage, IconResult, IconSource, MINI_GRAY,
 };
-use crate::workspace::WindowKey;
+use crate::native_guards::WindowKey;
 
 /// `ApplicationFrameHost.exe` owns UWP windows; its exe icon is not the app.
 const FRAME_HOST_EXE: &str = "applicationframehost.exe";

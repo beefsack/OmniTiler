@@ -12,17 +12,16 @@ use crate::directional::{OutputId, WindowId};
 use crate::engine::Engine;
 use crate::ids::{CorrelationId, OwnerId};
 use crate::seed::EngineWindow;
-use crate::session::DomainKey;
 use crate::session::RefusalKind;
+use crate::session::{DomainKey, OutputDomain};
 use crate::workspace_scope::{TrailingSelection, resolve_numbered, resolve_trailing};
 use crate::world_commands::CommandApplied;
 use crate::world_engine::{
     KIND_CREATION_EXHAUSTED, KIND_IN_FLIGHT, KIND_SCOPE_HELD, KIND_SEND_REFUSED, KIND_SEND_TARGET,
     KIND_SEND_WINDOW, KIND_SNAPSHOT, MSG_CREATION_EXHAUSTED, MSG_IN_FLIGHT, MSG_SCOPE_HELD,
-    MSG_SEND_REFUSED, MSG_SEND_TARGET, MSG_SEND_WINDOW, MSG_SNAPSHOT, PendingSend,
-    RetainedTransfer, WorldEngine,
+    MSG_SEND_REFUSED, MSG_SEND_TARGET, MSG_SEND_WINDOW, MSG_SNAPSHOT, RetainedTransfer,
+    WorldEngine,
 };
-use crate::world_publish::homed_occupancy;
 use crate::world_report::{OneShotEffect, TransferKind, TransferTarget, WorldReport};
 
 impl WorldEngine {
@@ -109,6 +108,18 @@ impl WorldEngine {
         match result {
             Ok((retained, focus)) => {
                 debug_assert_eq!(retained.target.operation_id, operation_id);
+                // Single-owner membership commits with the transfer: the
+                // mover homes at the target while settlement proves
+                // arrival (shielded, never flapping back).
+                if let TransferKind::Window(window) = &retained.target.kind {
+                    let target = DomainKey {
+                        output: retained.target.target_output.clone(),
+                        workspace: crate::directional::WorkspaceId(
+                            retained.target.target_workspace.clone(),
+                        ),
+                    };
+                    self.commit_send_member(window, &target);
+                }
                 self.note_command(command_seq);
                 self.retained.push(retained);
                 match focus {
@@ -185,15 +196,22 @@ impl WorldEngine {
                 RefusalKind::Unchanged.message(),
             ));
         }
-        // Aligned whole-workspace migrations own their destination
-        // trailing cell until arrival: a window send onto the same cell
-        // would double-book the native before the moved unit lands.
-        if self.is_aligned(report)
-            && self.retained.iter().any(|r| {
-                matches!(&r.target.kind, TransferKind::Migration)
-                    && r.target.target_output == *target_output
-                    && r.target.target_workspace == target_workspace
-            })
+        // Outstanding whole-workspace migrations own their destination
+        // cell until arrival: a window send onto the same cell would
+        // double-book the workspace before the moved unit lands.
+        if self.retained.iter().any(|r| {
+            matches!(&r.target.kind, TransferKind::Migration)
+                && r.target.target_output == *target_output
+                && r.target.target_workspace == target_workspace
+        }) {
+            return Err((KIND_SEND_TARGET, MSG_SEND_TARGET));
+        }
+        // Logical homing prerequisites: the target workspace lives in its
+        // ring and neither key is held.
+        if !self
+            .mapping
+            .get(&target_output.0)
+            .is_some_and(|ring| ring.iter().any(|id| id == target_workspace))
         {
             return Err((KIND_SEND_TARGET, MSG_SEND_TARGET));
         }
@@ -210,16 +228,17 @@ impl WorldEngine {
         let source_floating = self.floating_scopes.contains(&source_key);
         let target_floating = self.floating_scopes.contains(&target_key);
         if source_floating || target_floating {
-            // Both domains must be observed (target readable: the adapter
+            // Both scopes must be staged (target readable: the adapter
             // can only verify membership it can see).
-            if !report
+            if !self
+                .staged
                 .domains
                 .iter()
-                .any(|d| d.readable && d.domain.key() == target_key)
+                .any(|d| d.readable && d.key == target_key)
             {
                 return Err((KIND_SEND_TARGET, MSG_SEND_TARGET));
             }
-            if !report.domains.iter().any(|d| d.domain.key() == source_key) {
+            if !self.staged.domains.iter().any(|d| d.key == source_key) {
                 return Err((KIND_SEND_WINDOW, MSG_SEND_WINDOW));
             }
             return Ok((
@@ -238,6 +257,10 @@ impl WorldEngine {
                     members: Vec::new(),
                     migration_refill: None,
                     migration_initial_empty: false,
+                    migration_source_index: None,
+                    migration_source_view: None,
+                    migration_target_view: None,
+                    migration_terminal: None,
                 },
                 // Membership-only floating boundary: follow names the mover.
                 // Stay keeps the native boundary focus (no engine MRU to
@@ -252,24 +275,37 @@ impl WorldEngine {
         ) else {
             return Err((KIND_SNAPSHOT, MSG_SNAPSHOT));
         };
-        let Some(source_domain) = report.domains.iter().find(|d| {
-            d.domain.id == source_key.output && d.domain.workspace == source_key.workspace
-        }) else {
+        let Some(source_domain) = self.staged.domains.iter().find(|d| d.key == source_key) else {
             return Err((KIND_SEND_WINDOW, MSG_SEND_WINDOW));
         };
-        let Some(target_domain) = report.domains.iter().find(|d| {
-            d.readable
-                && d.domain.id == target_key.output
-                && d.domain.workspace == target_key.workspace
-        }) else {
+        let Some(target_domain) = self
+            .staged
+            .domains
+            .iter()
+            .find(|d| d.readable && d.key == target_key)
+        else {
             return Err((KIND_SEND_TARGET, MSG_SEND_TARGET));
         };
         // Source-only in `windows`, target-only in `target_windows`:
         // the engine combines them for pair convergence, so
         // concatenating here would duplicate every row.
+        let source_output_domain = OutputDomain {
+            id: source_key.output.clone(),
+            workspace: source_key.workspace.clone(),
+            bounds: source_domain.bounds,
+            gap: source_domain.gap,
+            adjacent: BTreeMap::new(),
+        };
+        let target_output_domain = OutputDomain {
+            id: target_key.output.clone(),
+            workspace: target_key.workspace.clone(),
+            bounds: target_domain.bounds,
+            gap: target_domain.gap,
+            adjacent: BTreeMap::new(),
+        };
         let (Some(inset_source), Some(inset_target)) = (
-            crate::world_engine::inset_world_domain(&source_domain.domain, source_domain.outer_gap),
-            crate::world_engine::inset_world_domain(&target_domain.domain, target_domain.outer_gap),
+            crate::world_engine::inset_world_domain(&source_output_domain, source_domain.outer_gap),
+            crate::world_engine::inset_world_domain(&target_output_domain, target_domain.outer_gap),
         ) else {
             return Err((KIND_SCOPE_HELD, MSG_SCOPE_HELD));
         };
@@ -283,7 +319,7 @@ impl WorldEngine {
             domain_key: source_key.clone(),
             outer_gap: source_domain.outer_gap,
             focused_window: source_domain.focused.clone(),
-            windows: source_domain.windows.clone(),
+            windows: self.shielded_windows(&source_key, &source_domain.windows),
             closed_windows: source_domain.closed.clone(),
             directional: None,
             directional_target_outer_gap: None,
@@ -291,7 +327,7 @@ impl WorldEngine {
                 Engine::canonical_component_domain(&inset_target),
                 target_key.clone(),
             )),
-            target_windows: target_domain.windows.clone(),
+            target_windows: self.shielded_windows(&target_key, &target_domain.windows),
             command: CoreCommand::SendToWorkspace {
                 window: window.0.clone(),
                 target_output: target_output.0.clone(),
@@ -330,6 +366,10 @@ impl WorldEngine {
                         members: Vec::new(),
                         migration_refill: None,
                         migration_initial_empty: false,
+                        migration_source_index: None,
+                        migration_source_view: None,
+                        migration_target_view: None,
+                        migration_terminal: None,
                     },
                     focus,
                 ))
@@ -389,15 +429,22 @@ impl WorldEngine {
         if target_key == source_key {
             return Err((KIND_SEND_TARGET, MSG_SEND_TARGET));
         }
-        // Aligned whole-workspace migrations own their destination
-        // trailing cell until arrival: a window send onto the same cell
-        // would double-book the native before the moved unit lands.
-        if self.is_aligned(report)
-            && self.retained.iter().any(|r| {
-                matches!(&r.target.kind, TransferKind::Migration)
-                    && r.target.target_output == *target_output
-                    && r.target.target_workspace == target_workspace
-            })
+        // Outstanding whole-workspace migrations own their destination
+        // cell until arrival: a window send onto the same cell would
+        // double-book the workspace before the moved unit lands.
+        if self.retained.iter().any(|r| {
+            matches!(&r.target.kind, TransferKind::Migration)
+                && r.target.target_output == *target_output
+                && r.target.target_workspace == target_workspace
+        }) {
+            return Err((KIND_SEND_TARGET, MSG_SEND_TARGET));
+        }
+        // Logical homing prerequisites: the target workspace lives in its
+        // ring and neither key is held.
+        if !self
+            .mapping
+            .get(&target_output.0)
+            .is_some_and(|ring| ring.iter().any(|id| id == target_workspace))
         {
             return Err((KIND_SEND_TARGET, MSG_SEND_TARGET));
         }
@@ -407,14 +454,15 @@ impl WorldEngine {
         let source_floating = self.floating_scopes.contains(&source_key);
         let target_floating = self.floating_scopes.contains(&target_key);
         if source_floating || target_floating {
-            if !report
+            if !self
+                .staged
                 .domains
                 .iter()
-                .any(|d| d.readable && d.domain.key() == target_key)
+                .any(|d| d.readable && d.key == target_key)
             {
                 return Err((KIND_SEND_TARGET, MSG_SEND_TARGET));
             }
-            if !report.domains.iter().any(|d| d.domain.key() == source_key) {
+            if !self.staged.domains.iter().any(|d| d.key == source_key) {
                 return Err((KIND_SEND_WINDOW, MSG_SEND_WINDOW));
             }
             return Ok((
@@ -433,6 +481,10 @@ impl WorldEngine {
                     members: Vec::new(),
                     migration_refill: None,
                     migration_initial_empty: false,
+                    migration_source_index: None,
+                    migration_source_view: None,
+                    migration_target_view: None,
+                    migration_terminal: None,
                 },
                 // Membership-only floating boundary: follow names the mover.
                 // Stay keeps the native boundary focus (no engine MRU to
@@ -447,21 +499,34 @@ impl WorldEngine {
         ) else {
             return Err((KIND_SNAPSHOT, MSG_SNAPSHOT));
         };
-        let Some(source_domain) = report.domains.iter().find(|d| {
-            d.domain.id == source_key.output && d.domain.workspace == source_key.workspace
-        }) else {
+        let Some(source_domain) = self.staged.domains.iter().find(|d| d.key == source_key) else {
             return Err((KIND_SEND_WINDOW, MSG_SEND_WINDOW));
         };
-        let Some(target_domain) = report.domains.iter().find(|d| {
-            d.readable
-                && d.domain.id == target_key.output
-                && d.domain.workspace == target_key.workspace
-        }) else {
+        let Some(target_domain) = self
+            .staged
+            .domains
+            .iter()
+            .find(|d| d.readable && d.key == target_key)
+        else {
             return Err((KIND_SEND_TARGET, MSG_SEND_TARGET));
         };
+        let source_output_domain = OutputDomain {
+            id: source_key.output.clone(),
+            workspace: source_key.workspace.clone(),
+            bounds: source_domain.bounds,
+            gap: source_domain.gap,
+            adjacent: BTreeMap::new(),
+        };
+        let target_output_domain = OutputDomain {
+            id: target_key.output.clone(),
+            workspace: target_key.workspace.clone(),
+            bounds: target_domain.bounds,
+            gap: target_domain.gap,
+            adjacent: BTreeMap::new(),
+        };
         let (Some(inset_source), Some(inset_target)) = (
-            crate::world_engine::inset_world_domain(&source_domain.domain, source_domain.outer_gap),
-            crate::world_engine::inset_world_domain(&target_domain.domain, target_domain.outer_gap),
+            crate::world_engine::inset_world_domain(&source_output_domain, source_domain.outer_gap),
+            crate::world_engine::inset_world_domain(&target_output_domain, target_domain.outer_gap),
         ) else {
             return Err((KIND_SCOPE_HELD, MSG_SCOPE_HELD));
         };
@@ -475,7 +540,7 @@ impl WorldEngine {
             domain_key: source_key.clone(),
             outer_gap: source_domain.outer_gap,
             focused_window: source_domain.focused.clone(),
-            windows: source_domain.windows.clone(),
+            windows: self.shielded_windows(&source_key, &source_domain.windows),
             closed_windows: source_domain.closed.clone(),
             directional: None,
             directional_target_outer_gap: None,
@@ -483,7 +548,7 @@ impl WorldEngine {
                 Engine::canonical_component_domain(&inset_target),
                 target_key.clone(),
             )),
-            target_windows: target_domain.windows.clone(),
+            target_windows: self.shielded_windows(&target_key, &target_domain.windows),
             command: CoreCommand::SendToOutput {
                 window: window.0.clone(),
                 target_output: target_output.0.clone(),
@@ -522,6 +587,10 @@ impl WorldEngine {
                         members: Vec::new(),
                         migration_refill: None,
                         migration_initial_empty: false,
+                        migration_source_index: None,
+                        migration_source_view: None,
+                        migration_target_view: None,
+                        migration_terminal: None,
                     },
                     focus,
                 ))
@@ -535,9 +604,8 @@ impl WorldEngine {
 
     /// Numbered send over the scoped ring for `output`: positional
     /// `1..=9`, or `0` for the trailing path (reuse the live trailing
-    /// empty, else mint a stable pending token and pend the send under
-    /// core until the binding is reported). Bound targets transfer
-    /// exactly like [`WorldCommand::Send`] with no view target at any
+    /// empty, else mint the trailing workspace immediately, exactly like
+    /// lifecycle). Commits an ordinary transfer with no view target at any
     /// step: sends never view-switch, including stays.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn start_numbered_send(
@@ -587,13 +655,8 @@ impl WorldEngine {
             };
         }
         if index == 0 {
-            let selection = if self.is_aligned(report) {
-                let occupied = crate::world_publish::homed_occupancy_for_output(report, output);
-                crate::workspace_scope::resolve_aligned_trailing(&ring, &occupied)
-            } else {
-                let occupied = homed_occupancy(report);
-                resolve_trailing(&ring, &occupied)
-            };
+            let occupied = self.ring_occupied(output);
+            let selection = resolve_trailing(&ring, &occupied);
             match selection {
                 TrailingSelection::Reuse(target) => {
                     let operation_id = format!("op-{command_seq}");
@@ -610,26 +673,27 @@ impl WorldEngine {
                     self.settle_send(command_seq, operation_id, result)
                 }
                 TrailingSelection::Create => {
-                    let Some(logical) = self.pending_token(output) else {
+                    // Trailing workspaces exist immediately in the logical
+                    // contract: mint, then commit the send.
+                    let created = self.create_trailing_workspace(output, report.default_tiled);
+                    let Some(target) = created else {
                         return CommandApplied::Rejected {
                             kind: KIND_CREATION_EXHAUSTED,
                             message: MSG_CREATION_EXHAUSTED,
                         };
                     };
-                    // Pend under core: stable identity, no view target, and
-                    // never the token as a native id. The engine send starts
-                    // once the binding names the native id.
-                    self.note_command(command_seq);
-                    self.pending_sends.push(PendingSend {
-                        operation_id: format!("op-{command_seq}"),
-                        logical_id: logical,
-                        output: output.clone(),
-                        window: (*window).clone(),
+                    let operation_id = format!("op-{command_seq}");
+                    let result = self.execute_send(
+                        report,
+                        &operation_id,
+                        window,
+                        output,
+                        &target,
                         follow,
-                        source_output: source_key.output,
-                        source_workspace: source_key.workspace.0,
-                    });
-                    CommandApplied::NoEffect
+                        by_id,
+                        held_scopes,
+                    );
+                    self.settle_send(command_seq, operation_id, result)
                 }
             }
         } else {

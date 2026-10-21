@@ -10,7 +10,7 @@
 //! [`IconImage`] pixels are top-down rows of BGRA bytes at `ICON_RENDER_PX`
 //! square, filled with [`MINI_GRAY`] where the artwork is transparent.
 //! Identity per miniature travels in the frame (see `crate::pager`), keyed
-//! by the full [`WindowKey`](crate::workspace::WindowKey) lifetime so a
+//! by the full [`WindowKey`](crate::native_guards::WindowKey) lifetime so a
 //! recycled HWND never inherits another window's artwork.
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 
 use tiler_core::geometry::Rect;
 
-use crate::workspace::WindowKey;
+use crate::native_guards::WindowKey;
 
 /// Maximum icon side at 96 DPI (logical px): caps artwork so the miniature
 /// outline stays visible around it instead of filling the whole cell.

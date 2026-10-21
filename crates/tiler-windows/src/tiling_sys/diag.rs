@@ -260,202 +260,6 @@ fn suppress_reason(
     "none"
 }
 
-/// Stage the hint lane for every fresh-query row assembly just produced:
-/// outcome, actual native cost, carried hints, and fallback facts from
-/// the per-token report (fresh lanes only; retained rows carry the cached
-/// overlay value with no query and no fallback). The sample records this
-/// assembly's operation/correlation for per-entry joins. Observed geometry
-/// and the executable basename come from the already-observed member paths
-/// only: no new native query. Resets the write lane (recompleted by
-/// application the same tick) and prunes all diagnostic maps by live
-/// membership.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn stage_hint_samples(
-    state: &mut TileLoop,
-    output_token: &str,
-    workspace_token: &str,
-    op: &str,
-    correlation: &str,
-    rows: &[crate::workspace_owner::OwnerRow],
-    reasons: &HashMap<String, &'static str>,
-    costs: &HashMap<String, QueryCost>,
-    observed: &[ObservedWindow],
-    query_ms: u64,
-) {
-    let tick = state.tick;
-    let by_token: HashMap<&str, &ObservedWindow> =
-        observed.iter().map(|w| (w.token.as_str(), w)).collect();
-    let mut hwnd_by_token: HashMap<&str, u64> = observed
-        .iter()
-        .map(|w| (w.token.as_str(), w.hwnd))
-        .collect();
-    // Stored identity by live token in one pass (no per-row scan): the
-    // basename fallback for rows with no fresh observation.
-    let mut ident_by_token: HashMap<&str, &ProcessIdentity> = HashMap::new();
-    for (key, token) in state.member_tokens.iter() {
-        hwnd_by_token.entry(token.as_str()).or_insert(key.hwnd);
-        if let Some(ident) = state.member_identity.get(key) {
-            ident_by_token.insert(token.as_str(), ident);
-        }
-    }
-    for row in rows {
-        let Some(outcome) = reasons.get(&row.token).copied() else {
-            // No query ran on this lane (slotless floats ride the live
-            // frame with no hint): nothing diagnostic to stage.
-            continue;
-        };
-        let fresh_lane = matches!(
-            outcome,
-            "hint" | "no-hint" | "timeout" | "failed" | "invalid" | "budget"
-        );
-        let (fallback, age_ms, fallback_reason) = if fresh_lane {
-            match state.hint_fallback_uses.get(&row.token) {
-                Some(report) => (report.reused, report.age_ms, report.reason),
-                None => (false, 0, outcome),
-            }
-        } else {
-            (false, 0, outcome)
-        };
-        let exe = by_token
-            .get(row.token.as_str())
-            .map(|w| exe_file_name(&w.identity.exe_path))
-            .or_else(|| {
-                ident_by_token
-                    .get(row.token.as_str())
-                    .map(|ident| exe_file_name(&ident.exe_path))
-            })
-            .unwrap_or_default()
-            .to_owned();
-        let cost = costs.get(&row.token).copied().unwrap_or_default();
-        let sample = state
-            .diag_pending
-            .entry(row.token.clone())
-            .or_insert_with(|| {
-                WindowDiagSample::blank(output_token, workspace_token, op, correlation)
-            });
-        sample.output = output_token.to_owned();
-        sample.workspace = workspace_token.to_owned();
-        sample.op = op.to_owned();
-        sample.correlation = correlation.to_owned();
-        sample.hwnd = hwnd_by_token.get(row.token.as_str()).copied().unwrap_or(0);
-        sample.exe = exe;
-        sample.outcome = outcome;
-        sample.timeout_ms = cost.offered_ms;
-        sample.query_us = cost.elapsed_us;
-        sample.carried = row.hints;
-        sample.fallback = fallback;
-        sample.fallback_age_ms = age_ms;
-        sample.fallback_reason = fallback_reason;
-        if let Some(window) = by_token.get(row.token.as_str()) {
-            sample.observed_outer = Some(window.outer);
-            sample.insets = [
-                window.insets.left,
-                window.insets.top,
-                window.insets.right,
-                window.insets.bottom,
-            ];
-        } else {
-            sample.observed_outer = None;
-            sample.insets = [0; 4];
-        }
-        sample.pre = Some(row.rect);
-        sample.planned = None;
-        sample.effective = None;
-        sample.outer = None;
-        sample.post = None;
-        sample.disposition = "no-write";
-        sample.suppress = "none";
-        sample.hint_tick = tick;
-        sample.write_tick = 0;
-    }
-    state.diag_query_ms = query_ms;
-    let live: HashSet<String> = state.member_tokens.values().cloned().collect();
-    state.diag_pending.retain(|token, _| live.contains(token));
-    state.diag_emitted.retain(|token, _| live.contains(token));
-    state.diag_class.retain(|token, _| live.contains(token));
-    state.diag_emit_seq.retain(|token, _| live.contains(token));
-    state.diag_coalesced.retain(|token| live.contains(token));
-}
-
-/// Stage the write lane for one geometry application pass over the structures
-/// the pass already produced: desired entries, the skip list (last wins),
-/// attempted setters, native outer targets, pre-write observations, and
-/// readback rectangles. Tokens with a hint sample but no desired entry
-/// complete honestly as `no-write` (floats and unplanned rows take no
-/// writes). Called by the production apply path and by tests through the
-/// same seam; never queries natively.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn stage_write_samples(
-    state: &mut TileLoop,
-    desired: &[crate::workspace_owner::PlannedWrite],
-    skipped: &[(String, String)],
-    written: &HashSet<String>,
-    outer_targets: &HashMap<String, Rect>,
-    observed: &[ObservedWindow],
-    post_rects: &HashMap<String, Rect>,
-    snapshot: &RefusedTracker,
-    now: Instant,
-) {
-    let tick = state.tick;
-    let pre_by_token: HashMap<&str, Rect> = observed
-        .iter()
-        .map(|w| (w.token.as_str(), w.visible))
-        .collect();
-    let mut last_skip: HashMap<&str, &str> = HashMap::new();
-    for (token, reason) in skipped {
-        last_skip.insert(token.as_str(), reason.as_str());
-    }
-    for entry in desired {
-        let token = entry.window.0.as_str();
-        let Some(sample) = state.diag_pending.get_mut(token) else {
-            continue;
-        };
-        if sample.hint_tick != tick {
-            continue;
-        }
-        let hints = state
-            .hint_logged
-            .get(token)
-            .copied()
-            .unwrap_or(WindowSizeHints::none());
-        let effective = if entry.overconstrained {
-            crate::tiling::overconstrained_effective(entry.rect, hints)
-        } else {
-            entry.rect
-        };
-        let disposition = match last_skip.get(token) {
-            Some(reason) => static_disposition(reason),
-            None if written.contains(token) => "wrote",
-            None => "match",
-        };
-        let pre = pre_by_token.get(token).copied().or(sample.pre);
-        let post = post_rects.get(token).copied();
-        sample.planned = Some(entry.rect);
-        sample.effective = Some(effective);
-        sample.outer = outer_targets.get(token).copied();
-        sample.pre = pre;
-        sample.post = post;
-        sample.disposition = disposition;
-        sample.suppress = suppress_reason(
-            snapshot,
-            token,
-            disposition,
-            Some(effective),
-            pre,
-            post,
-            now,
-        );
-        sample.write_tick = tick;
-    }
-    for sample in state.diag_pending.values_mut() {
-        if sample.hint_tick == tick && sample.write_tick != tick {
-            sample.disposition = "no-write";
-            sample.suppress = "none";
-            sample.write_tick = tick;
-        }
-    }
-}
-
 /// Complete hint-staged samples when the Engine reply carries no plan
 /// (rejected/diverged/invalid): no write lane exists, and the samples must
 /// still flush rather than linger half-staged.
@@ -569,14 +373,14 @@ fn resolve_class(state: &mut TileLoop, token: &str, hwnd: u64) -> String {
 /// carries the stored pid and lifetime tag. Wait-free reads only (process id
 /// query plus the property tag, never a message round-trip); false on any
 /// mismatch or unreadable live state, so callers report unknown.
-fn class_lifetime_ok(key: &crate::workspace::WindowKey, stored_tag: &str) -> bool {
+fn class_lifetime_ok(key: &crate::native_guards::WindowKey, stored_tag: &str) -> bool {
     if stored_tag.is_empty() || key.pid == 0 {
         return false;
     }
     if class_fence_pid(key.hwnd) != key.pid {
         return false;
     }
-    crate::workspace_owner::visible_lifetime_ok(stored_tag, live_member_tag(key.hwnd).as_deref())
+    crate::native_guards::visible_lifetime_ok(stored_tag, live_member_tag(key.hwnd).as_deref())
 }
 
 /// Live pid for the emission-time class fence (wait-free, no message

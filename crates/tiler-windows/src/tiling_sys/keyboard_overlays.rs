@@ -5,6 +5,8 @@ use crate::snapkey::{QueuedFullscreenIntent, QueuedMaximizeIntent};
 pub(super) fn dispatch_maximize_intent(
     state: &mut TileLoop,
     me: &ProcessIdentity,
+    _store: &LedgerStore,
+    _dir: &Path,
     fulls: &[Rect],
     areas: &[MonitorArea],
     intent: QueuedMaximizeIntent,
@@ -138,7 +140,7 @@ pub(super) fn dispatch_maximize_intent(
         );
         return;
     };
-    if !crate::workspace_owner::member_matches(
+    if !crate::native_guards::member_matches(
         &member_key,
         origin.hwnd,
         origin.pid,
@@ -185,7 +187,7 @@ pub(super) fn dispatch_maximize_intent(
     // native write.
     let live_tag = crate::product_hide::sys::read_member_tag(member_key.hwnd);
     let lifetime_ok = state.member_tags.get(&member_key).is_some_and(|stored| {
-        crate::workspace_owner::visible_lifetime_ok(stored, live_tag.as_deref())
+        crate::native_guards::visible_lifetime_ok(stored, live_tag.as_deref())
     });
     if !lifetime_ok {
         drop_member_state(state, &member_key);
@@ -305,6 +307,8 @@ pub(super) fn dispatch_maximize_intent(
 pub(super) fn dispatch_fullscreen_intent(
     state: &mut TileLoop,
     me: &ProcessIdentity,
+    _store: &LedgerStore,
+    _dir: &Path,
     fulls: &[Rect],
     areas: &[MonitorArea],
     intent: QueuedFullscreenIntent,
@@ -439,7 +443,7 @@ pub(super) fn dispatch_fullscreen_intent(
         );
         return;
     };
-    if !crate::workspace_owner::member_matches(
+    if !crate::native_guards::member_matches(
         &member_key,
         origin.hwnd,
         origin.pid,
@@ -616,11 +620,11 @@ pub(super) fn dispatch_fullscreen_intent(
             let meta = meta.expect("decision owns metadata");
             let outcome = exit_fullscreen_owned(member_key.hwnd, &meta);
             // A clean exit to a normal frame restores the current
-            // Engine allocation in the same action; a reasserted
+            // core allocation in the same action; a reasserted
             // maximize converges as a retained overlay next tick.
             if outcome == "restored" && !meta.was_maximized {
                 let fulls_owned = fulls.to_vec();
-                reconcile_tick(state, me, &fulls_owned, areas);
+                reconcile_tick(state, me, _store, _dir, &fulls_owned, areas);
             }
             ("restored", outcome)
         }

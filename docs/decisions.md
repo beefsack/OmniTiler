@@ -2590,6 +2590,23 @@ platform API behavior.
   the same workspace count, so some screens may hold several empty workspaces;
   KDE interprets that model. Platform responsibilities: input, observe, actuate,
   render. This is the approved boundary, not a claim of completed extraction.
+- <a id="logical-workspace-authority"></a> User approved 2026-10-21: core's
+  logical workspace-to-screen mapping is the authority. Native workspace
+  domains are observations only, not prerequisites for logical destinations
+  or competing membership owners. The inherited world-engine machinery may
+  be simplified or replaced rather than patched; maximize portable core
+  authority without platform-specific policy. The default world contract
+  needs no native workspace vocabulary. Hosts requiring native domains opt
+  into the capability-named `host_owned_workspace_domains` observation option;
+  `equal_workspace_count` independently expresses output-spanning host limits.
+  This supersedes native-derived world identity/binding prerequisites, not
+  truthful settlement, incomplete/unreadable fences, explicit closes,
+  generation/watermark checks, consumed-command fencing or at-most-once
+  ambiguous effects. Unsupported tiled-to-floating output crossings must
+  still preserve committed source state; diagnostic float origin never
+  selects policy. Stage 2a implements this logical boundary; Windows owner
+  adoption and cursor-first placement remain separate slices.
+  [Implementation and evidence](changes/core-world-model-rearchitecture.md#stage-2a-accepted-outcome-2026-10-21).
 - User approved 2026-10-20: core owns shapes and bounds of the active border,
   group underlays and drop overlays. Platforms report cursor position so core
   computes drop targets. Try this first; optimise only if dogfooding shows cost.
@@ -2634,12 +2651,15 @@ platform API behavior.
   is not a restorable snapshot of trees, shares, MRU or minimized history.
 - Every accepted full observation publishes one globally monotonic world
   revision while independent domain sessions/revisions remain independent.
-  Reports include topology, logical/native bindings, settings, hidden and
-  minimized lifetimes, explicit closes, unreadable holds and actuation
+  Reports include screen topology, settings, hidden and minimized lifetimes,
+  explicit closes, unreadable holds and actuation
   feedback. Replies include complete workspace/output/window desires,
   per-property authority, retained targets, correlated operation results and
   one-shot effects. Held or untouched scope omission authorizes no write or
-  retirement. Optional future presentation state remains unimplemented.
+  retirement. Under the approved logical authority above, observed logical
+  membership/view receipts replace required logical/native bindings; host
+  backing remains optional observation. Optional future presentation state
+  remains unimplemented.
 - Discovery binds authenticated KWin-owner/adapter identity to a fresh core
   generation and returns not-ready with no applicable state. A complete report
   precedes ready application. Process restart, Engine replacement and poison

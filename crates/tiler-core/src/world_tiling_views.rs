@@ -1,28 +1,24 @@
 //! Planner-owned tiling and view commands (D2): per-workspace tiling
-//! toggles, policy and selection view retention, scoped rings, and stable
-//! pending-creation tokens.
+//! toggles, policy and selection view retention, and scoped rings.
 //!
 //! Split from [`crate::world_commands`]: this module only extends the
 //! [`crate::world_engine::WorldEngine`] `impl`.
 
-use std::collections::BTreeMap;
-
 use crate::directional::OutputId;
 use crate::session::DomainKey;
-use crate::workspace_scope::{plan_global_swap, scoped_ring_ids};
 use crate::world_commands::CommandApplied;
 use crate::world_engine::{
     KIND_TILING_TARGET, KIND_VIEW_OUTPUT, KIND_VIEW_TARGET, MSG_TILING_TARGET, MSG_VIEW_OUTPUT,
-    MSG_VIEW_TARGET, PendingCreation, RetainedTransfer, WorldEngine,
+    MSG_VIEW_TARGET, RetainedTransfer, WorldEngine,
 };
-use crate::world_publish::live_native_order;
 use crate::world_report::{TilingMode, TransferKind, TransferTarget, WorldReport};
 
 impl WorldEngine {
     /// Planner-owned per-workspace tiling toggle. The workspace must be a
-    /// live native id on `output`. Disabling releases the retained session
-    /// (no frame writes while floating) and drops window transfers touching
-    /// the scope; re-enabling re-adopts through the fresh route. Idempotent.
+    /// known logical id on `output`. Disabling releases the retained
+    /// session (no frame writes while floating) and drops window transfers
+    /// touching the scope; re-enabling re-adopts through the fresh route.
+    /// Idempotent.
     pub(crate) fn set_workspace_tiling(
         &mut self,
         report: &WorldReport,
@@ -31,9 +27,11 @@ impl WorldEngine {
         workspace: &str,
         tiled: bool,
     ) -> CommandApplied {
-        let known = report.topology.iter().any(|topology| {
-            &topology.output == output && topology.native_order.iter().any(|id| id == workspace)
-        });
+        let _ = report;
+        let known = self
+            .mapping
+            .get(&output.0)
+            .is_some_and(|ring| ring.iter().any(|id| id == workspace));
         if !known {
             return CommandApplied::Rejected {
                 kind: KIND_TILING_TARGET,
@@ -70,10 +68,6 @@ impl WorldEngine {
                 }
                 TransferKind::View | TransferKind::Migration => true,
             });
-            self.pending_sends.retain(|pending| {
-                !(pending.source_output == key.output
-                    && pending.source_workspace == key.workspace.0)
-            });
         }
         self.note_command(command_seq);
         CommandApplied::NoEffect
@@ -89,6 +83,13 @@ impl WorldEngine {
         workspace: &str,
         operation_id: String,
     ) {
+        self.retain_view_inner(output, workspace, operation_id);
+    }
+
+    /// Shared view retention: latest view command wins per output. The
+    /// output must be a live screen and the workspace must name a known
+    /// logical id in its ring.
+    fn retain_view_inner(&mut self, output: &OutputId, workspace: &str, operation_id: String) {
         self.retained.retain(|r| {
             !(matches!(r.target.kind, TransferKind::View) && r.target.target_output == *output)
         });
@@ -107,12 +108,19 @@ impl WorldEngine {
             members: Vec::new(),
             migration_refill: None,
             migration_initial_empty: false,
+            migration_source_index: None,
+            migration_source_view: None,
+            migration_target_view: None,
+            migration_terminal: None,
         });
+        self.views.insert(output.0.clone(), workspace.to_owned());
     }
 
     /// Retain one view target for selection/switch commands. The output must
-    /// be observed and the workspace must name a known native id (or a
-    /// pending logical token just created by the trailing path).
+    /// be a live screen and the workspace must name a known logical id in
+    /// its ring. Shared mode fans out: the ring unifies across all live
+    /// outputs and every output shows the same view with one shared
+    /// history entry.
     pub(crate) fn retain_view(
         &mut self,
         report: &WorldReport,
@@ -120,21 +128,16 @@ impl WorldEngine {
         output: &OutputId,
         workspace: &str,
     ) -> CommandApplied {
-        let Some(topology) = report
-            .topology
-            .iter()
-            .find(|topology| &topology.output == output)
-        else {
+        if !self.mapping.contains_key(&output.0) {
             return CommandApplied::Rejected {
                 kind: KIND_VIEW_OUTPUT,
                 message: MSG_VIEW_OUTPUT,
             };
-        };
-        let known = topology.native_order.iter().any(|id| id == workspace)
-            || self
-                .pending_creations
-                .iter()
-                .any(|pending| pending.output == *output && pending.logical_id == workspace);
+        }
+        let known = self
+            .mapping
+            .get(&output.0)
+            .is_some_and(|ring| ring.iter().any(|id| id == workspace));
         if !known {
             return CommandApplied::Rejected {
                 kind: KIND_VIEW_TARGET,
@@ -142,44 +145,48 @@ impl WorldEngine {
             };
         }
         self.note_command(command_seq);
-        // Latest view command wins per output.
-        self.retained.retain(|r| {
-            !(matches!(r.target.kind, TransferKind::View) && r.target.target_output == *output)
-        });
-        self.retained.push(RetainedTransfer {
-            target: TransferTarget {
-                operation_id: format!("op-{command_seq}"),
-                kind: TransferKind::View,
-                target_output: output.clone(),
-                target_workspace: workspace.to_owned(),
-                follow: false,
-                held: false,
-            },
-            policy: false,
-            source_output: output.clone(),
-            source_workspace: String::new(),
-            members: Vec::new(),
-            migration_refill: None,
-            migration_initial_empty: false,
-        });
+        // Latest view command wins per output. Core views move immediately
+        // (logical authority); the retained flight proves actuation.
+        self.retain_view_inner(output, workspace, format!("op-{command_seq}"));
+        if report.workspace_mode == crate::workspace_scope::WorkspaceMode::Shared {
+            let canonical = self.mapping.get(&output.0).cloned().unwrap_or_default();
+            let live: Vec<String> = {
+                let mut live: Vec<String> = report
+                    .screens
+                    .iter()
+                    .map(|screen| screen.output.0.clone())
+                    .collect();
+                live.sort();
+                live
+            };
+            for out in &live {
+                self.mapping.insert(out.clone(), canonical.clone());
+                self.views.insert(out.clone(), workspace.to_owned());
+            }
+            self.history.observe_shared(&canonical, workspace);
+        }
         CommandApplied::NoEffect
     }
 
-    /// Scoped selection ring for one output (D2): the retained mapping
-    /// ring for local/global-unique, the shared order for shared mode.
+    /// Scoped selection ring for one output: the retained logical ring.
+    /// Shared mode returns the unified order (first live screen's ring).
     pub(crate) fn selection_ring(&self, report: &WorldReport, output: &OutputId) -> Vec<String> {
-        let live = live_native_order(report);
-        scoped_ring_ids(
-            report.workspace_mode,
-            &self.mapping,
-            &self.shared_order,
-            &output.0,
-            &live,
-        )
+        if report.workspace_mode == crate::workspace_scope::WorkspaceMode::Shared {
+            let mut live: Vec<String> = report
+                .screens
+                .iter()
+                .map(|screen| screen.output.0.clone())
+                .collect();
+            live.sort();
+            if let Some(first) = live.first() {
+                return self.mapping.get(first).cloned().unwrap_or_default();
+            }
+        }
+        self.mapping.get(&output.0).cloned().unwrap_or_default()
     }
 
-    /// Selection ring plus global-unique swap visibility: the ring for
-    /// numbered/relative resolution.
+    /// Selection ring plus visibility: the ring for numbered/relative
+    /// resolution.
     pub(crate) fn resolve_selection_ring(
         &self,
         report: &WorldReport,
@@ -189,50 +196,9 @@ impl WorldEngine {
         if ring.is_empty() { None } else { Some(ring) }
     }
 
-    /// Send ring for a window homed on `output`: the same scoped ring as
+    /// Send ring for a window homed on `output`: the same ring as
     /// selection, resolved once before transfer.
     pub(crate) fn send_ring(&self, report: &WorldReport, output: &OutputId) -> Vec<String> {
         self.selection_ring(report, output)
-    }
-
-    /// Visible-elsewhere swap plan for global-unique selection (D2).
-    pub(crate) fn global_swap_plan(
-        &self,
-        report: &WorldReport,
-        output: &OutputId,
-        target: &str,
-    ) -> Option<crate::workspace_scope::SwapPlan> {
-        let current_by_output: BTreeMap<String, String> = report
-            .topology
-            .iter()
-            .map(|topology| (topology.output.0.clone(), topology.current_native.clone()))
-            .collect();
-        plan_global_swap(&current_by_output, &output.0, target)
-    }
-
-    /// Stable pending logical token for one output, shared with lifecycle.
-    /// Exhaustion refuses (`None`): the counter never wraps and never
-    /// reuses the final token, so a saturated backend re-bootstraps under a
-    /// new generation instead of aliasing two outputs' tokens.
-    pub(crate) fn pending_token(&mut self, output: &OutputId) -> Option<String> {
-        if let Some(pending) = self
-            .pending_creations
-            .iter()
-            .find(|pending| pending.output == *output)
-        {
-            return Some(pending.logical_id.clone());
-        }
-        if self.creation_counter == u64::MAX {
-            return None;
-        }
-        // Creation tokens never wrap: exhaustion refuses and re-bootstraps.
-        let next = self.creation_counter.saturating_add(1);
-        self.creation_counter = next;
-        let logical = format!("wl-{next}");
-        self.pending_creations.push(PendingCreation {
-            logical_id: logical.clone(),
-            output: output.clone(),
-        });
-        Some(logical)
     }
 }

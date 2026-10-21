@@ -27,7 +27,7 @@ pub(super) fn tray_focused_output(
     areas: &[MonitorArea],
     owner_hwnd: u64,
 ) -> Option<String> {
-    let keys = state.workspaces.output_keys();
+    let keys = state.output_devices();
     let foreground_hwnd = crate::ffi::foreground_window();
     // Exact owned-UI match only (nonzero owner): a missing foreground keeps
     // the ordinary fallback, and any other real foreground recomputes, so
@@ -110,17 +110,14 @@ pub(super) fn poll_tray_select(
     let owner = tray.hwnd_value();
     let focused = tray_focused_output(state, areas, owner);
     let workspace_live = state
-        .workspaces
         .workspace_ids(&request.output)
         .iter()
         .any(|id| id == &request.workspace);
     if !crate::tray_pager::verify_select_scope(&request, focused.as_deref(), workspace_live) {
         let mut line = workspace_log(state, tick, "select", index, "tray", "refused-stale-scope");
-        line["output"] = serde_json::Value::from(state.workspaces.output_token(&request.output));
+        line["output"] = serde_json::Value::from(state.output_token(&request.output));
         line["workspace"] = serde_json::Value::from(
-            state
-                .workspaces
-                .workspace_token(&request.output, &request.workspace),
+            state.workspace_token(&request.output, &request.workspace),
         );
         log_json_at(&state.log_path, line);
         return;

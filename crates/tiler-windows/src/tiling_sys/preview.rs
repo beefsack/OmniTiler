@@ -1,15 +1,21 @@
 #![forbid(unsafe_code)]
 /// START-frozen preview source binding: the exact mover token, source
-/// output/workspace, and accepted revision captured at gesture START
-/// (native MoveSizeStart drain). The preview never rebinds mid-gesture:
-/// output/workspace/revision drift fails
+/// output/workspace, and the core domain fingerprint captured at gesture
+/// START (native MoveSizeStart drain). The preview never rebinds
+/// mid-gesture: output/workspace/fingerprint drift fails
 /// the whole gesture closed until settle. Source bounds stay at START.
+///
+/// The fingerprint covers the core logical ring plus the current view for
+/// the source output: observation-stable (observation ticks never move
+/// rings/views) but commit-sensitive (any selection/send/migration or
+/// lifecycle change fails the fence), replacing the retired per-domain
+/// Engine accepted revision.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct PreviewStartBinding {
     pub(super) token: String,
     pub(super) output: String,
     pub(super) workspace: String,
-    pub(super) revision: u64,
+    pub(super) domain_fp: u64,
 }
 
 pub(super) struct PreviewBound {
@@ -35,7 +41,7 @@ pub(super) struct PreviewFresh {
     pub(super) token_ok: bool,
     /// The START member still lives on the START output/workspace.
     pub(super) loc_ok: bool,
-    /// Accepted revision still equals the START revision.
+    /// Domain fingerprint still equals the START fingerprint.
     pub(super) revision_ok: bool,
     /// Sticky marker or Engine float exception on the mover.
     pub(super) float_hold: bool,

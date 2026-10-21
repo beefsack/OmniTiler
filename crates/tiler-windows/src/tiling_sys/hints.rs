@@ -42,8 +42,8 @@ pub(super) struct HintFallbackUse {
 /// diagnostic age only. A fresh empty hint is contradictory (usable outcomes
 /// never carry one) and clears instead, fail-closed.
 pub(super) fn note_last_good(
-    cache: &mut HashMap<crate::workspace::WindowKey, LastGoodHint>,
-    key: &crate::workspace::WindowKey,
+    cache: &mut HashMap<crate::native_guards::WindowKey, LastGoodHint>,
+    key: &crate::native_guards::WindowKey,
     token: &str,
     tag: &str,
     hints: WindowSizeHints,
@@ -69,8 +69,8 @@ pub(super) fn note_last_good(
 /// revive stale hints. Unperformed queries (`Invalid`), failures, and budget
 /// skips never call this: they preserve the entry.
 pub(super) fn invalidate_last_good(
-    cache: &mut HashMap<crate::workspace::WindowKey, LastGoodHint>,
-    key: &crate::workspace::WindowKey,
+    cache: &mut HashMap<crate::native_guards::WindowKey, LastGoodHint>,
+    key: &crate::native_guards::WindowKey,
 ) {
     cache.remove(key);
 }
@@ -86,8 +86,8 @@ pub(super) fn invalidate_last_good(
 /// moved), `identity` reserved by the caller for a live lifetime-tag
 /// mismatch.
 pub(super) fn timeout_candidate(
-    cache: &mut HashMap<crate::workspace::WindowKey, LastGoodHint>,
-    key: &crate::workspace::WindowKey,
+    cache: &mut HashMap<crate::native_guards::WindowKey, LastGoodHint>,
+    key: &crate::native_guards::WindowKey,
     token: &str,
     stored_tag: &str,
     now: Instant,

@@ -26,21 +26,22 @@
 //!
 //! Request keys (object, all required):
 //! ```text
-//! {v:1, owner, adapter, gen, obs:"u64", reqSeq:"u64", req, cmdSeq:"u64"|null,
-//!  command:{op,...}|null, mode, topology, bindings, domains,
-//!  minimized, predicate, refill, defaultTiled:bool, focused:""|id, complete:bool,
-//!  gesture:bool, feedback}
+//! {v:2, owner, adapter, gen, obs:"u64", reqSeq:"u64", req, cmdSeq:"u64"|null,
+//!  command:{op,...}|null, screens, windows, views, closed,
+//!  hostOwned:bool, equalCount:bool, native, predicate, refill,
+//!  defaultTiled:bool, focused:""|id, complete:bool, gesture:bool, feedback}
 //! (plus optional tolerant D2/D3 settings: anchorFallback, noSpaceResult;
 //!  missing or invalid values backfill the defaults)
-//! topology[]: {out, order:[native...], current, complete:bool,
-//!              rect:[x,y,w,h]|null, primary:bool}
-//! bindings[]: {logical, native, out, pin:bool, disp:bool, managed:bool}
-//! domains[]: {id, ws, bounds:[x,y,w,h], gap, outer, focused, readable:bool,
-//!             hold:""|token, windows, closed:[id...]}
-//! windows[]: {win, out, ws, rect:[x,y,w,h], floating:bool, fitExcluded:bool,
-//!             fullscreen:bool, maximized:bool, sticky:bool, fixedAuto:bool,
-//!             fixedSuppress:bool, hints:{minW,maxW,minH,maxH: i32|null}}
-//! minimized[]: {win, out, ws, sticky:bool}
+//! screens[]: {out, full:[x,y,w,h]|null, work:[x,y,w,h]|null, gap, outer,
+//!             complete:bool, primary:bool}
+//! windows[] (facts): {win, out, rect:[x,y,w,h]|null, floating:bool,
+//!             fitExcluded:bool, fullscreen:bool, maximized:bool, sticky:bool,
+//!             fixedAuto:bool, fixedSuppress:bool, minimized:bool, hints:{...},
+//!             observedWs:""|id|null}
+//! views[]: {out, view:""|id} (empty means unknown)
+//! closed[]: [id...] (explicit closes)
+//! native[] (host-owned observations, requires hostOwned): {out, order:[id...],
+//!             current:""|id}
 //! predicate: "both-axes-fixed"|"either-axis-fixed"
 //! refill: "last-remaining-workspace"|"most-recently-used-workspace"
 //! anchorFallback: "largest-splittable-window"|"closest-splittable-relative"|"no-search"
@@ -54,7 +55,8 @@
 //!   select-relative|select-previous|select-trailing|send-relative|
 //!   send-numbered|set-workspace-tiling|
 //!   migrate-workspace|focus-directional|move-directional|send-directional|
-//!   migrate-directional|operation (fields per variant, see decode)
+//!   migrate-directional|operation (fields per variant, see decode; every
+//!   `ws` field names a stable core logical workspace id)
 //! ```
 //!
 //! Reply keys are exactly the core canonical reply encoding (`v`, `adapter`,
@@ -67,20 +69,17 @@
 //! transfers, and effects with `result: null`).
 //! Bootstrap/discovery replies reuse the same shape with `ready:false` and
 //! empty sections. Bounded errors reuse
-//! `{v:1,outcome:"rejected",kind,message,gen}`.
-
-use std::collections::BTreeMap;
+//! `{v:2,outcome:"rejected",kind,message,gen}`.
 
 use tiler_core::boundary::CoreCommand;
 use tiler_core::bounds::{is_opaque_id, valid_carried_rect};
 use tiler_core::directional::{Axis, NodeId, OutputId, WindowId, WorkspaceId};
 use tiler_core::geometry::Rect;
 use tiler_core::ids::{MAX_CORRELATION_LEN, MAX_GENERATION_LEN, MAX_OWNER_LEN};
-use tiler_core::workspace_scope::WorkspaceMode;
 use tiler_core::world_report::{
-    AttemptFeedback, AttemptKind, AttemptOutcome, DomainReport, HoldReason, MinimizedEntry,
-    OutputTopology, TransferKind, WORLD_CONTRACT_VERSION, WorkspaceBinding, WorldCommand,
-    WorldReply, WorldReport, validate_report_reason,
+    AttemptFeedback, AttemptKind, AttemptOutcome, HoldReason, NativeObservation, ScreenReport,
+    ScreenView, TransferKind, WORLD_CONTRACT_VERSION, WindowFact, WorldCommand, WorldReply,
+    WorldReport, validate_report_reason,
 };
 
 /// World protocol contract version (equals the core world contract version).
@@ -138,7 +137,7 @@ fn unknown_value() -> WorldProtocolError {
 #[must_use]
 pub fn encode_error(kind: &str, message: &str, core_generation: &str) -> String {
     let mut out = String::new();
-    out.push_str("{\"v\":1,\"outcome\":\"rejected\",\"kind\":");
+    out.push_str("{\"v\":2,\"outcome\":\"rejected\",\"kind\":");
     push_json_string(&mut out, kind);
     out.push_str(",\"message\":");
     push_json_string(&mut out, message);
@@ -280,11 +279,6 @@ fn req_rect_value(value: &serde_json::Value) -> Result<Rect> {
     })
 }
 
-fn req_rect(map: &serde_json::Map<String, serde_json::Value>, key: &str) -> Result<Rect> {
-    let value = map.get(key).ok_or_else(malformed)?;
-    req_rect_value(value)
-}
-
 fn req_id(map: &serde_json::Map<String, serde_json::Value>, key: &str) -> Result<String> {
     let text = req_str(map, key)?;
     if !is_opaque_id(text) {
@@ -359,15 +353,6 @@ fn parse_hold_token(text: &str) -> Result<Option<HoldReason>> {
     }
 }
 
-fn parse_mode(text: &str) -> Result<WorkspaceMode> {
-    match text {
-        "per-output-local" => Ok(WorkspaceMode::PerOutputLocal),
-        "global-unique" => Ok(WorkspaceMode::GlobalUnique),
-        "shared" => Ok(WorkspaceMode::Shared),
-        _ => Err(unknown_value()),
-    }
-}
-
 fn parse_attempt_kind(text: &str) -> Result<AttemptKind> {
     match text {
         "transfer" => Ok(AttemptKind::Transfer),
@@ -420,14 +405,30 @@ fn decode_hints(value: &serde_json::Value) -> Result<tiler_core::size_hints::Win
     Ok(hint)
 }
 
-fn decode_window(value: &serde_json::Value) -> Result<tiler_core::seed::EngineWindow> {
+fn opt_id_or_null(
+    map: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Result<Option<String>> {
+    match map.get(key) {
+        None => Err(malformed()),
+        Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::String(text)) => {
+            if !is_opaque_id(text) {
+                return Err(unknown_value());
+            }
+            Ok(Some(text.to_owned()))
+        }
+        Some(_) => Err(unknown_value()),
+    }
+}
+
+fn decode_fact(value: &serde_json::Value) -> Result<WindowFact> {
     let map = as_object(value)?;
     check_keys(
         map,
         &[
             "win",
             "out",
-            "ws",
             "rect",
             "floating",
             "fitExcluded",
@@ -436,14 +437,18 @@ fn decode_window(value: &serde_json::Value) -> Result<tiler_core::seed::EngineWi
             "sticky",
             "fixedAuto",
             "fixedSuppress",
+            "minimized",
             "hints",
+            "observedWs",
         ],
     )?;
-    Ok(tiler_core::seed::EngineWindow {
+    // A null rect is an explicitly unreadable frame: the staged scope
+    // holds instead of authorizing geometry, never a silent absence.
+    let rect = opt_rect_or_null(map, "rect")?;
+    Ok(WindowFact {
         window: WindowId(req_id(map, "win")?),
         output: OutputId(req_id(map, "out")?),
-        workspace: WorkspaceId(req_id(map, "ws")?),
-        rect: req_rect(map, "rect")?,
+        rect,
         floating: req_bool(map, "floating")?,
         fit_excluded: req_bool(map, "fitExcluded")?,
         fullscreen: req_bool(map, "fullscreen")?,
@@ -452,91 +457,127 @@ fn decode_window(value: &serde_json::Value) -> Result<tiler_core::seed::EngineWi
         fixed_auto: req_bool(map, "fixedAuto")?,
         fixed_suppress: req_bool(map, "fixedSuppress")?,
         hints: decode_hints(map.get("hints").ok_or_else(malformed)?)?,
+        minimized: req_bool(map, "minimized")?,
+        observed_workspace: opt_id_or_null(map, "observedWs")?,
     })
 }
 
-fn decode_domain(value: &serde_json::Value) -> Result<DomainReport> {
-    use tiler_core::directional::Direction;
+fn decode_screen(value: &serde_json::Value) -> Result<ScreenReport> {
     let map = as_object(value)?;
     check_keys(
         map,
-        &[
-            "id", "ws", "bounds", "gap", "outer", "focused", "readable", "hold", "adjacent",
-            "windows", "closed",
-        ],
+        &["out", "full", "work", "gap", "outer", "complete", "primary"],
     )?;
-    let bounds = req_rect(map, "bounds")?;
-    let mut adjacent = BTreeMap::new();
-    let adjacent_value = map.get("adjacent").ok_or_else(malformed)?;
-    let adjacent_map = as_object(adjacent_value)?;
-    for (key, target) in adjacent_map {
-        let direction = match key.as_str() {
-            "left" => Direction::Left,
-            "right" => Direction::Right,
-            "up" => Direction::Up,
-            "down" => Direction::Down,
-            _ => return Err(unknown_value()),
-        };
-        let target = target.as_str().ok_or_else(malformed)?;
-        if !is_opaque_id(target) {
-            return Err(unknown_value());
-        }
-        if adjacent
-            .insert(direction, OutputId(target.to_owned()))
-            .is_some()
-        {
-            return Err(malformed());
-        }
-    }
-    if adjacent.len() > 4 {
-        return Err(unknown_value());
-    }
-    let windows_value = map.get("windows").ok_or_else(malformed)?;
-    let windows_items = windows_value.as_array().ok_or_else(malformed)?;
-    let mut windows = Vec::with_capacity(windows_items.len());
-    for item in windows_items {
-        windows.push(decode_window(item)?);
-    }
-    let closed_value = map.get("closed").ok_or_else(malformed)?;
-    let closed_items = closed_value.as_array().ok_or_else(malformed)?;
-    let mut closed = Vec::with_capacity(closed_items.len());
-    for item in closed_items {
-        let id = item.as_str().ok_or_else(malformed)?;
-        if !is_opaque_id(id) {
-            return Err(unknown_value());
-        }
-        closed.push(WindowId(id.to_owned()));
-    }
-    // Empty focused id means none; otherwise an opaque id.
-    let focused_text = req_str(map, "focused")?;
-    if !focused_text.is_empty() && !is_opaque_id(focused_text) {
-        return Err(unknown_value());
-    }
-    let readable = req_bool(map, "readable")?;
-    let hold = parse_hold_token(req_str(map, "hold")?)?;
-    Ok(DomainReport {
-        domain: tiler_core::session::OutputDomain {
-            id: OutputId(req_id(map, "id")?),
-            workspace: WorkspaceId(req_id(map, "ws")?),
-            bounds,
-            gap: req_i32(map, "gap")?,
-            adjacent,
-        },
+    // Null rectangles stay representable for explicitly unreadable or
+    // partial observations; `complete` claims require both.
+    let full_rect = opt_rect_or_null(map, "full")?;
+    let work_area = opt_rect_or_null(map, "work")?;
+    Ok(ScreenReport {
+        output: OutputId(req_id(map, "out")?),
+        full_rect,
+        work_area,
+        gap: req_i32(map, "gap")?,
         outer_gap: req_i32(map, "outer")?,
-        focused: WindowId(focused_text.to_owned()),
-        windows,
-        closed,
-        readable,
-        hold,
+        complete: req_bool(map, "complete")?,
+        primary: req_bool(map, "primary")?,
     })
 }
 
-fn decode_topology(value: &serde_json::Value) -> Result<OutputTopology> {
+fn decode_view(value: &serde_json::Value) -> Result<ScreenView> {
     let map = as_object(value)?;
-    check_keys(
-        map,
-        &["out", "order", "current", "complete", "rect", "primary"],
-    )?;
+    check_keys(map, &["out", "view"])?;
+    // Empty view means unknown (no desire received yet); otherwise an
+    // opaque logical id.
+    let text = req_str(map, "view")?;
+    if !text.is_empty() && !is_opaque_id(text) {
+        return Err(unknown_value());
+    }
+    Ok(ScreenView {
+        output: OutputId(req_id(map, "out")?),
+        view: text.to_owned(),
+    })
+}
+
+/// Bootstrap restoration ingress: persisted rings, views, tiling, and
+/// member homing adopted on the first accepted report only. Strict shape
+/// here (opaque ids, exact keys); semantic cross-links and staleness live
+/// in the core validation gate.
+fn decode_restored(value: &serde_json::Value) -> Result<tiler_core::world_report::RestoredWorld> {
+    use tiler_core::world_report::{RestoredMember, RestoredRing, RestoredTiling, RestoredWorld};
+    let map = as_object(value)?;
+    check_keys(map, &["rings", "views", "tiling", "members"])?;
+    let mut rings = Vec::new();
+    for item in map
+        .get("rings")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(malformed)?
+    {
+        let ring = as_object(item)?;
+        check_keys(ring, &["out", "ws"])?;
+        let mut workspaces = Vec::new();
+        for id in ring
+            .get("ws")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(malformed)?
+        {
+            let id = id.as_str().ok_or_else(malformed)?;
+            if !is_opaque_id(id) {
+                return Err(unknown_value());
+            }
+            workspaces.push(id.to_owned());
+        }
+        rings.push(RestoredRing {
+            output: OutputId(req_id(ring, "out")?),
+            workspaces,
+        });
+    }
+    let mut views = Vec::new();
+    for item in map
+        .get("views")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(malformed)?
+    {
+        views.push(decode_view(item)?);
+    }
+    let mut tiling = Vec::new();
+    for item in map
+        .get("tiling")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(malformed)?
+    {
+        let entry = as_object(item)?;
+        check_keys(entry, &["out", "ws", "tiled"])?;
+        tiling.push(RestoredTiling {
+            output: OutputId(req_id(entry, "out")?),
+            workspace: req_id(entry, "ws")?,
+            tiled: req_bool(entry, "tiled")?,
+        });
+    }
+    let mut members = Vec::new();
+    for item in map
+        .get("members")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(malformed)?
+    {
+        let entry = as_object(item)?;
+        check_keys(entry, &["win", "out", "ws"])?;
+        members.push(RestoredMember {
+            window: WindowId(req_id(entry, "win")?),
+            output: OutputId(req_id(entry, "out")?),
+            workspace: req_id(entry, "ws")?,
+        });
+    }
+    Ok(RestoredWorld {
+        rings,
+        views,
+        tiling,
+        members,
+    })
+}
+
+fn decode_native(value: &serde_json::Value) -> Result<NativeObservation> {
+    let map = as_object(value)?;
+    check_keys(map, &["out", "order", "current"])?;
     let order_value = map.get("order").ok_or_else(malformed)?;
     let order_items = order_value.as_array().ok_or_else(malformed)?;
     let mut order = Vec::with_capacity(order_items.len());
@@ -547,55 +588,29 @@ fn decode_topology(value: &serde_json::Value) -> Result<OutputTopology> {
         }
         order.push(id.to_owned());
     }
-    // Live native output geometry when observed (null when unreadable);
-    // a present rect must carry valid carried bounds, never a window
-    // frame proxy (placement only reads disconnect-time output facts).
-    let geometry = match map.get("rect") {
-        None => return Err(malformed()),
-        Some(serde_json::Value::Null) => None,
-        Some(rect) => Some(req_rect_value(rect)?),
-    };
-    Ok(OutputTopology {
+    // Empty current means unknown; otherwise an opaque id.
+    let current = req_str(map, "current")?;
+    if !current.is_empty() && !is_opaque_id(current) {
+        return Err(unknown_value());
+    }
+    Ok(NativeObservation {
         output: OutputId(req_id(map, "out")?),
         native_order: order,
-        current_native: req_id(map, "current").map_err(|_| {
-            // An empty current view refuses: topology currents are always
-            // observed natives. Kept as unknown-value (vocabulary), not
-            // malformed (shape).
-            if map.get("current").and_then(serde_json::Value::as_str) == Some("") {
-                unknown_value()
-            } else {
-                malformed()
-            }
-        })?,
-        complete: req_bool(map, "complete")?,
-        geometry,
-        primary: req_bool(map, "primary")?,
+        current_native: current.to_owned(),
     })
 }
 
-fn decode_binding(value: &serde_json::Value) -> Result<WorkspaceBinding> {
-    let map = as_object(value)?;
-    check_keys(map, &["logical", "native", "out", "pin", "disp", "managed"])?;
-    Ok(WorkspaceBinding {
-        logical_id: req_id(map, "logical")?,
-        native_id: req_id(map, "native")?,
-        output: OutputId(req_id(map, "out")?),
-        pinned: req_bool(map, "pin")?,
-        displaced: req_bool(map, "disp")?,
-        managed: req_bool(map, "managed")?,
-    })
-}
-
-fn decode_minimized(value: &serde_json::Value) -> Result<MinimizedEntry> {
-    let map = as_object(value)?;
-    check_keys(map, &["win", "out", "ws", "sticky"])?;
-    Ok(MinimizedEntry {
-        window: WindowId(req_id(map, "win")?),
-        output: OutputId(req_id(map, "out")?),
-        workspace: WorkspaceId(req_id(map, "ws")?),
-        sticky: req_bool(map, "sticky")?,
-    })
+fn decode_closed_ids(value: &serde_json::Value) -> Result<Vec<WindowId>> {
+    let items = value.as_array().ok_or_else(malformed)?;
+    let mut closed = Vec::with_capacity(items.len());
+    for item in items {
+        let id = item.as_str().ok_or_else(malformed)?;
+        if !is_opaque_id(id) {
+            return Err(unknown_value());
+        }
+        closed.push(WindowId(id.to_owned()));
+    }
+    Ok(closed)
 }
 
 fn decode_feedback(value: &serde_json::Value) -> Result<AttemptFeedback> {
@@ -1058,10 +1073,13 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
             "cmdSeq",
             "command",
             "mode",
-            "topology",
-            "bindings",
-            "domains",
-            "minimized",
+            "screens",
+            "windows",
+            "views",
+            "closed",
+            "hostOwned",
+            "equalCount",
+            "native",
             "predicate",
             "refill",
             "defaultTiled",
@@ -1070,7 +1088,7 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
             "gesture",
             "feedback",
         ],
-        &["anchorFallback", "noSpaceResult"],
+        &["anchorFallback", "noSpaceResult", "restored"],
     )?;
     let version = map
         .get("v")
@@ -1094,30 +1112,32 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
             message: "command-pair-invalid",
         });
     }
-    let topology_value = map.get("topology").ok_or_else(malformed)?;
-    let mut topology = Vec::new();
-    for item in topology_value.as_array().ok_or_else(malformed)? {
-        topology.push(decode_topology(item)?);
+    let screens_value = map.get("screens").ok_or_else(malformed)?;
+    let mut screens = Vec::new();
+    for item in screens_value.as_array().ok_or_else(malformed)? {
+        screens.push(decode_screen(item)?);
     }
-    let bindings_value = map.get("bindings").ok_or_else(malformed)?;
-    let mut bindings = Vec::new();
-    for item in bindings_value.as_array().ok_or_else(malformed)? {
-        bindings.push(decode_binding(item)?);
+    let windows_value = map.get("windows").ok_or_else(malformed)?;
+    let mut windows = Vec::new();
+    for item in windows_value.as_array().ok_or_else(malformed)? {
+        windows.push(decode_fact(item)?);
     }
-    let domains_value = map.get("domains").ok_or_else(malformed)?;
-    let mut domains = Vec::new();
-    for item in domains_value.as_array().ok_or_else(malformed)? {
-        domains.push(decode_domain(item)?);
+    let views_value = map.get("views").ok_or_else(malformed)?;
+    let mut views = Vec::new();
+    for item in views_value.as_array().ok_or_else(malformed)? {
+        views.push(decode_view(item)?);
+    }
+    let closed_value = map.get("closed").ok_or_else(malformed)?;
+    let closed = decode_closed_ids(closed_value)?;
+    let native_value = map.get("native").ok_or_else(malformed)?;
+    let mut native = Vec::new();
+    for item in native_value.as_array().ok_or_else(malformed)? {
+        native.push(decode_native(item)?);
     }
     let feedback_value = map.get("feedback").ok_or_else(malformed)?;
     let mut feedback = Vec::new();
     for item in feedback_value.as_array().ok_or_else(malformed)? {
         feedback.push(decode_feedback(item)?);
-    }
-    let minimized_value = map.get("minimized").ok_or_else(malformed)?;
-    let mut minimized = Vec::new();
-    for item in minimized_value.as_array().ok_or_else(malformed)? {
-        minimized.push(decode_minimized(item)?);
     }
     let predicate =
         tiler_core::size_hints::FixedSizePredicate::parse_wire(req_str(map, "predicate")?)
@@ -1135,6 +1155,20 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
     let no_space_result = tiler_core::admission::NoSpaceResult::normalize_wire(
         map.get("noSpaceResult").and_then(serde_json::Value::as_str),
     );
+    // Bootstrap restoration is an explicit opt-in object: absent or null
+    // means a fresh bootstrap (core mints rings/views). A present object
+    // decodes strictly; semantic cross-links are enforced by the core
+    // [`validate_report`] gate above, never echoed.
+    let restored = match map.get("restored") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(value) => Some(decode_restored(value)?),
+    };
+    let workspace_mode = match req_str(map, "mode")? {
+        "per-output-local" => tiler_core::workspace_scope::WorkspaceMode::PerOutputLocal,
+        "global-unique" => tiler_core::workspace_scope::WorkspaceMode::GlobalUnique,
+        "shared" => tiler_core::workspace_scope::WorkspaceMode::Shared,
+        _ => return Err(unknown_value()),
+    };
     let report = WorldReport {
         contract_version: WORLD_CONTRACT_VERSION,
         owner: req_bounded(map, "owner", MAX_OWNER_LEN, is_owner_text)?,
@@ -1145,11 +1179,14 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
         request_id: req_bounded(map, "req", MAX_CORRELATION_LEN, is_correlation_text)?,
         command_seq,
         command,
-        workspace_mode: parse_mode(req_str(map, "mode")?)?,
-        topology,
-        bindings,
-        domains,
-        minimized,
+        workspace_mode,
+        screens,
+        windows,
+        views,
+        closed,
+        host_owned_workspace_domains: req_bool(map, "hostOwned")?,
+        equal_workspace_count: req_bool(map, "equalCount")?,
+        native,
         fixed_size_predicate: predicate,
         migration_source_refill: refill,
         anchor_fallback,
@@ -1165,6 +1202,7 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
         inventory_complete: req_bool(map, "complete")?,
         gesture_barrier: req_bool(map, "gesture")?,
         feedback,
+        restored,
     };
     if let Some(reason) = validate_report_reason(&report) {
         return Err(WorldProtocolError {
@@ -1173,15 +1211,10 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
             message: reason,
         });
     }
-    // Hard input caps that `validate_report` does not bound alone: every
-    // carried string is already length-gated by its alphabet above, and
-    // section counts are core-capped, so the estimator bound holds.
-    if report.domains.len() > tiler_core::world_report::MAX_WORLD_DOMAINS {
-        return Err(WorldProtocolError {
-            kind: KIND_SNAPSHOT,
-            message: "section-over-cap",
-        });
-    }
+    // Hard input caps are enforced by the core [`validate_report`] gate
+    // above (fixed check vocabulary, never payload bytes): every carried
+    // string is already length-gated by its alphabet, and section counts
+    // are core-capped, so the estimator bound holds.
     Ok(report)
 }
 
@@ -1264,11 +1297,6 @@ pub fn encode_reply(reply: &WorldReply) -> String {
         push_json_string(
             &mut out,
             workspace.native_binding.as_deref().unwrap_or_default(),
-        );
-        out.push_str(",\"logical\":");
-        push_json_string(
-            &mut out,
-            workspace.logical_id.as_deref().unwrap_or_default(),
         );
         out.push_str(",\"scope\":");
         push_json_string(&mut out, &workspace.scope);

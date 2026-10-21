@@ -194,9 +194,17 @@ fn retained_update_gaps_preserves_topology() {
     };
     assert_eq!(kind, "domain-mismatch");
     // The retained update-gaps path adopts without destroying topology.
-    assert!(!tiler_windows::settings::retained_gaps_match(
-        &engine, &key, 4, 12
-    ));
+    // A retained mismatch issues `UpdateGaps` so topology survives: plain
+    // reconcile refuses gap drift instead of adopting it.
+    let retained_matches = |engine: &tiler_core::engine::Engine, gap: i32, outer_gap: i32| {
+        engine.session(&key).is_some_and(|session| {
+            session
+                .domains()
+                .iter()
+                .any(|domain| domain.key() == key && domain.gap == gap)
+        }) && engine.outer_gap_matches(&key, outer_gap)
+    };
+    assert!(!retained_matches(&engine, 4, 12));
     seed.command = CoreCommand::UpdateGaps;
     let reply = engine.handle(&seed);
     assert!(
@@ -208,9 +216,7 @@ fn retained_update_gaps_preserves_topology() {
         engine.session(&key).expect("session").snapshot().domains
     );
     assert_eq!(tree_before, tree_after, "topology survives the gap update");
-    assert!(tiler_windows::settings::retained_gaps_match(
-        &engine, &key, 4, 12
-    ));
+    assert!(retained_matches(&engine, 4, 12));
     assert_eq!(engine.outer_gap(&key), Some(12));
 }
 

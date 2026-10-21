@@ -71,13 +71,13 @@
 //!   here. Old arbitrary replies cannot reset: only this call changes the
 //!   bound generation.
 
-use super::world_capture::{CapturedWorld, capture_world};
-use super::{MonitorArea, ObservedWindow, PendingClosed, RetainedRow, TileLoop};
+use super::world_capture::{CapturedWorld, OwnerInputs, capture_world};
+use super::{MonitorArea, ObservedWindow, PendingClosed, RetainedRow};
 use std::collections::{BTreeMap, BTreeSet};
 use tiler_core::ids::{GenerationId, OwnerId};
 use tiler_core::world_engine::{WorldEngine, WorldEngineConfig, WorldOutcome};
 use tiler_core::world_report::{
-    AttemptFeedback, WORLD_CONTRACT_VERSION, WorldCommand, WorldReply, WorldReport,
+    AttemptFeedback, ScreenView, WORLD_CONTRACT_VERSION, WorldCommand, WorldReply, WorldReport,
 };
 
 /// Windows carrier profile for the future world engine: automatic
@@ -87,7 +87,6 @@ const fn windows_engine_config() -> WorldEngineConfig {
     WorldEngineConfig {
         fixed_send_admission: true,
         maximized_focus_fence: false,
-        aligned_per_output_workspaces: false,
     }
 }
 
@@ -102,6 +101,9 @@ const WINDOWS_OWNER: &str = "tiler-windows";
 #[derive(Debug, Clone)]
 struct SequencerFlight {
     observation_seq: u64,
+    // Consumed by the 2b owner cutover for command correlation; the core
+    // already namespaces command consumption per incarnation.
+    #[allow(dead_code)]
     command_seq: Option<u64>,
     request_id: String,
     delivered_closed: Vec<(String, PendingClosed)>,
@@ -234,18 +236,16 @@ impl WorldSequencer {
             .insert(feedback.operation_id.clone(), feedback);
     }
 
-    /// Closes the current capture still obliges: every carried domain close
-    /// plus every unhomed (absent-domain, uncarried) close. The native map is
+    /// Closes the current capture still obliges: every carried close plus
+    /// every unhomed (absent-workspace, uncarried) close. The native map is
     /// the sole authority, so obligations read straight from the capture with
     /// no shadow ack history: they clear only when the native queue applies
     /// an ack receipt. Unhomed facts stay dirty with no extra invalidation.
     #[must_use]
     pub(super) fn outstanding_closes(&self, captured: &CapturedWorld) -> Vec<String> {
         let mut out: BTreeSet<String> = BTreeSet::new();
-        for domain in &captured.domains {
-            for id in &domain.closed {
-                out.insert(id.0.clone());
-            }
+        for id in &captured.closed {
+            out.insert(id.0.clone());
         }
         for token in &captured.unhomed_closed {
             out.insert(token.clone());
@@ -266,9 +266,15 @@ impl WorldSequencer {
     /// Typed envelope over accepted capture pieces. Core size/validation
     /// gates stay core-side via [`WorldEngine::handle_report`]; the adapter
     /// never pre-empts them and never encodes JSON transport.
+    ///
+    /// View echoes are the adapter's observed applied logical views
+    /// (facade readback), never the sequencer's desired cache: in the
+    /// absence of an observation the report carries empty (unknown) views
+    /// and the core retains the pending flight. Copying the last desired
+    /// views back as proof would self-echo desire as observation.
     #[must_use]
     pub(super) fn assemble(
-        &self,
+        &mut self,
         captured: &CapturedWorld,
         request_seq: u64,
         command_seq: Option<u64>,
@@ -276,7 +282,22 @@ impl WorldSequencer {
     ) -> WorldReport {
         let mut feedback: Vec<AttemptFeedback> = self.pending_feedback.values().cloned().collect();
         feedback.sort_by(|a, b| a.operation_id.cmp(&b.operation_id));
+        // Observed applied views from capture (unknown when the facade has
+        // no readback); never the last desired snapshot.
+        let views: Vec<ScreenView> = captured.observed_views.clone();
+        // Restoration rides only until the first applied acknowledgement:
+        // a fresh bootstrap adopts persisted rings/views/tiling/homing, and
+        // every later report is a fresh-observation report (the core refuses
+        // restoration past the first report, so a replay can never rewrite
+        // retained rings). A rejected or lost first flight retries with the
+        // restoration intact because nothing was accepted yet.
+        let restored = if self.has_accepted {
+            None
+        } else {
+            captured.restored.clone()
+        };
         WorldReport {
+            restored,
             contract_version: WORLD_CONTRACT_VERSION,
             owner: WINDOWS_OWNER.to_owned(),
             adapter_incarnation: self.adapter_incarnation.clone(),
@@ -286,11 +307,14 @@ impl WorldSequencer {
             request_id: format!("req-{request_seq}"),
             command_seq,
             command,
-            workspace_mode: captured.mode,
-            topology: captured.topology.clone(),
-            bindings: captured.bindings.clone(),
-            domains: captured.domains.clone(),
-            minimized: captured.minimized.clone(),
+            screens: captured.screens.clone(),
+            windows: captured.windows.clone(),
+            views,
+            closed: captured.closed.clone(),
+            workspace_mode: captured.workspace_mode,
+            host_owned_workspace_domains: false,
+            equal_workspace_count: captured.equal_workspace_count,
+            native: Vec::new(),
             fixed_size_predicate: captured.fixed_size_predicate,
             migration_source_refill: captured.migration_source_refill,
             anchor_fallback: Default::default(),
@@ -303,7 +327,7 @@ impl WorldSequencer {
         }
     }
 
-    /// Capture source-first from the live owner tables and sequence one typed
+    /// Capture source-first from the field-input seam and sequence one typed
     /// report: at most one flight; a caller-supplied explicit command rides
     /// exactly once under the next command sequence, or is refused while
     /// busy. While observation-only catch-up is pending, a supplied command
@@ -312,10 +336,12 @@ impl WorldSequencer {
     /// dispatches the catch-up first and resubmits after. Dirtiness stays
     /// set through dispatch (dirty-until-ack); only an accepted current
     /// acknowledgement clears the observation obligation. Read-only over
-    /// the owner: native ledgers and maps cannot mutate through `&TileLoop`.
+    /// the owner inputs: native ledgers and maps cannot mutate through `&`.
+    /// The seam (never `&TileLoop`) keeps the runtime borrow split: the
+    /// caller holds `&mut WorldOwner` alongside these shared inputs.
     pub(super) fn try_dispatch(
         &mut self,
-        state: &TileLoop,
+        inputs: &OwnerInputs<'_>,
         observed: Option<&[ObservedWindow]>,
         retained: &[RetainedRow],
         areas: &[MonitorArea],
@@ -341,18 +367,16 @@ impl WorldSequencer {
         } else {
             None
         };
-        let captured = capture_world(state, observed, retained, areas, foreground_hwnd);
+        let captured = capture_world(inputs, observed, retained, areas, foreground_hwnd);
         let request_seq = self.next_request_seq;
         let report = self.assemble(&captured, request_seq, command_seq, command);
         // Snapshot the exact native homing for every carried close, read
-        // from the same owner state as the capture. Entries without a
+        // from the same owner inputs as the capture. Entries without a
         // source record ride the report but settle no receipt pair.
         let mut delivered_closed: Vec<(String, PendingClosed)> = Vec::new();
-        for domain in &report.domains {
-            for id in &domain.closed {
-                if let Some(homing) = state.pending_closed.get(&id.0) {
-                    delivered_closed.push((id.0.clone(), homing.clone()));
-                }
+        for id in &report.closed {
+            if let Some(homing) = inputs.pending_closed.get(&id.0) {
+                delivered_closed.push((id.0.clone(), homing.clone()));
             }
         }
         delivered_closed.sort_by(|a, b| a.0.cmp(&b.0));
@@ -437,6 +461,9 @@ impl WorldSequencer {
             self.last_accepted_obs = reply.based_on_observation_seq;
             self.last_accepted_req = reply.request_id.clone();
             self.last_desired = Some(reply.clone());
+            // Desired views are never fed back as the next report's
+            // echoes: echoes carry observed applied state only, so the
+            // ack updates no view cache here.
             self.obs_dirty = false;
             self.observation_only_catchup = false;
             AckOutcome::Applied(receipt)
@@ -485,6 +512,9 @@ impl WorldSequencer {
     /// side-effect-free no-ops (`false`). Native lifetime/close facts are
     /// untouched: the owner is not mutably reachable here. Old arbitrary
     /// replies cannot reset: only this call changes the bound generation.
+    /// (No caller yet: the 2b owner cutover drives resets on identity
+    /// rotation. Retained as the sole reset path, never a second one.)
+    #[allow(dead_code)]
     pub(super) fn reset_generation(&mut self, core_generation: &str) -> bool {
         if core_generation == self.core_generation {
             return false;
@@ -612,6 +642,145 @@ impl WorldSequencer {
         self.has_accepted
     }
 
+    /// Borrow the sequenced engine (read-only inspection for the runtime
+    /// owner; mutation flows through [`WorldSequencer::deliver`]).
+    #[must_use]
+    pub(super) fn engine_ref(&self) -> &WorldEngine {
+        &self.engine
+    }
+
+    /// Capture plus one explicit command (single-flight). Thin wrapper over
+    /// [`WorldSequencer::try_dispatch`] for the runtime owner call site.
+    pub(super) fn try_dispatch_with_command(
+        &mut self,
+        inputs: &OwnerInputs<'_>,
+        observed: Option<&[ObservedWindow]>,
+        retained: &[RetainedRow],
+        areas: &[MonitorArea],
+        foreground_hwnd: u64,
+        command: WorldCommand,
+    ) -> Result<WorldReport, DispatchError> {
+        self.try_dispatch(
+            inputs,
+            observed,
+            retained,
+            areas,
+            foreground_hwnd,
+            Some(command),
+        )
+    }
+
+    /// Evaluate one report on a cloned engine candidate without adopting.
+    /// Returns the outcome plus the evaluated candidate: the caller adopts
+    /// the candidate exactly once via [`WorldSequencer::adopt_or_deliver`]
+    /// (accepted/consumed/duplicate), never re-running the report.
+    /// Rejection preserves the committed engine.
+    #[must_use]
+    pub(super) fn deliver_staged_candidate(
+        &self,
+        report: &WorldReport,
+    ) -> (WorldOutcome, WorldEngine) {
+        let mut candidate = self.engine.clone();
+        let outcome = candidate.handle_report(report);
+        (outcome, candidate)
+    }
+
+    /// Adopt a previously staged candidate outcome when it is not a
+    /// rejection. Single evaluation: the candidate already ran the report,
+    /// so no second `deliver` runs here. Rejection preserves the committed
+    /// engine; accepted/consumed/duplicate adopt the candidate exactly once.
+    pub(super) fn adopt_or_deliver(&mut self, staged: (WorldOutcome, WorldEngine)) -> WorldOutcome {
+        let (outcome, candidate) = staged;
+        match outcome {
+            WorldOutcome::Rejected { .. } => outcome,
+            _ => {
+                self.engine = candidate;
+                outcome
+            }
+        }
+    }
+
+    /// Production staged delivery (T2): an affected tiled-source cross-output
+    /// Window transfer whose staged row floats refuses as `float-no-remap`
+    /// with the committed world unchanged. Single evaluation: the exact
+    /// report runs once on a cloned candidate; accepted/consumed/duplicate
+    /// adopt the candidate, rejection preserves the committed engine.
+    /// Unaffected commands run the direct path. Never reads `FloatOrigin`.
+    pub(super) fn deliver_production(&mut self, report: &WorldReport) -> WorldOutcome {
+        let Some(mover) = Self::staged_mover(report) else {
+            return self.deliver(report);
+        };
+        let (staged, candidate) = self.deliver_staged_candidate(report);
+        let declined = matches!(
+            &staged,
+            WorldOutcome::Accepted(reply) if Self::staged_declines(&mover, report, reply)
+        );
+        if declined {
+            return WorldOutcome::Rejected {
+                kind: "float-no-remap",
+                message: "cross-output capacity float without remap",
+            };
+        }
+        self.adopt_or_deliver((staged, candidate))
+    }
+
+    /// Affected mover for staging, bounded to the T2 scope: direct output
+    /// sends, directional sends and moves, plus the equivalent Operation
+    /// SendToOutput / cross-output Move. Every other command kind runs the
+    /// direct path with no staging; no claim is made here about whether
+    /// those other routes can cross outputs.
+    fn staged_mover(report: &WorldReport) -> Option<String> {
+        match &report.command {
+            Some(WorldCommand::Send { window, .. })
+            | Some(WorldCommand::SendDirectional { window, .. })
+            | Some(WorldCommand::MoveDirectional { window, .. }) => Some(window.0.clone()),
+            Some(WorldCommand::Operation(command)) => match command {
+                tiler_core::boundary::CoreCommand::SendToOutput { window, .. } => {
+                    Some(window.clone())
+                }
+                tiler_core::boundary::CoreCommand::Move {
+                    window,
+                    cross_output_transfer,
+                    ..
+                } if *cross_output_transfer => Some(window.clone()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Functional decline facts only for the pinned mover: report-time tiled
+    /// source, cross-output Window transfer under `op-<command_seq>`,
+    /// floating staged row. Same-output transfers never decline. Never reads
+    /// `float_origin`.
+    fn staged_declines(mover: &str, report: &WorldReport, reply: &WorldReply) -> bool {
+        let Some(source) = report.windows.iter().find(|fact| fact.window.0 == mover) else {
+            return false;
+        };
+        if source.floating {
+            return false;
+        }
+        let Some(seq) = report.command_seq else {
+            return false;
+        };
+        let operation_id = format!("op-{seq}");
+        let Some(transfer) = reply.transfers.iter().find(|target| {
+            matches!(
+                &target.kind,
+                tiler_core::world_report::TransferKind::Window(window) if window.0 == mover
+            )
+        }) else {
+            return false;
+        };
+        if transfer.target_output == source.output || transfer.operation_id != operation_id {
+            return false;
+        }
+        reply
+            .windows
+            .iter()
+            .any(|row| row.lifetime.0 == mover && row.floating)
+    }
+
     #[must_use]
     pub(super) fn last_desired(&self) -> Option<&WorldReply> {
         self.last_desired.as_ref()
@@ -650,48 +819,16 @@ impl WorldSequencer {
 
 /// Offline T2 staged delivery (test-only proof; never runtime).
 ///
-/// Fixture-scoped single-authority transaction on the sequencer-owned engine:
-/// an affected command evaluates the exact report ONCE on a fresh `.clone()`
-/// candidate. An Accepted candidate adopts unless the pinned Window transfer
-/// is unsupported (report-time tiled source, cross-output operation-pinned
-/// transfer, floating staged row); unsupported discards the candidate and
-/// returns a local `float-no-remap` refusal whose flight the caller releases
-/// via [`WorldSequencer::note_rejected_or_lost`] plus observation-only
-/// catch-up, with no ack and no native effects. CommandConsumed reconciles
-/// fresh observation state on the candidate and the core adopts it, so it
-/// adopts here, bypassing T2 classification (the command never re-executes);
-/// Duplicate is mutation-free and adopts for uniformity; Rejected drops the
-/// candidate with the real engine untouched. Unaffected commands run directly
-/// with zero incremental cloning. Returns the outcome plus whether the
-/// affected-command branch ran: exactly one `.clone()` call site establishes
-/// the count, so the flag is a branch indicator, not a hook count. The raw
-/// [`WorldSequencer::deliver`] path is untouched.
+/// Thin branch-indicator wrapper over the production
+/// [`WorldSequencer::deliver_production`] path: returns the production
+/// outcome plus whether the affected-command branch ran. No second staging
+/// route exists; the production path owns the single evaluation.
 #[cfg(test)]
+#[allow(dead_code)]
 impl WorldSequencer {
     pub(super) fn deliver_staged(&mut self, report: &WorldReport) -> (WorldOutcome, bool) {
-        let Some(mover) = Self::staged_mover(report) else {
-            return (self.engine.handle_report(report), false);
-        };
-        let mut candidate = self.engine.clone();
-        let staged = candidate.handle_report(report);
-        let declined = matches!(
-            &staged,
-            WorldOutcome::Accepted(reply) if Self::staged_declines(&mover, report, reply)
-        );
-        if declined {
-            (
-                WorldOutcome::Rejected {
-                    kind: "float-no-remap",
-                    message: "cross-output capacity float without remap",
-                },
-                true,
-            )
-        } else {
-            if !matches!(staged, WorldOutcome::Rejected { .. }) {
-                self.engine = candidate;
-            }
-            (staged, true)
-        }
+        let staged = Self::staged_mover(report).is_some();
+        (self.deliver_production(report), staged)
     }
 
     /// Test-only read proof: retained-engine revision, transfers, and full
@@ -706,1438 +843,5 @@ impl WorldSequencer {
 
     pub(super) fn test_engine_debug(&self) -> String {
         format!("{:?}", self.engine)
-    }
-
-    /// Affected mover for staging, bounded to the T2 scope: direct output
-    /// sends, directional sends and moves, plus the equivalent Operation
-    /// SendToOutput / cross-output Move. Every other command kind runs the
-    /// direct path with no staging; no claim is made here about whether
-    /// those other routes can cross outputs.
-    fn staged_mover(report: &WorldReport) -> Option<String> {
-        match &report.command {
-            Some(WorldCommand::Send { window, .. })
-            | Some(WorldCommand::SendDirectional { window, .. })
-            | Some(WorldCommand::MoveDirectional { window, .. }) => Some(window.0.clone()),
-            Some(WorldCommand::Operation(command)) => match command {
-                tiler_core::boundary::CoreCommand::SendToOutput { window, .. } => {
-                    Some(window.clone())
-                }
-                tiler_core::boundary::CoreCommand::Move {
-                    window,
-                    cross_output_transfer,
-                    ..
-                } if *cross_output_transfer => Some(window.clone()),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
-    /// Functional decline facts only for the pinned mover: report-time tiled
-    /// source, cross-output Window transfer under `op-<command_seq>`,
-    /// floating staged row. Never reads `float_origin`.
-    fn staged_declines(mover: &str, report: &WorldReport, reply: &WorldReply) -> bool {
-        let Some(source) = report
-            .domains
-            .iter()
-            .flat_map(|domain| domain.windows.iter())
-            .find(|window| window.window.0 == mover)
-        else {
-            return false;
-        };
-        if source.floating {
-            return false;
-        }
-        let Some(seq) = report.command_seq else {
-            return false;
-        };
-        let operation_id = format!("op-{seq}");
-        let Some(transfer) = reply.transfers.iter().find(|target| {
-            matches!(
-                &target.kind,
-                tiler_core::world_report::TransferKind::Window(window) if window.0 == mover
-            )
-        }) else {
-            return false;
-        };
-        if transfer.target_output == source.output || transfer.operation_id != operation_id {
-            return false;
-        }
-        reply
-            .windows
-            .iter()
-            .any(|row| row.lifetime.0 == mover && row.floating)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::super::rmax03_adapter_tests::test_state;
-    use super::*;
-    use crate::model::ProcessIdentity;
-    use crate::tiling::FrameInsets;
-    use crate::workspace::WindowKey;
-    use tiler_core::directional::{OutputId, WindowId};
-    use tiler_core::geometry::Rect;
-    use tiler_core::world_report::{
-        AttemptKind, AttemptOutcome, HoldReason, validate_report_reason,
-    };
-
-    const DEV1: &str = "\\\\.\\DISPLAY1";
-    const DEV2: &str = "\\\\.\\DISPLAY2";
-    const EXE: &str = "C:\\Apps\\app.exe";
-    const ADAPTER: &str = "test-windows-adapter-1";
-
-    fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
-        Rect { x, y, w, h }
-    }
-
-    fn win_key(hwnd: u64, pid: u32, creation: &str) -> WindowKey {
-        WindowKey {
-            hwnd,
-            pid,
-            creation: creation.to_owned(),
-        }
-    }
-
-    fn plain_facts() -> crate::tiling::WindowFacts {
-        crate::tiling::WindowFacts {
-            visible: true,
-            minimized: false,
-            maximized: false,
-            cloaked: false,
-            elevated: false,
-            shell: false,
-            tool_window: false,
-            owned: false,
-            captionless_fullscreen: false,
-            no_activate: false,
-            dialog: false,
-        }
-    }
-
-    fn observed_window(key: &WindowKey, token: &str, vis: Rect) -> ObservedWindow {
-        let outer = Rect {
-            x: vis.x - 8,
-            y: vis.y - 8,
-            w: vis.w + 16,
-            h: vis.h + 16,
-        };
-        ObservedWindow {
-            hwnd: key.hwnd,
-            token: token.to_owned(),
-            outer,
-            visible: vis,
-            insets: FrameInsets::measure(outer, vis),
-            identity: crate::tiling::ObservedTarget {
-                hwnd: key.hwnd,
-                pid: key.pid,
-                process_creation: key.creation.clone(),
-                exe_path: EXE.to_owned(),
-                user_sid: "S-1-5-21-1000".to_owned(),
-                session_id: 1,
-                tag: String::new(),
-            },
-            facts: plain_facts(),
-        }
-    }
-
-    fn process_identity(key: &WindowKey) -> ProcessIdentity {
-        ProcessIdentity {
-            pid: key.pid,
-            process_creation: key.creation.clone(),
-            user_sid: "S-1-5-21-1000".to_owned(),
-            session_id: 1,
-            exe_path: EXE.to_owned(),
-        }
-    }
-
-    fn two_areas() -> Vec<MonitorArea> {
-        vec![
-            MonitorArea {
-                device: DEV1.to_owned(),
-                work: rect(0, 0, 1920, 1040),
-                full: rect(0, 0, 1920, 1080),
-            },
-            MonitorArea {
-                device: DEV2.to_owned(),
-                work: rect(1920, 0, 1920, 1040),
-                full: rect(1920, 0, 1920, 1080),
-            },
-        ]
-    }
-
-    fn synced_state() -> TileLoop {
-        let mut state = test_state();
-        state.workspaces.ensure_output(DEV1);
-        state.workspaces.ensure_output(DEV2);
-        state
-    }
-
-    fn ws_id(state: &TileLoop, dev: &str, index: usize) -> String {
-        state.workspaces.workspace_ids(dev)[index].clone()
-    }
-
-    fn admit(
-        state: &mut TileLoop,
-        key: &WindowKey,
-        dev: &str,
-        ws: &str,
-        token: &str,
-        hidden: bool,
-    ) {
-        assert!(state.workspaces.assign(key.clone(), dev, ws, hidden));
-        state.member_tokens.insert(key.clone(), token.to_owned());
-        state
-            .member_tags
-            .insert(key.clone(), "member-tag-1".to_owned());
-        state
-            .member_identity
-            .insert(key.clone(), process_identity(key));
-    }
-
-    fn bootstrapped() -> WorldSequencer {
-        WorldSequencer::bootstrap(ADAPTER, "gen-1").expect("valid identities")
-    }
-
-    fn transfer_feedback(op: &str, outcome: AttemptOutcome) -> AttemptFeedback {
-        AttemptFeedback {
-            operation_id: op.to_owned(),
-            kind: AttemptKind::Transfer,
-            outcome,
-            hold: None,
-        }
-    }
-
-    fn focus_command(window: &str) -> WorldCommand {
-        WorldCommand::Focus {
-            window: WindowId(window.to_owned()),
-            direction: "left".to_owned(),
-        }
-    }
-
-    fn send_command(window: &str, output: &str, workspace: &str) -> WorldCommand {
-        WorldCommand::Send {
-            window: WindowId(window.to_owned()),
-            target_output: OutputId(output.to_owned()),
-            target_workspace: workspace.to_owned(),
-            follow: false,
-        }
-    }
-
-    /// Two live members with verified fresh frames; returns the sequencer,
-    /// owner, and current-tick products.
-    fn two_window_rig() -> (
-        WorldSequencer,
-        TileLoop,
-        Vec<ObservedWindow>,
-        Vec<MonitorArea>,
-    ) {
-        let mut state = synced_state();
-        let ws1 = ws_id(&state, DEV1, 0);
-        let k1 = win_key(1001, 2001, "proc-1");
-        let k2 = win_key(1002, 2002, "proc-2");
-        admit(&mut state, &k1, DEV1, &ws1, "w1", false);
-        admit(&mut state, &k2, DEV1, &ws1, "w2", false);
-        let observed = vec![
-            observed_window(&k1, "w1", rect(100, 100, 800, 600)),
-            observed_window(&k2, "w2", rect(110, 110, 800, 600)),
-        ];
-        (bootstrapped(), state, observed, two_areas())
-    }
-
-    /// Native ledger fingerprint the scaffold must never mutate.
-    fn native_fingerprint(state: &TileLoop) -> (Vec<String>, usize, usize, usize) {
-        let mut closed: Vec<String> = state.pending_closed.keys().cloned().collect();
-        closed.sort();
-        (
-            closed,
-            state.member_tokens.len(),
-            state.member_tags.len(),
-            state.member_identity.len(),
-        )
-    }
-
-    fn accepted_reply(seq: &mut WorldSequencer, report: &WorldReport) -> WorldReply {
-        match seq.deliver(report) {
-            WorldOutcome::Accepted(reply) => reply,
-            other => panic!("expected accepted, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn bootstrap_binds_identities_and_first_report_is_dirty() {
-        assert!(WorldSequencer::bootstrap("has space", "gen-1").is_none());
-        assert!(WorldSequencer::bootstrap(ADAPTER, "GEN-1").is_none());
-        assert!(WorldSequencer::bootstrap(ADAPTER, "").is_none());
-        let seq = bootstrapped();
-        assert_eq!(seq.adapter_incarnation(), ADAPTER);
-        assert_eq!(seq.core_generation(), "gen-1");
-        assert!(!seq.is_ready());
-        assert!(!seq.has_flight());
-        // Discovery carries generation/capabilities with ready=false and no
-        // applicable desired state.
-        let discovery = seq.bootstrap_reply("disc-1");
-        assert!(!discovery.ready);
-        assert_eq!(discovery.core_generation, "gen-1");
-        assert_eq!(discovery.adapter_incarnation, ADAPTER);
-        assert!(discovery.windows.is_empty());
-        // Bootstrap is immediately dirty: the first full observation is owed.
-        let state = synced_state();
-        let captured = capture_world(&state, Some(&[]), &[], &two_areas(), 0);
-        assert!(seq.is_dirty(&captured));
-    }
-
-    #[test]
-    fn generation_handshake_reset_and_no_native_mutation() {
-        let (mut seq, mut state, observed, areas) = two_window_rig();
-        let ws1 = ws_id(&state, DEV1, 0);
-        state.pending_closed.insert(
-            "w9".to_owned(),
-            PendingClosed {
-                output: DEV1.to_owned(),
-                workspace: ws1.clone(),
-            },
-        );
-        let before = native_fingerprint(&state);
-        // Invalidation advances before dispatch and the report binds the
-        // explicit current identities.
-        assert_eq!(seq.current_obs(), 0);
-        seq.invalidate();
-        assert_eq!(seq.current_obs(), 1);
-        let report = seq
-            .try_dispatch(&state, Some(&observed), &[], &areas, 0, None)
-            .expect("dispatch");
-        assert_eq!(validate_report_reason(&report), None);
-        assert_eq!(report.owner, "tiler-windows");
-        assert_eq!(report.adapter_incarnation, ADAPTER);
-        assert_eq!(report.core_generation, "gen-1");
-        assert_eq!(report.observation_seq, 1);
-        assert_eq!(report.request_seq, 1);
-        assert_eq!(report.request_id, "req-1");
-        assert!(seq.has_flight());
-        // Single flight: a second dispatch while outstanding is busy, and no
-        // quiet queue forms behind it.
-        assert_eq!(
-            seq.try_dispatch(&state, Some(&observed), &[], &areas, 0, None),
-            Err(DispatchError::Busy)
-        );
-        let reply = accepted_reply(&mut seq, &report);
-        assert_eq!(reply.based_on_observation_seq, 1);
-        let homing = PendingClosed {
-            output: DEV1.to_owned(),
-            workspace: ws1.clone(),
-        };
-        let receipt = match seq.ack(&reply) {
-            AckOutcome::Applied(receipt) => {
-                assert_eq!(receipt.request_id, "req-1");
-                // The receipt carries the exact captured (token, homing)
-                // pair, never a bare token, bound to this namespace.
-                assert_eq!(receipt.adapter_incarnation, ADAPTER);
-                assert_eq!(receipt.core_generation, "gen-1");
-                assert_eq!(receipt.closed_acked, vec![("w9".to_owned(), homing)]);
-                receipt
-            }
-            other => panic!("expected applied, got {other:?}"),
-        };
-        assert!(seq.is_ready());
-        assert_eq!(seq.last_desired().expect("desired").state_revision, 1);
-        assert_eq!(seq.last_accepted_obs(), 1);
-        assert_eq!(seq.last_accepted_rev(), 1);
-        assert_eq!(seq.last_accepted_req(), "req-1");
-        // The scaffold alone prunes nothing: the close stays dirty until the
-        // native caller applies the receipt to its own queue.
-        assert_eq!(native_fingerprint(&state), before);
-        let captured = capture_world(&state, Some(&observed), &[], &areas, 0);
-        assert_eq!(seq.outstanding_closes(&captured), vec!["w9".to_owned()]);
-        assert!(seq.is_dirty(&captured));
-        // Caller-side receipt application prunes exactly the delivered pair,
-        // and repeated post-prune reports carry no close.
-        let pruned = seq.apply_close_receipt(&mut state.pending_closed, &receipt);
-        assert_eq!(pruned, vec!["w9".to_owned()]);
-        assert!(state.pending_closed.is_empty());
-        let clean = capture_world(&state, Some(&observed), &[], &areas, 0);
-        assert!(seq.outstanding_closes(&clean).is_empty());
-        assert!(!seq.is_dirty(&clean));
-        // Generation reset clears flight/ordering/desired/command/feedback
-        // state and restarts counters under the fresh namespace; the pruned
-        // native close does not re-deliver.
-        assert!(seq.reset_generation("gen-2"));
-        assert!(!seq.has_flight());
-        assert!(seq.last_desired().is_none());
-        assert!(!seq.is_ready());
-        assert_eq!(seq.core_generation(), "gen-2");
-        // The pruned native close does not re-deliver, but the reset itself
-        // owes a fresh full observation.
-        let recaptured = capture_world(&state, Some(&observed), &[], &areas, 0);
-        assert!(seq.outstanding_closes(&recaptured).is_empty());
-        assert!(seq.is_dirty(&recaptured));
-        // Same-generation and malformed resets are side-effect-free no-ops.
-        assert!(!seq.reset_generation("gen-2"));
-        assert_eq!(seq.core_generation(), "gen-2");
-        assert_eq!(seq.next_request_seq(), 1);
-        assert_eq!(seq.current_obs(), 0);
-        // An old arbitrary reply can neither apply nor reset the generation.
-        // The delayed old req-1 (gen-1) cannot match the new gen-2 req-1.
-        seq.invalidate();
-        let report2 = seq
-            .try_dispatch(&state, Some(&observed), &[], &areas, 0, None)
-            .expect("dispatch under gen-2");
-        assert_eq!(report2.request_seq, 1);
-        assert_eq!(report2.request_id, "req-1");
-        assert_eq!(report2.core_generation, "gen-2");
-        assert!(
-            report2
-                .domains
-                .iter()
-                .all(|domain| domain.closed.is_empty())
-        );
-        assert!(!seq.reset_generation("gen-2"));
-        assert!(seq.has_flight());
-        assert_eq!(seq.next_request_seq(), 2);
-        assert!(!seq.reset_generation("GEN-BAD"));
-        assert_eq!(seq.core_generation(), "gen-2");
-        match seq.ack(&reply) {
-            AckOutcome::Ignored { reason } => assert_eq!(reason, "foreign-generation"),
-            other => panic!("expected foreign-generation ignore, got {other:?}"),
-        }
-        assert_eq!(seq.core_generation(), "gen-2");
-        assert!(seq.has_flight());
-        let reply2 = accepted_reply(&mut seq, &report2);
-        match seq.ack(&reply2) {
-            AckOutcome::Applied(receipt) => {
-                assert!(receipt.closed_acked.is_empty());
-            }
-            other => panic!("expected applied, got {other:?}"),
-        }
-        assert!(!seq.is_dirty(&capture_world(&state, Some(&observed), &[], &areas, 0)));
-        assert!(state.pending_closed.is_empty());
-        assert_eq!(
-            (
-                state.member_tokens.len(),
-                state.member_tags.len(),
-                state.member_identity.len()
-            ),
-            (before.1, before.2, before.3)
-        );
-    }
-
-    #[test]
-    fn stale_watermark_revision_and_request_never_consume_flight() {
-        let (mut seq, state, observed, areas) = two_window_rig();
-        seq.invalidate();
-        let report1 = seq
-            .try_dispatch(&state, Some(&observed), &[], &areas, 0, None)
-            .expect("dispatch");
-        // Racing native input advances the watermark while the flight is out.
-        seq.invalidate();
-        assert_eq!(seq.current_obs(), 2);
-        let reply1 = accepted_reply(&mut seq, &report1);
-        // Stale but correlated: incorporation acknowledged, state/effects
-        // NOT applied, catch-up scheduled.
-        match seq.ack(&reply1) {
-            AckOutcome::Stale(_) => {}
-            other => panic!("expected stale, got {other:?}"),
-        }
-        assert!(!seq.has_flight());
-        assert!(seq.in_catchup());
-        assert!(seq.last_desired().is_none());
-        assert!(!seq.is_ready());
-        let captured = capture_world(&state, Some(&observed), &[], &areas, 0);
-        assert!(seq.is_dirty(&captured));
-        // Catch-up refuses a NEW explicit command without consuming
-        // anything: no counters, no flight, no flags. The caller dispatches
-        // the catch-up observation first and resubmits after; the superseded
-        // command never replays.
-        assert_eq!(
-            seq.try_dispatch(
-                &state,
-                Some(&observed),
-                &[],
-                &areas,
-                0,
-                Some(focus_command("w1")),
-            ),
-            Err(DispatchError::CatchupRequired)
-        );
-        assert!(!seq.has_flight());
-        assert!(seq.in_catchup());
-        assert_eq!(seq.next_request_seq(), 2);
-        assert_eq!(seq.next_command_seq(), 1);
-        let catchup = seq
-            .try_dispatch(&state, Some(&observed), &[], &areas, 0, None)
-            .expect("catch-up dispatch");
-        assert!(catchup.command.is_none());
-        assert!(catchup.command_seq.is_none());
-        assert_eq!(catchup.observation_seq, 2);
-        // Replies naming another request, a foreign generation, or a foreign
-        // adapter consume nothing and keep the flight. These mutated clones
-        // are never delivered; only the true reply below reaches the core.
-        let reply2 = accepted_reply(&mut seq, &catchup);
-        let mut wrong = reply2.clone();
-        wrong.request_id = "req-999".to_owned();
-        match seq.ack(&wrong) {
-            AckOutcome::Ignored { reason } => assert_eq!(reason, "wrong-request"),
-            other => panic!("expected wrong-request ignore, got {other:?}"),
-        }
-        assert!(seq.has_flight());
-        // A foreign-generation reply likewise acks nothing.
-        let mut foreign = reply2.clone();
-        foreign.core_generation = "gen-9".to_owned();
-        match seq.ack(&foreign) {
-            AckOutcome::Ignored { reason } => assert_eq!(reason, "foreign-generation"),
-            other => panic!("expected foreign-generation ignore, got {other:?}"),
-        }
-        assert!(seq.has_flight());
-        // A foreign-adapter reply is equally powerless.
-        let mut alien = reply2.clone();
-        alien.adapter_incarnation = "other-adapter-1".to_owned();
-        match seq.ack(&alien) {
-            AckOutcome::Ignored { reason } => assert_eq!(reason, "foreign-adapter"),
-            other => panic!("expected foreign-adapter ignore, got {other:?}"),
-        }
-        assert!(seq.has_flight());
-        // The true reply applies and clears catch-up.
-        match seq.ack(&reply2) {
-            AckOutcome::Applied(_) => {}
-            other => panic!("expected applied, got {other:?}"),
-        }
-        assert!(!seq.in_catchup());
-        assert!(seq.is_ready());
-        // With no flight, stray replies are ignored, never applied.
-        match seq.ack(&reply2) {
-            AckOutcome::Ignored { reason } => assert_eq!(reason, "no-flight"),
-            other => panic!("expected no-flight ignore, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn duplicate_and_consumed_commands_run_at_most_once() {
-        let (mut seq, state, observed, areas) = two_window_rig();
-        seq.invalidate();
-        let report = seq
-            .try_dispatch(
-                &state,
-                Some(&observed),
-                &[],
-                &areas,
-                0,
-                Some(focus_command("w1")),
-            )
-            .expect("dispatch");
-        assert_eq!(report.command_seq, Some(1));
-        assert_eq!(validate_report_reason(&report), None);
-        let reply = accepted_reply(&mut seq, &report);
-        assert_eq!(reply.effects.len(), 1);
-        assert_eq!(reply.effects[0].id, "fx-1");
-        assert_eq!(reply.effects[0].target.0, "w1");
-        let revision = reply.state_revision;
-        // An identical redelivery duplicates at the same revision: no new
-        // revision, no second effect.
-        match seq.deliver(&report) {
-            WorldOutcome::Duplicate(dup) => assert_eq!(dup.state_revision, revision),
-            other => panic!("expected duplicate, got {other:?}"),
-        }
-        match seq.ack(&reply) {
-            AckOutcome::Applied(_) => {}
-            other => panic!("expected applied, got {other:?}"),
-        }
-        // The next fresh command sequence executes exactly once.
-        seq.invalidate();
-        let fresh = seq
-            .try_dispatch(
-                &state,
-                Some(&observed),
-                &[],
-                &areas,
-                0,
-                Some(focus_command("w1")),
-            )
-            .expect("dispatch");
-        assert_eq!(fresh.command_seq, Some(2));
-        let fresh_reply = accepted_reply(&mut seq, &fresh);
-        assert_eq!(fresh_reply.effects.len(), 1);
-        assert_eq!(fresh_reply.effects[0].id, "fx-2");
-        match seq.ack(&fresh_reply) {
-            AckOutcome::Applied(_) => {}
-            other => panic!("expected applied, got {other:?}"),
-        }
-        // A fresh report carrying the consumed command sequence reconciles
-        // observation but never re-executes the command. Hand-assembled under
-        // the next request sequence (the sequencer itself never reuses one),
-        // with no flight to acknowledge afterwards.
-        let captured = capture_world(&state, Some(&observed), &[], &areas, 0);
-        let consumed = seq.assemble(
-            &captured,
-            seq.next_request_seq(),
-            Some(1),
-            Some(focus_command("w1")),
-        );
-        match seq.deliver(&consumed) {
-            WorldOutcome::CommandConsumed(consumed_reply) => {
-                assert!(consumed_reply.command_consumed);
-                assert!(consumed_reply.effects.is_empty());
-            }
-            other => panic!("expected command-consumed, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn newer_explicit_command_is_never_replayed() {
-        let (mut seq, state, observed, areas) = two_window_rig();
-        seq.invalidate();
-        let first = seq
-            .try_dispatch(
-                &state,
-                Some(&observed),
-                &[],
-                &areas,
-                0,
-                Some(focus_command("w1")),
-            )
-            .expect("dispatch");
-        assert_eq!(seq.flight_command_seq(), Some(1));
-        // Racing input supersedes the observation before the reply lands.
-        seq.invalidate();
-        let stale_reply = accepted_reply(&mut seq, &first);
-        assert_eq!(stale_reply.effects.len(), 1);
-        assert_eq!(stale_reply.effects[0].id, "fx-1");
-        match seq.ack(&stale_reply) {
-            AckOutcome::Stale(_) => {}
-            other => panic!("expected stale, got {other:?}"),
-        }
-        // The stale effect is never applied as desired state.
-        assert!(seq.last_desired().is_none());
-        // Catch-up refuses the newer explicit command with nothing
-        // consumed; the caller observes first, resubmits after.
-        assert_eq!(
-            seq.try_dispatch(
-                &state,
-                Some(&observed),
-                &[],
-                &areas,
-                0,
-                Some(focus_command("w2")),
-            ),
-            Err(DispatchError::CatchupRequired)
-        );
-        assert!(!seq.has_flight());
-        assert!(seq.in_catchup());
-        assert_eq!(seq.next_request_seq(), 2);
-        assert_eq!(seq.next_command_seq(), 2);
-        let catchup = seq
-            .try_dispatch(&state, Some(&observed), &[], &areas, 0, None)
-            .expect("catch-up");
-        assert!(catchup.command.is_none());
-        let catchup_reply = accepted_reply(&mut seq, &catchup);
-        assert!(catchup_reply.effects.is_empty());
-        match seq.ack(&catchup_reply) {
-            AckOutcome::Applied(_) => {}
-            other => panic!("expected applied, got {other:?}"),
-        }
-        // The caller resupplies the newer explicit command under a fresh
-        // sequence; it executes exactly once.
-        seq.invalidate();
-        let second = seq
-            .try_dispatch(
-                &state,
-                Some(&observed),
-                &[],
-                &areas,
-                0,
-                Some(focus_command("w2")),
-            )
-            .expect("dispatch");
-        assert_eq!(second.command_seq, Some(2));
-        let second_reply = accepted_reply(&mut seq, &second);
-        assert_eq!(second_reply.effects.len(), 1);
-        assert_eq!(second_reply.effects[0].id, "fx-2");
-        assert_eq!(second_reply.effects[0].target.0, "w2");
-        match seq.ack(&second_reply) {
-            AckOutcome::Applied(_) => {}
-            other => panic!("expected applied, got {other:?}"),
-        }
-        // Across every applied desired snapshot, fx-1 never appears and
-        // fx-2 appears exactly once: the superseded command never replayed.
-        let applied = seq.last_desired().expect("desired");
-        assert!(applied.effects.iter().all(|fx| fx.id != "fx-1"));
-    }
-
-    #[test]
-    fn lost_reply_causes_observation_catchup_without_command_retry() {
-        let (mut seq, state, observed, areas) = two_window_rig();
-        let before = native_fingerprint(&state);
-        seq.invalidate();
-        let report = seq
-            .try_dispatch(
-                &state,
-                Some(&observed),
-                &[],
-                &areas,
-                0,
-                Some(focus_command("w1")),
-            )
-            .expect("dispatch");
-        // Transport loss: no reply ever arrives. The correlated rejection
-        // releases the flight, retains dirty work, acknowledges nothing.
-        let req_id = report.request_id.clone();
-        assert!(seq.note_rejected_or_lost("gen-1", &req_id));
-        assert!(!seq.has_flight());
-        assert!(seq.in_catchup());
-        assert!(seq.last_desired().is_none());
-        // A fresh explicit command during catch-up is refused without
-        // consuming anything: the lost command is not retried automatically
-        // and the new one waits for resubmission after catch-up.
-        assert_eq!(
-            seq.try_dispatch(
-                &state,
-                Some(&observed),
-                &[],
-                &areas,
-                0,
-                Some(focus_command("w1")),
-            ),
-            Err(DispatchError::CatchupRequired)
-        );
-        assert_eq!(seq.next_request_seq(), 2);
-        assert_eq!(seq.next_command_seq(), 2);
-        let catchup = seq
-            .try_dispatch(&state, Some(&observed), &[], &areas, 0, None)
-            .expect("catch-up");
-        assert!(catchup.command.is_none());
-        assert_eq!(catchup.request_id, "req-2");
-        drop(report);
-        let reply = accepted_reply(&mut seq, &catchup);
-        assert!(reply.effects.is_empty());
-        match seq.ack(&reply) {
-            AckOutcome::Applied(_) => {}
-            other => panic!("expected applied, got {other:?}"),
-        }
-        // The caller resubmits explicitly afterwards; it runs exactly once.
-        seq.invalidate();
-        let resubmitted = seq
-            .try_dispatch(
-                &state,
-                Some(&observed),
-                &[],
-                &areas,
-                0,
-                Some(focus_command("w1")),
-            )
-            .expect("resubmit");
-        assert_eq!(resubmitted.command_seq, Some(2));
-        let resubmitted_reply = accepted_reply(&mut seq, &resubmitted);
-        assert_eq!(resubmitted_reply.effects.len(), 1);
-        assert_eq!(resubmitted_reply.effects[0].id, "fx-2");
-        match seq.ack(&resubmitted_reply) {
-            AckOutcome::Applied(_) => {}
-            other => panic!("expected applied, got {other:?}"),
-        }
-        assert_eq!(native_fingerprint(&state), before);
-    }
-
-    #[test]
-    fn counter_exhaustion_requires_generation_reset_without_wrap() {
-        let (mut seq, state, observed, areas) = two_window_rig();
-        seq.invalidate();
-        let first = seq
-            .try_dispatch(&state, Some(&observed), &[], &areas, 0, None)
-            .expect("dispatch");
-        assert_eq!(first.request_seq, 1);
-        let reply = accepted_reply(&mut seq, &first);
-        match seq.ack(&reply) {
-            AckOutcome::Applied(_) => {}
-            other => panic!("expected applied, got {other:?}"),
-        }
-        // Drive the request counter to exhaustion inside this generation.
-        seq.next_request_seq = u64::MAX;
-        assert_eq!(
-            seq.try_dispatch(&state, Some(&observed), &[], &areas, 0, None),
-            Err(DispatchError::CountersExhausted)
-        );
-        // No wrap: the counter still reads max and invalidation holds there.
-        assert_eq!(seq.next_request_seq(), u64::MAX);
-        seq.current_obs = u64::MAX;
-        seq.invalidate();
-        assert_eq!(seq.current_obs(), u64::MAX);
-        // An exhausted watermark refuses dispatch too: holding at max must
-        // not silently reuse it for a later report.
-        seq.next_request_seq = 2;
-        assert_eq!(
-            seq.try_dispatch(&state, Some(&observed), &[], &areas, 0, None),
-            Err(DispatchError::CountersExhausted)
-        );
-        // Only a generation reset (fresh bootstrap namespace) recovers.
-        assert!(seq.reset_generation("gen-2"));
-        assert_eq!(seq.next_request_seq(), 1);
-        assert_eq!(seq.next_command_seq(), 1);
-        assert_eq!(seq.current_obs(), 0);
-        seq.invalidate();
-        let recovered = seq
-            .try_dispatch(&state, Some(&observed), &[], &areas, 0, None)
-            .expect("dispatch after reset");
-        assert_eq!(recovered.request_seq, 1);
-        assert_eq!(recovered.core_generation, "gen-2");
-        let recovered_reply = accepted_reply(&mut seq, &recovered);
-        match seq.ack(&recovered_reply) {
-            AckOutcome::Applied(_) => {}
-            other => panic!("expected applied, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn updated_feedback_after_dispatch_survives_old_ack() {
-        let (mut seq, state, observed, areas) = two_window_rig();
-        seq.note_feedback(transfer_feedback("op-1", AttemptOutcome::PossiblyExecuted));
-        seq.invalidate();
-        let report = seq
-            .try_dispatch(&state, Some(&observed), &[], &areas, 0, None)
-            .expect("dispatch");
-        assert_eq!(report.feedback.len(), 1);
-        assert_eq!(report.feedback[0].outcome, AttemptOutcome::PossiblyExecuted);
-        // A partial attempt resolves AFTER dispatch: PossiblyExecuted moves
-        // to Applied with no new native invalidation.
-        seq.note_feedback(transfer_feedback("op-1", AttemptOutcome::Applied));
-        assert_eq!(seq.pending_feedback_len(), 1);
-        let reply = accepted_reply(&mut seq, &report);
-        match seq.ack(&reply) {
-            AckOutcome::Applied(receipt) => {
-                // Exact version/value compare: the delivered value no longer
-                // matches pending, so nothing is removed.
-                assert!(receipt.feedback_acked.is_empty());
-            }
-            other => panic!("expected applied, got {other:?}"),
-        }
-        // The newer feedback stays dirty without any manual invalidation:
-        // the observation watermark is current, the obligation is not.
-        assert!(!seq.obs_dirty);
-        let captured = capture_world(&state, Some(&observed), &[], &areas, 0);
-        assert!(seq.is_dirty(&captured));
-        // The next report carries the resolved outcome, which then acks.
-        let follow = seq
-            .try_dispatch(&state, Some(&observed), &[], &areas, 0, None)
-            .expect("dispatch");
-        assert_eq!(follow.feedback.len(), 1);
-        assert_eq!(follow.feedback[0].outcome, AttemptOutcome::Applied);
-        let follow_reply = accepted_reply(&mut seq, &follow);
-        match seq.ack(&follow_reply) {
-            AckOutcome::Applied(receipt) => {
-                assert_eq!(receipt.feedback_acked, vec!["op-1".to_owned()]);
-            }
-            other => panic!("expected applied, got {other:?}"),
-        }
-        assert!(!seq.has_pending_feedback());
-        assert!(!seq.is_dirty(&capture_world(&state, Some(&observed), &[], &areas, 0)));
-    }
-
-    #[test]
-    fn absent_domain_close_stays_dirty_then_attaches_when_domain_returns() {
-        let (mut seq, mut state, observed, areas) = two_window_rig();
-        // Queue a verified close homed on an unknown domain: uncarried, but
-        // the caller retains it.
-        state.pending_closed.insert(
-            "w7".to_owned(),
-            PendingClosed {
-                output: DEV1.to_owned(),
-                workspace: "ws-9".to_owned(),
-            },
-        );
-        let captured = capture_world(&state, Some(&observed), &[], &areas, 0);
-        assert_eq!(captured.unhomed_closed, vec!["w7".to_owned()]);
-        seq.invalidate();
-        let report = seq
-            .try_dispatch(&state, Some(&observed), &[], &areas, 0, None)
-            .expect("dispatch");
-        assert!(report.domains.iter().all(|domain| domain.closed.is_empty()));
-        let reply = accepted_reply(&mut seq, &report);
-        match seq.ack(&reply) {
-            AckOutcome::Applied(receipt) => assert!(receipt.closed_acked.is_empty()),
-            other => panic!("expected applied, got {other:?}"),
-        }
-        // The unrelated ack changes nothing for the absent-domain close: it
-        // stays dirty with no extra native invalidation.
-        assert!(!seq.obs_dirty);
-        let recaptured = capture_world(&state, Some(&observed), &[], &areas, 0);
-        assert_eq!(seq.outstanding_closes(&recaptured), vec!["w7".to_owned()]);
-        assert!(seq.is_dirty(&recaptured));
-        // The domain returns: the same close attaches, delivers exactly on
-        // the next flight, and is retained until the caller applies the
-        // receipt to its own queue.
-        assert!(state.workspaces.ensure_workspace_id(DEV1, "ws-9"));
-        seq.invalidate();
-        let homed = seq
-            .try_dispatch(&state, Some(&observed), &[], &areas, 0, None)
-            .expect("dispatch");
-        let carriers: Vec<String> = homed
-            .domains
-            .iter()
-            .flat_map(|domain| domain.closed.iter().map(|id| id.0.clone()))
-            .collect();
-        assert_eq!(carriers, vec!["w7".to_owned()]);
-        let homed_reply = accepted_reply(&mut seq, &homed);
-        match seq.ack(&homed_reply) {
-            AckOutcome::Applied(receipt) => {
-                assert_eq!(
-                    receipt.closed_acked,
-                    vec![(
-                        "w7".to_owned(),
-                        PendingClosed {
-                            output: DEV1.to_owned(),
-                            workspace: "ws-9".to_owned(),
-                        }
-                    )]
-                );
-                let pruned = seq.apply_close_receipt(&mut state.pending_closed, &receipt);
-                assert_eq!(pruned, vec!["w7".to_owned()]);
-            }
-            other => panic!("expected applied, got {other:?}"),
-        }
-        assert!(!seq.is_dirty(&capture_world(&state, Some(&observed), &[], &areas, 0)));
-        assert!(state.pending_closed.is_empty());
-    }
-
-    #[test]
-    fn close_added_during_flight_stays_pending_until_its_own_ack() {
-        let (mut seq, mut state, observed, areas) = two_window_rig();
-        let ws1 = ws_id(&state, DEV1, 0);
-        seq.invalidate();
-        let first = seq
-            .try_dispatch(&state, Some(&observed), &[], &areas, 0, None)
-            .expect("dispatch");
-        // A close queues while the flight is out; the dispatched snapshot
-        // cannot carry it.
-        state.pending_closed.insert(
-            "w9".to_owned(),
-            PendingClosed {
-                output: DEV1.to_owned(),
-                workspace: ws1.clone(),
-            },
-        );
-        assert!(first.domains.iter().all(|domain| domain.closed.is_empty()));
-        let reply = accepted_reply(&mut seq, &first);
-        // The ack settles only exact delivered facts: the newer close is not
-        // swept in.
-        match seq.ack(&reply) {
-            AckOutcome::Applied(receipt) => assert!(receipt.closed_acked.is_empty()),
-            other => panic!("expected applied, got {other:?}"),
-        }
-        let captured = capture_world(&state, Some(&observed), &[], &areas, 0);
-        assert_eq!(seq.outstanding_closes(&captured), vec!["w9".to_owned()]);
-        assert!(seq.is_dirty(&captured));
-        // The next flight delivers it exactly; the caller-side receipt
-        // application then clears the native obligation.
-        let second = seq
-            .try_dispatch(&state, Some(&observed), &[], &areas, 0, None)
-            .expect("dispatch");
-        let carriers: Vec<String> = second
-            .domains
-            .iter()
-            .flat_map(|domain| domain.closed.iter().map(|id| id.0.clone()))
-            .collect();
-        assert_eq!(carriers, vec!["w9".to_owned()]);
-        let reply2 = accepted_reply(&mut seq, &second);
-        match seq.ack(&reply2) {
-            AckOutcome::Applied(receipt) => {
-                assert_eq!(
-                    receipt.closed_acked,
-                    vec![(
-                        "w9".to_owned(),
-                        PendingClosed {
-                            output: DEV1.to_owned(),
-                            workspace: ws1.clone(),
-                        }
-                    )]
-                );
-                let pruned = seq.apply_close_receipt(&mut state.pending_closed, &receipt);
-                assert_eq!(pruned, vec!["w9".to_owned()]);
-            }
-            other => panic!("expected applied, got {other:?}"),
-        }
-        assert!(!seq.is_dirty(&capture_world(&state, Some(&observed), &[], &areas, 0)));
-    }
-
-    #[test]
-    fn rehomed_close_under_same_token_survives_old_ack() {
-        let (mut seq, mut state, observed, areas) = two_window_rig();
-        let ws1 = ws_id(&state, DEV1, 0);
-        let ws2 = ws_id(&state, DEV1, 1);
-        state.pending_closed.insert(
-            "w9".to_owned(),
-            PendingClosed {
-                output: DEV1.to_owned(),
-                workspace: ws1.clone(),
-            },
-        );
-        seq.invalidate();
-        let first = seq
-            .try_dispatch(&state, Some(&observed), &[], &areas, 0, None)
-            .expect("dispatch");
-        assert!(
-            first
-                .domains
-                .iter()
-                .any(|domain| domain.closed.iter().any(|id| id.0 == "w9"))
-        );
-        // Newer native close information re-homes the same token before the
-        // ack lands; the dispatched snapshot still names the old homing.
-        state
-            .pending_closed
-            .get_mut("w9")
-            .expect("queued")
-            .workspace = ws2.clone();
-        let reply = accepted_reply(&mut seq, &first);
-        match seq.ack(&reply) {
-            AckOutcome::Applied(receipt) => {
-                assert_eq!(
-                    receipt.closed_acked,
-                    vec![(
-                        "w9".to_owned(),
-                        PendingClosed {
-                            output: DEV1.to_owned(),
-                            workspace: ws1.clone(),
-                        }
-                    )]
-                );
-                // Exact-equality prune: the re-homed entry survives.
-                let pruned = seq.apply_close_receipt(&mut state.pending_closed, &receipt);
-                assert!(pruned.is_empty());
-            }
-            other => panic!("expected applied, got {other:?}"),
-        }
-        assert_eq!(
-            state.pending_closed.get("w9"),
-            Some(&PendingClosed {
-                output: DEV1.to_owned(),
-                workspace: ws2.clone(),
-            })
-        );
-        let captured = capture_world(&state, Some(&observed), &[], &areas, 0);
-        assert_eq!(seq.outstanding_closes(&captured), vec!["w9".to_owned()]);
-        assert!(seq.is_dirty(&captured));
-        // The next flight delivers the current homing, which then prunes.
-        let second = seq
-            .try_dispatch(&state, Some(&observed), &[], &areas, 0, None)
-            .expect("dispatch");
-        let homed: Vec<String> = second
-            .domains
-            .iter()
-            .filter(|domain| domain.closed.iter().any(|id| id.0 == "w9"))
-            .map(|domain| domain.domain.workspace.0.clone())
-            .collect();
-        assert_eq!(homed.len(), 1);
-        let reply2 = accepted_reply(&mut seq, &second);
-        match seq.ack(&reply2) {
-            AckOutcome::Applied(receipt) => {
-                assert_eq!(
-                    receipt.closed_acked,
-                    vec![(
-                        "w9".to_owned(),
-                        PendingClosed {
-                            output: DEV1.to_owned(),
-                            workspace: ws2.clone(),
-                        }
-                    )]
-                );
-                let pruned = seq.apply_close_receipt(&mut state.pending_closed, &receipt);
-                assert_eq!(pruned, vec!["w9".to_owned()]);
-            }
-            other => panic!("expected applied, got {other:?}"),
-        }
-        assert!(state.pending_closed.is_empty());
-        assert!(!seq.is_dirty(&capture_world(&state, Some(&observed), &[], &areas, 0)));
-    }
-
-    #[test]
-    fn deferred_receipt_cannot_prune_across_generation() {
-        let (mut seq, mut state, observed, areas) = two_window_rig();
-        let ws1 = ws_id(&state, DEV1, 0);
-        state.pending_closed.insert(
-            "w9".to_owned(),
-            PendingClosed {
-                output: DEV1.to_owned(),
-                workspace: ws1.clone(),
-            },
-        );
-        seq.invalidate();
-        let report = seq
-            .try_dispatch(&state, Some(&observed), &[], &areas, 0, None)
-            .expect("dispatch");
-        let reply = accepted_reply(&mut seq, &report);
-        let receipt = match seq.ack(&reply) {
-            AckOutcome::Applied(receipt) => receipt,
-            other => panic!("expected applied, got {other:?}"),
-        };
-        assert_eq!(receipt.core_generation, "gen-1");
-        // The generation resets before the caller applies the receipt: the
-        // fresh engine has not incorporated the close.
-        assert!(seq.reset_generation("gen-2"));
-        // A malformed reset is a side-effect-free no-op: still gen-2.
-        assert!(!seq.reset_generation("GEN-BAD"));
-        assert_eq!(seq.core_generation(), "gen-2");
-        // The deferred old-namespace receipt prunes nothing.
-        let pruned = seq.apply_close_receipt(&mut state.pending_closed, &receipt);
-        assert!(pruned.is_empty());
-        assert!(state.pending_closed.contains_key("w9"));
-        // The fresh-generation close obligation remains dirty and the next
-        // report carries it again.
-        let recaptured = capture_world(&state, Some(&observed), &[], &areas, 0);
-        assert_eq!(seq.outstanding_closes(&recaptured), vec!["w9".to_owned()]);
-        assert!(seq.is_dirty(&recaptured));
-        seq.invalidate();
-        let fresh = seq
-            .try_dispatch(&state, Some(&observed), &[], &areas, 0, None)
-            .expect("dispatch");
-        assert_eq!(fresh.core_generation, "gen-2");
-        assert!(
-            fresh
-                .domains
-                .iter()
-                .any(|domain| domain.closed.iter().any(|id| id.0 == "w9"))
-        );
-        let fresh_reply = accepted_reply(&mut seq, &fresh);
-        match seq.ack(&fresh_reply) {
-            AckOutcome::Applied(fresh_receipt) => {
-                assert_eq!(fresh_receipt.core_generation, "gen-2");
-                // Only the current-namespace receipt prunes.
-                let pruned = seq.apply_close_receipt(&mut state.pending_closed, &fresh_receipt);
-                assert_eq!(pruned, vec!["w9".to_owned()]);
-            }
-            other => panic!("expected applied, got {other:?}"),
-        }
-        assert!(state.pending_closed.is_empty());
-        assert!(!seq.is_dirty(&capture_world(&state, Some(&observed), &[], &areas, 0)));
-    }
-
-    #[test]
-    fn core_rejection_is_never_an_acknowledgement() {
-        let (mut seq, state, observed, areas) = two_window_rig();
-        let before = native_fingerprint(&state);
-        seq.invalidate();
-        let report = seq
-            .try_dispatch(
-                &state,
-                Some(&observed),
-                &[],
-                &areas,
-                0,
-                Some(focus_command("w1")),
-            )
-            .expect("dispatch");
-        // A caller-supplied command offered while busy is refused outright:
-        // explicit commands never silently coalesce into a queue.
-        assert_eq!(
-            seq.try_dispatch(
-                &state,
-                Some(&observed),
-                &[],
-                &areas,
-                0,
-                Some(focus_command("w2")),
-            ),
-            Err(DispatchError::Busy)
-        );
-        // Corrupt the generation binding: the core rejects before any
-        // mutation, so there is nothing to acknowledge.
-        let mut foreign = report.clone();
-        foreign.core_generation = "gen-9".to_owned();
-        match seq.deliver(&foreign) {
-            WorldOutcome::Rejected { .. } => {}
-            other => panic!("expected rejected, got {other:?}"),
-        }
-        // A malformed correlation is likewise refused, never incorporated.
-        let mut bad_id = report.clone();
-        bad_id.request_id = String::new();
-        match seq.deliver(&bad_id) {
-            WorldOutcome::Rejected { .. } => {}
-            other => panic!("expected rejected, got {other:?}"),
-        }
-        // The correlated rejection releases exactly this flight and nothing
-        // else; the refused command never ran and is never replayed.
-        assert!(seq.note_rejected_or_lost("gen-1", &report.request_id));
-        assert!(!seq.has_flight());
-        assert!(seq.in_catchup());
-        assert!(seq.last_desired().is_none());
-        assert!(!seq.has_pending_feedback());
-        let captured = capture_world(&state, Some(&observed), &[], &areas, 0);
-        assert!(seq.is_dirty(&captured));
-        // The refused command never ran and is never replayed: catch-up is
-        // observation-only.
-        let catchup = seq
-            .try_dispatch(&state, Some(&observed), &[], &areas, 0, None)
-            .expect("catch-up");
-        assert!(catchup.command.is_none());
-        let reply = accepted_reply(&mut seq, &catchup);
-        assert!(reply.effects.is_empty());
-        assert_eq!(native_fingerprint(&state), before);
-    }
-
-    #[test]
-    fn delayed_rejection_never_clears_newer_flight() {
-        let (mut seq, state, observed, areas) = two_window_rig();
-        seq.invalidate();
-        let first = seq
-            .try_dispatch(&state, Some(&observed), &[], &areas, 0, None)
-            .expect("dispatch");
-        assert_eq!(first.request_id, "req-1");
-        assert!(seq.note_rejected_or_lost("gen-1", "req-1"));
-        assert!(!seq.has_flight());
-        assert!(seq.in_catchup());
-        // A newer flight is out: the delayed old rejection is a no-op.
-        let second = seq
-            .try_dispatch(&state, Some(&observed), &[], &areas, 0, None)
-            .expect("catch-up");
-        assert_eq!(second.request_id, "req-2");
-        assert!(!seq.note_rejected_or_lost("gen-1", "req-1"));
-        assert!(seq.has_flight());
-        assert!(!seq.in_catchup());
-        let reply = accepted_reply(&mut seq, &second);
-        match seq.ack(&reply) {
-            AckOutcome::Applied(_) => {}
-            other => panic!("expected applied, got {other:?}"),
-        }
-        // After a generation reset the request namespace restarts, so an
-        // old-generation rejection must not match the new req-1 flight.
-        assert!(seq.reset_generation("gen-2"));
-        seq.invalidate();
-        let third = seq
-            .try_dispatch(&state, Some(&observed), &[], &areas, 0, None)
-            .expect("dispatch");
-        assert_eq!(third.request_id, "req-1");
-        assert!(!seq.note_rejected_or_lost("gen-1", "req-1"));
-        assert!(!seq.note_rejected_or_lost("gen-2", "req-9"));
-        assert!(seq.has_flight());
-        assert!(!seq.in_catchup());
-        assert!(seq.note_rejected_or_lost("gen-2", "req-1"));
-        assert!(!seq.has_flight());
-        assert!(seq.in_catchup());
-    }
-
-    #[test]
-    fn sequencer_never_mutates_native_ledgers_or_maps() {
-        let (mut seq, mut state, observed, areas) = two_window_rig();
-        let ws1 = ws_id(&state, DEV1, 0);
-        state.pending_closed.insert(
-            "w9".to_owned(),
-            PendingClosed {
-                output: DEV1.to_owned(),
-                workspace: ws1,
-            },
-        );
-        seq.note_feedback(transfer_feedback("op-9", AttemptOutcome::PossiblyExecuted));
-        let before = native_fingerprint(&state);
-        // Full lifecycle: dispatch, stale ack, catch-up, applied ack,
-        // rejection, generation reset. Every sequencer method takes the
-        // owner by shared reference, so the fingerprint must hold.
-        seq.invalidate();
-        let first = seq
-            .try_dispatch(&state, Some(&observed), &[], &areas, 0, None)
-            .expect("dispatch");
-        seq.invalidate();
-        let stale = accepted_reply(&mut seq, &first);
-        match seq.ack(&stale) {
-            AckOutcome::Stale(_) => {}
-            other => panic!("expected stale, got {other:?}"),
-        }
-        let catchup = seq
-            .try_dispatch(&state, Some(&observed), &[], &areas, 0, None)
-            .expect("catch-up");
-        let applied = accepted_reply(&mut seq, &catchup);
-        match seq.ack(&applied) {
-            AckOutcome::Applied(_) => {}
-            other => panic!("expected applied, got {other:?}"),
-        }
-        // Correlated rejection then generation reset: still only shared
-        // references to the owner, so the fingerprint must hold. The reset
-        // clears staged feedback, which is sequencer-side and outside the
-        // native fingerprint.
-        let third = seq
-            .try_dispatch(&state, Some(&observed), &[], &areas, 0, None)
-            .expect("dispatch");
-        assert!(seq.note_rejected_or_lost("gen-1", &third.request_id));
-        assert!(seq.reset_generation("gen-9"));
-        assert_eq!(native_fingerprint(&state), before);
-        // Hint and snapshot caches capture reads are equally untouched.
-        assert!(state.hint_logged.is_empty());
-        assert!(state.member_rects.is_empty());
-        assert!(state.float_rects.is_empty());
-    }
-
-    #[test]
-    fn wrong_echo_and_stale_revision_never_apply() {
-        let (mut seq, mut state, observed, areas) = two_window_rig();
-        let ws1 = ws_id(&state, DEV1, 0);
-        state.pending_closed.insert(
-            "w9".to_owned(),
-            PendingClosed {
-                output: DEV1.to_owned(),
-                workspace: ws1,
-            },
-        );
-        seq.note_feedback(transfer_feedback("op-9", AttemptOutcome::PossiblyExecuted));
-        seq.invalidate();
-        let report = seq
-            .try_dispatch(&state, Some(&observed), &[], &areas, 0, None)
-            .expect("dispatch");
-        assert_eq!(report.feedback.len(), 1);
-        let reply = accepted_reply(&mut seq, &report);
-        // A reply echoing another watermark keeps the flight with closes
-        // and feedback retained: nothing applied, nothing acknowledged.
-        let mut wrong_echo = reply.clone();
-        wrong_echo.based_on_observation_seq = 999;
-        match seq.ack(&wrong_echo) {
-            AckOutcome::Ignored { reason } => assert_eq!(reason, "obs-mismatch"),
-            other => panic!("expected obs-mismatch ignore, got {other:?}"),
-        }
-        assert!(seq.has_flight());
-        assert!(!seq.in_catchup());
-        assert!(seq.has_pending_feedback());
-        let captured = capture_world(&state, Some(&observed), &[], &areas, 0);
-        assert_eq!(seq.outstanding_closes(&captured), vec!["w9".to_owned()]);
-        // The true reply applies and acks exactly the delivered facts.
-        match seq.ack(&reply) {
-            AckOutcome::Applied(receipt) => {
-                assert_eq!(receipt.feedback_acked, vec!["op-9".to_owned()]);
-                assert_eq!(receipt.closed_acked.len(), 1);
-                assert_eq!(&receipt.closed_acked[0].0, "w9");
-            }
-            other => panic!("expected applied, got {other:?}"),
-        }
-        // A revision-stale reply for the current flight never grants
-        // applicability either: incorporation receipt, no state, catch-up.
-        seq.invalidate();
-        let next = seq
-            .try_dispatch(&state, Some(&observed), &[], &areas, 0, None)
-            .expect("dispatch");
-        let fresh = accepted_reply(&mut seq, &next);
-        assert!(fresh.state_revision > reply.state_revision);
-        let mut stale_rev = fresh.clone();
-        stale_rev.state_revision = reply.state_revision;
-        match seq.ack(&stale_rev) {
-            AckOutcome::Stale(_) => {}
-            other => panic!("expected stale, got {other:?}"),
-        }
-        assert!(!seq.has_flight());
-        assert!(seq.in_catchup());
-        let desired = seq.last_desired().expect("desired");
-        assert_eq!(desired.request_id, "req-1");
-        assert_eq!(desired.state_revision, reply.state_revision);
-    }
-
-    #[test]
-    fn generation_reset_clears_feedback_before_command_reuse() {
-        let (mut seq, state, observed, areas) = two_window_rig();
-        // Same-output workspace send: the empty second workspace accepts.
-        let target_ws = ws_id(&state, DEV1, 1);
-        // Generation one: an explicit send retains transfer op-1. The send
-        // needs an observed focused window, so the foreground names w1.
-        seq.invalidate();
-        let send = seq
-            .try_dispatch(
-                &state,
-                Some(&observed),
-                &[],
-                &areas,
-                1001,
-                Some(send_command("w1", "o1", &target_ws)),
-            )
-            .expect("dispatch");
-        assert_eq!(send.command_seq, Some(1));
-        let send_reply = accepted_reply(&mut seq, &send);
-        let retained: Vec<String> = seq
-            .engine
-            .retained_transfers()
-            .iter()
-            .map(|target| target.operation_id.clone())
-            .collect();
-        assert_eq!(retained, vec!["op-1".to_owned()]);
-        match seq.ack(&send_reply) {
-            AckOutcome::Applied(_) => {}
-            other => panic!("expected applied, got {other:?}"),
-        }
-        // A late refusal for the old generation is staged but must not
-        // survive the reset: command sequences restart at one, so it would
-        // collide with the fresh op-1.
-        seq.note_feedback(transfer_feedback("op-1", AttemptOutcome::RefusedProven));
-        assert!(seq.reset_generation("gen-2"));
-        assert!(!seq.has_pending_feedback());
-        // Generation two reuses op-1 for its own first send; with the stale
-        // refusal cleared, the fresh transfer retains.
-        seq.invalidate();
-        let resend = seq
-            .try_dispatch(
-                &state,
-                Some(&observed),
-                &[],
-                &areas,
-                1001,
-                Some(send_command("w1", "o1", &target_ws)),
-            )
-            .expect("dispatch");
-        assert_eq!(resend.command_seq, Some(1));
-        assert!(resend.feedback.is_empty());
-        let resend_reply = accepted_reply(&mut seq, &resend);
-        let retained: Vec<String> = seq
-            .engine
-            .retained_transfers()
-            .iter()
-            .map(|target| target.operation_id.clone())
-            .collect();
-        assert_eq!(retained, vec!["op-1".to_owned()]);
-        match seq.ack(&resend_reply) {
-            AckOutcome::Applied(_) => {}
-            other => panic!("expected applied, got {other:?}"),
-        }
-        // The collision is real, not hypothetical: redelivering the old
-        // refusal settles (kills) the fresh same-identity transfer.
-        seq.note_feedback(transfer_feedback("op-1", AttemptOutcome::RefusedProven));
-        let probe = seq
-            .try_dispatch(&state, Some(&observed), &[], &areas, 0, None)
-            .expect("dispatch");
-        assert_eq!(probe.feedback.len(), 1);
-        match seq.deliver(&probe) {
-            WorldOutcome::Accepted(_) => {}
-            other => panic!("expected accepted, got {other:?}"),
-        }
-        assert!(seq.engine.retained_transfers().is_empty());
-    }
-
-    #[test]
-    fn envelope_preserves_windows_profile_and_core_gates() {
-        // The sequencer assembles typed reports only; the core's own
-        // size/validation gates still decide, with no JSON transport.
-        let (mut seq, state, observed, areas) = two_window_rig();
-        seq.invalidate();
-        let report = seq
-            .try_dispatch(&state, Some(&observed), &[], &areas, 0, None)
-            .expect("dispatch");
-        assert_eq!(validate_report_reason(&report), None);
-        assert_eq!(report.contract_version, WORLD_CONTRACT_VERSION);
-        // Monotonic counters across dispatches within the generation.
-        let reply = accepted_reply(&mut seq, &report);
-        match seq.ack(&reply) {
-            AckOutcome::Applied(_) => {}
-            other => panic!("expected applied, got {other:?}"),
-        }
-        seq.invalidate();
-        let second = seq
-            .try_dispatch(&state, Some(&observed), &[], &areas, 0, None)
-            .expect("dispatch");
-        assert_eq!(second.request_seq, 2);
-        assert_eq!(second.request_id, "req-2");
-        assert_eq!(second.observation_seq, 2);
-        assert!(second.request_seq > report.request_seq);
-        assert!(second.observation_seq > report.observation_seq);
-        // Hold reasons ride through untouched: an unreadable capture still
-        // validates and the core holds rather than authorizes.
-        let unreadable = capture_world(&state, None, &[], &areas, 0);
-        assert!(!unreadable.inventory_complete);
-        let held_report = seq.assemble(&unreadable, 99, None, None);
-        assert_eq!(validate_report_reason(&held_report), None);
-        assert!(
-            held_report
-                .domains
-                .iter()
-                .all(|domain| domain.hold == Some(HoldReason::IncompleteInventory))
-        );
     }
 }

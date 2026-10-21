@@ -11,7 +11,7 @@ use crate::model::{
 };
 use crate::native::{HeldProcess, IdentityError};
 use crate::storage::{LEDGER_FILE_NAME, LedgerStore};
-use crate::workspace_owner::MarkerSlot;
+use crate::native_guards::MarkerSlot;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -1227,7 +1227,7 @@ pub fn admit_managed_claim_for_hide(
     allow_project_topmost: bool,
 ) -> std::result::Result<WindowIdentity, ManagedAdmitError> {
     use ManagedAdmitError::{Absent, Refused, Uncertain, WrongIdentity};
-    if !crate::workspace_owner::visible_lifetime_ok(
+    if !crate::native_guards::visible_lifetime_ok(
         member_tag,
         read_member_tag(hwnd_u64).as_deref(),
     ) {
@@ -1261,7 +1261,7 @@ pub fn admit_managed_claim_for_hide(
         let _ = remove_nonce_checked(hwnd_u64, &tag, &snap.process, owner);
         return Err(Uncertain);
     }
-    if !crate::workspace_owner::visible_lifetime_ok(
+    if !crate::native_guards::visible_lifetime_ok(
         member_tag,
         read_member_tag(hwnd_u64).as_deref(),
     ) {

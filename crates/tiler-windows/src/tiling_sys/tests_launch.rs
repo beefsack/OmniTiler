@@ -199,9 +199,12 @@ fn keyboard_tick_routes_launch_without_spawning_for_settled_events() {
     state.keyboard.takeover = true;
     let me = fake_me();
     let tick = state.tick;
+    let (dir, store) = test_ledger("launch-route");
     keyboard_tick(
         &mut state,
         &me,
+        &store,
+        &dir,
         &[],
         &[],
         vec![QueuedSnapEvent::Launch(QueuedLaunchIntent {
@@ -233,6 +236,20 @@ fn tiling_intent() -> QueuedWorkspaceTilingIntent {
     }
 }
 
+fn test_ledger(name: &str) -> (std::path::PathBuf, crate::storage::LedgerStore) {
+    let dir = std::env::temp_dir().join(format!(
+        "tiler-launch-{name}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    std::fs::create_dir_all(&dir).expect("tmp dir");
+    let store = crate::storage::LedgerStore::open(&dir.join("ledger")).expect("ledger");
+    (dir, store)
+}
+
 #[test]
 fn workspace_tiling_dispatch_ignores_ups_repeats_and_passed_chords() {
     // Key-ups, repeats, and passed chords never toggle and never advance
@@ -241,10 +258,13 @@ fn workspace_tiling_dispatch_ignores_ups_repeats_and_passed_chords() {
     let mut state = test_state();
     state.keyboard.takeover = true;
     let tick = state.tick;
+    let (dir, store) = test_ledger("tiling-ups");
     for edge in [SnapEdge::Up, SnapEdge::Repeat] {
         dispatch_workspace_tiling_intent(
             &mut state,
             &fake_me(),
+            &store,
+            &dir,
             &[],
             &[],
             QueuedWorkspaceTilingIntent {
@@ -260,6 +280,8 @@ fn workspace_tiling_dispatch_ignores_ups_repeats_and_passed_chords() {
     dispatch_workspace_tiling_intent(
         &mut state,
         &fake_me(),
+        &store,
+        &dir,
         &[],
         &[],
         QueuedWorkspaceTilingIntent {
@@ -281,7 +303,17 @@ fn workspace_tiling_dispatch_refuses_without_takeover() {
     let mut state = test_state();
     assert!(!state.keyboard.takeover);
     let tick = state.tick;
-    dispatch_workspace_tiling_intent(&mut state, &fake_me(), &[], &[], tiling_intent(), None);
+    let (dir, store) = test_ledger("tiling-no-takeover");
+    dispatch_workspace_tiling_intent(
+        &mut state,
+        &fake_me(),
+        &store,
+        &dir,
+        &[],
+        &[],
+        tiling_intent(),
+        None,
+    );
     assert_eq!(state.tick, tick + 1);
 }
 
@@ -293,8 +325,18 @@ fn workspace_tiling_dispatch_refuses_on_injected_fence() {
     let mut state = test_state();
     state.keyboard.takeover = true;
     let tick = state.tick;
+    let (dir, store) = test_ledger("tiling-fence");
     for gate in [Some("suspended"), Some("elevated-foreground")] {
-        dispatch_workspace_tiling_intent(&mut state, &fake_me(), &[], &[], tiling_intent(), gate);
+        dispatch_workspace_tiling_intent(
+            &mut state,
+            &fake_me(),
+            &store,
+            &dir,
+            &[],
+            &[],
+            tiling_intent(),
+            gate,
+        );
     }
     assert_eq!(state.tick, tick + 2);
 }
@@ -308,7 +350,17 @@ fn workspace_tiling_dispatch_refuses_without_scope() {
     state.keyboard.takeover = true;
     assert!(state.active_output.is_empty());
     let tick = state.tick;
-    dispatch_workspace_tiling_intent(&mut state, &fake_me(), &[], &[], tiling_intent(), None);
+    let (dir, store) = test_ledger("tiling-no-scope");
+    dispatch_workspace_tiling_intent(
+        &mut state,
+        &fake_me(),
+        &store,
+        &dir,
+        &[],
+        &[],
+        tiling_intent(),
+        None,
+    );
     assert_eq!(state.tick, tick + 1);
     assert!(state.active_output.is_empty());
 }
@@ -323,9 +375,12 @@ fn keyboard_tick_routes_workspace_tiling_without_toggling_for_settled_events() {
     state.keyboard.takeover = true;
     let me = fake_me();
     let tick = state.tick;
+    let (dir, store) = test_ledger("tiling-route");
     keyboard_tick(
         &mut state,
         &me,
+        &store,
+        &dir,
         &[],
         &[],
         vec![QueuedSnapEvent::WorkspaceTiling(

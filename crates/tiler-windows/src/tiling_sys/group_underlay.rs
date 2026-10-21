@@ -1,6 +1,17 @@
 #![forbid(unsafe_code)]
 use super::*;
 
+/// Read-only resolved active group for the underlay fill: the correlated
+/// world result projected over a fresh observation. Field names mirror the
+/// retired Engine plan so the render below is untouched.
+struct ResolvedGroup {
+    base_revision: u64,
+    group: tiler_core::directional::NodeId,
+    focused_leaf: tiler_core::directional::NodeId,
+    members: Vec<tiler_core::active_group::ActiveGroupMember>,
+    bounds: Rect,
+}
+
 /// Hide the underlay fill with a change-only `group-underlay` log line.
 /// Bridged hides post through the handoff like the border; the ack logs.
 pub(super) fn hide_underlay(state: &mut TileLoop, reason: &str) {
@@ -168,6 +179,8 @@ fn underlay_no_group_reason(reason: NoGroupReason) -> &'static str {
 pub(super) fn refresh_group_underlay(
     state: &mut TileLoop,
     me: &ProcessIdentity,
+    store: &LedgerStore,
+    dir: &Path,
     fulls: &[Rect],
     areas: &[MonitorArea],
 ) {
@@ -263,7 +276,7 @@ pub(super) fn refresh_group_underlay(
         hide_underlay(state, "floating");
         return;
     };
-    let Some(loc) = state.workspaces.member_loc(&member_key).cloned() else {
+    let Some(loc) = state.member_home(&member_key) else {
         hide_underlay(state, "no-group");
         return;
     };
@@ -276,82 +289,55 @@ pub(super) fn refresh_group_underlay(
         hide_underlay(state, "floating");
         return;
     }
-    let Some((domain, domain_key)) = workspace_domain_for(
-        &loc.output,
-        &loc.workspace,
-        areas,
-        state.inner_gap,
-        state.outer_gap,
-    ) else {
+    let Some(domain_bounds) = areas
+        .iter()
+        .find(|a| a.device == loc.output)
+        .and_then(|area| tiling_domain_bounds_with(area.work, state.outer_gap))
+    else {
         hide_underlay(state, "no-group");
         return;
     };
-    // Copies for the diagnostics payload: `domain` moves into the event below.
-    let domain_bounds = domain.bounds;
-    let domain_gap = domain.gap;
-    // Advisory minimums for the ActiveGroup projection: the same retained
-    // per-window hints the ordinary plan for this state used. Reads retained
-    // maps only (no native queries, no writes); unknown members resolve to
-    // no hints exactly like ordinary plans.
-    let hint_rows: Vec<(
-        String,
-        String,
-        String,
-        tiler_core::size_hints::WindowSizeHints,
-    )> = state
-        .member_tokens
-        .iter()
-        .filter_map(|(key, token)| {
-            let sibling = state.workspaces.member_loc(key)?;
-            if sibling.output != loc.output || sibling.workspace != loc.workspace {
-                return None;
-            }
-            let hints = state
-                .hint_logged
-                .get(token)
-                .copied()
-                .unwrap_or_else(tiler_core::size_hints::WindowSizeHints::none);
-            Some((
-                token.clone(),
-                sibling.output.clone(),
-                sibling.workspace.clone(),
-                hints,
-            ))
-        })
-        .collect();
-    let hint_members: Vec<crate::group_underlay::UnderlayHintMember<'_>> = hint_rows
-        .iter()
-        .map(
-            |(token, output, workspace, hints)| crate::group_underlay::UnderlayHintMember {
-                token,
-                output,
-                workspace,
-                hints: *hints,
-            },
-        )
-        .collect();
-    let mut event = tiler_core::boundary::CoreEvent {
-        owner: state.owner.clone(),
-        generation: state.generation.clone(),
-        correlation: state.correlation(),
-        revision: revision_for(state, &loc.output, &loc.workspace),
-        fingerprint: 0,
-        domain,
-        domain_key,
-        outer_gap: state.outer_gap,
-        focused_window: WindowId(window.token.clone()),
-        windows: crate::group_underlay::underlay_hint_windows(&hint_members),
-        directional: None,
-        directional_target_outer_gap: None,
-        target_domain: None,
-        target_windows: Vec::new(),
-        closed_windows: Vec::new(),
-        command: CoreCommand::ActiveGroup,
+    // Copies for the diagnostics payload: bounds plus gap ride the
+    // geometry report below.
+    let domain_gap = state.inner_gap;
+    // World-routed active-group resolution: the core owns the highlight
+    // projection outright over a fresh observation, and the correlated
+    // result carries everything the renderer needs. Read-only: never
+    // commits, never writes geometry.
+    let mut skipped: Vec<(String, String)> = Vec::new();
+    let mut retained: Vec<RetainedRow> = Vec::new();
+    let Some(observed) = state.observe(me, fulls, &mut skipped, &mut retained) else {
+        hide_underlay(state, "observe-failed");
+        return;
     };
-    let found = match handle_engine_event(state, &mut event) {
-        CoreReply::ActiveGroup(found) => found,
-        CoreReply::NoGroup { reason, .. } => {
-            hide_underlay(state, underlay_no_group_reason(reason));
+    let foreground = crate::ffi::foreground_window();
+    let reply = super::world_tick::run_world_command(
+        state,
+        me,
+        store,
+        dir,
+        &observed,
+        &retained,
+        areas,
+        foreground,
+        fulls,
+        tiler_core::world_report::WorldCommand::Operation(CoreCommand::ActiveGroup),
+    );
+    let Some(result) = reply.as_ref().and_then(|reply| reply.command_result.as_ref()) else {
+        hide_underlay(state, "no-group");
+        return;
+    };
+    let found = match result {
+        tiler_core::world_report::CommandResult::ActiveGroup {
+            base_revision,
+            group,
+            focused_leaf,
+            focused_window: _,
+            members,
+            bounds,
+        } => (base_revision, group, focused_leaf, members, bounds),
+        tiler_core::world_report::CommandResult::NoGroup { reason, .. } => {
+            hide_underlay(state, underlay_no_group_reason(*reason));
             return;
         }
         _ => {
@@ -359,6 +345,15 @@ pub(super) fn refresh_group_underlay(
             return;
         }
     };
+    let (base_revision, group, focused_leaf, members, bounds) = found;
+    let found = ResolvedGroup {
+        base_revision: *base_revision,
+        group: group.clone(),
+        focused_leaf: focused_leaf.clone(),
+        members: members.clone(),
+        bounds: *bounds,
+    };
+    let found = &found;
     if underlay_eligible(
         true,
         true,

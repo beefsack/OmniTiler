@@ -15,6 +15,8 @@ use super::*;
 fn refresh_cross_drag_preview(
     state: &mut TileLoop,
     me: &ProcessIdentity,
+    store: &LedgerStore,
+    dir: &Path,
     fulls: &[Rect],
     areas: &[MonitorArea],
     hwnd: u64,
@@ -28,27 +30,24 @@ fn refresh_cross_drag_preview(
 ) {
     use crate::active_border_sys::PREVIEW_DEFAULT_ARGB;
     let probe = hwnd as isize as HWND;
-    let Some(dest_workspace) = state.workspaces.active_id(dest_output) else {
+    let Some(dest_workspace) = state.active_view(dest_output) else {
         hide_preview(state, "no-view");
         return;
     };
-    if !state.workspaces.is_tiled(dest_output, &dest_workspace) {
+    if !state.is_tiled_view(dest_output, &dest_workspace) {
         hide_preview(state, "floating-dest");
         return;
     }
-    let dest_domain = workspace_domain_for(
-        dest_output,
-        &dest_workspace,
-        areas,
-        state.inner_gap,
-        state.outer_gap,
-    );
-    let inside_dest = dest_domain.as_ref().is_some_and(|(domain, _)| {
+    let dest_bounds = areas
+        .iter()
+        .find(|a| a.device == dest_output)
+        .and_then(|area| tiling_domain_bounds_with(area.work, state.outer_gap));
+    let inside_dest = dest_bounds.is_some_and(|bounds| {
         crate::tiling::drop_point_in_domain(
-            domain.bounds.x,
-            domain.bounds.y,
-            domain.bounds.w,
-            domain.bounds.h,
+            bounds.x,
+            bounds.y,
+            bounds.w,
+            bounds.h,
             x,
             y,
         )
@@ -59,7 +58,7 @@ fn refresh_cross_drag_preview(
     let live_tag = crate::product_hide::sys::read_member_tag(hwnd);
     let start_key = state.gesture_start_key.get(&hwnd).cloned();
     let identity_ok = match (&start_key, &live) {
-        (Some(key), Some(identity)) => crate::workspace_owner::member_matches(
+        (Some(key), Some(identity)) => crate::native_guards::member_matches(
             key,
             hwnd,
             identity.pid,
@@ -79,12 +78,12 @@ fn refresh_cross_drag_preview(
     });
     let loc = start_key
         .as_ref()
-        .and_then(|key| state.workspaces.member_loc(key).cloned());
+        .and_then(|key| state.member_home(key));
     let loc_ok = loc
         .as_ref()
         .is_some_and(|loc| loc.output == start.output && loc.workspace == start.workspace);
-    let revision = revision_for(state, &start.output, &start.workspace);
-    let revision_ok = revision == start.revision;
+    let domain_fp = state.preview_domain_fp(&start.output);
+    let revision_ok = domain_fp == start.domain_fp;
     let float_hold = start_key
         .as_ref()
         .is_some_and(|key| state.sticky.contains_key(key))
@@ -155,79 +154,78 @@ fn refresh_cross_drag_preview(
             .get(&hwnd)
             .and_then(|bound| bound.hover_prior.clone()),
         producer: "native".to_owned(),
-        start_rect: state.gesture_before.get(&hwnd).copied(),
     };
     state
         .preview_bound
         .entry(hwnd)
         .or_insert(PreviewBound { hover_prior: None });
-    // Occupied destinations resolve through the pair route; empty ones
-    // project the singleton admission. Occupancy reads project membership
-    // (no observation assembly, no hint budget): row assembly runs exactly
-    // once inside the prepare call below. Both share the Engine drop
-    // resolver with the final drop.
-    let dest_occupied = !state
-        .workspaces
-        .workspace_members(dest_output, &dest_workspace)
-        .is_empty();
-    let mut hint_cx = HintCx::new();
-    let event = if dest_occupied {
-        prepare_cross_drag_preview(state, areas, &observed, &retained, &settle, &correlation)
-    } else {
-        prepare_cross_singleton_event(
-            state,
-            areas,
-            &observed,
-            &settle,
-            &correlation,
-            &mut hint_cx,
-            true,
-        )
-    };
-    let Some(mut event) = event else {
-        hide_preview(state, "incomplete");
+    // World-routed preview: the core owns the drop resolver outright
+    // (occupied pair and empty singleton alike), so the sample dispatches
+    // the same `DragPreview` operation as the final drop with the carried
+    // hover prior and reads the correlated result. Never commits, never
+    // writes geometry: only the owned overlay surface renders.
+    let (Some(source_wire), Some(dest_wire)) = (
+        state.wire_of(&settle.source_output),
+        state.wire_of(dest_output),
+    ) else {
+        hide_preview(state, "unknown-output");
         return;
     };
-    // Expected pair revision for the reply fence (the convergence persists
-    // drift, so a mismatch hides stale rather than rendering it). Singleton
-    // previews fence on domain plus mover only: the fresh destination has no
-    // prior revision to go stale against.
-    let expected_revision =
-        if dest_occupied {
-            Some(
-                revision_for(state, &settle.source_output, &settle.source_workspace).max(
-                    revision_for(state, &settle.dest_output, &settle.dest_workspace),
-                ),
-            )
-        } else {
-            None
-        };
-    let dest_key = event.domain_key.clone();
-    match handle_engine_event(state, &mut event) {
-        CoreReply::DragPreview(plan) => {
-            let preview = &plan.preview;
-            let revision_ok = expected_revision.is_none_or(|expected| preview.revision == expected);
-            if preview.domain != dest_key
-                || !revision_ok
-                || preview.source_window.0 != settle.mover_token
-            {
-                hide_preview(state, "stale");
-                state.preview_bound.remove(&hwnd);
-                state.preview_dead.insert(hwnd);
-                return;
-            }
-            let rect = preview.proposed_rect;
-            if rect.w <= 0 || rect.h <= 0 {
-                if let Some(bound) = state.preview_bound.get_mut(&hwnd) {
-                    bound.hover_prior = None;
-                }
-                hide_preview(state, "geometry");
-                return;
-            }
-            let next_prior = preview.hover_prior();
-            let prior_desc = preview_prior_desc(&Some(next_prior.clone()));
+    let source_key = tiler_core::session::DomainKey {
+        output: tiler_core::directional::OutputId(source_wire),
+        workspace: tiler_core::directional::WorkspaceId(settle.source_workspace.clone()),
+    };
+    let dest_key = tiler_core::session::DomainKey {
+        output: tiler_core::directional::OutputId(dest_wire),
+        workspace: tiler_core::directional::WorkspaceId(dest_workspace.clone()),
+    };
+    let foreground = crate::ffi::foreground_window();
+    let reply = super::world_tick::run_world_command(
+        state,
+        me,
+        store,
+        dir,
+        &observed,
+        &retained,
+        areas,
+        foreground,
+        fulls,
+        tiler_core::world_report::WorldCommand::Operation(CoreCommand::DragPreview {
+            window: settle.mover_token.clone(),
+            x: settle.x,
+            y: settle.y,
+            hover_prior: settle.drop_prior.clone(),
+            source: Some(source_key.clone()),
+        }),
+    );
+    let Some(preview) = reply.as_ref().and_then(|reply| match &reply.command_result {
+        Some(tiler_core::world_report::CommandResult::DragPreview {
+            rect,
+            hover,
+            domain,
+            source,
+            ..
+        }) if domain == &dest_key && source == &source_key => Some((*rect, hover.clone())),
+        _ => None,
+    }) else {
+        if let Some(bound) = state.preview_bound.get_mut(&hwnd) {
+            bound.hover_prior = None;
+        }
+        hide_preview(state, "refused");
+        return;
+    };
+    let (rect, next_prior) = preview;
+    if rect.w <= 0 || rect.h <= 0 {
+        if let Some(bound) = state.preview_bound.get_mut(&hwnd) {
+            bound.hover_prior = None;
+        }
+        hide_preview(state, "geometry");
+        return;
+    }
+    {
+            let prior_desc = preview_prior_desc(&next_prior);
             if let Some(bound) = state.preview_bound.get_mut(&hwnd) {
-                bound.hover_prior = Some(next_prior);
+                bound.hover_prior = next_prior;
             }
             if state.render_bridge.is_some() {
                 let lifetime = WindowLifetime {
@@ -309,217 +307,7 @@ fn refresh_cross_drag_preview(
                     }),
                 );
             }
-        }
-        CoreReply::Rejected { kind, .. } => {
-            log_redacted_dispatch(
-                state,
-                "drag-preview",
-                state.tick,
-                correlation.as_str(),
-                &settle.mover_token,
-                &settle.producer,
-                settle.start_rect,
-                &event,
-                &observed,
-                kind,
-            );
-            if let Some(bound) = state.preview_bound.get_mut(&hwnd) {
-                bound.hover_prior = None;
-            }
-            hide_preview(state, preview_hide_for_refusal(kind));
-        }
-        CoreReply::Diverged(reason) => {
-            log_redacted_dispatch(
-                state,
-                "drag-preview",
-                state.tick,
-                correlation.as_str(),
-                &settle.mover_token,
-                &settle.producer,
-                settle.start_rect,
-                &event,
-                &observed,
-                reason.as_str(),
-            );
-            hide_preview(state, reason.as_str());
-            state.preview_bound.remove(&hwnd);
-            state.preview_dead.insert(hwnd);
-        }
-        CoreReply::SnapshotInvalid { detail, .. } => {
-            log_redacted_dispatch(
-                state,
-                "drag-preview",
-                state.tick,
-                correlation.as_str(),
-                &settle.mover_token,
-                &settle.producer,
-                settle.start_rect,
-                &event,
-                &observed,
-                detail,
-            );
-            if let Some(bound) = state.preview_bound.get_mut(&hwnd) {
-                bound.hover_prior = None;
-            }
-            hide_preview(state, detail);
-        }
-        _ => {
-            log_redacted_dispatch(
-                state,
-                "drag-preview",
-                state.tick,
-                correlation.as_str(),
-                &settle.mover_token,
-                &settle.producer,
-                settle.start_rect,
-                &event,
-                &observed,
-                "refused",
-            );
-            if let Some(bound) = state.preview_bound.get_mut(&hwnd) {
-                bound.hover_prior = None;
-            }
-            hide_preview(state, "refused");
-        }
     }
-}
-
-/// Build the pair `DragPreview` event for an occupied destination: same
-/// shared row assembly as the final drop, read-only.
-pub(super) fn prepare_cross_drag_preview(
-    state: &mut TileLoop,
-    areas: &[MonitorArea],
-    observed: &[ObservedWindow],
-    retained: &[RetainedRow],
-    settle: &CrossDragSettle,
-    correlation: &CorrelationId,
-) -> Option<CoreEvent> {
-    let rows = assemble_cross_drag_rows(
-        state,
-        areas,
-        observed,
-        retained,
-        settle,
-        correlation,
-        correlation.as_str(),
-        "drag-preview",
-    )?;
-    let from = WindowId(settle.mover_token.clone());
-    let dest_windows: Vec<(WindowId, Rect, WindowSizeHints, bool)> = rows
-        .dest_rows
-        .iter()
-        .map(|r| (WindowId(r.token.clone()), r.rect, r.hints, r.floating))
-        .collect();
-    let mut event = crate::tiling::build_reconcile_event_for_floating(
-        &state.owner,
-        &state.generation,
-        correlation,
-        revision_for(state, &settle.dest_output, &settle.dest_workspace),
-        rows.combined_fp,
-        &rows.dest_domain,
-        &rows.dest_key,
-        state.outer_gap,
-        &dest_windows,
-        Some(&from),
-    );
-    for row in &rows.source_rows {
-        event.windows.push(tiler_core::seed::EngineWindow {
-            window: WindowId(row.token.clone()),
-            output: rows.source_key.output.clone(),
-            workspace: rows.source_key.workspace.clone(),
-            rect: row.rect,
-            floating: row.floating,
-            fit_excluded: false,
-            fullscreen: false,
-            maximized: false,
-            sticky: false,
-            fixed_auto: false,
-            fixed_suppress: false,
-            hints: row.hints,
-        });
-    }
-    event.directional = Some(vec![
-        (rows.source_domain, rows.source_key.clone()),
-        (rows.dest_domain, rows.dest_key),
-    ]);
-    event.directional_target_outer_gap = Some(state.outer_gap);
-    event.command = CoreCommand::DragPreview {
-        window: from.0.clone(),
-        x: settle.x,
-        y: settle.y,
-        hover_prior: settle.drop_prior.clone(),
-        source: Some(rows.source_key),
-    };
-    Some(event)
-}
-
-/// Build the singleton event for an empty destination: the mover row alone
-/// homed on the destination, no pair. The Engine fresh-seeds and either
-/// projects the sole admission (preview) or commits it (drop); preview and
-/// drop share this exact shape. Fresh destinations carry current gaps, so no
-/// gap adoption runs (adoption would converge a session during preview, and
-/// the drop seeds fresh the same way).
-pub(super) fn prepare_cross_singleton_event(
-    state: &mut TileLoop,
-    areas: &[MonitorArea],
-    observed: &[ObservedWindow],
-    settle: &CrossDragSettle,
-    correlation: &CorrelationId,
-    hint_cx: &mut HintCx,
-    preview: bool,
-) -> Option<CoreEvent> {
-    let current = observed.iter().find(|w| w.token == settle.mover_token)?;
-    let hints = min_hint_for(current, hint_cx).hints;
-    let (dest_domain, dest_key) = workspace_domain_for(
-        &settle.dest_output,
-        &settle.dest_workspace,
-        areas,
-        state.inner_gap,
-        state.outer_gap,
-    )?;
-    let source_key = tiler_core::session::DomainKey {
-        output: tiler_core::directional::OutputId(settle.source_output.clone()),
-        workspace: tiler_core::directional::WorkspaceId(settle.source_workspace.clone()),
-    };
-    let mover = WindowId(settle.mover_token.clone());
-    // Same retained-capture substitution as the pair route: the singleton
-    // seed observation claims the mover at its tile slot, never at a
-    // traveled native frame. Hints stay fresh from the live frame.
-    let frame = settle.start_rect.unwrap_or(current.visible);
-    let fp = crate::tiling::fingerprint(&[(settle.mover_token.clone(), frame)]);
-    // Fresh destination: the seed carries current gaps, so no gap adoption
-    // runs here (adoption would converge a session during a read-only
-    // preview). The drop path below shares this shape.
-    let mut event = crate::tiling::build_reconcile_event_for_floating(
-        &state.owner,
-        &state.generation,
-        correlation,
-        revision_for(state, &settle.dest_output, &settle.dest_workspace),
-        fp,
-        &dest_domain,
-        &dest_key,
-        state.outer_gap,
-        &[(mover.clone(), frame, hints, false)],
-        Some(&mover),
-    );
-    event.command = if preview {
-        CoreCommand::DragPreview {
-            window: mover.0.clone(),
-            x: settle.x,
-            y: settle.y,
-            hover_prior: settle.drop_prior.clone(),
-            source: Some(source_key),
-        }
-    } else {
-        CoreCommand::DragDrop {
-            window: mover.0.clone(),
-            x: settle.x,
-            y: settle.y,
-            hover_prior: settle.drop_prior.clone(),
-            source: Some(source_key),
-        }
-    };
-    Some(event)
 }
 
 /// Drop-preview refresh for one loop wake while an accepted move gesture
@@ -527,20 +315,20 @@ pub(super) fn prepare_cross_singleton_event(
 /// target-slot surface ABOVE windows (KWin overlay-item analogue).
 ///
 /// The native caption modal loop (frame-following) feeds this path.
-/// Each 100ms pump sample coalesces on pointer movement, assembles a fresh
-/// complete canonical domain observation with size hints, and routes the
-/// SAME Engine `DragPreview` resolver as the final drop, carrying the exact
-/// sticky group-edge hover prior across samples (and into the drop via
-/// `preview_bound`). Refusals (self/centre/outside/zero/Esc) hide with no
-/// rectangle; only a real moved pointer with a valid resolved target shows.
+/// Each sample dispatches the world `DragPreview` operation with the
+/// carried sticky group-edge hover prior and renders the correlated
+/// result. Refusals (self/centre/outside/zero/Esc) hide with no
+/// rectangle; only a real moved pointer with a valid resolved target
+/// shows.
 ///
-/// Never focuses, never writes geometry, never touches topology or the
-/// reconciler: the Engine call is the read-only working-clone preview, and
-/// the only effect is the owned overlay surface. Resize, floating, and
+/// Never focuses, never writes geometry, never touches topology: the
+/// only effect is the owned overlay surface. Resize, floating, and
 /// sticky gestures never show.
 pub(super) fn refresh_drag_preview(
     state: &mut TileLoop,
     me: &ProcessIdentity,
+    store: &LedgerStore,
+    dir: &Path,
     fulls: &[Rect],
     areas: &[MonitorArea],
 ) {
@@ -626,8 +414,9 @@ pub(super) fn refresh_drag_preview(
     if state.preview_dead.contains(&hwnd) {
         return;
     }
-    // START-frozen source binding (token, output/workspace, revision): bound
-    // at START, never rebound. Drift fails the whole gesture closed below.
+    // START-frozen source binding (token, output/workspace, domain
+    // fingerprint): bound at START, never rebound. Drift fails the whole
+    // gesture closed below.
     let Some(start) = state.gesture_preview_start.get(&hwnd).cloned() else {
         hide_preview(state, "no-start");
         state.preview_dead.insert(hwnd);
@@ -637,13 +426,6 @@ pub(super) fn refresh_drag_preview(
     // pre-gesture size while the origin travels; a resize changes it. The
     // START hit test cannot decide this (top-edge caption grabs hit-test as
     // sizing borders), so resize holds hide here the moment any edge moves.
-    // Lane care: `gesture_before` prefers the stable visible (DWM
-    // extended-frame) rect with a GetWindowRect-outer fallback, so either
-    // lane matching means same-size (accepted review outcome; a true resize
-    // moves both). Modal truth wins first: a caption-started move loop
-    // carries move intent even through a system rescale (mixed-DPI
-    // WM_DPICHANGED), which frame comparison alone would misread as a
-    // resize and kill the preview mid-gesture.
     let probe = hwnd as isize as HWND;
     let live_frame = match observe_window(probe, me, fulls, &mut state.tokens) {
         Ok(window) => window,
@@ -694,14 +476,16 @@ pub(super) fn refresh_drag_preview(
         return;
     }
     // Cross-output preview: the pointer left the START output. The pointer
-    // output's current view scopes resolution (occupied pair route or empty
-    // singleton projection); the same-output path below stays untouched.
+    // output's current view scopes resolution; the same-output path below
+    // stays untouched.
     if let Some(dest) = output_for_point(areas, x, y)
         && dest != start.output
     {
         refresh_cross_drag_preview(
             state,
             me,
+            store,
+            dir,
             fulls,
             areas,
             hwnd,
@@ -716,17 +500,12 @@ pub(super) fn refresh_drag_preview(
         return;
     }
     // Fresh invalidation facts against the START binding: identity, tag,
-    // remap, membership, revision, float, and same-output scope. The pure
-    // gate below orders them (invalidation fails the whole gesture closed
-    // even with a static pointer; zero/outside hide transiently). No
-    // pointer-movement short-circuit runs before these checks, so a
-    // lingering rectangle can never survive mover death, reuse, or domain
-    // drift on a stationary pointer.
+    // remap, membership, domain fingerprint, float, and same-output scope.
     let live = window_identity(probe, hwnd, me);
     let live_tag = crate::product_hide::sys::read_member_tag(hwnd);
     let start_key = state.gesture_start_key.get(&hwnd).cloned();
     let identity_ok = match (&start_key, &live) {
-        (Some(key), Some(identity)) => crate::workspace_owner::member_matches(
+        (Some(key), Some(identity)) => crate::native_guards::member_matches(
             key,
             hwnd,
             identity.pid,
@@ -746,30 +525,27 @@ pub(super) fn refresh_drag_preview(
     });
     let loc = start_key
         .as_ref()
-        .and_then(|key| state.workspaces.member_loc(key).cloned());
+        .and_then(|key| state.member_home(key));
     let loc_ok = loc
         .as_ref()
         .is_some_and(|loc| loc.output == start.output && loc.workspace == start.workspace);
-    let revision = revision_for(state, &start.output, &start.workspace);
-    let revision_ok = revision == start.revision;
+    let domain_fp = state.preview_domain_fp(&start.output);
+    let revision_ok = domain_fp == start.domain_fp;
     let float_hold = start_key
         .as_ref()
         .is_some_and(|key| state.sticky.contains_key(key))
         || engine_is_float(state, &start.output, &start.workspace, &start.token)
         || !workspace_mode_tiled(state, &start.output, &start.workspace);
-    let domain = workspace_domain_for(
-        &start.output,
-        &start.workspace,
-        areas,
-        state.inner_gap,
-        state.outer_gap,
-    );
-    let inside = domain.as_ref().is_some_and(|(domain, _)| {
+    let start_bounds = areas
+        .iter()
+        .find(|a| a.device == start.output)
+        .and_then(|area| tiling_domain_bounds_with(area.work, state.outer_gap));
+    let inside = start_bounds.is_some_and(|bounds| {
         drop_point_in_domain(
-            domain.bounds.x,
-            domain.bounds.y,
-            domain.bounds.w,
-            domain.bounds.h,
+            bounds.x,
+            bounds.y,
+            bounds.w,
+            bounds.h,
             x,
             y,
         )
@@ -795,7 +571,7 @@ pub(super) fn refresh_drag_preview(
         }
         PreviewGate::Dead(reason) => {
             if reason == "revision-drift" {
-                // Revision drift clears the carried prior first: nothing
+                // Fingerprint drift clears the carried prior first: nothing
                 // stale may render or ride into a later drop.
                 if let Some(bound) = state.preview_bound.get_mut(&hwnd) {
                     bound.hover_prior = None;
@@ -807,15 +583,13 @@ pub(super) fn refresh_drag_preview(
             return;
         }
     }
-    let Some((domain, domain_key)) = domain else {
+    if start_bounds.is_none() {
         hide_preview(state, "no-group");
         state.preview_bound.remove(&hwnd);
         state.preview_dead.insert(hwnd);
         return;
     };
-    // Fresh complete canonical domain observation with size hints: the same
-    // row assembly as the settle path, so preview and drop resolve over
-    // identical inputs through the shared resolver. Enumeration or row
+    // Fresh observation for the world preview command below; enumeration
     // failure hides (never a lingering rectangle on incomplete input).
     let mut skipped: Vec<(String, String)> = Vec::new();
     let mut retained: Vec<RetainedRow> = Vec::new();
@@ -824,21 +598,11 @@ pub(super) fn refresh_drag_preview(
         return;
     };
     let correlation = state.correlation();
-    let mut hint_cx = HintCx::new();
-    let Some(rows) = assemble_domain_rows(
-        state,
-        &start.output,
-        &start.workspace,
-        &observed,
-        &retained,
-        "drag-preview",
-        correlation.as_str(),
-        &mut hint_cx,
-    ) else {
-        hide_preview(state, "incomplete");
-        return;
-    };
-    if !rows.iter().any(|row| row.token == start.token) {
+    if !state
+        .member_tokens
+        .values()
+        .any(|token| token == &start.token)
+    {
         hide_preview(state, "unmanaged");
         state.preview_bound.remove(&hwnd);
         state.preview_dead.insert(hwnd);
@@ -851,183 +615,143 @@ pub(super) fn refresh_drag_preview(
         .preview_bound
         .entry(hwnd)
         .or_insert(PreviewBound { hover_prior: None });
-    let windows: Vec<(WindowId, Rect, WindowSizeHints, bool)> = rows
-        .iter()
-        .map(|r| (WindowId(r.token.clone()), r.rect, r.hints, r.floating))
-        .collect();
-    let fp = fingerprint(
-        &rows
-            .iter()
-            .map(|r| (r.token.clone(), r.rect))
-            .collect::<Vec<_>>(),
-    );
-    let mover = WindowId(start.token.clone());
     let carried = state
         .preview_bound
         .get(&hwnd)
         .and_then(|bound| bound.hover_prior.clone());
-    let mut event = crate::tiling::build_reconcile_event_for_floating(
-        &state.owner,
-        &state.generation,
-        &correlation,
-        start.revision,
-        fp,
-        &domain,
-        &domain_key,
-        OUTER_GAP,
-        &windows,
-        Some(&mover),
-    );
-    event.command = CoreCommand::DragPreview {
-        window: start.token.clone(),
-        x,
-        y,
-        hover_prior: carried,
-        source: None,
+    let Some(source_wire) = state.wire_of(&start.output) else {
+        hide_preview(state, "unknown-output");
+        return;
     };
-    // Correlation/domain/revision/mover fence on the reply, all START
-    // bound: a stale reply after Finish, drift, or a mover swap never
-    // renders.
-    match handle_engine_event(state, &mut event) {
-        CoreReply::DragPreview(plan) => {
-            let preview = &plan.preview;
-            if preview.domain != domain_key
-                || preview.revision != start.revision
-                || preview.source_window.0 != start.token
-            {
-                hide_preview(state, "stale");
-                state.preview_bound.remove(&hwnd);
-                state.preview_dead.insert(hwnd);
-                return;
-            }
-            let rect = preview.proposed_rect;
-            if rect.w <= 0 || rect.h <= 0 {
-                if let Some(bound) = state.preview_bound.get_mut(&hwnd) {
-                    bound.hover_prior = None;
-                }
-                hide_preview(state, "geometry");
-                return;
-            }
-            // Carry the exact sticky hover prior into the next sample and
-            // the final drop (the Engine owns the 32/80 semantics; this
-            // only forwards the opaque value).
-            let next_prior = preview.hover_prior();
-            let prior_desc = preview_prior_desc(&Some(next_prior.clone()));
-            if let Some(bound) = state.preview_bound.get_mut(&hwnd) {
-                bound.hover_prior = Some(next_prior);
-            }
-            // Bridged present: post the Engine-resolved slot with the sample
-            // correlation and carried prior for the ack-driven log line,
-            // fenced on the fresh mover lifetime identity (the mover band
-            // is never a requirement: the preview plane is always topmost)
-            // plus the foreground identity for the renderer-side switch
-            // fence (an unreadable foreground posts `None` and refuses
-            // narrowly per the binding contract; readable unchanged
-            // foregrounds keep unfocused-hold semantics). The applied
-            // outcome logs on the acknowledgement.
-            if state.render_bridge.is_some() {
-                let lifetime = WindowLifetime {
-                    pid: live_frame.identity.pid,
-                    creation: live_frame.identity.process_creation.clone(),
-                    member_tag: crate::product_hide::sys::read_member_tag(hwnd),
-                };
-                post_preview_frame(
-                    state,
-                    rect,
-                    PREVIEW_DEFAULT_ARGB,
-                    &start.token,
-                    hwnd,
-                    lifetime,
-                    foreground_lifetime(me),
-                    correlation.as_str(),
-                    &prior_desc,
-                );
-                return;
-            }
-            let outcome = state.preview_overlay.show_fill_above(
-                rect,
-                PREVIEW_DEFAULT_ARGB,
-                &start.token,
-                hwnd,
-            );
-            let checksum = state.preview_overlay.snapshot()["dib_checksum"].clone();
-            let signature = format!(
-                "shown:{}:{},{},{},{}:{checksum}",
-                start.token, rect.x, rect.y, rect.w, rect.h
-            );
-            let changed = state.preview_last.as_deref() != Some(signature.as_str());
-            if changed {
-                state.preview_last = Some(signature);
-            }
-            // Routine same-mover repaints (per mouse move) aggregate into the
-            // per-carrier ~1s window; mover transitions log immediately below.
-            let outcome_name = match outcome {
-                OverlayOutcome::Shown => "shown",
-                OverlayOutcome::Redrew => "redrew",
-                OverlayOutcome::Moved => "moved",
-                OverlayOutcome::Unchanged => "unchanged",
-                OverlayOutcome::Hidden => "hidden",
-            };
-            if render_same_thread_gate(
-                state,
-                RenderCarrier::Preview,
-                start.token.as_str(),
-                Instant::now(),
-                changed || state.trace,
-                same_thread_sample(
-                    outcome_name,
-                    start.token.clone(),
-                    [rect.x, rect.y, rect.w, rect.h],
-                    String::new(),
-                    checksum.as_str().unwrap_or_default().to_owned(),
-                ),
-            ) {
-                return;
-            }
-            if changed || state.trace {
-                log_json_at(
-                    &state.log_path,
-                    serde_json::json!({
-                        "event": "drag-preview",
-                        "tick": state.tick,
-                        "correlation": correlation.as_str(),
-                        "outcome": match outcome {
-                            OverlayOutcome::Shown => "shown",
-                            OverlayOutcome::Redrew => "redrew",
-                            OverlayOutcome::Moved => "moved",
-                            OverlayOutcome::Unchanged => "unchanged",
-                            OverlayOutcome::Hidden => "hidden",
-                        },
-                        "window": start.token,
-                        "rect": [rect.x, rect.y, rect.w, rect.h],
-                        "hover_prior": prior_desc,
-                    }),
-                );
-            }
+    let source_key = tiler_core::session::DomainKey {
+        output: tiler_core::directional::OutputId(source_wire),
+        workspace: tiler_core::directional::WorkspaceId(start.workspace.clone()),
+    };
+    let foreground = crate::ffi::foreground_window();
+    let reply = super::world_tick::run_world_command(
+        state,
+        me,
+        store,
+        dir,
+        &observed,
+        &retained,
+        areas,
+        foreground,
+        fulls,
+        tiler_core::world_report::WorldCommand::Operation(CoreCommand::DragPreview {
+            window: start.token.clone(),
+            x,
+            y,
+            hover_prior: carried,
+            source: None,
+        }),
+    );
+    // Source fence on the correlated result (START bound): a stale result
+    // after Finish, drift, or a mover swap never renders.
+    let Some((rect, next_prior)) = reply.as_ref().and_then(|reply| match &reply.command_result {
+        Some(tiler_core::world_report::CommandResult::DragPreview {
+            rect,
+            hover,
+            source,
+            ..
+        }) if source == &source_key => Some((*rect, hover.clone())),
+        _ => None,
+    }) else {
+        if let Some(bound) = state.preview_bound.get_mut(&hwnd) {
+            bound.hover_prior = None;
         }
-        CoreReply::Rejected { kind, .. } => {
-            if let Some(bound) = state.preview_bound.get_mut(&hwnd) {
-                bound.hover_prior = None;
-            }
-            // Self, centre-stack, and outside refusals show no rectangle.
-            hide_preview(state, preview_hide_for_refusal(kind));
+        hide_preview(state, "refused");
+        return;
+    };
+    if rect.w <= 0 || rect.h <= 0 {
+        if let Some(bound) = state.preview_bound.get_mut(&hwnd) {
+            bound.hover_prior = None;
         }
-        CoreReply::Diverged(reason) => {
-            hide_preview(state, reason.as_str());
-            state.preview_bound.remove(&hwnd);
-            state.preview_dead.insert(hwnd);
-        }
-        CoreReply::SnapshotInvalid { detail, .. } => {
-            if let Some(bound) = state.preview_bound.get_mut(&hwnd) {
-                bound.hover_prior = None;
-            }
-            hide_preview(state, detail);
-        }
-        _ => {
-            if let Some(bound) = state.preview_bound.get_mut(&hwnd) {
-                bound.hover_prior = None;
-            }
-            hide_preview(state, "refused");
-        }
+        hide_preview(state, "geometry");
+        return;
+    }
+    // Carry the exact sticky hover prior into the next sample and
+    // the final drop (the core owns the hover semantics; this
+    // only forwards the opaque value).
+    let prior_desc = preview_prior_desc(&next_prior);
+    if let Some(bound) = state.preview_bound.get_mut(&hwnd) {
+        bound.hover_prior = next_prior;
+    }
+    if state.render_bridge.is_some() {
+        let lifetime = WindowLifetime {
+            pid: live_frame.identity.pid,
+            creation: live_frame.identity.process_creation.clone(),
+            member_tag: crate::product_hide::sys::read_member_tag(hwnd),
+        };
+        post_preview_frame(
+            state,
+            rect,
+            PREVIEW_DEFAULT_ARGB,
+            &start.token,
+            hwnd,
+            lifetime,
+            foreground_lifetime(me),
+            correlation.as_str(),
+            &prior_desc,
+        );
+        return;
+    }
+    let outcome = state.preview_overlay.show_fill_above(
+        rect,
+        PREVIEW_DEFAULT_ARGB,
+        &start.token,
+        hwnd,
+    );
+    let checksum = state.preview_overlay.snapshot()["dib_checksum"].clone();
+    let signature = format!(
+        "shown:{}:{},{},{},{}:{checksum}",
+        start.token, rect.x, rect.y, rect.w, rect.h
+    );
+    let changed = state.preview_last.as_deref() != Some(signature.as_str());
+    if changed {
+        state.preview_last = Some(signature);
+    }
+    let outcome_name = match outcome {
+        OverlayOutcome::Shown => "shown",
+        OverlayOutcome::Redrew => "redrew",
+        OverlayOutcome::Moved => "moved",
+        OverlayOutcome::Unchanged => "unchanged",
+        OverlayOutcome::Hidden => "hidden",
+    };
+    if render_same_thread_gate(
+        state,
+        RenderCarrier::Preview,
+        start.token.as_str(),
+        Instant::now(),
+        changed || state.trace,
+        same_thread_sample(
+            outcome_name,
+            start.token.clone(),
+            [rect.x, rect.y, rect.w, rect.h],
+            String::new(),
+            checksum.as_str().unwrap_or_default().to_owned(),
+        ),
+    ) {
+        return;
+    }
+    if changed || state.trace {
+        log_json_at(
+            &state.log_path,
+            serde_json::json!({
+                "event": "drag-preview",
+                "tick": state.tick,
+                "correlation": correlation.as_str(),
+                "outcome": match outcome {
+                    OverlayOutcome::Shown => "shown",
+                    OverlayOutcome::Redrew => "redrew",
+                    OverlayOutcome::Moved => "moved",
+                    OverlayOutcome::Unchanged => "unchanged",
+                    OverlayOutcome::Hidden => "hidden",
+                },
+                "window": start.token,
+                "rect": [rect.x, rect.y, rect.w, rect.h],
+                "hover_prior": prior_desc,
+            }),
+        );
     }
 }

@@ -48,7 +48,7 @@ pub(super) fn capture_gesture_start(
     if let std::collections::hash_map::Entry::Vacant(e) = state.gesture_start_key.entry(hwnd) {
         let probe = hwnd as isize as HWND;
         if let Some(live) = window_identity(probe, hwnd, me) {
-            e.insert(crate::workspace::WindowKey {
+            e.insert(crate::native_guards::WindowKey {
                 hwnd,
                 pid: live.pid,
                 creation: live.process_creation.clone(),
@@ -72,13 +72,13 @@ pub(super) fn capture_gesture_start(
             .iter()
             .find(|(key, _)| key.hwnd == hwnd)
             .and_then(|(key, token)| {
-                state.workspaces.member_loc(key).cloned().map(|loc| {
-                    let revision = revision_for(state, &loc.output, &loc.workspace);
+                state.member_home(key).map(|loc| {
+                    let domain_fp = state.preview_domain_fp(&loc.output);
                     PreviewStartBinding {
                         token: token.clone(),
                         output: loc.output,
                         workspace: loc.workspace,
-                        revision,
+                        domain_fp,
                     }
                 })
             });

@@ -12,9 +12,15 @@ pub(super) const RESTART_HYDRATION_DETAIL_CAP: usize = 8;
 /// log. `total` is the exact row count; only the first
 /// [`RESTART_HYDRATION_DETAIL_CAP`] rows are carried and `omitted` counts
 /// the rest, so the record never grows with the domain.
-pub(super) fn bounded_hydration_candidates(
-    rows: &[crate::workspace_owner::OwnerRow],
-) -> serde_json::Value {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct HydrationCandidate<'a> {
+    pub token: &'a str,
+    pub rect: Rect,
+    pub floating: bool,
+    pub hints: WindowSizeHints,
+}
+
+pub(super) fn bounded_hydration_candidates(rows: &[HydrationCandidate<'_>]) -> serde_json::Value {
     let total = rows.len();
     let candidates: Vec<serde_json::Value> = rows
         .iter()
@@ -66,7 +72,7 @@ pub(super) fn admit_born_fullscreen(
         let Some(frame) = row.rect else {
             continue;
         };
-        if state.workspaces.member_loc(&row.key).is_some()
+        if state.member_home(&row.key).is_some()
             || state.member_tokens.contains_key(&row.key)
             || state.hidden_claims.keys().any(|k| k.hwnd == row.key.hwnd)
         {
@@ -90,7 +96,7 @@ pub(super) fn admit_born_fullscreen(
         if live.pid != row.key.pid || live.process_creation != row.key.creation {
             continue;
         }
-        let stale = crate::workspace_owner::reused_hwnd_stale(
+        let stale = crate::native_guards::reused_hwnd_stale(
             &state.member_tokens.keys().cloned().collect::<Vec<_>>(),
             &state.hidden_claims.keys().cloned().collect(),
             &row.key,
@@ -98,7 +104,7 @@ pub(super) fn admit_born_fullscreen(
         for dead in stale {
             drop_member_state(state, &dead);
         }
-        if state.workspaces.member_loc(&row.key).is_some()
+        if state.member_home(&row.key).is_some()
             || state.member_tokens.contains_key(&row.key)
         {
             continue;
@@ -116,34 +122,28 @@ pub(super) fn admit_born_fullscreen(
         }
         let token = row.token.clone();
         let output = output_for_rect(areas, &frame);
-        state.workspaces.ensure_output(&output);
-        let Some(active) = state.workspaces.active_id(&output) else {
-            continue;
-        };
-        if state
-            .workspaces
-            .assign(row.key.clone(), &output, &active, false)
-        {
-            state.member_tokens.insert(row.key.clone(), token.clone());
-            state.member_identity.insert(row.key.clone(), live);
-            state.member_tags.insert(row.key.clone(), fresh_tag);
-            // Hidden-snapshot seed only (never a tile slot): a born hold that
-            // is later hidden needs an existing snapshot for row assembly,
-            // while visible rows always use the fresh row rect. `known_slot`
-            // checks treat born keys as slotless regardless of this seed, and
-            // release drops it so a first exit to maximized clears normally.
-            state.member_rects.insert(token.clone(), frame);
-            if state.born_fullscreen.insert(row.key.clone()) {
-                log_json_at(
-                    &log_path,
-                    serde_json::json!({
-                        "event": "initial-fullscreen-held",
-                        "window": token,
-                    }),
-                );
-            }
-            admitted.push(output);
+        state.ensure_device(&output);
+        // Homing is core-owned: the adapter binds only the mechanical
+        // token/identity/tag triple, never a workspace.
+        state.member_tokens.insert(row.key.clone(), token.clone());
+        state.member_identity.insert(row.key.clone(), live);
+        state.member_tags.insert(row.key.clone(), fresh_tag);
+        // Hidden-snapshot seed only (never a tile slot): a born hold that
+        // is later hidden needs an existing snapshot for row assembly,
+        // while visible rows always use the fresh row rect. `known_slot`
+        // checks treat born keys as slotless regardless of this seed, and
+        // release drops it so a first exit to maximized clears normally.
+        state.member_rects.insert(token.clone(), frame);
+        if state.born_fullscreen.insert(row.key.clone()) {
+            log_json_at(
+                &log_path,
+                serde_json::json!({
+                    "event": "initial-fullscreen-held",
+                    "window": token,
+                }),
+            );
         }
+        admitted.push(output);
     }
     admitted
 }
@@ -169,7 +169,7 @@ pub(super) fn admit_slotless_maximized(
     let mut admitted: Vec<String> = Vec::new();
     let log_path = state.log_path.clone();
     for row in retained {
-        let is_member = state.workspaces.member_loc(&row.key).is_some()
+        let is_member = state.member_home(&row.key).is_some()
             || state.member_tokens.contains_key(&row.key)
             || state.hidden_claims.keys().any(|k| k.hwnd == row.key.hwnd);
         if !tiler_core::window_policy::should_admit_slotless_maximized(
@@ -193,7 +193,7 @@ pub(super) fn admit_slotless_maximized(
         if live.pid != row.key.pid || live.process_creation != row.key.creation {
             continue;
         }
-        let stale = crate::workspace_owner::reused_hwnd_stale(
+        let stale = crate::native_guards::reused_hwnd_stale(
             &state.member_tokens.keys().cloned().collect::<Vec<_>>(),
             &state.hidden_claims.keys().cloned().collect(),
             &row.key,
@@ -201,7 +201,7 @@ pub(super) fn admit_slotless_maximized(
         for dead in stale {
             drop_member_state(state, &dead);
         }
-        if state.workspaces.member_loc(&row.key).is_some()
+        if state.member_home(&row.key).is_some()
             || state.member_tokens.contains_key(&row.key)
         {
             continue;
@@ -219,13 +219,11 @@ pub(super) fn admit_slotless_maximized(
         }
         let token = row.token.clone();
         let output = output_for_rect(areas, &frame);
-        state.workspaces.ensure_output(&output);
-        let Some(active) = state.workspaces.active_id(&output) else {
-            continue;
-        };
-        if state
-            .workspaces
-            .assign(row.key.clone(), &output, &active, false)
+        state.ensure_device(&output);
+        // Homing is core-owned: the adapter binds only the mechanical
+        // token/identity/tag triple, never a workspace. The tiled-first
+        // latch below reads the core view (empty before bootstrap).
+        let active = state.active_view(&output).unwrap_or_default();
         {
             state.member_tokens.insert(row.key.clone(), token.clone());
             state.member_identity.insert(row.key.clone(), live);
@@ -282,7 +280,7 @@ pub(super) fn admit_slotless_maximized(
             // admission keeps the overlay under both `core.born_maximized`
             // values with no one-shot clear.
             if !fixed_birth && !hydrated_override {
-                let tiled_first = state.workspaces.is_tiled(&output, &active);
+                let tiled_first = state.is_tiled_view(&output, &active);
                 if tiler_core::window_policy::born_keep_latch(
                     tiled_first,
                     born_maximized_keep_overlay_for(state.settings_live.as_ref()),
@@ -338,20 +336,19 @@ pub(super) fn adopt_restart_markers(
     me: &ProcessIdentity,
     observed: &[ObservedWindow],
     retained: &[RetainedRow],
-    areas: &[MonitorArea],
-    hint_cx: &mut HintCx,
+    _areas: &[MonitorArea],
+    _hint_cx: &mut HintCx,
 ) {
     /// One staged marker window: `prior` carries the pre-sticky float state
     /// for sticky markers and is `None` for an ordinary float.
     struct Staged {
-        key: crate::workspace::WindowKey,
+        key: crate::native_guards::WindowKey,
         token: String,
-        loc: crate::workspace::MemberLoc,
+        loc: super::world_reads::Home,
         prior: Option<bool>,
         frame: Rect,
     }
     let log_path = state.log_path.clone();
-    let correlation = state.correlation();
     // Rebuild the observation-scoped write barrier: a rejected staged float
     // from the previous observation holds no authority here until this
     // observation revalidates its marker, lifetime, and pid fences below.
@@ -362,7 +359,7 @@ pub(super) fn adopt_restart_markers(
     // below excepted).
     let mut staged: Vec<Staged> = Vec::new();
     for window in observed {
-        let key = crate::workspace::WindowKey {
+        let key = crate::native_guards::WindowKey {
             hwnd: window.hwnd,
             pid: window.identity.pid,
             creation: window.identity.process_creation.clone(),
@@ -376,7 +373,7 @@ pub(super) fn adopt_restart_markers(
         let Some(token) = state.member_tokens.get(&key).cloned() else {
             continue;
         };
-        let Some(loc) = state.workspaces.member_loc(&key).cloned() else {
+        let Some(loc) = state.member_home(&key) else {
             continue;
         };
         let Some(stored) = state.member_identity.get(&key).cloned() else {
@@ -398,7 +395,7 @@ pub(super) fn adopt_restart_markers(
         }
         // Shared portable classifier (sticky wins over float and the tile
         // override); absent is silent, corrupt/unreadable log no intent.
-        let marker = crate::workspace_owner::classify_restart_marker(
+        let marker = crate::native_guards::classify_restart_marker(
             crate::product_hide::sys::peek_float_intent_raw(window.hwnd),
             crate::product_hide::sys::peek_sticky_raw(window.hwnd),
             crate::product_hide::sys::peek_tile_override_raw(window.hwnd),
@@ -407,13 +404,13 @@ pub(super) fn adopt_restart_markers(
         // explicit tile win below (same fences, no Engine commit, no
         // writes); missing/degraded/unmatched records fall back to ordinary
         // fixed classification with no hold or retry.
-        let is_override = matches!(marker, crate::workspace_owner::RestartMarker::TileOverride);
+        let is_override = matches!(marker, crate::native_guards::RestartMarker::TileOverride);
         let prior = match marker {
-            crate::workspace_owner::RestartMarker::Sticky(prior) => Some(prior),
-            crate::workspace_owner::RestartMarker::FloatIntent => None,
-            crate::workspace_owner::RestartMarker::TileOverride => None,
-            crate::workspace_owner::RestartMarker::Absent => continue,
-            crate::workspace_owner::RestartMarker::Corrupt => {
+            crate::native_guards::RestartMarker::Sticky(prior) => Some(prior),
+            crate::native_guards::RestartMarker::FloatIntent => None,
+            crate::native_guards::RestartMarker::TileOverride => None,
+            crate::native_guards::RestartMarker::Absent => continue,
+            crate::native_guards::RestartMarker::Corrupt => {
                 log_json_at(
                     &log_path,
                     serde_json::json!({
@@ -424,7 +421,7 @@ pub(super) fn adopt_restart_markers(
                 );
                 continue;
             }
-            crate::workspace_owner::RestartMarker::Unreadable => {
+            crate::native_guards::RestartMarker::Unreadable => {
                 log_json_at(
                     &log_path,
                     serde_json::json!({
@@ -438,21 +435,21 @@ pub(super) fn adopt_restart_markers(
         };
         let live_tag = crate::product_hide::sys::read_member_tag(key.hwnd);
         let lifetime_ok = state.member_tags.get(&key).is_some_and(|stored| {
-            crate::workspace_owner::visible_lifetime_ok(stored, live_tag.as_deref())
+            crate::native_guards::visible_lifetime_ok(stored, live_tag.as_deref())
         });
         // Portable hydration gate: admitted (checked above) plus exact
         // identity plus live lifetime tag. A mismatch fails closed with no
         // intent and no log: the window is simply not ours.
         let eligible = if is_override {
-            crate::workspace_owner::restart_tile_override_eligible(true, true, lifetime_ok, marker)
+            crate::native_guards::restart_tile_override_eligible(true, true, lifetime_ok, marker)
         } else {
             match prior {
                 Some(prior) => {
-                    crate::workspace_owner::restart_sticky_eligible(true, true, lifetime_ok, marker)
+                    crate::native_guards::restart_sticky_eligible(true, true, lifetime_ok, marker)
                         == Some(prior)
                 }
                 None => {
-                    crate::workspace_owner::restart_float_eligible(true, true, lifetime_ok, marker)
+                    crate::native_guards::restart_float_eligible(true, true, lifetime_ok, marker)
                 }
             }
         };
@@ -533,7 +530,7 @@ pub(super) fn adopt_restart_markers(
         if token != row.token {
             continue;
         }
-        if state.workspaces.member_loc(key).is_none() {
+        if state.member_home(key).is_none() {
             continue;
         }
         hydrate_tile_override_marker(state, me, key, &log_path, &token);
@@ -551,7 +548,15 @@ pub(super) fn adopt_restart_markers(
             domains.push((s.loc.output.clone(), s.loc.workspace.clone()));
         }
     }
+    // World-owned marker adoption: the intent lanes staged below ARE the
+    // adoption. The next world report carries them as floating facts and
+    // the core homes them floating; no per-domain Engine commit exists to
+    // refuse. Frames land here with the adopted outcome per window.
     for (output, workspace) in domains {
+        // Kept: the temporary lane entries below are the re-adopted
+        // origins (sticky keeps its prior, never a normal float). Every
+        // durable marker stays for later restarts; only settled
+        // unfloat/sticky-off removes them.
         for s in staged
             .iter()
             .filter(|s| s.loc.output == output && s.loc.workspace == workspace)
@@ -564,199 +569,6 @@ pub(super) fn adopt_restart_markers(
                     state.floated.insert(s.key.clone());
                 }
             }
-        }
-        let rollback = |state: &mut TileLoop| {
-            for s in staged
-                .iter()
-                .filter(|s| s.loc.output == output && s.loc.workspace == workspace)
-            {
-                state.sticky.remove(&s.key);
-                state.floated.remove(&s.key);
-                state.float_rects.remove(&s.token);
-                // Observation-scoped write barrier for this exact validated
-                // lifetime only: row assembly rides the held key floating
-                // and the write gate excludes it, so the rejected candidate
-                // takes no tiled writes before the next observation
-                // revalidates. Durable markers are untouched and no lane is
-                // kept: the next preamble clears and rebuilds this set.
-                state.restart_reject_hold.insert(s.key.clone());
-            }
-        };
-        let Some(rows) = assemble_domain_rows(
-            state,
-            &output,
-            &workspace,
-            observed,
-            retained,
-            "restart-adopt",
-            correlation.as_str(),
-            hint_cx,
-        ) else {
-            rollback(state);
-            continue;
-        };
-        let Some((domain, domain_key)) =
-            workspace_domain_for(&output, &workspace, areas, state.inner_gap, state.outer_gap)
-        else {
-            rollback(state);
-            continue;
-        };
-        let windows: Vec<(WindowId, Rect, WindowSizeHints, bool)> = rows
-            .iter()
-            .map(|r| (WindowId(r.token.clone()), r.rect, r.hints, r.floating))
-            .collect();
-        let fp = fingerprint(
-            &rows
-                .iter()
-                .map(|r| (r.token.clone(), r.rect))
-                .collect::<Vec<_>>(),
-        );
-        let focused = rows
-            .iter()
-            .find(|r| !r.floating)
-            .map(|r| WindowId(r.token.clone()));
-        let mut candidate = state.engine.clone();
-        let pre_revision = state
-            .engine
-            .session(&domain_key)
-            .map(|session| session.accepted_revision());
-        let mut event = crate::tiling::build_reconcile_event_for_floating(
-            &state.owner,
-            &state.generation,
-            &correlation,
-            revision_for(state, &output, &workspace),
-            fp,
-            &domain,
-            &domain_key,
-            state.outer_gap,
-            &windows,
-            focused.as_ref(),
-        );
-        stamp_engine_event(state, &mut event);
-        log_json_at(
-            &log_path,
-            serde_json::json!({
-                "event": "restart-adopt-attempt",
-                "correlation": correlation.as_str(),
-                "windows": rows.len(),
-                "floating": rows.iter().filter(|row| row.floating).count(),
-                "focus": focused.as_ref().map(|window| window.0.as_str()),
-                "session_present_before": pre_revision.is_some(),
-                "session_revision_before": pre_revision,
-            }),
-        );
-        let reply = candidate.handle(&event);
-        if matches!(
-            reply,
-            CoreReply::Rejected { .. } | CoreReply::Diverged(_) | CoreReply::SnapshotInvalid { .. }
-        ) {
-            // Rejection detail: the per-window lane rows below stay
-            // unchanged; this one record carries the full bounded
-            // candidate facts plus the Engine reports that distinguish a
-            // converge-then-seed fall-through (converged counts with a
-            // fallback fit reason, then `duplicate-window`) from an
-            // immediate convergence refusal (no converged counts).
-            let converged = candidate.last_convergence().map(|report| {
-                serde_json::json!({
-                    "op": report.op,
-                    "removed": report.removed,
-                    "admitted": report.admitted,
-                    "flags_adopted": report.flags_adopted,
-                })
-            });
-            let adoption_fit = candidate.last_adoption_fit().map(|report| {
-                serde_json::json!({
-                    "outcome": report.outcome,
-                    "windows": report.windows,
-                    "reason": report.reason,
-                })
-            });
-            let fixed = candidate.last_fixed_admission().map(|report| {
-                serde_json::json!({
-                    "op": report.op,
-                    "evaluated": report.evaluated,
-                    "admitted": report.admitted,
-                    "reason": report.reason,
-                })
-            });
-            log_json_at(
-                &log_path,
-                serde_json::json!({
-                    "event": "candidate-rejected-detail",
-                    "correlation": correlation.as_str(),
-                    "outcome": "candidate-rejected",
-                    "reason": reply_outcome(&reply),
-                    "focus": focused.as_ref().map(|window| window.0.as_str()),
-                    "windows": rows.len(),
-                    "floating": rows.iter().filter(|row| row.floating).count(),
-                    "session_present_before": pre_revision.is_some(),
-                    "session_revision_before": pre_revision,
-                    "converged": converged,
-                    "adoption_fit": adoption_fit,
-                    "fixed": fixed,
-                    "detail": bounded_hydration_candidates(&rows),
-                }),
-            );
-            rollback(state);
-            for s in staged
-                .iter()
-                .filter(|s| s.loc.output == output && s.loc.workspace == workspace)
-            {
-                let lane = match s.prior {
-                    Some(_) => "sticky-adopt",
-                    None => "float-adopt",
-                };
-                log_json_at(
-                    &log_path,
-                    serde_json::json!({
-                        "event": lane,
-                        "window": s.token,
-                        "correlation": correlation.as_str(),
-                        "outcome": "candidate-rejected",
-                        "reason": reply_outcome(&reply),
-                    }),
-                );
-            }
-            continue;
-        }
-        let mut missing = false;
-        for s in staged
-            .iter()
-            .filter(|s| s.loc.output == output && s.loc.workspace == workspace)
-        {
-            if !candidate
-                .session(&domain_key)
-                .is_some_and(|sess| sess.is_exception(&WindowId(s.token.clone())))
-            {
-                missing = true;
-                let lane = match s.prior {
-                    Some(_) => "sticky-adopt",
-                    None => "float-adopt",
-                };
-                log_json_at(
-                    &log_path,
-                    serde_json::json!({
-                        "event": lane,
-                        "window": s.token,
-                        "correlation": correlation.as_str(),
-                        "outcome": "candidate-unfloated",
-                    }),
-                );
-            }
-        }
-        if missing {
-            rollback(state);
-            continue;
-        }
-        state.engine = candidate;
-        // Kept: the temporary lane entries above are the re-adopted
-        // origins (sticky keeps its prior, never a normal float). Every
-        // durable marker stays for later restarts; only settled
-        // unfloat/sticky-off removes them.
-        for s in staged
-            .iter()
-            .filter(|s| s.loc.output == output && s.loc.workspace == workspace)
-        {
             state.float_rects.insert(s.token.clone(), s.frame);
             let lane = match s.prior {
                 Some(_) => "sticky-adopted",

@@ -72,7 +72,7 @@ fn managed_origins(
         let Some(tag) = state.member_tags.get(&row.key) else {
             continue;
         };
-        if !crate::workspace_owner::visible_lifetime_ok(tag, live_tag.as_deref()) {
+        if !crate::native_guards::visible_lifetime_ok(tag, live_tag.as_deref()) {
             continue;
         }
         if !scope_allows(&state.scope, &stored.exe_path) {
@@ -249,8 +249,7 @@ pub(super) fn refresh_active_border(state: &mut TileLoop, me: &ProcessIdentity, 
     }
     let hidden_workspace = state.hidden_claims.keys().any(|k| k.hwnd == foreground)
         && state
-            .workspaces
-            .member_loc(
+            .member_home(
                 &state
                     .hidden_claims
                     .keys()

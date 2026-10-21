@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 //! Item 1 portable regression: settings catalog/presets, exact Ctrl/Tab
-//! classifier routing, and ManagedWorkspaces history/ring convergence.
+//! classifier routing, and world-owned history/ring convergence.
 //!
 //! Portable only (no Win32 here): the Windows-only owner selection,
 //! foreground/CLI dispatch, hook release/suppression, and Apply/Revert UI
@@ -16,7 +16,6 @@ use tiler_windows::snapkey::{
     ChordAction, Classified, KeyboardConfig, SnapClassify, VK_CONTROL, VK_H, VK_J, VK_LWIN, VK_TAB,
     WorkspaceHistoryOp,
 };
-use tiler_windows::workspace::ManagedWorkspaces;
 
 fn takeover() -> KeyboardConfig {
     KeyboardConfig {
@@ -225,77 +224,4 @@ fn classifier_routes_history_through_remap_and_suppression() {
     win_ctrl(&mut m);
     assert_eq!(SnapClassify::push(&mut m, VK_TAB, false, true, false), None);
     assert_eq!(SnapClassify::push(&mut m, VK_TAB, true, true, false), None);
-}
-
-#[test]
-fn history_end_to_end_observe_toggle_and_relative() {
-    // Three occupied workspaces: observe 1->2->3, toggle resolves 2, select
-    // it, toggle resolves 3. Relative wraps through the trailing empty.
-    let mut m = ManagedWorkspaces::new();
-    m.ensure_output("mon-1");
-    let base = m.workspace_ids("mon-1");
-    m.assign(
-        tiler_windows::workspace::WindowKey {
-            hwnd: 1,
-            pid: 1001,
-            creation: "c000000000000001".to_owned(),
-        },
-        "mon-1",
-        &base[0],
-        false,
-    );
-    m.assign(
-        tiler_windows::workspace::WindowKey {
-            hwnd: 2,
-            pid: 1002,
-            creation: "c000000000000002".to_owned(),
-        },
-        "mon-1",
-        &base[1],
-        false,
-    );
-    let (third, created) = m.select_trailing("mon-1").expect("trailing");
-    assert!(created);
-    m.assign(
-        tiler_windows::workspace::WindowKey {
-            hwnd: 3,
-            pid: 1003,
-            creation: "c000000000000003".to_owned(),
-        },
-        "mon-1",
-        &third,
-        false,
-    );
-    for target in [&third, &base[0], &base[1], &third] {
-        assert!(m.activate("mon-1", target));
-        assert!(m.observe_workspace_change("mon-1", target));
-    }
-    // Toggle twice: 2 then 3 (views, not MRU traversal).
-    assert_eq!(
-        m.resolve_previous("mon-1").as_deref(),
-        Some(base[1].as_str())
-    );
-    assert!(m.activate("mon-1", &base[1]));
-    assert!(m.observe_workspace_change("mon-1", &base[1]));
-    assert_eq!(m.resolve_previous("mon-1").as_deref(), Some(third.as_str()));
-    // Relative from first wraps to last (trailing empty included).
-    assert!(m.activate("mon-1", &base[0]));
-    assert!(m.observe_workspace_change("mon-1", &base[0]));
-    let ring = m.scoped_ring_ids("mon-1");
-    assert_eq!(
-        m.resolve_relative("mon-1", -1).as_deref(),
-        Some(ring.last().expect("last").as_str())
-    );
-    assert_eq!(
-        m.resolve_relative("mon-1", 1).as_deref(),
-        Some(ring[1].as_str())
-    );
-    // Classifier arms agree with the resolvers: Win+Ctrl+Tab toggles,
-    // Win+Ctrl+J steps next.
-    let mut c = SnapClassify::new(takeover());
-    win_ctrl(&mut c);
-    assert_eq!(history_down(&mut c, VK_TAB), WorkspaceHistoryOp::Previous);
-    let mut c = SnapClassify::new(takeover());
-    win_ctrl(&mut c);
-    assert_eq!(history_down(&mut c, VK_J), WorkspaceHistoryOp::Next);
 }

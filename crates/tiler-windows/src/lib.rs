@@ -17,6 +17,7 @@ pub mod model;
 pub mod mouse_snap;
 #[cfg(windows)]
 pub mod native;
+pub mod native_guards;
 pub mod pager;
 pub mod pager_icons;
 #[cfg(windows)]
@@ -41,6 +42,3 @@ pub mod tray_pager;
 #[cfg(windows)]
 pub mod tray_sys;
 pub mod winarrow;
-pub mod workspace;
-pub mod workspace_owner;
-pub mod workspace_scope_owner;

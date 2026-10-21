@@ -74,7 +74,7 @@ pub(super) struct VisibilityDiagnostics {
     /// never persisted; restart needs none (ledger-hidden windows cannot
     /// admit while invisible, and tagged fences already hold). No retry or
     /// timer: persistence is the hold itself until ownership resolves or drops.
-    pub(super) uncertain_hides: std::collections::BTreeSet<crate::workspace::WindowKey>,
+    pub(super) uncertain_hides: std::collections::BTreeSet<crate::native_guards::WindowKey>,
 }
 
 /// One rehide-sweep bucket: honest instance count plus capped opaque sample
@@ -393,7 +393,7 @@ pub(super) fn hide_log_line(
 pub(super) fn note_hide_diag(
     state: &mut TileLoop,
     ctx: &ActionCtx,
-    key: &crate::workspace::WindowKey,
+    key: &crate::native_guards::WindowKey,
     outcome: &'static str,
     detail: Option<&'static str>,
     project_topmost: bool,
@@ -429,7 +429,7 @@ pub(super) fn note_hide_diag(
 pub(super) fn note_reveal_diag(
     state: &mut TileLoop,
     ctx: &ActionCtx,
-    key: &crate::workspace::WindowKey,
+    key: &crate::native_guards::WindowKey,
     outcome: &'static str,
     detail: Option<&'static str>,
     phase: Option<&'static str>,
@@ -525,13 +525,13 @@ pub(super) fn clear_visibility() {
 /// mismatch or unreadable read reports unknown. Wait-free reads only, never
 /// a message round-trip, never a write.
 fn fenced_visibility(
-    key: &crate::workspace::WindowKey,
+    key: &crate::native_guards::WindowKey,
     stored_tag: &str,
 ) -> (Option<bool>, Option<bool>) {
     if stored_tag.is_empty() {
         return (None, None);
     }
-    if !crate::workspace_owner::visible_lifetime_ok(
+    if !crate::native_guards::visible_lifetime_ok(
         stored_tag,
         live_member_tag(key.hwnd).as_deref(),
     ) {
@@ -758,7 +758,7 @@ pub(super) fn flush_visibility(state: &mut TileLoop) -> Option<serde_json::Value
 
 /// Current exception mask for one member: adapter lifetime lanes plus the
 /// live Engine exception bit for its workspace domain. Pure read.
-fn exc_mask_for(state: &TileLoop, key: &crate::workspace::WindowKey, token: &str) -> u8 {
+fn exc_mask_for(state: &TileLoop, key: &crate::native_guards::WindowKey, token: &str) -> u8 {
     let mut mask = 0u8;
     if state.floated.contains(key) {
         mask |= LANE_FLOAT;
@@ -772,7 +772,7 @@ fn exc_mask_for(state: &TileLoop, key: &crate::workspace::WindowKey, token: &str
     if state.fixed_auto_seen.contains(key) {
         mask |= LANE_AUTO_FIXED;
     }
-    if let Some(loc) = state.workspaces.member_loc(key)
+    if let Some(loc) = state.member_home(key)
         && engine_is_float(state, &loc.output, &loc.workspace, token)
     {
         mask |= LANE_ENGINE;
@@ -915,7 +915,7 @@ pub(super) fn rollback_newly_hidden(
     state: &mut TileLoop,
     me: &ProcessIdentity,
     store: &LedgerStore,
-    newly_hidden: &[crate::workspace::WindowKey],
+    newly_hidden: &[crate::native_guards::WindowKey],
     ctx: &ActionCtx,
     clock: &mut impl crate::product_hide::batch::BatchWaitClock,
 ) {

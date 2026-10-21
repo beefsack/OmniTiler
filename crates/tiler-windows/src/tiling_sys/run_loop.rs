@@ -148,10 +148,14 @@ pub(super) fn run_tile_loop(
         .as_ref()
         .map(|live| live.settings.core.taskbar_pager)
         .unwrap_or(true);
+    // Item 12 stage B: the saved scope mode adopts only on owner restart.
+    // Computed before the owner moves the live settings in.
+    let startup_scope = crate::settings::startup_mode(settings_live.as_ref());
     let mut state = TileLoop {
-        engine: Engine::new(),
         owner: owner.clone(),
         generation: generation.clone(),
+        world: world_owner::WorldOwner::bootstrap_ids(owner.as_str(), generation.as_str())
+            .expect("world owner bootstrap"),
         tokens: TokenMap::default(),
         refused: RefusedTracker::default(),
         stable: HashMap::new(),
@@ -178,6 +182,7 @@ pub(super) fn run_tile_loop(
         settings_dir,
         last_remap,
         last_disabled,
+        scope_adopted: startup_scope,
         cli_overrides,
         snap_dropped: 0,
         cb_diag_dropped: 0,
@@ -189,8 +194,9 @@ pub(super) fn run_tile_loop(
         snap_advance: None,
         resize_repeat: None,
         last_enumerated: 0,
-        workspaces: ManagedWorkspaces::new(),
-        scope_owner: crate::workspace_scope_owner::WorkspaceScopeOwner::new(),
+        applied_homing: HashMap::new(),
+        applied_views: HashMap::new(),
+        output_tokens: HashMap::new(),
         member_tokens: std::collections::BTreeMap::new(),
         member_rects: HashMap::new(),
         hidden_claims: std::collections::BTreeMap::new(),
@@ -282,42 +288,18 @@ pub(super) fn run_tile_loop(
         input_bridge: None,
         render_bridge: None,
         render_frames: RenderFrameHealth::default(),
-        pending_releases: crate::workspace::PendingReleases::new(),
-        pending_retry_fp: 0,
     };
-    state.engine.sync_binding(&owner, &generation);
     state.workspace_proof = workspace_proof;
-    // R-SPC-04 D1-D8 + G-05: enable the shared fixed-size admission opt-in
-    // now that the adapter wires complete observation (bounded min/max
-    // tracks with seeded-untouched stripping), lifetime-bound origin and
-    // override stamps, and no-touch admission lanes. `Engine::new` defaults
-    // OFF to preserve exact prior behavior; the predicate starts from the
-    // last-good startup settings (both-axes default, proof owners included)
-    // and later adopts live edits for subsequent admissions only.
-    state.engine.set_fixed_size_admission(true);
-    state.engine.set_fixed_send_admission(true);
-    state
-        .engine
-        .set_fixed_size_predicate(fixed_predicate_for(state.settings_live.as_ref()));
-    // Best-effort admission D2/D3: the shared capacity policy starts from
-    // the last-good startup settings (largest-splittable/float defaults,
-    // proof owners included) and later adopts live edits for subsequent
-    // decisions only.
-    state
-        .engine
-        .set_anchor_fallback(anchor_fallback_for(state.settings_live.as_ref()));
-    state
-        .engine
-        .set_no_space_result(no_space_for(state.settings_live.as_ref()));
-    // Existing workspaces take the saved default at owner startup (initially
-    // tiled); live default edits later affect only newly created workspaces.
-    // Overrides reset on owner restart: nothing persists per workspace.
+    // Fixed-size admission, capacity anchor/no-space, default tiling, and the
+    // workspace scope mode are core ingress now: every world report carries
+    // them from the last-good live settings (proof owners keep defaults), so
+    // no adapter Engine configuration exists to set. The core adopts them for
+    // subsequent admissions only, never reclassifying retained state.
     let startup_default = state
         .settings_live
         .as_ref()
         .map(|live| live.settings.core.workspace.default_tiled)
         .unwrap_or(true);
-    state.workspaces.set_default_tiled(startup_default);
     log_json_at(
         &log_path,
         serde_json::json!({
@@ -329,12 +311,18 @@ pub(super) fn run_tile_loop(
     );
     // Item 12 stage B: the saved scope mode adopts only on owner restart.
     // The adopted mode stays in force for the whole run; later live edits
-    // report drift without adopting. Startup priming follows the initial
-    // monitor sync; later hotplug retains its current behavior.
-    let startup_scope = crate::workspace_scope_owner::startup_mode(state.settings_live.as_ref());
-    state.scope_owner =
-        crate::workspace_scope_owner::WorkspaceScopeOwner::adopt_startup(startup_scope);
-    log_json_at(&log_path, state.scope_owner.startup_event());
+    // report drift without adopting. The core reads the mode from every
+    // report ingress.
+    let startup_scope = state.scope_adopted;
+    log_json_at(
+        &log_path,
+        serde_json::json!({
+            "event": "scope-mode",
+            "mode": tiler_core::workspace_scope::mode_token(startup_scope),
+            "outcome": "adopted",
+            "scope": "startup",
+        }),
+    );
     let mut areas = all_monitors()?;
     let (mut monitor, mut monitor_count) = (areas[0].clone(), areas.len());
     let mode = if workspace_proof {
@@ -349,14 +337,16 @@ pub(super) fn run_tile_loop(
     // Visible takeover state: default on, explicit off, proof never hooks
     // except shortcut-proof/workspace-proof with test-only marker acceptance.
     let takeover = (state.keyboard.takeover && !proof) || shortcut_proof || workspace_proof;
-    // Per-output-local workspaces start from live monitors: one domain set
-    // per device key, retained Engine sessions per (output, workspace).
+    // Per-output-local workspaces start from live monitors: the mechanical
+    // device-to-wire map assigns stable wire ids, and the core mints its
+    // logical rings/views from the first report screens. The cached output
+    // context primes below; trailing lifecycle is core-owned.
     sync_monitor_outputs(&mut state, &areas);
-    // Item 12 stage B: scoped startup priming on the fixed topology (mode
-    // order/history baselines plus shared current convergence and the
-    // trailing floor). Runs once here; later hotplug syncs mode-aware
-    // through `scope_hotplug`.
-    scope_trailing::prime_after_sync(&mut state);
+    if state.active_output.is_empty()
+        && let Some(first) = state.known_outputs.first().cloned()
+    {
+        state.active_output = first;
+    }
     log_json_at(
         &log_path,
         serde_json::json!({
@@ -814,7 +804,7 @@ pub(super) fn run_tile_loop(
                 snap_suspend(dir, me, store);
             }
             if initial_limited {
-                reconcile_limited_tick(&mut state, me, &fulls, &areas, initial_fg);
+                reconcile_limited_tick(&mut state, me, store, dir, &fulls, &areas, initial_fg);
             }
             hide_border(&mut state, "suspended");
             hide_underlay(&mut state, "suspended");
@@ -830,9 +820,9 @@ pub(super) fn run_tile_loop(
                 snap_resume(dir, me, store);
                 snap_primed = true;
             }
-            reconcile_tick(&mut state, me, &fulls, &areas);
+            reconcile_tick(&mut state, me, store, dir, &fulls, &areas);
             refresh_active_border(&mut state, me, &fulls);
-            refresh_group_underlay(&mut state, me, &fulls, &areas);
+            refresh_group_underlay(&mut state, me, store, dir, &fulls, &areas);
         }
         // Trace-only owner-work sequence: counted only when tracing so
         // default runs pay no timer/counter work.
@@ -1071,7 +1061,7 @@ pub(super) fn run_tile_loop(
             // serviced from the ack state with no blocking wait.
             drain_render_failures(&mut state);
             poll_render_acks(&mut state, Instant::now());
-            service_pending_drop(&mut state, me, &fulls, &areas);
+            service_pending_drop(&mut state, me, store, dir, &fulls, &areas);
             // Accent-only wake: a Personalization broadcast reached a
             // renderer or loop-thread window while the owner slept (no
             // ack payload, no input, no message on this thread). Promote
@@ -1437,7 +1427,7 @@ pub(super) fn run_tile_loop(
     // resets this runtime-local preimage with the Engine.
     let mut float_topmost_restored = 0u32;
     let mut float_topmost_skipped = 0u32;
-    let float_preimages: Vec<(crate::workspace::WindowKey, bool)> = state
+    let float_preimages: Vec<(crate::native_guards::WindowKey, bool)> = state
         .float_topmost_prev
         .iter()
         .map(|(key, prior)| (key.clone(), *prior))

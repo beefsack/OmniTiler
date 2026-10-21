@@ -3,15 +3,19 @@
 //! Serde-free typed envelope for the full-state boundary in
 //! `docs/changes/archive/core-full-state-replies.md`. No transport, JSON, platform,
 //! or process imports. Reuses the existing typed carriers
-//! ([`crate::seed::EngineWindow`], [`crate::session::OutputDomain`],
-//! [`crate::directional`] ids, [`crate::workspace_scope::WorkspaceMode`])
-//! rather than lossy clones, so the transition in
-//! [`crate::world_engine`] and the protocol codec share one shape.
+//! ([`crate::directional`] ids, [`crate::geometry::Rect`]) rather than lossy
+//! clones, so the transition in [`crate::world_engine`] and the protocol
+//! codec share one shape.
 //!
 //! The [`WorldEngine`] owns the transition; this module owns shapes,
 //! validation, and freshness. Sizing and the canonical encoding live in
 //! [`crate::world_sizing`] and re-export here, so downstream paths
 //! (`world_engine`, protocol codec) keep one stable import root.
+//!
+//! Contract version 2 is logical-first: the core owns stable logical
+//! workspace ids, and screens (FULL rectangles plus work areas) with window
+//! facts are the only observation prerequisites. Native workspace domains
+//! are an explicit capability-named opt-in observation, never authority.
 
 pub use crate::world_sizing::{
     encode_reply_canonical, int_len, json_string_len, reply_estimate, reply_exact_bytes,
@@ -26,26 +30,30 @@ use crate::boundary::NoGroupReason;
 use crate::bounds::{GEOMETRY_BOUND, is_gap, is_opaque_id, valid_carried_rect};
 use crate::directional::{Direction, NodeId, OutputId, WindowId};
 use crate::geometry::Rect;
-use crate::seed::EngineWindow;
-use crate::session::{DomainKey, DragHoverPrior, OutputDomain};
+use crate::session::{DomainKey, DragHoverPrior};
 use crate::workspace_scope::WorkspaceMode;
 
-/// World envelope version (single source for the wire `v`).
-pub const WORLD_CONTRACT_VERSION: u32 = 1;
+/// World envelope version (single source for the wire `v`). Version 2 is
+/// the logical-first contract: stable core workspace ids authorize mapping,
+/// screens plus window facts are the only observation prerequisites, and
+/// native workspace domains are an explicit capability-named opt-in.
+pub const WORLD_CONTRACT_VERSION: u32 = 2;
 /// D4 selected transport budget: 4 MiB request AND reply.
 pub const WORLD_MAX_REQUEST_BYTES: usize = 4 * 1024 * 1024;
 /// D4 selected transport budget: 4 MiB request AND reply.
 pub const WORLD_MAX_REPLY_BYTES: usize = 4 * 1024 * 1024;
 
 /// Hard input caps so the worst-case budget is bounded before any work.
-pub const MAX_WORLD_DOMAINS: usize = 64;
-pub const MAX_WORLD_WINDOWS: usize = 10_000;
+pub const MAX_WORLD_SCREENS: usize = 16;
+pub const MAX_WORLD_FACTS: usize = 10_000;
 /// Bound on explicit-close ids per report (same lifetime alphabet as windows).
 pub const MAX_WORLD_CLOSED: usize = 10_000;
+pub const MAX_WORLD_VIEWS: usize = 16;
+/// Bound on host-owned native observations per report (only carried when the
+/// `host_owned_workspace_domains` capability is set).
+pub const MAX_WORLD_NATIVE: usize = 4096;
 pub const MAX_NATIVE_PER_OUTPUT: usize = 256;
-pub const MAX_WORLD_OUTPUTS: usize = 16;
 pub const MAX_WORLD_FEEDBACK: usize = 1024;
-pub const MAX_WORLD_BINDINGS: usize = 4096;
 
 /// Tiling policy for one desired workspace row. The core retains one mode
 /// per workspace (Planner-owned, toggled only through
@@ -68,8 +76,8 @@ impl TilingMode {
     }
 }
 
-/// Scope key for one desired workspace row: the owning output id for
-/// per-output-local and global-unique modes, `shared` for the shared mode.
+/// Scope key for one desired workspace row: the owning output id, except in
+/// shared mode where every workspace shares one scope.
 #[must_use]
 pub fn workspace_scope_key(mode: WorkspaceMode, output: &OutputId) -> String {
     match mode {
@@ -224,7 +232,7 @@ pub enum TransferKind {
     Window(WindowId),
     /// View-only operation: no window moves, only the output view changes.
     View,
-    /// Whole-workspace migration: one live native workspace id moves scope.
+    /// Whole-workspace migration: one live logical workspace id moves scope.
     /// `target_workspace` on the [`TransferTarget`] names the migrated id.
     Migration,
 }
@@ -235,7 +243,7 @@ pub struct TransferTarget {
     pub operation_id: String,
     pub kind: TransferKind,
     pub target_output: OutputId,
-    /// Native backing workspace id.
+    /// Stable core logical workspace id.
     pub target_workspace: String,
     pub follow: bool,
     /// Set when the last feedback was possibly-executed: the target stays
@@ -250,7 +258,7 @@ pub struct TransferTarget {
 pub struct WindowDesire {
     pub lifetime: WindowId,
     pub output: OutputId,
-    /// Native backing workspace id.
+    /// Stable core logical workspace id homing this window.
     pub workspace: String,
     pub allocation: Option<crate::geometry::Rect>,
     pub effective_frame: Option<crate::geometry::Rect>,
@@ -278,17 +286,18 @@ pub struct WindowDesire {
     pub frame_operation: Option<String>,
 }
 
-/// Desired workspace row. `existence=false` is removal ELIGIBILITY only (the
-/// adapter re-enumerates occupants, visibility, pins, mappings and minimum
-/// count before deleting; unknown occupancy keeps). `id` is the native
-/// backing id once bound, else the pending logical token.
+/// Desired workspace row. `id` is the stable core logical workspace id;
+/// `output` is its owning screen. `existence=false` is removal ELIGIBILITY
+/// only (the adapter re-enumerates occupants, pins and minimum count before
+/// deleting; unknown occupancy keeps). `native_binding` carries a host-owned
+/// binding only when the `host_owned_workspace_domains` capability is set;
+/// it is always `None` in the default contract and never authorizes mapping.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceDesire {
     pub id: String,
     pub output: OutputId,
     pub native_binding: Option<String>,
-    pub logical_id: Option<String>,
-    /// Owning scope: the output id (local/global-unique) or `shared`.
+    /// Owning scope: the output id.
     pub scope: String,
     pub order: usize,
     pub tiling_mode: TilingMode,
@@ -296,19 +305,11 @@ pub struct WorkspaceDesire {
     pub hold: Option<HoldReason>,
 }
 
-/// The native id the adapter must actuate for this row, or `None` when
-/// unbound: the adapter must create through the one-in-flight creation path
-/// and MUST NOT use the logical token as a native id, even if the token
-/// string happens to appear in the native inventory.
-#[must_use]
-pub fn actuation_native_id(row: &WorkspaceDesire) -> Option<&str> {
-    row.native_binding.as_deref()
-}
-
-/// Desired output row: `logical_view` is the persistent view target.
-/// Observed active focus is informational only, never a focus command.
-/// `tiling_mode` is the retained planner-owned mode of the current native
-/// view (default tiled), so the adapter can see floating outputs.
+/// Desired output row: `logical_view` is the persistent core-owned view
+/// target (the stable logical workspace id shown). Observed focus is
+/// informational only, never a focus command. `tiling_mode` is the
+/// retained planner-owned mode of the current logical view (default
+/// tiled), so the adapter can see floating outputs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutputDesire {
     pub output: OutputId,
@@ -385,80 +386,134 @@ pub struct AttemptFeedback {
     pub hold: Option<HoldReason>,
 }
 
-/// One domain observation: the full typed [`OutputDomain`] (bounds, gap,
-/// adjacency = settings) plus the complete [`EngineWindow`] carriers with
-/// all safety flags (floating/fit-excluded/fullscreen/maximized/sticky,
-/// fixed assertions, size-hint constraints). No lossy clone.
+/// One screen observation: the stable output id, the FULL native output
+/// rectangle in one coherent adapter coordinate space, and the distinct
+/// work area the core tiles into. `gap`/`outer_gap` are settings carried
+/// per screen. `None` rectangles stay representable for explicitly
+/// unreadable/partial observations; a report claiming complete topology
+/// carries valid FULL and work-area rectangles for every screen, and
+/// anything else narrowly fences topology-dependent crossing, migration,
+/// and remap (never an inferred work area, never a window frame proxy).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DomainReport {
-    pub domain: OutputDomain,
-    pub outer_gap: i32,
-    /// Focused window in this domain; empty window id means none.
-    pub focused: WindowId,
-    pub windows: Vec<EngineWindow>,
-    /// Explicit closes (D23). Always honored, even when the surrounding
-    /// inventory is incomplete; only IMPLICIT missing=closed inference
-    /// requires a provably complete inventory.
-    pub closed: Vec<WindowId>,
-    /// False when the scope was unreadable: the scope becomes an explicit
-    /// hold and its rows authorize nothing.
-    pub readable: bool,
-    pub hold: Option<HoldReason>,
-}
-
-/// Per-output native topology: live backing ids in native order, the current
-/// view, whether enumeration was complete for this output, the live native
-/// FULL output geometry when observed, and whether this output is the
-/// active (primary) screen.
-///
-/// `geometry` is the core-owned topology authority: the FULL native output
-/// rectangle in one coherent adapter coordinate space, used for directional
-/// planning through the shared strict unique-reciprocal derivation (exact
-/// edge-touch, positive overlap, no wrap). A report claiming complete
-/// topology carries a valid FULL rectangle for every output; `None` stays
-/// representable for explicitly unreadable/partial observations and then
-/// narrowly fences topology-dependent crossing, migration, and remap (never
-/// an inferred work area, never a window frame proxy, and never permission
-/// to derive from the readable subset). Domain `bounds` remains the
-/// distinct work-area field, with outer-gap handling unchanged.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OutputTopology {
+pub struct ScreenReport {
     pub output: OutputId,
-    pub native_order: Vec<String>,
-    pub current_native: String,
+    pub full_rect: Option<Rect>,
+    pub work_area: Option<Rect>,
+    pub gap: i32,
+    pub outer_gap: i32,
     pub complete: bool,
-    pub geometry: Option<Rect>,
     pub primary: bool,
 }
 
-/// Native/logical workspace binding with inventory flags. Pinned and
-/// displaced ids are retained against trailing cleanup; unmanaged ids are
-/// observed but not owned.
+/// One truthful window fact: the stable window lifetime, the screen where
+/// the adapter observes it, its frame, and every safety flag. `rect=None`
+/// is an explicitly unreadable frame: the homed scope holds instead of
+/// authorizing geometry, never a silent absence. `minimized=true` marks a
+/// lifetime the adapter holds minimized: the core homes it on its retained
+/// logical workspace with no managed geometry (never silent absence,
+/// never inferred close). Core logical workspaces authorize homing, never
+/// native workspace vocabulary.
+/// Optional membership evidence (never authority by itself):
+/// `observed_workspace` is an adapter-observed logical workspace id for
+/// this window (facade readback / mechanical application receipt),
+/// distinct from core desire. Host-native window membership (if any) is
+/// translated by future ports into this observed logical receipt; there is
+/// no separate host-native per-window field in the default contract.
+/// `None` means unknown, never a proof of absence.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkspaceBinding {
-    pub logical_id: String,
-    pub native_id: String,
-    pub output: OutputId,
-    pub pinned: bool,
-    pub displaced: bool,
-    pub managed: bool,
-}
-
-/// Explicit minimized lifetime: a window the adapter holds minimized,
-/// homed on its workspace. Reported separately from active tiled domain
-/// membership (minimized windows are absent from `DomainReport.windows`);
-/// the core never tiles them and never writes frames for them. Overlap
-/// with live membership or explicit closes refuses fail-closed. `sticky`
-/// is the adapter-read native all-desktop state, required exactly like
-/// the homing ids: startup conversion moves only non-sticky minimized
-/// members, and the wire refuses a missing key instead of defaulting.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MinimizedEntry {
+pub struct WindowFact {
     pub window: WindowId,
     pub output: OutputId,
-    pub workspace: crate::directional::WorkspaceId,
+    pub rect: Option<Rect>,
+    pub floating: bool,
+    pub fit_excluded: bool,
+    pub fullscreen: bool,
+    pub maximized: bool,
     pub sticky: bool,
+    pub fixed_auto: bool,
+    pub fixed_suppress: bool,
+    pub hints: crate::size_hints::WindowSizeHints,
+    pub minimized: bool,
+    pub observed_workspace: Option<String>,
 }
+
+/// Observed applied logical view per screen: the stable logical workspace id
+/// independently verified as shown. Never a copy of a desired view or reply
+/// acknowledgement. Empty means unknown: the core keeps its retained view and
+/// the row carries no view proof. View transfers and migration refill require
+/// an observed receipt exactly naming the expected logical id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScreenView {
+    pub output: OutputId,
+    pub view: String,
+}
+
+/// Host-owned native domain observation (optional, capability-gated): the
+/// adapter-observed native workspace order and current native view for one
+/// screen. Pure observation, never mapping authority: core logical
+/// workspaces authorize all homing, lifecycle, and commands. Carrying any
+/// entry without the `host_owned_workspace_domains` capability refuses.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeObservation {
+    pub output: OutputId,
+    pub native_order: Vec<String>,
+    pub current_native: String,
+}
+
+/// One persisted logical workspace ring: the stable output id plus its
+/// ordered stable logical workspace ids, as retained by the adapter across
+/// a restart. Neutral bootstrap facts: no native domain authority, no
+/// applied member/view receipts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestoredRing {
+    pub output: OutputId,
+    pub workspaces: Vec<String>,
+}
+
+/// One persisted per-workspace tiling mode: the stable logical workspace on
+/// its owning screen plus whether the adapter retains it tiled. Absent
+/// entries seed from the reported saved default.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestoredTiling {
+    pub output: OutputId,
+    pub workspace: String,
+    pub tiled: bool,
+}
+
+/// One persisted member homing: the opaque window lifetime plus its retained
+/// logical workspace on the observed screen. The adapter binds the token to
+/// its live native lifetime; the core never verifies identity here. All
+/// classification (floating, sticky, minimized, fullscreen, hidden) rides
+/// the window facts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestoredMember {
+    pub window: WindowId,
+    pub output: OutputId,
+    pub workspace: String,
+}
+
+/// Bootstrap restoration ingress: persisted rings, current views,
+/// per-workspace tiling, and member homing adopted on the first accepted
+/// report of an incarnation only. Restored members are retained (never
+/// fresh placement, admission, or focus): genuinely new lifetimes after the
+/// restoration bootstrap still focus once through the ordinary
+/// admission-focus path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestoredWorld {
+    pub rings: Vec<RestoredRing>,
+    pub views: Vec<ScreenView>,
+    pub tiling: Vec<RestoredTiling>,
+    pub members: Vec<RestoredMember>,
+}
+
+/// Bound on restored outputs per report (mirrors the screen cap).
+pub const MAX_RESTORED_RINGS: usize = MAX_WORLD_SCREENS;
+/// Bound on restored workspace ids per output.
+pub const MAX_RESTORED_PER_RING: usize = 256;
+/// Bound on restored per-workspace tiling entries per report.
+pub const MAX_RESTORED_TILING: usize = 4096;
+/// Bound on restored member homings per report (mirrors the fact cap).
+pub const MAX_RESTORED_MEMBERS: usize = MAX_WORLD_FACTS;
 
 /// Explicit world commands. At most one per report; observation-only
 /// reports carry none. Every variant consumes one `command_seq` (bound to
@@ -469,6 +524,11 @@ pub struct MinimizedEntry {
 /// retain a window transfer, focus operations emit one at-most-once effect,
 /// `SetWorkspaceTiling` retains planner-owned tiling mode, and read-only
 /// operations reconcile only.
+///
+/// Every `workspace` string names a stable core LOGICAL workspace id owned
+/// by `output` (never a native desktop name): the single world route speaks
+/// logical authority in both directions, and native workspaces stay
+/// capability-gated observations that never authorize commands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorldCommand {
     /// One-shot focus attempt (emits an effect, never retained).
@@ -507,12 +567,9 @@ pub enum WorldCommand {
     },
     /// Numbered send: positional `0..=9` over the scoped send ring for
     /// `output` (`0` is the trailing path: reuse the live trailing empty
-    /// or create a stable pending token, exactly like lifecycle).
-    /// Resolving to a bound native is an ordinary transfer and never
-    /// view-switches, including `follow=false` stays. Resolving to an
-    /// unbound pending token pends the send under core (stable operation
-    /// identity, no view target, never the token as a native id) and the
-    /// engine send starts once the binding is reported.
+    /// or create the trailing workspace immediately, exactly like
+    /// lifecycle). Commits an ordinary transfer and never view-switches,
+    /// including `follow=false` stays.
     SendNumbered {
         window: WindowId,
         output: OutputId,
@@ -520,7 +577,7 @@ pub enum WorldCommand {
         follow: bool,
     },
     /// Planner-owned per-workspace tiling toggle (legacy Meta+Y parity):
-    /// retain `tiled` for one live native workspace. Disabling releases
+    /// retain `tiled` for one live logical workspace. Disabling releases
     /// the retained session (no frame writes while floating); re-enabling
     /// re-adopts through the fresh route. Never decided by the adapter.
     SetWorkspaceTiling {
@@ -528,9 +585,9 @@ pub enum WorldCommand {
         workspace: String,
         tiled: bool,
     },
-    /// Whole-workspace migration (D2): move one live native workspace id
-    /// from the source scope to the target scope. Retained until the
-    /// topology/bindings confirm it.
+    /// Whole-workspace migration (D2): move one live logical workspace id
+    /// from the source scope to the target scope. Retained until member
+    /// arrival plus both view proofs confirm it.
     MigrateWorkspace {
         source_output: OutputId,
         target_output: OutputId,
@@ -590,7 +647,9 @@ pub enum WorldCommand {
 }
 
 /// World report: complete normalized observation on EVERY update, covering
-/// hidden and retained domains.
+/// screens, window facts, and view echoes. The default contract needs no
+/// native workspace concept at all: screens (FULL rectangles plus work
+/// areas) and window facts bootstrap and operate the whole logical model.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorldReport {
     pub contract_version: u32,
@@ -605,14 +664,37 @@ pub struct WorldReport {
     pub request_id: String,
     pub command_seq: Option<u64>,
     pub command: Option<WorldCommand>,
+    /// Logical workspace scope mode for this report: per-output-local
+    /// (default), global-unique (scoped numbering with visible-elsewhere
+    /// swap), or shared (one ring/history across all outputs). The mode is
+    /// authoritative for ring, view, history, hotplug, startup, and migration
+    /// policy on this report; changing it across reports re-scopes policy
+    /// without rewriting history beyond the mode rules.
     pub workspace_mode: WorkspaceMode,
-    pub topology: Vec<OutputTopology>,
-    pub bindings: Vec<WorkspaceBinding>,
-    pub domains: Vec<DomainReport>,
-    /// Explicit minimized lifetimes, separate from active tiled domain
-    /// membership. Minimized windows are absent from `domains[].windows`;
-    /// each entry carries an explicit desired hold row instead.
-    pub minimized: Vec<MinimizedEntry>,
+    /// Screen observations: FULL rectangles plus work areas, completeness,
+    /// and the active (primary) screen. Core topology authority.
+    pub screens: Vec<ScreenReport>,
+    /// Truthful window facts: observed screen affinity, frames, flags, and
+    /// minimized state. Core logical workspaces authorize all homing.
+    pub windows: Vec<WindowFact>,
+    /// Adapter-echoed logical views per screen (view proof for retained
+    /// view transfers and migration refill). Empty means unknown.
+    pub views: Vec<ScreenView>,
+    /// Explicit closes. Always honored, even when the surrounding
+    /// inventory is incomplete; only IMPLICIT missing=closed inference
+    /// requires a provably complete inventory.
+    pub closed: Vec<WindowId>,
+    /// Capability opt-in: the adapter additionally observes host-owned
+    /// workspace domains (see [`NativeObservation`]). Pure observation,
+    /// never mapping authority. Off by default.
+    pub host_owned_workspace_domains: bool,
+    /// Capability opt-in: keep workspace counts equal across screens
+    /// (neutral parity for native desktops spanning outputs). Off by
+    /// default; replaces the superseded aligned-grid option.
+    pub equal_workspace_count: bool,
+    /// Host-owned native domain observations. Must be empty unless the
+    /// `host_owned_workspace_domains` capability is set.
+    pub native: Vec<NativeObservation>,
     /// Ingress fixed-size admission predicate (R-SPC-04 D1): the core
     /// applies it to subsequent admissions only, never reclassifying
     /// retained windows.
@@ -638,14 +720,28 @@ pub struct WorldReport {
     /// policy (hotplug survivor/return views); never focus proof.
     pub focused_global: String,
     /// Saved default tiling seed (legacy `defaultTiled` parity): seeds
-    /// newly observed native workspaces (startup seeds all; live changes
-    /// seed only subsequently observed workspaces). Manual per-workspace
+    /// newly created logical workspaces (bootstrap seeds all; live changes
+    /// seed only subsequently created workspaces). Manual per-workspace
     /// toggles already retained never reseed. Backfills `true` when the
     /// adapter predates the field.
     pub default_tiled: bool,
     pub inventory_complete: bool,
     pub gesture_barrier: bool,
     pub feedback: Vec<AttemptFeedback>,
+    /// Bootstrap restoration ingress (restart/persistence adoption): the
+    /// adapter's persisted logical workspace rings, current views,
+    /// per-workspace tiling modes, and member homing, as neutral opaque
+    /// facts. `None` is a fresh bootstrap (core mints rings/views from the
+    /// live screens); `Some` is a restoration bootstrap adopted
+    /// transactionally on the first accepted report of an incarnation only.
+    /// Later reports carrying restoration refuse as stale without mutation.
+    /// Native identity/lifetime association stays adapter-mechanical (member
+    /// windows are opaque tokens the adapter binds to its live lifetimes);
+    /// core logical mapping is the sole homing authority. Floating, sticky,
+    /// minimized, fullscreen, and hidden truth rides the window facts, never
+    /// this ingress. Malformed or dangling restoration refuses as
+    /// `snapshot-invalid` without mutation.
+    pub restored: Option<RestoredWorld>,
 }
 
 /// World reply: single globally ordered full desired snapshot. No
@@ -795,14 +891,14 @@ pub fn classify_request(
 }
 
 /// Deterministic FNV-1a digest over the canonical report content. Covers
-/// sequences, mode, owner, request/command identity, domains (bounds, gap,
-/// adjacency, focused, outer gap, readability, hold), windows (identity,
-/// homing, frame, every safety flag, size-hint bounds), closes, topology
-/// (output, native order, current view, completeness), bindings (logical,
-/// native, output, pin/displacement/managed flags), inventory completeness,
-/// the default-tiling seed, the migration source-refill mode, the D2/D3
-/// capacity settings, the global focus, the gesture barrier, and
-/// feedback (identity, kind, outcome, hold).
+/// sequences, owner, request/command identity, screens (output, FULL and
+/// work-area rectangles, gaps, completeness, primary), facts (identity,
+/// observed screen, frame, every safety flag, size-hint bounds, minimized
+/// state), view echoes, explicit closes, capability flags, host-owned
+/// native observations, inventory completeness, the default-tiling seed,
+/// the migration source-refill mode, the D2/D3 capacity settings, the
+/// global focus, the gesture barrier, and feedback (identity, kind,
+/// outcome, hold).
 /// Duplicate detection still compares full typed input equality (see
 /// [`WorldEngine`](crate::world_engine::WorldEngine)); the digest is only
 /// a fast pre-check, never the identity.
@@ -821,6 +917,10 @@ pub fn report_digest(report: &WorldReport) -> u64 {
     fn flag(hash: &mut u64, set: bool) {
         feed(hash, if set { "1" } else { "0" });
         sep(hash);
+    }
+    fn rect_part(rect: Option<Rect>) -> String {
+        rect.map(|rect| format!("{},{},{},{}", rect.x, rect.y, rect.w, rect.h))
+            .unwrap_or_default()
     }
     let mut hash: u64 = 14695981039346656037;
     for part in [
@@ -843,6 +943,8 @@ pub fn report_digest(report: &WorldReport) -> u64 {
     }
     flag(&mut hash, report.inventory_complete);
     flag(&mut hash, report.default_tiled);
+    flag(&mut hash, report.host_owned_workspace_domains);
+    flag(&mut hash, report.equal_workspace_count);
     feed(&mut hash, &report.focused_global);
     sep(&mut hash);
     flag(&mut hash, report.gesture_barrier);
@@ -854,106 +956,69 @@ pub fn report_digest(report: &WorldReport) -> u64 {
     sep(&mut hash);
     feed(&mut hash, report.no_space_result.as_wire_str());
     sep(&mut hash);
-    for entry in &report.minimized {
+    for screen in &report.screens {
         for part in [
-            entry.window.0.clone(),
-            entry.output.0.clone(),
-            entry.workspace.0.clone(),
+            screen.output.0.clone(),
+            rect_part(screen.full_rect),
+            rect_part(screen.work_area),
+            screen.gap.to_string(),
+            screen.outer_gap.to_string(),
+            (if screen.complete { "c" } else { "i" }).to_owned(),
+            (if screen.primary { "p" } else { "s" }).to_owned(),
         ] {
             feed(&mut hash, &part);
-            sep(&mut hash);
-        }
-        flag(&mut hash, entry.sticky);
-    }
-    for topology in &report.topology {
-        for part in [
-            topology.output.0.clone(),
-            topology.current_native.clone(),
-            (if topology.complete { "c" } else { "i" }).to_owned(),
-            (if topology.primary { "p" } else { "s" }).to_owned(),
-            topology
-                .geometry
-                .map(|rect| format!("{},{},{},{}", rect.x, rect.y, rect.w, rect.h))
-                .unwrap_or_default(),
-        ] {
-            feed(&mut hash, &part);
-            sep(&mut hash);
-        }
-        for native in &topology.native_order {
-            feed(&mut hash, native);
             sep(&mut hash);
         }
     }
-    for binding in &report.bindings {
+    for fact in &report.windows {
         for part in [
-            binding.logical_id.clone(),
-            binding.native_id.clone(),
-            binding.output.0.clone(),
+            fact.window.0.clone(),
+            fact.output.0.clone(),
+            rect_part(fact.rect),
         ] {
             feed(&mut hash, &part);
             sep(&mut hash);
         }
-        flag(&mut hash, binding.pinned);
-        flag(&mut hash, binding.displaced);
-        flag(&mut hash, binding.managed);
+        flag(&mut hash, fact.floating);
+        flag(&mut hash, fact.fit_excluded);
+        flag(&mut hash, fact.fullscreen);
+        flag(&mut hash, fact.maximized);
+        flag(&mut hash, fact.sticky);
+        flag(&mut hash, fact.fixed_auto);
+        flag(&mut hash, fact.fixed_suppress);
+        flag(&mut hash, fact.minimized);
+        feed(
+            &mut hash,
+            fact.observed_workspace.as_deref().unwrap_or_default(),
+        );
+        sep(&mut hash);
+        for bound in [
+            fact.hints.min_w,
+            fact.hints.min_h,
+            fact.hints.max_w,
+            fact.hints.max_h,
+        ] {
+            feed(&mut hash, &bound.map(|v| v.to_string()).unwrap_or_default());
+            sep(&mut hash);
+        }
     }
-    for domain in &report.domains {
-        for part in [
-            domain.domain.id.0.clone(),
-            domain.domain.workspace.0.clone(),
-            domain.domain.bounds.x.to_string(),
-            domain.domain.bounds.y.to_string(),
-            domain.domain.bounds.w.to_string(),
-            domain.domain.bounds.h.to_string(),
-            domain.domain.gap.to_string(),
-            domain.outer_gap.to_string(),
-            domain.focused.0.clone(),
-            (if domain.readable { "r" } else { "h" }).to_owned(),
-            format!("{:?}", domain.hold),
-        ] {
-            feed(&mut hash, &part);
-            sep(&mut hash);
-        }
-        let mut adjacent: Vec<_> = domain.domain.adjacent.iter().collect();
-        adjacent.sort_by_key(|(direction, _)| format!("{direction:?}"));
-        for (direction, target) in adjacent {
-            feed(&mut hash, &format!("{direction:?}"));
-            sep(&mut hash);
-            feed(&mut hash, &target.0);
-            sep(&mut hash);
-        }
-        for window in &domain.windows {
-            for part in [
-                window.window.0.clone(),
-                window.output.0.clone(),
-                window.workspace.0.clone(),
-                window.rect.x.to_string(),
-                window.rect.y.to_string(),
-                window.rect.w.to_string(),
-                window.rect.h.to_string(),
-            ] {
-                feed(&mut hash, &part);
-                sep(&mut hash);
-            }
-            flag(&mut hash, window.floating);
-            flag(&mut hash, window.fit_excluded);
-            flag(&mut hash, window.fullscreen);
-            flag(&mut hash, window.maximized);
-            flag(&mut hash, window.sticky);
-            flag(&mut hash, window.fixed_auto);
-            flag(&mut hash, window.fixed_suppress);
-            for bound in [
-                window.hints.min_w,
-                window.hints.min_h,
-                window.hints.max_w,
-                window.hints.max_h,
-            ] {
-                feed(&mut hash, &bound.map(|v| v.to_string()).unwrap_or_default());
-                sep(&mut hash);
-            }
-        }
-        for id in &domain.closed {
-            feed(&mut hash, &id.0);
+    for view in &report.views {
+        feed(&mut hash, &view.output.0);
+        sep(&mut hash);
+        feed(&mut hash, &view.view);
+        sep(&mut hash);
+    }
+    for id in &report.closed {
+        feed(&mut hash, &id.0);
+        sep(&mut hash);
+    }
+    for native in &report.native {
+        feed(&mut hash, &native.output.0);
+        sep(&mut hash);
+        feed(&mut hash, &native.current_native);
+        sep(&mut hash);
+        for id in &native.native_order {
+            feed(&mut hash, id);
             sep(&mut hash);
         }
     }
@@ -966,6 +1031,41 @@ pub fn report_digest(report: &WorldReport) -> u64 {
         sep(&mut hash);
         feed(&mut hash, &format!("{:?}", feedback.hold));
         sep(&mut hash);
+    }
+    match report.restored.as_ref() {
+        None => flag(&mut hash, false),
+        Some(restored) => {
+            flag(&mut hash, true);
+            for ring in &restored.rings {
+                feed(&mut hash, &ring.output.0);
+                sep(&mut hash);
+                for id in &ring.workspaces {
+                    feed(&mut hash, id);
+                    sep(&mut hash);
+                }
+            }
+            for view in &restored.views {
+                feed(&mut hash, &view.output.0);
+                sep(&mut hash);
+                feed(&mut hash, &view.view);
+                sep(&mut hash);
+            }
+            for entry in &restored.tiling {
+                feed(&mut hash, &entry.output.0);
+                sep(&mut hash);
+                feed(&mut hash, &entry.workspace);
+                sep(&mut hash);
+                flag(&mut hash, entry.tiled);
+            }
+            for member in &restored.members {
+                feed(&mut hash, &member.window.0);
+                sep(&mut hash);
+                feed(&mut hash, &member.output.0);
+                sep(&mut hash);
+                feed(&mut hash, &member.workspace);
+                sep(&mut hash);
+            }
+        }
     }
     hash
 }
@@ -1000,12 +1100,17 @@ pub fn validate_report_reason(report: &WorldReport) -> Option<&'static str> {
     if !crate::ids::is_generation_id(&report.core_generation) {
         return Some("generation-invalid");
     }
-    if report.domains.len() > MAX_WORLD_DOMAINS
-        || report.topology.len() > MAX_WORLD_OUTPUTS
-        || report.bindings.len() > MAX_WORLD_BINDINGS
+    if report.screens.len() > MAX_WORLD_SCREENS
+        || report.windows.len() > MAX_WORLD_FACTS
+        || report.closed.len() > MAX_WORLD_CLOSED
+        || report.views.len() > MAX_WORLD_VIEWS
+        || report.native.len() > MAX_WORLD_SCREENS
         || report.feedback.len() > MAX_WORLD_FEEDBACK
     {
         return Some("section-over-cap");
+    }
+    if !report.host_owned_workspace_domains && !report.native.is_empty() {
+        return Some("native-without-capability");
     }
     if report.command_seq.is_none() != report.command.is_none() {
         return Some("command-pair-invalid");
@@ -1016,137 +1121,228 @@ pub fn validate_report_reason(report: &WorldReport) -> Option<&'static str> {
         return Some("command-invalid");
     }
     let mut seen_windows = BTreeSet::new();
-    let mut total_windows = 0usize;
-    let mut total_closed = 0usize;
-    let mut seen_closed = BTreeSet::new();
-    for domain in &report.domains {
-        if !domain.domain.validate() {
-            return Some("domain-invalid");
+    let mut seen_outputs = BTreeSet::new();
+    for screen in &report.screens {
+        if !is_opaque_id(&screen.output.0) {
+            return Some("screen-id-invalid");
         }
-        if !is_opaque_id(&domain.domain.id.0) || !is_opaque_id(&domain.domain.workspace.0) {
-            return Some("domain-id-invalid");
+        if !seen_outputs.insert(screen.output.0.clone()) {
+            return Some("duplicate-screen");
         }
-        if !valid_carried_rect(
-            domain.domain.bounds.x,
-            domain.domain.bounds.y,
-            domain.domain.bounds.w,
-            domain.domain.bounds.h,
-        ) {
-            return Some("domain-bounds-invalid");
-        }
-        if !is_gap(domain.domain.gap) || !is_gap(domain.outer_gap) {
+        if !is_gap(screen.gap) || !is_gap(screen.outer_gap) {
             return Some("gap-invalid");
         }
-        if domain.domain.adjacent.len() > 4 {
-            return Some("adjacent-invalid");
+        match (screen.full_rect, screen.work_area) {
+            (Some(full), Some(work)) => {
+                if !valid_carried_rect(full.x, full.y, full.w, full.h)
+                    || !valid_carried_rect(work.x, work.y, work.w, work.h)
+                {
+                    return Some("screen-rect-invalid");
+                }
+            }
+            (None, None) => {}
+            _ => return Some("screen-rect-partial"),
         }
-        for target in domain.domain.adjacent.values() {
-            if !is_opaque_id(&target.0) {
-                return Some("adjacent-invalid");
-            }
+        if screen.complete
+            && (screen.full_rect.is_none()
+                || screen.work_area.is_none()
+                || screen
+                    .full_rect
+                    .is_some_and(|rect| !valid_carried_rect(rect.x, rect.y, rect.w, rect.h))
+                || screen
+                    .work_area
+                    .is_some_and(|rect| !valid_carried_rect(rect.x, rect.y, rect.w, rect.h)))
+        {
+            return Some("screen-complete-invalid");
         }
-        if !domain.focused.0.is_empty() && !is_opaque_id(&domain.focused.0) {
-            return Some("focused-id-invalid");
+    }
+    for fact in &report.windows {
+        if !is_opaque_id(&fact.window.0) || !is_opaque_id(&fact.output.0) {
+            return Some("window-id-invalid");
         }
-        if domain.windows.len() > MAX_WORLD_WINDOWS || domain.closed.len() > MAX_WORLD_CLOSED {
-            return Some("domain-entry-over-cap");
+        if !seen_outputs.contains(&fact.output.0) {
+            return Some("window-output-unknown");
         }
-        for window in &domain.windows {
-            if !is_opaque_id(&window.window.0)
-                || !is_opaque_id(&window.output.0)
-                || !is_opaque_id(&window.workspace.0)
-            {
-                return Some("window-id-invalid");
-            }
-            if !valid_carried_rect(window.rect.x, window.rect.y, window.rect.w, window.rect.h) {
-                return Some("window-rect-invalid");
-            }
-            // Size hints are advisory only: zero, negative, contradictory,
-            // and out-of-bound values (Qt 0x0 default minimums,
-            // QWIDGETSIZE_MAX / i32::MAX unbounded maximums) sanitize to
-            // absent at every use site (see
-            // `crate::size_hints::WindowSizeHints`), never fail the
-            // report. A single valid native window reporting such default
-            // or sentinel hints invalidates the whole world when gated
-            // here, so every DescribeWorld carrying one was refused.
-            if !seen_windows.insert(window.window.0.clone()) {
-                return Some("duplicate-window");
-            }
-            total_windows += 1;
+        if let Some(rect) = fact.rect
+            && !valid_carried_rect(rect.x, rect.y, rect.w, rect.h)
+        {
+            return Some("window-rect-invalid");
         }
-        for id in &domain.closed {
-            if !is_opaque_id(&id.0) {
-                return Some("closed-id-invalid");
-            }
-            // Closed ids must not also be live: one id cannot be both
-            // observed and reported closed.
-            if seen_windows.contains(&id.0) {
-                return Some("closed-overlaps-live");
-            }
+        // Size hints are advisory only: zero, negative, contradictory,
+        // and out-of-bound values (Qt 0x0 default minimums,
+        // QWIDGETSIZE_MAX / i32::MAX unbounded maximums) sanitize to
+        // absent at every use site (see
+        // `crate::size_hints::WindowSizeHints`), never fail the
+        // report. A single valid window reporting such default or
+        // sentinel hints invalidates the whole world when gated here,
+        // so every report carrying one was refused.
+        if !seen_windows.insert(fact.window.0.clone()) {
+            return Some("duplicate-window");
+        }
+        if let Some(observed) = fact.observed_workspace.as_deref()
+            && !is_opaque_id(observed)
+        {
+            return Some("window-observed-invalid");
+        }
+    }
+    for id in &report.closed {
+        if !is_opaque_id(&id.0) {
+            return Some("closed-id-invalid");
+        }
+        // Closed ids must not also be live: one id cannot be both
+        // observed and reported closed.
+        if seen_windows.contains(&id.0) {
+            return Some("closed-overlaps-live");
+        }
+    }
+    {
+        let mut seen_closed = BTreeSet::new();
+        for id in &report.closed {
             if !seen_closed.insert(id.0.clone()) {
                 return Some("duplicate-closed");
             }
-            total_closed += 1;
-        }
-        if domain.readable != domain.hold.is_none() {
-            return Some("readable-hold-mismatch");
         }
     }
-    if total_windows > MAX_WORLD_WINDOWS || total_closed > MAX_WORLD_CLOSED {
-        return Some("inventory-over-cap");
-    }
-    // Explicit minimized lifetimes: opaque homing, no duplicates, never
-    // also live (a minimized window is absent from domain membership) and
-    // never also explicitly closed (contradictory input refuses).
     {
-        let mut seen_minimized = BTreeSet::new();
-        for entry in &report.minimized {
-            if !is_opaque_id(&entry.window.0)
-                || !is_opaque_id(&entry.output.0)
-                || !is_opaque_id(&entry.workspace.0)
-            {
-                return Some("minimized-id-invalid");
+        let mut seen_views = BTreeSet::new();
+        for view in &report.views {
+            if !is_opaque_id(&view.output.0) {
+                return Some("view-id-invalid");
             }
-            if seen_windows.contains(&entry.window.0) || seen_closed.contains(&entry.window.0) {
-                return Some("minimized-overlaps");
+            if !seen_outputs.contains(&view.output.0) {
+                return Some("view-output-unknown");
             }
-            if !seen_minimized.insert(entry.window.0.clone()) {
-                return Some("duplicate-minimized");
+            if !view.view.is_empty() && !is_opaque_id(&view.view) {
+                return Some("view-target-invalid");
             }
-        }
-        if report.minimized.len() > MAX_WORLD_WINDOWS {
-            return Some("minimized-over-cap");
+            if !seen_views.insert(view.output.0.clone()) {
+                return Some("duplicate-view");
+            }
         }
     }
     let mut total_native = 0usize;
-    for topology in &report.topology {
-        if !is_opaque_id(&topology.output.0)
-            || !is_opaque_id(&topology.current_native)
-            || topology.native_order.len() > MAX_NATIVE_PER_OUTPUT
+    for native in &report.native {
+        if !is_opaque_id(&native.output.0)
+            || !native.current_native.is_empty() && !is_opaque_id(&native.current_native)
+            || native.native_order.len() > MAX_NATIVE_PER_OUTPUT
         {
-            return Some("topology-invalid");
+            return Some("native-invalid");
         }
-        for native in &topology.native_order {
-            if !is_opaque_id(native) {
+        if !seen_outputs.contains(&native.output.0) {
+            return Some("native-output-unknown");
+        }
+        for id in &native.native_order {
+            if !is_opaque_id(id) {
                 return Some("native-id-invalid");
             }
         }
-        total_native += topology.native_order.len();
+        total_native += native.native_order.len();
     }
-    if total_native > MAX_WORLD_OUTPUTS.saturating_mul(MAX_NATIVE_PER_OUTPUT) {
-        return Some("topology-over-cap");
-    }
-    for binding in &report.bindings {
-        if !is_opaque_id(&binding.logical_id)
-            || !is_opaque_id(&binding.native_id)
-            || !is_opaque_id(&binding.output.0)
-        {
-            return Some("binding-invalid");
-        }
+    if total_native > MAX_WORLD_NATIVE {
+        return Some("native-over-cap");
     }
     for feedback in &report.feedback {
         if !is_opaque_id(&feedback.operation_id) {
             return Some("feedback-invalid");
+        }
+    }
+    if let Some(restored) = report.restored.as_ref() {
+        let facts: BTreeSet<&str> = report
+            .windows
+            .iter()
+            .map(|fact| fact.window.0.as_str())
+            .collect();
+        let closed: BTreeSet<&str> = report.closed.iter().map(|id| id.0.as_str()).collect();
+        if let Some(reason) = validate_restored(restored, &facts, &closed) {
+            return Some(reason);
+        }
+    }
+    None
+}
+
+/// Validate bootstrap restoration ingress without echoing payload bytes:
+/// every carried id is opaque, rings/views/tiling/members are cross-linked
+/// (views, tiling, and members must name ring entries), and every restored
+/// member must ride the report's window facts (a restored window that is
+/// explicitly closed or unknown is stale). `None` when valid. Restored
+/// outputs need not name reported screens: units homed on a disconnected
+/// screen displace onto a survivor through the ordinary hotplug path.
+/// First-report-only enforcement lives in the engine (`restored-stale`),
+/// not here.
+#[must_use]
+pub fn validate_restored(
+    restored: &RestoredWorld,
+    facts: &BTreeSet<&str>,
+    closed: &BTreeSet<&str>,
+) -> Option<&'static str> {
+    if restored.rings.is_empty() {
+        return Some("restored-ring-invalid");
+    }
+    if restored.rings.len() > MAX_RESTORED_RINGS
+        || restored.views.len() > MAX_WORLD_VIEWS
+        || restored.tiling.len() > MAX_RESTORED_TILING
+        || restored.members.len() > MAX_RESTORED_MEMBERS
+    {
+        return Some("section-over-cap");
+    }
+    let mut ringed: BTreeSet<(&str, &str)> = BTreeSet::new();
+    let mut ring_outputs: BTreeSet<&str> = BTreeSet::new();
+    for ring in &restored.rings {
+        if !is_opaque_id(&ring.output.0) || !ring_outputs.insert(ring.output.0.as_str()) {
+            return Some("restored-output-invalid");
+        }
+        if ring.workspaces.is_empty() || ring.workspaces.len() > MAX_RESTORED_PER_RING {
+            return Some("restored-workspace-invalid");
+        }
+        for id in &ring.workspaces {
+            if !is_opaque_id(id) || !ringed.insert((ring.output.0.as_str(), id.as_str())) {
+                return Some("restored-workspace-invalid");
+            }
+        }
+    }
+    let mut view_outputs: BTreeSet<&str> = BTreeSet::new();
+    for view in &restored.views {
+        if !is_opaque_id(&view.output.0) || !view_outputs.insert(view.output.0.as_str()) {
+            return Some("restored-view-invalid");
+        }
+        if !ring_outputs.contains(view.output.0.as_str()) {
+            return Some("restored-view-unknown");
+        }
+        if view.view.is_empty() || !ringed.contains(&(view.output.0.as_str(), view.view.as_str())) {
+            return Some("restored-view-invalid");
+        }
+    }
+    let mut tiling_keys: BTreeSet<(&str, &str)> = BTreeSet::new();
+    for entry in &restored.tiling {
+        if !is_opaque_id(&entry.output.0) || !is_opaque_id(&entry.workspace) {
+            return Some("restored-tiling-invalid");
+        }
+        if !ringed.contains(&(entry.output.0.as_str(), entry.workspace.as_str())) {
+            return Some("restored-tiling-unknown");
+        }
+        if !tiling_keys.insert((entry.output.0.as_str(), entry.workspace.as_str())) {
+            return Some("restored-tiling-duplicate");
+        }
+    }
+    let mut member_windows: BTreeSet<&str> = BTreeSet::new();
+    for member in &restored.members {
+        if !is_opaque_id(&member.window.0)
+            || !is_opaque_id(&member.output.0)
+            || !is_opaque_id(&member.workspace)
+        {
+            return Some("restored-member-invalid");
+        }
+        if !ringed.contains(&(member.output.0.as_str(), member.workspace.as_str())) {
+            return Some("restored-member-unknown");
+        }
+        if !member_windows.insert(member.window.0.as_str()) {
+            return Some("restored-member-duplicate");
+        }
+        if closed.contains(member.window.0.as_str()) {
+            return Some("restored-member-closed");
+        }
+        if !facts.contains(member.window.0.as_str()) {
+            return Some("restored-member-unknown");
         }
     }
     None

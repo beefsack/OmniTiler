@@ -14,8 +14,6 @@
 //! last-switch output; pager labels read `Workspace N`; the pager section
 //! sits after the workspace toggle/default rows and before Settings.
 
-use crate::workspace::ManagedWorkspaces;
-
 /// First menu id for pager workspace rows: row `i` (0-based) uses
 /// `MENU_ID_WORKSPACE_FIRST + i`. Above the fixed 1001-1007 range.
 pub const MENU_ID_WORKSPACE_FIRST: u32 = 1100;
@@ -43,14 +41,12 @@ pub const fn workspace_pick_index(picked: u32, count: usize) -> Option<usize> {
     if index < count { Some(index) } else { None }
 }
 
-/// 1-based ordinal of an output's active workspace in workspace order, or
-/// `None` when the output or its active workspace is unknown.
-#[must_use]
-pub fn active_ordinal(spaces: &ManagedWorkspaces, output: &str) -> Option<u32> {
-    let ids = spaces.workspace_ids(output);
-    let active = spaces.active_id(output)?;
-    ids.iter()
-        .position(|id| id == &active)
+/// 1-based ordinal of an output's active workspace in the core logical ring,
+/// or `None` when the workspace is unknown. World-owned over plain keys.
+pub fn active_ordinal_keys(ring: &[String], active: Option<&str>) -> Option<u32> {
+    let active = active?;
+    ring.iter()
+        .position(|id| id == active)
         .map(|index| index as u32 + 1)
 }
 
@@ -253,14 +249,12 @@ mod tests {
 
     #[test]
     fn active_ordinal_is_one_based_in_workspace_order() {
-        use crate::workspace::ManagedWorkspaces;
-        let mut spaces = ManagedWorkspaces::new();
-        spaces.ensure_output("mon-a");
-        // Fresh output starts on its first workspace: ordinal 1.
-        assert_eq!(active_ordinal(&spaces, "mon-a"), Some(1));
-        let second = spaces.select("mon-a", 2).expect("second workspace");
-        assert_eq!(spaces.active_id("mon-a").as_deref(), Some(second.as_str()));
-        assert_eq!(active_ordinal(&spaces, "mon-a"), Some(2));
-        assert_eq!(active_ordinal(&spaces, "mon-missing"), None);
+        let ring = vec!["ws-1".to_owned(), "ws-2".to_owned()];
+        // First workspace active: ordinal 1.
+        assert_eq!(active_ordinal_keys(&ring, Some("ws-1")), Some(1));
+        assert_eq!(active_ordinal_keys(&ring, Some("ws-2")), Some(2));
+        assert_eq!(active_ordinal_keys(&ring, Some("ws-gone")), None);
+        assert_eq!(active_ordinal_keys(&ring, None), None);
+        assert_eq!(active_ordinal_keys(&[], Some("ws-1")), None);
     }
 }

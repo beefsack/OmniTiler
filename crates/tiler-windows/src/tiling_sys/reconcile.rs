@@ -1,32 +1,30 @@
 #![forbid(unsafe_code)]
 use super::focus_actuation::overlay_expected;
-use super::geometry::{ApplyInput, apply_geometry};
-use super::rows::assemble_domain_rows;
 use super::*;
 
-/// Engine-writable tokens for one domain: eligible observed members only.
-/// Retained and hidden rows converge membership but never take geometry
-/// writes; hidden workspace geometry is not written until reveal.
+/// World-owned writable tokens for one domain: eligible observed members
+/// only. Retained and hidden rows converge membership but never take
+/// geometry writes; hidden workspace geometry is not written until reveal.
 ///
 /// Native HWND/PID/creation plus scope gates pre-filter here; the portable
-/// hidden/fresh exclusion rides [`crate::workspace_owner::writable_subset`],
-/// the same seam the portable regression covers, so production and tests
-/// share one rule without weakening any native check.
+/// hidden/fresh exclusion rides [`crate::native_guards::writable_subset`].
+/// Float intent reads the last applied world reply plus the adapter intent
+/// lanes (never a local Engine session).
 pub(super) fn writable_tokens(
     state: &TileLoop,
     output: &str,
     workspace: &str,
     observed: &[ObservedWindow],
 ) -> HashSet<String> {
-    let members = state.workspaces.workspace_members(output, workspace);
+    let members = state.workspace_members(output, workspace);
     let by_hwnd: HashMap<u64, &ObservedWindow> = observed.iter().map(|w| (w.hwnd, w)).collect();
-    let mut eligible: std::collections::BTreeMap<crate::workspace::WindowKey, String> =
+    let mut eligible: std::collections::BTreeMap<crate::native_guards::WindowKey, String> =
         std::collections::BTreeMap::new();
     for key in &members {
         let Some(window) = by_hwnd.get(&key.hwnd) else {
             continue;
         };
-        if !crate::workspace_owner::member_matches(
+        if !crate::native_guards::member_matches(
             key,
             window.hwnd,
             window.identity.pid,
@@ -40,189 +38,26 @@ pub(super) fn writable_tokens(
         eligible.insert(key.clone(), window.token.clone());
     }
     let fresh: HashSet<String> = observed.iter().map(|w| w.token.clone()).collect();
-    // Floats converge Engine membership but never take tiled geometry writes.
-    let domain_key = tiler_core::session::DomainKey {
-        output: tiler_core::directional::OutputId(output.to_owned()),
-        workspace: tiler_core::directional::WorkspaceId(workspace.to_owned()),
-    };
-    let float_tokens: HashSet<String> = state
-        .engine
-        .session(&domain_key)
-        .map(|session| {
-            eligible
-                .values()
-                .filter(|token| session.is_exception(&WindowId(token.to_string())))
-                .cloned()
-                .collect()
-        })
-        .unwrap_or_default();
+    // Floats converge membership but never take tiled geometry writes:
+    // intent reads the last applied world reply plus the adapter lanes.
+    let float_tokens: HashSet<String> = eligible
+        .values()
+        .filter(|token| state.core_is_float_token(token))
+        .cloned()
+        .collect();
     eligible.retain(|_, token| !float_tokens.contains(token));
     // Observation-scoped restart-hydration write barrier: a rejected staged
-    // float keeps no Engine exception and no intent lane, so the exception
-    // exclusion above cannot see it. Exact lifetime identity, never HWND
-    // alone; the next preamble clears and rebuilds the set.
+    // float keeps no core exception and no intent lane, so the exclusion
+    // above cannot see it. Exact lifetime identity, never HWND alone.
     eligible.retain(|key, _| !state.restart_reject_hold.contains(key));
-    crate::workspace_owner::writable_subset(
+    crate::native_guards::writable_subset(
         &members,
-        |k| state.workspaces.is_hidden(k),
+        |k| state.is_hidden_member(k),
         &eligible,
         &fresh,
     )
 }
 
-/// Foreground-excluding writable tokens for the limited lane: the normal
-/// member/eligibility rule minus any token whose live HWND is the
-/// unmanageable fullscreen foreground. Production callers pass the single
-/// captured suspend HWND; unknown (`0`) removes nothing because the lane
-/// itself never runs then (fail closed to full suspension upstream).
-pub(super) fn writable_tokens_limited(
-    state: &TileLoop,
-    output: &str,
-    workspace: &str,
-    observed: &[ObservedWindow],
-    foreground_hw: u64,
-) -> HashSet<String> {
-    let writable = writable_tokens(state, output, workspace, observed);
-    if foreground_hw == 0 {
-        return writable;
-    }
-    let foreground_tokens: HashSet<&str> = observed
-        .iter()
-        .filter(|w| w.hwnd == foreground_hw)
-        .map(|w| w.token.as_str())
-        .collect();
-    writable
-        .into_iter()
-        .filter(|token| !foreground_tokens.contains(token.as_str()))
-        .collect()
-}
-
-/// Shared per-domain geometry planning for one observed snapshot: Engine
-/// row assembly, reconcile event (focusless in the limited lane), Engine
-/// dispatch, then one non-activating geometry pass over the caller-filtered
-/// writable set. Both the normal and the limited lanes run this identical
-/// planning; only the preamble (admission/retire/visibility/close drain)
-/// and the focus/writable policy differ per lane.
-#[allow(clippy::too_many_arguments)]
-fn reconcile_domains_geometry(
-    state: &mut TileLoop,
-    me: &ProcessIdentity,
-    fulls: &[Rect],
-    areas: &[MonitorArea],
-    observed: &[ObservedWindow],
-    retained: &[RetainedRow],
-    tick: u64,
-    correlation: &CorrelationId,
-    skipped: &[(String, String)],
-    limited_fg: Option<u64>,
-) {
-    let mut hint_cx = HintCx::new();
-    for area in areas {
-        let output = area.device.clone();
-        state.workspaces.ensure_output(&output);
-        let Some(active) = state.workspaces.active_id(&output) else {
-            continue;
-        };
-        if !workspace_mode_tiled(state, &output, &active) {
-            continue;
-        }
-        if tiling_domain_bounds_with(area.work, state.outer_gap).is_none() {
-            continue;
-        }
-        let Some(rows) = assemble_domain_rows(
-            state,
-            &output,
-            &active,
-            observed,
-            retained,
-            "reconcile",
-            correlation.as_str(),
-            &mut hint_cx,
-        ) else {
-            continue;
-        };
-        let windows: Vec<(WindowId, Rect, WindowSizeHints, bool)> = rows
-            .iter()
-            .map(|r| (WindowId(r.token.clone()), r.rect, r.hints, r.floating))
-            .collect();
-        let fp = fingerprint(
-            &rows
-                .iter()
-                .map(|r| (r.token.clone(), r.rect))
-                .collect::<Vec<_>>(),
-        );
-        // The limited lane never forwards focus: automatic focus stays
-        // blocked under an unmanageable fullscreen even when the Engine
-        // could plan it. The normal lane keeps the existing foreground
-        // rule untouched.
-        let focused = match limited_fg {
-            Some(_) => None,
-            None => state
-                .focused_token(observed)
-                .filter(|f| windows.iter().any(|(w, _, _, _)| w == f)),
-        };
-        let Some((domain, domain_key)) =
-            workspace_domain_for(&output, &active, areas, state.inner_gap, state.outer_gap)
-        else {
-            continue;
-        };
-        let gaps_adopted = crate::settings::retained_gaps_match(
-            &state.engine,
-            &domain_key,
-            state.inner_gap,
-            state.outer_gap,
-        );
-        let mut event = crate::tiling::build_reconcile_event_for_floating(
-            &state.owner,
-            &state.generation,
-            correlation,
-            revision_for(state, &output, &active),
-            fp,
-            &domain,
-            &domain_key,
-            state.outer_gap,
-            &windows,
-            focused.as_ref(),
-        );
-        if !gaps_adopted {
-            event.command = CoreCommand::UpdateGaps;
-        }
-        let reply = handle_engine_event(state, &mut event);
-        log_engine_placement_trace(state, tick, correlation.as_str(), "reconcile");
-        let writable = match limited_fg {
-            Some(fg) => writable_tokens_limited(state, &output, &active, observed, fg),
-            None => writable_tokens(state, &output, &active, observed),
-        };
-        apply_geometry(
-            state,
-            ApplyInput {
-                me,
-                fulls,
-                reply: &reply,
-                observed,
-                op: "reconcile",
-                tick,
-                correlation: correlation.as_str(),
-                skipped: skipped.to_vec(),
-                writable: &writable,
-                output_token: state.workspaces.output_token(&output),
-                workspace_token: state.workspaces.workspace_token(&output, &active),
-                revision: revision_for(state, &output, &active),
-            },
-        );
-        if limited_fg.is_none() {
-            adopt_tick_capacity_floats(
-                state,
-                me,
-                tick,
-                correlation.as_str(),
-                &reply,
-                observed,
-                &domain_key,
-            );
-        }
-    }
-}
 /// Auto-retire positively restored owned-fullscreen markers on verified
 /// workspace members through the shared exact-lifetime sequence, so no
 /// special clear action is needed to trigger it. Global game/elevated gate
@@ -244,13 +79,13 @@ pub(super) fn sweep_retire_stale_fullscreen(
     if effects.suspend_block(state, me, fulls) || effects.elevated(me) {
         return;
     }
-    let candidates: Vec<(crate::workspace::WindowKey, String)> = state
+    let candidates: Vec<(crate::native_guards::WindowKey, String)> = state
         .member_tokens
         .iter()
         .map(|(key, token)| (key.clone(), token.clone()))
         .collect();
     for (key, token) in candidates {
-        if state.workspaces.member_loc(&key).is_none() {
+        if state.member_home(&key).is_none() {
             continue;
         }
         let Some(expected) = overlay_expected(state, observed, retained, &token) else {
@@ -271,14 +106,16 @@ pub(super) fn sweep_retire_stale_fullscreen(
     }
 }
 
-/// Run one reconcile tick partitioned per output-local domain: enumerate
-/// once, then converge each monitor's current workspace through its own
-/// retained Engine session with that monitor's `rcWork` bounds. Hidden
-/// workspace sessions are never reconciled, so their membership and layout
-/// survive untouched; no layout reseeds across switches.
+/// Run one reconcile tick through the single world owner: enumerate once,
+/// run the mechanical admission preamble plus visibility diagnostics, then
+/// dispatch one observation report (capture/sequence/deliver/apply/ack).
+/// Policy (rings, views, homing, history, trailing, closes) is core-owned;
+/// the adapter retains only native caches plus the last applied receipts.
 pub(super) fn reconcile_tick(
     state: &mut TileLoop,
     me: &ProcessIdentity,
+    store: &LedgerStore,
+    dir: &Path,
     fulls: &[Rect],
     areas: &[MonitorArea],
 ) {
@@ -360,53 +197,47 @@ pub(super) fn reconcile_tick(
             }),
         );
     }
-    // One shared hint-query budget for the whole tick across all outputs:
-    // no domain independently blows the per-operation bound. The normal
-    // lane runs the identical geometry planning as the limited lane (see
-    // `reconcile_domains_geometry`); only the preamble above and the
-    // close drain below are normal-lane only.
-    reconcile_domains_geometry(
+    // One shared observation tick through the single world owner: the core
+    // converges every monitor from this tick's screens plus window facts,
+    // and the host diff applies every accepted reply with fresh proof.
+    // Committed capacity floats join the ordinary float lanes with markers.
+    let foreground = crate::ffi::foreground_window();
+    if super::world_tick::run_observation_tick(
         state,
         me,
-        fulls,
-        areas,
+        store,
+        dir,
         &observed,
         &retained,
-        tick,
-        &correlation,
-        &skipped,
-        None,
-    );
-    // D23: queued closes homed outside the selected set (hidden/inactive
-    // workspaces) drain through ordinary observations here, before any later
-    // registry pruning can strand them. Engine commits only; hidden domains
-    // take no geometry or focus writes.
-    fanout_pending_closed(state, me, areas, &observed, &retained, correlation.as_str());
+        areas,
+        foreground,
+        fulls,
+    )
+    .is_some()
+    {
+        let correlation_str = correlation.as_str();
+        super::capacity_floats::adopt_capacity_from_reply(
+            state,
+            me,
+            tick,
+            correlation_str,
+            &observed,
+        );
+    }
 }
 
-/// Narrow geometry-only lane for an unmanageable fullscreen foreground:
-/// one observation, then the shared per-domain geometry planning with the
-/// foreground excluded per write, focus forced off, and no other effects.
+/// Narrow observation lane for an unmanageable fullscreen foreground: one
+/// observation through the same world owner, with no other effects.
 ///
-/// Deliberately runs none of the normal preamble/postamble, each of which
-/// can natively touch windows or membership:
-/// - no `ensure_workspace_assignments` (fresh roster admits nothing; only
-///   already-member windows are writable through the membership-keyed
-///   `writable_tokens_limited` plus the per-write stored-tag revalidation);
-/// - no `clear_maximize_at_admission` (no `restore_zoom_placement`
-///   un-maximize, which can activate);
-/// - no stale-fullscreen sweep, visibility/exception staging, close drain,
-///   or capacity-float adoption (no marker, hide, Engine-close, or float
-///   moves);
-/// - no `publish_managed`/maintenance/focus/overlay refresh by the caller
-///   (the shared geometry readback still refreshes its in-memory managed
-///   snapshot; that publishes no native writes).
-///
-/// Unknown foreground (`0`) refuses with no planning: fail closed to full
-/// suspension upstream.
+/// The unmanageable foreground window itself is unmanaged (never admitted,
+/// never homed), so the core authorizes no frame for it; observation-only
+/// reports emit no focus effects. Unknown foreground (`0`) refuses with no
+/// planning: fail closed to full suspension upstream.
 pub(super) fn reconcile_limited_tick(
     state: &mut TileLoop,
     me: &ProcessIdentity,
+    store: &LedgerStore,
+    dir: &Path,
     fulls: &[Rect],
     areas: &[MonitorArea],
     foreground_hw: u64,
@@ -416,7 +247,6 @@ pub(super) fn reconcile_limited_tick(
     }
     state.tick += 1;
     let tick = state.tick;
-    let correlation = state.correlation();
     let mut skipped: Vec<(String, String)> = Vec::new();
     let mut retained: Vec<RetainedRow> = Vec::new();
     let log_path = state.log_path.clone();
@@ -427,16 +257,15 @@ pub(super) fn reconcile_limited_tick(
         );
         return;
     };
-    reconcile_domains_geometry(
+    let _ = super::world_tick::run_observation_tick(
         state,
         me,
-        fulls,
-        areas,
+        store,
+        dir,
         &observed,
         &retained,
-        tick,
-        &correlation,
-        &skipped,
-        Some(foreground_hw),
+        areas,
+        foreground_hw,
+        fulls,
     );
 }

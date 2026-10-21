@@ -16,6 +16,8 @@ use super::*;
 fn dispatch_fullscreen_cli_toggle(
     state: &mut TileLoop,
     me: &ProcessIdentity,
+    store: &LedgerStore,
+    dir: &Path,
     fulls: &[Rect],
     areas: &[MonitorArea],
 ) {
@@ -68,7 +70,7 @@ fn dispatch_fullscreen_cli_toggle(
         log_json_at(&state.log_path, line);
         return;
     };
-    if !crate::workspace_owner::member_matches(
+    if !crate::native_guards::member_matches(
         &member_key,
         origin.hwnd,
         origin.pid,
@@ -188,7 +190,7 @@ fn dispatch_fullscreen_cli_toggle(
             let outcome = exit_fullscreen_owned(member_key.hwnd, &meta);
             if outcome == "restored" && !meta.was_maximized {
                 let fulls_owned = fulls.to_vec();
-                reconcile_tick(state, me, &fulls_owned, areas);
+                reconcile_tick(state, me, store, dir, &fulls_owned, areas);
             }
             ("restored", outcome)
         }
@@ -223,6 +225,8 @@ fn dispatch_fullscreen_cli_toggle(
 fn dispatch_float_cli_toggle(
     state: &mut TileLoop,
     me: &ProcessIdentity,
+    store: &LedgerStore,
+    dir: &Path,
     fulls: &[Rect],
     areas: &[MonitorArea],
 ) {
@@ -280,6 +284,8 @@ fn dispatch_float_cli_toggle(
     dispatch_float_intent(
         state,
         me,
+        store,
+        dir,
         fulls,
         areas,
         QueuedFloatIntent {
@@ -300,6 +306,8 @@ fn dispatch_float_cli_toggle(
 fn dispatch_sticky_cli_toggle(
     state: &mut TileLoop,
     me: &ProcessIdentity,
+    store: &LedgerStore,
+    dir: &Path,
     fulls: &[Rect],
     areas: &[MonitorArea],
 ) {
@@ -352,6 +360,8 @@ fn dispatch_sticky_cli_toggle(
     dispatch_sticky_intent(
         state,
         me,
+        store,
+        dir,
         fulls,
         areas,
         QueuedStickyIntent {
@@ -466,15 +476,15 @@ pub(super) fn poll_workspace_cli_request(
         return;
     }
     if request.action == WorkspaceAction::Fullscreen {
-        dispatch_fullscreen_cli_toggle(state, me, fulls, areas);
+        dispatch_fullscreen_cli_toggle(state, me, store, dir, fulls, areas);
         return;
     }
     if request.action == WorkspaceAction::Float {
-        dispatch_float_cli_toggle(state, me, fulls, areas);
+        dispatch_float_cli_toggle(state, me, store, dir, fulls, areas);
         return;
     }
     if request.action == WorkspaceAction::Sticky {
-        dispatch_sticky_cli_toggle(state, me, fulls, areas);
+        dispatch_sticky_cli_toggle(state, me, store, dir, fulls, areas);
         return;
     }
     if suspend_read(state, me, fulls).veto.block {
@@ -504,7 +514,7 @@ pub(super) fn poll_workspace_cli_request(
         );
         return;
     };
-    state.workspaces.ensure_output(&output);
+    state.ensure_device(&output);
     state.tick += 1;
     let tick = state.tick;
     // Dispatch beginning for the CLI path: the clock starts before the
@@ -660,53 +670,72 @@ pub(super) fn poll_workspace_cli_request(
         }
         return;
     }
-    // Resolve without preactivating (same as the hook select path):
-    // resolvers never touch ACTIVE; only the transition activates. History
-    // forms resolve purely like the hook history path. Scoped resolvers keep
-    // the local path equivalent and share trailing creation across outputs.
+    // Resolve without preactivating (same as the hook select path).
+    // Numbered digits resolve positionally over the core logical ring;
+    // previous/relative/trailing resolve core-side through their dedicated
+    // world commands (history and trailing are core-owned).
+    let Some(wire) = state.wire_of(&output) else {
+        log_json_at(
+            &state.log_path,
+            workspace_log(state, tick, op, request.index, "cli", "unknown-output"),
+        );
+        return;
+    };
+    enum CliSelect {
+        Explicit(String),
+        Cmd(tiler_core::world_report::WorldCommand),
+    }
     let (target, none_outcome, dispatch_op, dispatch_index): (
-        Option<String>,
+        Option<CliSelect>,
         &'static str,
         &'static str,
         u8,
     ) = match request.action {
         WorkspaceAction::Select => {
             if request.index == 0 {
-                let sticky: BTreeSet<crate::workspace::WindowKey> =
-                    state.sticky.keys().cloned().collect();
-                let (owner, spaces) = (&mut state.scope_owner, &mut state.workspaces);
-                match owner.resolve_trailing_select(spaces, &output, &sticky) {
-                    crate::workspace_scope_owner::TrailingResolve::Reuse(id) => {
-                        (Some(id), "unknown-output", "select", request.index)
-                    }
-                    crate::workspace_scope_owner::TrailingResolve::Unknown => {
-                        (None, "unknown-output", "select", request.index)
-                    }
-                }
+                (
+                    Some(CliSelect::Cmd(
+                        tiler_core::world_report::WorldCommand::SelectTrailing {
+                            output: tiler_core::directional::OutputId(wire.clone()),
+                        },
+                    )),
+                    "unknown-output",
+                    "select",
+                    request.index,
+                )
             } else {
-                let target =
-                    state
-                        .scope_owner
-                        .resolve_numbered(&state.workspaces, &output, request.index);
-                (target, "unknown-target", "select", request.index)
+                let ring = state.world.engine().logical_ring(&wire);
+                match tiler_core::workspace_scope::resolve_numbered(&ring, request.index) {
+                    Some(id) => (
+                        Some(CliSelect::Explicit(id)),
+                        "unknown-target",
+                        "select",
+                        request.index,
+                    ),
+                    None => (None, "unknown-target", "select", request.index),
+                }
             }
         }
-        WorkspaceAction::Previous => {
-            let (owner, spaces) = (&mut state.scope_owner, &mut state.workspaces);
-            (
-                owner.resolve_previous(spaces, &output),
-                "unknown-target",
-                "previous",
-                0,
-            )
-        }
+        WorkspaceAction::Previous => (
+            Some(CliSelect::Cmd(
+                tiler_core::world_report::WorldCommand::SelectPrevious {
+                    output: tiler_core::directional::OutputId(wire.clone()),
+                },
+            )),
+            "unknown-target",
+            "previous",
+            0,
+        ),
         WorkspaceAction::RelativeHistory => match request.direction {
             Some(direction) => {
                 let delta = direction.delta();
                 (
-                    state
-                        .scope_owner
-                        .resolve_relative(&state.workspaces, &output, delta),
+                    Some(CliSelect::Cmd(
+                        tiler_core::world_report::WorldCommand::SelectRelative {
+                            output: tiler_core::directional::OutputId(wire.clone()),
+                            delta,
+                        },
+                    )),
                     "unknown-target",
                     if delta < 0 {
                         "relative-prev"
@@ -740,40 +769,75 @@ pub(super) fn poll_workspace_cli_request(
         );
         return;
     };
-    // REQ-WS-09 departure memory for the CLI select/previous/relative path:
-    // the dispatch-time foreground resolves directly against verified
-    // source membership.
-    let foreground_hwnd = crate::ffi::foreground_window();
-    if let Some(source_id) = state.workspaces.active_id(&output)
-        && let Some(token) = remember_select_departure(
+    // Departure memory is core-owned history now: the select command below
+    // records it, so the adapter logs nothing here.
+    let effect = match target {
+        CliSelect::Explicit(id) => workspace_do_select(
             state,
+            me,
+            store,
+            dir,
+            fulls,
+            areas,
+            &mut observed,
             &output,
-            &source_id,
-            foreground_hwnd,
-            &observed,
-            &retained,
-        )
-    {
-        log_json_at(
-            &state.log_path.clone(),
-            serde_json::json!({"event":"select-departure","correlation":ctx.correlation,"window":token}),
-        );
-    }
-    let effect = workspace_do_select(
-        state,
-        me,
-        store,
-        dir,
-        fulls,
-        areas,
-        &mut observed,
-        &output,
-        &target,
-        &ctx,
-        None,
-        false,
-        false,
-    );
+            &id,
+            &ctx,
+            None,
+            false,
+            false,
+        ),
+        CliSelect::Cmd(command) => {
+            let foreground = crate::ffi::foreground_window();
+            let reply = super::world_tick::run_world_command(
+                state,
+                me,
+                store,
+                dir,
+                &observed,
+                &retained,
+                areas,
+                foreground,
+                fulls,
+                command,
+            );
+            let transition_ms = ctx
+                .start
+                .elapsed()
+                .as_millis()
+                .min(u128::from(u64::MAX)) as u64;
+            match reply {
+                Some(_) => SelectEffect {
+                    outcome: "ok",
+                    geometry: None,
+                    focus: "none",
+                    transition_ms,
+                    observation_ms: 0,
+                    geometry_ms: 0,
+                    hide_ms: 0,
+                    reveal_ms: 0,
+                    focus_ms: 0,
+                    plan_ms: 0,
+                    source_workspace: state.active_output.clone(),
+                    target_workspace: dispatch_op.to_owned(),
+                },
+                None => SelectEffect {
+                    outcome: "unverified",
+                    geometry: None,
+                    focus: "none",
+                    transition_ms,
+                    observation_ms: 0,
+                    geometry_ms: 0,
+                    hide_ms: 0,
+                    reveal_ms: 0,
+                    focus_ms: 0,
+                    plan_ms: 0,
+                    source_workspace: state.active_output.clone(),
+                    target_workspace: dispatch_op.to_owned(),
+                },
+            }
+        }
+    };
     log_json_at(
         &state.log_path,
         workspace_log(

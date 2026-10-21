@@ -1,18 +1,20 @@
 #![forbid(unsafe_code)]
-use super::*;
+//! World-routed send follow tail.
+//!
+//! The core owns the send transfer and the follow view change: this tail
+//! only routes the explicit [`WorldCommand::Send`](tiler_core::world_report::WorldCommand::Send)
+//! with `follow=true` through the single world owner and reports the honest
+//! outcome. No hide/reveal, no Engine plan, no history.
 
-/// Shared send tail for both the Engine plan route and the native
-/// cross-boundary route: commit-before-hide the mover, then follow by
-/// selecting the target (which reveals it and reconciles it when tiled).
-/// The carried overlay snapshot re-verifies live before hide (item 9):
-/// a newly arrived fullscreen refuses, other drift defers, with no restore
-/// and no replay. Broader view/mode/gap races stay with the select's own
-/// fresh fences below. When `deferred` is set (D16 slotless carry), the
-/// target select skips its geometry application while keeping observation,
-/// reconcile, reveal, focus, and fences. A D3 capacity-float mover
-/// (`to_float`) rides the same slotless select: the source reflow already
-/// applied on the caller plan, and the mover takes no destination
-/// geometry.
+use super::*;
+use tiler_core::world_report::WorldCommand;
+
+/// Route one send-and-follow through the world owner.
+///
+/// `target_id` is the stable core logical workspace id on the wire output
+/// for `output` (device key). Returns `ok` when the owner accepted and
+/// applied a reply, `unknown-output` when the device has no wire id, and
+/// `unverified` when the command was rejected or lost.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn workspace_send_follow(
     state: &mut TileLoop,
@@ -22,9 +24,9 @@ pub(super) fn workspace_send_follow(
     fulls: &[Rect],
     areas: &[MonitorArea],
     observed: &mut [ObservedWindow],
-    mover_key: &crate::workspace::WindowKey,
-    stored: &ProcessIdentity,
-    mover_minimized: bool,
+    mover_key: &crate::native_guards::WindowKey,
+    _stored: &ProcessIdentity,
+    _mover_minimized: bool,
     output: &str,
     target_id: &str,
     source_token: &str,
@@ -33,133 +35,69 @@ pub(super) fn workspace_send_follow(
     source: Option<ApplySummary>,
     source_ms: u64,
     source_plan_ms: u64,
-    preflight: SendPreflight,
-    deferred: bool,
-    to_float: bool,
+    _preflight: SendPreflight,
+    _deferred: bool,
+    _to_float: bool,
 ) -> SendEffect {
-    if let Err(outcome) = preflight.overlay_hold(mover_key.hwnd, fulls) {
-        return SendEffect {
-            outcome,
-            focus: "none",
-            source,
-            target: None,
-            transition_ms: 0,
-            observation_ms: 0,
-            source_geometry_ms: source_ms,
-            target_geometry_ms: 0,
-            hide_ms: 0,
-            reveal_ms: 0,
-            focus_ms: 0,
-            source_plan_ms,
-            target_plan_ms: 0,
-            source_workspace: source_token.to_owned(),
-            target_workspace: target_token.to_owned(),
-        };
-    }
-    let mut clock = action_clock();
-    let hide_done = hide_phase(
-        state,
-        me,
-        store,
-        dir,
-        ctx,
-        vec![HideAttempt {
-            key: mover_key.clone(),
-            expected: stored.clone(),
-            iconic: mover_minimized,
-        }],
-        &mut clock,
-    );
-    log_visibility_timing(
-        state,
-        ctx,
-        "send-hide",
-        &hide_done.breakdown,
-        &PhaseBreakdown::default(),
-    );
-    let (hide_outcome, _hide_detail) = match hide_done.results.first() {
-        Some(result) => (result.outcome, result.detail),
-        None => ("uncertain", None),
-    };
-    if state.hidden_claims.contains_key(mover_key) {
-        state.workspaces.set_hidden(mover_key, true);
-    }
-    if hide_outcome != "hidden" {
-        return SendEffect {
-            outcome: hide_outcome,
-            focus: "none",
-            source,
-            target: None,
-            transition_ms: 0,
-            observation_ms: 0,
-            source_geometry_ms: source_ms,
-            target_geometry_ms: 0,
-            hide_ms: 0,
-            reveal_ms: 0,
-            focus_ms: 0,
-            source_plan_ms,
-            target_plan_ms: 0,
-            source_workspace: source_token.to_owned(),
-            target_workspace: target_token.to_owned(),
-        };
-    }
-    // Follow focuses the verified mover, fullscreen like ordinary.
-    let select = workspace_do_select(
-        state,
-        me,
-        store,
-        dir,
-        fulls,
-        areas,
-        observed,
-        output,
-        target_id,
-        ctx,
-        Some(mover_key),
-        false,
-        deferred || to_float,
-    );
-    if select.outcome != "ok" {
-        return SendEffect {
-            outcome: select.outcome,
-            focus: select.focus,
-            source,
-            target: select.geometry,
-            transition_ms: select.transition_ms,
-            observation_ms: select.observation_ms,
-            source_geometry_ms: source_ms,
-            target_geometry_ms: select.geometry_ms,
-            hide_ms: select.hide_ms,
-            reveal_ms: select.reveal_ms,
-            focus_ms: select.focus_ms,
-            source_plan_ms,
-            target_plan_ms: select.plan_ms,
-            source_workspace: source_token.to_owned(),
-            target_workspace: select.target_workspace.clone(),
-        };
-    }
-    // Verified-only mapping, fullscreen like ordinary: the select already
-    // revealed the arrival, so only `focus-ok` reports success.
-    let outcome: &'static str = if select.focus == "focus-ok" {
-        "ok"
-    } else {
-        "focus-unverified"
-    };
-    SendEffect {
+    let fail = |outcome: &'static str| SendEffect {
         outcome,
-        focus: select.focus,
+        focus: "none",
         source,
-        target: select.geometry,
-        transition_ms: select.transition_ms,
-        observation_ms: select.observation_ms,
+        target: None,
+        transition_ms: 0,
+        observation_ms: 0,
         source_geometry_ms: source_ms,
-        target_geometry_ms: select.geometry_ms,
-        hide_ms: select.hide_ms,
-        reveal_ms: select.reveal_ms,
-        focus_ms: select.focus_ms,
+        target_geometry_ms: 0,
+        hide_ms: 0,
+        reveal_ms: 0,
+        focus_ms: 0,
         source_plan_ms,
-        target_plan_ms: select.plan_ms,
+        target_plan_ms: 0,
         source_workspace: source_token.to_owned(),
-        target_workspace: select.target_workspace.clone(),
+        target_workspace: target_token.to_owned(),
+    };
+    let Some(token) = state.member_tokens.get(mover_key).cloned() else {
+        return fail("unmanaged");
+    };
+    let Some(wire) = state.output_tokens.get(output).cloned() else {
+        return fail("unknown-output");
+    };
+    let foreground = crate::ffi::foreground_window();
+    let reply = super::world_tick::run_world_command(
+        state,
+        me,
+        store,
+        dir,
+        observed,
+        &[],
+        areas,
+        foreground,
+        fulls,
+        WorldCommand::Send {
+            window: tiler_core::directional::WindowId(token),
+            target_output: tiler_core::directional::OutputId(wire),
+            target_workspace: target_id.to_owned(),
+            follow: true,
+        },
+    );
+    match reply {
+        Some(_) => SendEffect {
+            outcome: "ok",
+            focus: "none",
+            source,
+            target: None,
+            transition_ms: ctx.start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+            observation_ms: 0,
+            source_geometry_ms: source_ms,
+            target_geometry_ms: 0,
+            hide_ms: 0,
+            reveal_ms: 0,
+            focus_ms: 0,
+            source_plan_ms,
+            target_plan_ms: 0,
+            source_workspace: source_token.to_owned(),
+            target_workspace: target_token.to_owned(),
+        },
+        None => fail("unverified"),
     }
 }

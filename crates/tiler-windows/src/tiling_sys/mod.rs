@@ -18,9 +18,8 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use tiler_core::boundary::{CoreCommand, CoreEvent, CoreReply, NoGroupReason};
+use tiler_core::boundary::{CoreCommand, CoreReply, NoGroupReason};
 use tiler_core::directional::WindowId;
-use tiler_core::engine::Engine;
 use tiler_core::geometry::Rect;
 use tiler_core::ids::{CorrelationId, GenerationId, OwnerId};
 use tiler_core::size_hints::WindowSizeHints;
@@ -42,9 +41,8 @@ use self::action_context::{ActionCtx, ActionLine, ActionTimings, SelectEffect, S
 use self::admission::admission_clear_planned;
 use self::admission::{
     anchor_fallback_for, clear_maximize_at_admission, committed_ordinary_pin,
-    engine_is_automatic_fixed, engine_is_float, fanout_pending_closed, fixed_origin_provenance,
-    fixed_predicate_for, float_focus_candidates, float_send_admits, handle_engine_event,
-    is_automatic_in, no_space_for, overlay_refusal_for, stamp_engine_event,
+    engine_is_automatic_fixed, engine_is_float, fixed_origin_provenance, fixed_predicate_for,
+    float_focus_candidates, float_send_admits, no_space_for, overlay_refusal_for,
 };
 use self::assignments::{
     MAX_HIDE_DIAG_PER_SELECT, audit_hidden_claims, ensure_workspace_assignments,
@@ -66,38 +64,30 @@ pub use self::commands::{
     cmd_capture, cmd_directional, cmd_inventory, cmd_resize, cmd_send_output, cmd_tile,
     cmd_workspace, load_normal_tile_base,
 };
-#[cfg(test)]
-use self::cross_drag::drag_refusal_kind;
-#[cfg(test)]
-use self::cross_drag::prepare_cross_drag_event;
 use self::cross_drag::{
-    CrossDragSettle, DropDestination, adopt_gaps_and_refresh_floats, adopt_gaps_for_route,
-    adopt_gaps_on_candidate, assemble_cross_drag_rows, cross_topology_fresh, fresh_cross_areas,
-    log_redacted_dispatch, resolve_drop_destination, settle_cross_drag_drop, snapshot_cross_drag,
+    CrossDragSettle, DropDestination, resolve_drop_destination, settle_cross_drag_drop,
+    snapshot_cross_drag,
 };
 use self::diag::{
     WindowDiagSample, diag_identity_broke, diag_identity_rebound, drop_diag_sample,
-    flush_window_diag, stage_hint_samples, stage_no_plan, stage_write_samples,
+    flush_window_diag, stage_no_plan,
 };
 #[cfg(test)]
 use self::diag::{
     clear_diag_classes, clear_diag_pids, diag_class_cached, inject_diag_class, inject_diag_pid,
 };
 use self::dir_watch::DirWatch;
-use self::directional_cross::run_directional_cross;
 use self::directional_resolution::{
     chord_output, directional_arrival_verified, directional_live, directional_outputs_from_areas,
     directional_snapshot, drag_drop_live, output_for_point, output_for_rect,
-    resolve_directional_target, revision_for, workspace_domain_for,
+    resolve_directional_target, revision_for,
 };
 pub use self::dispatch::{LaunchBackend, SystemLaunchBackend};
 use self::dispatch::{
     dispatch_float_intent, dispatch_launch_intent, dispatch_orientation_intent,
     dispatch_sticky_intent, dispatch_workspace_tiling_intent,
 };
-#[cfg(test)]
-use self::drag_preview::prepare_cross_drag_preview;
-use self::drag_preview::{prepare_cross_singleton_event, refresh_drag_preview};
+use self::drag_preview::refresh_drag_preview;
 use self::first_run::{FirstRunPending, resolve_first_run};
 pub use self::first_run::{FirstRunResolution, resolve_first_run_outcome};
 #[cfg(test)]
@@ -109,8 +99,7 @@ use self::float_toggle::{
 use self::focus::{hide_border, note_focus_advance, publish_managed, refresh_active_border};
 pub(crate) use self::focus_actuation::owner_snap_dropped;
 use self::focus_actuation::{
-    FocusActuation, actuate_focus, born_maximized_keep_overlay_for, overlay_expected,
-    same_axis_move_for,
+    actuate_focus, born_maximized_keep_overlay_for, overlay_expected, same_axis_move_for,
 };
 #[cfg(test)]
 use self::fullscreen::{
@@ -122,7 +111,7 @@ use self::fullscreen::{
     exit_fullscreen_owned, holdable_key, live_style_for_retire, read_fullscreen_meta,
     track_fullscreen_holds,
 };
-use self::geometry::{ApplyInput, ApplySummary, apply_geometry, audit_json, reply_outcome};
+use self::geometry::{ApplySummary, audit_json};
 use self::gesture_tick::gesture_tick;
 use self::group_underlay::{
     chord_held_now, classify_move_size_start, hide_preview, hide_underlay, live_outer_rect,
@@ -149,13 +138,10 @@ use self::keyboard_resize::dispatch_resize_intent;
 use self::keyboard_tick::keyboard_tick;
 use self::migration::workspace_migrate_tick;
 #[cfg(test)]
-use self::migration::{migrate_rows_for, workspace_migrate_one};
+use self::migration::workspace_migrate_one;
 #[cfg(test)]
 use self::migration_run::migration_follow_tail;
 use self::migration_run::run_workspace_migrate;
-use self::migration_visibility::migration_view_effects;
-#[cfg(test)]
-use self::migration_visibility::{flush_migrate_hide_summary, flush_migrate_reveal_summary};
 use self::minmax::{FreshHint, QueryCost, fixed_birth_for_slotless, hidden_hint_for, min_hint_for};
 pub(crate) use self::monitors::ensure_pm_v2;
 use self::monitors::{MonitorArea, all_monitors, monitor_fulls};
@@ -171,12 +157,12 @@ use self::observe::{
     visibility_generation, window_identity,
 };
 pub use self::observe::{KnownIdentity, ObserveFailure};
-use self::output_send::{resolve_output_send_target, run_output_send};
+use self::output_send::run_output_send;
 #[cfg(test)]
 use self::output_sync::poll_foreground_workspace;
 use self::output_sync::{
     foreground_elevated, foreground_pager_elevated_detailed, sync_monitor_outputs,
-    sync_monitor_outputs_local, workspace_maintenance,
+    workspace_maintenance,
 };
 #[cfg(test)]
 use self::output_sync::{foreground_elevated_detailed, foreground_pager_elevated};
@@ -242,7 +228,7 @@ use self::render_bridge::{
 use self::restart::{admit_born_fullscreen, admit_slotless_maximized, adopt_restart_markers};
 use self::retained::{HiddenRecord, PendingClosed, RetainedRow};
 use self::rows::{
-    assemble_domain_rows, drop_member_state, hold_band_target, hold_marker_target,
+    drop_member_state, hold_band_target, hold_marker_target,
     hydrate_tile_override_marker, install_float_mark_held, install_sticky_mark_held,
     install_tile_override_mark_held, marker_tag_pid_fresh, prune_float_state,
     remove_tile_override_mark_best_effort, retain_float_focus_validated,
@@ -255,13 +241,11 @@ use self::run_loop_wait::{
     OwnerWaitDiag, OwnerWaitSource, TRACE_REPORT_SECS, drain_hook_edges, gesture_sampling_open,
     loop_exit_cause, owner_deadline_source, pump_waits_snapshots, tray_staged_pending,
 };
-use self::selection::remember_select_departure;
 use self::selection::workspace_do_select;
 use self::send_follow::workspace_send_follow;
 use self::send_native::workspace_do_send_native;
 use self::send_preflight::SendPreflight;
 use self::send_preflight::SendTarget;
-use self::send_stay::ensure_trailing_spare;
 use self::send_stay::workspace_send_stay;
 use self::sends::workspace_do_send;
 #[cfg(test)]
@@ -271,7 +255,7 @@ use self::settings::{
     suspend_read, suspend_read_inner,
 };
 use self::shell::{exe_file_name, is_border_shell_popup, is_shell_class, rect_from_win};
-use self::trace::{log_engine_placement_trace, log_json_at, log_mono_ms, refresh_border_timed};
+use self::trace::{log_json_at, log_mono_ms, refresh_border_timed};
 use self::visibility_batch::{
     HideAttempt, PhaseBreakdown, action_clock, hide_phase, log_visibility_timing, reveal_phase,
 };
@@ -285,12 +269,7 @@ use self::visibility_diag::{
     omission_summary, rehide_err_outcome, rehide_retired_detail, reveal_err_outcome,
     reveal_log_line, reveal_outcome, rollback_newly_hidden, stage_exceptions, stage_visibility,
 };
-#[cfg(test)]
-use self::workspace_mode::dispatch_workspace_release;
 use self::workspace_mode::read_topmost_now;
-#[cfg(test)]
-use self::workspace_mode::reset_fixed_admission_for_domain;
-use self::workspace_mode::retry_pending_releases;
 use self::workspace_mode::set_topmost_band;
 use self::workspace_mode::toggle_workspace_tiling;
 use self::workspace_mode::workspace_mode_known;
@@ -352,7 +331,6 @@ use crate::tiling::{
     parse_workspace_request, readback_outcome, scope_allows, scope_exe_basename,
     tick_summary_signature, tiling_domain_bounds_with,
 };
-use crate::workspace::ManagedWorkspaces;
 type DynError = Box<dyn std::error::Error>;
 type Result<T> = std::result::Result<T, DynError>;
 
@@ -367,15 +345,21 @@ const TICK_POLL_MS: u32 = 100;
 const FOCUS_SETTLE_ROUNDS: u32 = 10;
 const FOCUS_SETTLE_POLL_MS: u32 = 50;
 
-/// Unconfirmed workspace-mode toggle releases queue in
-/// [`crate::workspace::PendingReleases`]: keyed by domain with
+/// Unconfirmed workspace-mode toggle releases queue keyed by domain with
 /// latest-intent-wins so a stale float can never fire at a retiled layout,
 /// dropped on confirmed toggles, stale once tiled, and retried only on
 /// topology edges with current observed geometry (never polled).
 struct TileLoop {
-    engine: Engine,
     owner: OwnerId,
     generation: GenerationId,
+    /// Single runtime WorldEngine owner (stage 2b, active): all
+    /// lifecycle/history/tiling/scope/select/send/migration policy routes
+    /// through `world`. The legacy `Engine`/`ManagedWorkspaces`/
+    /// `WorkspaceScopeOwner` policy owners are deleted: core logical queries
+    /// (`logical_ring`/`logical_view`/`logical_members`/`adapter_homing`)
+    /// are the sole routing authority, read-only. Native caches below retain
+    /// only proven applied homes/views/claims plus output native-wire ids.
+    world: world_owner::WorldOwner,
     tokens: TokenMap,
     refused: RefusedTracker,
     /// Stable pre-gesture rectangles from the last reconcile observation.
@@ -401,7 +385,7 @@ struct TileLoop {
     /// back to the stored-member check only. The tag is the member property
     /// (`OmniTilerMember`), never the owned-helper property (which is
     /// empty for ordinary windows and would refuse every ordinary gesture).
-    gesture_start_key: HashMap<u64, crate::workspace::WindowKey>,
+    gesture_start_key: HashMap<u64, crate::native_guards::WindowKey>,
     gesture_start_tag: HashMap<u64, Option<String>>,
     tick: u64,
     allowlist: Option<Vec<AllowEntry>>,
@@ -480,17 +464,21 @@ struct TileLoop {
     /// Raw `EnumWindows` count from the latest observation (targets seen
     /// before any eligibility filtering, including zero).
     last_enumerated: usize,
-    /// Project-owned per-output-local workspaces. Independent Engine domains
-    /// per `(output, workspace)` preserve each layout plus last focus.
-    workspaces: crate::workspace::ManagedWorkspaces,
-    /// Startup-adopted workspace-scope mode plus scoped history (item 12
-    /// stage B). Adopted once from the saved mode before `sync_monitor_outputs`;
-    /// live file edits never adopt, only report restart-required drift.
-    scope_owner: crate::workspace_scope_owner::WorkspaceScopeOwner,
+    /// Mechanical device-to-wire-output map (native device keys to opaque
+    /// `oN` ids). Synced from live monitor areas; native-wire ids only,
+    /// never rings/views/tiling/history policy.
+    output_tokens: HashMap<String, String>,
+    /// Adapter-retained last applied logical homing per Engine token (from
+    /// the last applied reply rows). Receipts prove this commitment with
+    /// fresh evidence; the core remains the sole homing authority.
+    applied_homing: HashMap<String, (String, String)>,
+    /// Adapter-retained last applied logical views per output (from the last
+    /// applied reply outputs). View receipts prove this commitment.
+    applied_views: HashMap<String, String>,
     /// Stable session tokens per member key. The token (not the ephemeral
     /// product nonce) is the Engine identity; the nonce lives only in
     /// `hidden_claims` plus the ledger while hidden.
-    member_tokens: std::collections::BTreeMap<crate::workspace::WindowKey, String>,
+    member_tokens: std::collections::BTreeMap<crate::native_guards::WindowKey, String>,
     /// Last-known rectangles per member token (visible reads plus hidden
     /// snapshots) so Engine source/target observations stay complete.
     member_rects: HashMap<String, Rect>,
@@ -499,16 +487,20 @@ struct TileLoop {
     /// windows are never dropped; the nonce leaves only after verified
     /// reveal or release. Keyed by the full `(hwnd, pid, creation)` member
     /// identity, never HWND alone, so a recycled HWND never matches.
-    hidden_claims: std::collections::BTreeMap<crate::workspace::WindowKey, HiddenRecord>,
+    hidden_claims: std::collections::BTreeMap<crate::native_guards::WindowKey, HiddenRecord>,
     /// Stored full process identity per member key. Hide effects bind to
     /// this stored identity and refuse recycled HWNDs with no writes.
-    member_identity: std::collections::BTreeMap<crate::workspace::WindowKey, ProcessIdentity>,
+    member_identity: std::collections::BTreeMap<crate::native_guards::WindowKey, ProcessIdentity>,
     /// Stored visible-membership lifetime tag per member key, stamped at
     /// admission onto the window itself. Same-process HWND reuse starts
     /// without it, so every effect re-verifies live-against-stored before
     /// trusting HWND/PID/creation. Never serialized, never trusted across
     /// runs, never removed (the property dies with its window).
-    member_tags: std::collections::BTreeMap<crate::workspace::WindowKey, String>,
+    member_tags: std::collections::BTreeMap<crate::native_guards::WindowKey, String>,
+    /// Workspace scope mode adopted at owner startup (restart-adopted).
+    /// Later live edits never adopt: the core reads the saved mode from
+    /// every report ingress, and drift only logs `restart-required`.
+    scope_adopted: tiler_core::workspace_scope::WorkspaceMode,
     /// Cached output context for the next select. Updated on every switch
     /// and refreshed from pointer/foreground context when stale.
     active_output: String,
@@ -565,7 +557,7 @@ struct TileLoop {
     /// retained fresh frames; hidden members fall back to their saved
     /// tile-slot/float snapshots in the portable resolver). Rebuilt per pass,
     /// so stale entries never survive their observation.
-    pager_live: HashMap<crate::workspace::WindowKey, Rect>,
+    pager_live: HashMap<crate::native_guards::WindowKey, Rect>,
     /// Retained native stacking order for pager miniatures, top-to-bottom in
     /// the single `EnumWindows` sequence (first is topmost). Refreshed on
     /// every observation from that same enumeration (observed eligible
@@ -575,7 +567,7 @@ struct TileLoop {
     /// repaint their last observed stacking. Painters draw it reversed per
     /// workspace (topmost last); see `crate::pager::retain_pager_order`.
     /// Full identity keys only, never HWND alone.
-    pager_z: Vec<crate::workspace::WindowKey>,
+    pager_z: Vec<crate::native_guards::WindowKey>,
     /// Identity-keyed pager icon cache (worker-owned artwork bytes). Pruned
     /// to live membership every pump; never queried or waited on in the
     /// tile loop or the painter.
@@ -618,25 +610,25 @@ struct TileLoop {
     /// born-fullscreen lifetimes never enter; floating-first (R-MAX-03) binds
     /// `retile_keep_overlay` below instead, so the born tile default keeps
     /// clearing tiled-first admissions while retile always overlays.
-    born_keep_overlay: BTreeSet<crate::workspace::WindowKey>,
+    born_keep_overlay: BTreeSet<crate::native_guards::WindowKey>,
     /// R-MAX-03 retile latch: exact fresh lifetimes bound at floating-first
     /// slotless admission. A floating-to-tiled workspace admission keeps the
     /// native maximize over the reserved tile slot with no one-shot clear,
     /// independent of `core.born_maximized` (only born R-MAX-06 reads that
     /// setting). Keyed by full member identity, never HWND alone; pruned
     /// with membership like `born_keep_overlay`.
-    retile_keep_overlay: BTreeSet<crate::workspace::WindowKey>,
+    retile_keep_overlay: BTreeSet<crate::native_guards::WindowKey>,
     /// Born-fullscreen hold (KDE initial-fullscreen-hold parity): first-seen
     /// fullscreen windows without a retained tile slot, tracked slotless as a
     /// planner-only exception until their first exit. Keyed by full member
     /// identity, never HWND alone. A window already seen non-fullscreen in
     /// this lifetime never enters.
-    born_fullscreen: BTreeSet<crate::workspace::WindowKey>,
+    born_fullscreen: BTreeSet<crate::native_guards::WindowKey>,
     /// Lifetime-known non-fullscreen member identities: every admitted or
     /// observed-eligible member lands here, so a later fullscreen transition
     /// is a managed overlay, never a born hold again. Pruned with the
     /// enumeration like the hold set.
-    seen_nonfullscreen: BTreeSet<crate::workspace::WindowKey>,
+    seen_nonfullscreen: BTreeSet<crate::native_guards::WindowKey>,
     /// Last observed foreground HWND. Only an actual foreground change to a
     /// hidden member selects its workspace; event-only notifications never do.
     last_foreground: u64,
@@ -647,12 +639,12 @@ struct TileLoop {
     /// decisions never mistake an unclassified window for a closed one.
     last_hwnds: HashSet<u64>,
     /// D23 minimized-omission set: member keys observed iconic this tick.
-    /// Their Engine rows are omitted so convergence releases the leaf,
+    /// Their world facts minimize so capture converges the leaf,
     /// reflows survivors, resolves MRU-or-none focus, and stores the
-    /// `MinimizedSlot`. Populated in `observe`, consumed in
-    /// `assemble_domain_rows`; cleared on every real observation pass.
+    /// `MinimizedSlot`. Populated in `observe`, consumed in capture;
+    /// cleared on every real observation pass.
     /// Session-only, never persisted.
-    minimized_omitted: HashSet<crate::workspace::WindowKey>,
+    minimized_omitted: HashSet<crate::native_guards::WindowKey>,
     /// D23 verified-close queue: Engine tokens with live-time homing,
     /// carried as `closed_windows` on that domain's next valid observation.
     /// Cleared only on Engine acceptance; every rejection retains. Stale
@@ -681,7 +673,7 @@ struct TileLoop {
     /// identity plus the opaque token/tag lifecycle; dropped only with member
     /// state, reveal retirement, or a moved native identity. Domain release
     /// and float toggles never drop it.
-    hint_last_good: HashMap<crate::workspace::WindowKey, LastGoodHint>,
+    hint_last_good: HashMap<crate::native_guards::WindowKey, LastGoodHint>,
     /// Lightweight per-token Timeout-reuse report (`reused`, entry age, tick)
     /// for minimum-hint diagnostics. Written on every fresh-query lane row;
     /// pruned with membership. No log lines here.
@@ -830,7 +822,7 @@ struct TileLoop {
     /// Prior `WS_EX_TOPMOST` per intentional-float member key, read at float
     /// time. Session-local only. Unfloat and graceful stop restore only bands
     /// the project raised, with no frame change.
-    float_topmost_prev: std::collections::BTreeMap<crate::workspace::WindowKey, bool>,
+    float_topmost_prev: std::collections::BTreeMap<crate::native_guards::WindowKey, bool>,
     /// Live float frame per Engine token. Distinct from `member_rects`, which
     /// keeps the last tiled allocation frozen at float time.
     float_rects: HashMap<String, Rect>,
@@ -842,13 +834,13 @@ struct TileLoop {
     /// Engine observation re-adopts it. Cleared on verified unfloat, window
     /// close, and stop; pruned with membership. Sticky, born-fullscreen, and
     /// native overlays keep their own lanes and never enter here.
-    floated: BTreeSet<crate::workspace::WindowKey>,
+    floated: BTreeSet<crate::native_guards::WindowKey>,
     /// Sticky-float members by stable member key to their pre-sticky float
     /// state (`true` when the window was already a normal float before
     /// sticky-on). Single runtime map, never redundant sets. Sticky rides the
     /// Engine as a slotless float plus this map plus a window-lifetime native
     /// marker; the marker (not this map) survives owner restarts.
-    sticky: std::collections::BTreeMap<crate::workspace::WindowKey, bool>,
+    sticky: std::collections::BTreeMap<crate::native_guards::WindowKey, bool>,
     /// Observation-scoped write barrier for restart-hydration float
     /// candidates: exact marker/lifetime-validated staged ordinary/sticky
     /// floats whose hydration commit was rejected (or never assembled) this
@@ -859,14 +851,7 @@ struct TileLoop {
     /// so rejected candidates take no tiled writes before the next
     /// observation revalidates. Never an adapter float lane: durable
     /// markers are untouched, and success/invalid markers leave no entry.
-    restart_reject_hold: BTreeSet<crate::workspace::WindowKey>,
-    /// Unconfirmed workspace-domain releases (toggle edges). Retried on
-    /// topology edges only (never polled) until the exact domain release
-    /// confirms; keyed by domain with latest-intent-wins.
-    pending_releases: crate::workspace::PendingReleases,
-    /// Topology fingerprint of the last pending-release retry attempt: equal
-    /// fingerprints skip silently, so quiet ticks never poll or log.
-    pending_retry_fp: u64,
+    restart_reject_hold: BTreeSet<crate::native_guards::WindowKey>,
     /// Explicit fixed-window tile overrides by stable member key (R-SPC-04
     /// D3/D6/D7): settled user tile wins for the same live client. The
     /// Engine records the win transactionally at unfloat; this set plus the
@@ -878,7 +863,7 @@ struct TileLoop {
     /// The runtime set holds EVERY settled explicit win (generic non-fixed
     /// unfloats included): core needs the suppress signal for all of them.
     /// Only the fixed-origin subset below is durable (marker-backed).
-    fixed_tile_overrides: BTreeSet<crate::workspace::WindowKey>,
+    fixed_tile_overrides: BTreeSet<crate::native_guards::WindowKey>,
     /// Durable fixed-origin tile overrides by stable member key (R-SPC-04
     /// D7): the subset of [`TileLoop::fixed_tile_overrides`] whose prior
     /// provenance was known automatic fixed at win time (Engine automatic
@@ -889,7 +874,7 @@ struct TileLoop {
     /// the runtime set only and keep the existing clear/overlay rules. Hint
     /// loss and predicate changes never erase entries; refloat, verified
     /// close, and membership prune clear them with the runtime set.
-    fixed_origin_overrides: BTreeSet<crate::workspace::WindowKey>,
+    fixed_origin_overrides: BTreeSet<crate::native_guards::WindowKey>,
     /// Adapter-asserted automatic fixed-float origins by stable member key
     /// (R-SPC-04 D4): first-seen maximized windows whose fresh tracks are
     /// fixed under the live predicate. They admit slotless and ride floating
@@ -897,14 +882,14 @@ struct TileLoop {
     /// stamped origin lets the Engine mark them automatic. Lifetime-bound,
     /// pruned with membership; cleared on explicit unfloat (which records an
     /// override instead) and re-float.
-    fixed_auto_seen: BTreeSet<crate::workspace::WindowKey>,
+    fixed_auto_seen: BTreeSet<crate::native_guards::WindowKey>,
     /// First born-fullscreen exits by stable member key (R-SPC-04 D5): the
     /// exit tick classifies with current hints and predicate before any
     /// maximize-clear/restore/slot side effect. One-shot: the next
     /// maximize-clear pass consumes the entry (fixed exits float automatic
     /// and skip the clear via the Engine mark; non-fixed exits tile and take
     /// the normal one-shot clear). Pruned with membership.
-    born_first_exit: BTreeSet<crate::workspace::WindowKey>,
+    born_first_exit: BTreeSet<crate::native_guards::WindowKey>,
     /// Live native overlay flags per Engine token (`(maximized,
     /// fullscreen)`), refreshed on every observation from observed facts
     /// plus retained rows. Feeds the fixed-size admission stamps on Engine
@@ -965,7 +950,7 @@ pub(crate) fn plan_snapshot_offer(
 /// Armed prompt-restore wake: the restored member by full identity plus the
 /// Engine token, so a recycled HWND can never count as completion proof.
 struct RestoreWake {
-    key: crate::workspace::WindowKey,
+    key: crate::native_guards::WindowKey,
     token: String,
     until: Instant,
 }
@@ -977,8 +962,6 @@ mod esc_sequence_tests;
 #[cfg(test)]
 #[path = "tests_input_snapshot.rs"]
 mod input_snapshot_offer_tests;
-
-mod scope_effects;
 
 mod scope_sends;
 
@@ -1032,30 +1015,47 @@ mod capacity_floats;
 
 mod rows;
 
-// W1 world capture fixtures (offline only): pure source-first observation
-// capture plus its regression fixtures. W1/W2 stay offline until the W3
-// atomic runtime cutover replaces the active Engine path whole; no W1/W2
-// scaffolding wires into production before then.
-#[cfg(test)]
+// W1 world capture (runtime owner path): pure source-first observation
+// capture over the real owner tables. Sequencing/actuation below drive
+// the single WorldEngine owner; legacy Engine/ManagedWorkspaces policy
+// owners are removed by the 2b cutover.
 mod world_capture;
 
-// W1 sequencing boundary fixtures (offline only): the future in-process
-// adapter envelope/ordering/ack over the capture above, sequenced through an
-// offline Windows-profile engine. Same W3 cutover gate as `world_capture`.
-#[cfg(test)]
+// W1 sequencing boundary (runtime): the in-process adapter
+// envelope/ordering/ack over the capture above, sequenced through the
+// Windows-profile WorldEngine owned by TileLoop.
 mod world_sequencer;
 
-// W2 host-diff/feedback actuator (offline only): the future host diff over
-// typed replies against an offline native facade. Same W3 cutover gate;
-// never wires into the running owner before then.
-#[cfg(test)]
+// W2 host-diff/feedback actuator (runtime): the host diff over typed
+// replies. Offline facade plus production NativeOps share the same
+// authority/freshness/proof rules.
 mod world_diff;
+// Production native actuator over the diff: the real NativeOps
+// plus truthful applied-receipt capture, wired through the tick.
+mod world_native;
+// Single runtime WorldEngine owner (stage 2b cutover): the in-process
+// holder over the sequencer above. All lifecycle/history/tiling/scope/
+// select/send/migration routes dispatch through it.
+mod world_owner;
 
-// W2 host-diff regression fixtures (offline only): source-first rigs over
-// real TileLoop/observed/retained sources plus the W1 capture boundary.
-// Same W3 cutover gate as `world_diff`.
+// Single active world tick (stage 2b, wired): mechanical admission plus
+// capture/sequence/deliver/apply/ack through the owner above. The sole
+// production owner path; legacy policy routes are deleted.
+mod world_tick;
+
+// World-backed read helpers for the single-owner cutover: every routing
+// query over the sequenced core plus the mechanical adapter caches.
+// No policy, no mutation beyond stable wire-id minting.
+mod world_reads;
+
+// Restored offline safety regressions over capture/sequencer/diff.
 #[cfg(test)]
 mod world_diff_tests;
+
+// Native-free route smoke test: capture shape plus sequencer plus offline
+// facade actuation with logical view echoes. Same W3 cutover gate.
+#[cfg(test)]
+mod world_route_tests;
 
 mod reconcile;
 
@@ -1078,8 +1078,6 @@ mod float_toggle;
 mod dispatch;
 
 mod directional_resolution;
-
-mod directional_cross;
 
 mod output_send;
 
@@ -1133,8 +1131,6 @@ mod migration;
 
 mod migration_run;
 
-mod migration_visibility;
-
 mod native_drag;
 
 mod pending_drop;
@@ -1160,32 +1156,8 @@ mod inspection;
 mod observation;
 
 #[cfg(test)]
-#[path = "tests_scope.rs"]
-mod tiling_sys_scope_tests;
-
-#[cfg(test)]
-#[path = "tests_scope_send.rs"]
-mod tiling_sys_scope_send_tests;
-
-#[cfg(test)]
-#[path = "tests_scope_hotplug.rs"]
-mod tiling_sys_scope_hotplug_tests;
-
-#[cfg(test)]
 #[path = "tests_same_axis.rs"]
 mod same_axis_move_tests;
-
-#[cfg(test)]
-#[path = "tests_fixed_predicate.rs"]
-mod fixed_predicate_tests;
-
-#[cfg(test)]
-#[path = "tests_born_maximized.rs"]
-mod born_maximized_tests;
-
-#[cfg(test)]
-#[path = "tests_float_unfloat.rs"]
-mod float_unfloat_clear_tests;
 
 #[cfg(test)]
 #[path = "tests_owned_exit.rs"]
@@ -1199,37 +1171,9 @@ mod send_preflight_tests;
 #[path = "tests_float_send_gate.rs"]
 mod float_send_gate_tests;
 
-/// D16 deferred-send production-route regressions (offline, native-free):
-/// the real `workspace_do_send` / `workspace_send_follow` /
-/// `workspace_do_select` routes with scripted observation, lifetime tags,
-/// and apply verdicts. Native hide/focus setters fail closed on the fake
-/// HWNDs (honest non-ok outcomes), so these tests pin routing evidence:
-/// apply counts, membership transfer, and float-intent retention. Drifted
-/// survivor frames prove the skip holds even with drift; ordinary tiled
-/// sends prove the applications still run.
-#[cfg(test)]
-#[path = "tests_deferred_send.rs"]
-mod deferred_send_route_tests;
-
-#[cfg(test)]
-#[path = "tests_admission_settings.rs"]
-mod admission_settings_tests;
-
-#[cfg(test)]
-#[path = "tests_capacity_floats.rs"]
-mod capacity_floats_tests;
-
-#[cfg(test)]
-#[path = "tests_capacity_recipe.rs"]
-mod capacity_recipe_tests;
-
 /// Select-route gap-repair regression (offline, native-free): the real
 /// `workspace_do_select` reveal must keep `UpdateGaps` repair victims
 /// instead of re-tiling them from stale pre-adopt rows.
-#[cfg(test)]
-#[path = "tests_select_repair.rs"]
-mod select_repair_route_tests;
-
 #[cfg(test)]
 #[path = "tests_border_shell.rs"]
 mod border_shell_tests;
@@ -1251,36 +1195,12 @@ mod preview_tests;
 mod rmax03_adapter_tests;
 
 #[cfg(test)]
-#[path = "tests_timeout_fallback.rs"]
-mod timeout_fallback_tests;
-
-#[cfg(test)]
-#[path = "tests_window_diag.rs"]
-mod window_diag_tests;
-
-#[cfg(test)]
-#[path = "tests_visibility_batch.rs"]
-mod visibility_batch_tests;
-
-#[cfg(test)]
 #[path = "tests_visibility_diag.rs"]
 mod visibility_diag_tests;
 
 #[cfg(test)]
-#[path = "tests_d23_minimize.rs"]
-mod d23_minimize_adapter_tests;
-
-#[cfg(test)]
-#[path = "tests_float_nav.rs"]
-mod float_nav_adapter_tests;
-
-#[cfg(test)]
 #[path = "tests_restart.rs"]
 mod restart_adoption_tests;
-
-#[cfg(test)]
-#[path = "tests_orientation.rs"]
-mod orientation_route_tests;
 
 #[cfg(test)]
 #[path = "tests_directional_cli.rs"]
@@ -1311,26 +1231,6 @@ mod launch_dispatch_tests;
 /// show presentable afterwards).
 #[path = "tests_stage3.rs"]
 mod stage3_combined_tests;
-
-#[cfg(test)]
-#[path = "tests_pending_drop.rs"]
-mod pending_drop_tests;
-
-#[cfg(test)]
-#[path = "tests_directional_cross.rs"]
-mod directional_cross_adapter_tests;
-
-#[cfg(test)]
-#[path = "tests_output_send.rs"]
-mod output_send_adapter_tests;
-
-#[cfg(test)]
-#[path = "tests_cross_drag.rs"]
-mod cross_drag_adapter_tests;
-
-#[cfg(test)]
-#[path = "tests_workspace_migrate.rs"]
-mod workspace_migrate_adapter_tests;
 
 #[cfg(test)]
 #[path = "tests_limited_fullscreen.rs"]

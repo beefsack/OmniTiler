@@ -7,12 +7,13 @@
 //! all setters and proof re-reads go through [`NativeOps`], implemented here
 //! by the in-memory [`FakeNative`]. Geometry converges from the core reply,
 //! never from a second policy: this module honors per-row authority, scope
-//! authority, holds, transfers, creations, removals, views, migrations, and
-//! one-shot effects exactly as the reply states them.
+//! authority, holds, transfers, views, migrations, and one-shot effects
+//! exactly as the reply states them. Workspace lifecycle needs no
+//! actuation: the core owns logical workspaces outright.
 //!
 //! Source-first inputs (M1): [`FreshHost::from_sources`] converts the real
 //! per-tick sources over the accepted W1 capture boundary. Window identity
-//! comes from [`WindowKey`](crate::workspace::WindowKey) (never HWND alone),
+//! comes from [`WindowKey`](crate::native_guards::WindowKey) (never HWND alone),
 //! safety facts from the real
 //! [`ObservedWindow`](super::observe::ObservedWindow)/[`RetainedRow`](super::retained::RetainedRow)
 //! slices, classification (hidden, iconic, unreadable) from the same owner
@@ -71,15 +72,15 @@
 //!   canonical slot, never a write target.
 //! - Partial results are reported honestly; nothing here claims atomicity.
 
-use super::world_capture::{CapturedWorld, capture_facts_rideable};
-use super::{ObservedWindow, RetainedRow, TileLoop};
+use super::world_capture::{CapturedWorld, OwnerInputs, capture_facts_rideable};
+use super::{ObservedWindow, RetainedRow};
 use crate::tiling::{ReadbackOutcome, RefusedTracker, WindowFacts, readback_outcome};
-use crate::workspace::WindowKey;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use crate::native_guards::WindowKey;
+use std::collections::{HashMap, HashSet};
 use tiler_core::geometry::Rect;
 use tiler_core::world_report::{
     AttemptFeedback, AttemptKind, AttemptOutcome, HoldReason, ScopeAuthority, TransferKind,
-    TransferTarget, WorkspaceBinding, WorldReply,
+    TransferTarget, WorldReply,
 };
 
 /// Fresh offline window facts for one managed lifetime: the observation-time
@@ -117,27 +118,28 @@ pub(super) struct FreshWindow {
 }
 
 /// Observation-time snapshot behind one diff pass, plus the stored
-/// visible-membership tags the lifetime gate rechecks against, the live
-/// output views, and the adapter-observed workspace mapping (logical/native
-/// plus pin/displacement/managed flags) that removal ownership rechecks
-/// against. The mapping is report-carried knowledge; occupancy, visibility,
-/// and enumeration stay live reads.
+/// visible-membership tags the lifetime gate rechecks against and the live
+/// output views. Logical workspace mapping is core-owned; the adapter
+/// carries no binding table. Occupancy, visibility, and enumeration stay
+/// live reads.
 #[derive(Debug, Clone, Default)]
 pub(super) struct FreshHost {
     pub(super) baseline: HashMap<String, FreshWindow>,
     pub(super) stored_tags: HashMap<String, String>,
-    /// Live output views at observation time (`output -> native workspace`),
-    /// seeding proof re-reads.
+    /// Live output views at observation time (`output -> logical workspace`
+    /// echo), seeding proof re-reads. Empty when the adapter has no echoed
+    /// view yet.
     pub(super) views: HashMap<String, String>,
-    pub(super) bindings: Vec<WorkspaceBinding>,
 }
 
 impl FreshHost {
     /// Source-first conversion over the accepted W1 capture boundary plus
     /// the real per-tick sources it was built from. See the module docs for
-    /// the per-field sources.
+    /// the per-field sources. Takes the field-input seam (`OwnerInputs`),
+    /// never the whole loop, so the runtime can hold the owner mutably
+    /// alongside this read.
     pub(super) fn from_sources(
-        state: &TileLoop,
+        state: &OwnerInputs<'_>,
         observed: &[ObservedWindow],
         retained: &[RetainedRow],
         captured: &CapturedWorld,
@@ -152,54 +154,21 @@ impl FreshHost {
             }
         }
         let mut stored_tags: HashMap<String, String> = HashMap::new();
-        for (key, token) in &state.member_tokens {
+        for (key, token) in state.member_tokens {
             if let Some(tag) = state.member_tags.get(key) {
                 stored_tags.insert(token.clone(), tag.clone());
             }
         }
         let mut baseline: HashMap<String, FreshWindow> = HashMap::new();
-        for domain in &captured.domains {
-            for row in &domain.windows {
-                let token = row.window.0.as_str();
-                let Some(key) = state.member_tokens.iter().find_map(|(key, id)| {
-                    if id.as_str() == token {
-                        Some(key)
-                    } else {
-                        None
-                    }
-                }) else {
-                    // No provable lifetime: unknown baselines hold.
-                    continue;
-                };
-                let hidden = state
-                    .workspaces
-                    .member_loc(key)
-                    .is_some_and(|loc| loc.hidden);
-                let iconic = state.minimized_omitted.contains(key);
-                baseline.insert(
-                    token.to_owned(),
-                    FreshWindow {
-                        key: key.clone(),
-                        token: token.to_owned(),
-                        frame: Some(row.rect),
-                        facts: facts_of.get(token).copied(),
-                        output: row.output.0.clone(),
-                        workspace: row.workspace.0.clone(),
-                        iconic,
-                        hidden,
-                        sticky: row.sticky,
-                        floating: row.floating,
-                        fit_excluded: row.fit_excluded,
-                        live_tag: state.member_tags.get(key).cloned(),
-                    },
-                );
-            }
-        }
-        for entry in &captured.minimized {
-            let token = entry.window.0.as_str();
-            if baseline.contains_key(token) {
-                continue;
-            }
+        // Logical homing is reply-side: the capture carries screen
+        // affinity plus truthful observed receipts. Baselines home to
+        // the last proven receipt where capture freshly proved it
+        // (never desire); unproven lifetimes hold with no workspace
+        // claim so third-location checks never mistake an empty
+        // preimage for an external move. Membership and frame writes
+        // still gate on core Controlled scope rows plus fresh proof.
+        for fact in &captured.windows {
+            let token = fact.window.0.as_str();
             let Some(key) = state.member_tokens.iter().find_map(|(key, id)| {
                 if id.as_str() == token {
                     Some(key)
@@ -207,39 +176,53 @@ impl FreshHost {
                     None
                 }
             }) else {
+                // No provable lifetime: unknown baselines hold.
                 continue;
             };
-            let hidden = state
-                .workspaces
-                .member_loc(key)
-                .is_some_and(|loc| loc.hidden);
+            let hidden = state.hidden_claims.contains_key(key);
+            let iconic = fact.minimized || state.minimized_omitted.contains(key);
+            // Observation-time homing: the retained proven receipt where
+            // capture freshly revalidated it this tick, else the live
+            // screen affinity with no workspace claim.
+            let (output, workspace) = match &fact.observed_workspace {
+                Some(proven_ws) => state
+                    .applied_homing
+                    .get(token)
+                    .filter(|(_, ws)| ws == proven_ws)
+                    .cloned()
+                    .unwrap_or_else(|| (fact.output.0.clone(), proven_ws.clone())),
+                None => (fact.output.0.clone(), String::new()),
+            };
             baseline.insert(
                 token.to_owned(),
                 FreshWindow {
                     key: key.clone(),
                     token: token.to_owned(),
-                    frame: None,
+                    frame: fact.rect,
                     facts: facts_of.get(token).copied(),
-                    output: entry.output.0.clone(),
-                    workspace: entry.workspace.0.clone(),
-                    iconic: true,
+                    output,
+                    workspace,
+                    iconic,
                     hidden,
-                    sticky: state.sticky.contains_key(key),
-                    floating: false,
-                    fit_excluded: false,
+                    sticky: fact.sticky,
+                    floating: fact.floating,
+                    fit_excluded: fact.fit_excluded,
                     live_tag: state.member_tags.get(key).cloned(),
                 },
             );
         }
-        let mut views: HashMap<String, String> = HashMap::new();
-        for topology in &captured.topology {
-            views.insert(topology.output.0.clone(), topology.current_native.clone());
-        }
+        // Observation-time views are the adapter's proven applied
+        // receipts from capture, never a fallback of desired views:
+        // empty means unknown and retains pending flights.
+        let views: HashMap<String, String> = captured
+            .observed_views
+            .iter()
+            .map(|view| (view.output.0.clone(), view.view.clone()))
+            .collect();
         Self {
             baseline,
             stored_tags,
             views,
-            bindings: captured.bindings.clone(),
         }
     }
 }
@@ -290,23 +273,38 @@ impl DiffGate {
 /// refusal, `Err(())` throw/ambiguous (may have executed). Occupant,
 /// visibility, and enumeration reads are always live: the facade keeps no
 /// cache of them, so removal rechecks observe racing host changes.
+///
+/// Reads take `&mut self`: production reads advance a side observation map
+/// and consume one-shot invalidation state, so even proofs are mutating.
+/// Callers already hold the actuator mutably.
 pub(super) trait NativeOps {
-    fn read_window(&self, token: &str) -> Option<FreshWindow>;
-    fn read_frame(&self, token: &str) -> Option<Rect>;
-    fn read_homing(&self, token: &str) -> Option<(String, String)>;
-    fn read_view(&self, output: &str) -> Option<String>;
-    fn is_foreground(&self, token: &str) -> bool;
-    fn gesture_barrier(&self) -> bool;
+    fn read_window(&mut self, token: &str) -> Option<FreshWindow>;
+    fn read_frame(&mut self, token: &str) -> Option<Rect>;
+    fn read_homing(&mut self, token: &str) -> Option<(String, String)>;
+    fn read_view(&mut self, output: &str) -> Option<String>;
+    fn is_foreground(&mut self, token: &str) -> bool;
+    fn gesture_barrier(&mut self) -> bool;
     fn write_frame(&mut self, token: &str, rect: Rect) -> Result<bool, ()>;
-    fn move_membership(&mut self, token: &str, out: &str, ws: &str) -> Result<bool, ()>;
-    fn create_workspace(&mut self, logical: &str) -> Result<Option<String>, ()>;
-    fn remove_workspace(&mut self, native: &str) -> Result<bool, ()>;
-    fn switch_view(&mut self, output: &str, native: &str) -> Result<bool, ()>;
+    /// Membership actuation toward `(out, ws)` with the desired visible
+    /// frame as an actuation TARGET only (`None` for membership-only
+    /// rows such as redirect-lane movers, floats/sticky/overlays, which
+    /// carry no published frame). `remap` allows a tiled cross-output
+    /// arrival to translate the live frame onto the target output
+    /// mechanically (position preserved, never resized or refit: the
+    /// sweep re-tiles after arrival); floats pass `false` and preserve
+    /// their physical frame. The setter boolean is never proof: the
+    /// caller re-reads exact homing/frame/visibility before settling
+    /// Applied.
+    fn move_membership(
+        &mut self,
+        token: &str,
+        out: &str,
+        ws: &str,
+        frame: Option<Rect>,
+        remap: bool,
+    ) -> Result<bool, ()>;
+    fn switch_view(&mut self, output: &str, logical: &str) -> Result<bool, ()>;
     fn focus_window(&mut self, token: &str) -> Result<bool, ()>;
-    fn occupants(&self, native: &str) -> (usize, bool);
-    fn is_visible(&self, native: &str) -> Option<bool>;
-    fn native_ids(&self) -> BTreeSet<String>;
-    fn workspace_count(&self) -> usize;
     /// One external invalidation consumed per call: racing native input that
     /// arrived mid-apply. The facade polls this before every setter.
     fn poll_external_invalidation(&mut self) -> bool {
@@ -316,15 +314,10 @@ pub(super) trait NativeOps {
 
 /// In-memory offline native. Seeded from a [`FreshHost`] baseline (windows
 /// plus views); writes mutate the live maps so proof re-reads observe them.
-/// Enumeration inputs (desktops, occupants, visibility) are staged per
-/// fixture and always read live.
 #[derive(Debug, Default)]
 pub(super) struct FakeNative {
     pub(super) windows: HashMap<String, FreshWindow>,
     pub(super) views: HashMap<String, String>,
-    pub(super) desktops: BTreeSet<String>,
-    pub(super) occupants: HashMap<String, (usize, bool)>,
-    pub(super) visible: HashMap<String, Option<bool>>,
     pub(super) foreground: Option<String>,
     pub(super) gesture: bool,
     pub(super) fail_frame: HashSet<String>,
@@ -339,12 +332,7 @@ pub(super) struct FakeNative {
     pub(super) throw_view: HashSet<String>,
     pub(super) fail_focus: HashSet<String>,
     pub(super) throw_focus: HashSet<String>,
-    pub(super) create_result: Option<Option<String>>,
-    pub(super) throw_create: bool,
-    pub(super) fail_remove: HashSet<String>,
     pub(super) pending_invalidation: bool,
-    pub(super) fire_after_writes: Option<usize>,
-    pub(super) writes_done: usize,
     pub(super) frame_writes: usize,
     pub(super) membership_writes: usize,
 }
@@ -359,50 +347,28 @@ impl FakeNative {
         native
     }
 
-    /// Arm one racing-input invalidation after `n` further successful
-    /// setter calls. The facade consumes it through
-    /// [`NativeOps::poll_external_invalidation`] before its next setter.
-    pub(super) fn arm_invalidation_after_writes(&mut self, n: usize) {
-        self.fire_after_writes = Some(self.writes_done.saturating_add(n));
-    }
-
-    /// Fire one racing-input invalidation immediately (consumed by the next
-    /// facade poll).
-    pub(super) fn fire_pending_invalidation(&mut self) {
-        self.pending_invalidation = true;
-    }
-
-    fn note_write(&mut self) {
-        self.writes_done += 1;
-        if self
-            .fire_after_writes
-            .is_some_and(|at| self.writes_done >= at)
-        {
-            self.fire_after_writes = None;
-            self.pending_invalidation = true;
-        }
-    }
+    fn note_write(&mut self) {}
 }
 
 impl NativeOps for FakeNative {
-    fn read_window(&self, token: &str) -> Option<FreshWindow> {
+    fn read_window(&mut self, token: &str) -> Option<FreshWindow> {
         self.windows.get(token).cloned()
     }
-    fn read_frame(&self, token: &str) -> Option<Rect> {
+    fn read_frame(&mut self, token: &str) -> Option<Rect> {
         self.windows.get(token).and_then(|w| w.frame)
     }
-    fn read_homing(&self, token: &str) -> Option<(String, String)> {
+    fn read_homing(&mut self, token: &str) -> Option<(String, String)> {
         self.windows
             .get(token)
             .map(|w| (w.output.clone(), w.workspace.clone()))
     }
-    fn read_view(&self, output: &str) -> Option<String> {
+    fn read_view(&mut self, output: &str) -> Option<String> {
         self.views.get(output).cloned()
     }
-    fn is_foreground(&self, token: &str) -> bool {
+    fn is_foreground(&mut self, token: &str) -> bool {
         self.foreground.as_deref() == Some(token)
     }
-    fn gesture_barrier(&self) -> bool {
+    fn gesture_barrier(&mut self) -> bool {
         self.gesture
     }
     fn write_frame(&mut self, token: &str, rect: Rect) -> Result<bool, ()> {
@@ -422,7 +388,14 @@ impl NativeOps for FakeNative {
         self.note_write();
         Ok(true)
     }
-    fn move_membership(&mut self, token: &str, out: &str, ws: &str) -> Result<bool, ()> {
+    fn move_membership(
+        &mut self,
+        token: &str,
+        out: &str,
+        ws: &str,
+        frame: Option<Rect>,
+        remap: bool,
+    ) -> Result<bool, ()> {
         if self.throw_membership.contains(token) {
             return Err(());
         }
@@ -433,43 +406,19 @@ impl NativeOps for FakeNative {
         if let Some(window) = self.windows.get_mut(token) {
             window.output = out.to_owned();
             window.workspace = ws.to_owned();
+            // Membership-only lane: the offline stand-in never moves
+            // frames here (production `LiveNative` remaps tiled targets
+            // and writes exact ones under the same gates; geometry still
+            // converges through the deferred frame phase). Both actuation
+            // targets ride only as inputs for the production seam.
+            let _ = (frame, remap);
         }
         self.membership_writes += 1;
         self.note_write();
         Ok(true)
     }
-    fn create_workspace(&mut self, logical: &str) -> Result<Option<String>, ()> {
-        if self.throw_create {
-            return Err(());
-        }
-        if let Some(result) = self.create_result.clone() {
-            if let Some(native) = result.clone() {
-                self.desktops.insert(native.clone());
-                self.occupants.entry(native.clone()).or_insert((0, true));
-                self.visible.entry(native.clone()).or_insert(Some(false));
-            }
-            let _ = logical;
-            self.note_write();
-            return Ok(result);
-        }
-        let native = format!("ws-created-{logical}");
-        self.desktops.insert(native.clone());
-        self.occupants.entry(native.clone()).or_insert((0, true));
-        self.visible.entry(native.clone()).or_insert(Some(false));
-        self.note_write();
-        Ok(Some(native))
-    }
-    fn remove_workspace(&mut self, native: &str) -> Result<bool, ()> {
-        if self.fail_remove.contains(native) {
-            self.note_write();
-            return Ok(false);
-        }
-        let removed = self.desktops.remove(native);
-        self.note_write();
-        Ok(removed)
-    }
-    fn switch_view(&mut self, output: &str, native: &str) -> Result<bool, ()> {
-        let key = format!("{output}/{native}");
+    fn switch_view(&mut self, output: &str, logical: &str) -> Result<bool, ()> {
+        let key = format!("{output}/{logical}");
         if self.throw_view.contains(&key) {
             return Err(());
         }
@@ -477,7 +426,7 @@ impl NativeOps for FakeNative {
             self.note_write();
             return Ok(false);
         }
-        self.views.insert(output.to_owned(), native.to_owned());
+        self.views.insert(output.to_owned(), logical.to_owned());
         self.note_write();
         Ok(true)
     }
@@ -493,55 +442,8 @@ impl NativeOps for FakeNative {
         self.note_write();
         Ok(true)
     }
-    fn occupants(&self, native: &str) -> (usize, bool) {
-        self.occupants.get(native).copied().unwrap_or((0, false))
-    }
-    fn is_visible(&self, native: &str) -> Option<bool> {
-        self.visible.get(native).copied().unwrap_or(None)
-    }
-    fn native_ids(&self) -> BTreeSet<String> {
-        self.desktops.clone()
-    }
-    fn workspace_count(&self) -> usize {
-        self.desktops.len()
-    }
     fn poll_external_invalidation(&mut self) -> bool {
         std::mem::take(&mut self.pending_invalidation)
-    }
-}
-
-/// One-flight logical creation state. The binding is adopted strictly from a
-/// direct setter result or a later reply row naming this logical id; the
-/// facade never binds by enumeration guessing, so an unrelated external
-/// workspace is never stolen.
-#[derive(Debug, Clone, Default)]
-struct CreationFlight {
-    bound: Option<String>,
-}
-
-/// Stable logical creation table: at most one flight per logical id.
-#[derive(Debug, Default)]
-pub(super) struct CreationTable {
-    flights: HashMap<String, CreationFlight>,
-}
-
-impl CreationTable {
-    pub(super) fn is_bound(&self, logical: &str) -> bool {
-        self.flights
-            .get(logical)
-            .is_some_and(|flight| flight.bound.is_some())
-    }
-
-    pub(super) fn is_inflight(&self, logical: &str) -> bool {
-        self.flights.contains_key(logical)
-    }
-
-    pub(super) fn start(&mut self, logical: &str) {
-        self.flights.entry(logical.to_owned()).or_default();
-    }
-
-    pub(super) fn bind(&mut self, logical: &str, native: String) {
-        self.flights.entry(logical.to_owned()).or_default().bound = Some(native);
     }
 }
 
@@ -597,6 +499,9 @@ impl EffectTracker {
     pub(super) fn mark_view_spent(&mut self, owning: &str) -> bool {
         self.spent_views.insert(owning.to_owned())
     }
+    // (No caller yet: the 2b owner cutover drives this on identity
+    // rotation alongside `HostDiff::reset_generation`.)
+    #[allow(dead_code)]
     fn clear_generation(&mut self) {
         self.ambiguous.clear();
         self.spent_effects.clear();
@@ -608,15 +513,16 @@ impl EffectTracker {
     }
 }
 
-/// One offline diff unit: freshness gate plus the refusal, creation, and
-/// at-most-once tables behind [`apply_world_reply`]. All maps stay bounded:
+/// One offline diff unit: freshness gate plus the refusal and at-most-once
+/// tables behind [`apply_world_reply`]. All maps stay bounded:
 /// [`Self::prune`] retains entries against the current reply and baseline
 /// every pass, and [`Self::reset_generation`] clears generation-scoped state.
+/// (Native workspace lifecycle needs no table: the core owns logical
+/// workspaces outright, so the adapter never creates or removes them.)
 #[derive(Debug)]
 pub(super) struct HostDiff {
     pub(super) gate: DiffGate,
     pub(super) refused: RefusedTracker,
-    pub(super) creations: CreationTable,
     pub(super) effects: EffectTracker,
 }
 
@@ -631,7 +537,6 @@ impl HostDiff {
                 has_accepted: false,
             },
             refused: RefusedTracker::default(),
-            creations: CreationTable::default(),
             effects: EffectTracker::default(),
         }
     }
@@ -640,20 +545,22 @@ impl HostDiff {
     /// (reused operation ids must never inherit spent/ambiguous/applied
     /// state) and the refusal memory (no stale suppression under a fresh
     /// world). The caller re-derives the watermark from the new bootstrap.
+    /// (No caller yet: the 2b owner cutover drives resets on identity
+    /// rotation. Retained as the sole reset path, never a second one.)
+    #[allow(dead_code)]
     pub(super) fn reset_generation(&mut self, generation: &str) {
         self.gate.reset_generation(generation);
         self.refused = RefusedTracker::default();
-        self.creations = CreationTable::default();
         self.effects.clear_generation();
     }
 
     /// Bound every table against the current reply and baseline: refusal
     /// entries survive only for live reply/baseline lifetimes, spent and
     /// ambiguous entries only for operation ids the reply still carries,
-    /// applied proofs only for baselined lifetimes (view proofs additionally
-    /// only for live outputs and live operation ids, since hotplug can
-    /// retire an output while its proof entry would otherwise linger), and
-    /// creation flights only for logical ids the reply still lists.
+    /// and applied proofs only for baselined lifetimes (view proofs
+    /// additionally only for live outputs and live operation ids, since
+    /// hotplug can retire an output while its proof entry would otherwise
+    /// linger).
     fn prune(&mut self, reply: &WorldReply, fresh: &FreshHost) {
         let mut live_tokens: Vec<&str> = fresh.baseline.keys().map(String::as_str).collect();
         for row in &reply.windows {
@@ -675,14 +582,6 @@ impl HostDiff {
             {
                 live_ops.insert(op);
             }
-        }
-        for row in &reply.workspaces {
-            let logical = row
-                .logical_id
-                .as_deref()
-                .filter(|id| !id.is_empty())
-                .unwrap_or(row.id.as_str());
-            live_ops.insert(logical);
         }
         self.effects
             .spent_effects
@@ -714,20 +613,6 @@ impl HostDiff {
         self.effects.applied_view.retain(|output, (op, _)| {
             live_outputs.contains(output.as_str()) && live_ops.contains(op.as_str())
         });
-        let mut live_logicals: HashSet<&str> = HashSet::new();
-        for row in &reply.workspaces {
-            let logical = row
-                .logical_id
-                .as_deref()
-                .filter(|id| !id.is_empty())
-                .unwrap_or(row.id.as_str());
-            if !logical.is_empty() {
-                live_logicals.insert(logical);
-            }
-        }
-        self.creations
-            .flights
-            .retain(|logical, _| live_logicals.contains(logical.as_str()));
     }
 }
 
@@ -839,7 +724,7 @@ fn overlay_guarded(window: &FreshWindow) -> bool {
 fn pre_setter_ok(
     gate: &DiffGate,
     entry_obs: u64,
-    ops: &dyn NativeOps,
+    ops: &mut dyn NativeOps,
     base: &FreshWindow,
     stored: &HashMap<String, String>,
     kind: SetterKind,
@@ -900,7 +785,7 @@ fn pre_setter_ok(
 /// matches (key plus stored tag) AND the live homing names the expected
 /// target. The setter boolean is never proof.
 fn homing_proven(
-    ops: &dyn NativeOps,
+    ops: &mut dyn NativeOps,
     base: &FreshWindow,
     stored: &HashMap<String, String>,
     output: &str,
@@ -1058,6 +943,90 @@ fn finalize(stats: &mut ApplyStats) {
     stats.partial = writes > 0 && (stats.held > 0 || stats.stopped_mid_apply);
 }
 
+/// Record one proven window-transfer arrival plus its follow view.
+/// Pushes Applied feedback; when follow actuation cannot prove the
+/// view, the transfer degrades to PossiblyExecuted (HeldEmit) or holds
+/// silently (HeldSilent) without claiming a view outcome on its id.
+/// `count_write` marks a confirmed native write (post-setter proof);
+/// pre-proven arrivals (no setter ran) record no write.
+#[allow(clippy::too_many_arguments)]
+fn settle_transfer_applied(
+    reply: &WorldReply,
+    gate: &mut DiffGate,
+    entry_obs: u64,
+    ops: &mut dyn NativeOps,
+    stats: &mut ApplyStats,
+    out_feedback: &mut Vec<AttemptFeedback>,
+    transfer: &TransferTarget,
+    effects: &mut EffectTracker,
+    fresh: &FreshHost,
+    token: &str,
+    count_write: bool,
+) {
+    if count_write {
+        stats.membership_writes += 1;
+    }
+    effects.settle_applied(&transfer.operation_id);
+    effects.applied_window.insert(
+        token.to_owned(),
+        (
+            transfer.operation_id.clone(),
+            transfer.target_output.0.clone(),
+            transfer.target_workspace.clone(),
+        ),
+    );
+    out_feedback.push(feedback(
+        &transfer.operation_id,
+        AttemptKind::Transfer,
+        AttemptOutcome::Applied,
+        None,
+    ));
+    if transfer.follow {
+        match actuate_follow_view(reply, gate, entry_obs, ops, stats, transfer, effects, fresh) {
+            FollowOutcome::Shown | FollowOutcome::Switched => {}
+            FollowOutcome::HeldEmit => {
+                // Membership is proven but the follow view is not:
+                // the transfer stays ambiguous without claiming a
+                // view outcome on its id.
+                out_feedback.pop();
+                out_feedback.push(feedback(
+                    &transfer.operation_id,
+                    AttemptKind::Transfer,
+                    AttemptOutcome::PossiblyExecuted,
+                    None,
+                ));
+            }
+            FollowOutcome::HeldSilent => {
+                out_feedback.pop();
+                stats.held += 1;
+            }
+        }
+    }
+}
+
+/// Logical no-effect receipt for a floating membership-only move: the
+/// live window still names the key with a matching stored tag and the
+/// physical frame is preserved exactly. Never reinterprets the
+/// physical output (no affinity check): the logical arrival is proven
+/// by the explicit commanded application (identity plus preserved
+/// frame plus visibility), not by screen position.
+fn float_no_effect_proven(
+    ops: &mut dyn NativeOps,
+    base: &FreshWindow,
+    stored: &HashMap<String, String>,
+) -> bool {
+    if base.frame.is_none() {
+        return false;
+    }
+    let Some(live) = ops.read_window(&base.token) else {
+        return false;
+    };
+    live.key == base.key
+        && lifetime_ok(&live, stored)
+        && live.frame == base.frame
+        && live.frame.is_some()
+}
+
 /// Diff one ready reply against fresh proof and actuate through `ops`.
 ///
 /// The caller owns generation/observation advancement: `state.gate.current_obs`
@@ -1084,22 +1053,13 @@ pub(super) fn apply_world_reply(
     }
     state.prune(reply, fresh);
 
-    // Logical ids without a native binding: dependent membership, view, and
-    // migration targets naming one hold until the binding arrives.
-    let mut unbound_logicals: HashSet<&str> = HashSet::new();
-    for row in &reply.workspaces {
-        if row.native_binding.is_none()
-            && let Some(logical) = row.logical_id.as_deref()
-            && !logical.is_empty()
-        {
-            unbound_logicals.insert(logical);
-        }
-    }
+    // Logical workspace ids need no native binding: the core owns them
+    // outright, so membership, view, and migration targets never wait for
+    // a binding that will never arrive.
 
     let HostDiff {
         gate,
         refused,
-        creations,
         effects,
     } = state;
 
@@ -1253,50 +1213,25 @@ pub(super) fn apply_world_reply(
         let op = t.operation_id.clone();
         let target_out = t.target_output.0.clone();
         let target_ws = t.target_workspace.clone();
-        if unbound_logicals.contains(target_ws.as_str()) {
-            stats.held += 1;
-            continue;
-        }
         // Never actuate membership into a held or untouched scope.
         if !scope_controlled(reply, &target_out, &target_ws) {
             stats.held += 1;
             continue;
         }
         if homing_proven(ops, base, &fresh.stored_tags, &target_out, &target_ws) {
-            effects.settle_applied(&op);
-            effects.applied_window.insert(
-                row.lifetime.0.clone(),
-                (op.clone(), target_out.clone(), target_ws.clone()),
+            settle_transfer_applied(
+                reply,
+                gate,
+                entry_obs,
+                ops,
+                &mut stats,
+                &mut out_feedback,
+                t,
+                effects,
+                fresh,
+                &row.lifetime.0,
+                false,
             );
-            out_feedback.push(feedback(
-                &op,
-                AttemptKind::Transfer,
-                AttemptOutcome::Applied,
-                None,
-            ));
-            if t.follow {
-                match actuate_follow_view(
-                    reply, gate, entry_obs, ops, &mut stats, t, effects, fresh,
-                ) {
-                    FollowOutcome::Shown | FollowOutcome::Switched => {}
-                    FollowOutcome::HeldEmit => {
-                        // Membership is proven but the follow view is not:
-                        // the transfer stays ambiguous without claiming a
-                        // view outcome on its id.
-                        out_feedback.pop();
-                        out_feedback.push(feedback(
-                            &op,
-                            AttemptKind::Transfer,
-                            AttemptOutcome::PossiblyExecuted,
-                            None,
-                        ));
-                    }
-                    FollowOutcome::HeldSilent => {
-                        out_feedback.pop();
-                        stats.held += 1;
-                    }
-                }
-            }
             continue;
         }
         if t.held || effects.is_ambiguous(&op) {
@@ -1366,7 +1301,20 @@ pub(super) fn apply_world_reply(
         }
         effects.arm(&op, format!("{target_out}/{target_ws}"));
         let before = ops.read_homing(&row.lifetime.0);
-        let moved = ops.move_membership(&row.lifetime.0, &target_out, &target_ws);
+        // Tiled rows carry their desired frame as the actuation target
+        // (the production seam writes it as part of the move);
+        // membership-only lanes (redirect movers, floats/sticky/overlays)
+        // pass `None`. Tiled cross-output arrivals additionally allow a
+        // mechanical remap onto the target output (position preserved,
+        // never resized: the sweep re-tiles after arrival); floats pass
+        // `false` and preserve their physical frame.
+        let frame_target = if row.floating || base.floating {
+            None
+        } else {
+            row.effective_frame
+        };
+        let remap = !row.floating && !base.floating;
+        let moved = ops.move_membership(&row.lifetime.0, &target_out, &target_ws, frame_target, remap);
         if gate.current_obs != entry_obs {
             stats.held += 1;
             stats.stopped_mid_apply = true;
@@ -1378,38 +1326,19 @@ pub(super) fn apply_world_reply(
         let proven = homing_proven(ops, base, &fresh.stored_tags, &target_out, &target_ws);
         match (moved, proven) {
             (Ok(_), true) => {
-                stats.membership_writes += 1;
-                effects.settle_applied(&op);
-                effects.applied_window.insert(
-                    row.lifetime.0.clone(),
-                    (op.clone(), target_out.clone(), target_ws.clone()),
+                settle_transfer_applied(
+                    reply,
+                    gate,
+                    entry_obs,
+                    ops,
+                    &mut stats,
+                    &mut out_feedback,
+                    t,
+                    effects,
+                    fresh,
+                    &row.lifetime.0,
+                    true,
                 );
-                out_feedback.push(feedback(
-                    &op,
-                    AttemptKind::Transfer,
-                    AttemptOutcome::Applied,
-                    None,
-                ));
-                if t.follow {
-                    match actuate_follow_view(
-                        reply, gate, entry_obs, ops, &mut stats, t, effects, fresh,
-                    ) {
-                        FollowOutcome::Shown | FollowOutcome::Switched => {}
-                        FollowOutcome::HeldEmit => {
-                            out_feedback.pop();
-                            out_feedback.push(feedback(
-                                &op,
-                                AttemptKind::Transfer,
-                                AttemptOutcome::PossiblyExecuted,
-                                None,
-                            ));
-                        }
-                        FollowOutcome::HeldSilent => {
-                            out_feedback.pop();
-                            stats.held += 1;
-                        }
-                    }
-                }
             }
             (Err(_), true) => {
                 effects.settle_applied(&op);
@@ -1423,6 +1352,28 @@ pub(super) fn apply_world_reply(
                     AttemptOutcome::Applied,
                     None,
                 ));
+            }
+            (Ok(true), false) if base.floating
+                && float_no_effect_proven(ops, base, &fresh.stored_tags) =>
+            {
+                // Existing-float crossing: membership-only, physical
+                // rectangle preserved. The logical arrival settles on
+                // the explicit commanded application (identity plus
+                // preserved frame plus visibility), never on a
+                // reinterpreted physical output.
+                settle_transfer_applied(
+                    reply,
+                    gate,
+                    entry_obs,
+                    ops,
+                    &mut stats,
+                    &mut out_feedback,
+                    t,
+                    effects,
+                    fresh,
+                    &row.lifetime.0,
+                    true,
+                );
             }
             (Ok(false), false)
                 if before.is_some_and(|(b_out, b_ws)| {
@@ -1642,191 +1593,6 @@ pub(super) fn apply_world_reply(
         return (stats, out_feedback);
     }
 
-    // Adopt bindings the reply carries for in-flight logical ids. Binding
-    // recovery comes strictly from the report (which the W1 capture built
-    // from native bindings), never from enumeration guessing.
-    for row in &reply.workspaces {
-        if let (Some(native), Some(logical)) =
-            (row.native_binding.as_deref(), row.logical_id.as_deref())
-            && !native.is_empty()
-            && !logical.is_empty()
-            && creations.is_inflight(logical)
-            && !creations.is_bound(logical)
-        {
-            creations.bind(logical, native.to_owned());
-            effects.settle_applied(&format!("create-{logical}"));
-        }
-    }
-
-    // 2. Workspace creation: one flight per logical id. Rows with a binding
-    // are adopted above; held and desired-absent rows never create; the
-    // logical token is never used as a native id.
-    for row in &reply.workspaces {
-        if row.native_binding.is_some() {
-            continue;
-        }
-        if row.hold.is_some() {
-            stats.held += 1;
-            continue;
-        }
-        if !row.existence {
-            stats.held += 1;
-            continue;
-        }
-        // A pending logical has no domain scope yet: creation needs a
-        // controlled domain on the same output, so a fully held output
-        // never actuates lifecycle.
-        let output_live = reply.scopes.iter().any(|status| {
-            status.authority == ScopeAuthority::Controlled
-                && status
-                    .scope
-                    .strip_prefix(row.output.0.as_str())
-                    .is_some_and(|rest| rest.starts_with('/'))
-        });
-        if !output_live {
-            stats.held += 1;
-            continue;
-        }
-        let logical = row
-            .logical_id
-            .as_deref()
-            .filter(|id| !id.is_empty())
-            .unwrap_or(row.id.as_str());
-        if logical.is_empty() {
-            continue;
-        }
-        if logical == row.id.as_str() && ops.native_ids().contains(logical) {
-            // The token collides with a live native id: it is never a
-            // native id, even on collision.
-            stats.held += 1;
-            continue;
-        }
-        if creations.is_bound(logical) {
-            continue;
-        }
-        if creations.is_inflight(logical) {
-            // Ambiguous result: hold without another attempt. An unrelated
-            // external workspace appearing meanwhile is never stolen; the
-            // binding arrives through a later reply row.
-            stats.held += 1;
-            continue;
-        }
-        let op = format!("create-{logical}");
-        if effects.is_ambiguous(&op) {
-            stats.held += 1;
-            continue;
-        }
-        if !ensure_fresh(reply, gate, entry_obs, ops) {
-            stats.stopped_mid_apply = true;
-            break;
-        }
-        creations.start(logical);
-        effects.arm(&op, row.output.0.clone());
-        match ops.create_workspace(logical) {
-            Ok(Some(native)) if !native.is_empty() && native != logical => {
-                creations.bind(logical, native);
-                effects.settle_applied(&op);
-                stats.creations += 1;
-            }
-            Ok(_) => {
-                // Null/empty without a throw may still have executed:
-                // hold ambiguously for the reply-carried binding, never
-                // claim a proven refusal that would green-light a duplicate.
-                stats.held += 1;
-            }
-            Err(()) => {
-                stats.held += 1;
-            }
-        }
-        if gate.current_obs != entry_obs {
-            stats.stopped_mid_apply = true;
-            break;
-        }
-    }
-    if stats.stopped_mid_apply {
-        finalize(&mut stats);
-        return (stats, out_feedback);
-    }
-
-    // 2b. Workspace removal: desired absence is eligibility only. The reply
-    // mapping must own the workspace (managed, non-displaced binding);
-    // occupancy (including non-tiled occupants), visibility, references, and
-    // the minimum count re-read fresh; unknown occupancy keeps.
-    for row in &reply.workspaces {
-        if row.existence || row.hold.is_some() {
-            continue;
-        }
-        let Some(native) = row.native_binding.as_deref().filter(|id| !id.is_empty()) else {
-            continue;
-        };
-        if !scope_controlled(reply, &row.output.0, native) {
-            stats.held += 1;
-            continue;
-        }
-        let owned = fresh
-            .bindings
-            .iter()
-            .find(|binding| binding.native_id == native && binding.output == row.output);
-        let Some(binding) = owned else {
-            stats.held += 1;
-            continue;
-        };
-        if !binding.managed || binding.displaced || binding.pinned {
-            stats.held += 1;
-            continue;
-        }
-        let referenced = reply.transfers.iter().any(|t| {
-            t.target_workspace == native
-                || matches!(&t.kind, TransferKind::Window(id) if {
-                    fresh.baseline.get(&id.0).is_some_and(|w| w.workspace == native)
-                })
-        }) || reply.windows.iter().any(|w| w.workspace == native);
-        if referenced {
-            stats.held += 1;
-            continue;
-        }
-        if !ensure_fresh(reply, gate, entry_obs, ops) {
-            stats.stopped_mid_apply = true;
-            break;
-        }
-        let (total, readable) = ops.occupants(native);
-        if !readable {
-            stats.held += 1;
-            continue;
-        }
-        if total > 0 {
-            stats.held += 1;
-            continue;
-        }
-        match ops.is_visible(native) {
-            Some(false) => {}
-            _ => {
-                stats.held += 1;
-                continue;
-            }
-        }
-        if ops.workspace_count() <= 2 {
-            stats.held += 1;
-            continue;
-        }
-        if !ensure_fresh(reply, gate, entry_obs, ops) {
-            stats.stopped_mid_apply = true;
-            break;
-        }
-        match ops.remove_workspace(native) {
-            Ok(true) => stats.removals += 1,
-            _ => stats.held += 1,
-        }
-        if gate.current_obs != entry_obs {
-            stats.stopped_mid_apply = true;
-            break;
-        }
-    }
-    if stats.stopped_mid_apply {
-        finalize(&mut stats);
-        return (stats, out_feedback);
-    }
-
     // Paired migration source-refill views (`{migration-op}-refill`) defer
     // to the migration path below: switching the source view before member
     // arrival proof would hide unmoved members.
@@ -1862,10 +1628,6 @@ pub(super) fn apply_world_reply(
         let out = t.target_output.0.clone();
         let ws = t.target_workspace.clone();
         let op = t.operation_id.clone();
-        if unbound_logicals.contains(ws.as_str()) {
-            stats.held += 1;
-            continue;
-        }
         if !scope_controlled(reply, &out, &ws) {
             stats.held += 1;
             continue;
@@ -2005,10 +1767,6 @@ pub(super) fn apply_world_reply(
         let op = t.operation_id.clone();
         let out = t.target_output.0.clone();
         let ws = t.target_workspace.clone();
-        if unbound_logicals.contains(ws.as_str()) {
-            stats.held += 1;
-            continue;
-        }
         if !scope_controlled(reply, &out, &ws) {
             stats.held += 1;
             continue;
@@ -2019,7 +1777,10 @@ pub(super) fn apply_world_reply(
             .filter(|w| w.output.0 == out && w.workspace == ws)
             .map(|w| w.lifetime.0.clone())
             .collect();
-        if members.is_empty() || members.iter().any(|id| !fresh.baseline.contains_key(id)) {
+        // A memberless migration carries no membership phase: the target and
+        // refill views below still actuate. Only unknown (unbaselined)
+        // members hold; an empty set proceeds to the view gates.
+        if members.iter().any(|id| !fresh.baseline.contains_key(id)) {
             stats.held += 1;
             continue;
         }
@@ -2109,7 +1870,21 @@ pub(super) fn apply_world_reply(
                 armed = true;
                 effects.arm(&op, format!("{out}/{ws}"));
             }
-            let moved = ops.move_membership(id, &out, &ws);
+            // Migration members ride their desired frames as actuation
+            // targets exactly like window transfers (redirect-lane
+            // members carry none and remap mechanically instead);
+            // floats preserve their frame.
+            let (member_frame, member_remap) = reply
+                .windows
+                .iter()
+                .find(|row| row.lifetime.0 == *id)
+                .map(|row| {
+                    let remap = !row.floating && !base.floating;
+                    let frame = if remap { row.effective_frame } else { None };
+                    (frame, remap)
+                })
+                .unwrap_or((None, false));
+            let moved = ops.move_membership(id, &out, &ws, member_frame, member_remap);
             if gate.current_obs != entry_obs {
                 stats.stopped_mid_apply = true;
                 break;
@@ -2208,10 +1983,9 @@ pub(super) fn apply_world_reply(
                 ));
             } else if refill.held
                 || !scope_controlled(reply, &refill_out, &refill_ws)
-                || unbound_logicals.contains(refill_ws.as_str())
                 || effects.is_view_spent(&refill.operation_id)
             {
-                // Held, scope-held, unbound, or already attempted refill:
+                // Held, scope-held, or already attempted refill:
                 // never switch a view that must remain untouched. A live
                 // third-location view proves external input; anything else
                 // holds truthfully with the parent unresolved.

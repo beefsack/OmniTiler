@@ -1,98 +1,51 @@
 #![forbid(unsafe_code)]
 use super::*;
 
-/// Shared `ToggleFloat` candidate for one domain member: assemble rows and
-/// evaluate on a local candidate. The caller commits the Engine only after
-/// its native effects verify, so a failed placement never strands state.
+/// Shared `ToggleFloat` placement for one domain member: the effective float
+/// rectangle from the same rule the core commits (explicit retained frame
+/// with valid shape, else the centered 60% work-area fallback). World-owned
+/// planning: the core commits the same rule on dispatch, so the adapter
+/// never invents geometry. Returns `None` after logging the refusal.
 #[allow(clippy::too_many_arguments)]
-fn prepare_toggle_float(
+fn plan_float_rect(
     state: &mut TileLoop,
     areas: &[MonitorArea],
-    observed: &[ObservedWindow],
-    retained: &[RetainedRow],
-    op: &'static str,
     from: &str,
-    loc: &crate::workspace::MemberLoc,
-    float_rect: Option<Rect>,
+    loc: &super::world_reads::Home,
     origin: &SnapOrigin,
     settle: &dyn Fn(&'static str) -> serde_json::Value,
     log_path: &Path,
-    correlation: &CorrelationId,
-    target: &'static str,
-) -> Option<(CoreReply, tiler_core::engine::Engine)> {
-    let mut hint_cx = HintCx::new();
-    let Some(rows) = assemble_domain_rows(
-        state,
-        &loc.output,
-        &loc.workspace,
-        observed,
-        retained,
-        op,
-        correlation.as_str(),
-        &mut hint_cx,
-    ) else {
-        let mut line = settle("deferred");
-        line["origin"] = serde_json::Value::from(origin.token.clone());
-        log_json_at(log_path, line);
-        return None;
-    };
-    if !rows.iter().any(|r| r.token == from) {
+) -> Option<Rect> {
+    if !state.member_tokens.values().any(|token| token == from) {
         let mut line = settle("unmanaged");
         line["origin"] = serde_json::Value::from(origin.token.clone());
         log_json_at(log_path, line);
         return None;
     }
-    let windows: Vec<(WindowId, Rect, WindowSizeHints, bool)> = rows
+    let Some(bounds) = areas
         .iter()
-        .map(|r| (WindowId(r.token.clone()), r.rect, r.hints, r.floating))
-        .collect();
-    let fp = fingerprint(
-        &rows
-            .iter()
-            .map(|r| (r.token.clone(), r.rect))
-            .collect::<Vec<_>>(),
-    );
-    let from_id = WindowId(from.to_owned());
-    let Some((domain, domain_key)) = workspace_domain_for(
-        &loc.output,
-        &loc.workspace,
-        areas,
-        state.inner_gap,
-        state.outer_gap,
-    ) else {
+        .find(|a| a.device == loc.output)
+        .and_then(|area| tiling_domain_bounds_with(area.work, state.outer_gap))
+    else {
         let mut line = settle("unknown-output");
         line["origin"] = serde_json::Value::from(origin.token.clone());
         log_json_at(log_path, line);
         return None;
     };
-    let mut event = crate::tiling::build_reconcile_event_for_floating(
-        &state.owner,
-        &state.generation,
-        correlation,
-        revision_for(state, &loc.output, &loc.workspace),
-        fp,
-        &domain,
-        &domain_key,
-        OUTER_GAP,
-        &windows,
-        Some(&from_id),
-    );
-    event.command = CoreCommand::ToggleFloat {
-        window: from.to_owned(),
-        float_rect,
-    };
-    let mut candidate = state.engine.clone();
-    stamp_engine_event(state, &mut event);
-    let reply = candidate.handle(&event);
-    if !matches!(reply, CoreReply::Tiled(_)) {
-        let mut line = settle(reply_outcome(&reply));
-        line["origin"] = serde_json::Value::from(origin.token.clone());
-        line["window"] = serde_json::Value::from(from.to_owned());
-        line["target"] = serde_json::Value::from(target);
-        log_json_at(log_path, line);
-        return None;
+    if let Some(kept) = state.float_rects.get(from)
+        && kept.w > 0
+        && kept.h > 0
+    {
+        return Some(*kept);
     }
-    Some((reply, candidate))
+    let w = ((i64::from(bounds.w) * 6) / 10).max(1) as i32;
+    let h = ((i64::from(bounds.h) * 6) / 10).max(1) as i32;
+    Some(Rect {
+        x: bounds.x + (bounds.w - w) / 2,
+        y: bounds.y + (bounds.h - h) / 2,
+        w,
+        h,
+    })
 }
 
 /// Shared tiled-to-float transition: native placement plus raised band with
@@ -103,50 +56,28 @@ fn prepare_toggle_float(
 pub(super) fn apply_float_from_tiled(
     state: &mut TileLoop,
     me: &ProcessIdentity,
+    store: &LedgerStore,
+    dir: &Path,
     fulls: &[Rect],
     areas: &[MonitorArea],
     observed: &[ObservedWindow],
     retained: &[RetainedRow],
-    skipped: Vec<(String, String)>,
-    member_key: &crate::workspace::WindowKey,
+    _skipped: Vec<(String, String)>,
+    member_key: &crate::native_guards::WindowKey,
     from: &str,
-    loc: &crate::workspace::MemberLoc,
+    loc: &super::world_reads::Home,
     origin: &SnapOrigin,
     settle: &dyn Fn(&'static str) -> serde_json::Value,
     log_path: &Path,
     tick: u64,
-    correlation: &CorrelationId,
+    _correlation: &CorrelationId,
     op: &'static str,
     target: &'static str,
     applied: &'static str,
     mark_sticky: bool,
 ) {
-    let Some((reply, candidate)) = prepare_toggle_float(
-        state,
-        areas,
-        observed,
-        retained,
-        op,
-        from,
-        loc,
-        None,
-        origin,
-        settle,
-        log_path,
-        correlation,
-        target,
-    ) else {
-        return;
-    };
-    let CoreReply::Tiled(plan) = &reply else {
-        return;
-    };
-    let Some(effective) = plan.float_rect else {
-        let mut line = settle("float-missing-placement");
-        line["origin"] = serde_json::Value::from(origin.token.clone());
-        line["window"] = serde_json::Value::from(from.to_owned());
-        line["target"] = serde_json::Value::from(target);
-        log_json_at(log_path, line);
+    let Some(effective) = plan_float_rect(state, areas, from, loc, origin, settle, log_path)
+    else {
         return;
     };
     let Some(expected) = observed.iter().find(|w| w.hwnd == member_key.hwnd) else {
@@ -291,7 +222,28 @@ pub(super) fn apply_float_from_tiled(
         log_json_at(log_path, line);
         return;
     }
-    state.engine = candidate;
+    // World commit AFTER verified native effects (same invariant as the
+    // retired candidate Engine): the core owns the float transition and
+    // the host diff applies sibling reflow with fresh proof. The adapter
+    // intent lanes below feed the next report; the native frame above is
+    // already proven.
+    let foreground = crate::ffi::foreground_window();
+    let reply = super::world_tick::run_world_command(
+        state,
+        me,
+        store,
+        dir,
+        observed,
+        retained,
+        areas,
+        foreground,
+        fulls,
+        tiler_core::world_report::WorldCommand::Operation(CoreCommand::ToggleFloat {
+            window: from.to_owned(),
+            float_rect: Some(effective),
+        }),
+    );
+    let committed = reply.is_some();
     state.float_rects.insert(from.to_owned(), actual);
     // R-SPC-04 D3/D7: a settled float withdraws any explicit tile win (a
     // later unfloat records a fresh one) and any D4 automatic latch: the
@@ -304,6 +256,16 @@ pub(super) fn apply_float_from_tiled(
     state.fixed_auto_seen.remove(member_key);
     state.born_first_exit.remove(member_key);
     remove_tile_override_mark_best_effort(state, me, member_key, log_path, from);
+    if !committed {
+        // The core refused or lost the toggle: native state stays placed
+        // but no intent lanes set, so the next report converges honestly.
+        let mut line = settle("float-unverified");
+        line["origin"] = serde_json::Value::from(origin.token.clone());
+        line["window"] = serde_json::Value::from(from.to_owned());
+        line["target"] = serde_json::Value::from(target);
+        log_json_at(log_path, line);
+        return;
+    }
     // Intentional-float lifetime: row assembly rides this token floating
     // across domain releases and boundary sends even when the Engine session
     // carries no exception yet. Sticky-on keeps its own lane instead. The
@@ -314,34 +276,10 @@ pub(super) fn apply_float_from_tiled(
         state.floated.insert(member_key.clone());
     }
     if !mark_sticky && !install_float_mark_held(state, me, member_key) {
+        // Commit already applied sibling reflow through the host diff;
+        // the missing marker only degrades this outcome.
         let focus = retain_float_focus_validated(state, me, fulls, expected, member_key);
-        let writable = writable_tokens(state, &loc.output, &loc.workspace, observed);
-        let summary = apply_geometry(
-            state,
-            ApplyInput {
-                me,
-                fulls,
-                reply: &reply,
-                observed,
-                op,
-                tick,
-                correlation: correlation.as_str(),
-                skipped,
-                writable: &writable,
-                output_token: state.workspaces.output_token(&loc.output),
-                workspace_token: state
-                    .workspaces
-                    .workspace_token(&loc.output, &loc.workspace),
-                revision: revision_for(state, &loc.output, &loc.workspace),
-            },
-        );
-        let outcome: &'static str = match summary {
-            Some(s) if !s.readback_ok => "float-unverified",
-            Some(s) if s.mismatched > 0 || actual != effective => "float-mismatch",
-            Some(_) => "float-unverified",
-            None => reply_outcome(&reply),
-        };
-        let mut line = settle(outcome);
+        let mut line = settle("float-unverified");
         line["origin"] = serde_json::Value::from(origin.token.clone());
         line["window"] = serde_json::Value::from(from.to_owned());
         line["target"] = serde_json::Value::from(target);
@@ -351,33 +289,7 @@ pub(super) fn apply_float_from_tiled(
     }
     if mark_sticky && !install_sticky_mark_held(state, me, member_key, false) {
         let focus = retain_float_focus_validated(state, me, fulls, expected, member_key);
-        let writable = writable_tokens(state, &loc.output, &loc.workspace, observed);
-        let summary = apply_geometry(
-            state,
-            ApplyInput {
-                me,
-                fulls,
-                reply: &reply,
-                observed,
-                op,
-                tick,
-                correlation: correlation.as_str(),
-                skipped,
-                writable: &writable,
-                output_token: state.workspaces.output_token(&loc.output),
-                workspace_token: state
-                    .workspaces
-                    .workspace_token(&loc.output, &loc.workspace),
-                revision: revision_for(state, &loc.output, &loc.workspace),
-            },
-        );
-        let outcome: &'static str = match summary {
-            Some(s) if !s.readback_ok => "float-unverified",
-            Some(s) if s.mismatched > 0 || actual != effective => "float-mismatch",
-            Some(_) => "sticky-unverified",
-            None => reply_outcome(&reply),
-        };
-        let mut line = settle(outcome);
+        let mut line = settle("sticky-unverified");
         line["origin"] = serde_json::Value::from(origin.token.clone());
         line["window"] = serde_json::Value::from(from.to_owned());
         line["target"] = serde_json::Value::from(target);
@@ -389,31 +301,12 @@ pub(super) fn apply_float_from_tiled(
         state.sticky.insert(member_key.clone(), false);
     }
     let focus = retain_float_focus_validated(state, me, fulls, expected, member_key);
-    let writable = writable_tokens(state, &loc.output, &loc.workspace, observed);
-    let summary = apply_geometry(
-        state,
-        ApplyInput {
-            me,
-            fulls,
-            reply: &reply,
-            observed,
-            op,
-            tick,
-            correlation: correlation.as_str(),
-            skipped,
-            writable: &writable,
-            output_token: state.workspaces.output_token(&loc.output),
-            workspace_token: state
-                .workspaces
-                .workspace_token(&loc.output, &loc.workspace),
-            revision: revision_for(state, &loc.output, &loc.workspace),
-        },
-    );
-    let outcome: &'static str = match summary {
-        Some(s) if !s.readback_ok => "float-unverified",
-        Some(s) if s.mismatched > 0 || actual != effective => "float-mismatch",
-        Some(_) => applied,
-        None => reply_outcome(&reply),
+    // Sibling reflow already applied through the host diff on commit; the
+    // mover's own readback decides mismatch, never a second geometry pass.
+    let outcome: &'static str = if actual != effective {
+        "float-mismatch"
+    } else {
+        applied
     };
     let mut line = settle(outcome);
     line["origin"] = serde_json::Value::from(origin.token.clone());
@@ -431,7 +324,7 @@ pub(super) fn restore_raised_band(
     me: &ProcessIdentity,
     fulls: &[Rect],
     observed: &[ObservedWindow],
-    member_key: &crate::workspace::WindowKey,
+    member_key: &crate::native_guards::WindowKey,
     from: &str,
     target: &str,
     origin: &SnapOrigin,
@@ -526,7 +419,7 @@ pub(super) fn restore_raised_band(
 pub(super) fn clear_sticky_mark(
     state: &TileLoop,
     me: &ProcessIdentity,
-    member_key: &crate::workspace::WindowKey,
+    member_key: &crate::native_guards::WindowKey,
     expected_prior: bool,
     from: &str,
     target: &str,
@@ -601,7 +494,7 @@ pub(super) fn clear_sticky_mark(
 pub(super) fn clear_float_mark(
     state: &TileLoop,
     me: &ProcessIdentity,
-    member_key: &crate::workspace::WindowKey,
+    member_key: &crate::native_guards::WindowKey,
     from: &str,
     target: &str,
     origin: &SnapOrigin,
@@ -664,47 +557,69 @@ pub(super) fn clear_float_mark(
 pub(super) fn apply_unfloat_to_tiled(
     state: &mut TileLoop,
     me: &ProcessIdentity,
+    store: &LedgerStore,
+    dir: &Path,
     fulls: &[Rect],
     areas: &[MonitorArea],
     observed: &[ObservedWindow],
     retained: &[RetainedRow],
-    skipped: Vec<(String, String)>,
-    member_key: &crate::workspace::WindowKey,
+    _skipped: Vec<(String, String)>,
+    member_key: &crate::native_guards::WindowKey,
     from: &str,
-    loc: &crate::workspace::MemberLoc,
+    _loc: &super::world_reads::Home,
     live_rect: Option<Rect>,
     origin: &SnapOrigin,
     settle: &dyn Fn(&'static str) -> serde_json::Value,
     log_path: &Path,
     tick: u64,
-    correlation: &CorrelationId,
+    _correlation: &CorrelationId,
     op: &'static str,
     target: &'static str,
     unmark_sticky: bool,
 ) {
     let float_rect = live_rect;
-    let Some((reply, candidate)) = prepare_toggle_float(
-        state,
-        areas,
-        observed,
-        retained,
-        op,
-        from,
-        loc,
-        float_rect,
-        origin,
-        settle,
-        log_path,
-        correlation,
-        target,
-    ) else {
-        return;
-    };
     // Capacity re-float: the tile retry found no space, so the window
     // stays floating with its frame. No tile override, no marker
     // removal, no toggle loop: lanes persist, survivors reflow below,
     // and the outcome reports no-space. The raised band stays as-is.
-    let capacity_refloat = matches!(&reply, CoreReply::Tiled(plan) if plan.float_window.is_some());
+    // World-owned: the command result carries `no_space` on the applied
+    // reply instead of a plan shape.
+    if !state.member_tokens.values().any(|token| token == from) {
+        let mut line = settle("unmanaged");
+        line["origin"] = serde_json::Value::from(origin.token.clone());
+        log_json_at(log_path, line);
+        return;
+    }
+    let foreground = crate::ffi::foreground_window();
+    let reply = super::world_tick::run_world_command(
+        state,
+        me,
+        store,
+        dir,
+        observed,
+        retained,
+        areas,
+        foreground,
+        fulls,
+        tiler_core::world_report::WorldCommand::Operation(CoreCommand::ToggleFloat {
+            window: from.to_owned(),
+            float_rect,
+        }),
+    );
+    let capacity_refloat = reply.as_ref().is_some_and(|reply| {
+        matches!(
+            &reply.command_result,
+            Some(tiler_core::world_report::CommandResult::Float { no_space: true, .. })
+        )
+    });
+    if reply.is_none() {
+        let mut line = settle("unfloat-unverified");
+        line["origin"] = serde_json::Value::from(origin.token.clone());
+        line["window"] = serde_json::Value::from(from.to_owned());
+        line["target"] = serde_json::Value::from(target);
+        log_json_at(log_path, line);
+        return;
+    }
     let topmost_restored = if capacity_refloat {
         // The float continues: keep its raised band exactly as-is.
         false
@@ -753,12 +668,13 @@ pub(super) fn apply_unfloat_to_tiled(
     ) {
         return;
     }
-    // R-SPC-04 D7 provenance: capture BEFORE the winning assignment below
+    // R-SPC-04 D7 provenance: capture BEFORE the winning dispatch below
     // withdraws the automatic mark. Only a known automatic-fixed prior wins
     // durable persistence; generic non-fixed unfloats keep runtime
     // suppression only and install no marker.
     let fixed_win = fixed_origin_provenance(state, member_key);
-    state.engine = candidate;
+    // World commit already applied through the host diff above (sibling
+    // reflow with fresh proof); the lanes below only record the outcome.
     if capacity_refloat {
         // Stays floating: keep lanes and frame, record no win.
         if !state.floated.contains(member_key) {
@@ -802,38 +718,13 @@ pub(super) fn apply_unfloat_to_tiled(
         Some(expected) => retain_float_focus_validated(state, me, fulls, expected, member_key),
         None => "float-focus-failed",
     };
-    let writable = writable_tokens(state, &loc.output, &loc.workspace, observed);
-    let summary = apply_geometry(
-        state,
-        ApplyInput {
-            me,
-            fulls,
-            reply: &reply,
-            observed,
-            op,
-            tick,
-            correlation: correlation.as_str(),
-            skipped,
-            writable: &writable,
-            output_token: state.workspaces.output_token(&loc.output),
-            workspace_token: state
-                .workspaces
-                .workspace_token(&loc.output, &loc.workspace),
-            revision: revision_for(state, &loc.output, &loc.workspace),
-        },
-    );
-    let outcome: &'static str = match summary {
-        Some(s) if !s.readback_ok => "unfloat-unverified",
-        Some(s) if s.mismatched > 0 => "unfloat-mismatch",
-        Some(_) => "unfloat-applied",
-        None => reply_outcome(&reply),
-    };
-    // A re-float that reflowed its survivors reports no-space instead
-    // of a tile success.
-    let outcome = if capacity_refloat && outcome == "unfloat-applied" {
+    // Sibling reflow already applied through the host diff on commit, and
+    // the tile slot rides the applied reply rows. A capacity re-float
+    // reports no-space instead of a tile success.
+    let outcome: &'static str = if capacity_refloat {
         "unfloat-no-space"
     } else {
-        outcome
+        "unfloat-applied"
     };
     let mut line = settle(outcome);
     line["origin"] = serde_json::Value::from(origin.token.clone());
@@ -866,7 +757,7 @@ pub(super) trait UnfloatClearEffects {
     fn revalidate(
         &mut self,
         state: &mut TileLoop,
-        member_key: &crate::workspace::WindowKey,
+        member_key: &crate::native_guards::WindowKey,
         expected: &ObservedWindow,
         me: &ProcessIdentity,
         fulls: &[Rect],
@@ -900,7 +791,7 @@ impl UnfloatClearEffects for NativeUnfloatClear {
     fn revalidate(
         &mut self,
         state: &mut TileLoop,
-        member_key: &crate::workspace::WindowKey,
+        member_key: &crate::native_guards::WindowKey,
         expected: &ObservedWindow,
         me: &ProcessIdentity,
         fulls: &[Rect],
@@ -998,9 +889,9 @@ pub(super) fn unfloat_maximize_clear(
     fulls: &[Rect],
     observed: &[ObservedWindow],
     retained: &[RetainedRow],
-    member_key: &crate::workspace::WindowKey,
+    member_key: &crate::native_guards::WindowKey,
     from: &str,
-    loc: &crate::workspace::MemberLoc,
+    loc: &super::world_reads::Home,
     origin_token: &str,
     log_path: &Path,
     tick: u64,
@@ -1039,8 +930,7 @@ pub(super) fn unfloat_maximize_clear(
     // clear; a captionless non-cover transition never retires. Never
     // cleared, never unfloated on veto.
     let same_home = state
-        .workspaces
-        .member_loc(member_key)
+        .member_home(member_key)
         .is_some_and(|fresh| fresh.output == loc.output && fresh.workspace == loc.workspace);
     let same_focus_pre = effects.foreground() == member_key.hwnd;
     let suspend_blocked = effects.suspend_block(state, me, fulls);
@@ -1124,8 +1014,7 @@ pub(super) fn unfloat_maximize_clear(
     // Home stability after the clear: pre-clear topology must never drive
     // admission.
     let same_domain = state
-        .workspaces
-        .member_loc(member_key)
+        .member_home(member_key)
         .is_some_and(|fresh| fresh.output == loc.output && fresh.workspace == loc.workspace);
     let same_focus = effects.foreground() == member_key.hwnd;
     // Post-clear fullscreen fence through the shared derivation (same as

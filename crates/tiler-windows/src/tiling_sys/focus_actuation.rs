@@ -154,7 +154,7 @@ pub(super) fn actuate_focus(
         return unsettled("vanished");
     };
     let proof_mode = state.allowlist.is_some();
-    let member_key = crate::workspace::WindowKey {
+    let member_key = crate::native_guards::WindowKey {
         hwnd: expected.hwnd,
         pid: expected.identity.pid,
         creation: expected.identity.process_creation.clone(),

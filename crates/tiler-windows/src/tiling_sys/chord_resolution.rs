@@ -26,11 +26,11 @@ pub(super) fn observe_chord_intent(
     })
 }
 
-/// Resolved chord target: the Engine token, member key, and domain.
+/// Resolved chord target: the Engine token, member key, and world-backed home.
 pub(super) struct ChordTarget {
     pub(super) from: String,
-    pub(super) member_key: crate::workspace::WindowKey,
-    pub(super) loc: crate::workspace::MemberLoc,
+    pub(super) member_key: crate::native_guards::WindowKey,
+    pub(super) loc: super::world_reads::Home,
 }
 
 /// Chord rejection: the outcome to log and the window token when the log
@@ -71,7 +71,7 @@ pub(super) fn resolve_chord_target(
         state.snap_advance = None;
         return Err(reject("unmanaged"));
     };
-    if !crate::workspace_owner::member_matches(
+    if !crate::native_guards::member_matches(
         &member_key,
         origin.hwnd,
         origin.pid,
@@ -80,24 +80,16 @@ pub(super) fn resolve_chord_target(
         state.snap_advance = None;
         return Err(reject("foreground-changed"));
     }
-    let Some(loc) = state.workspaces.member_loc(&member_key).cloned() else {
+    let Some(loc) = state.member_home(&member_key) else {
         state.snap_advance = None;
         return Err(reject("unmanaged"));
     };
-    if workspace_domain_for(
-        &loc.output,
-        &loc.workspace,
-        areas,
-        state.inner_gap,
-        state.outer_gap,
-    )
-    .is_none()
-    {
+    if !areas.iter().any(|a| a.device == loc.output) {
         return Err(reject("unknown-output"));
     }
     let live_tag = crate::product_hide::sys::read_member_tag(member_key.hwnd);
     let lifetime_ok = state.member_tags.get(&member_key).is_some_and(|stored| {
-        crate::workspace_owner::visible_lifetime_ok(stored, live_tag.as_deref())
+        crate::native_guards::visible_lifetime_ok(stored, live_tag.as_deref())
     });
     if !lifetime_ok {
         drop_member_state(state, &member_key);
@@ -156,7 +148,7 @@ pub(super) fn chord_overlay_refusal(
     sticky_vocab: bool,
     observed: &[ObservedWindow],
     retained: &[RetainedRow],
-    member_key: &crate::workspace::WindowKey,
+    member_key: &crate::native_guards::WindowKey,
 ) -> Option<&'static str> {
     let by_hwnd: HashMap<u64, &ObservedWindow> = observed.iter().map(|w| (w.hwnd, w)).collect();
     let zoomed = is_zoomed_now(member_key.hwnd);
@@ -190,7 +182,7 @@ pub(super) fn chord_overlay_refusal(
 pub(super) fn orientation_overlay_refusal(
     observed: &[ObservedWindow],
     retained: &[RetainedRow],
-    member_key: &crate::workspace::WindowKey,
+    member_key: &crate::native_guards::WindowKey,
 ) -> Option<&'static str> {
     let by_hwnd: HashMap<u64, &ObservedWindow> = observed.iter().map(|w| (w.hwnd, w)).collect();
     let zoomed = is_zoomed_now(member_key.hwnd);

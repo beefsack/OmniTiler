@@ -245,7 +245,7 @@ pub(super) fn min_hint_for(window: &ObservedWindow, cx: &HintCx) -> FreshHint {
 /// (or the test seam stands in).
 pub(super) fn hidden_hint_for(
     state: &TileLoop,
-    key: &crate::workspace::WindowKey,
+    key: &crate::native_guards::WindowKey,
     cx: &HintCx,
 ) -> FreshHint {
     if cx.over_budget() {
@@ -288,13 +288,13 @@ pub(super) fn hidden_hint_for(
         Ok(live) => live,
         Err(_) => return FreshHint::unperformed(HintOutcome::Invalid),
     };
-    if !crate::workspace_owner::member_matches(key, key.hwnd, live.pid, &live.process_creation)
+    if !crate::native_guards::member_matches(key, key.hwnd, live.pid, &live.process_creation)
         || live != stored
     {
         return FreshHint::unperformed(HintOutcome::Invalid);
     }
     let live_tag = crate::product_hide::sys::read_member_tag(key.hwnd);
-    if !crate::workspace_owner::visible_lifetime_ok(&stored_tag, live_tag.as_deref()) {
+    if !crate::native_guards::visible_lifetime_ok(&stored_tag, live_tag.as_deref()) {
         return FreshHint::unperformed(HintOutcome::Invalid);
     }
     let Some(outer_raw) = crate::ffi::window_rect(key.hwnd) else {

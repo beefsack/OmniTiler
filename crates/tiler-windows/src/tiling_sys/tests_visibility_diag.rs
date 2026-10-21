@@ -31,17 +31,16 @@ fn vd_facts(cloaked: bool) -> WindowFacts {
 
 fn vd_member(
     state: &mut TileLoop,
-    output: &str,
-    ws: &str,
+    _output: &str,
+    _ws: &str,
     token: &str,
     hwnd: u64,
-) -> crate::workspace::WindowKey {
-    let key = crate::workspace::WindowKey {
+) -> crate::native_guards::WindowKey {
+    let key = crate::native_guards::WindowKey {
         hwnd,
         pid: 7000 + hwnd as u32,
         creation: format!("cvd{hwnd:016x}"),
     };
-    assert!(state.workspaces.assign(key.clone(), output, ws, false));
     state.member_tokens.insert(key.clone(), token.to_owned());
     state.member_identity.insert(
         key.clone(),
@@ -60,7 +59,7 @@ fn vd_member(
     key
 }
 
-fn vd_observed(token: &str, key: &crate::workspace::WindowKey, cloaked: bool) -> ObservedWindow {
+fn vd_observed(token: &str, key: &crate::native_guards::WindowKey, cloaked: bool) -> ObservedWindow {
     ObservedWindow {
         hwnd: key.hwnd,
         token: token.to_owned(),
@@ -91,7 +90,7 @@ fn vd_observed(token: &str, key: &crate::workspace::WindowKey, cloaked: bool) ->
 }
 
 fn vd_retained(
-    key: &crate::workspace::WindowKey,
+    key: &crate::native_guards::WindowKey,
     token: &str,
     maximized: bool,
     fullscreen: bool,
@@ -114,7 +113,7 @@ fn vd_retained(
     }
 }
 
-fn vd_frameless_retained(key: &crate::workspace::WindowKey, token: &str) -> RetainedRow {
+fn vd_frameless_retained(key: &crate::native_guards::WindowKey, token: &str) -> RetainedRow {
     RetainedRow {
         key: key.clone(),
         token: token.to_owned(),
@@ -125,7 +124,7 @@ fn vd_frameless_retained(key: &crate::workspace::WindowKey, token: &str) -> Reta
     }
 }
 
-fn vd_hidden(state: &mut TileLoop, key: &crate::workspace::WindowKey) {
+fn vd_hidden(state: &mut TileLoop, key: &crate::native_guards::WindowKey) {
     let identity = state
         .member_identity
         .get(key)
@@ -162,8 +161,10 @@ fn vd_setup() -> Vd {
     let mut state = test_state();
     assert!(!state.trace, "visibility diagnostics are normal-level");
     let output = "mon-vd".to_owned();
-    state.workspaces.ensure_output(&output);
-    let ws = state.workspaces.active_id(&output).expect("active");
+    state.ensure_device(&output);
+    let ws = state
+        .active_view(&output)
+        .unwrap_or_else(|| "ws-1".to_owned());
     Vd {
         state,
         output,
@@ -1086,50 +1087,6 @@ fn rehide_retired_detail_names_phase_without_raw_text() {
     vd_teardown();
 }
 
-#[test]
-fn migrate_leg_summaries_flush_honest_counts_then_silence() {
-    // The early-return paths in `migration_view_effects` flush through these
-    // same helpers, so this pins the honest attempted/logged/omitted shape
-    // every return path emits.
-    let path = std::env::temp_dir().join(format!(
-        "tiler-migrate-sum-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    ));
-    let _ = std::fs::remove_file(&path);
-    flush_migrate_hide_summary(&path, 44, "act-9", 70, 64);
-    flush_migrate_reveal_summary(&path, 44, "act-9", 5, 5);
-    flush_migrate_reveal_summary(&path, 45, "act-9", 5, 3);
-    let text = std::fs::read_to_string(&path).unwrap_or_default();
-    let _ = std::fs::remove_file(&path);
-    let lines: Vec<serde_json::Value> = text
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| serde_json::from_str(line).expect("log line parses"))
-        .collect();
-    assert_eq!(lines.len(), 2, "complete legs stay silent: {lines:?}");
-    assert_eq!(lines[0]["event"], "workspace-hide-summary");
-    assert_eq!(lines[0]["tick"], 44);
-    assert_eq!(lines[0]["correlation"], "act-9");
-    assert!(lines[0]["phase"].is_null());
-    assert_eq!(lines[0]["attempted"], 70);
-    assert_eq!(lines[0]["logged"], 64);
-    assert_eq!(lines[0]["omitted"], 6);
-    assert!(
-        lines[0]["mono_ms"].as_u64().is_some(),
-        "summaries carry common time"
-    );
-    assert_eq!(lines[1]["event"], "workspace-reveal-summary");
-    assert_eq!(lines[1]["tick"], 45);
-    assert_eq!(lines[1]["phase"], "migrate");
-    assert_eq!(lines[1]["attempted"], 5);
-    assert_eq!(lines[1]["logged"], 3);
-    assert_eq!(lines[1]["omitted"], 2);
-    vd_teardown();
-}
 
 #[test]
 fn sweep_reveal_lines_pin_maintenance_and_migrate_phases() {

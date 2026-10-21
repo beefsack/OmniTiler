@@ -4,8 +4,8 @@
 //! Pure, offline and read-only over the real owner plus real per-tick
 //! products: [`TileLoop`] tables, [`ObservedWindow`](super::observe::ObservedWindow),
 //! [`RetainedRow`]/[`HiddenRecord`]/[`PendingClosed`](super::retained::RetainedRow),
-//! [`MonitorArea`](super::monitors::MonitorArea) and
-//! [`ManagedWorkspaces`](crate::workspace::ManagedWorkspaces). No parallel
+//! [`MonitorArea`](super::monitors::MonitorArea) and the core logical rings.
+//! No parallel
 //! DTOs: fixtures instantiate these exact production structures through the
 //! same [`capture_world`] constructor the runtime will use. No Engine
 //! mutation, no FFI, no sequencing: observation/request/command counters and
@@ -16,7 +16,7 @@
 //! - `observe.rs` `ObservedWindow`: identity-first observation with
 //!   iconic-before-frame ordering. Lifetimes derive directly from the
 //!   observed identity (`hwnd`, `pid`, `process_creation`) as the full
-//!   [`WindowKey`](crate::workspace::WindowKey), never HWND alone.
+//!   [`WindowKey`](crate::native_guards::WindowKey), never HWND alone.
 //! - `observation.rs` `TileLoop::observe`: minimized omission
 //!   (`minimized_omitted`), scope/hosted gates and the per-tick retained
 //!   vec. Identity-less `Unknown` evidence never becomes a member row.
@@ -25,9 +25,9 @@
 //!   `HiddenRecord` (durable hide-time show preimage
 //!   `claim.show: WindowShowState` plus hide-time `iconic`) and
 //!   `PendingClosed` (homed verified-close obligations).
-//! - `workspace.rs` `ManagedWorkspaces`: committed membership, workspace
-//!   order/active view, displacement records and the session output tokens
-//!   that serve as the wire-opaque output ids (native device keys such as
+//! - Core logical topology: committed membership, logical ring/active
+//!   view, and the mechanical device-to-wire output tokens that serve as
+//!   the wire-opaque output ids (native device keys such as
 //!   `\\.\DISPLAY1` fail the core `is_opaque_id` gate, so the existing
 //!   `output_token` source maps them collision-free).
 //! - `monitors.rs` `MonitorArea`: device-keyed work (placement) and full
@@ -93,23 +93,18 @@
 //!   enumeration so it cannot re-run offline, but its retained consequence
 //!   (membership kept with a frameless row) holds identically.
 //! - Omission is never a close: only queued `PendingClosed` obligations
-//!   ride `DomainReport.closed`, homed per domain. A close observed live
-//!   again is stale and drops; closes homed on unknown domains stay pending
-//!   with the caller.
+//!   ride the global close list. A close observed live again is stale and
+//!   drops; closes homed on unknown workspaces stay pending with the caller.
 //! - A failed enumeration (`None`, mirroring `TileLoop::observe`) holds
-//!   every inventoried scope as incomplete and clears completeness: a failed
+//!   every staged scope as incomplete and clears completeness: a failed
 //!   enum never encodes as successful emptiness, and absence on a failed
 //!   tick infers no close and no minimize. Explicit queued closes still
-//!   ride their homed domain beside the hold, matching the incomplete-
-//!   inventory contract.
-//! - Domains carry no adjacency: production `workspace_domain` emits an
-//!   empty map and Windows has no native adjacency routing source, so the
-//!   KDE-style edge-touch computation is withheld rather than copied.
-//! - Unknown inventory never fabricates an empty row: any member that
-//!   cannot resolve to a verified row holds its domain (`readable = false`
-//!   with an explicit
-//!   [`HoldReason`](tiler_core::world_report::HoldReason)) and clears the
-//!   global completeness flag.
+//!   ride beside the hold, matching the incomplete-inventory contract.
+//! - Screens carry no adjacency and no native workspace vocabulary: FULL
+//!   rectangles plus work areas only. Unknown inventory never fabricates
+//!   an empty row: any member that cannot resolve to a verified row rides
+//!   an unreadable fact (rect `None`) and clears the global completeness
+//!   flag.
 //!
 //! Production prerequisites consumed read-only (no FFI here):
 //! - `assignments::audit_hidden_claims` retires dead claims through the
@@ -121,24 +116,184 @@
 //!   holds on any gap.
 
 use super::*;
-use std::collections::{BTreeSet, HashSet};
-use tiler_core::directional::{OutputId, WindowId, WorkspaceId};
-use tiler_core::seed::EngineWindow;
+use crate::model::ProcessIdentity;
+use crate::native_guards::WindowKey;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use tiler_core::directional::{OutputId, WindowId};
+use tiler_core::size_hints::WindowSizeHints;
 use tiler_core::world_report::{
-    DomainReport, HoldReason, MinimizedEntry, OutputTopology, WorkspaceBinding,
+    RestoredWorld, ScreenReport, ScreenView, WindowFact,
 };
+
+/// Field-input seam for the single runtime WorldEngine owner.
+///
+/// The owner (`WorldOwner` inside `TileLoop`) borrows mutably while capture,
+/// sequencing, and actuation read owner tables. Threading `&TileLoop` through
+/// those paths self-borrows (`&mut self.world` plus `&self`) and cannot
+/// compile at the production tick call site. This struct carries exactly the
+/// read-only owner fields the world route consumes, with the same field
+/// names as `TileLoop`, so capture bodies read unchanged while the runtime
+/// builds one value from disjoint field borrows (`state.owner_inputs()`).
+/// The legacy `&TileLoop` call shape is gone; tests construct the seam the
+/// same way production does.
+#[derive(Debug)]
+pub(super) struct OwnerInputs<'a> {
+    pub member_tokens: &'a BTreeMap<WindowKey, String>,
+    pub member_identity: &'a BTreeMap<WindowKey, ProcessIdentity>,
+    pub member_tags: &'a BTreeMap<WindowKey, String>,
+    pub member_rects: &'a HashMap<String, Rect>,
+    pub float_rects: &'a HashMap<String, Rect>,
+    pub hint_logged: &'a HashMap<String, WindowSizeHints>,
+    pub sticky: &'a BTreeMap<WindowKey, bool>,
+    pub floated: &'a BTreeSet<WindowKey>,
+    pub restart_reject_hold: &'a BTreeSet<WindowKey>,
+    pub born_fullscreen: &'a BTreeSet<WindowKey>,
+    pub born_first_exit: &'a BTreeSet<WindowKey>,
+    pub fixed_auto_seen: &'a BTreeSet<WindowKey>,
+    pub fixed_tile_overrides: &'a BTreeSet<WindowKey>,
+    pub fixed_origin_overrides: &'a BTreeSet<WindowKey>,
+    pub hidden_claims: &'a BTreeMap<WindowKey, HiddenRecord>,
+    pub minimized_omitted: &'a HashSet<WindowKey>,
+    pub pending_closed: &'a BTreeMap<String, PendingClosed>,
+    pub scope: &'a [String],
+    pub scope_hosts: &'a [ScopeHostChild],
+    pub settings_live: &'a Option<LiveSettings>,
+    /// Mechanical device-to-wire-output map (native device keys to opaque
+    /// `oN` ids). Native-wire ids only, never rings/views/tiling/history.
+    pub output_tokens: &'a HashMap<String, String>,
+    /// Adapter-retained last applied logical homing per Engine token
+    /// (from the last applied reply rows). Receipts prove this commitment
+    /// with fresh evidence; the core remains the sole homing authority.
+    pub applied_homing: &'a HashMap<String, (String, String)>,
+    /// Adapter-retained last applied logical views per output (from the last
+    /// applied reply outputs). View receipts prove this commitment.
+    pub applied_views: &'a HashMap<String, String>,
+    pub inner_gap: i32,
+    pub outer_gap: i32,
+    pub active: &'a HashSet<u64>,
+}
+
+impl TileLoop {
+    /// Build the read-only world-route seam from disjoint field borrows.
+    /// The production tick holds `&mut self.world` alongside this value;
+    /// every argument borrows a different field, never the whole loop, so
+    /// the borrow checker accepts the split.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn owner_inputs<'a>(
+        member_tokens: &'a BTreeMap<WindowKey, String>,
+        member_identity: &'a BTreeMap<WindowKey, ProcessIdentity>,
+        member_tags: &'a BTreeMap<WindowKey, String>,
+        member_rects: &'a HashMap<String, Rect>,
+        float_rects: &'a HashMap<String, Rect>,
+        hint_logged: &'a HashMap<String, WindowSizeHints>,
+        sticky: &'a BTreeMap<WindowKey, bool>,
+        floated: &'a BTreeSet<WindowKey>,
+        restart_reject_hold: &'a BTreeSet<WindowKey>,
+        born_fullscreen: &'a BTreeSet<WindowKey>,
+        born_first_exit: &'a BTreeSet<WindowKey>,
+        fixed_auto_seen: &'a BTreeSet<WindowKey>,
+        fixed_tile_overrides: &'a BTreeSet<WindowKey>,
+        fixed_origin_overrides: &'a BTreeSet<WindowKey>,
+        hidden_claims: &'a BTreeMap<WindowKey, HiddenRecord>,
+        minimized_omitted: &'a HashSet<WindowKey>,
+        pending_closed: &'a BTreeMap<String, PendingClosed>,
+        scope: &'a [String],
+        scope_hosts: &'a [ScopeHostChild],
+        settings_live: &'a Option<LiveSettings>,
+        output_tokens: &'a HashMap<String, String>,
+        applied_homing: &'a HashMap<String, (String, String)>,
+        applied_views: &'a HashMap<String, String>,
+        inner_gap: i32,
+        outer_gap: i32,
+        active: &'a HashSet<u64>,
+    ) -> OwnerInputs<'a> {
+        OwnerInputs {
+            member_tokens,
+            member_identity,
+            member_tags,
+            member_rects,
+            float_rects,
+            hint_logged,
+            sticky,
+            floated,
+            restart_reject_hold,
+            born_fullscreen,
+            born_first_exit,
+            fixed_auto_seen,
+            fixed_tile_overrides,
+            fixed_origin_overrides,
+            hidden_claims,
+            minimized_omitted,
+            pending_closed,
+            scope,
+            scope_hosts,
+            settings_live,
+            output_tokens,
+            applied_homing,
+            applied_views,
+            inner_gap,
+            outer_gap,
+            active,
+        }
+    }
+
+    /// Test/offline convenience: build the seam from a shared borrow.
+    /// Production ticks use the disjoint associated function above to hold
+    /// `&mut world` alongside; offline code holds no such split.
+    pub(super) fn inputs(&self) -> OwnerInputs<'_> {
+        OwnerInputs {
+            member_tokens: &self.member_tokens,
+            member_identity: &self.member_identity,
+            member_tags: &self.member_tags,
+            member_rects: &self.member_rects,
+            float_rects: &self.float_rects,
+            hint_logged: &self.hint_logged,
+            sticky: &self.sticky,
+            floated: &self.floated,
+            restart_reject_hold: &self.restart_reject_hold,
+            born_fullscreen: &self.born_fullscreen,
+            born_first_exit: &self.born_first_exit,
+            fixed_auto_seen: &self.fixed_auto_seen,
+            fixed_tile_overrides: &self.fixed_tile_overrides,
+            fixed_origin_overrides: &self.fixed_origin_overrides,
+            hidden_claims: &self.hidden_claims,
+            minimized_omitted: &self.minimized_omitted,
+            pending_closed: &self.pending_closed,
+            scope: &self.scope,
+            scope_hosts: &self.scope_hosts,
+            settings_live: &self.settings_live,
+            output_tokens: &self.output_tokens,
+            applied_homing: &self.applied_homing,
+            applied_views: &self.applied_views,
+            inner_gap: self.inner_gap,
+            outer_gap: self.outer_gap,
+            active: &self.active,
+        }
+    }
+}
 
 /// Captured world: the typed core observation pieces the sequencer unit
 /// will envelope into a `WorldReport`. Sequencing fields (contract version,
 /// owner/incarnation/generation, observation/request/command counters,
-/// commands, feedback) are deliberately absent here.
+/// commands, feedback) and view echoes are deliberately absent here:
+/// screens plus window facts are the only observation prerequisites, and
+/// views echo the core's last desired logical views out of band.
 #[derive(Debug, Clone)]
 pub(super) struct CapturedWorld {
-    pub(super) mode: tiler_core::workspace_scope::WorkspaceMode,
-    pub(super) topology: Vec<OutputTopology>,
-    pub(super) bindings: Vec<WorkspaceBinding>,
-    pub(super) domains: Vec<DomainReport>,
-    pub(super) minimized: Vec<MinimizedEntry>,
+    pub(super) screens: Vec<ScreenReport>,
+    pub(super) windows: Vec<WindowFact>,
+    pub(super) closed: Vec<WindowId>,
+    /// Adapter-observed applied logical views per screen (visibility-proven
+    /// receipts from `world_native::observed_view_receipts`). Empty means
+    /// unknown: the core treats missing echoes as gaps and retains pending
+    /// flights, never as proof.
+    pub(super) observed_views: Vec<ScreenView>,
+    /// Workspace scope mode from the saved `core.workspace.mode` (restart
+    /// adopted, like the owner state). Drives core ring/view/history,
+    /// hotplug, startup, and migration policy for the report.
+    pub(super) workspace_mode: tiler_core::workspace_scope::WorkspaceMode,
+    /// Equal-workspace-count parity capability for the report.
+    pub(super) equal_workspace_count: bool,
     pub(super) inventory_complete: bool,
     pub(super) gesture_barrier: bool,
     pub(super) focused_global: String,
@@ -146,28 +301,33 @@ pub(super) struct CapturedWorld {
     pub(super) fixed_size_predicate: tiler_core::size_hints::FixedSizePredicate,
     pub(super) migration_source_refill: tiler_core::output_selection::MigrationSourceRefill,
     /// Closes observed live again: stale, dropped, never carried.
+    /// (Read by the 2b owner cutover; capture retains the evidence meanwhile.)
+    #[allow(dead_code)]
     pub(super) dropped_stale_closed: Vec<String>,
-    /// Closes homed on unknown domains: uncarried, retained by the caller.
+    /// Closes homed on unknown workspaces: uncarried, retained by the caller.
     pub(super) unhomed_closed: Vec<String>,
-    /// Member tokens withheld by domain holds (never silently dropped).
+    /// Member tokens withheld by unreadable facts (never silently dropped).
+    /// (Read by the 2b owner cutover; capture retains the evidence meanwhile.)
+    #[allow(dead_code)]
     pub(super) held_members: Vec<String>,
+    /// Bootstrap restoration ingress projected from the live owner tables
+    /// (workspace rings, active views, per-workspace tiling, member homing).
+    /// `None` when no workspace exists yet. The sequencer carries this only
+    /// on the first accepted report of an incarnation; the core adopts it
+    /// transactionally and refuses it on later reports. Native
+    /// identity/lifetime association stays adapter-mechanical (tokens bound
+    /// here to live member keys); the core owns the logical mapping.
+    pub(super) restored: Option<RestoredWorld>,
 }
 
-/// Floating membership for one row (production row-assembly parity):
-/// sticky wins unconditionally (returning before the first-exit check, so a
-/// sticky first exit stays floating with no extra conjunct); the D4
+/// Bootstrap restoration ingress: none (deleted wrapper).
+/// Floating membership for one row: sticky wins unconditionally; the D4
 /// automatic-fixed latch floats unless an explicit tile win dominates;
-/// adapter float intent (floats, restart-holds, committed Engine exceptions,
-/// born holds) floats unless a first-exit mark already returned the member
-/// to the tiled lane. Never inferred from hints alone.
-fn capture_floating(
-    state: &TileLoop,
-    key: &crate::workspace::WindowKey,
-    output: &str,
-    workspace: &str,
-    token: &str,
-    hidden: bool,
-) -> bool {
+/// marker-derived adapter float intent (floats, restart-holds, born holds)
+/// floats unless a first-exit mark already returned the member to the tiled
+/// lane. Never inferred from hints alone. No legacy Engine exception lane:
+/// the core owns float exceptions outright.
+fn capture_floating(state: & OwnerInputs<'_>, key: & crate::native_guards::WindowKey, hidden: bool) -> bool {
     let sticky = state.sticky.contains_key(key);
     if sticky {
         return true;
@@ -176,9 +336,6 @@ fn capture_floating(
     if fixed_auto && !fixed_suppress {
         return true;
     }
-    // Production first-exit parity: visible first exits return to the tiled
-    // lane; hidden first exits do the same unless the member is an
-    // intentional float (the hidden `first_exit_hidden` conjunction).
     let first_exit =
         state.born_first_exit.contains(key) && (!hidden || !state.floated.contains(key));
     if first_exit {
@@ -187,7 +344,6 @@ fn capture_floating(
     state.floated.contains(key)
         || state.restart_reject_hold.contains(key)
         || state.born_fullscreen.contains(key)
-        || admission::engine_is_float(state, output, workspace, token)
 }
 
 /// The three fixed-size lanes, preserved distinctly: the explicit tile-win
@@ -196,7 +352,7 @@ fn capture_floating(
 /// (`fixed_auto_seen`) reports only when neither sticky intent nor a
 /// durable win reframes it (production stamp parity: sticky dominates
 /// automatic origin and durable wins never acquire it).
-fn capture_fixed(state: &TileLoop, key: &crate::workspace::WindowKey) -> (bool, bool) {
+fn capture_fixed(state: & OwnerInputs<'_>, key: & crate::native_guards::WindowKey) -> (bool, bool) {
     let durable =
         state.fixed_tile_overrides.contains(key) || state.fixed_origin_overrides.contains(key);
     let sticky = state.sticky.contains_key(key);
@@ -212,7 +368,7 @@ fn capture_fixed(state: &TileLoop, key: &crate::workspace::WindowKey) -> (bool, 
 /// boundary (`observed_window_from_engine`), so carrying such a row as
 /// tiled would publish controlled frame authority for a window the adapter
 /// must not touch. Callers hold the domain instead.
-pub(super) fn capture_facts_rideable(facts: &WindowFacts) -> bool {
+pub(super) fn capture_facts_rideable(facts: & WindowFacts) -> bool {
     match crate::tiling::classify(facts) {
         Ok(()) => true,
         Err(SkipReason::Fullscreen | SkipReason::Maximized) => true,
@@ -231,15 +387,14 @@ pub(super) fn capture_facts_rideable(facts: &WindowFacts) -> bool {
 #[must_use]
 #[allow(clippy::too_many_lines)]
 pub(super) fn capture_world(
-    state: &TileLoop,
+    state: & OwnerInputs<'_>,
     observed: Option<&[ObservedWindow]>,
-    retained: &[RetainedRow],
-    areas: &[MonitorArea],
+    retained: & [RetainedRow],
+    areas: & [MonitorArea],
     foreground_hwnd: u64,
 ) -> CapturedWorld {
     let enum_failed = observed.is_none();
-    let observed: &[ObservedWindow] = observed.unwrap_or(&[]);
-    let mode = state.scope_owner.adopted();
+    let observed: & [ObservedWindow] = observed.unwrap_or(&[]);
     // Liveness for stale-close detection: every member token plus every
     // carried observed/retained token. A queued close observed live again
     // is stale and drops; it never rides as a contradictory live+closed row.
@@ -254,464 +409,646 @@ pub(super) fn capture_world(
         live.insert(row.token.as_str());
     }
 
-    let mut domains: Vec<DomainReport> = Vec::new();
-    let mut minimized: Vec<MinimizedEntry> = Vec::new();
+    let mut screens: Vec<ScreenReport> = Vec::new();
+    let mut facts: Vec<WindowFact> = Vec::new();
+    let mut closed_all: Vec<WindowId> = Vec::new();
     let mut held_members: Vec<String> = Vec::new();
-    let mut topology_complete = true;
+    let mut inventory_complete = !enum_failed;
+    // An unreadable fact (rect `None`) holds its staged scope instead of
+    // authorizing geometry, never a silent absence: every withheld member
+    // below rides one. Minimized facts ride separately with no geometry.
+    macro_rules! unreadable_fact {
+        ($facts:expr, $held:expr, $complete:expr, $token:expr, $mapped:expr, $sticky:expr) => {{
+            $facts.push(WindowFact {
+                window: WindowId($token.to_owned()),
+                output: OutputId($mapped.clone()),
+                rect: None,
+                floating: false,
+                fit_excluded: false,
+                fullscreen: false,
+                maximized: false,
+                sticky: $sticky,
+                fixed_auto: false,
+                fixed_suppress: false,
+                hints: WindowSizeHints::none(),
+                minimized: false,
+                // No facade readback on the default path: unknown, never
+                // proof of absence.
+                observed_workspace: None,
+            });
+            $held.push($token.to_owned());
+            $complete = false;
+        }};
+    }
+    macro_rules! minimized_fact {
+        ($facts:expr, $token:expr, $mapped:expr, $sticky:expr) => {{
+            $facts.push(WindowFact {
+                window: WindowId($token.to_owned()),
+                output: OutputId($mapped.clone()),
+                rect: None,
+                floating: false,
+                fit_excluded: false,
+                fullscreen: false,
+                maximized: false,
+                sticky: $sticky,
+                fixed_auto: false,
+                fixed_suppress: false,
+                hints: WindowSizeHints::none(),
+                minimized: true,
+                observed_workspace: None,
+            });
+        }};
+    }
     if enum_failed {
         // A failed enumeration proves nothing about any scope: every
         // inventoried scope holds below and completeness clears, even for
         // empty managed workspaces (which would otherwise read as a
         // successful empty and authorize cleanup).
-        topology_complete = false;
     }
 
-    for output in state.workspaces.output_keys() {
-        let mapped = state.workspaces.output_token(&output);
-        // `output_token` falls back to `"o?"` for unknown outputs, which is
-        // not wire-opaque: keys from `output_keys` are always known, so this
-        // arm is defensive only and holds without emitting.
+    // Screens ride the live monitor areas in native order plus the
+    // mechanical device-to-wire map only. No rings/views/tiling/history:
+    // the core mints and owns its logical workspaces outright.
+    for area in areas {
+        let mapped = state
+            .output_tokens
+            .get(&area.device)
+            .cloned()
+            .unwrap_or_else(|| "o?".to_owned());
         let mapped_valid = mapped != "o?";
-        if !mapped_valid {
-            topology_complete = false;
-        }
-        let area = areas.iter().find(|a| a.device == output);
-        // Raw work bounds ride the report; the core insets exactly once via
-        // `inset_world_domain`. The inset runs here only as a validates-the-
-        // margin check: a work area that cannot carry the margin holds
-        // instead of tiling an un-inset (or double-inset) domain.
-        let inset_ok = area.is_some_and(|a| {
-            crate::tiling::tiling_domain_bounds_with(a.work, state.outer_gap).is_some()
-        });
-        let raw_bounds = area.map(|a| a.work);
-        let area_missing = area.is_none() || !inset_ok;
+        let inset_ok =
+            crate::tiling::tiling_domain_bounds_with(area.work, state.outer_gap).is_some();
+        let area_missing = !mapped_valid || !inset_ok;
         if area_missing {
-            topology_complete = false;
+            inventory_complete = false;
         }
-        for workspace in state.workspaces.workspace_ids(&output) {
-            let mut windows: Vec<EngineWindow> = Vec::new();
-            let mut closed: Vec<WindowId> = Vec::new();
-            let mut hold: Option<HoldReason> = if area_missing || !mapped_valid {
-                Some(HoldReason::Unreadable)
-            } else if enum_failed {
-                Some(HoldReason::IncompleteInventory)
+        let screen_complete = !area_missing && !enum_failed;
+        screens.push(ScreenReport {
+            output: OutputId(mapped.clone()),
+            full_rect: Some(area.full),
+            work_area: Some(area.work),
+            gap: state.inner_gap,
+            outer_gap: state.outer_gap,
+            complete: screen_complete,
+            primary: areas.first().is_some_and(|a| a.device == area.device),
+        });
+    }
+    let screen_outputs: HashSet<String> =
+        screens.iter().map(|s| s.output.0.clone()).collect();
+    let first_output: String = screens
+        .first()
+        .map(|s| s.output.0.clone())
+        .unwrap_or_else(|| "o?".to_owned());
+    // Output affinity for one frame: live placement geometry, never a
+    // policy table. Unknown devices fall back to the first screen with
+    // incompleteness marked by the caller.
+    let affinity_of = |rect: & Rect| -> String {
+        let device = super::directional_resolution::output_for_rect(areas, rect);
+        state
+            .output_tokens
+            .get(&device)
+            .cloned()
+            .unwrap_or_else(|| first_output.clone())
+    };
+    // Seed the member-key universe from mechanical tables only: bound
+    // members, hidden claims, minimized omissions, and retained rows. New
+    // windows enter through the observed lane below.
+    let mut keys: BTreeSet<WindowKey> = BTreeSet::new();
+    for key in state.member_tokens.keys() {
+        keys.insert(key.clone());
+    }
+    for key in state.hidden_claims.keys() {
+        keys.insert(key.clone());
+    }
+    for key in state.minimized_omitted.iter() {
+        keys.insert(key.clone());
+    }
+    for row in retained {
+        keys.insert(row.key.clone());
+    }
+    if enum_failed {
+        // A failed enumeration proves nothing: every bound lifetime rides
+        // unreadable with first-screen affinity; explicit queued closes
+        // still ride beside the hold. Bare absence never becomes a close.
+        for key in &keys {
+            let sticky = state.sticky.contains_key(key);
+            if let Some(token) = state.member_tokens.get(key) {
+                unreadable_fact!(
+                    facts,
+                    held_members,
+                    inventory_complete,
+                    token,
+                    first_output,
+                    sticky
+                );
             } else {
-                None
+                inventory_complete = false;
+            }
+        }
+    } else {
+        // Visible lane over live observation: every observed window rides a
+        // fact (new lifetimes admit through the ordinary path; the core
+        // assigns logical homing). Identity/scope/classify gates hold
+        // narrowly as unreadable, never as silent absence.
+        for window in observed {
+            let key = WindowKey {
+                hwnd: window.hwnd,
+                pid: window.identity.pid,
+                creation: window.identity.process_creation.clone(),
             };
-            for key in state.workspaces.workspace_members(&output, &workspace) {
-                if enum_failed {
-                    // Failed observation resolves nothing: no rows, no
-                    // minimized entries, no lifetime inheritance. Explicit
-                    // queued closes still ride their homed domain below
-                    // (verified evidence beside a hold, per contract); bare
-                    // absence never becomes a close.
-                    hold = Some(HoldReason::IncompleteInventory);
-                    if let Some(token) = state.member_tokens.get(&key) {
-                        held_members.push(token.clone());
-                    }
-                    continue;
-                }
-                let Some(live_token) = state.member_tokens.get(&key) else {
-                    hold = Some(HoldReason::IncompleteInventory);
-                    continue;
-                };
-                let hidden = state
-                    .workspaces
-                    .member_loc(&key)
-                    .is_some_and(|loc| loc.hidden);
-                // Scope exclusion derives from the stored identity through
-                // production `scope_allows`. Without a stored identity the
-                // scope fence cannot be verified, so the domain holds. The
-                // stored identity must also name this exact lifetime
-                // (`pid`/`process_creation` equal the key): drifted tables
-                // hold instead of scoping another process.
-                let Some(identity) = state.member_identity.get(&key) else {
-                    hold = Some(HoldReason::IncompleteInventory);
-                    held_members.push(live_token.clone());
-                    continue;
-                };
-                if identity.pid != key.pid || identity.process_creation != key.creation {
-                    hold = Some(HoldReason::IncompleteInventory);
-                    held_members.push(live_token.clone());
-                    continue;
-                }
-                let excluded = !crate::tiling::scope_allows(&state.scope, &identity.exe_path);
-                // Scope exclusion has no window authority lane in the typed
-                // report, so the domain holds instead of authorizing
-                // geometry, membership, or effects for an unmanaged
-                // executable. (Legacy row assembly rides a row and gates
-                // writes in `writable_tokens`; that gate does not exist on
-                // the world path, where reply authority is the only gate.)
-                if excluded {
-                    hold = Some(HoldReason::IncompleteInventory);
-                    held_members.push(live_token.clone());
-                    continue;
-                }
-                // Lifetime-matched rows for this key: identity first, then
-                // the token must equal the stable member token or the row
-                // is a recycled lifetime and inherits nothing.
-                let observed_row = observed.iter().find(|w| {
-                    w.hwnd == key.hwnd
-                        && w.identity.pid == key.pid
-                        && w.identity.process_creation == key.creation
-                });
-                if observed_row.is_some_and(|w| w.token != *live_token) {
-                    hold = Some(HoldReason::IncompleteInventory);
-                    held_members.push(live_token.clone());
-                    continue;
-                }
-                let retained_row = retained.iter().find(|r| r.key == key);
-                if retained_row.is_some_and(|r| r.token != *live_token) {
-                    hold = Some(HoldReason::IncompleteInventory);
-                    held_members.push(live_token.clone());
-                    continue;
-                }
-                let sticky = state.sticky.contains_key(&key);
-                let (fixed_auto, fixed_suppress) = capture_fixed(state, &key);
-                if hidden {
-                    // Hidden lane dominates like production assembly: the
-                    // claim association must prove before any row, snapshot
-                    // or minimized entry. The claim tag (hidden-claim nonce)
-                    // must be well-formed, the claim identity must equal the
-                    // member key, and a stamped lifetime tag must exist; the
-                    // member tag itself is a different native property from
-                    // the claim tag, so only presence (never equality) is
-                    // required of it.
-                    let associated = state.hidden_claims.get(&key).is_some_and(|record| {
-                        crate::model::valid_claim_tag(&record.claim.tag)
-                            && record.claim.hwnd == key.hwnd
-                            && record.claim.process.pid == key.pid
-                            && record.claim.process.process_creation == key.creation
-                    }) && state
-                        .member_tags
-                        .get(&key)
-                        .is_some_and(|tag| !tag.is_empty());
-                    if !associated {
-                        hold = Some(HoldReason::IncompleteInventory);
-                        held_members.push(live_token.clone());
-                        continue;
-                    }
-                    let record = state
-                        .hidden_claims
-                        .get(&key)
-                        .expect("associated claim exists");
-                    // Iconic minimization reads the durable preimage
-                    // (`show.minimized`, minimized wins per
-                    // `ProductShowRestore`) plus the hide-time and
-                    // observed-iconic state.
-                    if record.iconic
-                        || record.claim.show.minimized
-                        || state.minimized_omitted.contains(&key)
-                    {
-                        minimized.push(MinimizedEntry {
-                            window: WindowId(live_token.clone()),
-                            output: OutputId(mapped.clone()),
-                            workspace: WorkspaceId(workspace.clone()),
-                            sticky,
-                        });
-                        continue;
-                    }
-                    // A token-matched fresh row carrying facts the report
-                    // cannot express (cloaked, tool, shell, owned, dialog,
-                    // no-activate, ...) holds the hidden domain too: the
-                    // snapshot carrier has no authority lane for them, and
-                    // only the overlay flags below are read from fresh rows.
-                    let fresh_blocked = observed_row
-                        .is_some_and(|w| !capture_facts_rideable(&w.facts))
-                        || retained_row.is_some_and(|r| {
-                            r.facts.is_some_and(|facts| !capture_facts_rideable(&facts))
-                        });
-                    if fresh_blocked {
-                        hold = Some(HoldReason::IncompleteInventory);
-                        held_members.push(live_token.clone());
-                        continue;
-                    }
-                    let floating =
-                        capture_floating(state, &key, &output, &workspace, live_token, true);
-                    let snapshot = crate::workspace_owner::hidden_snapshot_rect(
-                        floating,
-                        state.float_rects.get(live_token).copied(),
-                        state.member_rects.get(live_token).copied(),
-                    );
-                    let Some(rect) = snapshot else {
-                        // Frameless hidden non-iconic: unknown frame, never
-                        // minimized, never dropped.
-                        hold = Some(HoldReason::Unreadable);
-                        held_members.push(live_token.clone());
-                        continue;
-                    };
-                    // Fresh same-tick rows verify overlay directly (a stale
-                    // hidden flag with live evidence). Otherwise maximized
-                    // rides the durable hide-time preimage and fullscreen
-                    // rides only the verified born-fullscreen hold lane;
-                    // with no verifiable fullscreen the domain holds rather
-                    // than defaulting `false` to authorize writes.
-                    let fresh_fullscreen = observed_row
-                        .map(|w| w.facts.captionless_fullscreen)
-                        .or_else(|| {
-                            retained_row
-                                .filter(|r| r.facts.is_some())
-                                .map(|r| r.fullscreen)
-                        });
-                    let fresh_maximized = observed_row.map(|w| w.facts.maximized).or_else(|| {
-                        retained_row
-                            .filter(|r| r.facts.is_some())
-                            .map(|r| r.maximized)
-                    });
-                    let maximized = fresh_maximized.unwrap_or(record.claim.show.maximized);
-                    let Some(fullscreen) = fresh_fullscreen
-                        .or_else(|| state.born_fullscreen.contains(&key).then_some(true))
-                    else {
-                        hold = Some(HoldReason::Unreadable);
-                        held_members.push(live_token.clone());
-                        continue;
-                    };
-                    let hints = state
-                        .hint_logged
-                        .get(live_token)
-                        .copied()
-                        .unwrap_or_else(WindowSizeHints::none);
-                    windows.push(EngineWindow {
-                        window: WindowId(live_token.clone()),
-                        output: OutputId(mapped.clone()),
-                        workspace: WorkspaceId(workspace.clone()),
-                        rect,
-                        // Ordinary hidden fullscreen rides reserved (tiled
-                        // lane with fullscreen set), never floated: only the
-                        // intent lanes inside `floating` (born holds,
-                        // floats, sticky, Engine exceptions) ride floating.
-                        floating,
-                        fit_excluded: floating || fullscreen || sticky || maximized,
-                        fullscreen,
-                        maximized,
-                        sticky,
-                        fixed_auto: fixed_auto && !fixed_suppress,
-                        fixed_suppress,
-                        hints,
-                    });
-                    continue;
-                }
-                // Visible lane: eligible observation first, then retained
-                // occupancy, mirroring production assembly order.
-                if let Some(window) = observed_row {
-                    // Facts the report cannot express hold the domain
-                    // instead of publishing controlled authority for a
-                    // window the adapter must not touch.
-                    if !capture_facts_rideable(&window.facts) {
-                        hold = Some(HoldReason::IncompleteInventory);
-                        held_members.push(live_token.clone());
-                        continue;
-                    }
-                    let floating =
-                        capture_floating(state, &key, &output, &workspace, live_token, false);
-                    let hints = state
-                        .hint_logged
-                        .get(live_token)
-                        .copied()
-                        .unwrap_or_else(WindowSizeHints::none);
-                    windows.push(EngineWindow {
-                        window: WindowId(live_token.clone()),
-                        output: OutputId(mapped.clone()),
-                        workspace: WorkspaceId(workspace.clone()),
-                        rect: window.visible,
-                        floating,
-                        fit_excluded: floating
-                            || sticky
-                            || window.facts.captionless_fullscreen
-                            || window.facts.maximized,
-                        fullscreen: window.facts.captionless_fullscreen,
-                        maximized: window.facts.maximized,
-                        sticky,
-                        fixed_auto: fixed_auto && !fixed_suppress,
-                        fixed_suppress,
-                        hints,
-                    });
-                    continue;
-                }
-                if let Some(row) = retained_row {
-                    // Iconic omission minimizes without any frame: the only
-                    // frameless lane that resolves. Frameless non-iconic
-                    // rows (unreadable or scope-excluded) hold the domain.
-                    if state.minimized_omitted.contains(&key)
-                        && row.rect.is_none()
-                        && !row.maximized
-                        && !row.fullscreen
-                    {
-                        minimized.push(MinimizedEntry {
-                            window: WindowId(live_token.clone()),
-                            output: OutputId(mapped.clone()),
-                            workspace: WorkspaceId(workspace.clone()),
-                            sticky,
-                        });
-                        continue;
-                    }
-                    if row.facts.is_none() {
-                        hold = Some(HoldReason::Unreadable);
-                        held_members.push(live_token.clone());
-                        continue;
-                    }
-                    // Facts the report cannot express hold the domain:
-                    // overlays (maximized/fullscreen) ride their reserved
-                    // lane below, everything else ineligible authorizes
-                    // nothing.
-                    if row
-                        .facts
-                        .is_some_and(|facts| !capture_facts_rideable(&facts))
-                    {
-                        hold = Some(HoldReason::IncompleteInventory);
-                        held_members.push(live_token.clone());
-                        continue;
-                    }
-                    let overlay = row.maximized || row.fullscreen;
-                    // Production `canonical_retained_rect` parity: an
-                    // overlay rides its last-known tile allocation, never
-                    // the compositor-owned maximum frame; first sightings
-                    // fall back to the fresh frame.
-                    let kept = state.member_rects.get(live_token).copied();
-                    let rect = match (overlay, row.rect, kept) {
-                        (true, _, Some(slot)) => Some(slot),
-                        (_, Some(fresh), _) => Some(fresh),
-                        _ => None,
-                    };
-                    let Some(rect) = rect else {
-                        hold = Some(HoldReason::Unreadable);
-                        held_members.push(live_token.clone());
-                        continue;
-                    };
-                    let floating =
-                        capture_floating(state, &key, &output, &workspace, live_token, false);
-                    let hints = crate::tiling::retained_overlay_hint(
-                        state.hint_logged.get(live_token).copied(),
-                        true,
-                        overlay,
-                        floating,
-                        state.born_fullscreen.contains(&key),
-                        true,
-                    );
-                    windows.push(EngineWindow {
-                        window: WindowId(live_token.clone()),
-                        output: OutputId(mapped.clone()),
-                        workspace: WorkspaceId(workspace.clone()),
-                        rect,
-                        floating,
-                        fit_excluded: floating || sticky || row.fullscreen || row.maximized,
-                        fullscreen: row.fullscreen,
-                        maximized: row.maximized,
-                        sticky,
-                        fixed_auto: fixed_auto && !fixed_suppress,
-                        fixed_suppress,
-                        hints,
-                    });
-                    continue;
-                }
-                // Iconic omission without any row (the production iconic
-                // arm omits before pushing a retained row): minimizes with
-                // no frame. Any other viewless member defers with retained
-                // state, never a falsely complete row.
-                if state.minimized_omitted.contains(&key) {
-                    minimized.push(MinimizedEntry {
-                        window: WindowId(live_token.clone()),
-                        output: OutputId(mapped.clone()),
-                        workspace: WorkspaceId(workspace.clone()),
-                        sticky,
-                    });
-                    continue;
-                }
-                hold = Some(HoldReason::IncompleteInventory);
-                held_members.push(live_token.clone());
-            }
-            // Explicit closes ride their homed domain even beside a hold:
-            // a queued verified close is honored inside incomplete
-            // inventory; only implicit missing=closed inference needs a
-            // provably complete list, which this capture never performs.
-            for (token, homing) in &state.pending_closed {
-                if homing.output == output
-                    && homing.workspace == workspace
-                    && !live.contains(token.as_str())
-                {
-                    closed.push(WindowId(token.clone()));
-                }
-            }
-            closed.sort_by(|a, b| a.0.cmp(&b.0));
-            windows.sort_by(|a, b| a.window.0.cmp(&b.window.0));
-            let readable = hold.is_none();
-            if !readable {
-                // Rows carried before a domain-level hold (missing area,
-                // unmapped output) are withheld, never published: their
-                // tokens join the held set like every other withheld row.
-                for window in &windows {
-                    held_members.push(window.window.0.clone());
-                }
-                windows.clear();
-                topology_complete = false;
-            }
-            let focused_global = observed
-                .iter()
-                .find(|w| w.hwnd == foreground_hwnd)
-                .map(|w| w.token.clone())
-                .unwrap_or_default();
-            let focused = if readable
-                && !focused_global.is_empty()
-                && let Some(key) = state
-                    .member_tokens
-                    .iter()
-                    .find_map(|(key, token)| (*token == focused_global).then_some(key))
-                && let Some(loc) = state.workspaces.member_loc(key)
-                && loc.output == output
-                && loc.workspace == workspace
-                && !loc.hidden
+            let token = state
+                .member_tokens
+                .get(&key)
+                .cloned()
+                .unwrap_or_else(|| window.token.clone());
+            if let Some(bound) = state.member_tokens.get(&key)
+                && bound != &window.token
             {
-                WindowId(focused_global.clone())
-            } else {
-                WindowId(String::new())
+                // Recycled lifetime under a stale number: hold, inherit
+                // nothing.
+                unreadable_fact!(
+                    facts,
+                    held_members,
+                    inventory_complete,
+                    bound,
+                    affinity_of(&window.visible),
+                    state.sticky.contains_key(&key)
+                );
+                continue;
+            }
+            let hidden = state.hidden_claims.contains_key(&key);
+            // Scope fence: stored identity for bound members (drift holds),
+            // live identity for brand-new windows.
+            let exe_path: Option<String> = match state.member_identity.get(&key) {
+                Some(identity)
+                    if identity.pid == key.pid
+                        && identity.process_creation == key.creation =>
+                {
+                    Some(identity.exe_path.clone())
+                }
+                Some(_) => {
+                    unreadable_fact!(
+                        facts,
+                        held_members,
+                        inventory_complete,
+                        token,
+                        affinity_of(&window.visible),
+                        state.sticky.contains_key(&key)
+                    );
+                    continue;
+                }
+                None => Some(window.identity.exe_path.clone()),
             };
-            // Production `workspace_domain` parity: Windows carries no
-            // adjacency source, so the map stays empty rather than copying
-            // the KDE edge-touch computation without native evidence. Bounds
-            // are the raw work area: the core insets once via
-            // `inset_world_domain` (the fallback below only rides beside a
-            // hold, when the area is missing).
-            let (domain_value, _) = crate::workspace_owner::workspace_domain(
-                &mapped,
-                &workspace,
-                raw_bounds.unwrap_or(tiler_core::geometry::Rect {
-                    x: 0,
-                    y: 0,
-                    w: 800,
-                    h: 600,
-                }),
-                state.inner_gap,
-            );
-            domains.push(DomainReport {
-                domain: domain_value,
-                outer_gap: state.outer_gap,
-                focused,
-                windows,
-                closed,
-                readable,
-                hold,
+            let exe_path = exe_path.unwrap_or_default();
+            if !crate::tiling::scope_allows(state.scope, &exe_path) {
+                unreadable_fact!(
+                    facts,
+                    held_members,
+                    inventory_complete,
+                    token,
+                    affinity_of(&window.visible),
+                    state.sticky.contains_key(&key)
+                );
+                continue;
+            }
+            let sticky = state.sticky.contains_key(&key);
+            let (fixed_auto, fixed_suppress) = capture_fixed(state, &key);
+            if hidden {
+                // Hidden lane dominates: the claim association must prove
+                // before any row, snapshot, or minimized entry.
+                let associated = state.hidden_claims.get(&key).is_some_and(|record| {
+                    crate::model::valid_claim_tag(&record.claim.tag)
+                        && record.claim.hwnd == key.hwnd
+                        && record.claim.process.pid == key.pid
+                        && record.claim.process.process_creation == key.creation
+                }) && state
+                    .member_tags
+                    .get(&key)
+                    .is_some_and(|tag| !tag.is_empty());
+                if !associated {
+                    unreadable_fact!(
+                        facts,
+                        held_members,
+                        inventory_complete,
+                        token,
+                        affinity_of(&window.visible),
+                        sticky
+                    );
+                    continue;
+                }
+                let record = state
+                    .hidden_claims
+                    .get(&key)
+                    .expect("associated claim exists");
+                if record.iconic
+                    || record.claim.show.minimized
+                    || state.minimized_omitted.contains(&key)
+                {
+                    minimized_fact!(facts, token, affinity_of(&window.visible), sticky);
+                    continue;
+                }
+                if !capture_facts_rideable(&window.facts) {
+                    unreadable_fact!(
+                        facts,
+                        held_members,
+                        inventory_complete,
+                        token,
+                        affinity_of(&window.visible),
+                        sticky
+                    );
+                    continue;
+                }
+                let floating = capture_floating(state, &key, true);
+                let snapshot = crate::native_guards::hidden_snapshot_rect(
+                    floating,
+                    state.float_rects.get(&token).copied(),
+                    state.member_rects.get(&token).copied(),
+                );
+                let Some(rect) = snapshot else {
+                    unreadable_fact!(
+                        facts,
+                        held_members,
+                        inventory_complete,
+                        token,
+                        affinity_of(&window.visible),
+                        sticky
+                    );
+                    continue;
+                };
+                let mapped = affinity_of(&rect);
+                let maximized = window.facts.maximized || record.claim.show.maximized;
+                let fullscreen =
+                    window.facts.captionless_fullscreen || state.born_fullscreen.contains(&key);
+                let hints = state
+                    .hint_logged
+                    .get(&token)
+                    .copied()
+                    .unwrap_or_else(WindowSizeHints::none);
+                facts.push(WindowFact {
+                    window: WindowId(token.clone()),
+                    output: OutputId(mapped),
+                    rect: Some(rect),
+                    floating,
+                    fit_excluded: floating || fullscreen || sticky || maximized,
+                    fullscreen,
+                    maximized,
+                    sticky,
+                    fixed_auto: fixed_auto && !fixed_suppress,
+                    fixed_suppress,
+                    hints,
+                    minimized: false,
+                    observed_workspace: None,
+                });
+                continue;
+            }
+            if !capture_facts_rideable(&window.facts) {
+                unreadable_fact!(
+                    facts,
+                    held_members,
+                    inventory_complete,
+                    token,
+                    affinity_of(&window.visible),
+                    sticky
+                );
+                continue;
+            }
+            let floating = capture_floating(state, &key, false);
+            let mapped = affinity_of(&window.visible);
+            let hints = state
+                .hint_logged
+                .get(&token)
+                .copied()
+                .unwrap_or_else(WindowSizeHints::none);
+            facts.push(WindowFact {
+                window: WindowId(token.clone()),
+                output: OutputId(mapped),
+                rect: Some(window.visible),
+                floating,
+                fit_excluded: floating
+                    || sticky
+                    || window.facts.captionless_fullscreen
+                    || window.facts.maximized,
+                fullscreen: window.facts.captionless_fullscreen,
+                maximized: window.facts.maximized,
+                sticky,
+                fixed_auto: fixed_auto && !fixed_suppress,
+                fixed_suppress,
+                hints,
+                minimized: false,
+                observed_workspace: None,
             });
         }
+        // Retained occupancy for bound members with no live row: overlay
+        // slots ride their last-known allocation, frameless iconic omission
+        // minimizes, everything else holds as unreadable.
+        let observed_tokens: HashSet<&str> =
+            observed.iter().map(|w| w.token.as_str()).collect();
+        for row in retained {
+            if observed_tokens.contains(row.token.as_str()) {
+                continue;
+            }
+            if facts.iter().any(|f| f.window.0 == row.token) {
+                continue;
+            }
+            let key = &row.key;
+            let Some(live_token) = state.member_tokens.get(key) else {
+                inventory_complete = false;
+                continue;
+            };
+            if *live_token != row.token {
+                unreadable_fact!(
+                    facts,
+                    held_members,
+                    inventory_complete,
+                    live_token,
+                    first_output.clone(),
+                    state.sticky.contains_key(key)
+                );
+                continue;
+            }
+            if state.hidden_claims.contains_key(key) {
+                continue;
+            }
+            let sticky = state.sticky.contains_key(key);
+            let (fixed_auto, fixed_suppress) = capture_fixed(state, key);
+            if state.minimized_omitted.contains(key)
+                && row.rect.is_none()
+                && !row.maximized
+                && !row.fullscreen
+            {
+                let mapped = state
+                    .member_rects
+                    .get(live_token)
+                    .map(affinity_of)
+                    .unwrap_or_else(|| first_output.clone());
+                minimized_fact!(facts, live_token, mapped, sticky);
+                continue;
+            }
+            let Some(row_facts) = row.facts else {
+                let mapped = row
+                    .rect
+                    .as_ref()
+                    .map(affinity_of)
+                    .unwrap_or_else(|| first_output.clone());
+                unreadable_fact!(
+                    facts,
+                    held_members,
+                    inventory_complete,
+                    live_token,
+                    mapped,
+                    sticky
+                );
+                continue;
+            };
+            if !capture_facts_rideable(&row_facts) {
+                let mapped = row
+                    .rect
+                    .as_ref()
+                    .map(affinity_of)
+                    .unwrap_or_else(|| first_output.clone());
+                unreadable_fact!(
+                    facts,
+                    held_members,
+                    inventory_complete,
+                    live_token,
+                    mapped,
+                    sticky
+                );
+                continue;
+            }
+            let overlay = row.maximized || row.fullscreen;
+            let kept = state.member_rects.get(live_token).copied();
+            let rect = match (overlay, row.rect, kept) {
+                (true, _, Some(slot)) => Some(slot),
+                (_, Some(fresh), _) => Some(fresh),
+                _ => None,
+            };
+            let Some(rect) = rect else {
+                let mapped = row
+                    .rect
+                    .as_ref()
+                    .map(affinity_of)
+                    .unwrap_or_else(|| first_output.clone());
+                unreadable_fact!(
+                    facts,
+                    held_members,
+                    inventory_complete,
+                    live_token,
+                    mapped,
+                    sticky
+                );
+                continue;
+            };
+            let floating = capture_floating(state, key, false);
+            let mapped = affinity_of(&rect);
+            let hints = crate::tiling::retained_overlay_hint(
+                state.hint_logged.get(live_token).copied(),
+                true,
+                overlay,
+                floating,
+                state.born_fullscreen.contains(key),
+                true,
+            );
+            facts.push(WindowFact {
+                window: WindowId(live_token.clone()),
+                output: OutputId(mapped),
+                rect: Some(rect),
+                floating,
+                fit_excluded: floating || sticky || row.fullscreen || row.maximized,
+                fullscreen: row.fullscreen,
+                maximized: row.maximized,
+                sticky,
+                fixed_auto: fixed_auto && !fixed_suppress,
+                fixed_suppress,
+                hints,
+                minimized: false,
+                observed_workspace: None,
+            });
+        }
+        // Hidden-claim members with no live row: snapshot or minimized lanes.
+        for (key, record) in state.hidden_claims {
+            if facts.iter().any(|f| {
+                state
+                    .member_tokens
+                    .get(key)
+                    .is_some_and(|t| t == &f.window.0)
+            }) {
+                continue;
+            }
+            let Some(live_token) = state.member_tokens.get(key) else {
+                inventory_complete = false;
+                continue;
+            };
+            let sticky = state.sticky.contains_key(key);
+            let (fixed_auto, fixed_suppress) = capture_fixed(state, key);
+            let associated = crate::model::valid_claim_tag(&record.claim.tag)
+                && record.claim.hwnd == key.hwnd
+                && record.claim.process.pid == key.pid
+                && record.claim.process.process_creation == key.creation
+                && state
+                    .member_tags
+                    .get(key)
+                    .is_some_and(|tag| !tag.is_empty());
+            if !associated {
+                unreadable_fact!(
+                    facts,
+                    held_members,
+                    inventory_complete,
+                    live_token,
+                    first_output.clone(),
+                    sticky
+                );
+                continue;
+            }
+            if record.iconic
+                || record.claim.show.minimized
+                || state.minimized_omitted.contains(key)
+            {
+                let mapped = state
+                    .member_rects
+                    .get(live_token)
+                    .map(affinity_of)
+                    .unwrap_or_else(|| first_output.clone());
+                minimized_fact!(facts, live_token, mapped, sticky);
+                continue;
+            }
+            let floating = capture_floating(state, key, true);
+            let snapshot = crate::native_guards::hidden_snapshot_rect(
+                floating,
+                state.float_rects.get(live_token).copied(),
+                state.member_rects.get(live_token).copied(),
+            );
+            let Some(rect) = snapshot else {
+                unreadable_fact!(
+                    facts,
+                    held_members,
+                    inventory_complete,
+                    live_token,
+                    first_output.clone(),
+                    sticky
+                );
+                continue;
+            };
+            let mapped = affinity_of(&rect);
+            // Hidden fullscreen truth: born holds plus the retained overlay
+            // flags for the same lifetime (a hidden ordinary fullscreen keeps
+            // its pre-hide frame state through the retained row; the durable
+            // claim preimage carries maximized only). Maximized unions the
+            // durable preimage with the retained flags the same way.
+            let retained_overlay = retained
+                .iter()
+                .find(|row| row.key == *key && row.token == *live_token)
+                .map(|row| (row.fullscreen, row.maximized))
+                .unwrap_or((false, false));
+            let maximized = record.claim.show.maximized || retained_overlay.1;
+            let fullscreen =
+                state.born_fullscreen.contains(key) || retained_overlay.0;
+            let hints = state
+                .hint_logged
+                .get(live_token)
+                .copied()
+                .unwrap_or_else(WindowSizeHints::none);
+            facts.push(WindowFact {
+                window: WindowId(live_token.clone()),
+                output: OutputId(mapped),
+                rect: Some(rect),
+                floating,
+                fit_excluded: floating || fullscreen || sticky || maximized,
+                fullscreen,
+                maximized,
+                sticky,
+                fixed_auto: fixed_auto && !fixed_suppress,
+                fixed_suppress,
+                hints,
+                minimized: false,
+                observed_workspace: None,
+            });
+        }
+        // Iconic omission without any row minimizes with no frame.
+        for key in state.minimized_omitted.iter() {
+            if facts.iter().any(|f| {
+                state
+                    .member_tokens
+                    .get(key)
+                    .is_some_and(|t| t == &f.window.0)
+            }) {
+                continue;
+            }
+            let Some(live_token) = state.member_tokens.get(key) else {
+                inventory_complete = false;
+                continue;
+            };
+            let mapped = state
+                .member_rects
+                .get(live_token)
+                .map(affinity_of)
+                .unwrap_or_else(|| first_output.clone());
+            minimized_fact!(
+                facts,
+                live_token,
+                mapped,
+                state.sticky.contains_key(key)
+            );
+        }
+        // Bound members with no live, retained, hidden, or minimized row
+        // hold as unreadable: a successful enumeration that omits a bound
+        // lifetime proves nothing (never an implicit close, never silent
+        // absence). Verified closes ride the close lane below, never a
+        // fact, so queued closes skip this hold.
+        for key in &keys {
+            if facts.iter().any(|f| {
+                state
+                    .member_tokens
+                    .get(key)
+                    .is_some_and(|t| t == &f.window.0)
+            }) {
+                continue;
+            }
+            let Some(live_token) = state.member_tokens.get(key) else {
+                continue;
+            };
+            if state.pending_closed.contains_key(live_token.as_str()) {
+                continue;
+            }
+            unreadable_fact!(
+                facts,
+                held_members,
+                inventory_complete,
+                live_token,
+                first_output.clone(),
+                state.sticky.contains_key(key)
+            );
+        }
     }
-    minimized.sort_by(|a, b| a.window.0.cmp(&b.window.0));
+    // Explicit closes ride even beside a hold: a queued verified close is
+    // honored inside incomplete inventory; only implicit missing=closed
+    // inference needs a provably complete list, which this capture never
+    // performs.
+    for token in state.pending_closed.keys() {
+        if live.contains(token.as_str()) {
+            continue;
+        }
+        closed_all.push(WindowId(token.clone()));
+    }
+
+    facts.sort_by(|a, b| a.window.0.cmp(&b.window.0));
+    closed_all.sort_by(|a, b| a.0.cmp(&b.0));
     held_members.sort();
     held_members.dedup();
 
     let mut dropped_stale_closed: Vec<String> = Vec::new();
     let mut unhomed_closed: Vec<String> = Vec::new();
-    for (token, homing) in &state.pending_closed {
+    for (token, homing) in state.pending_closed {
         if live.contains(token.as_str()) {
             dropped_stale_closed.push(token.clone());
             continue;
         }
-        let homed = state.workspaces.output_keys().iter().any(|device| {
-            device == &homing.output
-                && state
-                    .workspaces
-                    .workspace_ids(device)
-                    .iter()
-                    .any(|id| id == &homing.workspace)
-        });
+        // Unhomed when the recorded device has no live wire id: the close
+        // stays pending with the caller and rides no report.
+        let homed = state
+            .output_tokens
+            .get(&homing.output)
+            .is_some_and(|id| screen_outputs.contains(id));
         if !homed {
             unhomed_closed.push(token.clone());
         }
@@ -720,82 +1057,42 @@ pub(super) fn capture_world(
     dropped_stale_closed.dedup();
     unhomed_closed.sort();
     unhomed_closed.dedup();
+    let unhomed_set: HashSet<&str> = unhomed_closed.iter().map(String::as_str).collect();
+    let closed: Vec<WindowId> = closed_all
+        .into_iter()
+        .filter(|id| !unhomed_set.contains(id.0.as_str()))
+        .collect();
 
     // Topology from the same device order the owner syncs: live backing ids
     // in native order, the current view, the live full output geometry
-    // (hotplug placement facts, never a frame proxy) and the primary flag.
-    // `all_monitors` orders primary-first, so primary derives from the
-    // `areas.first()` device: managed output order may be reordered relative
-    // to the native list and must never decide it.
-    let primary_device = areas.first().map(|area| area.device.clone());
-    let mut topology: Vec<OutputTopology> = Vec::new();
-    let outputs = state.workspaces.output_keys();
-    for output in outputs.iter() {
-        // Defensive only: keys from `output_keys` are always known, so the
-        // `"o?"` fallback never fires on real tables.
-        let mapped = state.workspaces.output_token(output);
-        if mapped == "o?" {
-            topology_complete = false;
-            continue;
-        }
-        let area = areas.iter().find(|a| a.device == *output);
-        if area.is_none() {
-            topology_complete = false;
-        }
-        // Defensive only: synced outputs always carry an active view.
-        let Some(current_native) = state.workspaces.active_id(output) else {
-            topology_complete = false;
-            continue;
-        };
-        topology.push(OutputTopology {
-            output: OutputId(mapped),
-            native_order: state.workspaces.workspace_ids(output),
-            current_native,
-            complete: topology_complete,
-            geometry: area.map(|a| a.full),
-            primary: primary_device.as_deref() == Some(output.as_str()),
-        });
-    }
-
-    // Bindings mirror actual ownership: Windows workspace ids are both the
-    // logical and the native backing id (synchronous native lifecycle, no
-    // pending logical tokens; `mint_shared_id` may place one id on several
-    // outputs and each placement binds separately). Every listed workspace
-    // is managed; displacement rides the owner records; Windows carries no
-    // pin source so nothing pins. The carried `mode` drives the core
-    // scope-key mapping (`workspace_scope_key`: `shared` vs per-output).
-    let mut bindings: Vec<WorkspaceBinding> = Vec::new();
-    let displaced: BTreeSet<String> = state
-        .workspaces
-        .displaced_snapshot()
-        .values()
-        .flat_map(|record| record.workspace_ids.iter().cloned())
-        .collect();
-    for output in state.workspaces.output_keys() {
-        let mapped = state.workspaces.output_token(&output);
-        if mapped == "o?" {
-            continue;
-        }
-        for id in state.workspaces.workspace_ids(&output) {
-            bindings.push(WorkspaceBinding {
-                logical_id: id.clone(),
-                native_id: id.clone(),
-                output: OutputId(mapped.clone()),
-                pinned: false,
-                displaced: displaced.contains(&id),
-                managed: true,
-            });
-        }
-    }
-
-    let inventory_complete =
-        topology_complete && domains.iter().all(|d| d.readable) && !outputs.is_empty();
+    // Full rectangles plus work areas are the hotplug placement facts
+    // (never a frame proxy) and the primary flag. `all_monitors` orders
+    // primary-first, so primary derives from the `areas.first()` device:
+    // managed output order may be reordered relative to the native list
+    // and must never decide it.
+    // Screens carry no native workspace vocabulary: FULL rectangles plus
+    // work areas only. The core mints and owns its logical workspaces.
+    let inventory_complete = inventory_complete
+        && !screens.is_empty()
+        && !facts
+            .iter()
+            .any(|fact| fact.rect.is_none() && !fact.minimized);
+    // Truthful applied receipts (never echoed desire): per-window logical
+    // homing only where fresh identity/visibility proves it, per-screen
+    // views only where exactly one non-sticky workspace shows members (or a
+    // memberless active shows provable emptiness). Unknown stays unknown so
+    // the core retains pending flights instead of settling on a guess. An
+    // empty workspace has no windows, so its view never proves here by
+    // echo; the actuation batch proves it by hiding every prior member.
+    let mut windows = facts;
+    super::world_native::attach_workspace_receipts(state, observed, retained, areas, &mut windows);
     CapturedWorld {
-        mode,
-        topology,
-        bindings,
-        domains,
-        minimized,
+        screens,
+        windows,
+        closed,
+        observed_views: super::world_native::observed_view_receipts(state, observed, areas),
+        workspace_mode: crate::settings::startup_mode(state.settings_live.as_ref()),
+        equal_workspace_count: false,
         inventory_complete,
         gesture_barrier: !state.active.is_empty(),
         focused_global: observed
@@ -803,7 +1100,11 @@ pub(super) fn capture_world(
             .find(|w| w.hwnd == foreground_hwnd)
             .map(|w| w.token.clone())
             .unwrap_or_default(),
-        default_tiled: state.workspaces.default_tiled(),
+        default_tiled: state
+            .settings_live
+            .as_ref()
+            .map(|live| live.settings.core.workspace.default_tiled)
+            .unwrap_or(true),
         fixed_size_predicate: admission::fixed_predicate_for(state.settings_live.as_ref()),
         migration_source_refill: state
             .settings_live
@@ -813,1567 +1114,6 @@ pub(super) fn capture_world(
         dropped_stale_closed,
         unhomed_closed,
         held_members,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::super::rmax03_adapter_tests::test_state;
-    use super::*;
-    use crate::model::{ProcessIdentity, WindowClaimKind, WindowIdentity, WindowShowState};
-    use crate::workspace::WindowKey;
-    use crate::workspace_scope_owner::WorkspaceScopeOwner;
-    use tiler_core::workspace_scope::WorkspaceMode;
-    use tiler_core::world_engine::{WorldEngine, WorldEngineConfig, WorldOutcome};
-    use tiler_core::world_report::{WORLD_CONTRACT_VERSION, WorldReport, validate_report_reason};
-
-    const DEV1: &str = "\\\\.\\DISPLAY1";
-    const DEV2: &str = "\\\\.\\DISPLAY2";
-    const EXE: &str = "C:\\Apps\\app.exe";
-
-    fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
-        Rect { x, y, w, h }
-    }
-
-    fn win_key(hwnd: u64, pid: u32, creation: &str) -> WindowKey {
-        WindowKey {
-            hwnd,
-            pid,
-            creation: creation.to_owned(),
-        }
-    }
-
-    fn observed_window(
-        key: &WindowKey,
-        token: &str,
-        vis: Rect,
-        facts: WindowFacts,
-    ) -> ObservedWindow {
-        let outer = Rect {
-            x: vis.x - 8,
-            y: vis.y - 8,
-            w: vis.w + 16,
-            h: vis.h + 16,
-        };
-        ObservedWindow {
-            hwnd: key.hwnd,
-            token: token.to_owned(),
-            outer,
-            visible: vis,
-            insets: FrameInsets::measure(outer, vis),
-            identity: ObservedTarget {
-                hwnd: key.hwnd,
-                pid: key.pid,
-                process_creation: key.creation.clone(),
-                exe_path: EXE.to_owned(),
-                user_sid: "S-1-5-21-1000".to_owned(),
-                session_id: 1,
-                tag: String::new(),
-            },
-            facts,
-        }
-    }
-
-    fn plain_facts() -> WindowFacts {
-        WindowFacts {
-            visible: true,
-            minimized: false,
-            maximized: false,
-            cloaked: false,
-            elevated: false,
-            shell: false,
-            tool_window: false,
-            owned: false,
-            captionless_fullscreen: false,
-            no_activate: false,
-            dialog: false,
-        }
-    }
-
-    fn retained_row(
-        key: &WindowKey,
-        token: &str,
-        rect: Option<Rect>,
-        maximized: bool,
-        fullscreen: bool,
-        facts: Option<WindowFacts>,
-    ) -> RetainedRow {
-        RetainedRow {
-            key: key.clone(),
-            token: token.to_owned(),
-            rect,
-            maximized,
-            fullscreen,
-            facts,
-        }
-    }
-
-    fn process_identity(key: &WindowKey) -> ProcessIdentity {
-        ProcessIdentity {
-            pid: key.pid,
-            process_creation: key.creation.clone(),
-            user_sid: "S-1-5-21-1000".to_owned(),
-            session_id: 1,
-            exe_path: EXE.to_owned(),
-        }
-    }
-
-    fn hidden_claim(key: &WindowKey, iconic: bool, show_min: bool, show_max: bool) -> HiddenRecord {
-        HiddenRecord {
-            claim: WindowIdentity {
-                hwnd: key.hwnd,
-                process: process_identity(key),
-                // Well-formed product nonce (16 lowercase hex, nonzero):
-                // `capture_world` requires `valid_claim_tag`, matching the
-                // production commit-before-hide gate. Malformed tags are
-                // covered by dedicated hold fixtures below.
-                tag: "0123456789abcdef".to_owned(),
-                kind: WindowClaimKind::Product,
-                show: WindowShowState {
-                    minimized: show_min,
-                    maximized: show_max,
-                },
-            },
-            iconic,
-        }
-    }
-
-    fn two_areas() -> Vec<MonitorArea> {
-        vec![
-            MonitorArea {
-                device: DEV1.to_owned(),
-                work: rect(0, 0, 1920, 1040),
-                full: rect(0, 0, 1920, 1080),
-            },
-            MonitorArea {
-                device: DEV2.to_owned(),
-                work: rect(1920, 0, 1920, 1040),
-                full: rect(1920, 0, 1920, 1080),
-            },
-        ]
-    }
-
-    /// Real owner harness plus synced outputs; workspace ids read back from
-    /// the actual tables (minted `ws-N`, active-first).
-    fn synced_state() -> TileLoop {
-        let mut state = test_state();
-        state.workspaces.ensure_output(DEV1);
-        state.workspaces.ensure_output(DEV2);
-        state
-    }
-
-    fn ws_id(state: &TileLoop, dev: &str, index: usize) -> String {
-        state.workspaces.workspace_ids(dev)[index].clone()
-    }
-
-    /// Admit one member through the real tables: committed membership plus
-    /// the stable token, stamped lifetime tag and stored identity.
-    fn admit(
-        state: &mut TileLoop,
-        key: &WindowKey,
-        dev: &str,
-        ws: &str,
-        token: &str,
-        hidden: bool,
-    ) {
-        assert!(state.workspaces.assign(key.clone(), dev, ws, hidden));
-        state.member_tokens.insert(key.clone(), token.to_owned());
-        state
-            .member_tags
-            .insert(key.clone(), "member-tag-1".to_owned());
-        state
-            .member_identity
-            .insert(key.clone(), process_identity(key));
-    }
-
-    /// Envelope helper: the sequencer unit owns these fields; fixtures
-    /// supply constants to prove the captured pieces validate and the
-    /// Windows engine profile accepts them.
-    fn enveloped(captured: &CapturedWorld) -> WorldReport {
-        WorldReport {
-            contract_version: WORLD_CONTRACT_VERSION,
-            owner: "tiler-windows".to_owned(),
-            adapter_incarnation: "test-adapter-1".to_owned(),
-            core_generation: "gen-1".to_owned(),
-            observation_seq: 1,
-            request_seq: 1,
-            request_id: "req-1".to_owned(),
-            command_seq: None,
-            command: None,
-            workspace_mode: captured.mode,
-            topology: captured.topology.clone(),
-            bindings: captured.bindings.clone(),
-            domains: captured.domains.clone(),
-            minimized: captured.minimized.clone(),
-            fixed_size_predicate: captured.fixed_size_predicate,
-            migration_source_refill: captured.migration_source_refill,
-            anchor_fallback: Default::default(),
-            no_space_result: Default::default(),
-            default_tiled: captured.default_tiled,
-            focused_global: captured.focused_global.clone(),
-            inventory_complete: captured.inventory_complete,
-            gesture_barrier: captured.gesture_barrier,
-            feedback: Vec::new(),
-        }
-    }
-
-    fn windows_engine() -> WorldEngine {
-        WorldEngine::new_with_config(
-            "gen-1",
-            WorldEngineConfig {
-                fixed_send_admission: true,
-                maximized_focus_fence: false,
-                aligned_per_output_workspaces: false,
-            },
-        )
-        .expect("valid generation")
-    }
-
-    #[test]
-    fn output_token_source_is_opaque_and_stable() {
-        let state = synced_state();
-        // The existing session token source maps native device keys to
-        // wire-opaque output ids; unknown outputs fall back to `"o?"`,
-        // which capture treats as unemittable (held, never encoded).
-        assert_eq!(state.workspaces.output_token(DEV1), "o1");
-        assert_eq!(state.workspaces.output_token(DEV2), "o2");
-        assert_eq!(state.workspaces.output_token("bogus"), "o?");
-        assert!(tiler_core::bounds::is_opaque_id(
-            &state.workspaces.output_token(DEV1)
-        ));
-    }
-
-    #[test]
-    fn controlled_two_output_world_assembles_and_engine_accepts() {
-        let mut state = synced_state();
-        let ws1 = ws_id(&state, DEV1, 0);
-        let ws3 = ws_id(&state, DEV2, 0);
-        let k1 = win_key(1001, 2001, "proc-1");
-        let k2 = win_key(1002, 2002, "proc-2");
-        admit(&mut state, &k1, DEV1, &ws1, "w1", false);
-        admit(&mut state, &k2, DEV2, &ws3, "w2", false);
-        state.hint_logged.insert(
-            "w1".to_owned(),
-            WindowSizeHints {
-                min_w: Some(200),
-                min_h: None,
-                max_w: None,
-                max_h: None,
-            },
-        );
-        let observed = vec![
-            observed_window(&k1, "w1", rect(100, 100, 800, 600), plain_facts()),
-            observed_window(&k2, "w2", rect(2020, 100, 800, 600), plain_facts()),
-        ];
-
-        let captured = capture_world(&state, Some(&observed), &[], &two_areas(), 1001);
-        assert!(captured.inventory_complete);
-        assert!(captured.held_members.is_empty());
-        assert!(captured.minimized.is_empty());
-        assert!(!captured.gesture_barrier);
-        assert_eq!(captured.focused_global, "w1");
-        // Windows carries no adjacency source: production `workspace_domain`
-        // emits an empty map and capture withholds the KDE-style
-        // computation rather than copying it without native evidence.
-        for domain in &captured.domains {
-            assert!(domain.readable);
-            assert!(domain.hold.is_none());
-            assert!(domain.domain.adjacent.is_empty());
-        }
-        let home = captured
-            .domains
-            .iter()
-            .find(|d| d.domain.workspace.0 == ws1)
-            .expect("ws1 domain");
-        assert_eq!(home.focused.0, "w1");
-        assert_eq!(home.windows.len(), 1);
-        // Last-good constraints ride verified rows; defaults seed the rest.
-        assert_eq!(
-            home.windows[0].hints,
-            WindowSizeHints {
-                min_w: Some(200),
-                min_h: None,
-                max_w: None,
-                max_h: None,
-            }
-        );
-        // Topology uses the session token source with primary-first order.
-        assert_eq!(captured.topology.len(), 2);
-        assert_eq!(captured.topology[0].output.0, "o1");
-        assert!(captured.topology[0].primary);
-        assert!(!captured.topology[1].primary);
-        assert_eq!(captured.topology[0].current_native, ws1);
-        assert_eq!(captured.topology[0].geometry, Some(rect(0, 0, 1920, 1080)));
-        // Bindings mirror ownership: logical and native are the workspace
-        // id, every entry managed, nothing pinned (no Windows pin source).
-        for binding in &captured.bindings {
-            assert_eq!(binding.logical_id, binding.native_id);
-            assert!(binding.managed);
-            assert!(!binding.pinned);
-        }
-        let report = enveloped(&captured);
-        assert_eq!(validate_report_reason(&report), None);
-        let mut engine = windows_engine();
-        match engine.handle_report(&report) {
-            WorldOutcome::Accepted(_) => {}
-            other => panic!("expected accepted, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn hidden_rows_carry_verified_overlay_or_hold() {
-        let mut state = synced_state();
-        let ws1 = ws_id(&state, DEV1, 0);
-        let ws2 = ws_id(&state, DEV1, 1);
-        // h1: stale hidden flag with live fullscreen evidence for the same
-        // lifetime: fresh row verifies overlay directly.
-        let h1 = win_key(1001, 2001, "proc-1");
-        // h2: verified born-fullscreen hold lane, no fresh row.
-        let h2 = win_key(1002, 2002, "proc-2");
-        // h3: durable maximized preimage only: fullscreen has no verifiable
-        // source, so the domain holds rather than defaulting `false`.
-        let h3 = win_key(1003, 2003, "proc-3");
-        admit(&mut state, &h1, DEV1, &ws1, "w1", true);
-        admit(&mut state, &h2, DEV1, &ws1, "w2", true);
-        admit(&mut state, &h3, DEV1, &ws2, "w3", true);
-        state
-            .hidden_claims
-            .insert(h1.clone(), hidden_claim(&h1, false, false, false));
-        state
-            .hidden_claims
-            .insert(h2.clone(), hidden_claim(&h2, false, false, false));
-        state
-            .hidden_claims
-            .insert(h3.clone(), hidden_claim(&h3, false, false, true));
-        state.born_fullscreen.insert(h2.clone());
-        state
-            .member_rects
-            .insert("w1".to_owned(), rect(101, 101, 800, 600));
-        state
-            .member_rects
-            .insert("w2".to_owned(), rect(102, 102, 800, 600));
-        state
-            .member_rects
-            .insert("w3".to_owned(), rect(103, 103, 800, 600));
-        let mut fresh_facts = plain_facts();
-        fresh_facts.captionless_fullscreen = true;
-        fresh_facts.maximized = true;
-        let observed = vec![observed_window(
-            &h1,
-            "w1",
-            rect(0, 0, 1920, 1080),
-            fresh_facts,
-        )];
-
-        let captured = capture_world(&state, Some(&observed), &[], &two_areas(), 0);
-        assert!(!captured.inventory_complete);
-        assert!(captured.minimized.is_empty());
-        // ws-1 stays controlled: h1 carries the fresh fullscreen/maximized
-        // over its hidden snapshot rect (hidden lane dominates geometry),
-        // h2 carries the verified born hold.
-        let home = captured
-            .domains
-            .iter()
-            .find(|d| d.domain.workspace.0 == ws1)
-            .expect("ws1 domain");
-        assert!(home.readable);
-        assert_eq!(home.windows.len(), 2);
-        let r1 = home
-            .windows
-            .iter()
-            .find(|w| w.window.0 == "w1")
-            .expect("w1 row");
-        assert_eq!(r1.rect, rect(101, 101, 800, 600));
-        assert!(r1.fullscreen);
-        assert!(r1.maximized);
-        assert!(r1.fit_excluded);
-        let r2 = home
-            .windows
-            .iter()
-            .find(|w| w.window.0 == "w2")
-            .expect("w2 row");
-        assert!(r2.fullscreen);
-        assert!(r2.floating);
-        // ws-2 holds: h3's maximized preimage is verified but its
-        // fullscreen is not, so nothing rides and nothing minimizes.
-        let held = captured
-            .domains
-            .iter()
-            .find(|d| d.domain.workspace.0 == ws2)
-            .expect("ws2 domain");
-        assert!(!held.readable);
-        assert_eq!(held.hold, Some(HoldReason::Unreadable));
-        assert!(held.windows.is_empty());
-        assert_eq!(captured.held_members, vec!["w3".to_owned()]);
-        let report = enveloped(&captured);
-        assert_eq!(validate_report_reason(&report), None);
-    }
-
-    #[test]
-    fn iconic_omission_minimizes_and_only_explicit_closes_ride() {
-        let mut state = synced_state();
-        let ws1 = ws_id(&state, DEV1, 0);
-        let visible_iconic = win_key(1001, 2001, "proc-1");
-        let hidden_iconic = win_key(1002, 2002, "proc-2");
-        let survivor = win_key(1003, 2003, "proc-3");
-        admit(&mut state, &visible_iconic, DEV1, &ws1, "w1", false);
-        admit(&mut state, &hidden_iconic, DEV1, &ws1, "w2", true);
-        admit(&mut state, &survivor, DEV1, &ws1, "w3", false);
-        // Visible iconic: the production iconic arm omits before any
-        // retained row, so no row exists for this member.
-        state.minimized_omitted.insert(visible_iconic.clone());
-        // Hidden iconic: hide-time claim plus iconic refresh; the durable
-        // preimage independently records minimized.
-        state.hidden_claims.insert(
-            hidden_iconic.clone(),
-            hidden_claim(&hidden_iconic, true, true, false),
-        );
-        state.minimized_omitted.insert(hidden_iconic.clone());
-        state
-            .member_rects
-            .insert("w2".to_owned(), rect(120, 120, 800, 600));
-        let observed = vec![observed_window(
-            &survivor,
-            "w3",
-            rect(100, 100, 800, 600),
-            plain_facts(),
-        )];
-        // Explicit verified close for a non-live token; omission of the
-        // iconic members must never fabricate closes for them.
-        state.pending_closed.insert(
-            "w9".to_owned(),
-            PendingClosed {
-                output: DEV1.to_owned(),
-                workspace: ws1.clone(),
-            },
-        );
-
-        let captured = capture_world(&state, Some(&observed), &[], &two_areas(), 0);
-        assert!(captured.inventory_complete);
-        let domain = captured
-            .domains
-            .iter()
-            .find(|d| d.domain.workspace.0 == ws1)
-            .expect("ws1 domain");
-        assert!(domain.readable);
-        assert_eq!(domain.windows.len(), 1);
-        assert_eq!(domain.windows[0].window.0, "w3");
-        assert_eq!(captured.minimized.len(), 2);
-        assert_eq!(captured.minimized[0].window.0, "w1");
-        assert_eq!(captured.minimized[1].window.0, "w2");
-        for entry in &captured.minimized {
-            assert_eq!(entry.output.0, "o1");
-            assert_eq!(entry.workspace.0, ws1);
-        }
-        assert_eq!(domain.closed.len(), 1);
-        assert_eq!(domain.closed[0].0, "w9");
-        assert!(captured.dropped_stale_closed.is_empty());
-        let report = enveloped(&captured);
-        assert_eq!(validate_report_reason(&report), None);
-        let mut engine = windows_engine();
-        match engine.handle_report(&report) {
-            WorldOutcome::Accepted(_) => {}
-            other => panic!("expected accepted, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn frameless_unreadable_holds_instead_of_minimizing() {
-        let mut state = synced_state();
-        let ws1 = ws_id(&state, DEV1, 0);
-        let unreadable = win_key(1001, 2001, "proc-1");
-        let survivor = win_key(1002, 2002, "proc-2");
-        admit(&mut state, &unreadable, DEV1, &ws1, "w1", false);
-        admit(&mut state, &survivor, DEV1, &ws1, "w2", false);
-        // Frameless retained row, not iconic: unreadable evidence with no
-        // verifiable frame or flags.
-        let retained = vec![retained_row(&unreadable, "w1", None, false, false, None)];
-        let observed = vec![observed_window(
-            &survivor,
-            "w2",
-            rect(100, 100, 800, 600),
-            plain_facts(),
-        )];
-
-        let captured = capture_world(&state, Some(&observed), &retained, &two_areas(), 0);
-        assert!(!captured.inventory_complete);
-        assert!(captured.minimized.is_empty());
-        let domain = captured
-            .domains
-            .iter()
-            .find(|d| d.domain.workspace.0 == ws1)
-            .expect("ws1 domain");
-        assert!(!domain.readable);
-        assert_eq!(domain.hold, Some(HoldReason::Unreadable));
-        assert!(domain.windows.is_empty());
-        // Both tokens are withheld from the report: the unreadable member
-        // and the verified survivor cleared beside it (never silently
-        // dropped).
-        assert_eq!(
-            captured.held_members,
-            vec!["w1".to_owned(), "w2".to_owned()]
-        );
-        let report = enveloped(&captured);
-        assert_eq!(validate_report_reason(&report), None);
-    }
-
-    #[test]
-    fn scope_exclusion_holds_instead_of_authorizing() {
-        let mut state = synced_state();
-        // Narrow the scope so the stored identities fall outside it.
-        state.scope = vec!["other.exe".to_owned()];
-        let ws1 = ws_id(&state, DEV1, 0);
-        let ws2 = ws_id(&state, DEV1, 1);
-        let visible = win_key(1001, 2001, "proc-1");
-        let hidden_born = win_key(1002, 2002, "proc-2");
-        let frameless = win_key(1003, 2003, "proc-3");
-        admit(&mut state, &visible, DEV1, &ws1, "w1", false);
-        admit(&mut state, &hidden_born, DEV1, &ws1, "w2", true);
-        admit(&mut state, &frameless, DEV1, &ws2, "w3", false);
-        state.hidden_claims.insert(
-            hidden_born.clone(),
-            hidden_claim(&hidden_born, false, false, false),
-        );
-        state.born_fullscreen.insert(hidden_born.clone());
-        state
-            .member_rects
-            .insert("w2".to_owned(), rect(102, 102, 800, 600));
-        let observed = vec![observed_window(
-            &visible,
-            "w1",
-            rect(100, 100, 800, 600),
-            plain_facts(),
-        )];
-        let retained = vec![retained_row(&frameless, "w3", None, false, false, None)];
-
-        let captured = capture_world(&state, Some(&observed), &retained, &two_areas(), 0);
-        assert!(!captured.inventory_complete);
-        // Scope exclusion has no window authority lane in the typed report
-        // (`fit_excluded` is fit semantics only and never reaches the
-        // session), so verified frames must not ride: both ws-1 members
-        // hold even with fresh frames and snapshots.
-        let home = captured
-            .domains
-            .iter()
-            .find(|d| d.domain.workspace.0 == ws1)
-            .expect("ws1 domain");
-        assert!(!home.readable);
-        assert_eq!(home.hold, Some(HoldReason::IncompleteInventory));
-        assert!(home.windows.is_empty());
-        // Frameless exclusion holds its own domain and never minimizes.
-        let held = captured
-            .domains
-            .iter()
-            .find(|d| d.domain.workspace.0 == ws2)
-            .expect("ws2 domain");
-        assert!(!held.readable);
-        assert!(captured.minimized.is_empty());
-        assert_eq!(
-            captured.held_members,
-            vec!["w1".to_owned(), "w2".to_owned(), "w3".to_owned()]
-        );
-        let report = enveloped(&captured);
-        assert_eq!(validate_report_reason(&report), None);
-        // Reply level: excluded scopes publish holds and no row for the
-        // affected lifetimes, so no write can be authorized for them.
-        let mut engine = windows_engine();
-        match engine.handle_report(&report) {
-            WorldOutcome::Accepted(reply) => {
-                for scope in &reply.scopes {
-                    if scope.scope.ends_with(&format!("/{ws1}"))
-                        || scope.scope.ends_with(&format!("/{ws2}"))
-                    {
-                        assert!(
-                            matches!(
-                                scope.authority,
-                                tiler_core::world_report::ScopeAuthority::Hold(_)
-                            ),
-                            "excluded scope holds: {scope:?}"
-                        );
-                    }
-                }
-                for window in &reply.windows {
-                    assert!(
-                        window.lifetime.0 != "w1"
-                            && window.lifetime.0 != "w2"
-                            && window.lifetime.0 != "w3",
-                        "excluded lifetime publishes no row: {window:?}"
-                    );
-                }
-            }
-            other => panic!("expected accepted, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn fixed_lanes_stay_distinct_and_never_fabricate() {
-        let mut state = synced_state();
-        let ws1 = ws_id(&state, DEV1, 0);
-        let auto = win_key(1001, 2001, "proc-1");
-        let overridden = win_key(1002, 2002, "proc-2");
-        let durable = win_key(1003, 2003, "proc-3");
-        let latched_and_won = win_key(1004, 2004, "proc-4");
-        let sticky_win = win_key(1005, 2005, "proc-5");
-        admit(&mut state, &auto, DEV1, &ws1, "w1", false);
-        admit(&mut state, &overridden, DEV1, &ws1, "w2", false);
-        admit(&mut state, &durable, DEV1, &ws1, "w3", false);
-        admit(&mut state, &latched_and_won, DEV1, &ws1, "w4", false);
-        admit(&mut state, &sticky_win, DEV1, &ws1, "w5", false);
-        state.fixed_auto_seen.insert(auto.clone());
-        state.fixed_tile_overrides.insert(overridden.clone());
-        state.fixed_origin_overrides.insert(durable.clone());
-        state.fixed_auto_seen.insert(latched_and_won.clone());
-        state.fixed_tile_overrides.insert(latched_and_won.clone());
-        state.sticky.insert(sticky_win.clone(), true);
-        let observed = vec![
-            observed_window(&auto, "w1", rect(100, 100, 800, 600), plain_facts()),
-            observed_window(&overridden, "w2", rect(110, 110, 800, 600), plain_facts()),
-            observed_window(&durable, "w3", rect(120, 120, 800, 600), plain_facts()),
-            observed_window(
-                &latched_and_won,
-                "w4",
-                rect(130, 130, 800, 600),
-                plain_facts(),
-            ),
-            observed_window(&sticky_win, "w5", rect(140, 140, 800, 600), plain_facts()),
-        ];
-
-        let captured = capture_world(&state, Some(&observed), &[], &two_areas(), 0);
-        assert!(captured.inventory_complete);
-        let domain = captured
-            .domains
-            .iter()
-            .find(|d| d.domain.workspace.0 == ws1)
-            .expect("ws1 domain");
-        assert!(domain.readable);
-        let row = |id: &str| {
-            domain
-                .windows
-                .iter()
-                .find(|w| w.window.0 == id)
-                .unwrap_or_else(|| panic!("row {id} rides"))
-        };
-        // D4 latch: automatic origin floats.
-        assert!(row("w1").fixed_auto);
-        assert!(row("w1").floating);
-        assert!(!row("w1").fixed_suppress);
-        // Runtime override: explicit tile win dominates, stays tiled.
-        assert!(row("w2").fixed_suppress);
-        assert!(!row("w2").fixed_auto);
-        assert!(!row("w2").floating);
-        // Durable origin override: same dominance without the runtime set.
-        assert!(row("w3").fixed_suppress);
-        assert!(!row("w3").floating);
-        // Stale latch beside an explicit win: the win dominates, automatic
-        // origin is never reported alongside suppression.
-        assert!(row("w4").fixed_suppress);
-        assert!(!row("w4").fixed_auto);
-        // Sticky intent: sticky and floating, never automatic.
-        assert!(row("w5").sticky);
-        assert!(row("w5").floating);
-        assert!(!row("w5").fixed_auto);
-    }
-
-    #[test]
-    fn mismatched_lifetime_or_tag_holds_without_inheriting() {
-        let mut state = synced_state();
-        let ws1 = ws_id(&state, DEV1, 0);
-        let ws2 = ws_id(&state, DEV1, 1);
-        let ws3 = ws_id(&state, DEV2, 0);
-        // Recycled token: the row carries the predecessor's token while the
-        // stable member token moved on. Maximized/sticky must not inherit.
-        let recycled = win_key(1001, 2001, "proc-1");
-        // Recycled process: the hidden claim names a different creation
-        // while the member key moved on. Iconic must not minimize this.
-        let reused = win_key(1002, 2002, "proc-2");
-        // Unstamped lifetime: hidden claim matches but no member tag was
-        // ever stamped for this key.
-        let untagged = win_key(1003, 2003, "proc-3");
-        admit(&mut state, &recycled, DEV1, &ws1, "w9", false);
-        admit(&mut state, &reused, DEV1, &ws2, "w2", true);
-        admit(&mut state, &untagged, DEV2, &ws3, "w3", true);
-        let mut overlaid = plain_facts();
-        overlaid.maximized = true;
-        let observed = vec![observed_window(
-            &recycled,
-            "w1",
-            rect(100, 100, 800, 600),
-            overlaid,
-        )];
-        let mut stale_claim = hidden_claim(&reused, true, true, false);
-        stale_claim.claim.process.process_creation = "proc-other".to_owned();
-        state.hidden_claims.insert(reused.clone(), stale_claim);
-        state.minimized_omitted.insert(reused.clone());
-        state
-            .member_rects
-            .insert("w2".to_owned(), rect(120, 120, 800, 600));
-        state.hidden_claims.insert(
-            untagged.clone(),
-            hidden_claim(&untagged, false, false, false),
-        );
-        state.member_tags.remove(&untagged);
-        state
-            .member_rects
-            .insert("w3".to_owned(), rect(130, 130, 800, 600));
-
-        let captured = capture_world(&state, Some(&observed), &[], &two_areas(), 0);
-        assert!(!captured.inventory_complete);
-        assert!(captured.minimized.is_empty());
-        assert_eq!(captured.domains.len(), 4);
-        // Explicit holds for every affected domain, even with empty rows:
-        // a recycled token (ws-1), a stale hidden claim (ws-2) and an
-        // unstamped lifetime (ws-3) each hold without inheriting flags.
-        for ws in [&ws1, &ws2, &ws3] {
-            let domain = captured
-                .domains
-                .iter()
-                .find(|d| d.domain.workspace.0 == **ws)
-                .unwrap_or_else(|| panic!("domain for {ws} exists"));
-            assert!(!domain.readable, "mismatched domain {ws} holds");
-            assert!(domain.hold.is_some(), "mismatched domain {ws} names a hold");
-            assert!(
-                domain.windows.is_empty(),
-                "mismatched domain {ws} rides nothing"
-            );
-        }
-        assert_eq!(
-            captured.held_members,
-            vec!["w2".to_owned(), "w3".to_owned(), "w9".to_owned()]
-        );
-        let report = enveloped(&captured);
-        assert_eq!(validate_report_reason(&report), None);
-    }
-
-    #[test]
-    fn stale_and_unhomed_closes_never_ride() {
-        let mut state = synced_state();
-        let ws1 = ws_id(&state, DEV1, 0);
-        let live = win_key(1001, 2001, "proc-1");
-        admit(&mut state, &live, DEV1, &ws1, "w1", false);
-        let observed = vec![observed_window(
-            &live,
-            "w1",
-            rect(100, 100, 800, 600),
-            plain_facts(),
-        )];
-        // Queued close for a live token: stale, drops.
-        state.pending_closed.insert(
-            "w1".to_owned(),
-            PendingClosed {
-                output: DEV1.to_owned(),
-                workspace: ws1.clone(),
-            },
-        );
-        // Queued close homed on an unknown domain: uncarried, caller-held.
-        state.pending_closed.insert(
-            "w7".to_owned(),
-            PendingClosed {
-                output: DEV1.to_owned(),
-                workspace: "ws-9".to_owned(),
-            },
-        );
-        // An open gesture suspends geometry effects.
-        state.active.insert(1001);
-
-        let captured = capture_world(&state, Some(&observed), &[], &two_areas(), 1001);
-        assert!(captured.inventory_complete);
-        assert!(captured.gesture_barrier);
-        let domain = captured
-            .domains
-            .iter()
-            .find(|d| d.domain.workspace.0 == ws1)
-            .expect("ws1 domain");
-        assert!(domain.closed.is_empty());
-        assert_eq!(captured.dropped_stale_closed, vec!["w1".to_owned()]);
-        assert_eq!(captured.unhomed_closed, vec!["w7".to_owned()]);
-    }
-
-    #[test]
-    fn hidden_member_without_snapshot_holds_and_is_not_minimized() {
-        let mut state = synced_state();
-        let ws1 = ws_id(&state, DEV1, 0);
-        let hidden = win_key(1001, 2001, "proc-1");
-        admit(&mut state, &hidden, DEV1, &ws1, "w1", true);
-        state
-            .hidden_claims
-            .insert(hidden.clone(), hidden_claim(&hidden, false, false, false));
-        // No snapshot rectangle anywhere: unknown frame, never minimized.
-
-        let captured = capture_world(&state, Some(&[]), &[], &two_areas(), 0);
-        assert!(!captured.inventory_complete);
-        assert!(captured.minimized.is_empty());
-        let domain = captured
-            .domains
-            .iter()
-            .find(|d| d.domain.workspace.0 == ws1)
-            .expect("ws1 domain");
-        assert!(!domain.readable);
-        assert_eq!(domain.hold, Some(HoldReason::Unreadable));
-    }
-
-    #[test]
-    fn assembly_is_stable_across_real_mode_shaped_ownership() {
-        // Per-output-local and global-unique share the same table shape:
-        // the carried mode selects the core scope-key mapping, never the
-        // capture shape.
-        for mode in [WorkspaceMode::PerOutputLocal, WorkspaceMode::GlobalUnique] {
-            let mut state = synced_state();
-            state.scope_owner = WorkspaceScopeOwner::adopt_startup(mode);
-            let ws1 = ws_id(&state, DEV1, 0);
-            let key = win_key(1001, 2001, "proc-1");
-            admit(&mut state, &key, DEV1, &ws1, "w1", false);
-            let observed = vec![observed_window(
-                &key,
-                "w1",
-                rect(100, 100, 800, 600),
-                plain_facts(),
-            )];
-            let captured = capture_world(&state, Some(&observed), &[], &two_areas(), 0);
-            assert_eq!(captured.mode, mode);
-            assert!(captured.inventory_complete);
-            let report = enveloped(&captured);
-            assert_eq!(validate_report_reason(&report), None);
-        }
-        // Shared-shaped ownership mints one logical id across outputs via
-        // the real `mint_shared_id` path; each placement binds separately
-        // under the shared scope key.
-        let mut state = synced_state();
-        state.scope_owner = WorkspaceScopeOwner::adopt_startup(WorkspaceMode::Shared);
-        let shared = state
-            .workspaces
-            .mint_shared_id(&[DEV1.to_owned(), DEV2.to_owned()]);
-        assert!(!shared.is_empty());
-        let key = win_key(1001, 2001, "proc-1");
-        admit(&mut state, &key, DEV1, &shared, "w1", false);
-        let observed = vec![observed_window(
-            &key,
-            "w1",
-            rect(100, 100, 800, 600),
-            plain_facts(),
-        )];
-        let captured = capture_world(&state, Some(&observed), &[], &two_areas(), 1001);
-        assert_eq!(captured.mode, WorkspaceMode::Shared);
-        assert!(captured.inventory_complete);
-        assert_eq!(
-            tiler_core::world_report::workspace_scope_key(
-                captured.mode,
-                &tiler_core::directional::OutputId("o1".to_owned())
-            ),
-            "shared"
-        );
-        assert_eq!(
-            tiler_core::world_report::workspace_scope_key(
-                WorkspaceMode::PerOutputLocal,
-                &tiler_core::directional::OutputId("o1".to_owned())
-            ),
-            "o1"
-        );
-        let placements = captured
-            .bindings
-            .iter()
-            .filter(|b| b.logical_id == shared)
-            .count();
-        assert_eq!(placements, 2);
-        let report = enveloped(&captured);
-        assert_eq!(validate_report_reason(&report), None);
-        let mut engine = windows_engine();
-        match engine.handle_report(&report) {
-            WorldOutcome::Accepted(_) => {}
-            other => panic!("expected accepted, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn outer_gap_insets_exactly_once() {
-        // Double-inset guard: capture carries raw work bounds plus the gap,
-        // and the core insets once. A lone tiled window must fill the
-        // single-inset domain, never the double-inset one.
-        let mut state = synced_state();
-        state.outer_gap = 12;
-        let ws1 = ws_id(&state, DEV1, 0);
-        let key = win_key(1001, 2001, "proc-1");
-        admit(&mut state, &key, DEV1, &ws1, "w1", false);
-        let observed = vec![observed_window(
-            &key,
-            "w1",
-            rect(100, 100, 800, 600),
-            plain_facts(),
-        )];
-
-        let captured = capture_world(&state, Some(&observed), &[], &two_areas(), 0);
-        assert!(captured.inventory_complete);
-        let domain = captured
-            .domains
-            .iter()
-            .find(|d| d.domain.workspace.0 == ws1)
-            .expect("ws1 domain");
-        assert!(domain.readable);
-        // Raw work bounds ride; the gap rides separately for the core inset.
-        assert_eq!(domain.domain.bounds, rect(0, 0, 1920, 1040));
-        assert_eq!(domain.outer_gap, 12);
-        assert_eq!(domain.domain.gap, state.inner_gap);
-        let report = enveloped(&captured);
-        assert_eq!(validate_report_reason(&report), None);
-        let once =
-            tiler_core::geometry::inset_bounds(rect(0, 0, 1920, 1040), 12).expect("margin fits");
-        let twice = tiler_core::geometry::inset_bounds(once, 12).expect("second margin fits");
-        assert_ne!(once, twice, "test needs distinct single/double insets");
-        let mut engine = windows_engine();
-        match engine.handle_report(&report) {
-            WorldOutcome::Accepted(reply) => {
-                let row = reply
-                    .windows
-                    .iter()
-                    .find(|w| w.lifetime.0 == "w1")
-                    .expect("w1 desired row");
-                assert_eq!(row.allocation, Some(once));
-                assert_eq!(row.effective_frame, Some(once));
-                assert_eq!(
-                    row.frame_authority,
-                    tiler_core::world_report::ScopeAuthority::Controlled
-                );
-            }
-            other => panic!("expected accepted, got {other:?}"),
-        }
-    }
-
-    fn flagged(mutate: impl FnOnce(&mut WindowFacts)) -> WindowFacts {
-        let mut facts = plain_facts();
-        mutate(&mut facts);
-        facts
-    }
-
-    #[test]
-    fn inexpressible_facts_hold_without_authority() {
-        // Every native safety flag without a typed report lane holds its
-        // domain: carrying any of these as tiled would publish controlled
-        // frame authority for a window the adapter must not touch.
-        let mut state = synced_state();
-        let ws1 = ws_id(&state, DEV1, 0);
-        let cases: Vec<(&str, WindowFacts)> = vec![
-            ("w1", flagged(|f| f.cloaked = true)),
-            ("w2", flagged(|f| f.elevated = true)),
-            ("w3", flagged(|f| f.shell = true)),
-            ("w4", flagged(|f| f.tool_window = true)),
-            ("w5", flagged(|f| f.owned = true)),
-            ("w6", flagged(|f| f.dialog = true)),
-            ("w7", flagged(|f| f.no_activate = true)),
-            ("w8", flagged(|f| f.visible = false)),
-            (
-                "w9",
-                flagged(|f| {
-                    f.minimized = true;
-                }),
-            ),
-        ];
-        let mut retained = Vec::new();
-        for (index, (token, facts)) in cases.iter().enumerate() {
-            let key = win_key(
-                1001 + index as u64,
-                2001 + index as u32,
-                &format!("proc-{index}"),
-            );
-            admit(&mut state, &key, DEV1, &ws1, token, false);
-            retained.push(retained_row(
-                &key,
-                token,
-                Some(rect(100, 100, 800, 600)),
-                false,
-                false,
-                Some(*facts),
-            ));
-        }
-
-        let captured = capture_world(&state, Some(&[]), &retained, &two_areas(), 0);
-        assert!(!captured.inventory_complete);
-        assert!(captured.minimized.is_empty());
-        let domain = captured
-            .domains
-            .iter()
-            .find(|d| d.domain.workspace.0 == ws1)
-            .expect("ws1 domain");
-        assert!(!domain.readable);
-        assert_eq!(domain.hold, Some(HoldReason::IncompleteInventory));
-        assert!(domain.windows.is_empty());
-        let mut expected: Vec<String> =
-            cases.iter().map(|(token, _)| (*token).to_owned()).collect();
-        expected.sort();
-        assert_eq!(captured.held_members, expected);
-        let report = enveloped(&captured);
-        assert_eq!(validate_report_reason(&report), None);
-        // Reply level: the held scope publishes a hold and no row carries
-        // controlled frame authority for any affected lifetime.
-        let mut engine = windows_engine();
-        match engine.handle_report(&report) {
-            WorldOutcome::Accepted(reply) => {
-                let scope = reply
-                    .scopes
-                    .iter()
-                    .find(|s| s.scope.ends_with(&format!("/{ws1}")))
-                    .expect("ws1 scope");
-                assert!(
-                    matches!(
-                        scope.authority,
-                        tiler_core::world_report::ScopeAuthority::Hold(_)
-                    ),
-                    "ineligible scope holds: {scope:?}"
-                );
-                for window in &reply.windows {
-                    assert!(
-                        !expected.iter().any(|token| token == &window.lifetime.0),
-                        "ineligible lifetime publishes no row: {window:?}"
-                    );
-                }
-            }
-            other => panic!("expected accepted, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn visible_ineligible_observation_holds() {
-        // The visible lane trusts no observed facts blindly: a cloaked live
-        // frame holds instead of riding controlled geometry.
-        let mut state = synced_state();
-        let ws1 = ws_id(&state, DEV1, 0);
-        let key = win_key(1001, 2001, "proc-1");
-        admit(&mut state, &key, DEV1, &ws1, "w1", false);
-        let observed = vec![observed_window(
-            &key,
-            "w1",
-            rect(100, 100, 800, 600),
-            flagged(|f| f.cloaked = true),
-        )];
-
-        let captured = capture_world(&state, Some(&observed), &[], &two_areas(), 0);
-        assert!(!captured.inventory_complete);
-        let domain = captured
-            .domains
-            .iter()
-            .find(|d| d.domain.workspace.0 == ws1)
-            .expect("ws1 domain");
-        assert!(!domain.readable);
-        assert_eq!(domain.hold, Some(HoldReason::IncompleteInventory));
-        assert!(domain.windows.is_empty());
-        assert_eq!(captured.held_members, vec!["w1".to_owned()]);
-        let report = enveloped(&captured);
-        assert_eq!(validate_report_reason(&report), None);
-    }
-
-    #[test]
-    fn overlay_lanes_stay_reserved_and_distinct() {
-        // Overlay lanes stay distinct and never blanket-float: maximized
-        // keeps its reserved tiled allocation, ordinary fullscreen (tiled
-        // or hidden) rides with fullscreen set and unfloated at capture and
-        // defers to a writeless exception row at the sweep, and the
-        // born-fullscreen hold rides the floating exception lane throughout.
-        // Capture-level rows still carry the canonical tile allocation for
-        // ordinary overlays (never the compositor-owned maximum frame).
-        let mut state = synced_state();
-        let ws1 = ws_id(&state, DEV1, 0);
-        let ws2 = ws_id(&state, DEV1, 1);
-        let ws3 = ws_id(&state, DEV2, 0);
-        let ws4 = ws_id(&state, DEV2, 1);
-        let tiled_full = win_key(1001, 2001, "proc-1");
-        let tiled_max = win_key(1002, 2002, "proc-2");
-        let hidden_full = win_key(1003, 2003, "proc-3");
-        let hidden_born = win_key(1004, 2004, "proc-4");
-        let plain_float = win_key(1005, 2005, "proc-5");
-        admit(&mut state, &tiled_full, DEV2, &ws4, "w1", false);
-        admit(&mut state, &tiled_max, DEV1, &ws1, "w2", false);
-        admit(&mut state, &hidden_full, DEV1, &ws2, "w3", true);
-        admit(&mut state, &hidden_born, DEV2, &ws3, "w4", true);
-        admit(&mut state, &plain_float, DEV1, &ws1, "w5", false);
-        state.floated.insert(plain_float.clone());
-        let mut full_facts = plain_facts();
-        full_facts.captionless_fullscreen = true;
-        let mut max_facts = plain_facts();
-        max_facts.maximized = true;
-        state
-            .member_rects
-            .insert("w1".to_owned(), rect(101, 101, 800, 600));
-        state
-            .member_rects
-            .insert("w2".to_owned(), rect(102, 102, 800, 600));
-        state
-            .member_rects
-            .insert("w3".to_owned(), rect(103, 103, 800, 600));
-        state
-            .member_rects
-            .insert("w4".to_owned(), rect(104, 104, 800, 600));
-        state.hidden_claims.insert(
-            hidden_full.clone(),
-            hidden_claim(&hidden_full, false, false, false),
-        );
-        state.hidden_claims.insert(
-            hidden_born.clone(),
-            hidden_claim(&hidden_born, false, false, false),
-        );
-        state.born_fullscreen.insert(hidden_born.clone());
-        let retained = vec![
-            retained_row(
-                &tiled_full,
-                "w1",
-                Some(rect(0, 0, 1920, 1080)),
-                false,
-                true,
-                Some(full_facts),
-            ),
-            retained_row(
-                &tiled_max,
-                "w2",
-                Some(rect(0, 0, 1920, 1080)),
-                true,
-                false,
-                Some(max_facts),
-            ),
-            retained_row(
-                &hidden_full,
-                "w3",
-                Some(rect(0, 0, 1920, 1080)),
-                false,
-                true,
-                Some(full_facts),
-            ),
-        ];
-        let observed = vec![observed_window(
-            &plain_float,
-            "w5",
-            rect(120, 120, 640, 480),
-            plain_facts(),
-        )];
-
-        let captured = capture_world(&state, Some(&observed), &retained, &two_areas(), 0);
-        assert!(captured.inventory_complete);
-        // Each overlay sits alone in its domain so capture lanes are
-        // attributable: ordinary overlays ride the reserved tiled lane with
-        // the canonical tile allocation (never the compositor-owned maximum
-        // frame, never floated); the born hold rides floating.
-        let home = captured
-            .domains
-            .iter()
-            .find(|d| d.domain.workspace.0 == ws4)
-            .expect("ws4 domain");
-        assert!(home.readable);
-        let r1 = home
-            .windows
-            .iter()
-            .find(|w| w.window.0 == "w1")
-            .expect("w1 row");
-        assert_eq!(r1.rect, rect(101, 101, 800, 600));
-        assert!(r1.fullscreen);
-        assert!(!r1.floating);
-        assert!(r1.fit_excluded);
-        let max_home = captured
-            .domains
-            .iter()
-            .find(|d| d.domain.workspace.0 == ws1)
-            .expect("ws1 domain");
-        assert!(max_home.readable);
-        let r2 = max_home
-            .windows
-            .iter()
-            .find(|w| w.window.0 == "w2")
-            .expect("w2 row");
-        assert_eq!(r2.rect, rect(102, 102, 800, 600));
-        assert!(r2.maximized);
-        assert!(!r2.floating);
-        // The plain intentional float rides the floating lane on its live
-        // frame beside the maximized tile.
-        let r5 = max_home
-            .windows
-            .iter()
-            .find(|w| w.window.0 == "w5")
-            .expect("w5 row");
-        assert_eq!(r5.rect, rect(120, 120, 640, 480));
-        assert!(r5.floating);
-        assert!(!r5.fullscreen);
-        // Hidden ordinary fullscreen rides reserved too (tiled lane with
-        // fullscreen set); the born hold rides the floating exception lane.
-        // Each overlay sits in its own domain so the sweep outcome below is
-        // attributable per lane.
-        let hid = captured
-            .domains
-            .iter()
-            .find(|d| d.domain.workspace.0 == ws2)
-            .expect("ws2 domain");
-        assert!(hid.readable);
-        let r3 = hid
-            .windows
-            .iter()
-            .find(|w| w.window.0 == "w3")
-            .expect("w3 row");
-        assert!(r3.fullscreen);
-        assert!(!r3.floating);
-        let born = captured
-            .domains
-            .iter()
-            .find(|d| d.domain.workspace.0 == ws3)
-            .expect("ws3 domain");
-        assert!(born.readable);
-        let r4 = born
-            .windows
-            .iter()
-            .find(|w| w.window.0 == "w4")
-            .expect("w4 row");
-        assert!(r4.fullscreen);
-        assert!(r4.floating);
-        let report = enveloped(&captured);
-        assert_eq!(validate_report_reason(&report), None);
-        // Reply level: the sweep owns admission policy. Maximized seeds a
-        // controlled tile with its reserved allocation; the plain float
-        // seeds a writeless exception row. Fullscreen first-seeds hold
-        // under the current shared contract (no explicit exception-behavior
-        // selection on the world fresh route): the scope holds and the rows
-        // carry holds, so nothing authorizes a frame write. The born
-        // dual-flag hold reports geometric exhaustion for the same safe
-        // reason. Capture stays truthful in all three lanes (no
-        // blanket-floating); liveness of fullscreen first-seeds belongs to
-        // a future shared-contract slice, not to capture.
-        let mut engine = windows_engine();
-        match engine.handle_report(&report) {
-            WorldOutcome::Accepted(reply) => {
-                let desire = |id: &str| {
-                    reply
-                        .windows
-                        .iter()
-                        .find(|w| w.lifetime.0 == id)
-                        .unwrap_or_else(|| panic!("row {id} desired"))
-                };
-                let scope_of = |ws: &str| {
-                    reply
-                        .scopes
-                        .iter()
-                        .find(|s| s.scope.ends_with(&format!("/{ws}")))
-                        .unwrap_or_else(|| panic!("scope {ws} desired"))
-                };
-                // Maximized: controlled tile with the reserved allocation.
-                let d2 = desire("w2");
-                assert_eq!(d2.allocation, Some(rect(8, 8, 1904, 1024)));
-                assert_eq!(d2.effective_frame, Some(rect(8, 8, 1904, 1024)));
-                assert_eq!(
-                    d2.frame_authority,
-                    tiler_core::world_report::ScopeAuthority::Controlled
-                );
-                // Plain float: writeless exception row beside the tile.
-                let d5 = desire("w5");
-                assert_eq!(d5.allocation, None);
-                assert_eq!(
-                    d5.frame_authority,
-                    tiler_core::world_report::ScopeAuthority::Untouched
-                );
-                // Ordinary fullscreen (tiled and hidden): held scope with
-                // held rows, never controlled authority.
-                for (id, ws) in [("w1", ws4.as_str()), ("w3", ws2.as_str())] {
-                    let scope = scope_of(ws);
-                    assert!(
-                        matches!(
-                            scope.authority,
-                            tiler_core::world_report::ScopeAuthority::Hold(_)
-                        ),
-                        "fullscreen first-seed scope holds: {scope:?}"
-                    );
-                    let row = desire(id);
-                    assert_eq!(row.allocation, None);
-                    assert!(
-                        matches!(
-                            row.frame_authority,
-                            tiler_core::world_report::ScopeAuthority::Hold(_)
-                        ),
-                        "fullscreen first-seed row holds: {row:?}"
-                    );
-                }
-                // Born dual-flag hold: same safe shape, geometric reason.
-                let born_scope = scope_of(ws3.as_str());
-                assert_eq!(
-                    born_scope.authority,
-                    tiler_core::world_report::ScopeAuthority::Hold(
-                        tiler_core::world_report::HoldReason::ConstraintClamp
-                    )
-                );
-                let d4 = desire("w4");
-                assert_eq!(d4.allocation, None);
-                assert!(
-                    matches!(
-                        d4.frame_authority,
-                        tiler_core::world_report::ScopeAuthority::Hold(_)
-                    ),
-                    "born hold row holds: {d4:?}"
-                );
-            }
-            other => panic!("expected accepted, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn sticky_first_exit_stays_floating() {
-        // Sticky early-returns in `capture_floating` before the first-exit
-        // check, so a sticky first exit stays floating with no extra
-        // conjunct; an ordinary visible first exit returns to the tiled lane.
-        let mut state = synced_state();
-        let ws1 = ws_id(&state, DEV1, 0);
-        let ws2 = ws_id(&state, DEV1, 1);
-        let sticky_exit = win_key(1001, 2001, "proc-1");
-        let plain_exit = win_key(1002, 2002, "proc-2");
-        admit(&mut state, &sticky_exit, DEV1, &ws1, "w1", true);
-        admit(&mut state, &plain_exit, DEV1, &ws2, "w2", false);
-        state.hidden_claims.insert(
-            sticky_exit.clone(),
-            hidden_claim(&sticky_exit, false, false, false),
-        );
-        state
-            .member_rects
-            .insert("w1".to_owned(), rect(101, 101, 800, 600));
-        state.sticky.insert(sticky_exit.clone(), true);
-        state.born_first_exit.insert(sticky_exit.clone());
-        state.born_first_exit.insert(plain_exit.clone());
-        // Verifiable fullscreen for the hidden sticky member: the hidden
-        // lane holds without a verified fullscreen source, which would mask
-        // the floating assertion below.
-        let mut sticky_facts = plain_facts();
-        sticky_facts.captionless_fullscreen = true;
-        let retained = vec![retained_row(
-            &sticky_exit,
-            "w1",
-            Some(rect(0, 0, 1920, 1080)),
-            false,
-            true,
-            Some(sticky_facts),
-        )];
-        let observed = vec![observed_window(
-            &plain_exit,
-            "w2",
-            rect(100, 100, 800, 600),
-            plain_facts(),
-        )];
-
-        let captured = capture_world(&state, Some(&observed), &retained, &two_areas(), 0);
-        assert!(captured.inventory_complete);
-        let hid = captured
-            .domains
-            .iter()
-            .find(|d| d.domain.workspace.0 == ws1)
-            .expect("ws1 domain");
-        assert!(hid.readable);
-        let r1 = hid
-            .windows
-            .iter()
-            .find(|w| w.window.0 == "w1")
-            .expect("w1 row");
-        assert!(r1.floating);
-        assert!(r1.sticky);
-        let home = captured
-            .domains
-            .iter()
-            .find(|d| d.domain.workspace.0 == ws2)
-            .expect("ws2 domain");
-        assert!(home.readable);
-        let r2 = home
-            .windows
-            .iter()
-            .find(|w| w.window.0 == "w2")
-            .expect("w2 row");
-        assert!(!r2.floating);
-    }
-
-    #[test]
-    fn enum_failure_holds_populated_inventory() {
-        // A failed enumeration (`None`, mirroring `TileLoop::observe`) never
-        // encodes as a successful empty: every inventoried scope holds,
-        // completeness clears, and bare absence infers no close and no
-        // minimize. An explicitly queued close still rides its homed domain
-        // beside the hold, per the incomplete-inventory contract.
-        let mut state = synced_state();
-        let ws1 = ws_id(&state, DEV1, 0);
-        let member = win_key(1001, 2001, "proc-1");
-        admit(&mut state, &member, DEV1, &ws1, "w1", false);
-        state.pending_closed.insert(
-            "w9".to_owned(),
-            PendingClosed {
-                output: DEV1.to_owned(),
-                workspace: ws1.clone(),
-            },
-        );
-
-        let captured = capture_world(&state, None, &[], &two_areas(), 0);
-        assert!(!captured.inventory_complete);
-        assert!(captured.minimized.is_empty());
-        for domain in &captured.domains {
-            assert!(!domain.readable);
-            assert_eq!(domain.hold, Some(HoldReason::IncompleteInventory));
-            assert!(domain.windows.is_empty());
-        }
-        // No close inference: only the explicitly queued close rides.
-        let home = captured
-            .domains
-            .iter()
-            .find(|d| d.domain.workspace.0 == ws1)
-            .expect("ws1 domain");
-        assert_eq!(home.closed.len(), 1);
-        assert_eq!(home.closed[0].0, "w9");
-        assert_eq!(captured.held_members, vec!["w1".to_owned()]);
-        for topology in &captured.topology {
-            assert!(!topology.complete);
-        }
-        let report = enveloped(&captured);
-        assert_eq!(validate_report_reason(&report), None);
-        let mut engine = windows_engine();
-        match engine.handle_report(&report) {
-            WorldOutcome::Accepted(reply) => {
-                for scope in &reply.scopes {
-                    assert!(
-                        matches!(
-                            scope.authority,
-                            tiler_core::world_report::ScopeAuthority::Hold(_)
-                        ),
-                        "failed-enum scope holds: {scope:?}"
-                    );
-                }
-                assert!(reply.windows.is_empty());
-            }
-            other => panic!("expected accepted, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn enum_failure_holds_empty_inventory() {
-        // Entirely empty managed workspaces hold too: failed observation of
-        // nothing is still not a successful empty, so cleanup stays
-        // unauthorized.
-        let state = synced_state();
-        assert!(!state.workspaces.output_keys().is_empty());
-
-        let captured = capture_world(&state, None, &[], &two_areas(), 0);
-        assert!(!captured.inventory_complete);
-        assert!(!captured.domains.is_empty());
-        for domain in &captured.domains {
-            assert!(!domain.readable);
-            assert_eq!(domain.hold, Some(HoldReason::IncompleteInventory));
-            assert!(domain.windows.is_empty());
-            assert!(domain.closed.is_empty());
-        }
-        assert!(captured.minimized.is_empty());
-        assert!(captured.held_members.is_empty());
-        let report = enveloped(&captured);
-        assert_eq!(validate_report_reason(&report), None);
-    }
-
-    #[test]
-    fn monitor_absence_holds_all_domains() {
-        // No monitor areas (failed monitor enumeration): every domain holds
-        // as unreadable with no primary and no complete topology, even with
-        // a live observed member.
-        let mut state = synced_state();
-        let ws1 = ws_id(&state, DEV1, 0);
-        let key = win_key(1001, 2001, "proc-1");
-        admit(&mut state, &key, DEV1, &ws1, "w1", false);
-        let observed = vec![observed_window(
-            &key,
-            "w1",
-            rect(100, 100, 800, 600),
-            plain_facts(),
-        )];
-
-        let captured = capture_world(&state, Some(&observed), &[], &[], 0);
-        assert!(!captured.inventory_complete);
-        for domain in &captured.domains {
-            assert!(!domain.readable);
-            assert_eq!(domain.hold, Some(HoldReason::Unreadable));
-            assert!(domain.windows.is_empty());
-        }
-        assert_eq!(captured.held_members, vec!["w1".to_owned()]);
-        for topology in &captured.topology {
-            assert!(!topology.complete);
-            assert_eq!(topology.geometry, None);
-            assert!(!topology.primary);
-        }
-        let report = enveloped(&captured);
-        assert_eq!(validate_report_reason(&report), None);
-    }
-
-    #[test]
-    fn monitor_reorder_primary_follows_native_order() {
-        // Primary derives from the native `areas.first()` device, never from
-        // managed output order: reordered areas flip the flag.
-        let state = synced_state();
-        let mut reordered = two_areas();
-        reordered.reverse();
-        assert_eq!(reordered[0].device, DEV2);
-
-        let captured = capture_world(&state, Some(&[]), &[], &reordered, 0);
-        assert!(captured.inventory_complete);
-        let first = captured
-            .topology
-            .iter()
-            .find(|t| t.output.0 == "o1")
-            .expect("o1 topology");
-        assert!(!first.primary);
-        let second = captured
-            .topology
-            .iter()
-            .find(|t| t.output.0 == "o2")
-            .expect("o2 topology");
-        assert!(second.primary);
-    }
-
-    #[test]
-    fn hidden_claim_tag_and_identity_hold() {
-        // Hidden association needs all three proofs: a well-formed claim tag,
-        // a matching claim identity, and a stored member identity naming the
-        // same lifetime. A malformed tag, an empty tag, and a drifted stored
-        // identity each hold their domain without minimizing.
-        let mut state = synced_state();
-        let ws1 = ws_id(&state, DEV1, 0);
-        let ws2 = ws_id(&state, DEV1, 1);
-        let ws3 = ws_id(&state, DEV2, 0);
-        let bad_tag = win_key(1001, 2001, "proc-1");
-        let empty_tag = win_key(1002, 2002, "proc-2");
-        let drifted = win_key(1003, 2003, "proc-3");
-        admit(&mut state, &bad_tag, DEV1, &ws1, "w1", true);
-        admit(&mut state, &empty_tag, DEV1, &ws2, "w2", true);
-        admit(&mut state, &drifted, DEV2, &ws3, "w3", true);
-        let mut malformed = hidden_claim(&bad_tag, false, false, false);
-        malformed.claim.tag = "nonce-1".to_owned();
-        state.hidden_claims.insert(bad_tag.clone(), malformed);
-        let mut empty = hidden_claim(&empty_tag, false, false, false);
-        empty.claim.tag = String::new();
-        state.hidden_claims.insert(empty_tag.clone(), empty);
-        state
-            .hidden_claims
-            .insert(drifted.clone(), hidden_claim(&drifted, false, false, false));
-        // Drift the stored identity away from the member key: the claim
-        // itself still matches, but the scope/classification source no
-        // longer names this lifetime.
-        let mut identity = process_identity(&drifted);
-        identity.pid = 9999;
-        state.member_identity.insert(drifted.clone(), identity);
-        state
-            .member_rects
-            .insert("w1".to_owned(), rect(101, 101, 800, 600));
-        state
-            .member_rects
-            .insert("w2".to_owned(), rect(102, 102, 800, 600));
-        state
-            .member_rects
-            .insert("w3".to_owned(), rect(103, 103, 800, 600));
-
-        let captured = capture_world(&state, Some(&[]), &[], &two_areas(), 0);
-        assert!(!captured.inventory_complete);
-        assert!(captured.minimized.is_empty());
-        for ws in [&ws1, &ws2, &ws3] {
-            let domain = captured
-                .domains
-                .iter()
-                .find(|d| d.domain.workspace.0 == *ws)
-                .unwrap_or_else(|| panic!("domain for {ws} exists"));
-            assert!(!domain.readable, "unproven hidden domain {ws} holds");
-            assert_eq!(domain.hold, Some(HoldReason::IncompleteInventory));
-            assert!(domain.windows.is_empty());
-        }
-        assert_eq!(
-            captured.held_members,
-            vec!["w1".to_owned(), "w2".to_owned(), "w3".to_owned()]
-        );
-        let report = enveloped(&captured);
-        assert_eq!(validate_report_reason(&report), None);
+        restored: None,
     }
 }

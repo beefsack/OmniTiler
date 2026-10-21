@@ -31,7 +31,7 @@ pub(super) struct PendingClosed {
 /// parity) and admission can clear a first-seen maximize exactly once.
 #[derive(Debug, Clone)]
 pub(super) struct RetainedRow {
-    pub(super) key: crate::workspace::WindowKey,
+    pub(super) key: crate::native_guards::WindowKey,
     pub(super) token: String,
     pub(super) rect: Option<Rect>,
     pub(super) maximized: bool,

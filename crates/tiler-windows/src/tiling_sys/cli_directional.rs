@@ -17,6 +17,7 @@ use super::*;
 pub(super) fn poll_directional_cli_request(
     state: &mut TileLoop,
     me: &ProcessIdentity,
+    store: &LedgerStore,
     dir: &Path,
     fulls: &[Rect],
     areas: &[MonitorArea],
@@ -153,6 +154,8 @@ pub(super) fn poll_directional_cli_request(
     keyboard_tick(
         state,
         me,
+        store,
+        dir,
         fulls,
         areas,
         vec![QueuedSnapEvent::Intent(crate::snapkey::QueuedIntent {

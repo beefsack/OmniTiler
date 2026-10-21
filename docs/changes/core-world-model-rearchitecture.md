@@ -295,7 +295,8 @@ remove the code it supersedes before its acceptance.
 
 ## Stage 2a replacement validation and remaining blocker (2026-10-21)
 
-- The logical-first replacement below is unaccepted. Passing broad gates and
+- Historical validation before the accepted correction below: the logical-first
+  replacement was unaccepted. Passing broad gates and
   earlier source review did not establish recovery after actuation feedback is
   acknowledged. No implementation from this replacement is accepted for the
   Windows owner cutover; the blocker below must be resolved first.
@@ -399,3 +400,193 @@ remove the code it supersedes before its acceptance.
 - Next: resolve the retained-outcome blocker and accept 2a before starting 2b.
   Then implement truthful applied member/view receipts and bootstrap/restoration
   projection, all Windows mode/send routes and both-output native verification.
+
+## Stage 2a accepted outcome (2026-10-21)
+
+- Logical-native-free world contract v2 is accepted for the core boundary,
+  not as Windows runtime adoption. The previous unresolved-outcome section
+  records the failing predecessor, not a remaining blocker. The
+  [logical-authority decision](../decisions.md#logical-workspace-authority)
+  is user-approved, not tentative. Inherited machinery can be simplified;
+  preserving its implementation is not an acceptance requirement.
+- Terminal migration refusal/supersession survives acknowledgement under
+  its operation identity, separately from no-retry authority. Later readable
+  evidence reconciles without feedback replay. Partial arrival holds, explicit
+  closes settle across gaps, and possibly-executed attempts never masquerade
+  as proven refusal. Float-placement ambiguity also survives acknowledgement:
+  a third rectangle cannot silently become external-input proof.
+- Settlement restages logical domains before sweeping and publishing. Proven
+  rollback returns source scope, membership, ring position, views, tree/shares
+  and focus in the same reply, not one observation later. Sessionless floating
+  workspaces migrate through core-owned membership and the same mapping/refill
+  commit, preserving floating mode without inventing a tree or focus effect.
+- Hotplug collects stranded members before rekeying and retains their unique
+  policy transfers until observed arrival. Outsiders and sticky windows are
+  excluded. Restored routing tests pin seam/rank selectors, exhausted-edge and
+  capacity-float crossings, command results, predicate ingress and no replay.
+- Independent deletion review found admission, directional, floating-migration
+  and adapter safety coverage gaps. These were restored, not waived by passing
+  broad suites. Floating-source refusal was a regression and was removed; the
+  absence of an Engine tree is not a reason to refuse logical migration.
+
+### Deleted-test behavior mapping
+
+Core test paths below are relative to `crates/tiler-core/tests/`; suite names
+refer to retained v2 files. Native-derived bindings, aligned-cell identities,
+native creation/removal and binding-echo startup conversion are superseded by
+the approved logical boundary, not treated as retained product requirements.
+
+| Replaced test file | Accepted behaviors and retained coverage |
+| --- | --- |
+| `../src/world_engine_tests.rs` | Envelope/identity/generation/watermark/duplicates/high-watermarks/size/transactional rejection: `world_envelope_budget`. Window/view/migration/refill/close/refusal/ambiguity/supersession: `world_logical_contract`, `world_truthful_settlement`, `world_migration_refusal`. Operation results, drag preview/drop, active group, move/resize, send permissions and deterministic replay: `world_restored_routing`. Float tokens: `world_capacity_diagnostic`; born state: retained `fixed_size_admission`. |
+| `world_admission_focus.rs` | Focus-once, burst last eligible, retry failure, unexplained exclusion, normalized floats, quiet bootstrap/restart and fullscreen/maximized siblings: `world_coverage_gaps::{burst_batch_pins_last_eligible_newcomer_once, explicit_tile_retry_failure_mints_no_focus_and_never_loops, unexplained_excluded_newcomer_takes_no_activation, normalized_ordinary_float_newcomer_focuses_once, maximized_sibling_suppresses_admission_without_retry, restart_adoption_stays_quiet_without_origin}`, plus `world_admission_close_stay` and capacity-origin parity. |
+| `world_aligned_migration.rs` | Tree/shares/focus/tiling, arrival/view/refill phases, delayed/partial/unreadable/empty/closed members, refusal/supersession/no replay and sticky source refill: logical/refusal/truthful suites. Directional target ranking: `world_restored_routing::world_migration_selects_largest_edge_despite_window_centre`. Second flight and sessionless floating carry/rollback: `world_coverage_gaps`. Same-native identity, target placeholder/rebinding and aligned-cell occupancy are superseded. |
+| `world_aligned_workspaces.rs` | Local/global-unique/shared rings, views/history, numbered/trailing selection, equal counts, occupancy and sticky handling: `world_modes_contract`, logical bootstrap, `world_float_boundary` and `world_global_swap`. Native aligned identities, holes and startup binding conversion are superseded. |
+| `world_born_fullscreen.rs` | Slotless born-fullscreen, later overlay slot, exit/replacement and reused-lifetime handling: retained `fixed_size_admission` born-fullscreen/removal tests, logical minimized/fullscreen/hidden test and `world_admission_close_stay` close/reopen lifetime test. |
+| `world_boundary_send.rs` | Tiled/float boundaries, membership-only float writes, sticky/excluded refusal and overlay flags: `world_float_boundary`, `world_float_membership`, `world_restored_routing::float_send_authorizes_membership_and_guarded_sends_refuse`, plus empty/occupied targets in `world_coverage_gaps`. |
+| `world_capacity_floats.rs` | Mixed seed, ordinary/capacity parity, float echoes, retry, minimized restore, held/exception-only scopes and disable/enable: `world_capacity_diagnostic` and `world_coverage_gaps` retry/restart tests. Origin is diagnostic only. |
+| `world_contract_repairs.rs` | Incarnation, topology/focus-pair, release/toggle, held rows, numbered/trailing sends, capacity/minimized/seed, late refusal and reply bounds: envelope/logical/modes/truthful/capacity suites. Same-domain preview and fixed-width predicate ingress: `world_restored_routing`; floating toggles/defaults: `world_float_membership` and `world_float_boundary`. |
+| `world_default_tiling.rs` | Startup floating default, later default only on new workspaces and manual override preservation: `world_float_boundary::default_seed_changes_only_new_workspaces`, plus float toggle/release tests. |
+| `world_directional_intents.rs` | Focus/move/send/migrate routing, focus-up fence, partial topology, seam/overlap/center ranking, exhausted-edge identity and capacity fallback: logical directional tests and `world_restored_routing::{world_seam_prefers_upper_interval, world_overlap_fallback_selects_larger_span, world_both_centred_skips_overlap_to_left_top, world_send_matches_move_targets, flight_fences_second_move_pre_engine_without_rerank, exhausted_move_retains_identity_pinned_transfer_and_settles_on_arrival, capacity_float_fallback_retains_identity_pinned_window_transfer}`. |
+| `world_displacement.rs` | Disconnect/return/nearest survivor, whole-unit tiling/layout, shared/global modes, geometry gaps, unique policy intents and outsiders: logical hotplug, `world_float_boundary::three_output_displacement_preserves_unit_and_returns`, modes/global-swap suites and restored-routing hotplug tests. Destination choice uses retained shared workspace-scope policy, not native-domain fallback identity. |
+| `world_float_recovery.rs` | Exact token, lost result, stale/consumed command, ambiguity, confirmation, external supersession, refusal, close, unfloat/replacement and reset: capacity suite, especially `float_ambiguous_third_frame_holds_across_ack`, `float_explicit_supersession_settles_ambiguous`, `float_lost_result_recovers_stale_never_replays`, `float_close_and_reset_clear_token`; envelope and truthful settlement fence replay. |
+| `world_focused_removal_fallback.rs` | Focused-close hold and each tree-position survivor reflow: `world_admission_close_stay::close_focused_holds_until_survivor_focus_recovers` and `world_coverage_gaps::close_each_position_reflows_controlled_survivors`. |
+| `world_output_send_stay_focus.rs` | Exact MRU survivor versus follow mover, both horizontal directions, empty source, held/refused silence and no settlement replay: logical/close-stay tests and `world_coverage_gaps::{directional_sends_both_directions_name_exact_focus_without_replay, refused_and_held_sends_emit_no_focus_and_retain_nothing}`. Aligned native binding variants are superseded, not the focus policy. |
+| `world_pending_send_focus.rs` | Pending stay/follow and emptied source: same-output observed-membership settlement in modes suite, directional focus/no-replay in coverage suite and contradictory-receipt bars in truthful suite. Native destination creation is no longer a prerequisite for logical commit. |
+| `world_startup_conversion.rs` | Native shared-current/distinct-current/binding/echo conversion is superseded by native-free bootstrap and optional host-owned receipts in logical/modes suites. Hidden/minimized/fullscreen facts remain covered. Actual platform restart restoration is explicitly pending 2b, not claimed by reobservation or desired snapshots. |
+| Windows `tiling_sys/world_diff_tests.rs` | Restored as 36 source-first offline tests: real/iconic/hidden/unreadable/overlay capture, effective-not-allocation geometry, clamp/refusal rearming, all per-flag/lifetime fences, generation/revision/watermark/gesture checks, invalidation before and after first write, bounded tables, ambiguous transfers/views/floats/effects, exact follow-view/focus proof, partial migration/refill, held scopes, consumed catch-up and exact acknowledgement receipts. Only native binding/creation/removal scaffolding is removed; T2's source-state outcome remains pinned in the core logical suite. |
+
+The deleted production `world_displacement.rs` responsibilities are retained
+in logical lifecycle plus `world_members::{rekey_members,
+relocate_session_for_move}`, exercised by the hotplug, return and rollback
+tests above. No accepted product behavior is removed by that source split.
+
+### Final verification and native smoke
+
+- Final locked core/protocol/Windows build and tests pass: 2,648 passed,
+  zero failed, one ignored across 69 suites. Strict locked all-target clippy,
+  workspace fmt and whitespace checks pass. KDE/macOS and their FFI consumer
+  ports are not compiled or repaired in this slice. No dependency, unsafe,
+  input-hook or cursor-policy change was introduced.
+- The final Windows artifact passed fixture-only smoke on both outputs:
+  four joined native lifetimes tiled on their staged outputs; directional
+  focus/move on each; float/unfloat; fullscreen coverage/exit on each;
+  cross-output send/follow both ways; workspace send/select hide/reveal and
+  close/reflow on each. Native PMv2 DWM frames, visibility and foreground
+  independently corroborated outcomes and managed-token joins. No synthetic
+  input was used. Windows still ran its existing sole legacy owner.
+- Exact-owner stop and independent restore were proven before fixture effects
+  and again at teardown. Fixture shutdown exited cleanly; owned processes,
+  recovery ledger and control requests were absent. Settings bytes, relevant
+  SPI/taskbar state and protected-window geometry matched baseline.
+- Initial smoke assertions confused DWM frames with outer frames, explicit
+  float fallback with frame preservation, and plain hide with cloaking. Source
+  and native readbacks corrected those oracles; no product workaround was
+  made. Raw source/artifact identities, gate logs and native evidence remain
+  outside the repository. Physical shortcuts, drag and games are not claimed.
+
+### Next slice boundary
+
+- 2a has no outstanding implementation blocker. 2b must replace the Windows
+  ManagedWorkspaces/direct-Engine owner atomically, with genuine applied
+  membership/view receipts, startup/restart restoration, floating membership
+  and refill actuation, all scope/send routes, and deletion of superseded
+  per-domain adapter interfaces. The offline world route remains test-only.
+- KDE/macOS ports must use contract v2, capability opt-ins and truthful receipts;
+  their old native-domain/binding APIs intentionally no longer compile against
+  this boundary. Their native safety/integration mechanics remain their own.
+- 2c remains cursor/settings/focus retention, approved fresh-placement/switch
+  policy and dual-output admission correction. Do not confuse startup or
+  restoration with fresh placement. Three-way placement subsuming launch
+  targeting remains tentative and unimplemented. No other tentative product
+  choice was introduced; all four parked questions above remain unchanged.
+
+## Stage 2b partial implementation checkpoint (2026-10-21)
+
+### Ownership and routing
+
+- Implementation is partial and not accepted for Windows dogfooding. Stage 2c
+  has not started. The stage 2a evidence above remains evidence for its earlier
+  artifact, not native acceptance of this runtime cutover.
+- `TileLoop` now retains `WorldOwner`/`WorldSequencer` as its sole world owner.
+  The direct Engine, ManagedWorkspaces and WorkspaceScopeOwner fields are gone.
+  The legacy `workspace.rs`, `workspace/`, `workspace_scope_owner.rs`,
+  `workspace_owner/` and settings `tile_bridge.rs` implementations are deleted.
+  Required native identity, marker and lifetime primitives moved to
+  `native_guards.rs`; they do not retain workspace rings or history.
+- Observation/reconcile, close/reflow, output changes, numbered/relative/
+  previous/trailing selection, numbered/relative/output follow/stay sends and
+  workspace migration now dispatch through the world route. Resize,
+  orientation, float/tiling/sticky actions, directional focus/move and
+  drag/drop/preview/group queries have been adapted to world commands or
+  world operations. These are source-routing claims, not native acceptance.
+- `world_reads.rs` reads core logical mapping and reply presentation.
+  `world_capture.rs` projects normalized host facts; `world_native.rs` actuates
+  through existing identity-checked geometry, hide/reveal and focus mechanisms.
+  Native receipt caches are distinct from core targets. Incorporation
+  acknowledgement must never establish native arrival.
+- Superseded Windows helper bodies and imports remain in `tiling_sys`.
+  Portable per-domain CoreEvent/CoreReply application and session-query APIs
+  have not been removed. Their removal, dead-code cleanup and an independent
+  final ownership/deletion audit remain required. KDE/macOS ports are unchanged.
+
+### Accepted local observations, not slice acceptance
+
+- Final checkpoint locked build and tests for core, protocol and Windows pass:
+  **2,156 passed, zero failed, one ignored across 69 suites**. The Windows
+  library contributes 788 passing tests after legacy test removal. Passing
+  totals do not close the coverage gaps listed below.
+- The production native seam has 32 passing scripted tests. Positive cases
+  exercise first bootstrap receipts, same-output numbered follow/stay,
+  directional tiled crossings both ways, membership-only float crossings,
+  lying setters and migration/source-refill settlement. The scripts update
+  native observation maps through setters; desired snapshots alone are not
+  their arrival oracle. The 36 source-first offline diff tests remain.
+- T2 production sequencing evaluates one candidate and adopts it only for
+  supported outcomes. The real no-fit directional regression checks unchanged
+  retained source state and observation-only catch-up; float origin remains
+  diagnostic. Explicit versus directional send semantics remain parked.
+- Strict all-target clippy fails on remaining dead/unused adapter code and
+  style findings. Workspace formatting and whitespace checks also fail.
+  There has been **no stage 2b live run**, both-output fixture acceptance,
+  native restart check or final artifact validation. Windows builds, but its
+  runtime operation is not established by these offline results.
+
+### Corrections and remaining verification
+
+- Earlier cutover drafts incorrectly rehomed departing members during view
+  switching, re-evaluated a staged candidate, copied desires into applied
+  caches, and required an existing receipt before first arrival could prove.
+  Corrections have executed scripted regressions; final independent review and
+  native verification of their composition remain outstanding. FreshHost now
+  seeds its view baseline from captured observed views.
+- The hint producer is connected to the world preamble using the existing
+  bounded hint/last-good mechanisms. Recycled-HWND retirement and token-scoped
+  cleanup were repaired. Born/fullscreen/minimized/hidden, marker restore and
+  first-exit capture cases have additional tests, but complete positive native
+  admission/restart coverage remains pending.
+- No durable workspace-ring store existed in the replaced Windows path.
+  Windows currently mints logical rings from live screens and adopts native
+  float/sticky/tile-override/recovery facts. The new neutral core RestoredWorld
+  bootstrap ingress is tested but is not populated by Windows; unused ingress
+  and persistence claims need reconciliation before completion.
+- Deleted Windows policy tests have only a provisional coverage map. Core
+  logical suites cover scope/history/migration/capacity policy and 12
+  `native_guards` tests retain selected identity/marker/fence tables. This is
+  not a complete replacement audit: positive adapter scope/hotplug/follow/stay,
+  capacity retry, float/unfloat, born-maximized, visibility rollback, hint
+  fallback/diagnostics and drag/pending-drop behaviors need named retained
+  coverage or restored regressions. In particular, drag/pending-drop arrival
+  checks still need review against effective frames and proven membership,
+  rather than treating desired allocation as native proof.
+- Action outcome logs and callers need a final audit: an accepted command or
+  a returned reply is not a verified send/select/migration. Hidden fullscreen
+  truth, partial batches, focused games, invalidation before each native effect
+  and recovery after failed/ambiguous effects remain mandatory review targets.
+- No new product decision is selected here. All four parked questions remain
+  unchanged; three-way placement subsuming launch targeting remains tentative.
+  No additional input hook or game-performance claim is introduced.
+- Next: inspect the current positive native-seam tests and receipt paths,
+  finish the deletion/coverage and outcome audits, remove superseded APIs and
+  obtain strict local gates before fixture-only native checks on both outputs.
+  Do not treat this partial checkpoint as a completed stage 2b slice.

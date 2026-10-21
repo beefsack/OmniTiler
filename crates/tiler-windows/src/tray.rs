@@ -14,10 +14,10 @@
 //! differences are explicit:
 //!
 //! - KDE parity: a current-workspace tiled checkbox plus new-workspace
-//!   Tiled/Floating default choices. The checkbox reflects the session-local
-//!   per-workspace mode (`crate::workspace::ManagedWorkspaces`); a missing
-//!   current scope disables only the checkbox while the default choices stay
-//!   usable. Only the default persists.
+//!   Tiled/Floating default choices. The checkbox reflects the core logical
+//!   tiling mode for the current view; a missing current scope disables only
+//!   the checkbox while the default choices stay usable. Only the default
+//!   persists.
 //! - The conflict row names Windows OS shortcut conflicts (there is no
 //!   `kwinrc [Windows]` edge-key analogue on Windows).
 //! - The warning fires only for kept effective bindings with known-unresolved

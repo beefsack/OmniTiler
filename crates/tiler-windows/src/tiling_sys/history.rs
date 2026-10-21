@@ -1,8 +1,8 @@
 #![forbid(unsafe_code)]
 use super::*;
 
-/// Move one migrating float window across outputs (move-only, never a resize
-/// or refit): `SetWindowPos` with `SWP_NOSIZE | SWP_NOZORDER |
+/// Move one migrating float window across outputs (move-only, never a
+/// resize or refit): `SetWindowPos` with `SWP_NOSIZE | SWP_NOZORDER |
 /// SWP_NOACTIVATE` at the translated frame. No focus, no z-order, no show
 /// effects. Under test the move records into the injected float-move log and
 /// the ALL-member native-transfer log and reports success without touching
@@ -105,7 +105,7 @@ pub(super) fn move_overlay_to_output(
 
 /// Remap one concealed member's `WINDOWPLACEMENT` normal rect across outputs
 /// (move-only, never a show-state change): reads the live placement to
-/// preserve the original restore size and `showCmd`, converts the target
+/// preserve the original normal restore size and `showCmd`, converts the target
 /// screen frame (`moved`, the FULL-delta translation of the retained normal
 /// frame) to the raw `rcNormalPosition` basis with the target monitor's
 /// `WORK` plus `FULL` inset delta (workspace coordinates for non-tool
@@ -136,10 +136,6 @@ pub(super) fn remap_placement_to_output(
     }
 }
 
-/// Production placement remap for minimized/hidden members: `GetWindowPlacement`,
-/// keep the original normal restore size and `showCmd`, write the target
-/// screen origin converted to the raw basis, post async. Returns `false` on
-/// any failure (never a partial show-state change).
 #[cfg(not(test))]
 fn remap_placement_normal_rect(
     hwnd_u64: u64,
@@ -180,13 +176,6 @@ fn remap_placement_normal_rect(
     crate::ffi::set_window_placement(hwnd_u64, &placement)
 }
 
-/// Production maximized-overlay normal remap: single live `GetWindowPlacement`
-/// snapshot supplies both the normal (restore) rect and the preserved
-/// `showCmd`/`flags`, translated to the target with the source/target `FULL`
-/// delta plus the per-monitor inset-delta conversion. Preserves the original
-/// restore size and `showCmd`, posts async. Never writes the observed
-/// maximized frame as the restore frame, never invents a retained fallback,
-/// never changes show-state. Returns `false` on any failure.
 #[cfg(not(test))]
 fn remap_maximized_normal_to_output(
     hwnd_u64: u64,
@@ -196,11 +185,6 @@ fn remap_maximized_normal_to_output(
     target_work: Rect,
     workspace_coords: bool,
 ) -> bool {
-    // Single causal snapshot: one `GetWindowPlacement` read supplies geometry
-    // plus `showCmd`/`flags`, so a state change between two reads cannot mix
-    // a stale restore frame with a fresh show-state (or vice versa). Basis
-    // rides the same live style/parent read; no retained fallback, no
-    // observed-maximized-frame reuse.
     let _ = workspace_coords;
     if !crate::ffi::is_window(hwnd_u64) {
         return false;
@@ -244,24 +228,30 @@ fn remap_maximized_normal_to_output(
     crate::ffi::set_window_placement(hwnd_u64, &placement)
 }
 
-/// Drain one bounded batch of workspace history intents (item 1). Toggle and
-/// relative steps work on empty workspaces and unmanaged foreground: they
-/// select views, never movers, so no managed-focus gate applies. The
-/// `--no-keyboard-snap-takeover` off switch disables all product
-/// interception (defensive second fence). Fullscreen and elevated foreground
-/// gate all history ops like digits. Targets resolve without preactivating
-/// (pure `resolve_previous`/`resolve_relative`: no activation, append, or
-/// creation); only the verified `workspace_do_select` transition activates,
-/// and its observation recording supplies history. Toggle with no recorded
-/// change, or a removed/unassigned/out-of-scope previous, settles as
-/// `unknown-target` (no-op until the next recorded change, never
-/// recreation/ordinal reinterpretation).
+/// Native device key for the next world-routed history intent: the cached
+/// output when it is still live, else the first live area. Pure native
+/// topology; never rings or views.
+fn history_device(state: &TileLoop, areas: &[MonitorArea]) -> Option<String> {
+    if !state.active_output.is_empty()
+        && areas.iter().any(|a| a.device == state.active_output)
+    {
+        return Some(state.active_output.clone());
+    }
+    areas.first().map(|a| a.device.clone())
+}
+
+/// Drain one bounded batch of workspace history intents through the world
+/// owner. Toggle and relative steps select views only, never movers. The
+/// core owns history outright (`SelectPrevious` / `SelectRelative`); this
+/// tick only routes and logs the honest outcome per intent. Fullscreen and
+/// elevated foreground gate dispatch like digits; the takeover-off switch
+/// disables all interception.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn workspace_history_tick(
     state: &mut TileLoop,
     me: &ProcessIdentity,
-    store: &LedgerStore,
-    dir: &Path,
+    _store: &LedgerStore,
+    _dir: &Path,
     fulls: &[Rect],
     areas: &[MonitorArea],
     events: Vec<QueuedWorkspaceHistoryIntent>,
@@ -304,7 +294,6 @@ pub(super) fn workspace_history_tick(
             }
             continue;
         }
-        let dispatch_start = Instant::now();
         if suspend_read(state, me, fulls).veto.block {
             log_json_at(
                 &log_path,
@@ -331,7 +320,7 @@ pub(super) fn workspace_history_tick(
             );
             continue;
         }
-        let Some(output) = chord_output(state, areas) else {
+        let Some(device) = history_device(state, areas) else {
             log_json_at(
                 &log_path,
                 serde_json::json!({
@@ -344,142 +333,54 @@ pub(super) fn workspace_history_tick(
             );
             continue;
         };
-        state.workspaces.ensure_output(&output);
-        state.tick += 1;
-        let tick = state.tick;
-        let mut skipped: Vec<(String, String)> = Vec::new();
-        let mut retained: Vec<RetainedRow> = Vec::new();
-        let Some(mut observed) = state.observe(me, fulls, &mut skipped, &mut retained) else {
+        let Some(wire) = state.output_tokens.get(&device).cloned() else {
             log_json_at(
                 &log_path,
                 serde_json::json!({
                     "event": "workspace-history",
-                    "tick": tick,
+                    "tick": state.tick,
                     "op": intent.op.as_str(),
                     "edge": intent.edge.as_str(),
                     "disposition": "consumed",
-                    "outcome": "observation-failed",
+                    "outcome": "unknown-output",
                 }),
             );
             continue;
         };
-        publish_managed(state, me, &observed, &retained);
-        ensure_workspace_assignments(state, me, &mut observed, &retained, areas);
-        clear_maximize_at_admission(state, me, &retained);
-        workspace_close_cleanup(state);
-        let op = intent.op;
-        let edge = intent.edge;
-        let ctx = ActionCtx {
-            correlation: format!("act-{tick}"),
-            tick,
-            queued_at: intent.tick,
-            start: dispatch_start,
-        };
-        // Pure resolution: no activation, append, or creation. Previous
-        // validates its stable id (clears removed/out-of-scope); relative
-        // wraps the full scoped ring including trailing empty and >9.
-        // Scoped resolvers keep local equivalent; `workspace_do_select`
-        // dispatches shared/global-swap native effects.
-        let target: Option<String> = match op {
+        let output = tiler_core::directional::OutputId(wire);
+        let command = match intent.op {
             WorkspaceHistoryOp::Previous => {
-                let (owner, spaces) = (&mut state.scope_owner, &mut state.workspaces);
-                owner.resolve_previous(spaces, &output)
+                tiler_core::world_report::WorldCommand::SelectPrevious { output }
             }
-            WorkspaceHistoryOp::Prev => {
-                state
-                    .scope_owner
-                    .resolve_relative(&state.workspaces, &output, -1)
-            }
-            WorkspaceHistoryOp::Next => {
-                state
-                    .scope_owner
-                    .resolve_relative(&state.workspaces, &output, 1)
-            }
+            WorkspaceHistoryOp::Prev => tiler_core::world_report::WorldCommand::SelectRelative {
+                output,
+                delta: -1,
+            },
+            WorkspaceHistoryOp::Next => tiler_core::world_report::WorldCommand::SelectRelative {
+                output,
+                delta: 1,
+            },
         };
-        match target {
-            Some(id) => {
-                // REQ-WS-09 departure memory, same as the numbered select.
-                let foreground_hwnd = crate::ffi::foreground_window();
-                if let Some(source_id) = state.workspaces.active_id(&output)
-                    && let Some(token) = remember_select_departure(
-                        state,
-                        &output,
-                        &source_id,
-                        foreground_hwnd,
-                        &observed,
-                        &retained,
-                    )
-                {
-                    log_json_at(
-                        &state.log_path.clone(),
-                        serde_json::json!({"event":"select-departure","correlation":ctx.correlation,"window":token}),
-                    );
-                }
-                let effect = workspace_do_select(
-                    state,
-                    me,
-                    store,
-                    dir,
-                    fulls,
-                    areas,
-                    &mut observed,
-                    &output,
-                    &id,
-                    &ctx,
-                    None,
-                    false,
-                    false,
-                );
-                log_json_at(
-                    &log_path,
-                    workspace_history_log(state, tick, op.as_str(), edge.as_str(), effect.outcome),
-                );
-                log_workspace_action(
-                    state,
-                    &log_path,
-                    &ActionLine {
-                        ctx: &ctx,
-                        op: op.as_str(),
-                        index: 0,
-                        edge: edge.as_str(),
-                        outcome: effect.outcome,
-                        focus: effect.focus,
-                        timings: &ActionTimings {
-                            transition_ms: effect.transition_ms,
-                            observation_ms: effect.observation_ms,
-                            source_plan_ms: 0,
-                            target_plan_ms: effect.plan_ms,
-                            source_geometry_ms: 0,
-                            target_geometry_ms: effect.geometry_ms,
-                            hide_ms: effect.hide_ms,
-                            reveal_ms: effect.reveal_ms,
-                            focus_ms: effect.focus_ms,
-                        },
-                        source_workspace: &effect.source_workspace,
-                        target_workspace: &effect.target_workspace,
-                        source: None,
-                        target: effect.geometry.as_ref(),
-                    },
-                );
-            }
-            None => {
-                log_json_at(
-                    &log_path,
-                    workspace_history_log(
-                        state,
-                        tick,
-                        op.as_str(),
-                        edge.as_str(),
-                        "unknown-target",
-                    ),
-                );
-            }
-        }
+        let op = intent.op.as_str();
+        let edge = intent.edge;
+        let tick = state.tick;
+        super::world_tick::observe_and_command(state, me, _store, _dir, fulls, areas, command);
+        let outcome: &'static str = if state.world.last_reply().is_some() {
+            state.tick += 1;
+            "ok"
+        } else {
+            "unverified"
+        };
+        log_json_at(
+            &log_path,
+            workspace_history_log(state, tick, op, edge.as_str(), outcome),
+        );
     }
 }
 
-/// Bounded history log line: opaque output/workspace tokens plus
-/// op/edge/outcome only. No HWNDs, tokens, titles, or app data.
+/// Bounded history log line: opaque output/workspace plus op/edge/outcome
+/// only. The workspace names the core's current logical view for the active
+/// wire output (read-only projection); unknown reads `ws?`.
 fn workspace_history_log(
     state: &TileLoop,
     tick: u64,
@@ -487,16 +388,7 @@ fn workspace_history_log(
     edge: &str,
     outcome: &str,
 ) -> serde_json::Value {
-    let output = if state.active_output.is_empty() {
-        "o?".to_owned()
-    } else {
-        state.workspaces.output_token(&state.active_output)
-    };
-    let workspace = state
-        .workspaces
-        .active_id(&state.active_output)
-        .map(|id| state.workspaces.workspace_token(&state.active_output, &id))
-        .unwrap_or_else(|| "ws?".to_owned());
+    let (output, workspace) = history_position(state);
     serde_json::json!({
         "event": "workspace-history",
         "tick": tick,
@@ -508,8 +400,24 @@ fn workspace_history_log(
     })
 }
 
-/// Bounded workspace log line: opaque output/workspace tokens plus
-/// op/index/edge/outcome only. No HWNDs, tokens, titles, or app data.
+/// Opaque history position for logs: the active device plus the core's
+/// current logical view on its wire id. No rings, no history peek.
+fn history_position(state: &TileLoop) -> (String, String) {
+    let output = if state.active_output.is_empty() {
+        "o?".to_owned()
+    } else {
+        state.active_output.clone()
+    };
+    let workspace = state
+        .output_tokens
+        .get(&state.active_output)
+        .and_then(|wire| state.world.engine().logical_view(wire))
+        .unwrap_or_else(|| "ws?".to_owned());
+    (output, workspace)
+}
+
+/// Bounded workspace log line: opaque output/workspace plus
+/// op/index/edge/outcome only.
 pub(super) fn workspace_log(
     state: &TileLoop,
     tick: u64,
@@ -518,16 +426,7 @@ pub(super) fn workspace_log(
     edge: &str,
     outcome: &str,
 ) -> serde_json::Value {
-    let output = if state.active_output.is_empty() {
-        "o?".to_owned()
-    } else {
-        state.workspaces.output_token(&state.active_output)
-    };
-    let workspace = state
-        .workspaces
-        .active_id(&state.active_output)
-        .map(|id| state.workspaces.workspace_token(&state.active_output, &id))
-        .unwrap_or_else(|| "ws?".to_owned());
+    let (output, workspace) = history_position(state);
     serde_json::json!({
         "event": "workspace",
         "tick": tick,

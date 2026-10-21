@@ -717,8 +717,7 @@ fn maximized_member_never_takes_geometry_writes() {
     // `writable_subset` production calls) never includes its retained-only
     // token: the overlaid tile keeps its allocation with no native write.
     use std::collections::{BTreeMap, BTreeSet, HashSet};
-    use tiler_windows::workspace::WindowKey;
-    use tiler_windows::workspace_owner::writable_subset;
+    use tiler_windows::native_guards::{WindowKey, writable_subset};
     let mut facts = eligible_facts();
     facts.maximized = true;
     assert_eq!(classify(&facts), Err(SkipReason::Maximized));
@@ -753,8 +752,7 @@ fn fullscreen_member_never_takes_geometry_writes() {
     // pinned). The app-owned toggle refusal (`fullscreen_toggle_decision`)
     // is untouched and covered separately.
     use std::collections::{BTreeMap, BTreeSet, HashSet};
-    use tiler_windows::workspace::WindowKey;
-    use tiler_windows::workspace_owner::writable_subset;
+    use tiler_windows::native_guards::{WindowKey, writable_subset};
     let mut facts = eligible_facts();
     facts.captionless_fullscreen = true;
     assert_eq!(classify(&facts), Err(SkipReason::Fullscreen));
@@ -775,119 +773,6 @@ fn fullscreen_member_never_takes_geometry_writes() {
     );
     assert!(writable_subset(&members, |_| true, &token_of, &fresh).is_empty());
 }
-#[test]
-fn fullscreen_send_carry_uses_stable_flags_and_reuses_mru_focus() {
-    // Item 9 integration seam: the stable fullscreen gate admits, the actual
-    // Engine stay send commits, and the plan focus resolves to the source
-    // MRU window (never the mover).
-    use tiler_core::engine::Engine;
-    use tiler_windows::workspace_owner::{
-        build_send_event, send_overlay_gate, stamp_send_target, workspace_domain,
-    };
-    assert_eq!(
-        send_overlay_gate(false, true, false, Some(true), true),
-        Ok(())
-    );
-    assert_eq!(
-        send_overlay_gate(false, false, false, Some(true), false),
-        Err("send-refused-fullscreen")
-    );
-    let bounds = rect(0, 0, 800, 600);
-    let mut engine = Engine::new();
-    let owner = OwnerId::parse("tiler-windows").expect("owner");
-    let generation = GenerationId::parse("aa").expect("generation");
-    engine.sync_binding(&owner, &generation);
-    let source = workspace_domain("mon-a", "ws-1", bounds, 8);
-    let target = workspace_domain("mon-a", "ws-2", bounds, 8);
-    for (tokens, focused) in [
-        (vec![("wA", bounds), ("wB", bounds)], Some("wB")),
-        (vec![("wC", bounds)], None),
-    ] {
-        let (domain, key) = if focused.is_some() { &source } else { &target };
-        let correlation = CorrelationId::parse("seed").expect("correlation");
-        let event = tiler_windows::tiling::build_reconcile_event_for(
-            &owner,
-            &generation,
-            &correlation,
-            0,
-            tokens.len() as u64,
-            domain,
-            key,
-            8,
-            &tokens
-                .iter()
-                .map(|(t, r)| {
-                    (
-                        WindowId((*t).to_owned()),
-                        *r,
-                        tiler_core::size_hints::WindowSizeHints::none(),
-                    )
-                })
-                .collect::<Vec<_>>(),
-            focused.map(|f| WindowId(f.to_owned())).as_ref(),
-        );
-        let _ = engine.handle(&event);
-    }
-    let revision = engine
-        .session(&source.1)
-        .map(|s| s.accepted_revision())
-        .unwrap_or(0);
-    let correlation = CorrelationId::parse("tick-1").expect("correlation");
-    let rows: Vec<tiler_windows::workspace_owner::OwnerRow> = ["wA", "wB"]
-        .iter()
-        .map(|t| tiler_windows::workspace_owner::OwnerRow {
-            token: (*t).to_owned(),
-            rect: bounds,
-            hints: tiler_core::size_hints::WindowSizeHints::none(),
-            floating: false,
-        })
-        .collect();
-    let mut event = build_send_event(
-        &owner,
-        &generation,
-        &correlation,
-        revision,
-        42,
-        source.clone(),
-        target.clone(),
-        &rows,
-        &[],
-        "wB",
-        8,
-        false,
-    )
-    .expect("event");
-    stamp_send_target(&mut event, &target.1);
-    let reply = engine.handle(&event);
-    let tiler_core::boundary::CoreReply::SendWorkspace(plan) = &reply else {
-        panic!("fullscreen-leg send commits, got {reply:?}");
-    };
-    assert!(
-        plan.geometry.iter().any(|g| g.window.0 == "wB"),
-        "mover admitted onto the target allocation"
-    );
-    let focus_domain = plan.focus_domain.clone().expect("stay focus domain");
-    assert_eq!(focus_domain, source.1, "stay focuses the source");
-    let focus_leaf = plan.focus_leaf.clone().expect("stay focus leaf");
-    let focused_window = engine
-        .session(&focus_domain)
-        .expect("focus session")
-        .snapshot()
-        .windows
-        .iter()
-        .find(|link| {
-            link.leaf == focus_leaf
-                && link.output == focus_domain.output
-                && link.workspace == focus_domain.workspace
-        })
-        .map(|link| link.window.0.clone());
-    assert_eq!(
-        focused_window.as_deref(),
-        Some("wA"),
-        "stay focus resolves to the source MRU, never the mover"
-    );
-}
-
 #[test]
 fn scope_filter_defaults_open_and_fences_exes() {
     let empty: Vec<String> = Vec::new();
@@ -2765,193 +2650,6 @@ fn underlay_saved_and_cli_colors_survive_new_default() {
     assert_eq!(rebased.underlay.style.alpha, 0x50);
 }
 
-#[test]
-fn born_floating_rows_converge_slotless_with_siblings_tiled() {
-    // Production seams: `domain_rows` carries the born floating flag, the
-    // floating reconcile event converges the hold as an Engine exception
-    // with no tile slot, and tiled siblings keep their topology. The
-    // writable subset never includes the retained-only floating token, so
-    // no geometry write ever targets the born frame.
-    use std::collections::{BTreeMap, BTreeSet, HashSet};
-    use tiler_core::boundary::CoreReply;
-    use tiler_core::directional::{OutputId, WorkspaceId};
-    use tiler_core::engine::Engine;
-    use tiler_core::session::{DomainKey, OutputDomain};
-    use tiler_windows::tiling::build_reconcile_event_for_floating;
-    use tiler_windows::workspace::WindowKey;
-    use tiler_windows::workspace_owner::{
-        MemberView, build_send_event, domain_rows, writable_subset,
-    };
-
-    let born = WindowKey {
-        hwnd: 41,
-        pid: 100,
-        creation: "creation-born".to_owned(),
-    };
-    let tiled = WindowKey {
-        hwnd: 42,
-        pid: 101,
-        creation: "creation-tiled".to_owned(),
-    };
-    let members: BTreeSet<WindowKey> = BTreeSet::from([born.clone(), tiled.clone()]);
-    let views = vec![
-        MemberView {
-            key: born.clone(),
-            token: "w-born".to_owned(),
-            rect: rect(0, 0, 1920, 1080),
-            hints: tiler_core::size_hints::WindowSizeHints::none(),
-            floating: true,
-        },
-        MemberView {
-            key: tiled.clone(),
-            token: "w-tiled".to_owned(),
-            rect: rect(8, 8, 500, 800),
-            hints: tiler_core::size_hints::WindowSizeHints::none(),
-            floating: false,
-        },
-    ];
-    let rows = domain_rows(&members, &views).expect("complete rows");
-    assert_eq!(rows.len(), 2);
-    assert!(
-        rows.iter()
-            .find(|r| r.token == "w-born")
-            .expect("born")
-            .floating
-    );
-    assert!(
-        !rows
-            .iter()
-            .find(|r| r.token == "w-tiled")
-            .expect("tiled")
-            .floating
-    );
-
-    let owner = OwnerId::parse("tiler-windows").expect("valid");
-    let generation = GenerationId::parse("abcdef0123456789").expect("valid");
-    let correlation = CorrelationId::parse("tick-1").expect("valid");
-    let key = DomainKey {
-        output: OutputId("mon-a".to_owned()),
-        workspace: WorkspaceId("ws-1".to_owned()),
-    };
-    let domain = OutputDomain {
-        id: OutputId("mon-a".to_owned()),
-        workspace: WorkspaceId("ws-1".to_owned()),
-        bounds: rect(0, 0, 1904, 1032),
-        gap: INNER_GAP,
-        adjacent: std::collections::BTreeMap::new(),
-    };
-    let windows: Vec<(
-        WindowId,
-        Rect,
-        tiler_core::size_hints::WindowSizeHints,
-        bool,
-    )> = rows
-        .iter()
-        .map(|r| (WindowId(r.token.clone()), r.rect, r.hints, r.floating))
-        .collect();
-    let mut engine = Engine::new();
-    engine.sync_binding(&owner, &generation);
-    let event = build_reconcile_event_for_floating(
-        &owner,
-        &generation,
-        &correlation,
-        0,
-        99,
-        &domain,
-        &key,
-        OUTER_GAP,
-        &windows,
-        Some(&WindowId("w-tiled".to_owned())),
-    );
-    assert!(
-        event
-            .windows
-            .iter()
-            .find(|w| w.window.0 == "w-born")
-            .expect("born")
-            .floating
-    );
-    match engine.handle(&event) {
-        CoreReply::Tiled(plan) => {
-            assert!(
-                plan.geometry.iter().all(|g| g.window.0 != "w-born"),
-                "floating hold takes no tile slot"
-            );
-            assert!(
-                plan.geometry.iter().any(|g| g.window.0 == "w-tiled"),
-                "tiled sibling keeps its topology"
-            );
-        }
-        CoreReply::Projection(plan) => {
-            assert!(
-                plan.geometry.iter().all(|g| g.window.0 != "w-born"),
-                "floating hold takes no tile slot"
-            );
-            assert!(
-                plan.geometry.iter().any(|g| g.window.0 == "w-tiled"),
-                "tiled sibling keeps its topology"
-            );
-        }
-        other => panic!("floating reconcile converges, got {other:?}"),
-    }
-
-    // Slotless occupancy: the born token is a workspace member but absent
-    // from the fresh eligible observation, so it never takes writes, while
-    // the eligible sibling stays writable.
-    let token_of: BTreeMap<WindowKey, String> = BTreeMap::from([
-        (born.clone(), "w-born".to_owned()),
-        (tiled.clone(), "w-tiled".to_owned()),
-    ]);
-    let fresh: HashSet<String> = HashSet::from(["w-tiled".to_owned()]);
-    assert_eq!(
-        writable_subset(&members, |_| false, &token_of, &fresh),
-        HashSet::from(["w-tiled".to_owned()])
-    );
-
-    // Focus stays navigable onto the held overlay: the retained-only born
-    // token rides the eligible focus set exactly like a retained maximize.
-    let mut spaces = tiler_windows::workspace::ManagedWorkspaces::new();
-    spaces.ensure_output("mon-a");
-    let active = spaces.active_id("mon-a").expect("active");
-    assert!(spaces.assign(born.clone(), "mon-a", &active, false));
-    assert!(spaces.assign(tiled.clone(), "mon-a", &active, false));
-    let eligible = spaces.eligible_focus_set(
-        &members,
-        &token_of,
-        &HashSet::from(["w-tiled".to_owned(), "w-born".to_owned()]),
-    );
-    assert!(eligible.contains(&born));
-    assert!(eligible.contains(&tiled));
-
-    // Send carries the floating flag into both Engine domains.
-    let source =
-        tiler_windows::workspace_owner::workspace_domain("mon-a", "ws-1", rect(0, 0, 800, 600), 8);
-    let target =
-        tiler_windows::workspace_owner::workspace_domain("mon-a", "ws-2", bounds_rect(), 8);
-    let send = build_send_event(
-        &owner,
-        &generation,
-        &correlation,
-        0,
-        7,
-        source,
-        target,
-        &rows,
-        &[],
-        "w-tiled",
-        8,
-        true,
-    )
-    .expect("send");
-    assert!(
-        send.windows
-            .iter()
-            .find(|w| w.window.0 == "w-born")
-            .expect("born")
-            .floating
-    );
-}
-
 fn bounds_rect() -> Rect {
     rect(0, 0, 800, 600)
 }
@@ -3114,240 +2812,6 @@ fn restore_wake_survives_pending_dispatch_until_reconcile() {
     assert_eq!(
         restore_wake_step(false, false, false, true, true),
         (false, false)
-    );
-}
-
-#[test]
-fn r_max_03_floating_first_seen_max_defers_clear_then_tiles_on_retile() {
-    // R-MAX-03 parity with KDE `plan-adapter.ts` floating admission: a
-    // first-seen maximized window on a floating workspace keeps workspace
-    // membership (hide/reveal) with no retained tile slot and no native
-    // clear; the first tiled admission reserves the overlay slot with no
-    // one-shot clear under either `core.born_maximized` value (only born
-    // R-MAX-06 reads that setting), the native restore lands in that slot,
-    // and the restored observation receives an actual fresh Engine tile.
-    // Previously slotted overlays never re-clear; intentional floats ride on
-    // untouched as Engine exceptions with no tile geometry.
-    use std::collections::{BTreeMap, BTreeSet, HashSet};
-    use tiler_core::boundary::CoreReply;
-    use tiler_core::directional::WindowId;
-    use tiler_core::engine::Engine;
-    use tiler_core::ids::{CorrelationId, GenerationId, OwnerId};
-    use tiler_core::window_policy::{
-        should_admit_slotless_maximized, should_clear_maximize_at_admission,
-        should_clear_maximize_at_admission_with_mode,
-    };
-    use tiler_windows::tiling::{
-        INNER_GAP, OUTER_GAP, build_reconcile_event_for_floating, fingerprint,
-    };
-    use tiler_windows::workspace::{ManagedWorkspaces, WindowKey};
-    use tiler_windows::workspace_owner::{
-        MemberView, domain_rows, planned_writes, workspace_domain, writable_subset,
-    };
-
-    let owner = OwnerId::parse("tiler-windows").expect("valid");
-    let generation = GenerationId::parse("abcdef0123456789").expect("valid");
-    let bounds = rect(0, 0, 1920, 1040);
-    let native_max = rect(-8, -8, 1936, 1056);
-    let restored = rect(120, 120, 800, 600);
-
-    // Floating workspace with the first-seen maximized member admitted
-    // slotless: workspace membership without a retained tile slot.
-    let mut spaces = ManagedWorkspaces::new();
-    spaces.ensure_output("mon-1");
-    let active = spaces.active_id("mon-1").expect("active");
-    assert!(spaces.set_tiled("mon-1", &active, false));
-    assert!(!spaces.is_tiled("mon-1", &active));
-    let key = WindowKey {
-        hwnd: 101,
-        pid: 7,
-        creation: "creation-max".to_owned(),
-    };
-    assert!(spaces.assign(key.clone(), "mon-1", &active, false));
-    assert!(
-        spaces.member_loc(&key).is_some(),
-        "floating maximum keeps hide/reveal membership"
-    );
-
-    // No native clear while the domain reads floating (KDE 4905-4909 gate).
-    // The slotless-seed guard itself is covered through the actual production
-    // row assembly in `tiling_sys::rmax03_adapter_tests`, not repeated here.
-    assert!(should_admit_slotless_maximized(true, false, false, false));
-    assert!(!should_admit_slotless_maximized(true, false, true, false));
-    assert!(!should_admit_slotless_maximized(true, false, false, true));
-    assert!(!should_admit_slotless_maximized(false, false, false, false));
-    assert!(!should_admit_slotless_maximized(true, true, false, false));
-    assert!(
-        !should_clear_maximize_at_admission(false, true, false, false, false),
-        "floating first-seen maximum must keep its native frame"
-    );
-
-    // No tile while floating: production never reconciles a floating domain,
-    // so no Engine session exists and nothing is writable.
-    let mut engine = Engine::new();
-    engine.sync_binding(&owner, &generation);
-    let (domain, domain_key) = workspace_domain("mon-1", &active, bounds, INNER_GAP);
-    assert!(engine.session(&domain_key).is_none());
-    let members: BTreeSet<WindowKey> = BTreeSet::from([key.clone()]);
-    let token_of: BTreeMap<WindowKey, String> = BTreeMap::from([(key.clone(), "w8".to_owned())]);
-    assert!(
-        writable_subset(&members, |_| false, &token_of, &HashSet::new()).is_empty(),
-        "slotless floating maximum takes no tiled write"
-    );
-
-    // Toggle tiled: the R-MAX-03 retile latch (bound at floating-first
-    // admission, both `core.born_maximized` values) reserves the overlay
-    // slot with no one-shot clear; only the unlatched born-tile lane still
-    // restores once, with no automatic retry.
-    assert!(spaces.set_tiled("mon-1", &active, true));
-    assert!(
-        !should_clear_maximize_at_admission_with_mode(false, true, false, false, true, true),
-        "retile overlay never clears under either born value"
-    );
-    assert!(
-        should_clear_maximize_at_admission_with_mode(false, true, false, false, true, false),
-        "unlatched born-tile lane still restores once"
-    );
-    assert!(
-        !should_clear_maximize_at_admission(false, true, false, true, true),
-        "one-shot clear never retries"
-    );
-
-    // Refetched restored observation converges through the real Engine into
-    // an actual fresh tile with an eligible write (not inventory presence).
-    let views = vec![MemberView {
-        key: key.clone(),
-        token: "w8".to_owned(),
-        rect: restored,
-        hints: tiler_core::size_hints::WindowSizeHints::none(),
-        floating: false,
-    }];
-    let rows = domain_rows(&members, &views).expect("complete rows");
-    assert_eq!(rows.len(), 1);
-    let windows = vec![(
-        WindowId("w8".to_owned()),
-        restored,
-        tiler_core::size_hints::WindowSizeHints::none(),
-        false,
-    )];
-    let fp = fingerprint(&[("w8".to_owned(), restored)]);
-    let event = build_reconcile_event_for_floating(
-        &owner,
-        &generation,
-        &CorrelationId::parse("rmax-1").expect("valid"),
-        0,
-        fp,
-        &domain,
-        &domain_key,
-        OUTER_GAP,
-        &windows,
-        None,
-    );
-    let reply = engine.handle(&event);
-    let writes = planned_writes(&reply).expect("fresh tile plan carries writes");
-    let tile = writes
-        .iter()
-        .find(|w| w.window.0 == "w8")
-        .expect("actual fresh tile contains the restored token");
-    assert_ne!(tile.rect, native_max, "tile is layout, not the max frame");
-    assert_ne!(
-        tile.rect, restored,
-        "tile is planned, not the observed frame"
-    );
-    let base = match &reply {
-        CoreReply::Tiled(plan) => plan.base_revision,
-        CoreReply::Projection(plan) => plan.base_revision,
-        other => panic!("unexpected reply: {other:?}"),
-    };
-    let fresh: HashSet<String> = HashSet::from(["w8".to_owned()]);
-    assert_eq!(
-        writable_subset(&members, |_| false, &token_of, &fresh),
-        HashSet::from(["w8".to_owned()]),
-        "restored member is eligible for the tiled write"
-    );
-
-    // Previously slotted native overlays never re-clear across the mode flip.
-    assert!(!should_clear_maximize_at_admission(
-        false, true, true, false, true
-    ));
-    assert!(!should_clear_maximize_at_admission(
-        false, true, true, true, true
-    ));
-    assert!(!should_clear_maximize_at_admission(
-        true, true, false, false, true
-    ));
-
-    // Intentional float preserved alongside: it rides the same Engine as an
-    // exception with no tile geometry while the restored member keeps its.
-    let float_key = WindowKey {
-        hwnd: 102,
-        pid: 8,
-        creation: "creation-float".to_owned(),
-    };
-    let both: BTreeSet<WindowKey> = BTreeSet::from([key.clone(), float_key.clone()]);
-    let float_views = vec![
-        MemberView {
-            key: key.clone(),
-            token: "w8".to_owned(),
-            rect: restored,
-            hints: tiler_core::size_hints::WindowSizeHints::none(),
-            floating: false,
-        },
-        MemberView {
-            key: float_key.clone(),
-            token: "w9".to_owned(),
-            rect: rect(400, 400, 640, 480),
-            hints: tiler_core::size_hints::WindowSizeHints::none(),
-            floating: true,
-        },
-    ];
-    let float_rows = domain_rows(&both, &float_views).expect("complete float rows");
-    assert_eq!(float_rows.len(), 2);
-    let float_windows = vec![
-        (
-            WindowId("w8".to_owned()),
-            restored,
-            tiler_core::size_hints::WindowSizeHints::none(),
-            false,
-        ),
-        (
-            WindowId("w9".to_owned()),
-            rect(400, 400, 640, 480),
-            tiler_core::size_hints::WindowSizeHints::none(),
-            true,
-        ),
-    ];
-    let float_fp = fingerprint(&[
-        ("w8".to_owned(), restored),
-        ("w9".to_owned(), rect(400, 400, 640, 480)),
-    ]);
-    let float_event = build_reconcile_event_for_floating(
-        &owner,
-        &generation,
-        &CorrelationId::parse("rmax-2").expect("valid"),
-        base,
-        float_fp,
-        &domain,
-        &domain_key,
-        OUTER_GAP,
-        &float_windows,
-        None,
-    );
-    let float_reply = engine.handle(&float_event);
-    let float_writes = planned_writes(&float_reply).expect("shared plan carries writes");
-    assert!(
-        float_writes.iter().any(|w| w.window.0 == "w8"),
-        "tiled member keeps its plan entry"
-    );
-    assert!(
-        float_writes.iter().all(|w| w.window.0 != "w9"),
-        "intentional float takes no tile geometry"
-    );
-    assert!(
-        engine
-            .session(&domain_key)
-            .is_some_and(|s| s.is_exception(&WindowId("w9".to_owned()))),
-        "intentional float exception survives the shared plan"
     );
 }
 
@@ -3785,10 +3249,9 @@ impl ResizeRig {
     fn seed(names: &[&str], focused: &str) -> Self {
         // Explicit side-by-side seed matching the established
         // pointer-resize seed shape. Domain bounds are pre-inset by the
-        // outer gap exactly like production `workspace_domain_for` builds
-        // them (`tiling_domain_bounds` gives (8,8,1584,884) for a
-        // 1600x900 work area), so the observation already equals the
-        // projection and the seed converges without reshaping.
+        // outer gap (bounds `(8,8,1584,884)` for a 1600x900 work area),
+        // so the observation already equals the projection and the seed
+        // converges without reshaping.
         debug_assert_eq!(names.len(), 2);
         Self::seed_placed(
             rect(8, 8, 1584, 884),
@@ -3805,7 +3268,22 @@ impl ResizeRig {
         let owner = OwnerId::parse("tiler-windows").expect("owner");
         let generation = GenerationId::parse("aa").expect("generation");
         engine.sync_binding(&owner, &generation);
-        let domain = tiler_windows::workspace_owner::workspace_domain("mon-a", "ws-1", bounds, 8);
+        let domain = {
+            use tiler_core::directional::{OutputId, WorkspaceId};
+            use tiler_core::session::{DomainKey, OutputDomain};
+            let key = DomainKey {
+                output: OutputId("mon-a".to_owned()),
+                workspace: WorkspaceId("ws-1".to_owned()),
+            };
+            let domain = OutputDomain {
+                id: OutputId("mon-a".to_owned()),
+                workspace: WorkspaceId("ws-1".to_owned()),
+                bounds,
+                gap: 8,
+                adjacent: std::collections::BTreeMap::new(),
+            };
+            (domain, key)
+        };
         let rects: Vec<(String, Rect)> = placed
             .iter()
             .map(|(name, r)| ((*name).to_owned(), *r))

@@ -234,7 +234,7 @@ pub(super) fn live_style_for_retire(hwnd_u64: u64) -> Option<u32> {
 pub(super) fn effective_stale_meta_via_effects(
     effects: &mut dyn UnfloatClearEffects,
     state: &mut TileLoop,
-    member_key: &crate::workspace::WindowKey,
+    member_key: &crate::native_guards::WindowKey,
     expected: &ObservedWindow,
     me: &ProcessIdentity,
     meta: Option<FullscreenMeta>,
@@ -477,7 +477,7 @@ pub(super) fn holdable_key(
     state: &TileLoop,
     me: &ProcessIdentity,
     hwnd_u64: u64,
-) -> Option<crate::workspace::WindowKey> {
+) -> Option<crate::native_guards::WindowKey> {
     if hwnd_u64 == 0 {
         return None;
     }
@@ -535,7 +535,7 @@ pub(super) fn holdable_key(
             return None;
         }
     }
-    Some(crate::workspace::WindowKey {
+    Some(crate::native_guards::WindowKey {
         hwnd: hwnd_u64,
         pid,
         creation: live.process_creation,
@@ -557,9 +557,9 @@ pub(super) fn track_fullscreen_holds(
     observed: &[ObservedWindow],
     retained: &[RetainedRow],
 ) {
-    let mut live_nonfullscreen: BTreeSet<crate::workspace::WindowKey> = BTreeSet::new();
+    let mut live_nonfullscreen: BTreeSet<crate::native_guards::WindowKey> = BTreeSet::new();
     for window in observed {
-        live_nonfullscreen.insert(crate::workspace::WindowKey {
+        live_nonfullscreen.insert(crate::native_guards::WindowKey {
             hwnd: window.hwnd,
             pid: window.identity.pid,
             creation: window.identity.process_creation.clone(),
@@ -579,7 +579,7 @@ pub(super) fn track_fullscreen_holds(
         .seen_nonfullscreen
         .extend(live_nonfullscreen.iter().cloned());
     let log_path = state.log_path.clone();
-    let released: Vec<crate::workspace::WindowKey> = state
+    let released: Vec<crate::native_guards::WindowKey> = state
         .born_fullscreen
         .iter()
         .filter(|key| live_nonfullscreen.contains(key) || !state.last_hwnds.contains(&key.hwnd))
@@ -653,32 +653,24 @@ fn consume_classified_first_exits(state: &mut TileLoop) {
             done.push(key.clone());
             continue;
         }
-        let Some(loc) = state.workspaces.member_loc(key) else {
+        let Some(loc) = state.member_home(key) else {
             continue;
         };
-        let domain_key = tiler_core::session::DomainKey {
-            output: tiler_core::directional::OutputId(loc.output.clone()),
-            workspace: tiler_core::directional::WorkspaceId(loc.workspace.clone()),
-        };
-        let Some(session) = state.engine.session(&domain_key) else {
-            continue;
-        };
-        let id = WindowId(token.clone());
-        if session.is_automatic_fixed_float(&id) {
+        // World-owned classification: the last applied reply row decides.
+        // An automatic fixed mark consumes the deferral (fixed exit floats);
+        // a homed tiled row consumes it too (non-fixed exit tiles). No row
+        // yet keeps deferring (uncommitted or foreign hold).
+        let done_here = state.world.last_reply().is_some_and(|reply| {
+            reply.windows.iter().any(|row| {
+                row.lifetime.0 == token
+                    && state.device_of(&row.output.0).as_deref() == Some(loc.output.as_str())
+                    && row.workspace == loc.workspace
+            })
+        });
+        if done_here {
             done.push(key.clone());
             continue;
         }
-        if session
-            .snapshot()
-            .windows
-            .iter()
-            .any(|link| link.window == id)
-            && !session.is_exception(&id)
-        {
-            done.push(key.clone());
-        }
-        // An exception that is neither automatic nor intentional is
-        // uncommitted (or a foreign hold): keep deferring.
     }
     for key in done {
         state.born_first_exit.remove(&key);

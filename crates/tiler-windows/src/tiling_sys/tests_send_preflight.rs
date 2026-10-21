@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 use super::SendPreflight;
-use crate::workspace_owner::SendFenceSnapshot;
+use crate::native_guards::SendFenceSnapshot;
 
 fn preflight(maximized: bool, fullscreen: bool, fallback: bool) -> SendPreflight {
     SendPreflight {

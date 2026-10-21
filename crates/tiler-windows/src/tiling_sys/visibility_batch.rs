@@ -173,7 +173,7 @@ impl<C: BatchWaitClock> BatchWaitClock for PhaseDeps<'_, C> {
 
 /// One hide candidate with its caller-resolved liveness facts.
 pub(super) struct HideAttempt {
-    pub(super) key: crate::workspace::WindowKey,
+    pub(super) key: crate::native_guards::WindowKey,
     pub(super) expected: ProcessIdentity,
     pub(super) iconic: bool,
 }
@@ -181,7 +181,7 @@ pub(super) struct HideAttempt {
 /// Settled per-window hide outcome in the `workspace_hide_one` vocabulary,
 /// so callers keep their exact existing arms.
 pub(super) struct HideResult {
-    pub(super) key: crate::workspace::WindowKey,
+    pub(super) key: crate::native_guards::WindowKey,
     pub(super) outcome: &'static str,
     pub(super) detail: Option<&'static str>,
 }
@@ -191,7 +191,7 @@ pub(super) struct HideResult {
 /// omission summary, whether the phase failed, and the actual breakdown.
 pub(super) struct HidePhase {
     pub(super) results: Vec<HideResult>,
-    pub(super) newly_hidden: Vec<crate::workspace::WindowKey>,
+    pub(super) newly_hidden: Vec<crate::native_guards::WindowKey>,
     pub(super) attempted: usize,
     pub(super) logged: usize,
     pub(super) failed: bool,
@@ -206,7 +206,7 @@ pub(super) struct HidePhase {
 pub(super) fn admit_hide_item(
     state: &mut TileLoop,
     me: &ProcessIdentity,
-    key: &crate::workspace::WindowKey,
+    key: &crate::native_guards::WindowKey,
     expected: &ProcessIdentity,
 ) -> std::result::Result<crate::model::WindowIdentity, (&'static str, Option<&'static str>)> {
     use crate::product_hide::sys::ManagedAdmitError;
@@ -226,7 +226,7 @@ pub(super) fn admit_hide_item(
     }
     let live_tag = live_member_tag(key.hwnd);
     let stored_tag = state.member_tags.get(key).cloned().unwrap_or_default();
-    if !crate::workspace_owner::visible_lifetime_ok(&stored_tag, live_tag.as_deref()) {
+    if !crate::native_guards::visible_lifetime_ok(&stored_tag, live_tag.as_deref()) {
         drop_member_state(state, key);
         return Err(("identity-changed", None));
     }
@@ -302,7 +302,7 @@ pub(super) fn hide_phase<C: BatchWaitClock>(
 ) -> HidePhase {
     use crate::product_hide::sys;
     let mut results: Vec<HideResult> = Vec::with_capacity(attempts.len());
-    let mut newly_hidden: Vec<crate::workspace::WindowKey> = Vec::new();
+    let mut newly_hidden: Vec<crate::native_guards::WindowKey> = Vec::new();
     let mut attempted: usize = 0;
     let mut logged: usize = 0;
     let mut failed = false;
@@ -310,7 +310,7 @@ pub(super) fn hide_phase<C: BatchWaitClock>(
     // Admitted plus committed, in input order: every entry owns its target
     // through a live hold guard plus its durable ledger preimage.
     struct Committed {
-        key: crate::workspace::WindowKey,
+        key: crate::native_guards::WindowKey,
         claim: crate::model::WindowIdentity,
         held: crate::native::HeldProcess,
         pid: u32,
@@ -442,7 +442,8 @@ pub(super) fn hide_phase<C: BatchWaitClock>(
                 iconic: attempt.iconic,
             },
         );
-        state.workspaces.set_hidden(&key, true);
+        // The hide claim above IS the hidden flag (adapter-owned); no
+        // session flag exists to set.
         if !had_claim {
             newly_hidden.push(key.clone());
         }
@@ -535,7 +536,7 @@ pub(super) fn hide_phase<C: BatchWaitClock>(
 /// Retire one revealed claim whose window is verifiably gone or recycled:
 /// drop the claim plus the full session state, exactly like the select
 /// reveal path. No writes, no focus.
-fn retire_revealed(state: &mut TileLoop, key: &crate::workspace::WindowKey) {
+fn retire_revealed(state: &mut TileLoop, key: &crate::native_guards::WindowKey) {
     state.hidden_claims.remove(key);
     if let Some(token) = state.member_tokens.remove(key) {
         state.member_rects.remove(&token);
@@ -553,14 +554,14 @@ fn retire_revealed(state: &mut TileLoop, key: &crate::workspace::WindowKey) {
     state.member_identity.remove(key);
     state.member_tags.remove(key);
     state.hint_last_good.remove(key);
-    state.workspaces.remove_window(key);
+    state.forget_member(key);
 }
 
-/// Complete one verified reveal: drop the claim and unflag the member. The
-/// caller focuses strictly afterwards, never here.
-fn complete_revealed(state: &mut TileLoop, key: &crate::workspace::WindowKey) {
+/// Complete one verified reveal: drop the claim. The hidden flag IS the
+/// claim presence, so nothing else unflags. The caller focuses strictly
+/// afterwards, never here.
+fn complete_revealed(state: &mut TileLoop, key: &crate::native_guards::WindowKey) {
     state.hidden_claims.remove(key);
-    state.workspaces.set_hidden(key, false);
 }
 
 /// Settled joint reveal phase: every prepared reveal posts, then all posts
@@ -580,7 +581,7 @@ pub(super) fn reveal_phase<C: BatchWaitClock>(
     me: &ProcessIdentity,
     store: &LedgerStore,
     ctx: &ActionCtx,
-    keys: &[crate::workspace::WindowKey],
+    keys: &[crate::native_guards::WindowKey],
     phase: Option<&'static str>,
     retire_full_drop: bool,
     clock: &mut C,
@@ -591,7 +592,7 @@ pub(super) fn reveal_phase<C: BatchWaitClock>(
     let mut logged: usize = 0;
     let mut breakdown = PhaseBreakdown::default();
     struct Posting {
-        key: crate::workspace::WindowKey,
+        key: crate::native_guards::WindowKey,
         claim: crate::model::WindowIdentity,
         held: crate::native::HeldProcess,
         pid: u32,
@@ -600,7 +601,7 @@ pub(super) fn reveal_phase<C: BatchWaitClock>(
     let mut show_cmds: HashMap<u64, i32> = HashMap::new();
     for key in keys {
         let Some(record) = state.hidden_claims.get(key).cloned() else {
-            state.workspaces.set_hidden(key, false);
+            // No claim means not hidden: nothing to unflag.
             continue;
         };
         attempted += 1;

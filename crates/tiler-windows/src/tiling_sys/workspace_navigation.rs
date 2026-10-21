@@ -1,11 +1,29 @@
 #![forbid(unsafe_code)]
-use super::*;
+//! World-routed workspace digit intents.
+//!
+//! The core owns selection and send planning outright (rings, order,
+//! history, trailing, refill): digit selects route `SelectNumbered` /
+//! `SelectTrailing` and digit sends route `SendNumbered` through the single
+//! world owner. No local resolvers, no preactivation, no history peek here.
 
-/// Drain one bounded batch of workspace digit intents. Select works on empty
-/// workspaces and unmanaged foreground; send refuses unmanaged focus. The
-/// `--no-keyboard-snap-takeover` off switch disables all product
-/// interception (the hook is never installed; this is the defensive second
-/// fence). Fullscreen and elevated foreground gate both ops.
+use super::*;
+use tiler_core::world_report::WorldCommand;
+
+/// Native device key for one digit intent: the cached output when live,
+/// else the first live area. Pure native topology; never rings or views.
+fn digit_device(state: &TileLoop, areas: &[MonitorArea]) -> Option<String> {
+    if !state.active_output.is_empty()
+        && areas.iter().any(|a| a.device == state.active_output)
+    {
+        return Some(state.active_output.clone());
+    }
+    areas.first().map(|a| a.device.clone())
+}
+
+/// Drain one bounded batch of workspace digit intents through the world
+/// owner. Select works on empty workspaces and unmanaged foreground; send
+/// refuses unmanaged focus. The takeover-off switch disables all
+/// interception. Fullscreen and elevated foreground gate both ops.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn workspace_tick(
     state: &mut TileLoop,
@@ -55,11 +73,6 @@ pub(super) fn workspace_tick(
             }
             continue;
         }
-        // Dispatch beginning: the action clock starts here, before the
-        // initial observation, so queue-to-effect latency includes the
-        // observation itself. `queued_at` stays the cheap callback stamp.
-        // Verified managed overlays bypass suspension like a managed maximize.
-        let dispatch_start = Instant::now();
         if suspend_read(state, me, fulls).veto.block {
             log_json_at(
                 &log_path,
@@ -88,7 +101,7 @@ pub(super) fn workspace_tick(
             );
             continue;
         }
-        let Some(output) = chord_output(state, areas) else {
+        let Some(device) = digit_device(state, areas) else {
             log_json_at(
                 &log_path,
                 serde_json::json!({
@@ -102,216 +115,69 @@ pub(super) fn workspace_tick(
             );
             continue;
         };
-        state.workspaces.ensure_output(&output);
-        state.tick += 1;
-        let tick = state.tick;
-        let mut skipped: Vec<(String, String)> = Vec::new();
-        let mut retained: Vec<RetainedRow> = Vec::new();
-        let Some(mut observed) = state.observe(me, fulls, &mut skipped, &mut retained) else {
+        let Some(wire) = state.output_tokens.get(&device).cloned() else {
             log_json_at(
                 &log_path,
                 serde_json::json!({
                     "event": "workspace",
-                    "tick": tick,
                     "op": intent.op.as_str(),
                     "index": intent.index,
                     "edge": intent.edge.as_str(),
                     "disposition": "consumed",
-                    "outcome": "observation-failed",
+                    "outcome": "unknown-output",
                 }),
             );
             continue;
         };
-        publish_managed(state, me, &observed, &retained);
-        ensure_workspace_assignments(state, me, &mut observed, &retained, areas);
-        // First-seen maximized windows restore once here: lifetime tags are
-        // stamped, and the cleared window converges as eligible next tick.
-        clear_maximize_at_admission(state, me, &retained);
-        workspace_close_cleanup(state);
-        // Stable per-action context: one opaque correlation for the whole
-        // select/send/follow lifecycle even when inner geometry ticks
-        // increment. `queued_at` is the cheap callback stamp (no
-        // logging/syscalls in the callback); `start` is the dispatch
-        // beginning on the loop thread, captured before observation.
         let op = intent.op;
         let index = intent.index;
         let edge = intent.edge;
-        let ctx = ActionCtx {
-            correlation: format!("act-{tick}"),
-            tick,
-            queued_at: intent.tick,
-            start: dispatch_start,
-        };
+        let tick = state.tick;
         match op {
             WorkspaceOp::Select => {
-                // Resolve without preactivating: `select`/`select_trailing`
-                // mutate ACTIVE, which makes `workspace_do_select` see
-                // `current == target` and return `already-active` with no
-                // native effects. Scoped resolvers resolve (minting shared
-                // trailing when needed) without touching ACTIVE; only the
-                // transition activates after hide/reveal.
-                let target: Option<String> = if index == 0 {
-                    let sticky: BTreeSet<crate::workspace::WindowKey> =
-                        state.sticky.keys().cloned().collect();
-                    let (owner, spaces) = (&mut state.scope_owner, &mut state.workspaces);
-                    match owner.resolve_trailing_select(spaces, &output, &sticky) {
-                        crate::workspace_scope_owner::TrailingResolve::Reuse(id) => Some(id),
-                        crate::workspace_scope_owner::TrailingResolve::Unknown => None,
-                    }
+                let output = tiler_core::directional::OutputId(wire);
+                let command = if index == 0 {
+                    WorldCommand::SelectTrailing { output }
                 } else {
-                    state
-                        .scope_owner
-                        .resolve_numbered(&state.workspaces, &output, index)
+                    WorldCommand::SelectNumbered { output, index }
                 };
-                match target {
-                    Some(id) => {
-                        // REQ-WS-09 departure memory: the dispatch-time
-                        // foreground resolves directly against verified
-                        // source membership, so the source remembers it
-                        // before hiding.
-                        let foreground_hwnd = crate::ffi::foreground_window();
-                        if let Some(source_id) = state.workspaces.active_id(&output)
-                            && let Some(token) = remember_select_departure(
-                                state,
-                                &output,
-                                &source_id,
-                                foreground_hwnd,
-                                &observed,
-                                &retained,
-                            )
-                        {
-                            log_json_at(
-                                &state.log_path.clone(),
-                                serde_json::json!({"event":"select-departure","correlation":ctx.correlation,"window":token}),
-                            );
-                        }
-                        let effect = workspace_do_select(
-                            state,
-                            me,
-                            store,
-                            dir,
-                            fulls,
-                            areas,
-                            &mut observed,
-                            &output,
-                            &id,
-                            &ctx,
-                            None,
-                            false,
-                            false,
-                        );
-                        log_json_at(
-                            &log_path,
-                            workspace_log(
-                                state,
-                                tick,
-                                op.as_str(),
-                                index,
-                                edge.as_str(),
-                                effect.outcome,
-                            ),
-                        );
-                        log_workspace_action(
-                            state,
-                            &log_path,
-                            &ActionLine {
-                                ctx: &ctx,
-                                op: op.as_str(),
-                                index,
-                                edge: edge.as_str(),
-                                outcome: effect.outcome,
-                                focus: effect.focus,
-                                timings: &ActionTimings {
-                                    transition_ms: effect.transition_ms,
-                                    observation_ms: effect.observation_ms,
-                                    source_plan_ms: 0,
-                                    target_plan_ms: effect.plan_ms,
-                                    source_geometry_ms: 0,
-                                    target_geometry_ms: effect.geometry_ms,
-                                    hide_ms: effect.hide_ms,
-                                    reveal_ms: effect.reveal_ms,
-                                    focus_ms: effect.focus_ms,
-                                },
-                                source_workspace: &effect.source_workspace,
-                                target_workspace: &effect.target_workspace,
-                                source: None,
-                                target: effect.geometry.as_ref(),
-                            },
-                        );
-                    }
-                    None => {
-                        let outcome = if index == 0 {
-                            "unknown-output"
-                        } else {
-                            "unknown-target"
-                        };
-                        log_json_at(
-                            &log_path,
-                            workspace_log(state, tick, op.as_str(), index, edge.as_str(), outcome),
-                        );
-                    }
-                }
+                super::world_tick::observe_and_command(
+                    state, me, store, dir, fulls, areas, command,
+                );
+                let outcome: &'static str = if state.world.last_reply().is_some() {
+                    state.tick += 1;
+                    "ok"
+                } else {
+                    "unverified"
+                };
+                log_json_at(
+                    &log_path,
+                    workspace_log(state, tick, op.as_str(), index, edge.as_str(), outcome),
+                );
             }
             WorkspaceOp::Send => {
                 let foreground_hwnd = crate::ffi::foreground_window();
                 let origin = intent.origin.clone();
                 match origin.filter(|o| o.hwnd == foreground_hwnd) {
                     Some(o) if !o.token.is_empty() => {
-                        let effect = workspace_do_send(
-                            state,
-                            me,
-                            store,
-                            dir,
-                            fulls,
-                            areas,
-                            &mut observed,
-                            &retained,
-                            &output,
-                            SendTarget::Numbered(index),
-                            intent.follow,
-                            o.hwnd,
-                            &o.token,
-                            o.pid,
-                            &o.creation,
-                            &ctx,
+                        let command = WorldCommand::SendNumbered {
+                            window: tiler_core::directional::WindowId(o.token.clone()),
+                            output: tiler_core::directional::OutputId(wire),
+                            index,
+                            follow: intent.follow,
+                        };
+                        super::world_tick::observe_and_command(
+                            state, me, store, dir, fulls, areas, command,
                         );
+                        let outcome: &'static str = if state.world.last_reply().is_some() {
+                            state.tick += 1;
+                            "ok"
+                        } else {
+                            "unverified"
+                        };
                         log_json_at(
                             &log_path,
-                            workspace_log(
-                                state,
-                                tick,
-                                op.as_str(),
-                                index,
-                                edge.as_str(),
-                                effect.outcome,
-                            ),
-                        );
-                        log_workspace_action(
-                            state,
-                            &log_path,
-                            &ActionLine {
-                                ctx: &ctx,
-                                op: op.as_str(),
-                                index,
-                                edge: edge.as_str(),
-                                outcome: effect.outcome,
-                                focus: effect.focus,
-                                timings: &ActionTimings {
-                                    transition_ms: effect.transition_ms,
-                                    observation_ms: effect.observation_ms,
-                                    source_plan_ms: effect.source_plan_ms,
-                                    target_plan_ms: effect.target_plan_ms,
-                                    source_geometry_ms: effect.source_geometry_ms,
-                                    target_geometry_ms: effect.target_geometry_ms,
-                                    hide_ms: effect.hide_ms,
-                                    reveal_ms: effect.reveal_ms,
-                                    focus_ms: effect.focus_ms,
-                                },
-                                source_workspace: &effect.source_workspace,
-                                target_workspace: &effect.target_workspace,
-                                source: effect.source.as_ref(),
-                                target: effect.target.as_ref(),
-                            },
+                            workspace_log(state, tick, op.as_str(), index, edge.as_str(), outcome),
                         );
                     }
                     _ => {

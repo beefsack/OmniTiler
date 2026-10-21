@@ -4,6 +4,8 @@ use super::*;
 pub(super) fn gesture_tick(
     state: &mut TileLoop,
     me: &ProcessIdentity,
+    store: &LedgerStore,
+    dir: &Path,
     fulls: &[Rect],
     areas: &[MonitorArea],
     ended: &[u64],
@@ -71,7 +73,7 @@ pub(super) fn gesture_tick(
             state.gesture_preview_start.remove(hwnd);
             state.gesture_start_cursor.remove(hwnd);
             let fulls_owned = fulls.to_vec();
-            reconcile_tick(state, me, &fulls_owned, areas);
+            reconcile_tick(state, me, store, dir, &fulls_owned, areas);
             continue;
         }
         let Some(current) = by_hwnd.get(hwnd) else {
@@ -85,7 +87,7 @@ pub(super) fn gesture_tick(
                 .find(|(k, _)| k.hwnd == *hwnd)
                 .map(|(k, _)| k.clone())
                 && let Some(stored) = state.member_identity.get(&key).cloned()
-                && crate::workspace_owner::member_matches(
+                && crate::native_guards::member_matches(
                     &key,
                     *hwnd,
                     stored.pid,
@@ -132,7 +134,7 @@ pub(super) fn gesture_tick(
                 }),
             );
             let fulls_owned = fulls.to_vec();
-            reconcile_tick(state, me, &fulls_owned, areas);
+            reconcile_tick(state, me, store, dir, &fulls_owned, areas);
             continue;
         };
         // START/END reuse fence: the fresh window must still match the
@@ -144,7 +146,7 @@ pub(super) fn gesture_tick(
         // versus a fresh member-property read (never the owned-helper tag,
         // which is empty for ordinary windows).
         if let (Some(key), Some(stored)) = (start_key.as_ref(), start_tag.as_ref())
-            && (!crate::workspace_owner::member_matches(
+            && (!crate::native_guards::member_matches(
                 key,
                 current.hwnd,
                 current.identity.pid,
@@ -167,7 +169,7 @@ pub(super) fn gesture_tick(
                 }),
             );
             let fulls_owned = fulls.to_vec();
-            reconcile_tick(state, me, &fulls_owned, areas);
+            reconcile_tick(state, me, store, dir, &fulls_owned, areas);
             continue;
         }
         // Release cursor carried from the MOVESIZEEND event callback, never
@@ -192,7 +194,7 @@ pub(super) fn gesture_tick(
                 }),
             );
             let fulls_owned = fulls.to_vec();
-            reconcile_tick(state, me, &fulls_owned, areas);
+            reconcile_tick(state, me, store, dir, &fulls_owned, areas);
             continue;
         };
         // Modal truth over rect comparison (see
@@ -214,7 +216,7 @@ pub(super) fn gesture_tick(
         let Some(member_key) = member_key else {
             continue;
         };
-        if !crate::workspace_owner::member_matches(
+        if !crate::native_guards::member_matches(
             &member_key,
             current.hwnd,
             current.identity.pid,
@@ -242,7 +244,7 @@ pub(super) fn gesture_tick(
         // Distinguish the Engine exception lane (intentional float, born
         // hold, automatic fixed) from a floating workspace mode: the
         // incident row conflated both under one outcome.
-        if let Some(loc) = state.workspaces.member_loc(&member_key).cloned() {
+        if let Some(loc) = state.member_home(&member_key) {
             let engine_float = engine_is_float(state, &loc.output, &loc.workspace, &current.token);
             let tiled = workspace_mode_tiled(state, &loc.output, &loc.workspace);
             if engine_float || !tiled {
@@ -262,16 +264,14 @@ pub(super) fn gesture_tick(
                 continue;
             }
         }
-        let Some(loc) = state.workspaces.member_loc(&member_key).cloned() else {
+        let Some(loc) = state.member_home(&member_key) else {
             continue;
         };
-        let Some((domain, domain_key)) = workspace_domain_for(
-            &loc.output,
-            &loc.workspace,
-            areas,
-            state.inner_gap,
-            state.outer_gap,
-        ) else {
+        let Some(source_bounds) = areas
+            .iter()
+            .find(|a| a.device == loc.output)
+            .and_then(|area| tiling_domain_bounds_with(area.work, state.outer_gap))
+        else {
             continue;
         };
         // Cross-output drops (REQ-MOU-03): the pointer output's current
@@ -288,10 +288,10 @@ pub(super) fn gesture_tick(
                     // area: panel-strip releases refuse before any Engine
                     // call, exactly like the retired same-output fence.
                     if !drop_point_in_domain(
-                        domain.bounds.x,
-                        domain.bounds.y,
-                        domain.bounds.w,
-                        domain.bounds.h,
+                        source_bounds.x,
+                        source_bounds.y,
+                        source_bounds.w,
+                        source_bounds.h,
                         x,
                         y,
                     ) {
@@ -309,7 +309,7 @@ pub(super) fn gesture_tick(
                             }),
                         );
                         let fulls_owned = fulls.to_vec();
-                        reconcile_tick(state, me, &fulls_owned, areas);
+                        reconcile_tick(state, me, store, dir, &fulls_owned, areas);
                         continue;
                     }
                     None
@@ -330,7 +330,7 @@ pub(super) fn gesture_tick(
                         }),
                     );
                     let fulls_owned = fulls.to_vec();
-                    reconcile_tick(state, me, &fulls_owned, areas);
+                    reconcile_tick(state, me, store, dir, &fulls_owned, areas);
                     continue;
                 }
             }
@@ -360,8 +360,6 @@ pub(super) fn gesture_tick(
                     y: 0,
                     drop_prior: None,
                     producer: producer.to_owned(),
-                    // Fence probe only: no Engine event is built from it.
-                    start_rect: None,
                 };
                 match snapshot_cross_drag(
                     state,
@@ -386,7 +384,7 @@ pub(super) fn gesture_tick(
                             }),
                         );
                         let fulls_owned = fulls.to_vec();
-                        reconcile_tick(state, me, &fulls_owned, areas);
+                        reconcile_tick(state, me, store, dir, &fulls_owned, areas);
                         continue;
                     }
                 }
@@ -421,7 +419,6 @@ pub(super) fn gesture_tick(
                 &loc.output,
                 &loc.workspace,
                 pending_dest,
-                state.gesture_before.get(hwnd).copied(),
             );
             state.preview_bound.remove(hwnd);
             state.preview_dead.remove(hwnd);
@@ -479,12 +476,11 @@ pub(super) fn gesture_tick(
                     }),
                 );
                 let fulls_owned = fulls.to_vec();
-                reconcile_tick(state, me, &fulls_owned, areas);
+                reconcile_tick(state, me, store, dir, &fulls_owned, areas);
                 continue;
             }
             let membership_ok = state
-                .workspaces
-                .member_loc(&member_key)
+                .member_home(&member_key)
                 .is_some_and(|fresh| {
                     fresh.output == loc.output && fresh.workspace == loc.workspace
                 });
@@ -503,7 +499,7 @@ pub(super) fn gesture_tick(
                 live_max,
                 live_full_opt.unwrap_or(retained_full),
             );
-            if let Some(outcome) = crate::workspace_owner::drag_drop_fences_hold(fence, &live) {
+            if let Some(outcome) = crate::native_guards::drag_drop_fences_hold(fence, &live) {
                 log_json_at(
                     &log_path,
                     serde_json::json!({
@@ -517,7 +513,7 @@ pub(super) fn gesture_tick(
                     }),
                 );
                 let fulls_owned = fulls.to_vec();
-                reconcile_tick(state, me, &fulls_owned, areas);
+                reconcile_tick(state, me, store, dir, &fulls_owned, areas);
                 continue;
             }
             // Proven inline hide before any Engine or project mutation: the
@@ -541,7 +537,7 @@ pub(super) fn gesture_tick(
                 state.gesture_preview_start.remove(hwnd);
                 state.gesture_start_cursor.remove(hwnd);
                 let fulls_owned = fulls.to_vec();
-                reconcile_tick(state, me, &fulls_owned, areas);
+                reconcile_tick(state, me, store, dir, &fulls_owned, areas);
                 continue;
             }
             let drop_prior = state
@@ -566,11 +562,12 @@ pub(super) fn gesture_tick(
                 y: *y,
                 drop_prior,
                 producer: producer.to_owned(),
-                start_rect: state.gesture_before.get(hwnd).copied(),
             };
             settle_cross_drag_drop(
                 state,
                 me,
+                store,
+                dir,
                 fulls,
                 areas,
                 &observed,
@@ -585,85 +582,19 @@ pub(super) fn gesture_tick(
         }
         state.tick += 1;
         let correlation = state.correlation();
-        // Incomplete snapshot defers with retained Engine state.
-        let mut hint_cx = HintCx::new();
-        let Some(rows) = assemble_domain_rows(
-            state,
-            &loc.output,
-            &loc.workspace,
-            &observed,
-            &retained,
-            "gesture",
-            correlation.as_str(),
-            &mut hint_cx,
-        ) else {
-            continue;
-        };
-        let windows: Vec<(WindowId, Rect, WindowSizeHints, bool)> = rows
-            .iter()
-            .map(|r| (WindowId(r.token.clone()), r.rect, r.hints, r.floating))
-            .collect();
-        let fp = fingerprint(
-            &rows
-                .iter()
-                .map(|r| (r.token.clone(), r.rect))
-                .collect::<Vec<_>>(),
-        );
-        let mover = WindowId(current.token.clone());
-        // Live gap edits adopt here so the drop convergence below sees
-        // matching gaps instead of refusing the gesture.
-        {
-            let revision = revision_for(state, &loc.output, &loc.workspace);
-            let outer_gap = state.outer_gap;
-            adopt_gaps_for_route(
-                state,
-                &domain,
-                &domain_key,
-                outer_gap,
-                &windows,
-                Some(&mover),
-                revision,
-                fp,
-                &correlation,
-            );
-        }
-        let event = crate::tiling::build_reconcile_event_for_floating(
-            &state.owner,
-            &state.generation,
-            &correlation,
-            revision_for(state, &loc.output, &loc.workspace),
-            fp,
-            &domain,
-            &domain_key,
-            state.outer_gap,
-            &windows,
-            Some(&mover),
-        );
-        // Single-domain observations run the local retained
-        // propose/commit path; Core owns gesture semantics.
-        // The preview track carried the exact sticky group-edge hover prior
-        // across samples through the same resolver; the final drop forwards
-        // that exact value (or `None` when no preview resolved, e.g. an
-        // unmoved-then-dropped pointer with no samples). Preview/drop
-        // agreement is by construction: same observation assembly, same
-        // resolver, same carried prior.
+        // World-routed inline settle: the core owns drop/resize planning
+        // and the host diff applies the accepted reply with fresh proof.
+        // The applied reply IS the outcome: `Some` applied, `None`
+        // refused or lost (converging through one bounded reconcile).
         let drop_prior = state
             .preview_bound
             .get(hwnd)
             .and_then(|bound| bound.hover_prior.clone());
-        // Closed bounded trace descriptor (`none` or `group-edge:Side`):
-        // proves preview-to-drop carry equality without raw NodeIds.
         let drop_prior_desc = preview_prior_desc(&drop_prior);
         // Reply rendering must never outlive the gesture: the preview is
-        // proven hidden before the Engine drop runs, so no late sample can
-        // paint over the settled layout. With a render bridge this hides
-        // with a verified `Hidden` acknowledgement the owner waits for
-        // (bounded, outside callbacks) before the Engine drop below. An
-        // unacknowledged hide refuses the drop narrowly (tentative stage 2
-        // semantics: `drag-drop-refused` with kind `preview-finish-unacked`,
-        // converging through one bounded reconcile like any other refusal):
-        // the drop never executes over a possibly visible preview, and the
-        // bumped safety epoch still bars any stale-show replay.
+        // proven hidden before the world drop runs, so no late sample can
+        // paint over the settled layout. An unacknowledged hide refuses
+        // the drop narrowly and converges through one bounded reconcile.
         if !hide_preview_finish(state, "finish") {
             let op = match &intent {
                 GestureIntent::MoveDrop { .. } => "drag-drop",
@@ -689,72 +620,89 @@ pub(super) fn gesture_tick(
             state.gesture_preview_start.remove(hwnd);
             state.gesture_start_cursor.remove(hwnd);
             let fulls_owned = fulls.to_vec();
-            reconcile_tick(state, me, &fulls_owned, areas);
+            reconcile_tick(state, me, store, dir, &fulls_owned, areas);
             continue;
         }
         state.preview_bound.remove(hwnd);
         state.preview_dead.remove(hwnd);
         state.gesture_preview_start.remove(hwnd);
         state.gesture_start_cursor.remove(hwnd);
-        let (reply, event) = match intent {
-            GestureIntent::MoveDrop { x, y } => {
-                let mut event = event;
-                event.command = CoreCommand::DragDrop {
-                    window: current.token.clone(),
-                    x,
-                    y,
-                    hover_prior: drop_prior,
-                    source: None,
-                };
-                let reply = handle_engine_event(state, &mut event);
-                (reply, event)
-            }
+        let command = match intent {
+            GestureIntent::MoveDrop { x, y } => CoreCommand::DragDrop {
+                window: current.token.clone(),
+                x,
+                y,
+                hover_prior: drop_prior,
+                source: None,
+            },
             GestureIntent::PointerResize {
                 direction,
                 boundary,
                 direction2,
                 boundary2,
-            } => {
-                let mut event = event;
-                event.command = CoreCommand::PointerResize {
-                    window: current.token.clone(),
-                    direction: direction.to_owned(),
-                    boundary,
-                    direction2: direction2.map(str::to_owned),
-                    boundary2,
-                };
-                let reply = handle_engine_event(state, &mut event);
-                (reply, event)
-            }
+            } => CoreCommand::PointerResize {
+                window: current.token.clone(),
+                direction: direction.to_owned(),
+                boundary,
+                direction2: direction2.map(str::to_owned),
+                boundary2,
+            },
         };
         let op = match intent {
             GestureIntent::MoveDrop { .. } => "drag-drop",
             GestureIntent::PointerResize { .. } => "pointer-resize",
         };
-        match &reply {
-            CoreReply::Tiled(_) | CoreReply::Projection(_) | CoreReply::Resize(_) => {
-                let tick = state.tick;
-                let fulls_owned = fulls.to_vec();
-                let writable = writable_tokens(state, &loc.output, &loc.workspace, &observed);
-                apply_geometry(
-                    state,
-                    ApplyInput {
-                        me,
-                        fulls: &fulls_owned,
-                        reply: &reply,
-                        observed: &observed,
-                        op,
-                        tick,
-                        correlation: correlation.as_str(),
-                        skipped: Vec::new(),
-                        writable: &writable,
-                        output_token: state.workspaces.output_token(&loc.output),
-                        workspace_token: state
-                            .workspaces
-                            .workspace_token(&loc.output, &loc.workspace),
-                        revision: revision_for(state, &loc.output, &loc.workspace),
-                    },
-                );
+        let foreground = crate::ffi::foreground_window();
+        let reply = super::world_tick::run_world_command(
+            state,
+            me,
+            store,
+            dir,
+            &observed,
+            &retained,
+            areas,
+            foreground,
+            fulls,
+            tiler_core::world_report::WorldCommand::Operation(command),
+        );
+        match reply {
+            Some(reply) => {
+                // Arrival proof before claiming success: the mover's
+                // desired allocation must read back live.
+                let arrived = reply
+                    .windows
+                    .iter()
+                    .find(|w| w.lifetime.0 == current.token)
+                    .and_then(|row| row.allocation.map(|alloc| (alloc, row.output.0.clone())))
+                    .is_some_and(|(alloc, wire)| {
+                        state.device_of(&wire).is_some_and(|device| {
+                            state
+                                .readback_frame(me, fulls, current.hwnd)
+                                .is_some_and(|visible| {
+                                    visible == alloc && output_for_rect(areas, &visible) == device
+                                })
+                        })
+                    });
+                if !arrived {
+                    log_json_at(
+                        &log_path,
+                        serde_json::json!({
+                            "event": "gesture",
+                            "tick": state.tick,
+                            "correlation": correlation.as_str(),
+                            "op": op,
+                            "disposition": "refused",
+                            "outcome": "drag-drop-refused",
+                            "kind": "unverified",
+                            "window": current.token,
+                            "producer": producer,
+                            "hover_prior": drop_prior_desc,
+                        }),
+                    );
+                    let fulls_owned = fulls.to_vec();
+                    reconcile_tick(state, me, store, dir, &fulls_owned, areas);
+                    continue;
+                }
                 log_json_at(
                     &log_path,
                     serde_json::json!({
@@ -770,32 +718,7 @@ pub(super) fn gesture_tick(
                     }),
                 );
             }
-            _ => {
-                // Refusal converges through one bounded reconcile (snap-back
-                // to the retained allocation), matching the KDE
-                // restore-marker outcome with no ledger. Self, centre-stack,
-                // and unsupported targets land here with no plan and no
-                // commit; the closed Engine kind rides along for attribution.
-                let kind = match &reply {
-                    CoreReply::Rejected { kind, .. } => *kind,
-                    CoreReply::Diverged(reason) => reason.as_str(),
-                    CoreReply::SnapshotInvalid { detail, .. } => *detail,
-                    _ => "unhandled-variant",
-                };
-                if op == "pointer-resize" {
-                    log_redacted_dispatch(
-                        state,
-                        "pointer-resize",
-                        state.tick,
-                        correlation.as_str(),
-                        &current.token,
-                        producer,
-                        state.gesture_before.get(hwnd).copied(),
-                        &event,
-                        &observed,
-                        kind,
-                    );
-                }
+            None => {
                 log_json_at(
                     &log_path,
                     serde_json::json!({
@@ -805,14 +728,14 @@ pub(super) fn gesture_tick(
                         "op": op,
                         "disposition": "refused",
                         "outcome": "drag-drop-refused",
-                        "kind": kind,
+                        "kind": "unverified",
                         "window": current.token,
                         "producer": producer,
                         "hover_prior": drop_prior_desc,
                     }),
                 );
                 let fulls_owned = fulls.to_vec();
-                reconcile_tick(state, me, &fulls_owned, areas);
+                reconcile_tick(state, me, store, dir, &fulls_owned, areas);
             }
         }
     }

@@ -6,10 +6,9 @@ use std::sync::Arc;
 
 use crate::pager::{
     OutputGeometry, OutputPager, PagerGate, TaskbarFacts, match_bars_to_outputs, pager_suppression,
-    verify_output_scoped_select,
 };
 use crate::pager_icons::IconImage;
-use crate::workspace::WindowKey;
+use crate::native_guards::WindowKey;
 
 /// Owner-creation retry when overlay registration fails: fixed 5s, forever,
 /// so a failed registration retries promptly without busy-looping pumps.
@@ -33,7 +32,7 @@ fn pager_covering_detail(
     let covering = |read: &super::settings::ForegroundRead| {
         crate::pager::pager_covering(
             read.veto.block,
-            read.veto.reason == crate::workspace_owner::ForegroundVetoReason::ManagedOverlay,
+            read.veto.reason == crate::native_guards::ForegroundVetoReason::ManagedOverlay,
         )
     };
     #[cfg(test)]
@@ -532,8 +531,12 @@ pub(super) fn sync_taskbar_pager(
     for (geo_index, bar_index) in match_bars_to_outputs(&geos, &bars) {
         let area = &areas[geo_index];
         let bar: TaskbarFacts = bars[bar_index];
-        match crate::pager::build_output_pager(
-            &state.workspaces,
+        let ring = state.workspace_ids(&area.device);
+        let view = state.active_view(&area.device);
+        match crate::pager::build_output_pager_from_parts(
+            &ring,
+            view.as_deref(),
+            &|workspace| state.workspace_members(&area.device, workspace),
             &state.pager_live,
             &state.member_tokens,
             &state.member_rects,
@@ -642,9 +645,9 @@ fn drain_icon_cache(
     log_path: &Path,
 ) -> HashMap<WindowKey, Arc<IconImage>> {
     let mut keys: Vec<WindowKey> = Vec::new();
-    for output in state.workspaces.output_keys() {
-        for id in state.workspaces.workspace_ids(&output) {
-            keys.extend(state.workspaces.workspace_members(&output, &id));
+    for output in state.output_devices() {
+        for id in state.workspace_ids(&output) {
+            keys.extend(state.workspace_members(&output, &id));
         }
     }
     let live: HashSet<WindowKey> = keys.iter().cloned().collect();
@@ -793,7 +796,7 @@ pub(super) fn poll_pager_select(
     }
     if !state.pager_served.contains(&request.output) {
         let mut line = workspace_log(state, tick, "select", index, "pager", "refused-not-served");
-        line["output"] = serde_json::Value::from(state.workspaces.output_token(&request.output));
+        line["output"] = serde_json::Value::from(state.output_token(&request.output));
         log_json_at(&state.log_path, line);
         return;
     }
@@ -801,13 +804,16 @@ pub(super) fn poll_pager_select(
     // the rendered workspace still live on it. Focus is irrelevant: a
     // click on an unfocused output's strip still selects there. The
     // 1-based ordinal is logging only, never a positional fallback.
-    if !verify_output_scoped_select(&request, &state.workspaces) {
+    let ring = state.workspace_ids(&request.output);
+    if !crate::pager::verify_output_scoped_select_keys(
+        &request,
+        &state.output_devices(),
+        &ring,
+    ) {
         let mut line = workspace_log(state, tick, "select", index, "pager", "refused-stale-scope");
-        line["output"] = serde_json::Value::from(state.workspaces.output_token(&request.output));
+        line["output"] = serde_json::Value::from(state.output_token(&request.output));
         line["workspace"] = serde_json::Value::from(
-            state
-                .workspaces
-                .workspace_token(&request.output, &request.workspace),
+            state.workspace_token(&request.output, &request.workspace),
         );
         log_json_at(&state.log_path, line);
         return;
@@ -847,7 +853,7 @@ pub(super) fn dispatch_verified_select(
     start: Instant,
     edge: &'static str,
 ) {
-    state.workspaces.ensure_output(output);
+    state.ensure_device(output);
     let mut skipped: Vec<(String, String)> = Vec::new();
     let mut retained: Vec<RetainedRow> = Vec::new();
     let Some(mut observed) = state.observe(me, fulls, &mut skipped, &mut retained) else {
@@ -867,25 +873,8 @@ pub(super) fn dispatch_verified_select(
         queued_at: start,
         start,
     };
-    // REQ-WS-09 departure memory, same as the tray path: the
-    // dispatch-time foreground resolves directly against verified source
-    // membership.
-    let foreground_hwnd = crate::ffi::foreground_window();
-    if let Some(source_id) = state.workspaces.active_id(output)
-        && let Some(token) = remember_select_departure(
-            state,
-            output,
-            &source_id,
-            foreground_hwnd,
-            &observed,
-            &retained,
-        )
-    {
-        log_json_at(
-            &state.log_path.clone(),
-            serde_json::json!({"event":"select-departure","correlation":ctx.correlation,"window":token}),
-        );
-    }
+    // Departure memory is core-owned history now: the select command below
+    // records it, so the adapter logs nothing here.
     let effect = workspace_do_select(
         state,
         me,
@@ -996,8 +985,18 @@ mod pager_host_tests {
         ));
         let store = crate::storage::LedgerStore::open(&tmp).expect("ledger temp dir");
         let output = "mon-pager".to_owned();
-        state.workspaces.ensure_output(&output);
-        let ids = state.workspaces.workspace_ids(&output);
+        state.ensure_device(&output);
+        // Genuine world seeding (never fabricated adapter state): one
+        // observation tick through the loop's own owner mints the core
+        // ring so the click scopes below resolve logical workspaces.
+        // No native effects; the injected observation below stays empty.
+        let areas = vec![super::MonitorArea {
+            device: output.clone(),
+            work: pager_full(),
+            full: pager_full(),
+        }];
+        super::super::world_tick::dispatch_test_observation(&mut state, &[], &[], &areas, 0);
+        let ids = state.workspace_ids(&output);
         assert!(ids.len() >= 2, "active plus a distinct target");
         // Hermetic observation insurance: any accidental dispatch below
         // must still touch no native window. Refused clicks never observe.
@@ -1047,7 +1046,7 @@ mod pager_host_tests {
         // Consumed once, never dispatched: no replay later.
         assert_eq!(pending_clicks(&state), 0);
         assert_eq!(
-            state.workspaces.active_id(&output).as_deref(),
+            state.active_view(&output).as_deref(),
             Some(active.as_str())
         );
         clear_pending_seams();
@@ -1064,7 +1063,7 @@ mod pager_host_tests {
             poll_pager_select(&mut state, &me, &store, &dir, &fulls, &areas);
             assert_eq!(pending_clicks(&state), 0);
             assert_eq!(
-                state.workspaces.active_id(&output).as_deref(),
+                state.active_view(&output).as_deref(),
                 Some(active.as_str())
             );
             clear_pending_seams();
@@ -1080,7 +1079,7 @@ mod pager_host_tests {
         poll_pager_select(&mut state, &me, &store, &dir, &fulls, &[]);
         assert_eq!(pending_clicks(&state), 0);
         assert_eq!(
-            state.workspaces.active_id(&output).as_deref(),
+            state.active_view(&output).as_deref(),
             Some(active.as_str())
         );
         clear_pending_seams();
@@ -1098,7 +1097,7 @@ mod pager_host_tests {
         poll_pager_select(&mut state, &me, &store, &dir, &fulls, &areas);
         assert_eq!(pending_clicks(&state), 0);
         assert_eq!(
-            state.workspaces.active_id(&output).as_deref(),
+            state.active_view(&output).as_deref(),
             Some(active.as_str())
         );
         clear_pending_seams();
@@ -1396,18 +1395,12 @@ mod pager_host_tests {
         clear_pending_seams();
         let mut state = test_state();
         let output = "mon-live".to_owned();
-        state.workspaces.ensure_output(&output);
-        let active = state.workspaces.active_id(&output).expect("active");
-        let member = crate::workspace::WindowKey {
+        state.ensure_device(&output);
+        let member = crate::native_guards::WindowKey {
             hwnd: 701,
             pid: 7,
             creation: "creation-live".to_owned(),
         };
-        assert!(
-            state
-                .workspaces
-                .assign(member.clone(), &output, &active, false)
-        );
         state
             .member_tokens
             .insert(member.clone(), "tok-live".to_owned());
@@ -1423,16 +1416,11 @@ mod pager_host_tests {
             w: 1920,
             h: 1080,
         };
-        let overlay_key = crate::workspace::WindowKey {
+        let overlay_key = crate::native_guards::WindowKey {
             hwnd: 702,
             pid: 8,
             creation: "creation-overlay".to_owned(),
         };
-        assert!(
-            state
-                .workspaces
-                .assign(overlay_key.clone(), &output, &active, false)
-        );
         state
             .member_tokens
             .insert(overlay_key.clone(), "tok-overlay".to_owned());
@@ -1472,6 +1460,28 @@ mod pager_host_tests {
         };
         // A foreign window observes fine but is never a member: excluded.
         let foreign = mk_observed(703, "tok-foreign", 9, "creation-foreign");
+        // Genuine world seeding for the member roster below: dispatch the
+        // member rows through the loop's own owner so the pager snapshot
+        // gates on real engine homing (the foreign window stays unbound).
+        let seed_areas = vec![super::MonitorArea {
+            device: output.clone(),
+            work: live_frame,
+            full: live_frame,
+        }];
+        super::super::world_tick::dispatch_test_observation(
+            &mut state,
+            &[mk_observed(701, "tok-live", 7, "creation-live")],
+            &[RetainedRow {
+                key: overlay_key.clone(),
+                token: "tok-overlay".to_owned(),
+                rect: Some(overlay_frame),
+                maximized: false,
+                fullscreen: true,
+                facts: None,
+            }],
+            &seed_areas,
+            0,
+        );
         inject_pending_observe(
             vec![mk_observed(701, "tok-live", 7, "creation-live"), foreign],
             vec![RetainedRow {
@@ -1567,9 +1577,16 @@ mod pager_host_tests {
         }
     }
 
-    fn pager_frame_for(state: &super::TileLoop, output: &str) -> crate::pager::OutputPager {
-        crate::pager::build_output_pager(
-            &state.workspaces,
+    fn pager_frame_for(
+        state: &super::TileLoop,
+        output: &str,
+        workspace: &str,
+        members: &std::collections::BTreeSet<crate::native_guards::WindowKey>,
+    ) -> crate::pager::OutputPager {
+        crate::pager::build_output_pager_from_parts(
+            std::slice::from_ref(&workspace.to_owned()),
+            Some(workspace),
+            &|_| members.clone(),
             &state.pager_live,
             &state.member_tokens,
             &state.member_rects,
@@ -1589,11 +1606,11 @@ mod pager_host_tests {
         clear_pending_seams();
         let mut state = test_state();
         let output = "mon-z".to_owned();
-        state.workspaces.ensure_output(&output);
-        let active = state.workspaces.active_id(&output).expect("active");
+        state.ensure_device(&output);
+        let active = "ws-1".to_owned();
         // HWND order is the inverse of the native stacking: the topmost
         // (kept fullscreen overlay) carries the smallest HWND.
-        let mk = |hwnd: u64, creation: &str| crate::workspace::WindowKey {
+        let mk = |hwnd: u64, creation: &str| crate::native_guards::WindowKey {
             hwnd,
             pid: 7,
             creation: creation.to_owned(),
@@ -1601,13 +1618,8 @@ mod pager_host_tests {
         let plain = mk(801, "creation-plain");
         let tiled = mk(802, "creation-tiled");
         let overlay = mk(800, "creation-overlay");
-        for key in [&plain, &tiled, &overlay] {
-            assert!(
-                state
-                    .workspaces
-                    .assign(key.clone(), &output, &active, false)
-            );
-        }
+        let members: std::collections::BTreeSet<crate::native_guards::WindowKey> =
+            [&plain, &tiled, &overlay].into_iter().cloned().collect();
         let plain_frame = Rect {
             x: 0,
             y: 0,
@@ -1621,6 +1633,38 @@ mod pager_host_tests {
             h: 540,
         };
         let overlay_frame = pager_full();
+        for (key, token) in [
+            (&plain, "tok-creation-plain"),
+            (&tiled, "tok-creation-tiled"),
+            (&overlay, "tok-creation-overlay"),
+        ] {
+            state.member_tokens.insert(key.clone(), token.to_owned());
+        }
+        // Genuine world seeding: the pager snapshot gates on real engine
+        // homing, so dispatch the member rows through the loop's own owner
+        // before the injected observation below.
+        let seed_areas = vec![super::MonitorArea {
+            device: output.clone(),
+            work: pager_full(),
+            full: pager_full(),
+        }];
+        super::super::world_tick::dispatch_test_observation(
+            &mut state,
+            &[
+                live_observed_hwnd(801, 7, "creation-plain", plain_frame),
+                live_observed_hwnd(802, 7, "creation-tiled", tiled_frame),
+            ],
+            &[RetainedRow {
+                key: overlay.clone(),
+                token: "tok-creation-overlay".to_owned(),
+                rect: Some(overlay_frame),
+                maximized: false,
+                fullscreen: true,
+                facts: None,
+            }],
+            &seed_areas,
+            0,
+        );
         inject_pending_observe(
             vec![
                 live_observed_hwnd(801, 7, "creation-plain", plain_frame),
@@ -1652,7 +1696,7 @@ mod pager_host_tests {
             vec![overlay.clone(), tiled.clone(), plain.clone()]
         );
         assert_eq!(state.pager_live.get(&overlay), Some(&overlay_frame));
-        let pager = pager_frame_for(&state, &output);
+        let pager = pager_frame_for(&state, &output, &active, &members);
         let cell = pager
             .cells
             .iter()
@@ -1669,22 +1713,17 @@ mod pager_host_tests {
         clear_pending_seams();
         let mut state = test_state();
         let output = "mon-zhide".to_owned();
-        state.workspaces.ensure_output(&output);
-        let active = state.workspaces.active_id(&output).expect("active");
-        let mk = |hwnd: u64, creation: &str| crate::workspace::WindowKey {
+        state.ensure_device(&output);
+        let active = "ws-1".to_owned();
+        let mk = |hwnd: u64, creation: &str| crate::native_guards::WindowKey {
             hwnd,
             pid: 7,
             creation: creation.to_owned(),
         };
         let x = mk(901, "creation-x");
         let y = mk(902, "creation-y");
-        for key in [&x, &y] {
-            assert!(
-                state
-                    .workspaces
-                    .assign(key.clone(), &output, &active, false)
-            );
-        }
+        let members: std::collections::BTreeSet<crate::native_guards::WindowKey> =
+            [&x, &y].into_iter().cloned().collect();
         let me = pager_me();
         let fulls = vec![pager_full()];
         let frame_x = Rect {
@@ -1714,6 +1753,24 @@ mod pager_host_tests {
         state
             .member_rects
             .insert("tok-creation-y".to_owned(), frame_y);
+        // Genuine world seeding: dispatch the tick-1 roster through the
+        // loop's own owner so the retained-order roster below reads real
+        // engine homing (absence never closes: the engine keeps x homed).
+        let seed_areas = vec![super::MonitorArea {
+            device: output.clone(),
+            work: pager_full(),
+            full: pager_full(),
+        }];
+        super::super::world_tick::dispatch_test_observation(
+            &mut state,
+            &[
+                live_observed_hwnd(901, 7, "creation-x", frame_x),
+                live_observed_hwnd(902, 7, "creation-y", frame_y),
+            ],
+            &[],
+            &seed_areas,
+            0,
+        );
         // Tick 1: both visible, native top-to-bottom [x, y].
         inject_pending_observe(
             vec![
@@ -1743,7 +1800,7 @@ mod pager_host_tests {
         assert_eq!(state.pager_z, vec![y.clone(), x.clone()]);
         assert_eq!(state.pager_live.get(&y), Some(&frame_y));
         assert!(!state.pager_live.contains_key(&x));
-        let pager = pager_frame_for(&state, &output);
+        let pager = pager_frame_for(&state, &output, &active, &members);
         let cell = pager
             .cells
             .iter()
@@ -1751,7 +1808,7 @@ mod pager_host_tests {
             .expect("hidden workspace still paints its members");
         assert_eq!(cell.mini_keys, vec![x.clone(), y.clone()]);
         // Tick 3: x closed (membership gone) prunes the retained slot.
-        assert!(state.workspaces.remove_window(&x));
+        assert!(state.forget_member(&x));
         inject_pending_observe(
             vec![live_observed_hwnd(902, 7, "creation-y", frame_y)],
             Vec::new(),
@@ -1764,7 +1821,24 @@ mod pager_host_tests {
         // Tick 4: a recycled HWND with a new creation is a new identity in
         // the deterministic fallback, never the stale slot.
         let x2 = mk(901, "creation-x2");
-        assert!(state.workspaces.assign(x2.clone(), &output, &active, false));
+        state
+            .member_tokens
+            .insert(x2.clone(), "tok-creation-x2".to_owned());
+        // Genuine world seeding for the recycled identity: the bound but
+        // unobserved lifetime holds as unreadable, so the engine homes it
+        // and the roster below resolves the new identity.
+        let seed_areas = vec![super::MonitorArea {
+            device: output.clone(),
+            work: pager_full(),
+            full: pager_full(),
+        }];
+        super::super::world_tick::dispatch_test_observation(
+            &mut state,
+            &[live_observed_hwnd(902, 7, "creation-y", frame_y)],
+            &[],
+            &seed_areas,
+            0,
+        );
         inject_pending_observe(
             vec![live_observed_hwnd(902, 7, "creation-y", frame_y)],
             Vec::new(),
@@ -1784,9 +1858,9 @@ mod pager_host_tests {
         clear_pending_seams();
         let mut state = test_state();
         let output = "mon-zfirst".to_owned();
-        state.workspaces.ensure_output(&output);
-        let active = state.workspaces.active_id(&output).expect("active");
-        let mk = |hwnd: u64, creation: &str| crate::workspace::WindowKey {
+        state.ensure_device(&output);
+        let active = "ws-1".to_owned();
+        let mk = |hwnd: u64, creation: &str| crate::native_guards::WindowKey {
             hwnd,
             pid: 7,
             creation: creation.to_owned(),
@@ -1838,17 +1912,12 @@ mod pager_host_tests {
             state.pager_z,
             vec![top.clone(), bottom.clone(), alien.clone()]
         );
-        // Admission assigns the members and stages their slots (the live
-        // frame map itself still lags until the next observation: preexisting
-        // first-admission behavior, unchanged here). No second observation
-        // runs before the first paint.
-        for key in [&top, &bottom] {
-            assert!(
-                state
-                    .workspaces
-                    .assign(key.clone(), &output, &active, false)
-            );
-        }
+        // Admission stages the members' slots (the live frame map itself
+        // still lags until the next observation: preexisting first-admission
+        // behavior, unchanged here). No second observation runs before the
+        // first paint.
+        let members: std::collections::BTreeSet<crate::native_guards::WindowKey> =
+            [&top, &bottom].into_iter().cloned().collect();
         state
             .member_tokens
             .insert(top.clone(), "tok-first-top".to_owned());
@@ -1861,7 +1930,7 @@ mod pager_host_tests {
         state
             .member_rects
             .insert("tok-first-bottom".to_owned(), bottom_frame);
-        let pager = pager_frame_for(&state, &output);
+        let pager = pager_frame_for(&state, &output, &active, &members);
         let cell = pager
             .cells
             .iter()
