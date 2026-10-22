@@ -2687,6 +2687,18 @@ platform API behavior.
   undercutting writes cannot supply that counter-proof. Consumed attempts do
   not block fresh counter-evidence. Pair suppression remains independent.
   [Acceptance and live limits](changes/core-world-model-rearchitecture.md#stage-3b1-accepted-outcome-2026-10-22).
+- Explicit float-placement completion, 2026-10-22: core consumes raw frame
+  attempts correlated by operation id, lifetime and target, including the
+  immediate pre-write frame. It derives confirmation/refusal/ambiguity from
+  native observations instead of platform `Property` outcome verdicts.
+  Retained operation evidence survives acknowledgement and observation gaps
+  independently of frame replay watermarks. Unchanged readable preimage plus
+  explicit setter refusal can prove refusal; ambiguous or DPI-invalidated
+  writes never re-actuate. Later observed target arrival can still confirm.
+  Platforms retain mechanical freshness/lifetime gates and at-most-once
+  dispatch, but no float outcome classifier or applied-float policy memory.
+  Transfer/view completion remains a separate extraction.
+  [Acceptance and limits](changes/core-world-model-rearchitecture.md#stage-3b2-accepted-outcome-2026-10-22).
 - User approved 2026-10-20: platforms detect and report host gesture start
   (window, move or resize), cursor updates, release and cancel, and render/apply.
   Core owns the drag session, target, overlay shape, release outcome

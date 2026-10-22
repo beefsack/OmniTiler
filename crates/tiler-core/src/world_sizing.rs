@@ -447,11 +447,13 @@ pub fn report_estimate(report: &WorldReport) -> usize {
     }
     for attempt in &report.frames {
         // {"win":S,"target":[x,y,w,h],"setter":S,"readback":R|null,
-        // "dpiBefore":N|null,"dpiAfter":N|null,"attemptMs":"u64"} = 85 fixed
-        // (7 + 1 + 10 + 3 + 2 + 9 + 1 + 11 + 1 + 12 + 1 + 11 + 1 + 13 + 2)
-        // plus ids, rect digits, setter token, DPI digits, and the stamp.
-        // Absent readback/DPI count `null` (4).
-        bytes += 85
+        // "dpiBefore":N|null,"dpiAfter":N|null,"attemptMs":"u64",
+        // "op":S,"pre":R|null} = 98 fixed (the 85 above plus ,"op": (6)
+        // plus ,"pre": (7)) plus ids, rect digits, setter token, DPI
+        // digits, the stamp, the operation id, and the pre-write rect.
+        // Absent readback/prewrite/DPI count `null` (4); an ordinary
+        // attempt carries an empty operation id.
+        bytes += 98
             + json_string_len(&attempt.window.0)
             + int_len(attempt.target.x)
             + int_len(attempt.target.y)
@@ -463,7 +465,11 @@ pub fn report_estimate(report: &WorldReport) -> usize {
             })
             + attempt.dpi_before.map_or(4, |dpi| u64_len(u64::from(dpi)))
             + attempt.dpi_after.map_or(4, |dpi| u64_len(u64::from(dpi)))
-            + u64_len(attempt.attempt_ms);
+            + u64_len(attempt.attempt_ms)
+            + json_string_len(attempt.operation_id.as_deref().unwrap_or_default())
+            + attempt.prewrite.map_or(4, |rect| {
+                5 + int_len(rect.x) + int_len(rect.y) + int_len(rect.w) + int_len(rect.h)
+            });
     }
     // No restoration ingress exists on the wire: every report is a
     // fresh-observation report and the adapter sends no restoration key.

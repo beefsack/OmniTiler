@@ -34,6 +34,8 @@ fn attempt(
         dpi_before: None,
         dpi_after: None,
         attempt_ms: ms,
+        operation_id: None,
+        prewrite: None,
     }
 }
 
@@ -53,6 +55,8 @@ fn dpi_attempt(
         dpi_before: before,
         dpi_after: after,
         attempt_ms: ms,
+        operation_id: None,
+        prewrite: None,
     }
 }
 
@@ -1487,6 +1491,8 @@ fn learned_ignores_dpi_refused_threw() {
                     dpi_before: before,
                     dpi_after: after,
                     attempt_ms: 1000,
+                    operation_id: None,
+                    prewrite: None,
                 }],
                 1000,
                 true,

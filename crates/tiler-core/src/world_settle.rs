@@ -784,71 +784,157 @@ impl WorldEngine {
         });
     }
 
-    /// Settle outstanding explicit float-placement targets against the raw
-    /// observation and explicit property feedback before the sweep. Accepted
-    /// (`Applied`) feedback is recorded by the adapter's read-back proof;
-    /// here only the terminal outcomes and observation proofs settle:
-    /// confirmation (observed frame equals the target), proven refusal or
-    /// external supersession feedback, explicit close, or a native frame
-    /// that matches neither the command-time source nor the target (newer
-    /// input wins, never fought). Possibly-executed latches ambiguity under
-    /// the operation identity so the hold survives the feedback ack;
-    /// absence without a close retains across the gap.
+    /// Settle outstanding explicit float-placement targets against
+    /// operation-correlated raw frame attempts plus the staged observation.
+    /// The adapter reports mechanical write facts only (setter disposition,
+    /// immediate pre-write and post-write frames, DPI pair); the core owns
+    /// every verdict here. Correlation is exact: an attempt settles a float
+    /// only when operation id, window, and target all match the retained
+    /// target. Window/geometry-only matches never count.
+    ///
+    /// Evidence stages BEFORE any readability or authority hold: a gapped
+    /// report (incomplete inventory, gesture barrier, minimized or
+    /// unreadable fact) never erases knowledge the shared consumed-frames
+    /// watermark forgets after acknowledgement. The latest fresh attempt
+    /// rides under the operation as [`RetainedFloat::pending`] until
+    /// settlement, close, replacement, or reset, and reconciles against
+    /// later readable complete observations with no replay from either
+    /// side (a spent operation is never re-dispatched or reissued).
+    ///
+    /// - Confirmation needs the staged observation at the target (native
+    ///   truth, never setter success). A correlated readback at the target
+    ///   corroborates, but the observation decides.
+    /// - Explicit refusal needs a readable preimage that survived the
+    ///   refused setter unchanged (readback equals prewrite, both readable,
+    ///   prewrite differs from the target, staged fact still names the
+    ///   preimage). Refusal evidence received during a gap is preserved
+    ///   and reconciles once a readable preimage arrives after the
+    ///   acknowledgement, instead of degrading into a permanent ambiguous
+    ///   hold.
+    /// - Anything else fresh and correlated latches no-reactuation
+    ///   ambiguity under the operation identity: accepted clamp/mismatch,
+    ///   throw, unreadable proof, and DPI-invalidated writes all hold
+    ///   without re-actuation. A DPI transition never confirms and never
+    ///   retries; it holds exactly like any other ambiguous write, and a
+    ///   fresh transition additionally suspends same-report confirmation
+    ///   until the next stable observation.
+    /// - With no fresh correlated evidence the observation still decides,
+    ///   but only on truthful readable complete data: at-target confirms,
+    ///   an ambiguous latch holds (an accepted clamp never masquerades as
+    ///   external supersession), and a frame matching neither the
+    ///   command-time source nor the target proves newer native input and
+    ///   drops the stale target without a fight.
+    /// - Explicit closes always settle, even across gaps; absent facts hold
+    ///   across the gap (never an inferred close). Incomplete inventory and
+    ///   gesture barriers hold every flight without settling.
     pub(crate) fn settle_floats(&mut self, report: &WorldReport) {
+        use crate::world_frames::{dpi_basis_changed, is_stale_replay};
+        use crate::world_report::FrameSetter;
         let mut keep: Vec<RetainedFloat> = Vec::new();
         for mut retained in std::mem::take(&mut self.retained_floats) {
-            let feedback = report
-                .feedback
-                .iter()
-                .find(|f| f.operation_id == retained.operation_id);
-            if matches!(
-                feedback.map(|f| f.outcome),
-                Some(AttemptOutcome::RefusedProven | AttemptOutcome::SupersededExternal)
-            ) {
-                continue;
-            }
             if self.staged.closes.contains(&retained.window) {
                 continue;
             }
-            if matches!(
-                feedback.map(|f| f.outcome),
-                Some(AttemptOutcome::PossiblyExecuted)
-            ) {
-                retained.ambiguous = true;
+            // Stage exact-correlated evidence first: a gap hold below must
+            // never erase what the shared consumed watermark will forget.
+            // At most one attempt per window rides a report, so the latest
+            // fresh evidence simply replaces the retained copy. A DPI
+            // transition on fresh evidence suspends same-report verdicts
+            // (the write straddles coordinate bases); the evidence still
+            // latches below and reconciles from later stable observations.
+            let mut fresh_evidence = false;
+            let mut fresh_dpi_flip = false;
+            for attempt in report.frames.iter().filter(|attempt| {
+                attempt.window == retained.window
+                    && attempt.target == retained.target
+                    && attempt.operation_id.as_deref() == Some(retained.operation_id.as_str())
+            }) {
+                if self
+                    .consumed_frames
+                    .get(&retained.window)
+                    .is_some_and(|prior| is_stale_replay(prior, attempt))
+                {
+                    continue;
+                }
+                if dpi_basis_changed(attempt.dpi_before, attempt.dpi_after) {
+                    fresh_dpi_flip = true;
+                }
+                retained.pending = Some(attempt.clone());
+                fresh_evidence = true;
             }
-            match self
-                .staged
-                .facts
-                .get(&retained.window)
-                .and_then(|fact| fact.rect)
+            // Every verdict below except close needs truthful readable
+            // complete data: complete inventory, no gesture barrier, and a
+            // non-minimized readable fact. Anything less holds without
+            // settling, but latches conservatively from retained evidence
+            // so a later readable report reconciles instead of dropping
+            // the operation as external input.
+            let readable = report.inventory_complete
+                && !report.gesture_barrier
+                && self
+                    .staged
+                    .facts
+                    .get(&retained.window)
+                    .is_some_and(|fact| !fact.minimized && fact.rect.is_some());
+            let Some(current) = readable
+                .then(|| {
+                    self.staged
+                        .facts
+                        .get(&retained.window)
+                        .and_then(|fact| fact.rect)
+                })
+                .flatten()
+            else {
+                if retained.pending.is_some() {
+                    // Accepted clamp/throw/unreadable/DPI evidence and
+                    // not-yet-provable refusal all latch no-reactuation
+                    // ambiguity: the spent operation never retries, and
+                    // the core never reissues it.
+                    retained.ambiguous = true;
+                }
+                keep.push(retained);
+                continue;
+            };
+            if current == retained.target && !fresh_dpi_flip {
+                // Confirmed by native observation. A DPI transition on
+                // this report's fresh evidence suspends the verdict: the
+                // write straddles coordinate bases, so confirmation waits
+                // for the next stable observation.
+                continue;
+            }
+            if let Some(pending) = retained.pending.as_ref()
+                && !dpi_basis_changed(pending.dpi_before, pending.dpi_after)
+                && matches!(pending.setter, FrameSetter::Refused)
+                && let (Some(pre), Some(readback)) = (pending.prewrite, pending.readback)
+                && pre != retained.target
+                && readback == pre
+                && current == pre
             {
-                None => {
-                    // Absent everywhere and not closed: never infer a
-                    // close; retain across the gap.
-                    keep.push(retained);
-                }
-                Some(current) => {
-                    if current == retained.target {
-                        // Confirmed by observation.
-                    } else if retained.ambiguous {
-                        // Ambiguous actuation (a clamp/partial setter can
-                        // leave a frame matching neither source nor
-                        // target): hold the target without re-actuation
-                        // until confirmation, proven refusal, explicit
-                        // external supersession, or close — exactly like a
-                        // possibly-executed transfer. The latch survives
-                        // the feedback ack, so never mistake the
-                        // ambiguity for newer input.
-                        keep.push(retained);
-                    } else if retained.source.is_some_and(|source| current != source) {
-                        // Native frame matches neither the command-time
-                        // source nor the target: newer external input
-                        // (manual move/resize) wins; the stale target drops
-                        // rather than fighting it.
-                    } else {
-                        keep.push(retained);
-                    }
-                }
+                // Proven refusal reconciled against readable evidence: the
+                // retained refusal preimage survived unchanged, possibly
+                // across the acknowledgement gap, on a stable DPI basis.
+                // No replay is involved; the stale target simply drops.
+                continue;
+            }
+            if fresh_evidence {
+                // Any fresh correlated evidence that is neither confirmation
+                // nor proven refusal latches ambiguity: accepted mismatch,
+                // throw, unreadable proof, refused-with-moved-preimage, and
+                // DPI-invalidated writes all hold without re-actuation.
+                retained.ambiguous = true;
+                keep.push(retained);
+                continue;
+            }
+            if retained.ambiguous {
+                keep.push(retained);
+                continue;
+            }
+            if retained.source.is_some_and(|source| current != source) {
+                // Native frame matches neither the command-time
+                // source nor the target: newer external input
+                // (manual move/resize) wins; the stale target drops
+                // rather than fighting it.
+            } else {
+                keep.push(retained);
             }
         }
         self.retained_floats = keep;

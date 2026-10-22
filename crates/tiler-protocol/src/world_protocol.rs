@@ -64,8 +64,11 @@
 //! frameAttempts[] (optional, tolerant: missing backfills []):
 //!   {win, target:[x,y,w,h], setter:accepted|refused|threw,
 //!    readback:[x,y,w,h]|null, dpiBefore:number|null, dpiAfter:number|null,
-//!    attemptMs:"u64"} - mechanical write/readback facts only, never a
-//!   policy verdict; at most one entry per window
+//!    attemptMs:"u64", op:""|id, pre:[x,y,w,h]|null} - mechanical
+//!   write/readback facts only, never a policy verdict; at most one entry
+//!   per window. `op` names the retained float-placement operation the
+//!   write ran under ("" for ordinary writes, never inferred); `pre` is
+//!   the live frame immediately before the write and requires `op`.
 //! command.op: focus|send|switch-view|select-workspace|select-numbered|
 //!   select-relative|select-previous|select-trailing|send-relative|
 //!   send-numbered|set-workspace-tiling|
@@ -636,9 +639,22 @@ fn decode_frame_attempt(
             "dpiBefore",
             "dpiAfter",
             "attemptMs",
+            "op",
+            "pre",
         ],
     )?;
     let target_value = map.get("target").ok_or_else(malformed)?;
+    let operation_id = match map.get("op") {
+        None => return Err(malformed()),
+        Some(serde_json::Value::String(op)) if op.is_empty() => None,
+        Some(serde_json::Value::String(op)) => Some(op.clone()),
+        Some(_) => return Err(unknown_value()),
+    };
+    let prewrite = match map.get("pre") {
+        None => return Err(malformed()),
+        Some(serde_json::Value::Null) => None,
+        Some(value) => Some(req_rect_value(value)?),
+    };
     Ok(tiler_core::world_report::FrameAttempt {
         window: WindowId(req_id(map, "win")?),
         target: req_rect_value(target_value)?,
@@ -647,6 +663,8 @@ fn decode_frame_attempt(
         dpi_before: opt_u32_or_null(map, "dpiBefore")?,
         dpi_after: opt_u32_or_null(map, "dpiAfter")?,
         attempt_ms: req_u64_str(map, "attemptMs")?,
+        operation_id,
+        prewrite,
     })
 }
 

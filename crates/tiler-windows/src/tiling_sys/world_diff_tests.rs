@@ -997,10 +997,6 @@ fn prune_bounds_generation_scoped_tables() {
         "w-gone".to_owned(),
         ("op-1".to_owned(), rig.out.clone(), rig.ws.clone()),
     );
-    diff.effects.applied_float.insert(
-        "w-gone".to_owned(),
-        ("op-float-live".to_owned(), rect(1, 1, 10, 10)),
-    );
     diff.effects
         .applied_view
         .insert(rig.out.clone(), ("op-stale".to_owned(), rig.ws.clone()));
@@ -1036,7 +1032,6 @@ fn prune_bounds_generation_scoped_tables() {
     assert!(diff.effects.mark_view_spent("op-stale-view"));
     assert!(diff.effects.mark_effect_spent("fx-stale"));
     assert!(!diff.effects.applied_window.contains_key("w-gone"));
-    assert!(!diff.effects.applied_float.contains_key("w-gone"));
     assert_eq!(
         diff.effects.applied_view.get(&rig.out),
         Some(&("op-view-live".to_owned(), rig.ws.clone()))
@@ -1402,11 +1397,17 @@ fn held_scope_blocks_geometry() {
     assert_eq!(stats.held, 1);
 }
 
-// --- float placements ---
+// --- float placements: raw attempts only, never verdicts ---
 
 #[test]
-fn float_token_places_once_fences_and_truthful_settles() {
+fn float_token_places_once_fences_and_reports_raw_attempt() {
+    use tiler_core::world_report::FrameAttempt;
     let rig = rig();
+    // Baseline live frame for the prewrite/readback oracles below.
+    let baseline = rect(0, 0, 800, 600);
+    // A successful placement writes once and reports the mechanical facts
+    // with exact operation correlation: no outcome verdict rides the
+    // feedback lane, and the token plus core observation decide.
     let (mut diff, fresh, mut native) = converted(&rig);
     native.windows.get_mut("w1").unwrap().floating = true;
     let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
@@ -1414,19 +1415,33 @@ fn float_token_places_once_fences_and_truthful_settles() {
     row.frame_authority = Auth::Untouched;
     row.frame_operation = Some("op-9".to_owned());
     reply.windows.push(row);
-    let (stats, feedback) = apply(&mut diff, &reply, &fresh, &mut native);
+    let (stats, feedback, frames) = apply_frames(&mut diff, &reply, &fresh, &mut native, 1000);
     assert_eq!(stats.geometry_writes, 1);
     assert!(
-        feedback
-            .iter()
-            .any(|f| f.operation_id == "op-9" && f.outcome == AttemptOutcome::Applied)
+        feedback.iter().all(|f| f.operation_id != "op-9"),
+        "float placements emit no verdict: {feedback:?}"
     );
+    assert_eq!(frames.len(), 1, "one raw attempt: {frames:?}");
+    let attempt: &FrameAttempt = &frames[0];
+    assert_eq!(attempt.window.0, "w1");
+    assert_eq!(attempt.target, rect(10, 10, 400, 300));
+    assert_eq!(attempt.setter, FrameSetter::Accepted);
+    assert_eq!(attempt.operation_id.as_deref(), Some("op-9"));
+    assert_eq!(attempt.prewrite, Some(baseline));
+    assert_eq!(attempt.readback, Some(rect(10, 10, 400, 300)));
+    assert_eq!(attempt.attempt_ms, 1000);
+    // Second dispatch of the same reply never replays: strictly
+    // at-most-once transport while the core holds the retained target.
     let writes = native.frame_writes;
-    let (stats, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    let (stats, second_feedback, second_frames) =
+        apply_frames(&mut diff, &reply, &fresh, &mut native, 1000);
     assert_eq!(native.frame_writes, writes);
     assert_eq!(stats.geometry_writes, 0);
+    assert!(second_feedback.is_empty());
+    assert!(second_frames.is_empty());
 
-    // Live sticky and fit-excluded intents never take float writes.
+    // Live sticky and fit-excluded intents never take float writes and emit
+    // no attempt at all: the gates hold before any setter.
     for lane in ["sticky", "excluded"] {
         let (mut diff, fresh, mut native) = converted(&rig);
         native.windows.get_mut("w1").unwrap().floating = true;
@@ -1440,12 +1455,16 @@ fn float_token_places_once_fences_and_truthful_settles() {
         row.frame_authority = Auth::Untouched;
         row.frame_operation = Some(format!("op-float-{lane}"));
         reply.windows.push(row);
-        let (stats, _) = apply(&mut diff, &reply, &fresh, &mut native);
+        let (stats, feedback, frames) = apply_frames(&mut diff, &reply, &fresh, &mut native, 1000);
         assert_eq!(stats.geometry_writes, 0, "live {lane} took a float write");
         assert!(stats.held >= 1);
+        assert!(feedback.is_empty());
+        assert!(frames.is_empty(), "gated lane emits no attempt");
     }
 
-    // Clamp settles possibly-executed without repeating the setter.
+    // Clamp reports accepted-with-mismatch plus the readable preimage and
+    // never repeats the setter; refusal, throw, and unreadable proof ride
+    // the same raw lane with no verdict.
     let (mut diff, fresh, mut native) = converted(&rig);
     native.windows.get_mut("w1").unwrap().floating = true;
     native.clamp_frame.insert("w1".to_owned());
@@ -1454,18 +1473,27 @@ fn float_token_places_once_fences_and_truthful_settles() {
     row.frame_authority = Auth::Untouched;
     row.frame_operation = Some("op-float-clamp".to_owned());
     reply.windows.push(row);
-    let (stats, first) = apply(&mut diff, &reply, &fresh, &mut native);
+    let (stats, first_feedback, first_frames) =
+        apply_frames(&mut diff, &reply, &fresh, &mut native, 2000);
     assert_eq!(stats.geometry_writes, 1);
-    assert!(first.iter().any(
-        |f| f.operation_id == "op-float-clamp" && f.outcome == AttemptOutcome::PossiblyExecuted
-    ));
+    assert!(first_feedback.is_empty());
+    assert_eq!(first_frames.len(), 1);
+    assert_eq!(
+        first_frames[0].operation_id.as_deref(),
+        Some("op-float-clamp")
+    );
+    assert_eq!(first_frames[0].setter, FrameSetter::Accepted);
+    assert_eq!(first_frames[0].prewrite, Some(baseline));
+    assert_eq!(first_frames[0].readback, Some(baseline));
     let writes = native.frame_writes;
-    let (stats, second) = apply(&mut diff, &reply, &fresh, &mut native);
+    let (stats, second_feedback, second_frames) =
+        apply_frames(&mut diff, &reply, &fresh, &mut native, 2000);
     assert_eq!(native.frame_writes, writes);
     assert_eq!(stats.geometry_writes, 0);
-    assert!(second.is_empty());
+    assert!(second_feedback.is_empty());
+    assert!(second_frames.is_empty());
 
-    // Throw settles possibly-executed without repeating the setter.
+    // Throw reports the ambiguous setter with the preimage and readback.
     let (mut diff, fresh, mut native) = converted(&rig);
     native.windows.get_mut("w1").unwrap().floating = true;
     native.throw_frame.insert("w1".to_owned());
@@ -1474,15 +1502,24 @@ fn float_token_places_once_fences_and_truthful_settles() {
     row.frame_authority = Auth::Untouched;
     row.frame_operation = Some("op-float-throw".to_owned());
     reply.windows.push(row);
-    let (stats, first) = apply(&mut diff, &reply, &fresh, &mut native);
+    let (stats, first_feedback, first_frames) =
+        apply_frames(&mut diff, &reply, &fresh, &mut native, 3000);
     assert_eq!(stats.geometry_writes, 0);
-    assert!(first.iter().any(
-        |f| f.operation_id == "op-float-throw" && f.outcome == AttemptOutcome::PossiblyExecuted
-    ));
+    assert!(first_feedback.is_empty());
+    assert_eq!(first_frames.len(), 1);
+    assert_eq!(
+        first_frames[0].operation_id.as_deref(),
+        Some("op-float-throw")
+    );
+    assert_eq!(first_frames[0].setter, FrameSetter::Threw);
+    assert_eq!(first_frames[0].prewrite, Some(baseline));
+    assert_eq!(first_frames[0].readback, Some(baseline));
     let writes = native.frame_writes;
-    let (_, second) = apply(&mut diff, &reply, &fresh, &mut native);
+    let (_, second_feedback, second_frames) =
+        apply_frames(&mut diff, &reply, &fresh, &mut native, 3000);
     assert_eq!(native.frame_writes, writes);
-    assert!(second.is_empty());
+    assert!(second_feedback.is_empty());
+    assert!(second_frames.is_empty());
 }
 
 // --- view truthfulness ---
@@ -2562,4 +2599,145 @@ fn shared_frame_convergence_learns_through_production_sequencing() {
         }
         seq_ack(&mut seq, &reply2);
     }
+}
+
+// --- stage 3b2 production float path: command -> diff -> core, no verdicts ---
+//
+// A real `ToggleFloat` command through the production sequencer mints the
+// retained placement token; the real diff writes through the native seam
+// and reports the mechanical attempt with exact operation correlation plus
+// the immediate pre-write frame; the sequencer carries it into the core,
+// which holds the token on clamp ambiguity. No float outcome verdict ever
+// rides the feedback lane, and the held placement never re-actuates.
+
+#[test]
+fn float_production_seam_reports_raw_attempt_and_core_holds_token() {
+    use tiler_core::boundary::CoreCommand;
+    let mut rig = rig();
+    let mut seq = WorldSequencer::bootstrap(ADAPTER, GENERATION).expect("bootstrap");
+    let report = dispatch_obs(&mut seq, &rig, 1001, 1000);
+    let reply = seq_deliver(&mut seq, &report);
+    seq_ack(&mut seq, &reply);
+    // Real command: explicit float placement for w1 under a clamping setter.
+    let target = rect(10, 10, 400, 300);
+    let baseline = rect(0, 0, 800, 600);
+    seq.invalidate();
+    let command = WorldCommand::Operation(CoreCommand::ToggleFloat {
+        window: "w1".to_owned(),
+        float_rect: Some(target),
+    });
+    let report = seq
+        .try_dispatch_with_command(
+            &rig.state.inputs(),
+            Some(&rig.observed),
+            &rig.retained,
+            &rig.areas,
+            1001,
+            2000,
+            command,
+        )
+        .expect("float dispatch");
+    assert_eq!(report.command_seq, Some(1));
+    let reply = seq_deliver(&mut seq, &report);
+    let token = reply
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "w1")
+        .and_then(|row| row.frame_operation.clone())
+        .expect("core mints the placement token");
+    assert_eq!(token, "op-1");
+    seq_ack(&mut seq, &reply);
+    // Real actuation under a throwing setter: the write may have executed,
+    // so the seam reports the ambiguous attempt with the readable preimage
+    // and readback but no verdict. The transient backoff lapses by the next
+    // report, so the held token stays published while the core holds.
+    let captured = capture_world(
+        &rig.state.inputs(),
+        Some(&rig.observed),
+        &rig.retained,
+        &rig.areas,
+        1001,
+    );
+    let fresh =
+        FreshHost::from_sources(&rig.state.inputs(), &rig.observed, &rig.retained, &captured);
+    let mut native = FakeNative::seeded(&fresh);
+    native.throw_frame.insert("w1".to_owned());
+    let mut diff = HostDiff::new(ADAPTER, GENERATION);
+    diff.gate.current_obs = seq.current_obs();
+    let mut attempts = Vec::new();
+    let (stats, feedback) =
+        apply_world_reply(&mut diff, &reply, &fresh, &mut native, &mut attempts, 3000);
+    // One write: the floated sibling reflows; the throwing placement writes
+    // nothing itself.
+    assert_eq!(stats.geometry_writes, 1);
+    assert!(
+        feedback.is_empty(),
+        "float placements emit no verdict: {feedback:?}"
+    );
+    let attempt = attempts
+        .iter()
+        .find(|attempt| attempt.window.0 == "w1")
+        .expect("raw float attempt rides: {attempts:?}");
+    assert_eq!(attempt.target, target);
+    assert_eq!(attempt.setter, FrameSetter::Threw);
+    assert_eq!(attempt.operation_id.as_deref(), Some(token.as_str()));
+    assert_eq!(attempt.prewrite, Some(baseline));
+    assert_eq!(attempt.readback, Some(baseline));
+    assert_eq!(attempt.attempt_ms, 3000);
+    for attempt in &attempts {
+        seq.note_frame_attempt(attempt.clone());
+    }
+    diff.gate.note_applied(&reply);
+    sync_observed_from_native(&mut rig, &native);
+    // The correlated attempt rides the next report; the core holds the token
+    // with no verdict and stages no replay.
+    seq.invalidate();
+    let report2 = dispatch_obs(&mut seq, &rig, 1001, 4000);
+    assert!(
+        report2.feedback.iter().all(|f| f.operation_id != token),
+        "no float verdict rides: {:?}",
+        report2.feedback
+    );
+    let carried = report2
+        .frames
+        .iter()
+        .find(|attempt| attempt.window.0 == "w1")
+        .expect("correlated attempt rides");
+    assert_eq!(carried.target, target);
+    assert_eq!(carried.operation_id.as_deref(), Some(token.as_str()));
+    assert_eq!(carried.prewrite, Some(baseline));
+    let reply2 = seq_deliver(&mut seq, &report2);
+    let row = reply2
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "w1")
+        .expect("second row");
+    assert_eq!(
+        row.frame_operation.as_deref(),
+        Some(token.as_str()),
+        "ambiguous hold keeps the token"
+    );
+    assert_eq!(reply2.command_result, None, "held placement never replays");
+    seq_ack(&mut seq, &reply2);
+    // After the acknowledgement the held placement still rides the token
+    // with no new attempt and no verdict.
+    seq.invalidate();
+    let report3 = dispatch_obs(&mut seq, &rig, 1001, 5000);
+    assert!(
+        report3.frames.is_empty(),
+        "consumed attempt never redelivers: {:?}",
+        report3.frames
+    );
+    let reply3 = seq_deliver(&mut seq, &report3);
+    assert_eq!(
+        reply3
+            .windows
+            .iter()
+            .find(|row| row.lifetime.0 == "w1")
+            .and_then(|row| row.frame_operation.clone())
+            .as_deref(),
+        Some(token.as_str()),
+        "hold survives the ack"
+    );
+    seq_ack(&mut seq, &reply3);
 }

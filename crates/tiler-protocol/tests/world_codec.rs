@@ -451,7 +451,7 @@ fn frame_attempts_decode_tolerantly_and_stay_bounded() {
     value["frameAttempts"] = serde_json::json!([{
         "win": "win-a", "target": [0, 0, 800, 560], "setter": "accepted",
         "readback": [0, 0, 700, 560], "dpiBefore": 96, "dpiAfter": 120,
-        "attemptMs": "1000",
+        "attemptMs": "1000", "op": "op-7", "pre": [0, 0, 800, 560],
     }]);
     let wire = value.to_string();
     let report = decode_request(&wire).expect("attempts decode");
@@ -463,6 +463,37 @@ fn frame_attempts_decode_tolerantly_and_stay_bounded() {
     assert_eq!(attempt.dpi_before, Some(96));
     assert_eq!(attempt.dpi_after, Some(120));
     assert_eq!(attempt.attempt_ms, 1000);
+    assert_eq!(attempt.operation_id.as_deref(), Some("op-7"));
+    assert_eq!(
+        attempt.prewrite,
+        Some(tiler_core::geometry::Rect {
+            x: 0,
+            y: 0,
+            w: 800,
+            h: 560
+        })
+    );
+    // Ordinary writes carry an empty operation id and no prewrite.
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["frameAttempts"] = serde_json::json!([{
+        "win": "win-a", "target": [0, 0, 800, 560], "setter": "refused",
+        "readback": null, "dpiBefore": null, "dpiAfter": null,
+        "attemptMs": "1001", "op": "", "pre": null,
+    }]);
+    let report = decode_request(&value.to_string()).expect("ordinary decodes");
+    assert_eq!(report.frames[0].operation_id, None);
+    assert_eq!(report.frames[0].prewrite, None);
+    // A prewrite without an operation id refuses: only placement writes
+    // carry a preimage.
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["frameAttempts"] = serde_json::json!([{
+        "win": "win-a", "target": [0, 0, 800, 560], "setter": "refused",
+        "readback": null, "dpiBefore": null, "dpiAfter": null,
+        "attemptMs": "1001", "op": "", "pre": [0, 0, 800, 560],
+    }]);
+    let error = decode_request(&value.to_string()).expect_err("pre without op refuses");
+    assert_eq!(error.kind, "snapshot-invalid");
+    assert_eq!(error.message, "frame-pre-without-operation");
     let estimate = tiler_core::world_report::report_estimate(&report);
     assert!(
         estimate >= wire.len(),
@@ -478,7 +509,7 @@ fn frame_attempts_decode_tolerantly_and_stay_bounded() {
     value["frameAttempts"] = serde_json::json!([{
         "win": "win-a", "target": [0, 0, 800, 560], "setter": "clamped",
         "readback": null, "dpiBefore": null, "dpiAfter": null,
-        "attemptMs": "1000",
+        "attemptMs": "1000", "op": "", "pre": null,
     }]);
     let error = decode_request(&value.to_string()).expect_err("bad setter refuses");
     assert_eq!(error.kind, "unknown-value");
@@ -486,7 +517,7 @@ fn frame_attempts_decode_tolerantly_and_stay_bounded() {
     value["frameAttempts"] = serde_json::json!([{
         "win": "win-a", "target": [0, 0, 800, 560], "setter": "threw",
         "readback": null, "dpiBefore": null, "dpiAfter": null,
-        "attemptMs": "1000", "verdict": "clamp",
+        "attemptMs": "1000", "op": "", "pre": null, "verdict": "clamp",
     }]);
     let error = decode_request(&value.to_string()).expect_err("unknown field refuses");
     assert_eq!(error.kind, "unknown-field");
@@ -494,9 +525,11 @@ fn frame_attempts_decode_tolerantly_and_stay_bounded() {
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["frameAttempts"] = serde_json::json!([
         {"win": "win-a", "target": [0, 0, 800, 560], "setter": "refused",
-         "readback": null, "dpiBefore": null, "dpiAfter": null, "attemptMs": "1000"},
+         "readback": null, "dpiBefore": null, "dpiAfter": null, "attemptMs": "1000",
+         "op": "", "pre": null},
         {"win": "win-a", "target": [0, 0, 800, 560], "setter": "refused",
-         "readback": null, "dpiBefore": null, "dpiAfter": null, "attemptMs": "1001"},
+         "readback": null, "dpiBefore": null, "dpiAfter": null, "attemptMs": "1001",
+         "op": "", "pre": null},
     ]);
     let error = decode_request(&value.to_string()).expect_err("duplicate refuses");
     assert_eq!(error.kind, "snapshot-invalid");

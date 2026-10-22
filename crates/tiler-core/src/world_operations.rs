@@ -1116,12 +1116,12 @@ impl WorldEngine {
         // Explicit float placement retains its target under the stable
         // command operation identity (`op-<cmdSeq>`) so a lost one-shot
         // result reply never loses the placement: later unrelated replies
-        // still carry the row token until observation confirms it, proven
-        // feedback settles it, or a newer intent replaces it. Unfloat
-        // (no rect) withdraws any outstanding target for the window.
-        // Refusals retain nothing. A no-space retry (still floated)
-        // neither retains a new target nor withdraws: the window never
-        // left float, so there is nothing to place or clear.
+        // still carry the row token until native observation confirms it,
+        // operation-correlated raw write facts prove refusal, or a newer
+        // intent replaces it. Unfloat (no rect) withdraws any outstanding
+        // target for the window. Refusals retain nothing. A no-space retry
+        // (still floated) neither retains a new target nor withdraws: the
+        // window never left float, so there is nothing to place or clear.
         if let Some(CommandResult::Float {
             window,
             rect,
@@ -1157,6 +1157,7 @@ impl WorldEngine {
                             output,
                             workspace,
                             ambiguous: false,
+                            pending: None,
                         });
                 }
                 None => {

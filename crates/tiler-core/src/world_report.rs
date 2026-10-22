@@ -416,21 +416,31 @@ impl FrameSetter {
 
 /// One normalized raw frame attempt: the mechanical facts behind a single
 /// native frame write, reported on the next report for the core-owned
-/// anti-fighting policy (see [`crate::world_frames`]). The adapter writes,
+/// anti-fighting policy (see [`crate::world_frames`]) and explicit
+/// float-placement completion (see [`crate::world_engine::WorldEngine`]
+/// retained floats settled in [`crate::world_settle`]). The adapter writes,
 /// re-reads, and reports; the core compares desired and observed and owns
 /// suppression, retry backoff, and completion. Never a policy conclusion:
-/// no clamp/suppress verdict rides here.
+/// no clamp/suppress verdict and no float outcome verdict ride here.
 ///
 /// - `target` is the attempted frame (the core's published desire, echoed
 ///   as correlation so the core matches the attempt to its desire).
 /// - `readback` is the immediate post-write frame (`None` = unreadable).
 /// - `dpi_before`/`dpi_after` are the live window DPI around the write
 ///   (`None` = unreadable, never guessed). A changed basis invalidates the
-///   placement: it never becomes a stable clamp.
+///   placement: it never becomes a stable clamp and never confirms a float.
 /// - `attempt_ms` is the adapter monotonic clock at the write, in the same
 ///   arbitrary-epoch milliseconds as the report `monotonic_ms`. The core
 ///   consumes each attempt idempotently by this stamp, so redelivery after
 ///   a lost acknowledgement never renews backoff.
+/// - `operation_id` correlates an explicit float-placement write to its
+///   retained core operation (`Some("op-<cmdSeq>")`, exact match on
+///   operation id plus window plus target). `None` is an ordinary frame
+///   write with no placement authority: it never settles a float.
+/// - `prewrite` is the live frame immediately before the write
+///   (`None` = unreadable). Only an explicit native refusal with an
+///   unchanged readable preimage proves refusal; anything else latches
+///   ambiguity. `Some` without an operation id is invalid.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrameAttempt {
     pub window: WindowId,
@@ -440,6 +450,8 @@ pub struct FrameAttempt {
     pub dpi_before: Option<u32>,
     pub dpi_after: Option<u32>,
     pub attempt_ms: u64,
+    pub operation_id: Option<String>,
+    pub prewrite: Option<Rect>,
 }
 
 /// One screen observation: the stable output id, the FULL native output
@@ -936,7 +948,7 @@ pub fn classify_request(
 /// cursor-warp settings, the cursor position, the global focus, the
 /// gesture barrier, feedback (identity, kind, outcome, hold), the monotonic
 /// clock, and frame attempts (window, target, setter, readback, DPI pair,
-/// attempt stamp).
+/// attempt stamp, placement operation id, pre-write frame).
 /// Duplicate detection still compares full typed input equality (see
 /// [`WorldEngine`](crate::world_engine::WorldEngine)); the digest is only
 /// a fast pre-check, never the identity.
@@ -1124,6 +1136,19 @@ pub fn report_digest(report: &WorldReport) -> u64 {
         );
         sep(&mut hash);
         feed(&mut hash, &attempt.attempt_ms.to_string());
+        sep(&mut hash);
+        feed(
+            &mut hash,
+            attempt.operation_id.as_deref().unwrap_or_default(),
+        );
+        sep(&mut hash);
+        feed(
+            &mut hash,
+            &attempt
+                .prewrite
+                .map(|rect| format!("{},{},{},{}", rect.x, rect.y, rect.w, rect.h))
+                .unwrap_or_default(),
+        );
         sep(&mut hash);
     }
     hash
@@ -1332,6 +1357,22 @@ pub fn validate_report_reason(report: &WorldReport) -> Option<&'static str> {
                 && !valid_carried_rect(readback.x, readback.y, readback.w, readback.h)
             {
                 return Some("frame-readback-invalid");
+            }
+            if let Some(prewrite) = attempt.prewrite
+                && !valid_carried_rect(prewrite.x, prewrite.y, prewrite.w, prewrite.h)
+            {
+                return Some("frame-prewrite-invalid");
+            }
+            if let Some(op) = attempt.operation_id.as_deref()
+                && !op.is_empty()
+                && !is_opaque_id(op)
+            {
+                return Some("frame-operation-invalid");
+            }
+            if attempt.operation_id.as_deref().is_none_or(str::is_empty)
+                && attempt.prewrite.is_some()
+            {
+                return Some("frame-pre-without-operation");
             }
             if !seen_frames.insert(attempt.window.0.clone()) {
                 return Some("duplicate-frame");

@@ -1182,3 +1182,107 @@ of cursor-first fresh placement or the entire rearchitecture.
   acceptance remain gaps. The disabled synthetic drag driver stays disabled.
   The four parked focus/send questions and tentative placement/control choices
   are unchanged; no new product question blocks the next slice.
+
+## Stage 3b2 implementation plan
+
+- Next bounded slice: move explicit float-placement completion and its
+  refusal/ambiguity decisions from Windows into core using operation-correlated
+  raw frame-attempt facts, including the immediate pre-write frame. Remove
+  Windows float outcome classification and applied-float policy memory; retain
+  only mechanical dispatch fencing, identity/freshness gates and readback.
+- Preserve exact-target observation confirmation, ambiguity across feedback
+  acknowledgement, no replay, explicit-close and replacement fences, and the
+  existing frame clamp/backoff owner. Ordinary floats gain no automatic writes.
+- Acceptance: core-only setter/readback truth-table and consumption regressions,
+  producer-shaped Windows raw-attempt/sequencer cases, full locked
+  core/protocol/Windows gates, independent review and fixture-only native
+  float-placement checks on both outputs. Clamps and ambiguous setters remain
+  offline predicates because the live fixture cannot enforce them.
+- Transfer/view completion and frameless migration placement follow separately;
+  do not change same-output transfer ordering or the parked focus/send policies.
+
+## Stage 3b2 accepted outcome (2026-10-22)
+
+### Explicit float-placement completion
+
+- Core derives float-placement confirmation, refusal and ambiguity from raw
+  operation-correlated frame attempts plus observed frames. `FrameAttempt`
+  carries `operation_id` and the immediate `prewrite` frame; wire attempt rows
+  require `op` (empty for ordinary writes) and `pre` (null when absent). Exact
+  operation, lifetime and target must match. Digest, validation and request
+  sizing cover both fields. Ordinary floats gain no automatic frame authority.
+- Windows emits no float `Property` outcome verdict and retains no
+  applied-float policy map. It only checks mechanical authority/freshness and
+  lifetime, fences dispatch at most once, writes, reads back and reports facts.
+  Transfer/view outcome classification remains native and is not accepted as
+  core-owned by this slice. Their ordering and T2 are unchanged.
+- Confirmation requires readable observed arrival, never setter success.
+  Proven refusal requires an explicitly refused setter, unchanged readable
+  prewrite/readback and a later corroborating observation. Accepted mismatch,
+  throw, missing proof or a DPI-invalidated write retains ambiguity without
+  re-actuation. A fresh DPI transition bars same-report confirmation; later
+  stable target observation can confirm. New float intent replaces the old
+  operation; explicit close settles even across observation gaps.
+- Correlated attempt evidence is retained under its float operation before
+  inventory/gesture/minimized/unreadable holds, independently of the shared
+  frame-consumption watermark. This preserves confirmation/refusal evidence
+  after acknowledgement and prevents a clamped third frame from being mistaken
+  for external input on recovery. Without ambiguous attempt evidence, the
+  existing source/target external-input rule is unchanged.
+- Independent review reproduced an initial gap-consumption defect for incomplete
+  inventory, gesture barriers and DPI-changing third frames. The retained-raw-
+  evidence correction and permanent recovery/ack/refusal/close regressions pass;
+  final review accepted the corrected ordering and lifetime-scoped state.
+
+### Verification and native limits
+
+- Final locked core/protocol/Windows build, all-target tests and strict all-target
+  clippy pass: **2,348 passed, zero failed, one ignored across 48 suites**.
+  Workspace formatting and whitespace checks pass. Core-only cases cover the
+  setter/readback matrix, exact correlation, forged ids, replay, observation
+  gaps, acknowledgement, replacement and DPI transitions. Windows production
+  diff/write/readback/sequencer cases assert raw correlation, no float verdict
+  feedback and no repeated dispatch. The shared tiled convergence table is
+  unchanged; float connector coverage is currently a production seam test,
+  not an additional shared action-case table.
+- The final artifact passed fixture-only native checks on both outputs: normal
+  float toggles reached the exact core-selected centered frame, peers reflowed,
+  one geometry-write trace row accompanied each placement, and later physical
+  frames stayed stable. Unfloat restored tiled coverage; later quiet reads
+  found no repeated actuation. Selection hide/reveal and both-direction
+  cross-DPI stay sends also passed with independent frame/visibility/focus
+  observations and exact caller-id/native-lifetime/managed-token joins.
+- Production trace does not expose float-operation/raw-attempt correlation or
+  retained-float state. Native frames establish placement, not internal flight
+  retirement; that correlation and retirement remain offline assertions.
+  Clamp/refused/throw predicates remain offline because fixture size hints do
+  not enforce programmatic clamps. No physical drag/shortcut/game acceptance
+  or transient visible-duration claim is made.
+- Exact-owner stop, independent restore and fixture shutdown left no owned
+  processes/windows, ledger or pending controls. Settings bytes, relevant
+  SPI/taskbar state and protected-window geometry matched baseline. Raw scripts,
+  source/artifact identities and native readbacks remain outside the repository.
+  Initial PowerShell harness arithmetic and launch-gate issues were corrected;
+  cleanup verified their bounded effects, with no product workaround or
+  unresolved restoration issue. No dependency, unsafe code, input hook or
+  polling loop was added. Explicit float attempts add one native frame read
+  and bounded retained-evidence storage; cost was not benchmarked.
+
+### Remaining boundary and exact next action
+
+- Windows remains a working dogfood slice. Stage 3b is incomplete: next extract
+  transfer/view completion and anti-fighting from `world_diff.rs` into core,
+  including standalone/follow/target/refill phases and `EffectTracker` policy
+  memory. Use raw correlated attempt/proof facts rather than adapter verdicts;
+  retain mechanical dispatch fencing, lifetime/freshness vetoes and truthful
+  native membership/view receipts. Stage 3b2 provides the gap-safe evidence
+  retention pattern, not a completed transfer/view contract.
+- Frameless/floating-source migration placement remains a separate slice;
+  native origin-delta remapping is still active. Preserve cross-output-only
+  pre-arrival tile publication and same-output follow ordering.
+- Stages 4 and 5 remain untouched. The core interface is not yet settled for
+  KDE/macOS ports: their float placements must emit raw attempts with `op`/`pre`
+  instead of `Property` verdicts, and ordinary frame attempts must supply empty
+  `op` plus null `pre`. Further transfer/view and gesture/presentation changes
+  remain ahead. Existing tentative choices and all four parked focus/send
+  questions are unchanged; no new product question blocks the next slice.

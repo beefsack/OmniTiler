@@ -453,7 +453,7 @@ fn applied_outcomes(feedback: &[tiler_core::world_report::AttemptFeedback]) -> V
 }
 
 #[test]
-fn production_setter_lie_never_reports_applied() {
+fn production_setter_lie_reports_raw_attempt_without_verdict() {
     let mut env = env_with(101_001);
     let ws = "ws1".to_owned();
     let out = env.state.output_token(DEV1);
@@ -463,6 +463,8 @@ fn production_setter_lie_never_reports_applied() {
     let observed = vec![observed_for(&key, "w1", frozen, plain_facts())];
     script_live(&key, "w1", frozen, plain_facts());
     // Setter accepts but the frame never moves: the app held its size.
+    // The seam reports the mechanical attempt with exact operation
+    // correlation and no outcome verdict; the core settles it.
     S_SET_OK.with(|m| m.borrow_mut().insert(key.hwnd, true));
     let (mut diff, fresh) = convert(&env, &observed);
     let mut reply = reply_shell(7, 1, &[(out.as_str(), ws.as_str())]);
@@ -470,22 +472,28 @@ fn production_setter_lie_never_reports_applied() {
         .windows
         .push(float_row(&out, &ws, "w1", rect(100, 100, 400, 300), "op-1"));
     let mut native = assemble(&mut env, scripted());
+    let mut attempts = Vec::new();
     let (stats, feedback) =
-        apply_world_reply(&mut diff, &reply, &fresh, &mut native, &mut Vec::new(), 0);
-    assert!(applied_outcomes(&feedback).is_empty(), "{feedback:?}");
-    assert!(
-        feedback.iter().any(|f| f.operation_id == "op-1"
-            && f.kind == AttemptKind::Property
-            && f.outcome == AttemptOutcome::PossiblyExecuted),
-        "{feedback:?}"
+        apply_world_reply(&mut diff, &reply, &fresh, &mut native, &mut attempts, 0);
+    assert!(feedback.is_empty(), "{feedback:?}");
+    assert_eq!(attempts.len(), 1, "{attempts:?}");
+    let attempt = &attempts[0];
+    assert_eq!(attempt.window.0, "w1");
+    assert_eq!(attempt.target, rect(100, 100, 400, 300));
+    assert_eq!(
+        attempt.setter,
+        tiler_core::world_report::FrameSetter::Accepted
     );
+    assert_eq!(attempt.operation_id.as_deref(), Some("op-1"));
+    assert_eq!(attempt.prewrite, Some(frozen));
+    assert_eq!(attempt.readback, Some(frozen));
     assert_eq!(stats.geometry_writes, 1);
     assert!(stats.held > 0);
     assert_eq!(S_SET_CALLS.with(|m| m.borrow().len()), 1);
 }
 
 #[test]
-fn production_explicit_refusal_settles_refused_proven() {
+fn production_explicit_refusal_reports_raw_attempt_without_verdict() {
     let mut env = env_with(102_001);
     let ws = "ws1".to_owned();
     let out = env.state.output_token(DEV1);
@@ -494,7 +502,9 @@ fn production_explicit_refusal_settles_refused_proven() {
     let frozen = rect(0, 0, 800, 600);
     let observed = vec![observed_for(&key, "w1", frozen, plain_facts())];
     script_live(&key, "w1", frozen, plain_facts());
-    // Explicit refusal with an unchanged readable preimage.
+    // Explicit refusal with an unchanged readable preimage: the seam
+    // reports setter, preimage, and readback with no verdict; the core
+    // derives the proven refusal from that evidence.
     S_SET_OK.with(|m| m.borrow_mut().insert(key.hwnd, false));
     let (mut diff, fresh) = convert(&env, &observed);
     let mut reply = reply_shell(7, 1, &[(out.as_str(), ws.as_str())]);
@@ -502,15 +512,19 @@ fn production_explicit_refusal_settles_refused_proven() {
         .windows
         .push(float_row(&out, &ws, "w1", rect(100, 100, 400, 300), "op-1"));
     let mut native = assemble(&mut env, scripted());
+    let mut attempts = Vec::new();
     let (_stats, feedback) =
-        apply_world_reply(&mut diff, &reply, &fresh, &mut native, &mut Vec::new(), 0);
-    assert!(applied_outcomes(&feedback).is_empty(), "{feedback:?}");
-    assert!(
-        feedback
-            .iter()
-            .any(|f| f.operation_id == "op-1" && f.outcome == AttemptOutcome::RefusedProven),
-        "{feedback:?}"
+        apply_world_reply(&mut diff, &reply, &fresh, &mut native, &mut attempts, 0);
+    assert!(feedback.is_empty(), "{feedback:?}");
+    assert_eq!(attempts.len(), 1, "{attempts:?}");
+    let attempt = &attempts[0];
+    assert_eq!(
+        attempt.setter,
+        tiler_core::world_report::FrameSetter::Refused
     );
+    assert_eq!(attempt.operation_id.as_deref(), Some("op-1"));
+    assert_eq!(attempt.prewrite, Some(frozen));
+    assert_eq!(attempt.readback, Some(frozen));
 }
 
 #[test]

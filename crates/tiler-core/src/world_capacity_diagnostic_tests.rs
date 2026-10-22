@@ -10,8 +10,8 @@ use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
 use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
-    AttemptFeedback, AttemptKind, AttemptOutcome, FloatOrigin, ScopeAuthority, ScreenReport,
-    WORLD_CONTRACT_VERSION, WindowFact, WorldCommand, WorldReport,
+    FloatOrigin, ScopeAuthority, ScreenReport, WORLD_CONTRACT_VERSION, WindowFact, WorldCommand,
+    WorldReport,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -98,6 +98,71 @@ fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> crate::world_repo
     match engine.handle_report(report) {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn report_with_frames(
+    request_seq: u64,
+    screens: Vec<ScreenReport>,
+    windows: Vec<WindowFact>,
+    focused: &str,
+    command_seq: Option<u64>,
+    command: Option<WorldCommand>,
+    feedback: Vec<crate::world_report::AttemptFeedback>,
+    frames: Vec<crate::world_report::FrameAttempt>,
+) -> WorldReport {
+    let mut out = report(
+        request_seq,
+        screens,
+        windows,
+        focused,
+        command_seq,
+        command,
+        feedback,
+    );
+    out.monotonic_ms = 1000 + request_seq * 1000;
+    out.frames = frames;
+    out
+}
+
+fn float_fact(window: &str, output: &str, rect: Option<Rect>) -> WindowFact {
+    WindowFact {
+        window: WindowId(window.to_owned()),
+        output: OutputId(output.to_owned()),
+        rect,
+        floating: true,
+        fit_excluded: false,
+        fullscreen: false,
+        maximized: false,
+        sticky: false,
+        fixed_auto: false,
+        fixed_suppress: false,
+        hints: WindowSizeHints::none(),
+        minimized: false,
+        observed_workspace: None,
+    }
+}
+
+fn float_attempt(
+    operation: &str,
+    window: &str,
+    target: Rect,
+    setter: crate::world_report::FrameSetter,
+    prewrite: Option<Rect>,
+    readback: Option<Rect>,
+    ms: u64,
+) -> crate::world_report::FrameAttempt {
+    crate::world_report::FrameAttempt {
+        window: WindowId(window.to_owned()),
+        target,
+        setter,
+        readback,
+        dpi_before: None,
+        dpi_after: None,
+        attempt_ms: ms,
+        operation_id: Some(operation.to_owned()),
+        prewrite,
     }
 }
 
@@ -348,13 +413,14 @@ fn float_toggle_unfloat_withdraws_and_replace_reissues() {
 
 #[test]
 fn float_placement_drops_on_newer_native_input_and_proven_refusal() {
-    use crate::world_report::{AttemptFeedback, AttemptKind, AttemptOutcome};
+    use crate::world_report::FrameSetter;
     let mut engine = WorldEngine::new("gen-1").expect("generation");
     let roomy = vec![screen_sized("out-a", 0, 800, 560, true)];
     accepted(
         &mut engine,
         &report(1, roomy.clone(), two_tiled(), "", None, None, vec![]),
     );
+    let source = rect(0, 0, 40, 90);
     let target = rect(10, 10, 200, 150);
     place_float(&mut engine, 2, two_tiled(), "win-a", Some(target));
     // Native frame matching neither source nor target wins without a fight:
@@ -380,23 +446,29 @@ fn float_placement_drops_on_newer_native_input_and_proven_refusal() {
         "foreign input supersedes: {row:?}"
     );
     assert!(row.floating, "exception retained: {row:?}");
-    // Proven refusal settles the replacement too.
+    // A native refusal with an unchanged readable preimage settles the
+    // replacement too: only exact operation-id plus window plus target
+    // correlation counts.
     place_float(&mut engine, 4, two_tiled(), "win-a", Some(target));
     let settled = accepted(
         &mut engine,
-        &report(
+        &report_with_frames(
             5,
             roomy,
             two_tiled(),
             "",
             None,
             None,
-            vec![AttemptFeedback {
-                operation_id: "op-14".to_owned(),
-                kind: AttemptKind::Property,
-                outcome: AttemptOutcome::RefusedProven,
-                hold: None,
-            }],
+            vec![],
+            vec![float_attempt(
+                "op-14",
+                "win-a",
+                target,
+                FrameSetter::Refused,
+                Some(source),
+                Some(source),
+                6000,
+            )],
         ),
     );
     assert_eq!(
@@ -605,48 +677,61 @@ fn all_minimized_scope_stays_controlled() {
 
 #[test]
 fn float_ambiguous_third_frame_holds_across_ack() {
+    use crate::world_report::FrameSetter;
     let mut engine = WorldEngine::new("gen-1").expect("generation");
     let roomy = vec![screen_sized("out-a", 0, 800, 560, true)];
     accepted(
         &mut engine,
         &report(1, roomy.clone(), two_tiled(), "", None, None, vec![]),
     );
+    let source = rect(0, 0, 40, 90);
     let target = rect(10, 10, 200, 150);
     place_float(&mut engine, 2, two_tiled(), "win-a", Some(target));
-    // Clamp leaves a third frame (neither source nor target) under ambiguity.
-    let mut third = fact("win-a", "out-a", 0);
-    third.rect = Some(rect(400, 300, 210, 160));
-    third.floating = true;
+    // A clamping setter leaves a third frame (neither source nor target):
+    // the raw accepted attempt with a mismatching readback latches
+    // ambiguity under the operation identity. The same evidence also feeds
+    // clamp suppression, so the token is withheld while the retained target
+    // stays outstanding: no re-actuation, no verdict.
+    let third = rect(400, 300, 210, 160);
     let ambiguous = accepted(
         &mut engine,
-        &report(
+        &report_with_frames(
             3,
             roomy.clone(),
-            vec![third.clone(), fact("win-b", "out-a", 100)],
+            vec![
+                float_fact("win-a", "out-a", Some(third)),
+                fact("win-b", "out-a", 100),
+            ],
             "",
             None,
             None,
-            vec![AttemptFeedback {
-                operation_id: "op-12".to_owned(),
-                kind: AttemptKind::Property,
-                outcome: AttemptOutcome::PossiblyExecuted,
-                hold: None,
-            }],
+            vec![],
+            vec![float_attempt(
+                "op-12",
+                "win-a",
+                target,
+                FrameSetter::Accepted,
+                Some(source),
+                Some(third),
+                4000,
+            )],
         ),
     );
-    assert_eq!(
-        row_of(&ambiguous, "win-a").frame_operation.as_deref(),
-        Some("op-12"),
-        "ambiguous holds"
-    );
+    assert_eq!(engine.retained_floats.len(), 1, "ambiguous retains");
+    let row = row_of(&ambiguous, "win-a");
+    assert_eq!(row.frame_operation, None, "clamp withholds while held");
+    assert_eq!(row.effective_frame, Some(target));
     // Ack disappears but the same third frame persists: never infer external
-    // from ambiguity. The token holds with no re-actuation.
+    // input from ambiguity. The token holds with no re-actuation.
     let held = accepted(
         &mut engine,
         &report(
             4,
             roomy.clone(),
-            vec![third, fact("win-b", "out-a", 100)],
+            vec![
+                float_fact("win-a", "out-a", Some(third)),
+                fact("win-b", "out-a", 100),
+            ],
             "",
             None,
             None,
@@ -655,33 +740,67 @@ fn float_ambiguous_third_frame_holds_across_ack() {
     );
     let row = row_of(&held, "win-a");
     assert_eq!(
-        row.frame_operation.as_deref(),
-        Some("op-12"),
-        "ambiguous holds across ack: {row:?}"
+        engine.retained_floats.len(),
+        1,
+        "ambiguous holds across ack"
     );
+    assert_eq!(row.frame_operation, None, "still withheld: {row:?}");
     assert_eq!(row.effective_frame, Some(target));
     assert_eq!(held.command_result, None, "no replay while held");
 }
 
 #[test]
-fn float_explicit_supersession_settles_ambiguous() {
+fn float_property_feedback_is_ignored_for_settlement() {
+    use crate::world_report::{AttemptFeedback, AttemptKind, AttemptOutcome, FrameSetter};
     let mut engine = WorldEngine::new("gen-1").expect("generation");
     let roomy = vec![screen_sized("out-a", 0, 800, 560, true)];
     accepted(
         &mut engine,
         &report(1, roomy.clone(), two_tiled(), "", None, None, vec![]),
     );
+    let source = rect(0, 0, 40, 90);
     let target = rect(10, 10, 200, 150);
     place_float(&mut engine, 2, two_tiled(), "win-a", Some(target));
-    let mut third = fact("win-a", "out-a", 0);
-    third.rect = Some(rect(400, 300, 210, 160));
-    third.floating = true;
-    let settled = accepted(
+    // Latch ambiguity with a genuine clamping attempt first. The attempt
+    // also feeds suppression, so the stranded token is withheld, never
+    // re-actuated.
+    let third = rect(400, 300, 210, 160);
+    accepted(
+        &mut engine,
+        &report_with_frames(
+            3,
+            roomy.clone(),
+            vec![
+                float_fact("win-a", "out-a", Some(third)),
+                fact("win-b", "out-a", 100),
+            ],
+            "",
+            None,
+            None,
+            vec![],
+            vec![float_attempt(
+                "op-12",
+                "win-a",
+                target,
+                FrameSetter::Accepted,
+                Some(source),
+                Some(third),
+                4000,
+            )],
+        ),
+    );
+    assert_eq!(engine.retained_floats.len(), 1);
+    // A forged supersession verdict for the operation settles nothing: the
+    // adapter never emits float verdicts, and the core ignores them.
+    let held = accepted(
         &mut engine,
         &report(
-            3,
-            roomy,
-            vec![third, fact("win-b", "out-a", 100)],
+            4,
+            roomy.clone(),
+            vec![
+                float_fact("win-a", "out-a", Some(third)),
+                fact("win-b", "out-a", 100),
+            ],
             "",
             None,
             None,
@@ -694,9 +813,878 @@ fn float_explicit_supersession_settles_ambiguous() {
         ),
     );
     assert_eq!(
+        engine.retained_floats.len(),
+        1,
+        "forged supersession ignored while ambiguous"
+    );
+    assert_eq!(row_of(&held, "win-a").effective_frame, Some(target));
+    // A forged refusal verdict settles nothing either.
+    let still_held = accepted(
+        &mut engine,
+        &report(
+            5,
+            roomy,
+            vec![
+                float_fact("win-a", "out-a", Some(third)),
+                fact("win-b", "out-a", 100),
+            ],
+            "",
+            None,
+            None,
+            vec![AttemptFeedback {
+                operation_id: "op-12".to_owned(),
+                kind: AttemptKind::Property,
+                outcome: AttemptOutcome::RefusedProven,
+                hold: None,
+            }],
+        ),
+    );
+    assert_eq!(
+        engine.retained_floats.len(),
+        1,
+        "forged refusal ignored while ambiguous"
+    );
+    assert_eq!(row_of(&still_held, "win-a").effective_frame, Some(target));
+}
+
+#[test]
+fn float_raw_accepted_attempt_confirms_at_target() {
+    use crate::world_report::FrameSetter;
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let roomy = vec![screen_sized("out-a", 0, 800, 560, true)];
+    accepted(
+        &mut engine,
+        &report(1, roomy.clone(), two_tiled(), "", None, None, vec![]),
+    );
+    let source = rect(0, 0, 40, 90);
+    let target = rect(10, 10, 200, 150);
+    place_float(&mut engine, 2, two_tiled(), "win-a", Some(target));
+    // Setter success alone proves nothing: the staged fact must name the
+    // target too. The correlated readback corroborates the observation.
+    let settled = accepted(
+        &mut engine,
+        &report_with_frames(
+            3,
+            roomy,
+            vec![
+                float_fact("win-a", "out-a", Some(target)),
+                fact("win-b", "out-a", 100),
+            ],
+            "",
+            None,
+            None,
+            vec![],
+            vec![float_attempt(
+                "op-12",
+                "win-a",
+                target,
+                FrameSetter::Accepted,
+                Some(source),
+                Some(target),
+                4000,
+            )],
+        ),
+    );
+    let row = row_of(&settled, "win-a");
+    assert_eq!(row.frame_operation, None, "confirmed: {row:?}");
+    assert!(row.floating, "stays floated: {row:?}");
+}
+
+#[test]
+fn float_dpi_change_blocks_confirmation_until_fresh_evidence() {
+    use crate::world_report::FrameAttempt;
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let roomy = vec![screen_sized("out-a", 0, 800, 560, true)];
+    accepted(
+        &mut engine,
+        &report(1, roomy.clone(), two_tiled(), "", None, None, vec![]),
+    );
+    let source = rect(0, 0, 40, 90);
+    let target = rect(10, 10, 200, 150);
+    place_float(&mut engine, 2, two_tiled(), "win-a", Some(target));
+    // A DPI transition under the write invalidates the placement: even a
+    // matching readback plus a matching observation cannot confirm it on
+    // this report. Unknown DPI on either side is not a transition.
+    let dpi_flip = accepted(
+        &mut engine,
+        &report_with_frames(
+            3,
+            roomy.clone(),
+            vec![
+                float_fact("win-a", "out-a", Some(target)),
+                fact("win-b", "out-a", 100),
+            ],
+            "",
+            None,
+            None,
+            vec![],
+            vec![FrameAttempt {
+                window: WindowId("win-a".to_owned()),
+                target,
+                setter: crate::world_report::FrameSetter::Accepted,
+                readback: Some(target),
+                dpi_before: Some(96),
+                dpi_after: Some(120),
+                attempt_ms: 4000,
+                operation_id: Some("op-12".to_owned()),
+                prewrite: Some(source),
+            }],
+        ),
+    );
+    assert_eq!(
+        row_of(&dpi_flip, "win-a").frame_operation.as_deref(),
+        Some("op-12"),
+        "DPI-changing basis never confirms"
+    );
+    // Fresh stable evidence afterwards confirms through observation alone.
+    let settled = accepted(
+        &mut engine,
+        &report(
+            4,
+            roomy,
+            vec![
+                float_fact("win-a", "out-a", Some(target)),
+                fact("win-b", "out-a", 100),
+            ],
+            "",
+            None,
+            None,
+            vec![],
+        ),
+    );
+    assert_eq!(
         row_of(&settled, "win-a").frame_operation,
         None,
-        "explicit supersession settles"
+        "fresh stable observation confirms"
+    );
+}
+
+#[test]
+fn float_changed_preimage_and_throw_latch_ambiguity() {
+    use crate::world_report::FrameSetter;
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let roomy = vec![screen_sized("out-a", 0, 800, 560, true)];
+    accepted(
+        &mut engine,
+        &report(1, roomy.clone(), two_tiled(), "", None, None, vec![]),
+    );
+    let source = rect(0, 0, 40, 90);
+    let target = rect(10, 10, 200, 150);
+    place_float(&mut engine, 2, two_tiled(), "win-a", Some(target));
+    // A refusal whose readback moved off the preimage proves nothing about
+    // the write: latch ambiguity exactly like a clamp. The attempt also
+    // feeds transient suppression, so the stranded token is withheld, never
+    // re-actuated.
+    let moved = rect(5, 5, 40, 90);
+    let held = accepted(
+        &mut engine,
+        &report_with_frames(
+            3,
+            roomy.clone(),
+            vec![
+                float_fact("win-a", "out-a", Some(moved)),
+                fact("win-b", "out-a", 100),
+            ],
+            "",
+            None,
+            None,
+            vec![],
+            vec![float_attempt(
+                "op-12",
+                "win-a",
+                target,
+                FrameSetter::Refused,
+                Some(source),
+                Some(moved),
+                4000,
+            )],
+        ),
+    );
+    assert_eq!(
+        engine.retained_floats.len(),
+        1,
+        "moved refusal latches ambiguity"
+    );
+    assert_eq!(row_of(&held, "win-a").effective_frame, Some(target));
+    // A throwing setter with unreadable proof latches too, even when the
+    // staged frame still names the source.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    accepted(
+        &mut engine,
+        &report(1, roomy.clone(), two_tiled(), "", None, None, vec![]),
+    );
+    place_float(&mut engine, 2, two_tiled(), "win-a", Some(target));
+    let thrown = accepted(
+        &mut engine,
+        &report_with_frames(
+            3,
+            roomy,
+            vec![
+                float_fact("win-a", "out-a", Some(source)),
+                fact("win-b", "out-a", 100),
+            ],
+            "",
+            None,
+            None,
+            vec![],
+            vec![float_attempt(
+                "op-12",
+                "win-a",
+                target,
+                FrameSetter::Threw,
+                Some(source),
+                None,
+                4000,
+            )],
+        ),
+    );
+    assert_eq!(
+        engine.retained_floats.len(),
+        1,
+        "throw with unreadable proof latches ambiguity"
+    );
+    assert_eq!(row_of(&thrown, "win-a").effective_frame, Some(target));
+}
+
+#[test]
+fn float_forged_correlation_never_settles() {
+    use crate::world_report::{FrameAttempt, FrameSetter};
+    let roomy = vec![screen_sized("out-a", 0, 800, 560, true)];
+    let source = rect(0, 0, 40, 90);
+    let target = rect(10, 10, 200, 150);
+    // Each forged shape runs against a fresh placement: only exact
+    // operation-id plus window plus target correlation settles, and an
+    // ordinary (uncorrelated) attempt is never a placement proof.
+    let forged: Vec<FrameAttempt> = vec![
+        float_attempt(
+            "op-9999",
+            "win-a",
+            target,
+            FrameSetter::Accepted,
+            Some(source),
+            Some(target),
+            4000,
+        ),
+        float_attempt(
+            "op-12",
+            "win-b",
+            target,
+            FrameSetter::Accepted,
+            Some(source),
+            Some(target),
+            4000,
+        ),
+        float_attempt(
+            "op-12",
+            "win-a",
+            rect(11, 11, 200, 150),
+            FrameSetter::Accepted,
+            Some(source),
+            Some(target),
+            4000,
+        ),
+        FrameAttempt {
+            window: WindowId("win-a".to_owned()),
+            target,
+            setter: FrameSetter::Accepted,
+            readback: Some(source),
+            dpi_before: None,
+            dpi_after: None,
+            attempt_ms: 4000,
+            operation_id: None,
+            prewrite: None,
+        },
+    ];
+    for (index, attempt) in forged.into_iter().enumerate() {
+        let mut engine = WorldEngine::new("gen-1").expect("generation");
+        accepted(
+            &mut engine,
+            &report(1, roomy.clone(), two_tiled(), "", None, None, vec![]),
+        );
+        place_float(&mut engine, 2, two_tiled(), "win-a", Some(target));
+        let reply = accepted(
+            &mut engine,
+            &report_with_frames(
+                3,
+                roomy.clone(),
+                vec![
+                    float_fact("win-a", "out-a", Some(source)),
+                    fact("win-b", "out-a", 100),
+                ],
+                "",
+                None,
+                None,
+                vec![],
+                vec![attempt],
+            ),
+        );
+        // Every forged shape leaves the placement outstanding: an ordinary
+        // clamp may withhold the stranded token, but the retained target
+        // never settles from window/geometry-only evidence.
+        assert_eq!(
+            engine.retained_floats.len(),
+            1,
+            "forged shape {index} never settles"
+        );
+        assert_eq!(row_of(&reply, "win-a").effective_frame, Some(target));
+    }
+}
+
+#[test]
+fn float_replay_of_consumed_attempt_never_resurrects() {
+    use crate::world_report::FrameSetter;
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let roomy = vec![screen_sized("out-a", 0, 800, 560, true)];
+    accepted(
+        &mut engine,
+        &report(1, roomy.clone(), two_tiled(), "", None, None, vec![]),
+    );
+    let source = rect(0, 0, 40, 90);
+    let target = rect(10, 10, 200, 150);
+    place_float(&mut engine, 2, two_tiled(), "win-a", Some(target));
+    // Latch ambiguity with a clamping attempt.
+    let third = rect(400, 300, 210, 160);
+    let clamp = float_attempt(
+        "op-12",
+        "win-a",
+        target,
+        FrameSetter::Accepted,
+        Some(source),
+        Some(third),
+        4000,
+    );
+    accepted(
+        &mut engine,
+        &report_with_frames(
+            3,
+            roomy.clone(),
+            vec![
+                float_fact("win-a", "out-a", Some(third)),
+                fact("win-b", "out-a", 100),
+            ],
+            "",
+            None,
+            None,
+            vec![],
+            vec![clamp.clone()],
+        ),
+    );
+    // Redelivering the identical stamp is a lost-ack replay: it changes
+    // nothing and never clears the latched hold.
+    let replayed = accepted(
+        &mut engine,
+        &report_with_frames(
+            4,
+            roomy.clone(),
+            vec![
+                float_fact("win-a", "out-a", Some(third)),
+                fact("win-b", "out-a", 100),
+            ],
+            "",
+            None,
+            None,
+            vec![],
+            vec![clamp],
+        ),
+    );
+    assert_eq!(
+        engine.retained_floats.len(),
+        1,
+        "replay holds without renewal"
+    );
+    assert_eq!(row_of(&replayed, "win-a").effective_frame, Some(target));
+    // Confirmation then redelivery: the settled placement stays settled.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    accepted(
+        &mut engine,
+        &report(1, roomy.clone(), two_tiled(), "", None, None, vec![]),
+    );
+    place_float(&mut engine, 2, two_tiled(), "win-a", Some(target));
+    let confirm = float_attempt(
+        "op-12",
+        "win-a",
+        target,
+        FrameSetter::Accepted,
+        Some(source),
+        Some(target),
+        4000,
+    );
+    let settled = accepted(
+        &mut engine,
+        &report_with_frames(
+            3,
+            roomy.clone(),
+            vec![
+                float_fact("win-a", "out-a", Some(target)),
+                fact("win-b", "out-a", 100),
+            ],
+            "",
+            None,
+            None,
+            vec![],
+            vec![confirm.clone()],
+        ),
+    );
+    assert_eq!(row_of(&settled, "win-a").frame_operation, None);
+    let again = accepted(
+        &mut engine,
+        &report_with_frames(
+            4,
+            roomy,
+            vec![
+                float_fact("win-a", "out-a", Some(target)),
+                fact("win-b", "out-a", 100),
+            ],
+            "",
+            None,
+            None,
+            vec![],
+            vec![confirm],
+        ),
+    );
+    assert_eq!(row_of(&again, "win-a").frame_operation, None);
+}
+
+#[test]
+fn float_incomplete_gesture_minimized_and_unreadable_hold() {
+    use crate::world_report::FrameSetter;
+    let roomy = vec![screen_sized("out-a", 0, 800, 560, true)];
+    let target = rect(10, 10, 200, 150);
+    // Incomplete inventory never confirms, even at the target.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    accepted(
+        &mut engine,
+        &report(1, roomy.clone(), two_tiled(), "", None, None, vec![]),
+    );
+    place_float(&mut engine, 2, two_tiled(), "win-a", Some(target));
+    let mut gap = report_with_frames(
+        3,
+        roomy.clone(),
+        vec![
+            float_fact("win-a", "out-a", Some(target)),
+            fact("win-b", "out-a", 100),
+        ],
+        "",
+        None,
+        None,
+        vec![],
+        vec![],
+    );
+    gap.inventory_complete = false;
+    let held = accepted(&mut engine, &gap);
+    assert_eq!(
+        row_of(&held, "win-a").frame_operation.as_deref(),
+        Some("op-12"),
+        "incomplete inventory holds"
+    );
+    // A gesture barrier holds the same way.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    accepted(
+        &mut engine,
+        &report(1, roomy.clone(), two_tiled(), "", None, None, vec![]),
+    );
+    place_float(&mut engine, 2, two_tiled(), "win-a", Some(target));
+    let mut gesture = report(
+        3,
+        roomy.clone(),
+        vec![
+            float_fact("win-a", "out-a", Some(target)),
+            fact("win-b", "out-a", 100),
+        ],
+        "",
+        None,
+        None,
+        vec![],
+    );
+    gesture.gesture_barrier = true;
+    let held = accepted(&mut engine, &gesture);
+    assert_eq!(
+        row_of(&held, "win-a").frame_operation.as_deref(),
+        Some("op-12"),
+        "gesture holds"
+    );
+    // Minimized and unreadable facts hold: there is no managed observation
+    // to confirm or supersede from. A minimized row carries no token by
+    // shape, but the placement stays retained; an unreadable fact keeps the
+    // stranded token withheld under suppression.
+    for (name, windows) in [
+        (
+            "minimized",
+            vec![
+                WindowFact {
+                    minimized: true,
+                    rect: None,
+                    ..float_fact("win-a", "out-a", None)
+                },
+                fact("win-b", "out-a", 100),
+            ],
+        ),
+        (
+            "unreadable",
+            vec![
+                float_fact("win-a", "out-a", None),
+                fact("win-b", "out-a", 100),
+            ],
+        ),
+    ] {
+        let mut engine = WorldEngine::new("gen-1").expect("generation");
+        accepted(
+            &mut engine,
+            &report(1, roomy.clone(), two_tiled(), "", None, None, vec![]),
+        );
+        place_float(&mut engine, 2, two_tiled(), "win-a", Some(target));
+        let mut stale = report_with_frames(
+            3,
+            roomy.clone(),
+            windows,
+            "",
+            None,
+            None,
+            vec![],
+            vec![float_attempt(
+                "op-12",
+                "win-a",
+                target,
+                FrameSetter::Threw,
+                None,
+                None,
+                4000,
+            )],
+        );
+        stale.monotonic_ms = 4000;
+        accepted(&mut engine, &stale);
+        assert_eq!(engine.retained_floats.len(), 1, "{name} holds");
+    }
+}
+
+#[test]
+fn float_gap_clamp_recovers_without_repeated_row() {
+    use crate::world_report::FrameSetter;
+    let roomy = vec![screen_sized("out-a", 0, 800, 560, true)];
+    let source = rect(0, 0, 40, 90);
+    let target = rect(10, 10, 200, 150);
+    let third = rect(400, 300, 210, 160);
+    // A clamping attempt received during a gap is staged under the
+    // operation before the hold, so the acknowledgement-consuming recovery
+    // report (no repeated attempt row) reconciles from retained evidence
+    // instead of dropping the placement as external input. A minimize
+    // excursion legitimately releases the committed exception geometry, so
+    // that lane asserts retention and no replay rather than the row frame.
+    for (name, gap_windows, incomplete, gesture, expect_effective) in [
+        (
+            "inventory",
+            vec![
+                float_fact("win-a", "out-a", Some(third)),
+                fact("win-b", "out-a", 100),
+            ],
+            true,
+            false,
+            true,
+        ),
+        (
+            "gesture",
+            vec![
+                float_fact("win-a", "out-a", Some(third)),
+                fact("win-b", "out-a", 100),
+            ],
+            false,
+            true,
+            true,
+        ),
+        (
+            "unreadable",
+            vec![
+                float_fact("win-a", "out-a", None),
+                fact("win-b", "out-a", 100),
+            ],
+            false,
+            false,
+            true,
+        ),
+        (
+            "minimized",
+            vec![
+                WindowFact {
+                    minimized: true,
+                    rect: None,
+                    ..float_fact("win-a", "out-a", None)
+                },
+                fact("win-b", "out-a", 100),
+            ],
+            false,
+            false,
+            false,
+        ),
+    ] {
+        let mut engine = WorldEngine::new("gen-1").expect("generation");
+        accepted(
+            &mut engine,
+            &report(1, roomy.clone(), two_tiled(), "", None, None, vec![]),
+        );
+        place_float(&mut engine, 2, two_tiled(), "win-a", Some(target));
+        let mut gapped = report_with_frames(
+            3,
+            roomy.clone(),
+            gap_windows,
+            "",
+            None,
+            None,
+            vec![],
+            vec![float_attempt(
+                "op-12",
+                "win-a",
+                target,
+                FrameSetter::Accepted,
+                Some(source),
+                Some(third),
+                4000,
+            )],
+        );
+        if incomplete {
+            gapped.inventory_complete = false;
+        }
+        if gesture {
+            gapped.gesture_barrier = true;
+        }
+        accepted(&mut engine, &gapped);
+        assert_eq!(
+            engine.retained_floats.len(),
+            1,
+            "{name}: gap stages evidence and holds"
+        );
+        // Recovery carries no repeated attempt: the shared consumed
+        // watermark already forgot it. Retained evidence still holds.
+        let recovered = accepted(
+            &mut engine,
+            &report_with_frames(
+                4,
+                roomy.clone(),
+                vec![
+                    float_fact("win-a", "out-a", Some(third)),
+                    fact("win-b", "out-a", 100),
+                ],
+                "",
+                None,
+                None,
+                vec![],
+                vec![],
+            ),
+        );
+        assert_eq!(
+            engine.retained_floats.len(),
+            1,
+            "{name}: recovery without repetition retains"
+        );
+        if expect_effective {
+            assert_eq!(row_of(&recovered, "win-a").effective_frame, Some(target));
+        }
+        assert_eq!(recovered.command_result, None, "{name}: no replay");
+    }
+}
+
+#[test]
+fn float_gap_refusal_recovers_to_settle_after_ack() {
+    use crate::world_report::FrameSetter;
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let roomy = vec![screen_sized("out-a", 0, 800, 560, true)];
+    accepted(
+        &mut engine,
+        &report(1, roomy.clone(), two_tiled(), "", None, None, vec![]),
+    );
+    let source = rect(0, 0, 40, 90);
+    let target = rect(10, 10, 200, 150);
+    place_float(&mut engine, 2, two_tiled(), "win-a", Some(target));
+    // An explicit refusal with an unchanged readable preimage arrives
+    // during an inventory gap: the staged fact cannot prove it yet, so the
+    // evidence is preserved instead of settling or dropping.
+    let mut gapped = report_with_frames(
+        3,
+        roomy.clone(),
+        vec![
+            float_fact("win-a", "out-a", Some(source)),
+            fact("win-b", "out-a", 100),
+        ],
+        "",
+        None,
+        None,
+        vec![],
+        vec![float_attempt(
+            "op-12",
+            "win-a",
+            target,
+            FrameSetter::Refused,
+            Some(source),
+            Some(source),
+            4000,
+        )],
+    );
+    gapped.inventory_complete = false;
+    accepted(&mut engine, &gapped);
+    assert_eq!(
+        engine.retained_floats.len(),
+        1,
+        "gap preserves refusal evidence"
+    );
+    // After the acknowledgement the complete readable preimage reconciles
+    // the retained refusal with no replay: the stale target drops.
+    let settled = accepted(
+        &mut engine,
+        &report_with_frames(
+            4,
+            roomy,
+            vec![
+                float_fact("win-a", "out-a", Some(source)),
+                fact("win-b", "out-a", 100),
+            ],
+            "",
+            None,
+            None,
+            vec![],
+            vec![],
+        ),
+    );
+    assert_eq!(
+        engine.retained_floats.len(),
+        0,
+        "readable preimage settles refusal"
+    );
+    let row = row_of(&settled, "win-a");
+    assert_eq!(row.frame_operation, None);
+    assert!(row.floating, "exception retained: {row:?}");
+}
+
+#[test]
+fn float_dpi_flip_holds_recovery_then_target_settles() {
+    use crate::world_report::FrameSetter;
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let roomy = vec![screen_sized("out-a", 0, 800, 560, true)];
+    accepted(
+        &mut engine,
+        &report(1, roomy.clone(), two_tiled(), "", None, None, vec![]),
+    );
+    let source = rect(0, 0, 40, 90);
+    let target = rect(10, 10, 200, 150);
+    place_float(&mut engine, 2, two_tiled(), "win-a", Some(target));
+    // A DPI-invalidated write latches no-reactuation ambiguity: it never
+    // confirms and never retries.
+    let third = rect(400, 300, 210, 160);
+    accepted(
+        &mut engine,
+        &report_with_frames(
+            3,
+            roomy.clone(),
+            vec![
+                float_fact("win-a", "out-a", Some(third)),
+                fact("win-b", "out-a", 100),
+            ],
+            "",
+            None,
+            None,
+            vec![],
+            vec![crate::world_report::FrameAttempt {
+                window: WindowId("win-a".to_owned()),
+                target,
+                setter: FrameSetter::Accepted,
+                readback: Some(third),
+                dpi_before: Some(96),
+                dpi_after: Some(120),
+                attempt_ms: 4000,
+                operation_id: Some("op-12".to_owned()),
+                prewrite: Some(source),
+            }],
+        ),
+    );
+    assert_eq!(
+        engine.retained_floats.len(),
+        1,
+        "DPI flip latches ambiguity"
+    );
+    // Recovery without a repeated row still holds: the third frame is not
+    // newer external input while ambiguity is latched.
+    let recovered = accepted(
+        &mut engine,
+        &report(
+            4,
+            roomy.clone(),
+            vec![
+                float_fact("win-a", "out-a", Some(third)),
+                fact("win-b", "out-a", 100),
+            ],
+            "",
+            None,
+            None,
+            vec![],
+        ),
+    );
+    assert_eq!(
+        engine.retained_floats.len(),
+        1,
+        "recovery holds without repetition"
+    );
+    assert_eq!(row_of(&recovered, "win-a").effective_frame, Some(target));
+    // A later exact target settles from native observation.
+    let settled = accepted(
+        &mut engine,
+        &report(
+            5,
+            roomy,
+            vec![
+                float_fact("win-a", "out-a", Some(target)),
+                fact("win-b", "out-a", 100),
+            ],
+            "",
+            None,
+            None,
+            vec![],
+        ),
+    );
+    assert_eq!(
+        engine.retained_floats.len(),
+        0,
+        "later exact target settles"
+    );
+    assert_eq!(row_of(&settled, "win-a").frame_operation, None);
+}
+
+#[test]
+fn float_gap_close_still_settles() {
+    use crate::world_report::FrameSetter;
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let roomy = vec![screen_sized("out-a", 0, 800, 560, true)];
+    accepted(
+        &mut engine,
+        &report(1, roomy.clone(), two_tiled(), "", None, None, vec![]),
+    );
+    let source = rect(0, 0, 40, 90);
+    let target = rect(10, 10, 200, 150);
+    place_float(&mut engine, 2, two_tiled(), "win-a", Some(target));
+    // An explicit close settles during an inventory gap even with a
+    // correlated attempt riding the same report: close always settles.
+    let mut gapped = report_with_frames(
+        3,
+        roomy,
+        vec![fact("win-b", "out-a", 100)],
+        "",
+        None,
+        None,
+        vec![],
+        vec![float_attempt(
+            "op-12",
+            "win-a",
+            target,
+            FrameSetter::Accepted,
+            Some(source),
+            Some(rect(400, 300, 210, 160)),
+            4000,
+        )],
+    );
+    gapped.inventory_complete = false;
+    gapped.closed = vec![WindowId("win-a".to_owned())];
+    accepted(&mut engine, &gapped);
+    assert_eq!(
+        engine.retained_floats.len(),
+        0,
+        "explicit close settles across the gap"
     );
 }
 

@@ -27,21 +27,25 @@
 //!   window authority lane.
 //! - Frame anti-fighting is core-owned (see `tiler_core::world_frames`):
 //!   this module attempts every authorized write through [`NativeOps`],
-//!   then reports the mechanical facts (setter disposition plus immediate
-//!   readback and DPI pair) as [`FrameAttempt`](tiler_core::world_report::FrameAttempt)
+//!   then reports the mechanical facts (setter disposition, immediate
+//!   pre-write and post-write frames, DPI pair) as [`FrameAttempt`](tiler_core::world_report::FrameAttempt)
 //!   rows for the next report. The core compares desired and observed and
 //!   publishes suppression (tiled constraint-clamp holds, withheld float
 //!   tokens), which the next pass obeys without re-writing. Ordinary
 //!   geometry emits no operation feedback at all: attempt rows plus
-//!   observations are the whole contract.
+//!   observations are the whole contract. Explicit float placements ride
+//!   the same raw-attempt lane with their stable operation id plus the
+//!   immediate pre-write frame; the core derives confirmation, proven
+//!   refusal, and ambiguity from that evidence plus the staged observation.
+//!   This module emits no float outcome verdict: a setter boolean or a
+//!   readback alone never settles a placement.
 //! - Feedback is emitted ONLY with operation ids the core actually consumes:
 //!   retained window/view/migration transfer ids (see
-//!   `WorldEngine::settle_retained`) and retained explicit float-placement
-//!   ids (see `WorldEngine::settle_floats`). Creation, removal, and effect
+//!   `WorldEngine::settle_retained`). Creation, removal, and effect
 //!   outcomes are proven by read-back and counted in stats; inventing
 //!   `prop-*`/`remove-*`/`create-*` feedback would ride reports pointlessly
 //!   since the core matches feedback by operation id only and ignores the
-//!   rest.
+//!   rest. Float placements specifically never emit feedback rows.
 //!
 //! Freshness and proof rules (shared core contract):
 //! - The reply must be ready, bound to the current adapter/core generation,
@@ -53,10 +57,13 @@
 //!   External invalidation is polled before every setter and stops remaining
 //!   unsafe writes, including after geometry/float/create/remove/view/
 //!   migration/effect writes.
-//! - Possibly-executed transfers, float placements, views, and effects arm
-//!   BEFORE the first native setter and never repeat while ambiguous.
-//!   Refused-proven settles only on fresh proof that nothing happened plus
-//!   an explicit native refusal. Third-location proof settles
+//! - Correlated raw attempts (transfers, float placements, views) and
+//!   one-shot effects arm BEFORE the first native setter and never repeat
+//!   while ambiguous: the transport reports mechanical facts once, and the
+//!   core derives every verdict. Refused-proven transfers settle only on
+//!   fresh proof that nothing happened plus an explicit native refusal;
+//!   float refusal is proven by an unchanged readable preimage in the raw
+//!   attempt, never by a verdict here. Third-location proof settles
 //!   superseded-external instead of fighting the user. Follow-view failure
 //!   holds the window transfer as possibly-executed: a view outcome is never
 //!   claimed on a window transfer id, and focus requires the exact live view.
@@ -501,7 +508,6 @@ pub(super) struct EffectTracker {
     pub(super) spent_views: HashSet<String>,
     pub(super) applied_window: HashMap<String, (String, String, String)>,
     pub(super) applied_view: HashMap<String, (String, String)>,
-    pub(super) applied_float: HashMap<String, (String, Rect)>,
 }
 
 impl EffectTracker {
@@ -520,7 +526,10 @@ impl EffectTracker {
         self.spent_effects.insert(id.to_owned())
     }
     /// Mark one float placement spent BEFORE dispatch. Returns false when
-    /// already spent for this operation.
+    /// already spent for this operation: the transport never dispatches the
+    /// same placement twice. This is strictly at-most-once dispatch, never
+    /// a policy verdict: completion, refusal, and ambiguity all live in the
+    /// core over the reported raw attempt plus native observation.
     pub(super) fn mark_float_spent(&mut self, op: &str) -> bool {
         self.spent_floats.insert(op.to_owned())
     }
@@ -544,7 +553,6 @@ impl EffectTracker {
         self.spent_views.clear();
         self.applied_window.clear();
         self.applied_view.clear();
-        self.applied_float.clear();
     }
 }
 
@@ -620,9 +628,6 @@ impl HostDiff {
             .retain(|op, _| live_ops.contains(op.as_str()));
         self.effects
             .applied_window
-            .retain(|token, _| fresh.baseline.contains_key(token));
-        self.effects
-            .applied_float
             .retain(|token, _| fresh.baseline.contains_key(token));
         // View proofs are keyed by output (not by window token), so neither
         // baseline retention above covers them: keep only proofs whose
@@ -1125,12 +1130,13 @@ fn frame_setter(wrote: Option<bool>) -> FrameSetter {
 /// The caller owns generation/observation advancement: `state.gate.current_obs`
 /// is the CURRENT watermark at entry. Racing input is consumed through
 /// [`NativeOps::poll_external_invalidation`] before every setter; within a
-/// pass the facade stops before remaining unsafe writes when the watermark
-/// moves. State tables stay bounded through [`HostDiff::prune`]; only
-/// operation ids the core consumes ever produce feedback. Every attempted
-/// frame write appends one mechanical [`FrameAttempt`] to `frame_out` for
-/// the next report (stamped with `attempt_ms`, the tick's monotonic clock);
-/// the core owns all suppression and the next desire is obeyed as-is.
+/// operation ids the core consumes ever produce feedback (float placements
+/// never do: their verdicts live in the core). Every attempted frame write
+/// appends one mechanical [`FrameAttempt`] to `frame_out` for the next
+/// report (stamped with `attempt_ms`, the tick's monotonic clock, plus the
+/// stable operation id and the immediate pre-write frame for explicit float
+/// placements); the core owns all suppression and completion and the next
+/// desire is obeyed as-is.
 #[allow(clippy::too_many_lines)]
 pub(super) fn apply_world_reply(
     state: &mut HostDiff,
@@ -1255,6 +1261,8 @@ pub(super) fn apply_world_reply(
                                         dpi_before,
                                         dpi_after,
                                         attempt_ms,
+                                        operation_id: None,
+                                        prewrite: None,
                                     });
                                     match (wrote, proof) {
                                         (Some(true), Some(proven)) if proven == target => {
@@ -1527,6 +1535,12 @@ pub(super) fn apply_world_reply(
     // necessary but never sufficient. The row carries no frame authority
     // (core publishes `Untouched`), so the token plus the full fresh gates
     // below are the only write authority. Ordinary floats never ride here.
+    // This lane reports mechanical write facts only (setter disposition,
+    // immediate pre-write and post-write frames, DPI pair) with exact
+    // operation-id plus window plus target correlation; the core derives
+    // confirmation, proven refusal, and ambiguity. No outcome verdict is
+    // emitted here: a setter boolean or a readback alone never settles a
+    // placement, and completion comes from native observation.
     for row in &reply.windows {
         let op = row.frame_operation.as_deref().unwrap_or("");
         if op.is_empty() {
@@ -1566,25 +1580,21 @@ pub(super) fn apply_world_reply(
             continue;
         }
         if effects.is_ambiguous(op) {
-            // Possibly-executed stays held without repeating: even a frame
-            // still at the baseline cannot prove the attempt never landed.
+            // A correlated raw attempt already ran under this operation:
+            // hold without repeating, even when the live frame still names
+            // the baseline (an ambiguous write may have landed and been
+            // moved back). Strictly at-most-once transport; the core owns
+            // the retained target and derives confirmation, proven refusal,
+            // or continued ambiguity from the reported raw facts plus the
+            // next staged observation. No verdict is emitted here.
             stats.held += 1;
             continue;
         }
         let live = ops.read_frame(&row.lifetime.0);
         match live {
             Some(rect) if rect == target => {
-                effects.mark_float_spent(op);
-                effects.settle_applied(op);
-                effects
-                    .applied_float
-                    .insert(row.lifetime.0.clone(), (op.to_owned(), target));
-                out_feedback.push(feedback(
-                    op,
-                    AttemptKind::Property,
-                    AttemptOutcome::Applied,
-                    None,
-                ));
+                // Already at the target: no write, no attempt, no verdict.
+                // The core confirms from the staged observation itself.
                 continue;
             }
             None => {
@@ -1598,19 +1608,6 @@ pub(super) fn apply_world_reply(
         let live_rect = live.expect("matched above");
         if base.frame.is_some_and(|baseline| baseline != live_rect) {
             stats.held += 1;
-            continue;
-        }
-        if let Some((applied_op, _)) = effects.applied_float.get(&row.lifetime.0)
-            && applied_op == op
-            && base.frame.is_some_and(|baseline| baseline != target)
-        {
-            effects.mark_float_spent(op);
-            out_feedback.push(feedback(
-                op,
-                AttemptKind::Property,
-                AttemptOutcome::SupersededExternal,
-                None,
-            ));
             continue;
         }
         if !ensure_fresh(reply, gate, entry_obs, ops) {
@@ -1637,18 +1634,22 @@ pub(super) fn apply_world_reply(
         }
         // Arm the float phase immediately pre-dispatch, after every
         // safety/authority gate passed, so holds never consume placement.
+        // Strictly at-most-once dispatch, never a policy verdict.
         if !effects.mark_float_spent(op) {
             stats.held += 1;
             continue;
         }
         effects.arm(op, format!("{}/{}", row.output.0, row.workspace));
         let dpi_before = ops.read_dpi(&row.lifetime.0);
+        let prewrite = ops.read_frame(&row.lifetime.0);
         let wrote = ops.write_frame(&row.lifetime.0, target).ok();
         let proof = ops.read_frame(&row.lifetime.0);
         let dpi_after = ops.read_dpi(&row.lifetime.0);
-        // Mechanical facts for the core-owned policy (same owner as tiled
-        // rows); the settlement feedback below stays on the existing truth
-        // table until stage 3b moves it.
+        // Mechanical facts only: the setter boolean is never proof, the
+        // pre-write frame is the refusal preimage, and the readback never
+        // carries a verdict. The core correlates by operation id plus
+        // window plus target and settles from this evidence plus the next
+        // staged observation.
         frame_out.push(FrameAttempt {
             window: row.lifetime.clone(),
             target,
@@ -1657,49 +1658,14 @@ pub(super) fn apply_world_reply(
             dpi_before,
             dpi_after,
             attempt_ms,
+            operation_id: Some(op.to_owned()),
+            prewrite,
         });
-        match (wrote, proof) {
-            (Some(true), Some(rect)) if rect == target => {
-                stats.geometry_writes += 1;
-                effects.settle_applied(op);
-                effects
-                    .applied_float
-                    .insert(row.lifetime.0.clone(), (op.to_owned(), target));
-                out_feedback.push(feedback(
-                    op,
-                    AttemptKind::Property,
-                    AttemptOutcome::Applied,
-                    None,
-                ));
-            }
-            (Some(true), Some(_)) => {
-                stats.geometry_writes += 1;
-                out_feedback.push(feedback(
-                    op,
-                    AttemptKind::Property,
-                    AttemptOutcome::PossiblyExecuted,
-                    None,
-                ));
-                stats.held += 1;
-            }
-            (Some(false), Some(rect)) if rect == live_rect => {
-                out_feedback.push(feedback(
-                    op,
-                    AttemptKind::Property,
-                    AttemptOutcome::RefusedProven,
-                    Some(HoldReason::ConstraintClamp),
-                ));
-                stats.held += 1;
-            }
-            _ => {
-                out_feedback.push(feedback(
-                    op,
-                    AttemptKind::Property,
-                    AttemptOutcome::PossiblyExecuted,
-                    None,
-                ));
-                stats.held += 1;
-            }
+        if wrote == Some(true) {
+            stats.geometry_writes += 1;
+        }
+        if proof != Some(target) {
+            stats.held += 1;
         }
         if gate.current_obs != entry_obs {
             stats.stopped_mid_apply = true;

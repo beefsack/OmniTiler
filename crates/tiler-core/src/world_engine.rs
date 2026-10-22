@@ -50,10 +50,10 @@ use crate::session::{DomainKey, OutputDomain};
 use crate::workspace_scope::ScopeHistory;
 use crate::world_commands::CommandApplied;
 use crate::world_report::{
-    CommandResult, HoldReason, TilingMode, TransferKind, TransferTarget, WORLD_CONTRACT_VERSION,
-    WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES, WorldReply, WorldReport,
-    encode_reply_canonical, reply_estimate, reply_upper_bound, report_digest, report_estimate,
-    validate_report_reason,
+    CommandResult, FrameAttempt, HoldReason, TilingMode, TransferKind, TransferTarget,
+    WORLD_CONTRACT_VERSION, WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES, WorldReply,
+    WorldReport, encode_reply_canonical, reply_estimate, reply_upper_bound, report_digest,
+    report_estimate, validate_report_reason,
 };
 
 pub(crate) const KIND_VERSION: &str = "unsupported-version";
@@ -202,10 +202,12 @@ pub(crate) struct RetainedTransfer {
 /// time plus the engine-committed effective rect. The window row carries
 /// the operation id explicitly; the adapter writes geometry ONLY under
 /// that token, exactly once. Settles on observation confirmation (observed
-/// frame equals the target), proven refusal/supersession feedback, explicit
-/// close, a newer float intent for the same window, or generation reset.
-/// An observed frame that matches neither the source nor the target proves
-/// newer native input and supersedes without a fight.
+/// frame equals the target), proven refusal from operation-correlated raw
+/// frame attempts, explicit close, a newer float intent for the same
+/// window, or generation reset. An observed frame that matches neither the
+/// source nor the target proves newer native input and supersedes without
+/// a fight. No outcome verdict is ever consumed: the adapter reports
+/// mechanical write facts only, and the core derives every verdict here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RetainedFloat {
     pub(crate) operation_id: String,
@@ -214,13 +216,27 @@ pub(crate) struct RetainedFloat {
     pub(crate) source: Option<crate::geometry::Rect>,
     pub(crate) output: OutputId,
     pub(crate) workspace: String,
-    /// Latched ambiguity from a `PossiblyExecuted` attempt row. Survives
-    /// the feedback row being acknowledged so a third frame (matching
-    /// neither source nor target) keeps holding instead of being
-    /// misclassified as newer external input. Clears only on settlement
-    /// (confirmation, explicit close, proven refusal/supersession, or a
-    /// newer intent replacing it).
+    /// Latched ambiguity from a correlated raw attempt that neither
+    /// confirms nor proves refusal (accepted clamp/mismatch, throw,
+    /// unreadable proof, or DPI-invalidated write). Survives the attempt
+    /// row being acknowledged so a third frame (matching neither source
+    /// nor target) keeps holding instead of being misclassified as newer
+    /// external input. Set together with [`RetainedFloat::pending`] while
+    /// the observation is gapped, and re-evaluated against later readable
+    /// evidence: a readable preimage matching retained refusal evidence
+    /// still settles refusal, and the target still settles confirmation.
+    /// Clears only on settlement (confirmation, explicit close, proven
+    /// refusal, or a newer intent replacing it).
     pub(crate) ambiguous: bool,
+    /// Latest exact-correlated raw frame attempt (operation id plus window
+    /// plus target) staged BEFORE any readability or authority hold, so a
+    /// gapped report never erases knowledge the shared consumed-frames
+    /// watermark forgets after acknowledgement. Reconciled against later
+    /// readable complete observations: confirmation and proven refusal
+    /// still require truthful readable data, and no replay is ever issued
+    /// (neither side re-dispatches a spent operation). Replaced by newer
+    /// fresh evidence; dropped with the retained target on settlement.
+    pub(crate) pending: Option<FrameAttempt>,
 }
 
 /// Bounded outcome of one [`WorldEngine::handle_report`] call.
