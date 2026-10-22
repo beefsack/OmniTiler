@@ -28,8 +28,8 @@ use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::geometry::Rect;
 use tiler_core::world_engine::WorldOutcome;
 use tiler_core::world_report::{
-    AttemptFeedback, AttemptKind, AttemptOutcome, ScopeAuthority as Auth, ScopeStatus,
-    TransferKind, TransferTarget, WORLD_CONTRACT_VERSION, WindowDesire, WorldCommand, WorldReply,
+    ScopeAuthority as Auth, ScopeStatus, TransferKind, TransferTarget, WORLD_CONTRACT_VERSION,
+    WindowDesire, WorldCommand, WorldReply,
 };
 
 const ADAPTER: &str = "adapter-1";
@@ -444,14 +444,6 @@ fn one_area() -> Vec<super::super::MonitorArea> {
     }]
 }
 
-fn applied_outcomes(feedback: &[tiler_core::world_report::AttemptFeedback]) -> Vec<String> {
-    feedback
-        .iter()
-        .filter(|f| f.outcome == AttemptOutcome::Applied)
-        .map(|f| f.operation_id.clone())
-        .collect()
-}
-
 #[test]
 fn production_setter_lie_reports_raw_attempt_without_verdict() {
     let mut env = env_with(101_001);
@@ -473,9 +465,16 @@ fn production_setter_lie_reports_raw_attempt_without_verdict() {
         .push(float_row(&out, &ws, "w1", rect(100, 100, 400, 300), "op-1"));
     let mut native = assemble(&mut env, scripted());
     let mut attempts = Vec::new();
-    let (stats, feedback) =
-        apply_world_reply(&mut diff, &reply, &fresh, &mut native, &mut attempts, 0);
-    assert!(feedback.is_empty(), "{feedback:?}");
+    let stats = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut native,
+        &mut attempts,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        0,
+    );
     assert_eq!(attempts.len(), 1, "{attempts:?}");
     let attempt = &attempts[0];
     assert_eq!(attempt.window.0, "w1");
@@ -513,9 +512,16 @@ fn production_explicit_refusal_reports_raw_attempt_without_verdict() {
         .push(float_row(&out, &ws, "w1", rect(100, 100, 400, 300), "op-1"));
     let mut native = assemble(&mut env, scripted());
     let mut attempts = Vec::new();
-    let (_stats, feedback) =
-        apply_world_reply(&mut diff, &reply, &fresh, &mut native, &mut attempts, 0);
-    assert!(feedback.is_empty(), "{feedback:?}");
+    let _stats = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut native,
+        &mut attempts,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        0,
+    );
     assert_eq!(attempts.len(), 1, "{attempts:?}");
     let attempt = &attempts[0];
     assert_eq!(
@@ -551,9 +557,16 @@ fn production_identity_drift_holds_without_receipt() {
         .windows
         .push(float_row(&out, &ws, "w1", rect(100, 100, 400, 300), "op-1"));
     let mut native = assemble(&mut env, scripted());
-    let (stats, feedback) =
-        apply_world_reply(&mut diff, &reply, &fresh, &mut native, &mut Vec::new(), 0);
-    assert!(applied_outcomes(&feedback).is_empty(), "{feedback:?}");
+    let stats = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut native,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        0,
+    );
     // The recycled HWND fails the fresh frame read first: narrow hold with
     // no writes and no receipt, never a fabricated frame proof.
     assert!(stats.held > 0, "{stats:?}");
@@ -578,9 +591,16 @@ fn production_racing_invalidation_stops_before_any_setter() {
         .windows
         .push(float_row(&out, &ws, "w1", rect(100, 100, 400, 300), "op-1"));
     let mut native = assemble(&mut env, scripted());
-    let (stats, feedback) =
-        apply_world_reply(&mut diff, &reply, &fresh, &mut native, &mut Vec::new(), 0);
-    assert!(applied_outcomes(&feedback).is_empty(), "{feedback:?}");
+    let stats = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut native,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        0,
+    );
     // Racing input stops the pass before the first setter: no writes and
     // no receipt.
     assert!(stats.stopped_mid_apply, "{stats:?}");
@@ -627,32 +647,51 @@ fn production_ambiguous_view_arms_at_most_once() {
         .entry(out.clone())
         .or_default()
         .push(ws2.clone());
-    let (_stats, first) =
-        apply_world_reply(&mut diff, &reply, &fresh, &mut native, &mut Vec::new(), 0);
-    assert!(
-        first.iter().any(|f| f.operation_id == "op-view-1"
-            && f.outcome == AttemptOutcome::PossiblyExecuted),
-        "{first:?}"
+    let mut first_members = Vec::new();
+    let mut first_views = Vec::new();
+    let first_stats = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut native,
+        &mut Vec::new(),
+        &mut first_members,
+        &mut first_views,
+        0,
+    );
+    assert_eq!(first_stats.held, 1);
+    // The uncertain hide leg reports one ambiguous view attempt (never a
+    // verdict): the core holds from the raw setter plus unreadable proof.
+    assert!(first_members.is_empty());
+    assert_eq!(first_views.len(), 1);
+    assert_eq!(first_views[0].operation_id, "op-view-1");
+    assert_eq!(
+        first_views[0].setter,
+        tiler_core::world_report::FrameSetter::Threw
     );
     assert_eq!(S_ADMIT_CALLS.with(|m| m.borrow().len()), 1);
     // ... and the retry never re-dispatches: the spent phase holds
-    // silently (no new admit, no resolving feedback) because no fresh
-    // proof retires the ambiguous flight. The live source view cannot
-    // prove itself against the desired target here: `read_view` only ever
-    // proves the desired view or nothing, so the flight persists until a
-    // later pass proves arrival. No Applied is fabricated either way; the
+    // silently (no new admit, no new attempt) because no fresh proof
+    // retires the ambiguous flight. The live source view cannot prove
+    // itself against the desired target here: `read_view` only ever proves
+    // the desired view or nothing, so the flight persists until a later
+    // pass proves arrival. No proof row is fabricated either way; the
     // admit call count is frozen.
-    let (_stats2, second) =
-        apply_world_reply(&mut diff, &reply, &fresh, &mut native, &mut Vec::new(), 0);
-    assert!(
-        second.iter().all(|f| f.operation_id != "op-view-1"),
-        "spent flight holds with no repeat feedback, got {second:?}"
+    let mut second_members = Vec::new();
+    let mut second_views = Vec::new();
+    let second_stats = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut native,
+        &mut Vec::new(),
+        &mut second_members,
+        &mut second_views,
+        0,
     );
+    assert!(second_stats.held > 0);
+    assert!(second_members.is_empty() && second_views.is_empty());
     assert_eq!(S_ADMIT_CALLS.with(|m| m.borrow().len()), 1);
-    assert!(
-        second.iter().all(|f| f.outcome != AttemptOutcome::Applied),
-        "{second:?}"
-    );
 }
 
 #[test]
@@ -728,9 +767,19 @@ fn production_fullscreen_foreground_vetoes_frame_write() {
         .windows
         .push(float_row(&out, &ws, "w1", rect(100, 100, 400, 300), "op-1"));
     let mut native = assemble(&mut env, scripted());
-    let (stats, feedback) =
-        apply_world_reply(&mut diff, &reply, &fresh, &mut native, &mut Vec::new(), 0);
-    assert!(applied_outcomes(&feedback).is_empty(), "{feedback:?}");
+    let mut members = Vec::new();
+    let mut views = Vec::new();
+    let stats = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut native,
+        &mut Vec::new(),
+        &mut members,
+        &mut views,
+        0,
+    );
+    assert!(members.is_empty() && views.is_empty());
     assert_eq!(S_SET_CALLS.with(|m| m.borrow().len()), 0);
     assert!(stats.held > 0, "{stats:?}");
 }
@@ -761,14 +810,26 @@ fn memberless_migration_actuates_views_without_members() {
         follow: false,
         held: false,
     });
-    let (stats, feedback) =
-        apply_world_reply(&mut diff, &reply, &fresh, &mut native, &mut Vec::new(), 0);
-    assert!(
-        feedback.iter().any(|f| f.operation_id == "op-m1"
-            && f.kind == AttemptKind::Transfer
-            && f.outcome == AttemptOutcome::Applied),
-        "{feedback:?}"
+    let mut members = Vec::new();
+    let mut views = Vec::new();
+    let stats = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut native,
+        &mut Vec::new(),
+        &mut members,
+        &mut views,
+        0,
     );
+    // A memberless migration and refill... (no members anywhere: the
+    // migration carries no membership phase) reports one raw target-view
+    // attempt and actuates it; the core settles from the attempt plus the
+    // staged echo.
+    assert!(members.is_empty());
+    assert_eq!(views.len(), 1);
+    assert_eq!(views[0].operation_id, "op-m1");
+    assert_eq!(views[0].post.as_deref(), Some(ws2.as_str()));
     assert_eq!(stats.view_writes, 1, "{stats:?}");
     assert!(!stats.stopped_mid_apply);
 }
@@ -1457,7 +1518,8 @@ fn admit_bare(env: &mut Env, key: &WindowKey, token: &str) {
 
 struct LiveTick {
     reply: WorldReply,
-    feedback: Vec<AttemptFeedback>,
+    members: Vec<tiler_core::world_report::MemberAttempt>,
+    views: Vec<tiler_core::world_report::ViewAttempt>,
 }
 
 /// One production tick through the real owner with scripted natives:
@@ -1595,10 +1657,27 @@ fn live_tick_cursor(
     );
     owner.sync_diff_gate();
     let mut frame_attempts = Vec::new();
-    let (_stats, feedback) =
-        owner.apply_accepted(&reply, &fresh, &mut native, &mut frame_attempts, tick_ms);
+    let mut member_attempts = Vec::new();
+    let mut view_attempts = Vec::new();
+    let _stats = owner.apply_accepted(
+        &reply,
+        &fresh,
+        &mut native,
+        &mut frame_attempts,
+        &mut member_attempts,
+        &mut view_attempts,
+        tick_ms,
+    );
     let (mut proven_h, mut proven_v) = native.receipt_updates(&reply);
-    merge_applied_transfers(&reply, &feedback, &mut native, &mut proven_h, &mut proven_v);
+    merge_applied_transfers(
+        &reply,
+        &member_attempts,
+        &view_attempts,
+        &fresh,
+        &mut native,
+        &mut proven_h,
+        &mut proven_v,
+    );
     drop(native);
     for (token, home) in proven_h {
         env.state.applied_homing.insert(token, home);
@@ -1606,11 +1685,14 @@ fn live_tick_cursor(
     for (output, view) in proven_v {
         env.state.applied_views.insert(output, view);
     }
-    for item in &feedback {
-        owner.note_feedback(item.clone());
+    for attempt in &member_attempts {
+        owner.note_member_attempt(attempt.clone());
     }
-    for attempt in frame_attempts {
-        owner.note_frame_attempt(attempt);
+    for attempt in &view_attempts {
+        owner.note_view_attempt(attempt.clone());
+    }
+    for attempt in &frame_attempts {
+        owner.note_frame_attempt(attempt.clone());
     }
     let mut pending = std::mem::take(&mut env.state.pending_closed);
     let (ack, pruned) = owner.ack(&reply, &mut pending);
@@ -1623,15 +1705,28 @@ fn live_tick_cursor(
         AckOutcome::Stale(_) => {}
         AckOutcome::Ignored { reason } => panic!("ack ignored: {reason}"),
     }
-    LiveTick { reply, feedback }
+    LiveTick {
+        reply,
+        members: member_attempts,
+        views: view_attempts,
+    }
 }
 
-fn applied_of(feedback: &[AttemptFeedback], op: &str) -> bool {
-    feedback.iter().any(|f| {
-        f.operation_id == op
-            && f.kind == AttemptKind::Transfer
-            && f.outcome == AttemptOutcome::Applied
-    })
+/// True when the raw attempts carry post proof at the target for one
+/// operation: the native proof the core settles from.
+fn applied_of_members(
+    members: &[tiler_core::world_report::MemberAttempt],
+    views: &[tiler_core::world_report::ViewAttempt],
+    op: &str,
+) -> bool {
+    members.iter().any(|a| {
+        a.operation_id == op
+            && a.post
+                .as_ref()
+                .is_some_and(|(out, ws)| out == &a.target_output && ws == &a.target_workspace)
+    }) || views
+        .iter()
+        .any(|a| a.operation_id == op && a.post.as_deref() == Some(a.target_workspace.as_str()))
 }
 
 fn window_op(reply: &WorldReply, window: &str) -> String {

@@ -79,8 +79,8 @@ use std::collections::BTreeSet;
 use tiler_core::ids::{GenerationId, OwnerId};
 use tiler_core::world_engine::{WorldEngine, WorldEngineConfig, WorldOutcome};
 use tiler_core::world_report::{
-    AttemptFeedback, FrameAttempt, ScreenView, WORLD_CONTRACT_VERSION, WorldCommand, WorldReply,
-    WorldReport,
+    AttemptFeedback, FrameAttempt, MemberAttempt, ScreenView, ViewAttempt, WORLD_CONTRACT_VERSION,
+    WorldCommand, WorldReply, WorldReport,
 };
 
 /// Windows carrier profile for the future world engine: automatic
@@ -112,6 +112,8 @@ struct SequencerFlight {
     delivered_closed: Vec<(String, PendingClosed)>,
     delivered_feedback: Vec<AttemptFeedback>,
     delivered_frames: Vec<FrameAttempt>,
+    delivered_members: Vec<MemberAttempt>,
+    delivered_views: Vec<ViewAttempt>,
 }
 
 /// Exact incorporation receipt for the native owner to prune against. Close
@@ -130,6 +132,8 @@ pub(super) struct AckReceipt {
     pub(super) closed_acked: Vec<(String, PendingClosed)>,
     pub(super) feedback_acked: Vec<String>,
     pub(super) frames_acked: Vec<String>,
+    pub(super) members_acked: Vec<(String, String)>,
+    pub(super) views_acked: Vec<String>,
 }
 
 /// Outcome of offering one core reply to the sequencer.
@@ -183,6 +187,15 @@ pub(super) struct WorldSequencer {
     /// clock; the core consumes each stamp idempotently, so redelivery
     /// after a lost acknowledgement never renews backoff.
     pending_frames: BTreeMap<String, FrameAttempt>,
+    /// Latest-wins raw membership attempts per operation window, drained
+    /// into the next report. The core derives window/migration completion
+    /// from these plus the staged observation; the acknowledgement removes
+    /// only exactly-equal entries, so a newer update for the same operation
+    /// window survives its predecessor's ack.
+    pending_members: BTreeMap<(String, String), MemberAttempt>,
+    /// Latest-wins raw view attempts per owning view phase, drained into
+    /// the next report (same ack semantics as members).
+    pending_views: BTreeMap<String, ViewAttempt>,
     last_desired: Option<WorldReply>,
     last_accepted_obs: u64,
     last_accepted_rev: u64,
@@ -212,6 +225,8 @@ impl WorldSequencer {
             flight: None,
             pending_feedback: BTreeMap::new(),
             pending_frames: BTreeMap::new(),
+            pending_members: BTreeMap::new(),
+            pending_views: BTreeMap::new(),
             last_desired: None,
             last_accepted_obs: 0,
             last_accepted_rev: 0,
@@ -242,7 +257,10 @@ impl WorldSequencer {
 
     /// Stage per-operation actuation feedback for the next report, replacing
     /// any entry for the same operation id. Marks feedback-dirty; the
-    /// acknowledgement path decides exact removal.
+    /// acknowledgement path decides exact removal. (No production transfer
+    /// or view verdicts ride this path anymore; retained for effect-kind
+    /// test scaffolding and forward compatibility.)
+    #[allow(dead_code)]
     pub(super) fn note_feedback(&mut self, feedback: AttemptFeedback) {
         self.pending_feedback
             .insert(feedback.operation_id.clone(), feedback);
@@ -254,6 +272,22 @@ impl WorldSequencer {
     pub(super) fn note_frame_attempt(&mut self, attempt: FrameAttempt) {
         self.pending_frames
             .insert(attempt.window.0.clone(), attempt);
+    }
+
+    /// Stage one raw membership attempt for the next report, replacing any
+    /// entry for the same operation window (same ack semantics as frames).
+    pub(super) fn note_member_attempt(&mut self, attempt: MemberAttempt) {
+        self.pending_members.insert(
+            (attempt.operation_id.clone(), attempt.window.0.clone()),
+            attempt,
+        );
+    }
+
+    /// Stage one raw view attempt for the next report, replacing any entry
+    /// for the same owning view phase (same ack semantics as frames).
+    pub(super) fn note_view_attempt(&mut self, attempt: ViewAttempt) {
+        self.pending_views
+            .insert(attempt.operation_id.clone(), attempt);
     }
 
     /// Closes the current capture still obliges: every carried close plus
@@ -274,15 +308,17 @@ impl WorldSequencer {
         out.into_iter().collect()
     }
 
-    /// Dirty means an outstanding OBSERVATION, CLOSE, FEEDBACK, or FRAME
-    /// obligation. Event-driven catch-up wants the next trigger while any
-    /// holds; nothing here polls or spins.
+    /// Dirty means an outstanding OBSERVATION, CLOSE, FEEDBACK, FRAME,
+    /// MEMBER, or VIEW obligation. Event-driven catch-up wants the next
+    /// trigger while any holds; nothing here polls or spins.
     #[must_use]
     #[cfg(test)]
     pub(super) fn is_dirty(&self, captured: &CapturedWorld) -> bool {
         self.obs_dirty
             || !self.pending_feedback.is_empty()
             || !self.pending_frames.is_empty()
+            || !self.pending_members.is_empty()
+            || !self.pending_views.is_empty()
             || !self.outstanding_closes(captured).is_empty()
     }
 
@@ -307,6 +343,12 @@ impl WorldSequencer {
         let mut feedback: Vec<AttemptFeedback> = self.pending_feedback.values().cloned().collect();
         feedback.sort_by(|a, b| a.operation_id.cmp(&b.operation_id));
         let frames: Vec<FrameAttempt> = self.pending_frames.values().cloned().collect();
+        let mut member_attempts: Vec<MemberAttempt> =
+            self.pending_members.values().cloned().collect();
+        member_attempts
+            .sort_by(|a, b| (&a.operation_id, &a.window.0).cmp(&(&b.operation_id, &b.window.0)));
+        let mut view_attempts: Vec<ViewAttempt> = self.pending_views.values().cloned().collect();
+        view_attempts.sort_by(|a, b| a.operation_id.cmp(&b.operation_id));
         // Observed applied views from capture (unknown when the facade has
         // no readback); never the last desired snapshot.
         let views: Vec<ScreenView> = captured.observed_views.clone();
@@ -348,6 +390,8 @@ impl WorldSequencer {
             feedback,
             monotonic_ms,
             frames,
+            member_attempts,
+            view_attempts,
         }
     }
 
@@ -398,6 +442,8 @@ impl WorldSequencer {
         // prunes them on the close itself.
         for id in &captured.closed {
             self.pending_frames.remove(&id.0);
+            self.pending_members
+                .retain(|(_, window), _| window != &id.0);
         }
         let request_seq = self.next_request_seq;
         let report = self.assemble(&captured, request_seq, command_seq, command, monotonic_ms);
@@ -418,6 +464,8 @@ impl WorldSequencer {
             delivered_closed,
             delivered_feedback: report.feedback.clone(),
             delivered_frames: report.frames.clone(),
+            delivered_members: report.member_attempts.clone(),
+            delivered_views: report.view_attempts.clone(),
         });
         self.next_request_seq += 1;
         if command_seq.is_some() {
@@ -481,6 +529,8 @@ impl WorldSequencer {
                 closed_acked: Vec::new(),
                 feedback_acked: Vec::new(),
                 frames_acked: Vec::new(),
+                members_acked: Vec::new(),
+                views_acked: Vec::new(),
             });
         }
         let revision_new = !self.has_accepted || reply.state_revision > self.last_accepted_rev;
@@ -561,6 +611,8 @@ impl WorldSequencer {
         self.flight = None;
         self.pending_feedback.clear();
         self.pending_frames.clear();
+        self.pending_members.clear();
+        self.pending_views.clear();
         self.last_desired = None;
         self.has_accepted = false;
         self.last_accepted_obs = 0;
@@ -576,9 +628,10 @@ impl WorldSequencer {
 
     /// Acknowledge exactly the flight's delivered facts: every carried
     /// `(token, homing)` close pair (read from the flight snapshot, never
-    /// re-read from a newer report) plus pending feedback and frame-attempt
-    /// entries exactly equal to the delivered value. A newer update for the
-    /// same operation or window survives and stays dirty.
+    /// re-read from a newer report) plus pending feedback, frame-attempt,
+    /// member-attempt, and view-attempt entries exactly equal to the
+    /// delivered value. A newer update for the same operation, window, or
+    /// view phase survives and stays dirty.
     fn ack_flight_obligations(&mut self, flight: &SequencerFlight) -> AckReceipt {
         let mut closed_acked = Vec::new();
         for (token, homing) in &flight.delivered_closed {
@@ -606,6 +659,29 @@ impl WorldSequencer {
                 frames_acked.push(delivered.window.0.clone());
             }
         }
+        let mut members_acked = Vec::new();
+        for delivered in &flight.delivered_members {
+            let key = (delivered.operation_id.clone(), delivered.window.0.clone());
+            if self
+                .pending_members
+                .get(&key)
+                .is_some_and(|pending| pending == delivered)
+            {
+                self.pending_members.remove(&key);
+                members_acked.push(key);
+            }
+        }
+        let mut views_acked = Vec::new();
+        for delivered in &flight.delivered_views {
+            if self
+                .pending_views
+                .get(&delivered.operation_id)
+                .is_some_and(|pending| pending == delivered)
+            {
+                self.pending_views.remove(&delivered.operation_id);
+                views_acked.push(delivered.operation_id.clone());
+            }
+        }
         AckReceipt {
             adapter_incarnation: self.adapter_incarnation.clone(),
             core_generation: self.core_generation.clone(),
@@ -613,6 +689,8 @@ impl WorldSequencer {
             closed_acked,
             feedback_acked,
             frames_acked,
+            members_acked,
+            views_acked,
         }
     }
 

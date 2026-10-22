@@ -504,6 +504,8 @@ fn report(
         feedback: Vec::new(),
         monotonic_ms,
         frames,
+        member_attempts: Vec::new(),
+        view_attempts: Vec::new(),
     }
 }
 

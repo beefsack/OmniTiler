@@ -669,6 +669,9 @@ impl WorldEngine {
                 migration_source_view: None,
                 migration_target_view: None,
                 migration_terminal: None,
+                pending_member: None,
+                pending_members: BTreeMap::new(),
+                pending_view: None,
             });
         }
         // Tiling seeds for new logical ids; prune keys outside all rings

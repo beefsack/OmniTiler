@@ -194,6 +194,20 @@ pub(crate) struct RetainedTransfer {
     /// evidence reconciles against the latched outcome. `None` until a
     /// terminal feedback row arrives.
     pub(crate) migration_terminal: Option<crate::world_report::AttemptOutcome>,
+    /// Latest exact-correlated raw membership evidence staged BEFORE any
+    /// readability hold (window transfer) or per-member map (migration
+    /// parent), mirroring [`RetainedFloat::pending`]: a gapped report never
+    /// erases knowledge the sequencer pending map forgets after
+    /// acknowledgement. Reconciled against later readable complete
+    /// observations; a spent operation is never re-dispatched.
+    pub(crate) pending_member: Option<crate::world_report::MemberAttempt>,
+    /// Per-member latest raw evidence for a migration parent, keyed by
+    /// member window. Latest-wins per member; pruned with the member set.
+    pub(crate) pending_members: BTreeMap<WindowId, crate::world_report::MemberAttempt>,
+    /// Latest exact-correlated raw view evidence for the owning phase
+    /// (standalone view id, follow parent, migration-target parent, refill
+    /// child id), staged before any hold for the same gap/ack survival.
+    pub(crate) pending_view: Option<crate::world_report::ViewAttempt>,
 }
 
 /// Retained explicit float-placement target: one outstanding authorized

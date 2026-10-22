@@ -8,7 +8,7 @@ use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
 use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
-    AttemptFeedback, AttemptKind, AttemptOutcome, ScopeAuthority, ScreenReport, TransferKind,
+    FrameSetter, MemberAttempt, ScopeAuthority, ScreenReport, TransferKind, ViewAttempt,
     WORLD_CONTRACT_VERSION, WindowFact, WorldCommand, WorldReport,
 };
 
@@ -46,6 +46,36 @@ fn fact(window: &str, output: &str, x: i32) -> WindowFact {
     }
 }
 
+/// Raw membership refusal for one migration member: explicit native refusal
+/// with an unchanged readable preimage at the source (never the target).
+fn member_refused(op: &str, window: &str, target_ws: &str, attempt_ms: u64) -> MemberAttempt {
+    MemberAttempt {
+        operation_id: op.to_owned(),
+        window: WindowId(window.to_owned()),
+        target_output: OutputId("out-b".to_owned()),
+        target_workspace: target_ws.to_owned(),
+        setter: FrameSetter::Refused,
+        pre: Some((OutputId("out-a".to_owned()), target_ws.to_owned())),
+        post: Some((OutputId("out-a".to_owned()), target_ws.to_owned())),
+        attempt_ms,
+    }
+}
+
+/// Raw ambiguous membership attempt (throwing setter, unchanged homing):
+/// holds without re-actuation, never proves refusal or rollback.
+fn member_thrown(op: &str, window: &str, target_ws: &str, attempt_ms: u64) -> MemberAttempt {
+    MemberAttempt {
+        operation_id: op.to_owned(),
+        window: WindowId(window.to_owned()),
+        target_output: OutputId("out-b".to_owned()),
+        target_workspace: target_ws.to_owned(),
+        setter: FrameSetter::Threw,
+        pre: Some((OutputId("out-a".to_owned()), target_ws.to_owned())),
+        post: Some((OutputId("out-a".to_owned()), target_ws.to_owned())),
+        attempt_ms,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn report(
     request_seq: u64,
@@ -54,7 +84,8 @@ fn report(
     focused: &str,
     command_seq: Option<u64>,
     command: Option<WorldCommand>,
-    feedback: Vec<AttemptFeedback>,
+    member_attempts: Vec<MemberAttempt>,
+    view_attempts: Vec<ViewAttempt>,
 ) -> WorldReport {
     WorldReport {
         contract_version: WORLD_CONTRACT_VERSION,
@@ -87,9 +118,11 @@ fn report(
         focused_global: focused.to_owned(),
         inventory_complete: true,
         gesture_barrier: false,
-        feedback,
+        feedback: Vec::new(),
         monotonic_ms: 0,
         frames: Vec::new(),
+        member_attempts,
+        view_attempts,
     }
 }
 
@@ -116,6 +149,7 @@ fn wholly_unarrived_refusal_restores_unit_and_focus() {
             "win-b",
             None,
             None,
+            vec![],
             vec![],
         ),
     );
@@ -145,6 +179,7 @@ fn wholly_unarrived_refusal_restores_unit_and_focus() {
             "win-b",
             None,
             None,
+            vec![],
             vec![],
         ),
     );
@@ -197,6 +232,7 @@ fn wholly_unarrived_refusal_restores_unit_and_focus() {
                 workspace: view_a.clone(),
             }),
             vec![],
+            vec![],
         ),
     );
     // Wholly-unarrived refusal: members still observed at the source.
@@ -213,12 +249,12 @@ fn wholly_unarrived_refusal_restores_unit_and_focus() {
             "",
             None,
             None,
-            vec![AttemptFeedback {
-                operation_id: "op-11".to_owned(),
-                kind: AttemptKind::Transfer,
-                outcome: AttemptOutcome::RefusedProven,
-                hold: None,
-            }],
+            vec![
+                member_refused("op-11", "win-a", &view_a, 5),
+                member_refused("op-11", "win-b", &view_a, 5),
+                member_refused("op-11", "win-c", &view_a, 5),
+            ],
+            vec![],
         ),
     );
     assert!(
@@ -346,6 +382,7 @@ fn partial_refusal_holds_persistently_without_retry() {
             None,
             None,
             vec![],
+            vec![],
         ),
     );
     let view_a = first
@@ -368,9 +405,11 @@ fn partial_refusal_holds_persistently_without_retry() {
                 workspace: view_a.clone(),
             }),
             vec![],
+            vec![],
         ),
     );
-    // One member arrives, one stays, with proven refusal: partial hold.
+    // One member arrives, one stays, with a refused member attempt:
+    // partial hold.
     let partial = accepted(
         &mut engine,
         &report(
@@ -380,12 +419,8 @@ fn partial_refusal_holds_persistently_without_retry() {
             "",
             None,
             None,
-            vec![AttemptFeedback {
-                operation_id: "op-11".to_owned(),
-                kind: AttemptKind::Transfer,
-                outcome: AttemptOutcome::RefusedProven,
-                hold: None,
-            }],
+            vec![member_refused("op-11", "win-b", &view_a, 3)],
+            vec![],
         ),
     );
     let flight = partial
@@ -405,6 +440,7 @@ fn partial_refusal_holds_persistently_without_retry() {
             "",
             None,
             None,
+            vec![],
             vec![],
         ),
     );
@@ -453,6 +489,7 @@ fn source_only_migration_keeps_sticky_at_source_refill() {
             None,
             None,
             vec![],
+            vec![],
         ),
     );
     let view_a = first
@@ -475,6 +512,7 @@ fn source_only_migration_keeps_sticky_at_source_refill() {
             None,
             None,
             vec![],
+            vec![],
         ),
     );
     let migrated = accepted(
@@ -494,6 +532,7 @@ fn source_only_migration_keeps_sticky_at_source_refill() {
                 target_output: OutputId("out-b".to_owned()),
                 workspace: view_a.clone(),
             }),
+            vec![],
             vec![],
         ),
     );
@@ -537,6 +576,7 @@ fn source_only_migration_keeps_sticky_at_source_refill() {
             None,
             None,
             vec![],
+            vec![],
         ),
     );
     let sticky: Vec<_> = held
@@ -557,7 +597,8 @@ fn report_with_screens(
     focused: &str,
     command_seq: Option<u64>,
     command: Option<WorldCommand>,
-    feedback: Vec<AttemptFeedback>,
+    member_attempts: Vec<MemberAttempt>,
+    view_attempts: Vec<ViewAttempt>,
     inventory_complete: bool,
     closed: Vec<WindowId>,
 ) -> WorldReport {
@@ -592,9 +633,11 @@ fn report_with_screens(
         focused_global: focused.to_owned(),
         inventory_complete,
         gesture_barrier: false,
-        feedback,
+        feedback: Vec::new(),
         monotonic_ms: 0,
         frames: Vec::new(),
+        member_attempts,
+        view_attempts,
     }
 }
 
@@ -614,6 +657,7 @@ fn gap_refusal_holds_then_proven_rollback_preserves_unit() {
             "win-b",
             None,
             None,
+            vec![],
             vec![],
         ),
     );
@@ -636,6 +680,7 @@ fn gap_refusal_holds_then_proven_rollback_preserves_unit() {
             "win-b",
             None,
             None,
+            vec![],
             vec![],
         ),
     );
@@ -674,6 +719,7 @@ fn gap_refusal_holds_then_proven_rollback_preserves_unit() {
                 workspace: view_a.clone(),
             }),
             vec![],
+            vec![],
         ),
     );
     // Gap + refusal: empty windows, incomplete inventory. Must hold, never
@@ -688,12 +734,12 @@ fn gap_refusal_holds_then_proven_rollback_preserves_unit() {
             "",
             None,
             None,
-            vec![AttemptFeedback {
-                operation_id: "op-11".to_owned(),
-                kind: AttemptKind::Transfer,
-                outcome: AttemptOutcome::RefusedProven,
-                hold: None,
-            }],
+            vec![
+                member_refused("op-11", "win-a", &view_a, 5),
+                member_refused("op-11", "win-b", &view_a, 5),
+                member_refused("op-11", "win-c", &view_a, 5),
+            ],
+            vec![],
             false,
             vec![],
         ),
@@ -729,12 +775,12 @@ fn gap_refusal_holds_then_proven_rollback_preserves_unit() {
             "",
             None,
             None,
-            vec![AttemptFeedback {
-                operation_id: "op-11".to_owned(),
-                kind: AttemptKind::Transfer,
-                outcome: AttemptOutcome::RefusedProven,
-                hold: None,
-            }],
+            vec![
+                member_refused("op-11", "win-a", &view_a, 7),
+                member_refused("op-11", "win-b", &view_a, 7),
+                member_refused("op-11", "win-c", &view_a, 7),
+            ],
+            vec![],
         ),
     );
     assert!(
@@ -782,6 +828,7 @@ fn refusal_close_settles_across_gap() {
             None,
             None,
             vec![],
+            vec![],
         ),
     );
     let view_a = first
@@ -801,12 +848,13 @@ fn refusal_close_settles_across_gap() {
             Some(WorldCommand::MigrateWorkspace {
                 source_output: OutputId("out-a".to_owned()),
                 target_output: OutputId("out-b".to_owned()),
-                workspace: view_a,
+                workspace: view_a.clone(),
             }),
+            vec![],
             vec![],
         ),
     );
-    // Explicit closes honored even across gaps, with refusal feedback.
+    // Explicit closes honored even across gaps, with refusal evidence.
     let settled = accepted(
         &mut engine,
         &report_with_screens(
@@ -817,12 +865,11 @@ fn refusal_close_settles_across_gap() {
             "",
             None,
             None,
-            vec![AttemptFeedback {
-                operation_id: "op-11".to_owned(),
-                kind: AttemptKind::Transfer,
-                outcome: AttemptOutcome::RefusedProven,
-                hold: None,
-            }],
+            vec![
+                member_refused("op-11", "win-a", &view_a, 3),
+                member_refused("op-11", "win-b", &view_a, 3),
+            ],
+            vec![],
             false,
             vec![WindowId("win-a".to_owned()), WindowId("win-b".to_owned())],
         ),
@@ -854,6 +901,7 @@ fn refusal_without_hostable_source_holds_without_destruction() {
             None,
             None,
             vec![],
+            vec![],
         ),
     );
     let view_a = first
@@ -875,6 +923,7 @@ fn refusal_without_hostable_source_holds_without_destruction() {
             "win-b",
             None,
             None,
+            vec![],
             vec![],
         ),
     );
@@ -907,6 +956,7 @@ fn refusal_without_hostable_source_holds_without_destruction() {
                 workspace: view_a.clone(),
             }),
             vec![],
+            vec![],
         ),
     );
     // Complete report, members proven at source, refusal, but the source
@@ -928,12 +978,12 @@ fn refusal_without_hostable_source_holds_without_destruction() {
             "",
             None,
             None,
-            vec![AttemptFeedback {
-                operation_id: "op-11".to_owned(),
-                kind: AttemptKind::Transfer,
-                outcome: AttemptOutcome::RefusedProven,
-                hold: None,
-            }],
+            vec![
+                member_refused("op-11", "win-a", &view_a, 5),
+                member_refused("op-11", "win-b", &view_a, 5),
+                member_refused("op-11", "win-c", &view_a, 5),
+            ],
+            vec![],
             true,
             vec![],
         ),
@@ -964,12 +1014,12 @@ fn refusal_without_hostable_source_holds_without_destruction() {
             "",
             None,
             None,
-            vec![AttemptFeedback {
-                operation_id: "op-11".to_owned(),
-                kind: AttemptKind::Transfer,
-                outcome: AttemptOutcome::RefusedProven,
-                hold: None,
-            }],
+            vec![
+                member_refused("op-11", "win-a", &view_a, 6),
+                member_refused("op-11", "win-b", &view_a, 6),
+                member_refused("op-11", "win-c", &view_a, 6),
+            ],
+            vec![],
         ),
     );
     assert!(
@@ -1009,6 +1059,7 @@ fn acknowledged_refusal_recovers_without_feedback_replay() {
             None,
             None,
             vec![],
+            vec![],
         ),
     );
     let view_a = first
@@ -1030,6 +1081,7 @@ fn acknowledged_refusal_recovers_without_feedback_replay() {
             "win-b",
             None,
             None,
+            vec![],
             vec![],
         ),
     );
@@ -1068,6 +1120,7 @@ fn acknowledged_refusal_recovers_without_feedback_replay() {
                 workspace: view_a.clone(),
             }),
             vec![],
+            vec![],
         ),
     );
     // Terminal refusal arrives inside incomplete empty inventory: hold at
@@ -1082,12 +1135,12 @@ fn acknowledged_refusal_recovers_without_feedback_replay() {
             "",
             None,
             None,
-            vec![AttemptFeedback {
-                operation_id: "op-11".to_owned(),
-                kind: AttemptKind::Transfer,
-                outcome: AttemptOutcome::RefusedProven,
-                hold: None,
-            }],
+            vec![
+                member_refused("op-11", "win-a", &view_a, 5),
+                member_refused("op-11", "win-b", &view_a, 5),
+                member_refused("op-11", "win-c", &view_a, 5),
+            ],
+            vec![],
             false,
             vec![],
         ),
@@ -1115,6 +1168,7 @@ fn acknowledged_refusal_recovers_without_feedback_replay() {
             "",
             None,
             None,
+            vec![],
             vec![],
         ),
     );
@@ -1216,6 +1270,7 @@ fn acknowledged_supersession_recovers_without_feedback_replay() {
             None,
             None,
             vec![],
+            vec![],
         ),
     );
     let view_a = first
@@ -1224,6 +1279,12 @@ fn acknowledged_supersession_recovers_without_feedback_replay() {
         .find(|row| row.output.0 == "out-a")
         .and_then(|row| row.logical_view.clone())
         .expect("view a");
+    let view_b = first
+        .outputs
+        .iter()
+        .find(|row| row.output.0 == "out-b")
+        .and_then(|row| row.logical_view.clone())
+        .expect("view b");
     accepted(
         &mut engine,
         &report(
@@ -1237,6 +1298,7 @@ fn acknowledged_supersession_recovers_without_feedback_replay() {
             "win-b",
             None,
             None,
+            vec![],
             vec![],
         ),
     );
@@ -1258,10 +1320,13 @@ fn acknowledged_supersession_recovers_without_feedback_replay() {
                 workspace: view_a.clone(),
             }),
             vec![],
+            vec![],
         ),
     );
     // Terminal supersession inside incomplete empty inventory: hold at the
-    // target, never rollback from absence.
+    // target, never rollback from absence. The raw target-view attempt
+    // proves newer external input (readable post naming a known logical
+    // id, neither the target nor the KNOWN baseline).
     let gap = accepted(
         &mut engine,
         &report_with_screens(
@@ -1272,11 +1337,16 @@ fn acknowledged_supersession_recovers_without_feedback_replay() {
             "",
             None,
             None,
-            vec![AttemptFeedback {
+            vec![],
+            vec![ViewAttempt {
                 operation_id: "op-11".to_owned(),
-                kind: AttemptKind::Transfer,
-                outcome: AttemptOutcome::SupersededExternal,
-                hold: None,
+                target_output: OutputId("out-b".to_owned()),
+                target_workspace: view_a.clone(),
+                setter: FrameSetter::Threw,
+                pre: None,
+                post: Some(view_b),
+                baseline: Some(view_a.clone()),
+                attempt_ms: 5,
             }],
             false,
             vec![],
@@ -1304,6 +1374,7 @@ fn acknowledged_supersession_recovers_without_feedback_replay() {
             "",
             None,
             None,
+            vec![],
             vec![],
         ),
     );
@@ -1338,6 +1409,7 @@ fn partial_supersession_holds_across_ack_without_replay() {
             None,
             None,
             vec![],
+            vec![],
         ),
     );
     let view_a = first
@@ -1357,12 +1429,14 @@ fn partial_supersession_holds_across_ack_without_replay() {
             Some(WorldCommand::MigrateWorkspace {
                 source_output: OutputId("out-a".to_owned()),
                 target_output: OutputId("out-b".to_owned()),
-                workspace: view_a,
+                workspace: view_a.clone(),
             }),
+            vec![],
             vec![],
         ),
     );
-    // One member arrives, one stays, with proven supersession: partial hold.
+    // One member arrives, one stays, with an ambiguous member attempt:
+    // partial hold.
     let partial = accepted(
         &mut engine,
         &report(
@@ -1372,12 +1446,8 @@ fn partial_supersession_holds_across_ack_without_replay() {
             "",
             None,
             None,
-            vec![AttemptFeedback {
-                operation_id: "op-11".to_owned(),
-                kind: AttemptKind::Transfer,
-                outcome: AttemptOutcome::SupersededExternal,
-                hold: None,
-            }],
+            vec![member_thrown("op-11", "win-b", &view_a, 3)],
+            vec![],
         ),
     );
     let flight = partial
@@ -1397,6 +1467,7 @@ fn partial_supersession_holds_across_ack_without_replay() {
             "",
             None,
             None,
+            vec![],
             vec![],
         ),
     );
@@ -1426,6 +1497,7 @@ fn terminal_then_close_settles_without_feedback_replay() {
             None,
             None,
             vec![],
+            vec![],
         ),
     );
     let view_a = first
@@ -1445,8 +1517,9 @@ fn terminal_then_close_settles_without_feedback_replay() {
             Some(WorldCommand::MigrateWorkspace {
                 source_output: OutputId("out-a".to_owned()),
                 target_output: OutputId("out-b".to_owned()),
-                workspace: view_a,
+                workspace: view_a.clone(),
             }),
+            vec![],
             vec![],
         ),
     );
@@ -1461,12 +1534,11 @@ fn terminal_then_close_settles_without_feedback_replay() {
             "",
             None,
             None,
-            vec![AttemptFeedback {
-                operation_id: "op-11".to_owned(),
-                kind: AttemptKind::Transfer,
-                outcome: AttemptOutcome::RefusedProven,
-                hold: None,
-            }],
+            vec![
+                member_refused("op-11", "win-a", &view_a, 3),
+                member_refused("op-11", "win-b", &view_a, 3),
+            ],
+            vec![],
             false,
             vec![],
         ),
@@ -1490,6 +1562,7 @@ fn terminal_then_close_settles_without_feedback_replay() {
             "",
             None,
             None,
+            vec![],
             vec![],
             false,
             vec![WindowId("win-a".to_owned()), WindowId("win-b".to_owned())],
@@ -1522,6 +1595,7 @@ fn possibly_executed_never_rolls_back() {
             None,
             None,
             vec![],
+            vec![],
         ),
     );
     let view_a = first
@@ -1548,6 +1622,7 @@ fn possibly_executed_never_rolls_back() {
                 workspace: view_a.clone(),
             }),
             vec![],
+            vec![],
         ),
     );
     let ambiguous = accepted(
@@ -1563,12 +1638,12 @@ fn possibly_executed_never_rolls_back() {
             "",
             None,
             None,
-            vec![AttemptFeedback {
-                operation_id: "op-11".to_owned(),
-                kind: AttemptKind::Transfer,
-                outcome: AttemptOutcome::PossiblyExecuted,
-                hold: None,
-            }],
+            vec![
+                member_thrown("op-11", "win-a", &view_a, 3),
+                member_thrown("op-11", "win-b", &view_a, 3),
+                member_thrown("op-11", "win-c", &view_a, 3),
+            ],
+            vec![],
         ),
     );
     let flight = ambiguous
@@ -1596,6 +1671,7 @@ fn possibly_executed_never_rolls_back() {
             "",
             None,
             None,
+            vec![],
             vec![],
         ),
     );
@@ -1645,6 +1721,7 @@ fn directional_fences_carry_distinct_fixed_reasons() {
             None,
             None,
             vec![],
+            vec![],
         ),
     );
     let view_a = first
@@ -1669,7 +1746,7 @@ fn directional_fences_carry_distinct_fixed_reasons() {
             direction: "right".to_owned(),
         }),
         inventory_complete: true,
-        ..report(2, 2, vec![], "", None, None, vec![])
+        ..report(2, 2, vec![], "", None, None, vec![], vec![])
     };
     match engine.handle_report(&east) {
         WorldOutcome::Rejected { kind, message } => {
@@ -1687,6 +1764,7 @@ fn directional_fences_carry_distinct_fixed_reasons() {
         "win-a",
         Some(12),
         Some(dir_cmd(&view_a)),
+        vec![],
         vec![],
     );
     inv.inventory_complete = false;
@@ -1706,6 +1784,7 @@ fn directional_fences_carry_distinct_fixed_reasons() {
         "win-a",
         Some(13),
         Some(dir_cmd("ws-ghost")),
+        vec![],
         vec![],
     );
     match engine.handle_report(&ghost) {
@@ -1728,6 +1807,7 @@ fn directional_fences_carry_distinct_fixed_reasons() {
         "",
         Some(14),
         Some(dir_cmd(&view_a)),
+        vec![],
         vec![],
     );
     match engine.handle_report(&bad_src) {
@@ -1754,6 +1834,7 @@ fn directional_fences_carry_distinct_fixed_reasons() {
             workspace: view_a.clone(),
         }),
         vec![],
+        vec![],
     );
     tgt.screens = inc_screens.clone();
     match engine.handle_report(&tgt) {
@@ -1773,6 +1854,7 @@ fn directional_fences_carry_distinct_fixed_reasons() {
         "win-a",
         Some(16),
         Some(dir_cmd(&view_a)),
+        vec![],
         vec![],
     );
     topo.screens = inc_screens;
@@ -1798,6 +1880,7 @@ fn directional_fences_carry_distinct_fixed_reasons() {
             None,
             None,
             vec![],
+            vec![],
         ),
     );
     let seed_view = seed
@@ -1816,6 +1899,7 @@ fn directional_fences_carry_distinct_fixed_reasons() {
             Some(21),
             Some(dir_cmd(&seed_view)),
             vec![],
+            vec![],
         ),
     );
     let again = report(
@@ -1825,6 +1909,7 @@ fn directional_fences_carry_distinct_fixed_reasons() {
         "win-a",
         Some(22),
         Some(dir_cmd(&seed_view)),
+        vec![],
         vec![],
     );
     match flight_engine.handle_report(&again) {
@@ -1900,7 +1985,7 @@ fn offset_two_output_migration_applies() {
             request_seq: 1,
             observation_seq: 1,
             request_id: "req-1".to_owned(),
-            ..report(1, 1, vec![], "", None, None, vec![])
+            ..report(1, 1, vec![], "", None, None, vec![], vec![])
         },
     );
     let view_a = first
@@ -1924,7 +2009,7 @@ fn offset_two_output_migration_applies() {
                 workspace: view_a,
                 direction: "right".to_owned(),
             }),
-            ..report(2, 2, vec![], "", None, None, vec![])
+            ..report(2, 2, vec![], "", None, None, vec![], vec![])
         },
     );
     assert!(
@@ -1933,5 +2018,484 @@ fn offset_two_output_migration_applies() {
             .iter()
             .any(|t| matches!(t.kind, crate::world_report::TransferKind::Migration)),
         "offset 3+2 must retain migration transfer"
+    );
+}
+
+#[test]
+fn unknown_baseline_never_proves_third_location() {
+    // Baseline None (unknown) must not prove external supersession even
+    // when the post names a known logical id distinct from the target:
+    // the flight holds on outstanding members instead of settling.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![fact("win-a", "out-a", 0)],
+            "",
+            None,
+            None,
+            vec![],
+            vec![],
+        ),
+    );
+    let view_a = first
+        .outputs
+        .iter()
+        .find(|row| row.output.0 == "out-a")
+        .and_then(|row| row.logical_view.clone())
+        .expect("view a");
+    let view_b = first
+        .outputs
+        .iter()
+        .find(|row| row.output.0 == "out-b")
+        .and_then(|row| row.logical_view.clone())
+        .expect("view b");
+    accepted(
+        &mut engine,
+        &report(
+            4,
+            4,
+            vec![fact("win-a", "out-a", 0)],
+            "",
+            Some(11),
+            Some(WorldCommand::MigrateWorkspace {
+                source_output: OutputId("out-a".to_owned()),
+                target_output: OutputId("out-b".to_owned()),
+                workspace: view_a.clone(),
+            }),
+            vec![],
+            vec![],
+        ),
+    );
+    let held = accepted(
+        &mut engine,
+        &report_with_screens(
+            5,
+            5,
+            vec![screen("out-a", 0, true), screen("out-b", 800, false)],
+            vec![fact("win-a", "out-a", 0)],
+            "",
+            None,
+            None,
+            vec![],
+            vec![ViewAttempt {
+                operation_id: "op-11".to_owned(),
+                target_output: OutputId("out-b".to_owned()),
+                target_workspace: view_a.clone(),
+                setter: FrameSetter::Threw,
+                pre: None,
+                post: Some(view_b),
+                baseline: None,
+                attempt_ms: 5,
+            }],
+            true,
+            vec![],
+        ),
+    );
+    assert!(
+        held.transfers
+            .iter()
+            .any(|t| matches!(t.kind, TransferKind::Migration) && t.held),
+        "unknown baseline holds, never supersedes: {:?}",
+        held.transfers
+    );
+}
+
+#[test]
+fn unchanged_preimage_never_proves_third_location() {
+    // pre == post (unchanged) is never external proof even when the
+    // baseline differs: the write left the view where it was.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![fact("win-a", "out-a", 0)],
+            "",
+            None,
+            None,
+            vec![],
+            vec![],
+        ),
+    );
+    let view_a = first
+        .outputs
+        .iter()
+        .find(|row| row.output.0 == "out-a")
+        .and_then(|row| row.logical_view.clone())
+        .expect("view a");
+    let view_b = first
+        .outputs
+        .iter()
+        .find(|row| row.output.0 == "out-b")
+        .and_then(|row| row.logical_view.clone())
+        .expect("view b");
+    accepted(
+        &mut engine,
+        &report(
+            4,
+            4,
+            vec![fact("win-a", "out-a", 0)],
+            "",
+            Some(11),
+            Some(WorldCommand::MigrateWorkspace {
+                source_output: OutputId("out-a".to_owned()),
+                target_output: OutputId("out-b".to_owned()),
+                workspace: view_a.clone(),
+            }),
+            vec![],
+            vec![],
+        ),
+    );
+    let held = accepted(
+        &mut engine,
+        &report_with_screens(
+            5,
+            5,
+            vec![screen("out-a", 0, true), screen("out-b", 800, false)],
+            vec![fact("win-a", "out-a", 0)],
+            "",
+            None,
+            None,
+            vec![],
+            vec![ViewAttempt {
+                operation_id: "op-11".to_owned(),
+                target_output: OutputId("out-b".to_owned()),
+                target_workspace: view_a.clone(),
+                setter: FrameSetter::Threw,
+                pre: Some(view_b.clone()),
+                post: Some(view_b),
+                baseline: Some(view_a.clone()),
+                attempt_ms: 5,
+            }],
+            true,
+            vec![],
+        ),
+    );
+    assert!(
+        held.transfers
+            .iter()
+            .any(|t| matches!(t.kind, TransferKind::Migration) && t.held),
+        "unchanged pre holds, never supersedes: {:?}",
+        held.transfers
+    );
+}
+
+#[test]
+fn refused_refill_keeps_child_and_holds_parent_across_ack() {
+    // A refused refill never retires its child and never lets the parent
+    // settle as externally moved: the child stays held with its raw
+    // staged (spent fence blocks repeats), the parent holds persistently,
+    // and mere child absence can never itself prove external. Multi-report:
+    // refusal, ack/gap with no new attempt, then late exact arrival.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            "",
+            None,
+            None,
+            vec![],
+            vec![],
+        ),
+    );
+    let view_a = first
+        .outputs
+        .iter()
+        .find(|row| row.output.0 == "out-a")
+        .and_then(|row| row.logical_view.clone())
+        .expect("view a");
+    let reply = accepted(
+        &mut engine,
+        &report(
+            4,
+            4,
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            "",
+            Some(11),
+            Some(WorldCommand::MigrateWorkspace {
+                source_output: OutputId("out-a".to_owned()),
+                target_output: OutputId("out-b".to_owned()),
+                workspace: view_a.clone(),
+            }),
+            vec![],
+            vec![],
+        ),
+    );
+    let refill_op = "op-11-refill".to_owned();
+    let refill_ws = reply
+        .transfers
+        .iter()
+        .find(|t| t.operation_id == refill_op)
+        .map(|t| t.target_workspace.clone())
+        .expect("refill child retained");
+    let refill_out = reply
+        .transfers
+        .iter()
+        .find(|t| t.operation_id == refill_op)
+        .map(|t| t.target_output.clone())
+        .expect("refill out");
+    // Members arrive at the target but the source refill is refused: the
+    // child stays, the parent holds.
+    let refused = accepted(
+        &mut engine,
+        &report_with_screens(
+            5,
+            5,
+            vec![screen("out-a", 0, true), screen("out-b", 800, false)],
+            vec![fact("win-a", "out-b", 800), fact("win-b", "out-b", 900)],
+            "",
+            None,
+            None,
+            vec![],
+            vec![ViewAttempt {
+                operation_id: refill_op.clone(),
+                target_output: refill_out.clone(),
+                target_workspace: refill_ws.clone(),
+                setter: FrameSetter::Refused,
+                pre: Some(view_a.clone()),
+                post: Some(view_a.clone()),
+                baseline: Some(refill_ws.clone()),
+                attempt_ms: 5,
+            }],
+            true,
+            vec![],
+        ),
+    );
+    let parent = refused
+        .transfers
+        .iter()
+        .find(|t| matches!(t.kind, TransferKind::Migration))
+        .expect("parent holds after refill refusal");
+    assert!(
+        refused
+            .transfers
+            .iter()
+            .any(|t| matches!(t.kind, TransferKind::Migration)),
+        "parent held: {parent:?}"
+    );
+    assert!(
+        refused
+            .transfers
+            .iter()
+            .any(|t| t.operation_id == refill_op),
+        "refused child kept, never retired: {:?}",
+        refused.transfers
+    );
+    // Ack/gap with no new attempt: still held, never settled as external.
+    let acked = accepted(
+        &mut engine,
+        &report(
+            6,
+            6,
+            vec![fact("win-a", "out-b", 800), fact("win-b", "out-b", 900)],
+            "",
+            None,
+            None,
+            vec![],
+            vec![],
+        ),
+    );
+    assert!(
+        acked
+            .transfers
+            .iter()
+            .any(|t| matches!(t.kind, TransferKind::Migration)),
+        "parent holds across ack: {:?}",
+        acked.transfers
+    );
+    assert!(
+        acked.transfers.iter().any(|t| t.operation_id == refill_op),
+        "child survives ack: {:?}",
+        acked.transfers
+    );
+}
+
+#[test]
+fn refused_refill_external_source_echo_settles_parent() {
+    // A refused refill holds, but a later genuine external source move
+    // (a known current echo naming a third workspace, neither the refill
+    // nor the refused preimage) settles the parent instead of holding
+    // forever. Unknown echoes and gaps still hold.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            "",
+            None,
+            None,
+            vec![],
+            vec![],
+        ),
+    );
+    let view_a = first
+        .outputs
+        .iter()
+        .find(|row| row.output.0 == "out-a")
+        .and_then(|row| row.logical_view.clone())
+        .expect("view a");
+    let reply = accepted(
+        &mut engine,
+        &report(
+            4,
+            4,
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            "",
+            Some(11),
+            Some(WorldCommand::MigrateWorkspace {
+                source_output: OutputId("out-a".to_owned()),
+                target_output: OutputId("out-b".to_owned()),
+                workspace: view_a.clone(),
+            }),
+            vec![],
+            vec![],
+        ),
+    );
+    let refill_op = "op-11-refill".to_owned();
+    let refill_ws = reply
+        .transfers
+        .iter()
+        .find(|t| t.operation_id == refill_op)
+        .map(|t| t.target_workspace.clone())
+        .expect("refill child retained");
+    let refill_out = reply
+        .transfers
+        .iter()
+        .find(|t| t.operation_id == refill_op)
+        .map(|t| t.target_output.clone())
+        .expect("refill out");
+    let migration_op = reply
+        .transfers
+        .iter()
+        .find(|t| matches!(t.kind, TransferKind::Migration))
+        .expect("migration retained")
+        .operation_id
+        .clone();
+    let target_ws = reply
+        .transfers
+        .iter()
+        .find(|t| t.operation_id == migration_op)
+        .map(|t| t.target_workspace.clone())
+        .expect("target ws");
+    let _ = target_ws;
+    let refused = accepted(
+        &mut engine,
+        &report_with_screens(
+            5,
+            5,
+            vec![screen("out-a", 0, true), screen("out-b", 800, false)],
+            vec![fact("win-a", "out-b", 800), fact("win-b", "out-b", 900)],
+            "",
+            None,
+            None,
+            vec![],
+            vec![ViewAttempt {
+                operation_id: refill_op.clone(),
+                target_output: refill_out.clone(),
+                target_workspace: refill_ws.clone(),
+                setter: FrameSetter::Refused,
+                pre: Some(view_a.clone()),
+                post: Some(view_a.clone()),
+                baseline: Some(refill_ws.clone()),
+                attempt_ms: 5,
+            }],
+            true,
+            vec![],
+        ),
+    );
+    assert!(
+        refused
+            .transfers
+            .iter()
+            .any(|t| matches!(t.kind, TransferKind::Migration)),
+        "parent holds after refusal"
+    );
+    // Ack with no new attempt: still held.
+    let acked = accepted(
+        &mut engine,
+        &report(
+            6,
+            6,
+            vec![fact("win-a", "out-b", 800), fact("win-b", "out-b", 900)],
+            "",
+            None,
+            None,
+            vec![],
+            vec![],
+        ),
+    );
+    assert!(
+        acked.transfers.iter().any(|t| t.operation_id == refill_op),
+        "child survives ack: {:?}",
+        acked.transfers
+    );
+    // Third known workspace on the source output, neither the refill nor
+    // the refused preimage.
+    let ring_a = engine.logical_ring("out-a");
+    let third = ring_a
+        .iter()
+        .find(|id| *id != &refill_ws && *id != &view_a)
+        .cloned()
+        .expect("third known source workspace");
+    // Current echo moves externally to the third workspace with no new raw
+    // attempt (post-ack): the parent must settle, dropping the child.
+    let mut external = report_with_screens(
+        7,
+        7,
+        vec![screen("out-a", 0, true), screen("out-b", 800, false)],
+        vec![fact("win-a", "out-b", 800), fact("win-b", "out-b", 900)],
+        "",
+        None,
+        None,
+        vec![],
+        vec![],
+        true,
+        vec![],
+    );
+    external.views = vec![
+        crate::world_report::ScreenView {
+            output: OutputId("out-a".to_owned()),
+            view: third.clone(),
+        },
+        crate::world_report::ScreenView {
+            output: OutputId("out-b".to_owned()),
+            view: engine
+                .logical_ring("out-b")
+                .into_iter()
+                .find(|id| id == &view_a)
+                .unwrap_or_else(|| {
+                    engine
+                        .logical_ring("out-b")
+                        .first()
+                        .cloned()
+                        .unwrap_or_default()
+                }),
+        },
+    ];
+    let settled = accepted(&mut engine, &external);
+    assert!(
+        settled
+            .transfers
+            .iter()
+            .all(|t| !matches!(t.kind, TransferKind::Migration)),
+        "external source echo settles parent: {:?} (third={third:?} refill={refill_ws:?} pre={view_a:?})",
+        settled.transfers
+    );
+    assert!(
+        !settled
+            .transfers
+            .iter()
+            .any(|t| t.operation_id == refill_op),
+        "refused child drops on external source move: {:?}",
+        settled.transfers
     );
 }

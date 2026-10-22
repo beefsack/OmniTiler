@@ -227,6 +227,16 @@ do not broaden cleanup or repeatedly restart the experiment.
   identities, not ordinals; `float-mismatch` reports successful floating
   settlement with a frame delta. Compare native rectangles in one coordinate
   convention (do not mix DPI-virtualized and physical values).
+- Core-world trace oracles: decode JSON before comparing output ids. Selection
+  follows the configured cursor/focus target, not necessarily foreground; only
+  resolved selection diagnostics identify that target. Legacy send `workspace`
+  diagnostics can carry a cached output: join raw `world-apply` member/view
+  rows and native observations instead. Already-proven no-write arrivals emit
+  no attempt row. Prove retirement with a fresh accepted reply containing an
+  empty `desired_transfers` and zero omitted rows, not quiet-log absence;
+  rejected no-op focus probes have no desired snapshot. Emptied workspace
+  pruning can change ordinals, and default migration refills the trailing empty
+  rather than revealing an occupied hidden workspace.
 
 ## Fixture-First Live Tests
 

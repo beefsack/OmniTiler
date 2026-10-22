@@ -333,7 +333,7 @@ pub fn command_result_estimate(result: &Option<CommandResult>) -> usize {
 /// `noSpaceResult`, `switchTarget`, `freshPlacement`, nullable `cursor`,
 /// `defaultTiled`/`focused`/`complete`/`gesture`/`focusFollowsCursor`/
 /// `cursorWarp` values, `feedback`, `monotonicMs` decimal string,
-/// `frameAttempts`).
+/// `frameAttempts`, `memberAttempts`, `viewAttempts`).
 /// Conservative: any compact encoding of the report fits within this
 /// bound (locked by `request_estimate_bounds_actual_wire_bytes`). The
 /// adapter must emit compact JSON with no whitespace; key order does not
@@ -348,11 +348,12 @@ pub fn report_estimate(report: &WorldReport) -> usize {
     // ,"cursor":,"switchTarget":,"freshPlacement":,"focusFollowsCursor":,
     // "cursorWarp": = 322
     // plus ,"monotonicMs":"" (19) and ,"frameAttempts":[] (19) = 360,
+    // plus ,"memberAttempts":[] (20) and ,"viewAttempts":[] (18) = 398,
     // plus the version digits. Values counted separately below; nullable
     // command and cursor slots count `null` (4) when absent. The workspace
     // mode token rides as `"mode":S` (9 fixed plus the token); membership
     // evidence rides per fact below (absent counts `null`).
-    let mut bytes = 360
+    let mut bytes = 398
         + usize_len(report.contract_version as usize)
         + json_string_len(&report.owner)
         + json_string_len(&report.adapter_incarnation)
@@ -470,6 +471,40 @@ pub fn report_estimate(report: &WorldReport) -> usize {
             + attempt.prewrite.map_or(4, |rect| {
                 5 + int_len(rect.x) + int_len(rect.y) + int_len(rect.w) + int_len(rect.h)
             });
+    }
+    for attempt in &report.member_attempts {
+        // {"op":S,"win":S,"out":S,"ws":S,"setter":S,"pre":H|null,
+        // "post":H|null,"attemptMs":"u64"} = 67 fixed plus ids, setter
+        // token, homing pairs, and the stamp. A homing pair
+        // `{"out":S,"ws":S}` counts 14 plus its ids; absent homings count
+        // null (4).
+        bytes += 67
+            + json_string_len(&attempt.operation_id)
+            + json_string_len(&attempt.window.0)
+            + json_string_len(&attempt.target_output.0)
+            + json_string_len(&attempt.target_workspace)
+            + json_string_len(attempt.setter.as_str())
+            + attempt.pre.as_ref().map_or(4, |(out, ws)| {
+                14 + json_string_len(&out.0) + json_string_len(ws)
+            })
+            + attempt.post.as_ref().map_or(4, |(out, ws)| {
+                14 + json_string_len(&out.0) + json_string_len(ws)
+            })
+            + u64_len(attempt.attempt_ms);
+    }
+    for attempt in &report.view_attempts {
+        // {"op":S,"out":S,"ws":S,"setter":S,"pre":S|null,"post":S|null,
+        // "base":S|null,"attemptMs":"u64"} = 68 fixed plus ids, setter
+        // token, views, and the stamp. Absent views count null (4).
+        bytes += 68
+            + json_string_len(&attempt.operation_id)
+            + json_string_len(&attempt.target_output.0)
+            + json_string_len(&attempt.target_workspace)
+            + json_string_len(attempt.setter.as_str())
+            + attempt.pre.as_deref().map_or(4, json_string_len)
+            + attempt.post.as_deref().map_or(4, json_string_len)
+            + attempt.baseline.as_deref().map_or(4, json_string_len)
+            + u64_len(attempt.attempt_ms);
     }
     // No restoration ingress exists on the wire: every report is a
     // fresh-observation report and the adapter sends no restoration key.

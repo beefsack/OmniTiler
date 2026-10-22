@@ -1,13 +1,117 @@
 //! Retained transfer settlement (D3=A): view, window/migration, and float
-//! settlement against staged homing, raw echoes, and attempt feedback.
+//! settlement against staged homing, raw echoes, and raw correlated attempt
+//! facts.
 //!
 //! Split from [`crate::world_engine`]: same `impl WorldEngine` ownership,
 //! only relocated for source size. No behavior change.
+//!
+//! Completion is core-owned over raw mechanical attempt facts
+//! ([`MemberAttempt`](crate::world_report::MemberAttempt) setter plus
+//! pre/post homing, [`ViewAttempt`](crate::world_report::ViewAttempt)
+//! setter plus pre/post/baseline views) plus the staged observation. The
+//! adapter reports write/re-read facts only and stages no verdict: every
+//! confirmation, proven refusal, ambiguity latch, and external
+//! supersession below is derived here. External transfer/view verdict
+//! ingress is retired; internal [`AttemptOutcome`] latch vocabulary
+//! (migration terminal) is retained.
 
-use crate::directional::WindowId;
+use crate::directional::{OutputId, WindowId};
 use crate::session::DomainKey;
 use crate::world_engine::{RetainedFloat, RetainedTransfer, WorldEngine};
-use crate::world_report::{AttemptOutcome, TransferKind, WorldReport};
+use crate::world_report::{
+    AttemptOutcome, FrameSetter, MemberAttempt, TransferKind, ViewAttempt, WorldReport,
+};
+
+/// Exact-correlated raw membership evidence for one retained operation
+/// window plus target. Forged rows (operation, window, or target mismatch)
+/// are never evidence: they read as absent.
+fn member_attempt_for<'a>(
+    report: &'a WorldReport,
+    operation_id: &str,
+    window: &WindowId,
+    target_output: &OutputId,
+    target_workspace: &str,
+) -> Option<&'a MemberAttempt> {
+    report.member_attempts.iter().find(|attempt| {
+        attempt.operation_id == operation_id
+            && attempt.window == *window
+            && attempt.target_output == *target_output
+            && attempt.target_workspace == target_workspace
+    })
+}
+
+/// Exact-correlated raw view evidence for one owning phase plus target.
+/// Same forged-row rule as [`member_attempt_for`].
+fn view_attempt_for<'a>(
+    report: &'a WorldReport,
+    operation_id: &str,
+    target_output: &OutputId,
+    target_workspace: &str,
+) -> Option<&'a ViewAttempt> {
+    report.view_attempts.iter().find(|attempt| {
+        attempt.operation_id == operation_id
+            && attempt.target_output == *target_output
+            && attempt.target_workspace == target_workspace
+    })
+}
+
+/// Proven refusal from one membership attempt: an explicit native refusal
+/// with an unchanged readable preimage that is not the target. Anything
+/// else (accepted mismatch, throw, unreadable proof, moved preimage)
+/// latches ambiguity, never refusal.
+fn member_refused(
+    attempt: &MemberAttempt,
+    target_output: &OutputId,
+    target_workspace: &str,
+) -> bool {
+    matches!(attempt.setter, FrameSetter::Refused)
+        && attempt.pre.is_some()
+        && attempt.pre == attempt.post
+        && attempt.pre.as_ref().is_some_and(|(output, workspace)| {
+            output != target_output || workspace != target_workspace
+        })
+}
+
+/// Proven refusal from one view attempt: same unchanged-readable-preimage
+/// rule as [`member_refused`]. A follow miss is never a refused window:
+/// callers hold the parent ambiguous instead of settling refusal.
+fn view_refused(attempt: &ViewAttempt, target_workspace: &str) -> bool {
+    matches!(attempt.setter, FrameSetter::Refused)
+        && attempt.pre.is_some()
+        && attempt.pre == attempt.post
+        && attempt.pre.as_deref() != Some(target_workspace)
+}
+
+/// Third-location proof from one view attempt: a readable post that is
+/// neither the target nor the KNOWN observation-time baseline proves newer
+/// external input. Unknown or empty baselines never prove third locations:
+/// a post matching an unknown baseline reads as ambiguity, never
+/// supersession. An unchanged preimage (`pre == post`) is never external
+/// proof even when the baseline differs: the write left the view where it
+/// was, so the attempt latches ambiguity without re-actuation. Target
+/// observation wins elsewhere (callers check exact echo before consulting
+/// this): this predicate never overrides an exact target proof.
+fn view_third_location(attempt: &ViewAttempt, target_workspace: &str) -> bool {
+    let Some(post) = attempt.post.as_deref() else {
+        return false;
+    };
+    let Some(baseline) = attempt.baseline.as_deref() else {
+        return false;
+    };
+    if post.is_empty() || baseline.is_empty() {
+        return false;
+    }
+    if post == target_workspace {
+        return false;
+    }
+    if post == baseline {
+        return false;
+    }
+    if attempt.pre.as_deref() == Some(post) {
+        return false;
+    }
+    true
+}
 
 impl WorldEngine {
     /// Settle retained view targets against raw echoes before staging.
@@ -15,20 +119,47 @@ impl WorldEngine {
     /// history; externally moved echoes (differing from both the
     /// expectation and the last echo) are newer input and win: the flight
     /// drops and the echo is adopted as the view. Stale echoes hold.
-    /// Proven refusal or external supersession feedback settles to
-    /// observed. Runs before [`WorldEngine::build_staged`] so homing
-    /// assigns against adapter truth, never a stale desire.
+    /// Raw refusal (explicit refusal with an unchanged readable preimage)
+    /// or raw third-location proof settles to observed; any other raw
+    /// attempt latches ambiguity without re-actuation (the adapter's spent
+    /// view-phase fence blocks repeats). Paired migration refill children
+    /// (`{parent}-refill` with a live migration parent) are skipped here
+    /// and settled with their parent in [`WorldEngine::settle_migration`].
+    /// Runs before [`WorldEngine::build_staged`] so homing assigns against
+    /// adapter truth, never a stale desire.
     pub(crate) fn settle_views_pre(&mut self, report: &WorldReport) {
+        // Migration parents live in the same vec: refill children with a
+        // live parent settle with the parent, never alone.
+        let parent_ops: std::collections::BTreeSet<String> = self
+            .retained
+            .iter()
+            .filter(|retained| matches!(&retained.target.kind, TransferKind::Migration))
+            .map(|retained| retained.target.operation_id.clone())
+            .collect();
         let mut keep: Vec<RetainedTransfer> = Vec::new();
-        for retained in std::mem::take(&mut self.retained) {
+        for mut retained in std::mem::take(&mut self.retained) {
             if !matches!(&retained.target.kind, TransferKind::View) {
                 keep.push(retained);
                 continue;
             }
-            let feedback = report
-                .feedback
-                .iter()
-                .find(|f| f.operation_id == retained.target.operation_id);
+            if let Some(prefix) = retained.target.operation_id.strip_suffix("-refill")
+                && parent_ops.contains(prefix)
+            {
+                keep.push(retained);
+                continue;
+            }
+            // Stage exact-correlated raw evidence before any hold so a
+            // gapped report never erases knowledge the sequencer pending
+            // map forgets after acknowledgement.
+            if let Some(attempt) = view_attempt_for(
+                report,
+                &retained.target.operation_id,
+                &retained.target.target_output,
+                &retained.target.target_workspace,
+            ) {
+                retained.pending_view = Some(attempt.clone());
+            }
+            let raw = retained.pending_view.clone();
             let echo = report
                 .views
                 .iter()
@@ -51,11 +182,48 @@ impl WorldEngine {
                     &retained.target.target_workspace,
                     &ring,
                 );
-            } else if matches!(
-                feedback.map(|f| f.outcome),
-                Some(AttemptOutcome::RefusedProven | AttemptOutcome::SupersededExternal)
-            ) {
-                // Settle to observed.
+            } else if raw
+                .as_ref()
+                .is_some_and(|attempt| view_refused(attempt, &retained.target.target_workspace))
+            {
+                // Proven refusal reconciled against readable evidence, never
+                // from raw alone across missing facts: target exact proof
+                // already won above; missing/gapped echoes hold with the raw
+                // staged for later reconciliation; only a readable echo
+                // naming the refused preimage settles to observed. Gaps
+                // (incomplete inventory, incomplete screen, gesture) hold
+                // persistently with identities preserved and no retry. The
+                // screen bar reads the CURRENT report screens (never the
+                // previous staged topology): an incomplete current screen
+                // holds even after a complete prior.
+                let current_complete = report
+                    .screens
+                    .iter()
+                    .find(|screen| screen.output == retained.target.target_output)
+                    .map(|screen| screen.complete);
+                if !report.inventory_complete
+                    || current_complete != Some(true)
+                    || report.gesture_barrier
+                {
+                    keep.push(retained);
+                    continue;
+                }
+                let pre_matches = raw.as_ref().and_then(|attempt| attempt.pre.clone());
+                if echo.is_some() && echo == pre_matches.as_deref() {
+                    // Settle to observed: the refused preimage survived.
+                } else {
+                    keep.push(retained);
+                }
+            } else if raw.as_ref().is_some_and(|attempt| {
+                view_third_location(attempt, &retained.target.target_workspace)
+                    && attempt.post.as_deref().is_some_and(|post| {
+                        self.mapping
+                            .get(&retained.target.target_output.0)
+                            .is_some_and(|ring| ring.iter().any(|id| id == post))
+                    })
+            }) {
+                // Newer external input proven by the raw post: settle to
+                // observed instead of fighting the user.
             } else {
                 let last = self
                     .last_views
@@ -64,7 +232,8 @@ impl WorldEngine {
                 let Some(echo) = echo else {
                     // Missing/empty echo is a gap, never external
                     // supersession and never a ring-head revert: hold the
-                    // flight with the retained view intact.
+                    // flight with the retained view intact. Raw evidence
+                    // stays staged above for later reconciliation.
                     keep.push(retained);
                     continue;
                 };
@@ -90,6 +259,8 @@ impl WorldEngine {
                         keep.push(retained);
                     }
                 } else {
+                    // Stale echo holds; retained raw evidence (if any)
+                    // latches ambiguity without re-actuation.
                     keep.push(retained);
                 }
             }
@@ -98,33 +269,52 @@ impl WorldEngine {
     }
 
     /// Settle outstanding window and migration transfers plus explicit
-    /// float placements against the staged homing, raw echoes, and explicit
-    /// attempt feedback. Runs after [`WorldEngine::build_staged`] and before
-    /// the sweep.
+    /// float placements against the staged homing, raw echoes, and raw
+    /// correlated attempt facts. Runs after [`WorldEngine::build_staged`]
+    /// and before the sweep.
     pub(crate) fn settle_rest(&mut self, report: &WorldReport) {
         let mut keep: Vec<RetainedTransfer> = Vec::new();
-        for retained in std::mem::take(&mut self.retained) {
-            let feedback = report
-                .feedback
-                .iter()
-                .find(|f| f.operation_id == retained.target.operation_id);
-            let refused = matches!(
-                feedback.map(|f| f.outcome),
-                Some(AttemptOutcome::RefusedProven)
-            );
-            if refused && let TransferKind::Window(window) = &retained.target.kind {
-                // Deferred until after the sweep: the unshielded sweep may
-                // re-store the slot while converging back to observed.
-                self.pending_forget.push((
-                    DomainKey {
-                        output: retained.target.target_output.clone(),
-                        workspace: crate::directional::WorkspaceId(
-                            retained.target.target_workspace.clone(),
-                        ),
-                    },
-                    window.clone(),
-                ));
+        for mut retained in std::mem::take(&mut self.retained) {
+            // Stage exact-correlated raw membership evidence before any
+            // hold so gapped reports never erase knowledge the sequencer
+            // pending map forgets after acknowledgement. Window follow
+            // phases stage their view evidence here too (as migration
+            // does): the follow must persist across acknowledgement and
+            // gaps, never silently settle on membership alone.
+            if let TransferKind::Window(window) = &retained.target.kind {
+                let target_output = retained.target.target_output.clone();
+                let target_workspace = retained.target.target_workspace.clone();
+                if let Some(attempt) = member_attempt_for(
+                    report,
+                    &retained.target.operation_id,
+                    window,
+                    &target_output,
+                    &target_workspace,
+                ) {
+                    retained.pending_member = Some(attempt.clone());
+                }
+                if retained.target.follow
+                    && let Some(attempt) = view_attempt_for(
+                        report,
+                        &retained.target.operation_id,
+                        &target_output,
+                        &target_workspace,
+                    )
+                {
+                    retained.pending_view = Some(attempt.clone());
+                }
             }
+            let raw = retained.pending_member.clone();
+            let raw_refused = match &retained.target.kind {
+                TransferKind::Window(_) => raw.as_ref().is_some_and(|attempt| {
+                    member_refused(
+                        attempt,
+                        &retained.target.target_output,
+                        &retained.target.target_workspace,
+                    )
+                }),
+                _ => false,
+            };
             match &retained.target.kind {
                 TransferKind::Window(window) => {
                     let homing = self.staged_homing(window);
@@ -141,42 +331,140 @@ impl WorldEngine {
                             retained.target.target_workspace.clone(),
                         ),
                     };
-                    if matches!(
-                        feedback.map(|f| f.outcome),
-                        Some(AttemptOutcome::RefusedProven | AttemptOutcome::SupersededExternal)
-                    ) {
-                        // Dropped above; refusal slot cleanup already queued.
-                    } else if homing.as_ref() == Some(&target_key) {
-                        // Confirmed by staged homing -- except same-output
-                        // transfers, where the committed Engine session
-                        // already homes at the target before the native
-                        // moves. Retained session homing must not confirm
-                        // itself: a same-output send settles only on
-                        // observed logical membership naming the exact
-                        // target workspace (unknown or wrong membership
-                        // holds the flight).
-                        let same_output = retained.source_output == retained.target.target_output;
-                        let observed_proves = self
-                            .staged
-                            .facts
-                            .get(window)
-                            .and_then(|fact| fact.observed_workspace.as_deref())
-                            == Some(retained.target.target_workspace.as_str());
-                        if same_output && !observed_proves {
-                            if matches!(
-                                feedback.map(|f| f.outcome),
-                                Some(AttemptOutcome::PossiblyExecuted)
-                            ) {
+                    // Ambiguous raw evidence (any correlated attempt that
+                    // is neither proof nor proven refusal) holds the
+                    // target without re-actuation; no raw at all holds
+                    // plainly so a later report can still dispatch.
+                    let ambiguous = raw.is_some() && !raw_refused;
+                    if homing.as_ref() == Some(&target_key) {
+                        // Target observation wins over stale refusal: arrival
+                        // proves before any raw refusal reconciles.
+                        // Explicit close settles even on arrival proof.
+                        if closed {
+                            // Explicit close settles; the sweep forgets it.
+                        } else {
+                            // Confirmed by staged homing -- except same-output
+                            // transfers, where the committed Engine session
+                            // already homes at the target before the native
+                            // moves. Retained session homing must not confirm
+                            // itself: a same-output send settles only on
+                            // observed logical membership naming the exact
+                            // target workspace (unknown or wrong membership
+                            // holds the flight).
+                            let same_output =
+                                retained.source_output == retained.target.target_output;
+                            let observed_proves = self
+                                .staged
+                                .facts
+                                .get(window)
+                                .and_then(|fact| fact.observed_workspace.as_deref())
+                                == Some(retained.target.target_workspace.as_str());
+                            if same_output && !observed_proves {
                                 let mut held = retained;
-                                held.target.held = true;
+                                if ambiguous {
+                                    held.target.held = true;
+                                }
                                 keep.push(held);
-                            } else {
-                                keep.push(retained);
+                            } else if retained.target.follow && !same_output {
+                                // Cross-output follow only: same-output
+                                // membership settles before its separate
+                                // `{op}-follow` view flight (membership-
+                                // before-follow), so the Window never waits
+                                // here; cross-output follow shares the parent
+                                // operation and must prove the exact view.
+                                let echo_exact = self
+                                    .staged
+                                    .echoes
+                                    .get(&retained.target.target_output.0)
+                                    .map(String::as_str)
+                                    == Some(retained.target.target_workspace.as_str());
+                                if echo_exact {
+                                    // Follow proves on the exact observed
+                                    // view: no new write is required when the
+                                    // view already shows the target.
+                                } else if retained.pending_view.as_ref().is_some_and(|attempt| {
+                                    view_third_location(attempt, &retained.target.target_workspace)
+                                        && attempt.post.as_deref().is_some_and(|post| {
+                                            self.mapping
+                                                .get(&retained.target.target_output.0)
+                                                .is_some_and(|ring| {
+                                                    ring.iter().any(|id| id == post)
+                                                })
+                                        })
+                                }) {
+                                    // Genuine known third-location external
+                                    // supersession settles the parent instead
+                                    // of fighting newer input.
+                                } else {
+                                    // Membership proves but the follow view
+                                    // is absent/stale/failed/ambiguous: hold
+                                    // persistently across acknowledgement and
+                                    // gaps with the staged follow evidence
+                                    // retained (never a refused window, never
+                                    // a view outcome on the window id). The
+                                    // spent view-phase fence blocks repeats;
+                                    // the next report settles only on exact
+                                    // echo or genuine external proof.
+                                    let mut held = retained;
+                                    held.target.held = true;
+                                    keep.push(held);
+                                }
                             }
                         }
                         // Otherwise confirmed: the flight drops.
                     } else if closed {
                         // Explicit close settles; the sweep forgets the slot.
+                    } else if raw_refused {
+                        // Proven refusal reconciles only against current
+                        // readable complete source-unchanged proof: raw alone
+                        // across missing facts never restores/deletes state.
+                        // Target arrival already won above; gaps hold with
+                        // the raw staged (as floats do), never settling from
+                        // absence. Minimized/unreadable facts hold.
+                        let gapped = !report.inventory_complete
+                            || self.screen_complete(&retained.source_output) != Some(true)
+                            || self.screen_complete(&retained.target.target_output) != Some(true)
+                            || report.gesture_barrier;
+                        if gapped {
+                            let mut held = retained;
+                            held.target.held = true;
+                            keep.push(held);
+                        } else {
+                            let fact_ok = self.staged.facts.get(window).is_some_and(|fact| {
+                                fact.rect.is_some()
+                                    && !fact.minimized
+                                    && !self.staged.closes.contains(window)
+                            });
+                            let pre_key = raw.as_ref().and_then(|attempt| {
+                                attempt.pre.as_ref().map(|(out, ws)| DomainKey {
+                                    output: out.clone(),
+                                    workspace: crate::directional::WorkspaceId(ws.clone()),
+                                })
+                            });
+                            if fact_ok && pre_key.is_some_and(|key| Some(&key) == homing.as_ref()) {
+                                // Settle to observed: the refused preimage
+                                // survived unchanged on readable evidence.
+                                // Deferred until after the sweep: the
+                                // unshielded sweep may re-store the slot
+                                // while converging back to observed.
+                                self.pending_forget.push((
+                                    DomainKey {
+                                        output: retained.target.target_output.clone(),
+                                        workspace: crate::directional::WorkspaceId(
+                                            retained.target.target_workspace.clone(),
+                                        ),
+                                    },
+                                    window.clone(),
+                                ));
+                            } else {
+                                // Missing/gapped echo, unreadable/minimized
+                                // fact, or moved preimage: hold with the raw
+                                // retained for later readable reconciliation.
+                                let mut held = retained;
+                                held.target.held = true;
+                                keep.push(held);
+                            }
+                        }
                     } else if let Some(key) = homing {
                         if key != source_key {
                             // Newer external input off both transfer screens
@@ -192,31 +480,20 @@ impl WorldEngine {
                             } else if key.output == target_key.output
                                 || key.output == source_key.output
                             {
-                                if matches!(
-                                    feedback.map(|f| f.outcome),
-                                    Some(AttemptOutcome::PossiblyExecuted)
-                                ) {
-                                    let mut held = retained;
+                                let mut held = retained;
+                                if ambiguous {
                                     held.target.held = true;
-                                    keep.push(held);
-                                } else {
-                                    keep.push(retained);
                                 }
+                                keep.push(held);
                             }
-                        } else if matches!(
-                            feedback.map(|f| f.outcome),
-                            Some(AttemptOutcome::PossiblyExecuted)
-                        ) {
+                        } else if ambiguous {
                             let mut held = retained;
                             held.target.held = true;
                             keep.push(held);
                         } else {
                             keep.push(retained);
                         }
-                    } else if matches!(
-                        feedback.map(|f| f.outcome),
-                        Some(AttemptOutcome::PossiblyExecuted)
-                    ) {
+                    } else if ambiguous {
                         let mut held = retained;
                         held.target.held = true;
                         keep.push(held);
@@ -228,7 +505,8 @@ impl WorldEngine {
                 }
                 TransferKind::View => {
                     // Retained by the pre-stage view pass only when the
-                    // echo is stale; nothing left to do here.
+                    // echo is stale (refill children settle with their
+                    // migration parent); nothing left to do here.
                     keep.push(retained);
                 }
                 TransferKind::Migration => {
@@ -261,47 +539,154 @@ impl WorldEngine {
     /// settles to observed without fighting either view. A target view
     /// that moved externally (echo differs from both the expectation and
     /// the last echo) settles the parent instead of fighting newer input,
-    /// and a settled parent never reactivates. Proven refusal or external
-    /// supersession feedback settles the whole transfer; the retained
-    /// logical mapping persists (core authority), while possibly-executed
-    /// holds the flight without re-actuation.
+    /// and a settled parent never reactivates. Proven refusal (every member
+    /// refused with an unchanged readable preimage) or external
+    /// supersession (third-location view proof) derived from raw attempt
+    /// facts latches the terminal outcome under the operation identity;
+    /// the retained logical mapping persists (core authority), while
+    /// ambiguous attempts hold the flight without re-actuation.
     pub(crate) fn settle_migration(
         &mut self,
         report: &WorldReport,
         mut retained: RetainedTransfer,
         keep: &mut Vec<RetainedTransfer>,
     ) {
-        let feedback = report
-            .feedback
-            .iter()
-            .find(|f| f.operation_id == retained.target.operation_id);
+        // Stage exact-correlated raw evidence before any hold so gapped
+        // reports never erase knowledge the sequencer pending maps forget
+        // after acknowledgement.
+        let target_out = retained.target.target_output.clone();
+        let target_ws = retained.target.target_workspace.clone();
+        let op = retained.target.operation_id.clone();
+        for member in retained.members.clone() {
+            if let Some(attempt) = member_attempt_for(report, &op, &member, &target_out, &target_ws)
+            {
+                retained.pending_members.insert(member, attempt.clone());
+            }
+        }
+        retained
+            .pending_members
+            .retain(|member, _| retained.members.contains(member));
+        if let Some(attempt) = view_attempt_for(report, &op, &target_out, &target_ws) {
+            retained.pending_view = Some(attempt.clone());
+        }
+        // Settle the paired refill child here: settle_views_pre skips
+        // `{parent}-refill` children with a live parent so the two phases
+        // reconcile together. An orphan child (no live parent) is never
+        // passed here.
+        let refill_child_op = format!("{op}-refill");
+        if let Some(pos) = keep.iter().position(|r| {
+            matches!(&r.target.kind, TransferKind::View) && r.target.operation_id == refill_child_op
+        }) {
+            let child_out = keep[pos].target.target_output.clone();
+            let child_ws = keep[pos].target.target_workspace.clone();
+            if let Some(attempt) = view_attempt_for(report, &refill_child_op, &child_out, &child_ws)
+            {
+                keep[pos].pending_view = Some(attempt.clone());
+            }
+            let child_raw = keep[pos].pending_view.clone();
+            let echo = self.staged.echoes.get(&child_out.0).map(String::as_str);
+            if echo == Some(child_ws.as_str()) {
+                keep.remove(pos);
+            } else if child_raw
+                .as_ref()
+                .is_some_and(|attempt| view_refused(attempt, &child_ws))
+            {
+                // A refused refill never retries: the spent view-phase fence
+                // blocks repeats, so mere child absence can never itself
+                // prove external. The parent holds below while the child is
+                // present; a later exact refill echo settles the child. A
+                // later genuine external source move (a known current echo
+                // naming a different workspace than both the refill and the
+                // refused preimage) settles the parent instead of holding
+                // forever: drop the child so the source-echo check below
+                // reconciles as external. Unknown/gap echoes hold.
+                let pre = child_raw.as_ref().and_then(|attempt| attempt.pre.clone());
+                let known_third = echo.is_some_and(|current| {
+                    current != child_ws.as_str()
+                        && Some(current) != pre.as_deref()
+                        && self
+                            .mapping
+                            .get(&child_out.0)
+                            .is_some_and(|ring| ring.iter().any(|id| id == current))
+                });
+                if known_third {
+                    keep.remove(pos);
+                } else {
+                    keep[pos].target.held = true;
+                }
+            } else if child_raw.as_ref().is_some_and(|attempt| {
+                view_third_location(attempt, &child_ws)
+                    && attempt.post.as_deref().is_some_and(|post| {
+                        self.mapping
+                            .get(&child_out.0)
+                            .is_some_and(|ring| ring.iter().any(|id| id == post))
+                    })
+            }) {
+                // Externally moved refill: drop the child; the parent
+                // reconciles against the source echo below.
+                keep.remove(pos);
+            } else {
+                // True lag (views never proven) or ambiguous evidence:
+                // hold without re-actuation. The spent view-phase fence
+                // blocks repeats after a dispatch; nothing here marks the
+                // child held, so an undispatched refill still retries on a
+                // later report (a held flag would deadlock the only
+                // actuation path, since the core never clears it).
+            }
+        }
         // Latch the terminal outcome under the operation identity so it
-        // survives the feedback row being acknowledged: `held` alone
-        // cannot distinguish possibly-executed ambiguity from proven
-        // refusal/supersession. Only terminal outcomes latch; later
-        // readable evidence reconciles against the latched outcome.
-        // Possibly-executed never latches and never rolls back.
-        if let Some(outcome) = feedback.map(|f| f.outcome)
-            && matches!(
-                outcome,
-                AttemptOutcome::RefusedProven | AttemptOutcome::SupersededExternal
-            )
+        // survives acknowledgement: `held` alone cannot distinguish
+        // ambiguous attempts from proven refusal/supersession. Only
+        // unanimous member refusal and third-location target-view proof
+        // latch; later readable evidence reconciles against the outcome.
+        // Ambiguity never latches and never rolls back.
+        let live_members: Vec<WindowId> = retained
+            .members
+            .iter()
+            .filter(|m| !self.staged.closes.contains(m))
+            .cloned()
+            .collect();
+        if !live_members.is_empty()
+            && live_members.iter().all(|member| {
+                retained
+                    .pending_members
+                    .get(member)
+                    .is_some_and(|attempt| member_refused(attempt, &target_out, &target_ws))
+            })
         {
-            retained.migration_terminal = Some(outcome);
+            retained.migration_terminal = Some(AttemptOutcome::RefusedProven);
+        } else if retained.pending_view.as_ref().is_some_and(|attempt| {
+            view_third_location(attempt, &target_ws)
+                && attempt.post.as_deref().is_some_and(|post| {
+                    self.mapping
+                        .get(&target_out.0)
+                        .is_some_and(|ring| ring.iter().any(|id| id == post))
+                })
+                // Target observation wins over stale third-location proof:
+                // an exact target echo confirms instead of latching external
+                // supersession.
+                && self
+                    .staged
+                    .echoes
+                    .get(&target_out.0)
+                    .map(String::as_str)
+                    != Some(target_ws.as_str())
+        }) && retained.migration_terminal.is_none()
+        {
+            retained.migration_terminal = Some(AttemptOutcome::SupersededExternal);
         }
         let terminal = retained.migration_terminal;
         // Paired refill-child presence (child pushed before the parent, so a
         // held child is already in `keep`; a settled child is gone). Computed
-        // before the `hold` closure borrows `keep`.
-        let refill_child_op = format!("{}-refill", retained.target.operation_id);
+        // before the `hold` closure borrows `keep`. Any correlated attempt
+        // that is neither proof nor proven refusal holds without
+        // re-actuation.
         let refill_child_held = keep.iter().any(|r| {
             matches!(&r.target.kind, TransferKind::View) && r.target.operation_id == refill_child_op
         });
+        let ambiguous = !retained.pending_members.is_empty() || retained.pending_view.is_some();
         let mut hold = |mut held: RetainedTransfer| {
-            if matches!(
-                feedback.map(|f| f.outcome),
-                Some(AttemptOutcome::PossiblyExecuted)
-            ) {
+            if ambiguous {
                 held.target.held = true;
             }
             keep.push(held);

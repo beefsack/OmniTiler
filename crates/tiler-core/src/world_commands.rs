@@ -451,6 +451,9 @@ impl WorldEngine {
                                 migration_source_view: None,
                                 migration_target_view: None,
                                 migration_terminal: None,
+                                pending_member: None,
+                                pending_members: BTreeMap::new(),
+                                pending_view: None,
                             });
                         }
                         if !members_b.is_empty() {
@@ -473,6 +476,9 @@ impl WorldEngine {
                                 migration_source_view: None,
                                 migration_target_view: None,
                                 migration_terminal: None,
+                                pending_member: None,
+                                pending_members: BTreeMap::new(),
+                                pending_view: None,
                             });
                         }
                         self.note_command(command_seq);
@@ -1184,6 +1190,9 @@ impl WorldEngine {
                 migration_source_view: None,
                 migration_target_view: None,
                 migration_terminal: None,
+                pending_member: None,
+                pending_members: BTreeMap::new(),
+                pending_view: None,
             });
         }
         let initial_empty = members.is_empty();
@@ -1206,6 +1215,9 @@ impl WorldEngine {
             migration_source_view: prev_source_view,
             migration_target_view: prev_target_view,
             migration_terminal: None,
+            pending_member: None,
+            pending_members: BTreeMap::new(),
+            pending_view: None,
         });
         // Single-owner membership follows the logical id: every
         // member homed at the source rekeys to the target.

@@ -1286,3 +1286,101 @@ of cursor-first fresh placement or the entire rearchitecture.
   `op` plus null `pre`. Further transfer/view and gesture/presentation changes
   remain ahead. Existing tentative choices and all four parked focus/send
   questions are unchanged; no new product question blocks the next slice.
+
+## Stage 3b3 accepted outcome (2026-10-23)
+
+### Transfer and view completion
+
+- Core now derives retained window, standalone/follow and migration target/
+  refill completion from raw `MemberAttempt` and `ViewAttempt` facts. Exact
+  operation/target/member correlation excludes unrelated evidence. Pending
+  evidence stages before holds and survives acknowledgement; readable arrival
+  wins over stale refusal. Explicit refusal needs an unchanged readable
+  preimage corroborated by current facts. Ambiguous effects never re-actuate.
+- Unknown view baselines and unchanged pre/post views cannot prove external
+  supersession. Cross-output follow retains its view evidence and waits for
+  exact observed view or genuine external proof across acknowledgement/gaps.
+  Same-output membership still precedes its separate `{op}-follow` view flight;
+  cross-output-only pre-arrival tile publication is unchanged.
+- Migration keeps member, target-view and source-refill phases ordered and
+  preserves partial arrivals. Refused refill evidence remains held with its
+  child until late exact arrival or a known third source view proves newer
+  input; child disappearance alone cannot manufacture that proof. Explicit
+  closes, terminal migration reconciliation and replacement fences remain.
+- Windows emits raw attempts, not transfer/view verdicts, and no longer keeps
+  applied-window/applied-view or ambiguous policy maps. Its remaining tracker
+  fences dispatch mechanically, including across missing baseline inventories.
+  Last-moment identity, freshness, scope and visibility vetoes remain native.
+  Raw attempts are retained even when the pass stops after a write.
+- No-write pre-proven arrivals legitimately emit no attempt. Existing independent
+  native receipt capture already handles them; a new singleton-follow seam
+  regression proves zero setters/attempts and subsequent retirement of all
+  flights. An initially suspected missing-receipt defect was disproven, not
+  worked around by fabricated attempts or setter echoes.
+
+### Verification and native evidence
+
+- Final locked core/protocol/Windows build, all-target tests and strict
+  all-target clippy pass: **2,360 passed, zero failed, one ignored across 48
+  suites**. Workspace formatting and whitespace checks pass. Independent final
+  boundary and evidence review accepted the corrected source. No dependency,
+  unsafe code, input hook or polling loop was added; bounded attempt/evidence
+  bookkeeping replaces native policy memory. Cost was not benchmarked.
+- Review reproduced and corrected false supersession from unknown baselines,
+  one-report-only follow holds, and refusal evidence losing its meaning after
+  acknowledgement. Permanent cases cover correlation, gap/ack recovery, arrival
+  precedence, current incomplete screens, refused refill retention and later
+  external source-view input. Producer-shaped Windows tests exercise actual
+  diff/readback/sequencer attempts and no-repeat dispatch.
+- Final-source fixture-only native checks passed standalone selection hide/
+  reveal on both outputs; trailing stay with selection return; and same-output
+  trailing follow, including a pre-proven no-write arrival and a fresh empty-
+  flight snapshot. The later numbered reunion sequence was not completed live;
+  it remains covered offline, not claimed from these native checks.
+- Both outputs passed cross-output follow in both directions, followed by a
+  three-member whole-workspace migration into an occupied target and back.
+  Exact lifetimes, native physical frames, visibility and foreground establish
+  arrival, preserved order/shares, follow focus and intact hidden peers. Fresh
+  accepted nongeometric replies show all member/view/refill flights retired
+  after each crossing. Default source refills remained trailing empties; the
+  occupied peers stayed hidden on inverse migration. Close/reflow proved victim
+  absence and correct survivor expansion without changing hidden peers.
+- Harness corrections concerned cursor targeting, JSON escaping, cached send
+  diagnostics, no-write proof, workspace pruning/ordinals and rejected probes
+  without desired snapshots. They changed no product policy. Raw correlation
+  was checked in actual trace rows rather than a summary's mistaken refill-id
+  attribution. Exact stop/independent restore and graceful fixture shutdown
+  after every leg left no owned processes, ledger or controls; settings bytes,
+  relevant SPI/taskbar state and protected geometry matched baseline. Raw
+  scripts, source/artifact identities and readbacks remain outside the repo.
+- Refusal/throw/clamp and observation-gap predicates remain offline evidence;
+  the fixture cannot enforce programmatic clamps. No physical shortcut/drag/
+  game or sub-sample visible-duration acceptance is claimed.
+
+### Port contract and remaining boundary
+
+- World contract v2 now accepts optional `memberAttempts` rows
+  `{op,win,out,ws,setter,pre:{out,ws}|null,post:{out,ws}|null,attemptMs}` and
+  `viewAttempts` rows `{op,out,ws,setter,pre,post,base,attemptMs}`. View proof
+  fields are logical ids or null (empty wire strings normalize to unknown);
+  counters are decimal strings. Each row records an actual setter, not a
+  completion verdict. Standalone/refill views use their own id; cross-output
+  follow and migration-target views use their parent id. Digest, validation,
+  byte budgets and acknowledgement cover both sections.
+- Transfer/view feedback verdict rows now reject the report; ports must remove
+  them rather than keep a dual route. Independent member/view receipts remain
+  required, including no-write proofs. KDE/macOS are intentionally unported;
+  the interface is not settled enough to begin their full ports yet.
+- Stage 3b remains incomplete. Exact next unit: core-owned frameless/floating-
+  source migration placement replacing native `remap_to_output` and the
+  `move_membership` remap fallback, with asymmetric-output regressions and
+  both-output fixture verification. Preserve same-output follow ordering and
+  cross-output-only tile slots. Shared convergence-case breadth still needs
+  completion; this slice adds production seam coverage, not a new shared table.
+- Stages 4 and 5 remain: gestures, active focus/warp, desired presentation/pager,
+  then ownership/dead-API/common-connector audit and finalized port notes.
+  Windows is a working dogfood slice, not the completed rearchitecture. MRU
+  refill, shared/global native checks, tile-override restart and user-owned
+  physical acceptance remain gaps. Existing tentative decisions and the four
+  parked focus/send questions are unchanged; no new product question blocks
+  the next unit.

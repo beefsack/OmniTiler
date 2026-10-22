@@ -271,11 +271,27 @@ fn apply(
     reply: &WorldReply,
     fresh: &FreshHost,
     native: &mut FakeNative,
-) -> (ApplyStats, Vec<AttemptFeedback>) {
-    apply_world_reply(diff, reply, fresh, native, &mut Vec::new(), 0)
+) -> (
+    ApplyStats,
+    Vec<tiler_core::world_report::MemberAttempt>,
+    Vec<tiler_core::world_report::ViewAttempt>,
+) {
+    let mut members = Vec::new();
+    let mut views = Vec::new();
+    let stats = apply_world_reply(
+        diff,
+        reply,
+        fresh,
+        native,
+        &mut Vec::new(),
+        &mut members,
+        &mut views,
+        0,
+    );
+    (stats, members, views)
 }
 
-/// Diff helper that keeps the mechanical frame attempts: the seam-level
+/// Diff helper that keeps the mechanical raw attempts: the seam-level
 /// proof that writes report raw facts (never verdicts) for the core.
 fn apply_frames(
     diff: &mut HostDiff,
@@ -285,12 +301,24 @@ fn apply_frames(
     attempt_ms: u64,
 ) -> (
     ApplyStats,
-    Vec<AttemptFeedback>,
     Vec<tiler_core::world_report::FrameAttempt>,
+    Vec<tiler_core::world_report::MemberAttempt>,
+    Vec<tiler_core::world_report::ViewAttempt>,
 ) {
     let mut frames = Vec::new();
-    let (stats, feedback) = apply_world_reply(diff, reply, fresh, native, &mut frames, attempt_ms);
-    (stats, feedback, frames)
+    let mut members = Vec::new();
+    let mut views = Vec::new();
+    let stats = apply_world_reply(
+        diff,
+        reply,
+        fresh,
+        native,
+        &mut frames,
+        &mut members,
+        &mut views,
+        attempt_ms,
+    );
+    (stats, frames, members, views)
 }
 
 fn fingerprint(state: &TileLoop) -> (usize, usize, usize, usize) {
@@ -580,10 +608,10 @@ fn retained_overlay_rides_slot_and_holds_tiled_write() {
     reply
         .windows
         .push(tiled_row(&out, &ws, "w1", rect(10, 10, 400, 300)));
-    let (stats, feedback) = apply(&mut diff, &reply, &fresh, &mut native);
+    let (stats, members, views) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(stats.geometry_writes, 0);
     assert_eq!(stats.held, 1);
-    assert!(feedback.is_empty());
+    assert!(members.is_empty() && views.is_empty());
 }
 
 #[test]
@@ -616,10 +644,10 @@ fn effective_frame_writes_allocation_never_does() {
     reply
         .windows
         .push(tiled_row(&rig.out, &rig.ws, "w1", rect(10, 10, 400, 300)));
-    let (stats, feedback) = apply(&mut diff, &reply, &fresh, &mut native);
+    let (stats, members, views) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(stats.geometry_writes, 1);
     assert_eq!(stats.held, 0);
-    assert!(feedback.is_empty());
+    assert!(members.is_empty() && views.is_empty());
     assert!(!stats.partial);
 
     let (mut diff, fresh, mut native) = converted(&rig);
@@ -627,10 +655,10 @@ fn effective_frame_writes_allocation_never_does() {
     let mut row = tiled_row(&rig.out, &rig.ws, "w1", rect(10, 10, 400, 300));
     row.effective_frame = None;
     reply.windows.push(row);
-    let (stats, feedback) = apply(&mut diff, &reply, &fresh, &mut native);
+    let (stats, members, views) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(stats.geometry_writes, 0);
     assert_eq!(stats.held, 1);
-    assert!(feedback.is_empty());
+    assert!(members.is_empty() && views.is_empty());
 }
 
 #[test]
@@ -644,10 +672,11 @@ fn converged_noop_reports_no_attempt() {
     reply
         .windows
         .push(tiled_row(&rig.out, &rig.ws, "w1", rect(0, 0, 800, 600)));
-    let (stats, feedback, frames) = apply_frames(&mut diff, &reply, &fresh, &mut native, 1000);
+    let (stats, frames, members, views) =
+        apply_frames(&mut diff, &reply, &fresh, &mut native, 1000);
     assert_eq!(stats.geometry_writes, 0);
     assert_eq!(stats.held, 0);
-    assert!(feedback.is_empty());
+    assert!(members.is_empty() && views.is_empty());
     assert!(frames.is_empty());
     assert!(!stats.partial);
 }
@@ -665,10 +694,11 @@ fn clamped_write_reports_raw_attempt_and_obeys_core_hold() {
     reply
         .windows
         .push(tiled_row(&rig.out, &rig.ws, "w1", rect(10, 10, 400, 300)));
-    let (stats, feedback, frames) = apply_frames(&mut diff, &reply, &fresh, &mut native, 1000);
+    let (stats, frames, members, views) =
+        apply_frames(&mut diff, &reply, &fresh, &mut native, 1000);
     assert_eq!(stats.geometry_writes, 1);
     assert_eq!(stats.held, 1);
-    assert!(feedback.is_empty());
+    assert!(members.is_empty() && views.is_empty());
     assert_eq!(frames.len(), 1);
     let attempt = &frames[0];
     assert_eq!(attempt.window.0, "w1");
@@ -684,7 +714,7 @@ fn clamped_write_reports_raw_attempt_and_obeys_core_hold() {
     let mut row = tiled_row(&rig.out, &rig.ws, "w1", rect(10, 10, 400, 300));
     row.frame_authority = Auth::Hold(CoreHold::ConstraintClamp);
     held.windows.push(row);
-    let (stats, _, held_frames) = apply_frames(&mut diff, &held, &fresh, &mut native, 2000);
+    let (stats, _, held_frames, _) = apply_frames(&mut diff, &held, &fresh, &mut native, 2000);
     assert_eq!(native.frame_writes, writes);
     assert_eq!(stats.geometry_writes, 0);
     assert_eq!(stats.held, 1);
@@ -693,7 +723,7 @@ fn clamped_write_reports_raw_attempt_and_obeys_core_hold() {
     moved
         .windows
         .push(tiled_row(&rig.out, &rig.ws, "w1", rect(20, 20, 400, 300)));
-    let (stats, _, _) = apply_frames(&mut diff, &moved, &fresh, &mut native, 3000);
+    let (stats, _, _, _) = apply_frames(&mut diff, &moved, &fresh, &mut native, 3000);
     assert_eq!(stats.geometry_writes, 1);
 }
 
@@ -709,17 +739,18 @@ fn explicit_refusal_reports_transient_facts_without_feedback() {
     reply
         .windows
         .push(tiled_row(&rig.out, &rig.ws, "w1", rect(10, 10, 400, 300)));
-    let (stats, feedback, frames) = apply_frames(&mut diff, &reply, &fresh, &mut native, 1000);
+    let (stats, frames, members, views) =
+        apply_frames(&mut diff, &reply, &fresh, &mut native, 1000);
     assert_eq!(stats.geometry_writes, 0);
     assert_eq!(stats.held, 1);
-    assert!(feedback.is_empty());
+    assert!(members.is_empty() && views.is_empty());
     assert_eq!(frames.len(), 1);
     assert_eq!(frames[0].setter, FrameSetter::Refused);
     assert_eq!(frames[0].target, rect(10, 10, 400, 300));
     // A controlled re-desire retries the setter (no local backoff memory).
     let writes = native.frame_writes;
     native.fail_frame.remove("w1");
-    let (stats, _, _) = apply_frames(&mut diff, &reply, &fresh, &mut native, 2000);
+    let (stats, _, _, _) = apply_frames(&mut diff, &reply, &fresh, &mut native, 2000);
     assert_eq!(stats.geometry_writes, 1);
     assert_eq!(native.frame_writes, writes + 1);
 }
@@ -794,13 +825,16 @@ fn per_flag_live_divergence_holds_without_writes() {
         reply
             .windows
             .push(tiled_row(&rig.out, &rig.ws, "w1", rect(10, 10, 400, 300)));
-        let (stats, feedback) = apply(&mut diff, &reply, &fresh, &mut native);
+        let (stats, members, views) = apply(&mut diff, &reply, &fresh, &mut native);
         assert_eq!(stats.geometry_writes, 0, "flag {name} wrote");
         assert!(
             stats.held >= 1 || stats.stopped_mid_apply,
             "flag {name} passed"
         );
-        assert!(feedback.is_empty(), "flag {name} invented feedback");
+        assert!(
+            members.is_empty() && views.is_empty(),
+            "flag {name} invented raw attempts"
+        );
     }
 }
 
@@ -813,7 +847,7 @@ fn lifetime_tag_drift_stops_before_setters() {
     reply
         .windows
         .push(tiled_row(&rig.out, &rig.ws, "w1", rect(10, 10, 400, 300)));
-    let (stats, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(stats.geometry_writes, 0);
     assert!(stats.stopped_mid_apply);
 }
@@ -827,14 +861,14 @@ fn gesture_watermark_generation_revision_fences() {
     reply
         .windows
         .push(tiled_row(&rig.out, &rig.ws, "w1", rect(10, 10, 400, 300)));
-    let (stats, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(stats.geometry_writes, 0);
     assert!(stats.stopped_mid_apply);
 
     let (mut diff, fresh, mut native) = converted(&rig);
     diff.gate.current_obs = 8;
     let reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
-    let (stats, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(stats.geometry_writes, 0);
     assert!(stats.stopped_mid_apply);
 
@@ -843,14 +877,14 @@ fn gesture_watermark_generation_revision_fences() {
         .note_applied(&reply_shell(7, 3, &[(rig.out.as_str(), rig.ws.as_str())]));
     for rev in [2, 3] {
         let stale = reply_shell(7, rev, &[(rig.out.as_str(), rig.ws.as_str())]);
-        let (stats, _) = apply(&mut diff, &stale, &fresh, &mut native);
+        let (stats, _, _) = apply(&mut diff, &stale, &fresh, &mut native);
         assert!(stats.stopped_mid_apply, "rev {rev} authorized");
     }
 
     let (mut diff, fresh, mut native) = converted(&rig);
     let mut foreign = reply_shell(7, 4, &[(rig.out.as_str(), rig.ws.as_str())]);
     foreign.core_generation = "gen-9".to_owned();
-    let (stats, _) = apply(&mut diff, &foreign, &fresh, &mut native);
+    let (stats, _, _) = apply(&mut diff, &foreign, &fresh, &mut native);
     assert!(stats.stopped_mid_apply);
 }
 
@@ -863,7 +897,7 @@ fn racing_invalidation_stops_before_any_write() {
     reply
         .windows
         .push(tiled_row(&rig.out, &rig.ws, "w1", rect(10, 10, 400, 300)));
-    let (stats, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(stats.geometry_writes, 0);
     assert!(stats.stopped_mid_apply);
 }
@@ -943,7 +977,16 @@ fn invalidation_stops_after_first_write() {
     reply
         .windows
         .push(tiled_row(&rig.out, &rig.ws, "w2", rect(0, 610, 700, 300)));
-    let (stats, _) = apply_world_reply(&mut diff, &reply, &fresh, &mut probe, &mut Vec::new(), 0);
+    let stats = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut probe,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        0,
+    );
     assert_eq!(stats.geometry_writes, 1);
     assert!(stats.stopped_mid_apply);
     assert!(stats.partial);
@@ -962,7 +1005,7 @@ fn write_plus_hold_reports_partial_truthfully() {
     reply
         .windows
         .push(tiled_row(&rig.out, &rig.ws, "w2", rect(0, 610, 700, 300)));
-    let (stats, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(stats.geometry_writes, 1);
     assert_eq!(stats.held, 1);
     assert!(stats.partial);
@@ -987,22 +1030,14 @@ fn prune_bounds_generation_scoped_tables() {
     fresh.views.insert(rig.out.clone(), rig.ws.clone());
     let mut native = FakeNative::seeded(&fresh);
     let mut diff = diff_at(7);
-    diff.effects.arm("op-stale", "ctx".to_owned());
-    diff.effects.arm("op-1", "ctx".to_owned());
+    diff.effects
+        .attempted_members
+        .insert(("op-stale".to_owned(), "w-stale".to_owned()));
+    diff.effects.mark_member_attempted("op-1", "w1");
     diff.effects.mark_effect_spent("fx-stale");
     diff.effects.mark_float_spent("op-stale-float");
     diff.effects.mark_float_spent("op-float-live");
     diff.effects.mark_view_spent("op-stale-view");
-    diff.effects.applied_window.insert(
-        "w-gone".to_owned(),
-        ("op-1".to_owned(), rig.out.clone(), rig.ws.clone()),
-    );
-    diff.effects
-        .applied_view
-        .insert(rig.out.clone(), ("op-stale".to_owned(), rig.ws.clone()));
-    diff.effects
-        .applied_view
-        .insert("o9".to_owned(), ("op-9".to_owned(), "ws-gone".to_owned()));
     native.throw_membership.insert("w1".to_owned());
     let mut reply = reply_shell(
         7,
@@ -1025,31 +1060,25 @@ fn prune_bounds_generation_scoped_tables() {
         .transfers
         .push(view_transfer("op-view-live", &rig.out, &rig.ws));
     let _ = apply(&mut diff, &reply, &fresh, &mut native);
-    assert!(diff.effects.is_ambiguous("op-1"));
-    assert!(!diff.effects.is_ambiguous("op-stale"));
+    assert!(diff.effects.is_member_attempted("op-1", "w1"));
+    assert!(!diff.effects.is_member_attempted("op-stale", "w-stale"));
     assert!(diff.effects.mark_float_spent("op-stale-float"));
     assert!(!diff.effects.mark_float_spent("op-float-live"));
     assert!(diff.effects.mark_view_spent("op-stale-view"));
     assert!(diff.effects.mark_effect_spent("fx-stale"));
-    assert!(!diff.effects.applied_window.contains_key("w-gone"));
-    assert_eq!(
-        diff.effects.applied_view.get(&rig.out),
-        Some(&("op-view-live".to_owned(), rig.ws.clone()))
-    );
-    assert!(!diff.effects.applied_view.contains_key("o9"));
 }
 
 #[test]
 fn generation_reset_clears_scoped_state() {
     let rig = rig();
     let (mut diff, fresh, mut native) = converted(&rig);
-    diff.effects.arm("op-1", "o1/ws".to_owned());
-    assert!(diff.effects.is_ambiguous("op-1"));
+    diff.effects.mark_member_attempted("op-1", "w1");
+    assert!(diff.effects.is_member_attempted("op-1", "w1"));
     diff.effects.mark_effect_spent("fx-1");
     diff.gate
         .note_applied(&reply_shell(7, 5, &[(rig.out.as_str(), rig.ws.as_str())]));
     diff.reset_generation("gen-2");
-    assert!(!diff.effects.is_ambiguous("op-1"));
+    assert!(!diff.effects.is_member_attempted("op-1", "w1"));
     assert!(diff.effects.mark_effect_spent("fx-1"));
     assert_eq!(diff.gate.current_obs, 0);
     assert!(!diff.gate.has_accepted);
@@ -1058,7 +1087,7 @@ fn generation_reset_clears_scoped_state() {
     reply
         .windows
         .push(tiled_row(&rig.out, &rig.ws, "w1", rect(10, 10, 400, 300)));
-    let (stats, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
     assert!(!stats.stopped_mid_apply);
 }
 
@@ -1082,19 +1111,21 @@ fn transfer_throw_holds_ambiguous_without_repeat() {
     reply.transfers.push(window_transfer(
         "op-1", "w1", &rig.out, &ws_target, false, false,
     ));
-    let (stats, feedback) = apply(&mut diff, &reply, &fresh, &mut native);
+    let (stats, members, views) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(stats.membership_writes, 0);
-    assert!(
-        feedback
-            .iter()
-            .any(|f| f.operation_id == "op-1" && f.outcome == AttemptOutcome::PossiblyExecuted)
-    );
-    assert!(diff.effects.is_ambiguous("op-1"));
+    assert_eq!(members.len(), 1);
+    let attempt = &members[0];
+    assert_eq!(attempt.operation_id, "op-1");
+    assert_eq!(attempt.window.0, "w1");
+    assert_eq!(attempt.target_output.0, rig.out);
+    assert_eq!(attempt.setter, FrameSetter::Threw);
+    assert!(views.is_empty());
+    assert!(diff.effects.is_member_attempted("op-1", "w1"));
     let before = native.membership_writes;
-    let (stats2, second) = apply(&mut diff, &reply, &fresh, &mut native);
+    let (stats2, members2, views2) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(native.membership_writes, before);
     assert_eq!(stats2.membership_writes, 0);
-    assert!(second.is_empty());
+    assert!(members2.is_empty() && views2.is_empty());
 }
 
 #[test]
@@ -1115,11 +1146,19 @@ fn transfer_refused_proven_and_third_location_supersedes() {
     reply.transfers.push(window_transfer(
         "op-2", "w1", &rig.out, &ws_target, false, false,
     ));
-    let (stats, feedback) = apply(&mut diff, &reply, &fresh, &mut native);
+    let (stats, members, views) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(stats.membership_writes, 0);
-    assert!(feedback.iter().any(|f| f.operation_id == "op-2"
-        && f.outcome == AttemptOutcome::RefusedProven
-        && f.hold == Some(CoreHold::RefusedTarget)));
+    assert_eq!(stats.held, 1);
+    assert_eq!(members.len(), 1);
+    let attempt = &members[0];
+    assert_eq!(attempt.operation_id, "op-2");
+    assert_eq!(attempt.setter, FrameSetter::Refused);
+    assert_eq!(
+        attempt.pre,
+        Some((OutputId(rig.out.clone()), rig.ws.clone()))
+    );
+    assert_eq!(attempt.pre, attempt.post);
+    assert!(views.is_empty());
 
     let (mut diff, fresh, mut native) = converted(&rig);
     native.windows.get_mut("w1").unwrap().output = "o9".to_owned();
@@ -1136,13 +1175,12 @@ fn transfer_refused_proven_and_third_location_supersedes() {
     reply.transfers.push(window_transfer(
         "op-3", "w1", &rig.out, &ws_target, false, false,
     ));
-    let (stats, feedback) = apply(&mut diff, &reply, &fresh, &mut native);
+    let (stats, members, views) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(stats.membership_writes, 0);
-    assert!(
-        feedback
-            .iter()
-            .any(|f| f.operation_id == "op-3" && f.outcome == AttemptOutcome::SupersededExternal)
-    );
+    assert_eq!(stats.held, 1);
+    // Third-location homing reports nothing: the core derives external
+    // supersession from staged observation, never from a verdict here.
+    assert!(members.is_empty() && views.is_empty());
 }
 
 #[test]
@@ -1164,13 +1202,11 @@ fn follow_success_applies_follow_failure_holds_without_view_claim() {
     reply.transfers.push(window_transfer(
         "op-4", "w1", &rig.out, &ws_target, true, true,
     ));
-    let (stats, feedback) = apply(&mut diff, &reply, &fresh, &mut native);
+    let (stats, members, views) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(stats.membership_writes, 0);
-    assert!(
-        feedback
-            .iter()
-            .any(|f| f.operation_id == "op-4" && f.outcome == AttemptOutcome::Applied)
-    );
+    // Pre-proven arrival reports nothing: the core settles from staged
+    // observation, and the already-shown follow view needs no dispatch.
+    assert!(members.is_empty() && views.is_empty());
     assert_eq!(
         native.views.get(&rig.out).map(String::as_str),
         Some(ws_target.as_str())
@@ -1195,21 +1231,21 @@ fn follow_success_applies_follow_failure_holds_without_view_claim() {
     reply.transfers.push(window_transfer(
         "op-5", "w1", &rig.out, &ws_target, true, true,
     ));
-    let (stats, first) = apply(&mut diff, &reply, &fresh, &mut native);
+    let (stats, members, views) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(stats.membership_writes, 0);
-    assert!(
-        first
-            .iter()
-            .any(|f| f.operation_id == "op-5" && f.outcome == AttemptOutcome::PossiblyExecuted)
-    );
-    assert!(
-        first
-            .iter()
-            .all(|f| f.operation_id != "op-5" || f.kind == AttemptKind::Transfer)
-    );
-    let (stats, second) = apply(&mut diff, &reply, &fresh, &mut native);
+    // Membership is pre-proven so no member row rides; the missed follow
+    // view reports one raw attempt under the parent id (never a view
+    // outcome on the window id, never a refused window).
+    assert!(members.is_empty());
+    assert_eq!(views.len(), 1);
+    let follow = &views[0];
+    assert_eq!(follow.operation_id, "op-5");
+    assert_eq!(follow.setter, FrameSetter::Refused);
+    assert_eq!(follow.post.as_deref(), Some(rig.ws.as_str()));
+    let (stats, members, views) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(stats.membership_writes, 0);
-    assert!(second.is_empty());
+    // The spent follow-view phase never repeats.
+    assert!(members.is_empty() && views.is_empty());
 }
 
 #[test]
@@ -1225,22 +1261,22 @@ fn effect_needs_exact_live_view_and_spends_once() {
         target: WindowId("w1".to_owned()),
         issued_revision: 1,
     });
-    let (stats, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(stats.effects, 0);
     assert!(!native.is_foreground("w1"));
 
     native.views.insert(rig.out.clone(), rig.ws.clone());
-    let (stats, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(stats.effects, 1);
     assert!(native.is_foreground("w1"));
-    let (stats, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(stats.effects, 0);
 
     let (mut diff, fresh, mut native) = converted(&rig);
     native.windows.get_mut("w1").unwrap().workspace = rig.ws.clone();
     native.views.insert(rig.out.clone(), rig.ws.clone());
     diff.gate.current_obs = 9;
-    let (stats, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(stats.effects, 0);
     assert!(!native.is_foreground("w1"));
     assert!(stats.stopped_mid_apply);
@@ -1292,34 +1328,48 @@ fn migration_partial_holds_then_completes_with_refill() {
         follow: false,
         held: false,
     });
-    let (stats, feedback) = apply(&mut diff, &reply, &fresh, &mut native);
+    let (stats, members, views) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(stats.membership_writes, 1);
     assert_eq!(stats.view_writes, 0);
-    assert!(
-        feedback
-            .iter()
-            .any(|f| f.operation_id == mig && f.outcome == AttemptOutcome::PossiblyExecuted)
+    // Both members report raw attempts (never verdicts): w1 proves arrival
+    // while the throwing member holds ambiguous. The target view waits for
+    // full arrival.
+    assert_eq!(members.len(), 2);
+    let w1 = members
+        .iter()
+        .find(|a| a.window.0 == "w1")
+        .expect("w1 attempt");
+    assert_eq!(w1.setter, FrameSetter::Accepted);
+    assert_eq!(
+        w1.post,
+        Some((OutputId(rig.out.clone()), ws_target.clone()))
     );
+    let w2 = members
+        .iter()
+        .find(|a| a.window.0 == "w2")
+        .expect("w2 attempt");
+    assert_eq!(w2.operation_id, mig);
+    assert_eq!(w2.setter, FrameSetter::Threw);
+    assert!(views.is_empty());
 
     native.throw_membership.clear();
     native.windows.get_mut("w2").unwrap().workspace = ws_target.clone();
-    let (stats, feedback) = apply(&mut diff, &reply, &fresh, &mut native);
+    let (stats, members, views) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(stats.membership_writes, 0);
     assert_eq!(stats.view_writes, 2);
     assert_eq!(
         native.views.get(&rig.out).map(String::as_str),
         Some(rig.ws.as_str())
     );
+    // Both views report raw attempts: the migration target and the
+    // paired refill. No verdict rides either row.
+    assert!(members.is_empty());
+    assert_eq!(views.len(), 2);
+    assert!(views.iter().any(|v| v.operation_id == mig));
     assert!(
-        feedback
+        views
             .iter()
-            .any(|f| f.operation_id == mig && f.outcome == AttemptOutcome::Applied)
-    );
-    assert!(
-        feedback
-            .iter()
-            .any(|f| f.operation_id == format!("{mig}-refill")
-                && f.outcome == AttemptOutcome::Applied)
+            .any(|v| v.operation_id == format!("{mig}-refill"))
     );
 }
 
@@ -1373,7 +1423,7 @@ fn migration_held_refill_never_actuates() {
         follow: false,
         held: true,
     });
-    let (_, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    let (_, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(
         native.views.get(&rig.out).map(String::as_str),
         Some(ws_target.as_str())
@@ -1392,7 +1442,7 @@ fn held_scope_blocks_geometry() {
     reply
         .windows
         .push(tiled_row(&rig.out, &rig.ws, "w1", rect(10, 10, 400, 300)));
-    let (stats, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(stats.geometry_writes, 0);
     assert_eq!(stats.held, 1);
 }
@@ -1415,12 +1465,10 @@ fn float_token_places_once_fences_and_reports_raw_attempt() {
     row.frame_authority = Auth::Untouched;
     row.frame_operation = Some("op-9".to_owned());
     reply.windows.push(row);
-    let (stats, feedback, frames) = apply_frames(&mut diff, &reply, &fresh, &mut native, 1000);
+    let (stats, frames, members, views) =
+        apply_frames(&mut diff, &reply, &fresh, &mut native, 1000);
     assert_eq!(stats.geometry_writes, 1);
-    assert!(
-        feedback.iter().all(|f| f.operation_id != "op-9"),
-        "float placements emit no verdict: {feedback:?}"
-    );
+    assert!(members.is_empty() && views.is_empty());
     assert_eq!(frames.len(), 1, "one raw attempt: {frames:?}");
     let attempt: &FrameAttempt = &frames[0];
     assert_eq!(attempt.window.0, "w1");
@@ -1433,11 +1481,11 @@ fn float_token_places_once_fences_and_reports_raw_attempt() {
     // Second dispatch of the same reply never replays: strictly
     // at-most-once transport while the core holds the retained target.
     let writes = native.frame_writes;
-    let (stats, second_feedback, second_frames) =
+    let (stats, second_frames, second_members, second_views) =
         apply_frames(&mut diff, &reply, &fresh, &mut native, 1000);
     assert_eq!(native.frame_writes, writes);
     assert_eq!(stats.geometry_writes, 0);
-    assert!(second_feedback.is_empty());
+    assert!(second_members.is_empty() && second_views.is_empty());
     assert!(second_frames.is_empty());
 
     // Live sticky and fit-excluded intents never take float writes and emit
@@ -1455,10 +1503,11 @@ fn float_token_places_once_fences_and_reports_raw_attempt() {
         row.frame_authority = Auth::Untouched;
         row.frame_operation = Some(format!("op-float-{lane}"));
         reply.windows.push(row);
-        let (stats, feedback, frames) = apply_frames(&mut diff, &reply, &fresh, &mut native, 1000);
+        let (stats, frames, members, views) =
+            apply_frames(&mut diff, &reply, &fresh, &mut native, 1000);
         assert_eq!(stats.geometry_writes, 0, "live {lane} took a float write");
         assert!(stats.held >= 1);
-        assert!(feedback.is_empty());
+        assert!(members.is_empty() && views.is_empty());
         assert!(frames.is_empty(), "gated lane emits no attempt");
     }
 
@@ -1473,10 +1522,8 @@ fn float_token_places_once_fences_and_reports_raw_attempt() {
     row.frame_authority = Auth::Untouched;
     row.frame_operation = Some("op-float-clamp".to_owned());
     reply.windows.push(row);
-    let (stats, first_feedback, first_frames) =
-        apply_frames(&mut diff, &reply, &fresh, &mut native, 2000);
+    let (stats, first_frames, _, _) = apply_frames(&mut diff, &reply, &fresh, &mut native, 2000);
     assert_eq!(stats.geometry_writes, 1);
-    assert!(first_feedback.is_empty());
     assert_eq!(first_frames.len(), 1);
     assert_eq!(
         first_frames[0].operation_id.as_deref(),
@@ -1486,11 +1533,11 @@ fn float_token_places_once_fences_and_reports_raw_attempt() {
     assert_eq!(first_frames[0].prewrite, Some(baseline));
     assert_eq!(first_frames[0].readback, Some(baseline));
     let writes = native.frame_writes;
-    let (stats, second_feedback, second_frames) =
+    let (stats, second_frames, second_members, second_views) =
         apply_frames(&mut diff, &reply, &fresh, &mut native, 2000);
     assert_eq!(native.frame_writes, writes);
     assert_eq!(stats.geometry_writes, 0);
-    assert!(second_feedback.is_empty());
+    assert!(second_members.is_empty() && second_views.is_empty());
     assert!(second_frames.is_empty());
 
     // Throw reports the ambiguous setter with the preimage and readback.
@@ -1502,10 +1549,8 @@ fn float_token_places_once_fences_and_reports_raw_attempt() {
     row.frame_authority = Auth::Untouched;
     row.frame_operation = Some("op-float-throw".to_owned());
     reply.windows.push(row);
-    let (stats, first_feedback, first_frames) =
-        apply_frames(&mut diff, &reply, &fresh, &mut native, 3000);
+    let (stats, first_frames, _, _) = apply_frames(&mut diff, &reply, &fresh, &mut native, 3000);
     assert_eq!(stats.geometry_writes, 0);
-    assert!(first_feedback.is_empty());
     assert_eq!(first_frames.len(), 1);
     assert_eq!(
         first_frames[0].operation_id.as_deref(),
@@ -1515,10 +1560,10 @@ fn float_token_places_once_fences_and_reports_raw_attempt() {
     assert_eq!(first_frames[0].prewrite, Some(baseline));
     assert_eq!(first_frames[0].readback, Some(baseline));
     let writes = native.frame_writes;
-    let (_, second_feedback, second_frames) =
+    let (_, second_frames, second_members, second_views) =
         apply_frames(&mut diff, &reply, &fresh, &mut native, 3000);
     assert_eq!(native.frame_writes, writes);
-    assert!(second_feedback.is_empty());
+    assert!(second_members.is_empty() && second_views.is_empty());
     assert!(second_frames.is_empty());
 }
 
@@ -1609,13 +1654,28 @@ fn view_ok_true_with_unreadable_proof_is_not_refused_proven() {
     reply
         .transfers
         .push(view_transfer("op-view-async", &rig.out, "ws-target"));
-    let (_, feedback) =
-        apply_world_reply(&mut diff, &reply, &fresh, &mut probe, &mut Vec::new(), 0);
-    let got = feedback
-        .iter()
-        .find(|f| f.operation_id == "op-view-async")
-        .expect("view feedback");
-    assert_eq!(got.outcome, AttemptOutcome::PossiblyExecuted);
+    let mut members = Vec::new();
+    let mut views = Vec::new();
+    let stats = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut probe,
+        &mut Vec::new(),
+        &mut members,
+        &mut views,
+        0,
+    );
+    assert_eq!(stats.view_writes, 0);
+    // Accepted setter with unreadable proof reports raw facts (never a
+    // verdict): the setter boolean is never proof, and an unreadable
+    // post can never prove refusal. The core holds ambiguous.
+    assert!(members.is_empty());
+    assert_eq!(views.len(), 1);
+    let got = &views[0];
+    assert_eq!(got.operation_id, "op-view-async");
+    assert_eq!(got.setter, FrameSetter::Accepted);
+    assert_eq!(got.post, None);
 }
 
 #[test]
@@ -1640,13 +1700,28 @@ fn view_ok_true_with_third_location_is_not_refused_proven() {
     reply
         .transfers
         .push(view_transfer("op-view-third", &rig.out, "ws-target"));
-    let (_, feedback) =
-        apply_world_reply(&mut diff, &reply, &fresh, &mut probe, &mut Vec::new(), 0);
-    let got = feedback
-        .iter()
-        .find(|f| f.operation_id == "op-view-third")
-        .expect("view feedback");
-    assert_ne!(got.outcome, AttemptOutcome::RefusedProven);
+    let mut members = Vec::new();
+    let mut views = Vec::new();
+    let stats = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut probe,
+        &mut Vec::new(),
+        &mut members,
+        &mut views,
+        0,
+    );
+    assert_eq!(stats.view_writes, 0);
+    // Accepted setter with third-location proof reports raw facts (never
+    // a refusal verdict): the core derives supersession from the readable
+    // post that is neither the target nor the baseline.
+    assert!(members.is_empty());
+    assert_eq!(views.len(), 1);
+    let got = &views[0];
+    assert_eq!(got.setter, FrameSetter::Accepted);
+    assert_eq!(got.post.as_deref(), Some("ws-other"));
+    assert_ne!(got.post.as_deref(), Some("ws-target"));
 }
 
 #[test]
@@ -1677,12 +1752,25 @@ fn stale_reply_must_not_retire_ambiguous_view_fence() {
     reply
         .transfers
         .push(view_transfer(op, &rig.out, "ws-target"));
-    let (_, first) = apply_world_reply(&mut diff, &reply, &fresh, &mut probe, &mut Vec::new(), 0);
-    assert!(
-        first
-            .iter()
-            .any(|f| f.operation_id == op && f.outcome == AttemptOutcome::PossiblyExecuted)
+    let mut members = Vec::new();
+    let mut views = Vec::new();
+    let first_stats = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut probe,
+        &mut Vec::new(),
+        &mut members,
+        &mut views,
+        0,
     );
+    assert_eq!(first_stats.held, 1);
+    // The throwing switch reports one raw attempt; the spent phase fence
+    // holds without repeating.
+    assert!(members.is_empty());
+    assert_eq!(views.len(), 1);
+    assert_eq!(views[0].operation_id, op);
+    assert_eq!(views[0].setter, FrameSetter::Threw);
     assert_eq!(probe.switches, 1);
     assert!(diff.effects.is_view_spent(op));
 
@@ -1695,16 +1783,35 @@ fn stale_reply_must_not_retire_ambiguous_view_fence() {
         ],
     );
     stale.core_generation = "gen-stale".to_owned();
-    let (stale_stats, stale_feedback) =
-        apply_world_reply(&mut diff, &stale, &fresh, &mut probe, &mut Vec::new(), 0);
+    let stale_stats = apply_world_reply(
+        &mut diff,
+        &stale,
+        &fresh,
+        &mut probe,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        0,
+    );
     assert!(stale_stats.stopped_mid_apply);
-    assert!(stale_feedback.is_empty());
     assert_eq!(probe.switches, 1);
     assert!(diff.effects.is_view_spent(op));
 
-    let (_, second) = apply_world_reply(&mut diff, &reply, &fresh, &mut probe, &mut Vec::new(), 0);
+    let mut members = Vec::new();
+    let mut views = Vec::new();
+    let stats = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut probe,
+        &mut Vec::new(),
+        &mut members,
+        &mut views,
+        0,
+    );
+    assert_eq!(stats.held, 1);
     assert_eq!(probe.switches, 1);
-    assert!(second.is_empty() || second.iter().all(|f| f.operation_id != op));
+    assert!(members.is_empty() && views.is_empty());
 }
 
 // --- core-owned frame loop: attempt -> report -> desire -> obeyed ---
@@ -1796,10 +1903,20 @@ fn frame_loop_clamp_suppresses_and_rearms_end_to_end() {
     let mut diff = HostDiff::new(ADAPTER, GENERATION);
     diff.gate.current_obs = seq.current_obs();
     let mut attempts = Vec::new();
-    let (stats, feedback) =
-        apply_world_reply(&mut diff, &reply, &fresh, &mut native, &mut attempts, 1000);
+    let mut members = Vec::new();
+    let mut views = Vec::new();
+    let stats = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut native,
+        &mut attempts,
+        &mut members,
+        &mut views,
+        1000,
+    );
     assert_eq!(stats.geometry_writes, 2);
-    assert!(feedback.is_empty());
+    assert!(members.is_empty() && views.is_empty());
     assert_eq!(attempts.len(), 2);
     let lying = attempts
         .iter()
@@ -1843,8 +1960,16 @@ fn frame_loop_clamp_suppresses_and_rearms_end_to_end() {
     diff.gate.current_obs = seq.current_obs();
     let writes = native.frame_writes;
     let mut attempts = Vec::new();
-    let (stats, _) =
-        apply_world_reply(&mut diff, &reply2, &fresh, &mut native, &mut attempts, 2000);
+    let stats = apply_world_reply(
+        &mut diff,
+        &reply2,
+        &fresh,
+        &mut native,
+        &mut attempts,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        2000,
+    );
     assert_eq!(native.frame_writes, writes);
     assert_eq!(stats.geometry_writes, 0);
     assert!(attempts.is_empty());
@@ -1875,8 +2000,16 @@ fn frame_loop_clamp_suppresses_and_rearms_end_to_end() {
         FreshHost::from_sources(&rig.state.inputs(), &rig.observed, &rig.retained, &captured);
     diff.gate.current_obs = seq.current_obs();
     let mut attempts = Vec::new();
-    let (stats, _) =
-        apply_world_reply(&mut diff, &reply3, &fresh, &mut native, &mut attempts, 3000);
+    let stats = apply_world_reply(
+        &mut diff,
+        &reply3,
+        &fresh,
+        &mut native,
+        &mut attempts,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        3000,
+    );
     assert_eq!(native.frame_writes, writes + 1);
     assert_eq!(stats.geometry_writes, 1);
     assert_eq!(attempts.len(), 1);
@@ -1907,11 +2040,18 @@ fn frame_loop_transient_backoff_and_retry_end_to_end() {
     let mut diff = HostDiff::new(ADAPTER, GENERATION);
     diff.gate.current_obs = seq.current_obs();
     let mut attempts = Vec::new();
-    let (stats, feedback) =
-        apply_world_reply(&mut diff, &reply, &fresh, &mut native, &mut attempts, 1000);
+    let stats = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut native,
+        &mut attempts,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        1000,
+    );
     assert_eq!(stats.geometry_writes, 1);
     assert_eq!(stats.held, 1);
-    assert!(feedback.is_empty());
     let refused = attempts
         .iter()
         .find(|attempt| attempt.window.0 == "w1")
@@ -1946,7 +2086,16 @@ fn frame_loop_transient_backoff_and_retry_end_to_end() {
     diff.gate.current_obs = seq.current_obs();
     let writes = native.frame_writes;
     let mut attempts = Vec::new();
-    apply_world_reply(&mut diff, &reply2, &fresh, &mut native, &mut attempts, 1100);
+    apply_world_reply(
+        &mut diff,
+        &reply2,
+        &fresh,
+        &mut native,
+        &mut attempts,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        1100,
+    );
     assert_eq!(native.frame_writes, writes);
     assert!(attempts.is_empty());
     diff.gate.note_applied(&reply2);
@@ -1968,8 +2117,16 @@ fn frame_loop_transient_backoff_and_retry_end_to_end() {
         FreshHost::from_sources(&rig.state.inputs(), &rig.observed, &rig.retained, &captured);
     diff.gate.current_obs = seq.current_obs();
     let mut attempts = Vec::new();
-    let (tick3_stats, _) =
-        apply_world_reply(&mut diff, &reply3, &fresh, &mut native, &mut attempts, 2000);
+    let tick3_stats = apply_world_reply(
+        &mut diff,
+        &reply3,
+        &fresh,
+        &mut native,
+        &mut attempts,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        2000,
+    );
     // The refused setter retries (a failed write never counts as a frame
     // write, so the new stamped attempt is the retry proof).
     assert_eq!(tick3_stats.held, 1);
@@ -2005,7 +2162,16 @@ fn frame_loop_dpi_change_never_clamps() {
     let mut diff = HostDiff::new(ADAPTER, GENERATION);
     diff.gate.current_obs = seq.current_obs();
     let mut attempts = Vec::new();
-    apply_world_reply(&mut diff, &reply, &fresh, &mut native, &mut attempts, 1000);
+    apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut native,
+        &mut attempts,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        1000,
+    );
     let flipped = attempts
         .iter()
         .find(|attempt| attempt.window.0 == "w1")
@@ -2109,22 +2275,22 @@ fn send_roundtrip_actuates_feedback_and_converges_without_remove() {
     let mut native = FakeNative::seeded(&fresh);
     let mut diff = HostDiff::new(ADAPTER, GENERATION);
     diff.gate.current_obs = seq.current_obs();
-    let (stats, produced) = apply(&mut diff, &reply, &fresh, &mut native);
+    let (stats, members, views) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(stats.membership_writes, 1);
-    assert!(
-        produced
-            .iter()
-            .any(|f| f.operation_id == op && f.outcome == AttemptOutcome::Applied)
-    );
+    // The dispatch reports one raw membership attempt (never a verdict):
+    // accepted setter with post proof at the target.
+    assert_eq!(members.len(), 1);
+    let attempt = &members[0];
+    assert_eq!(attempt.operation_id, op);
+    assert_eq!(attempt.window.0, "w1");
+    assert_eq!(attempt.setter, FrameSetter::Accepted);
+    assert_eq!(attempt.post, Some((OutputId(rig.out.clone()), ws2.clone())));
+    assert!(views.is_empty());
     diff.gate.note_applied(&reply);
     let writes = native.membership_writes;
-    let (stats, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
     assert!(stats.stopped_mid_apply);
     assert_eq!(native.membership_writes, writes);
-    for item in &produced {
-        seq.note_feedback(item.clone());
-    }
-    assert!(seq.has_pending_feedback());
     // Model the native effect end-to-end: the next capture receipts the
     // arrival and the core can settle on evidence instead of holding
     // against a stale observation.
@@ -2141,6 +2307,9 @@ fn send_roundtrip_actuates_feedback_and_converges_without_remove() {
         1001,
     );
     assert!(seq.is_dirty(&captured));
+    for item in &members {
+        seq.note_member_attempt(item.clone());
+    }
     let report = seq
         .try_dispatch(
             &rig.state.inputs(),
@@ -2152,19 +2321,23 @@ fn send_roundtrip_actuates_feedback_and_converges_without_remove() {
             None,
         )
         .expect("feedback dispatch");
-    assert!(report.feedback.iter().any(|f| f.operation_id == op));
+    assert!(report.member_attempts.iter().any(|f| f.operation_id == op));
     let reply2 = match seq.deliver(&report) {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
     match seq.ack(&reply2) {
         AckOutcome::Applied(receipt) => {
-            assert!(receipt.feedback_acked.contains(&op));
+            assert!(
+                receipt
+                    .members_acked
+                    .contains(&(op.clone(), "w1".to_owned()))
+            );
         }
         other => panic!("expected applied, got {other:?}"),
     }
     diff.gate.current_obs = seq.current_obs();
-    let (stats, produced) = apply(&mut diff, &reply2, &fresh, &mut native);
+    let (stats, members, views) = apply(&mut diff, &reply2, &fresh, &mut native);
     // The arrival receipt settled the transfer: w1 rides homed at the
     // target with no retained transfer, while w2 converges to its grown
     // post-departure slot with one frame write. Nothing outstanding means
@@ -2175,8 +2348,8 @@ fn send_roundtrip_actuates_feedback_and_converges_without_remove() {
     assert_eq!(stats.geometry_writes, 1);
     assert!(!stats.stopped_mid_apply);
     assert!(
-        produced.iter().all(|f| f.operation_id != op),
-        "settled flight re-proves nothing, got {produced:?}"
+        members.is_empty() && views.is_empty(),
+        "settled flight re-proves nothing"
     );
     assert!(!stats.partial);
     assert_eq!(fingerprint(&rig.state), before);
@@ -2188,7 +2361,7 @@ fn feedback_exact_equality_and_catchup_fencing() {
     let mut seq = WorldSequencer::bootstrap(ADAPTER, GENERATION).expect("bootstrap");
     let v1 = AttemptFeedback {
         operation_id: "op-a".to_owned(),
-        kind: AttemptKind::Transfer,
+        kind: AttemptKind::Effect,
         outcome: AttemptOutcome::Applied,
         hold: None,
     };
@@ -2209,7 +2382,7 @@ fn feedback_exact_equality_and_catchup_fencing() {
     // predecessor ack must not consume it.
     let v2 = AttemptFeedback {
         operation_id: "op-a".to_owned(),
-        kind: AttemptKind::Transfer,
+        kind: AttemptKind::Effect,
         outcome: AttemptOutcome::PossiblyExecuted,
         hold: None,
     };
@@ -2534,7 +2707,16 @@ fn shared_frame_convergence_learns_through_production_sequencing() {
         let mut diff = HostDiff::new(ADAPTER, GENERATION);
         diff.gate.current_obs = seq.current_obs();
         let mut attempts = Vec::new();
-        apply_world_reply(&mut diff, &reply, &fresh, &mut native, &mut attempts, 1000);
+        apply_world_reply(
+            &mut diff,
+            &reply,
+            &fresh,
+            &mut native,
+            &mut attempts,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            1000,
+        );
         let emitted = attempts
             .iter()
             .find(|attempt| attempt.window.0 == window)
@@ -2665,15 +2847,19 @@ fn float_production_seam_reports_raw_attempt_and_core_holds_token() {
     let mut diff = HostDiff::new(ADAPTER, GENERATION);
     diff.gate.current_obs = seq.current_obs();
     let mut attempts = Vec::new();
-    let (stats, feedback) =
-        apply_world_reply(&mut diff, &reply, &fresh, &mut native, &mut attempts, 3000);
+    let stats = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut native,
+        &mut attempts,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        3000,
+    );
     // One write: the floated sibling reflows; the throwing placement writes
     // nothing itself.
     assert_eq!(stats.geometry_writes, 1);
-    assert!(
-        feedback.is_empty(),
-        "float placements emit no verdict: {feedback:?}"
-    );
     let attempt = attempts
         .iter()
         .find(|attempt| attempt.window.0 == "w1")
@@ -2740,4 +2926,43 @@ fn float_production_seam_reports_raw_attempt_and_core_holds_token() {
         "hold survives the ack"
     );
     seq_ack(&mut seq, &reply3);
+}
+
+#[test]
+fn attempted_members_survive_observation_gaps() {
+    // At-most-once dispatch fences survive absence/readability gaps and ack
+    // loss: pruning retains attempted membership on the live operation
+    // alone, never erasing the fence when the fresh baseline misses the
+    // lifetime. A possibly-executed write never repeats.
+    let rig = rig();
+    let captured = capture_world(
+        &rig.state.inputs(),
+        Some(&rig.observed),
+        &rig.retained,
+        &rig.areas,
+        1001,
+    );
+    let mut fresh =
+        FreshHost::from_sources(&rig.state.inputs(), &rig.observed, &rig.retained, &captured);
+    let mut diff = diff_at(7);
+    diff.effects.mark_member_attempted("op-1", "w1");
+    assert!(diff.effects.is_member_attempted("op-1", "w1"));
+    // Gap: fresh baseline misses the lifetime (unreadable/incomplete), but
+    // the reply still carries the live operation.
+    fresh.baseline.remove("w1");
+    let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
+    reply.transfers.push(window_transfer(
+        "op-1",
+        "w1",
+        &rig.out,
+        "ws-target",
+        false,
+        false,
+    ));
+    let mut native = FakeNative::seeded(&fresh);
+    let _ = apply(&mut diff, &reply, &fresh, &mut native);
+    assert!(
+        diff.effects.is_member_attempted("op-1", "w1"),
+        "fence survives baseline gap"
+    );
 }

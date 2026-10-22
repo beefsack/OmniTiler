@@ -58,6 +58,12 @@ pub const MAX_WORLD_FRAMES: usize = 1024;
 pub const MAX_WORLD_NATIVE: usize = 4096;
 pub const MAX_NATIVE_PER_OUTPUT: usize = 256;
 pub const MAX_WORLD_FEEDBACK: usize = 1024;
+/// Bound on mechanical membership attempts per report (one latest-wins row
+/// per operation window at most).
+pub const MAX_WORLD_MEMBER_ATTEMPTS: usize = 1024;
+/// Bound on mechanical view attempts per report (one latest-wins row per
+/// owning view phase at most).
+pub const MAX_WORLD_VIEW_ATTEMPTS: usize = 1024;
 
 /// Tiling policy for one desired workspace row. The core retains one mode
 /// per workspace (Planner-owned, toggled only through
@@ -454,6 +460,68 @@ pub struct FrameAttempt {
     pub prewrite: Option<Rect>,
 }
 
+/// One normalized raw membership attempt: the mechanical facts behind a
+/// single native membership write for one window under one retained
+/// operation (window transfer or whole-workspace migration member). The
+/// adapter checks mechanical authority/freshness/lifetime gates, writes,
+/// re-reads homing, and reports; the core derives confirmation, proven
+/// refusal, ambiguity, and external supersession from this evidence plus
+/// the staged observation. Never a policy conclusion: no outcome verdict
+/// rides here.
+///
+/// - `operation_id` is the retained transfer operation (window transfer
+///   id, or the migration parent id for members). Exact match on operation
+///   id plus window plus target.
+/// - `target_output`/`target_workspace` echo the retained target as
+///   correlation so the core matches the attempt to its desire.
+/// - `setter` is the mechanical disposition (`Accepted` never proves
+///   arrival by itself, `Refused` is an explicit native refusal, `Threw`
+///   is a throwing/ambiguous call).
+/// - `pre`/`post` are the live homings immediately before/after the write
+///   (`None` = unreadable). Only an explicit refusal with an unchanged
+///   readable preimage proves refusal; anything else latches ambiguity.
+/// - `attempt_ms` is the adapter monotonic clock at the write, matching
+///   [`FrameAttempt::attempt_ms`] idempotency.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemberAttempt {
+    pub operation_id: String,
+    pub window: WindowId,
+    pub target_output: OutputId,
+    pub target_workspace: String,
+    pub setter: FrameSetter,
+    pub pre: Option<(OutputId, String)>,
+    pub post: Option<(OutputId, String)>,
+    pub attempt_ms: u64,
+}
+
+/// One normalized raw view attempt: the mechanical facts behind a single
+/// native view write for one owning phase (standalone view id, follow
+/// parent, migration-target parent, or refill child id). Same
+/// write/re-read/report split as [`MemberAttempt`]: the core derives every
+/// verdict. Follow misses stay ambiguous parent membership, never a
+/// refused window.
+///
+/// - `operation_id` is the owning phase id (the retained view id itself
+///   for standalone/refill rows, the window parent for follow, the
+///   migration parent for the target view).
+/// - `pre`/`post` are the live exact-output views immediately
+///   before/after the write (`None` = unreadable); `baseline` is the
+///   observation-time view (`None` = unknown). Only an explicit refusal
+///   with an unchanged readable preimage proves refusal; a readable post
+///   that is neither the baseline nor the target proves newer external
+///   input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ViewAttempt {
+    pub operation_id: String,
+    pub target_output: OutputId,
+    pub target_workspace: String,
+    pub setter: FrameSetter,
+    pub pre: Option<String>,
+    pub post: Option<String>,
+    pub baseline: Option<String>,
+    pub attempt_ms: u64,
+}
+
 /// One screen observation: the stable output id, the FULL native output
 /// rectangle in one coherent adapter coordinate space, and the distinct
 /// work area the core tiles into. `gap`/`outer_gap` are settings carried
@@ -789,6 +857,17 @@ pub struct WorldReport {
     /// Raw write/readback facts only; the core owns the clamp/transient
     /// policy over them (see [`crate::world_frames`]).
     pub frames: Vec<FrameAttempt>,
+    /// Mechanical membership attempts since the previous report (at most
+    /// one latest-wins entry per operation window, bounded by
+    /// [`MAX_WORLD_MEMBER_ATTEMPTS`]). Raw setter/pre/post homing facts
+    /// only; the core owns window/migration transfer completion over them
+    /// plus the staged observation (see [`crate::world_settle`]).
+    pub member_attempts: Vec<MemberAttempt>,
+    /// Mechanical view attempts since the previous report (at most one
+    /// latest-wins entry per owning view phase, bounded by
+    /// [`MAX_WORLD_VIEW_ATTEMPTS`]). Raw setter/pre/post/baseline facts
+    /// only; the core owns standalone/follow/target/refill completion.
+    pub view_attempts: Vec<ViewAttempt>,
 }
 
 /// World reply: single globally ordered full desired snapshot. No
@@ -947,8 +1026,11 @@ pub fn classify_request(
 /// switch-target and fresh-placement modes, the focus-follows-cursor and
 /// cursor-warp settings, the cursor position, the global focus, the
 /// gesture barrier, feedback (identity, kind, outcome, hold), the monotonic
-/// clock, and frame attempts (window, target, setter, readback, DPI pair,
-/// attempt stamp, placement operation id, pre-write frame).
+/// clock, frame attempts (window, target, setter, readback, DPI pair,
+/// attempt stamp, placement operation id, pre-write frame), member
+/// attempts (operation, window, target, setter, pre/post homing, stamp),
+/// and view attempts (owning operation, target, setter, pre/post/baseline
+/// views, stamp).
 /// Duplicate detection still compares full typed input equality (see
 /// [`WorldEngine`](crate::world_engine::WorldEngine)); the digest is only
 /// a fast pre-check, never the identity.
@@ -1151,6 +1233,56 @@ pub fn report_digest(report: &WorldReport) -> u64 {
         );
         sep(&mut hash);
     }
+    for attempt in &report.member_attempts {
+        feed(&mut hash, &attempt.operation_id);
+        sep(&mut hash);
+        feed(&mut hash, &attempt.window.0);
+        sep(&mut hash);
+        feed(&mut hash, &attempt.target_output.0);
+        sep(&mut hash);
+        feed(&mut hash, &attempt.target_workspace);
+        sep(&mut hash);
+        feed(&mut hash, attempt.setter.as_str());
+        sep(&mut hash);
+        feed(
+            &mut hash,
+            &attempt
+                .pre
+                .as_ref()
+                .map(|(out, ws)| format!("{out}/{ws}", out = out.0))
+                .unwrap_or_default(),
+        );
+        sep(&mut hash);
+        feed(
+            &mut hash,
+            &attempt
+                .post
+                .as_ref()
+                .map(|(out, ws)| format!("{out}/{ws}", out = out.0))
+                .unwrap_or_default(),
+        );
+        sep(&mut hash);
+        feed(&mut hash, &attempt.attempt_ms.to_string());
+        sep(&mut hash);
+    }
+    for attempt in &report.view_attempts {
+        feed(&mut hash, &attempt.operation_id);
+        sep(&mut hash);
+        feed(&mut hash, &attempt.target_output.0);
+        sep(&mut hash);
+        feed(&mut hash, &attempt.target_workspace);
+        sep(&mut hash);
+        feed(&mut hash, attempt.setter.as_str());
+        sep(&mut hash);
+        feed(&mut hash, attempt.pre.as_deref().unwrap_or_default());
+        sep(&mut hash);
+        feed(&mut hash, attempt.post.as_deref().unwrap_or_default());
+        sep(&mut hash);
+        feed(&mut hash, attempt.baseline.as_deref().unwrap_or_default());
+        sep(&mut hash);
+        feed(&mut hash, &attempt.attempt_ms.to_string());
+        sep(&mut hash);
+    }
     hash
 }
 
@@ -1191,6 +1323,8 @@ pub fn validate_report_reason(report: &WorldReport) -> Option<&'static str> {
         || report.native.len() > MAX_WORLD_SCREENS
         || report.feedback.len() > MAX_WORLD_FEEDBACK
         || report.frames.len() > MAX_WORLD_FRAMES
+        || report.member_attempts.len() > MAX_WORLD_MEMBER_ATTEMPTS
+        || report.view_attempts.len() > MAX_WORLD_VIEW_ATTEMPTS
     {
         return Some("section-over-cap");
     }
@@ -1338,6 +1472,13 @@ pub fn validate_report_reason(report: &WorldReport) -> Option<&'static str> {
         if !is_opaque_id(&feedback.operation_id) {
             return Some("feedback-invalid");
         }
+        // Transfer/view completion is core-owned over raw member/view
+        // attempts below: external verdict ingress for those kinds is
+        // retired. Other feedback kinds (creation/effect/property) remain
+        // shape-valid but do not settle transfers or views.
+        if matches!(feedback.kind, AttemptKind::Transfer | AttemptKind::View) {
+            return Some("feedback-kind-retired");
+        }
     }
     {
         let mut seen_frames = BTreeSet::new();
@@ -1376,6 +1517,48 @@ pub fn validate_report_reason(report: &WorldReport) -> Option<&'static str> {
             }
             if !seen_frames.insert(attempt.window.0.clone()) {
                 return Some("duplicate-frame");
+            }
+        }
+    }
+    {
+        let mut seen_members = BTreeSet::new();
+        for attempt in &report.member_attempts {
+            if !is_opaque_id(&attempt.operation_id) || !is_opaque_id(&attempt.window.0) {
+                return Some("member-window-invalid");
+            }
+            if !is_opaque_id(&attempt.target_output.0) || !is_opaque_id(&attempt.target_workspace) {
+                return Some("member-target-invalid");
+            }
+            for homing in [&attempt.pre, &attempt.post] {
+                if let Some((out, ws)) = homing
+                    && (!is_opaque_id(&out.0) || !is_opaque_id(ws))
+                {
+                    return Some("member-homing-invalid");
+                }
+            }
+            if !seen_members.insert((attempt.operation_id.clone(), attempt.window.0.clone())) {
+                return Some("duplicate-member");
+            }
+        }
+    }
+    {
+        let mut seen_views = BTreeSet::new();
+        for attempt in &report.view_attempts {
+            if !is_opaque_id(&attempt.operation_id) {
+                return Some("view-operation-invalid");
+            }
+            if !is_opaque_id(&attempt.target_output.0) || !is_opaque_id(&attempt.target_workspace) {
+                return Some("view-target-invalid");
+            }
+            for view in [&attempt.pre, &attempt.post, &attempt.baseline] {
+                if let Some(view) = view
+                    && !is_opaque_id(view)
+                {
+                    return Some("view-proof-invalid");
+                }
+            }
+            if !seen_views.insert(attempt.operation_id.clone()) {
+                return Some("duplicate-view-attempt");
             }
         }
     }

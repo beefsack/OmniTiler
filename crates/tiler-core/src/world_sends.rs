@@ -297,6 +297,9 @@ impl WorldEngine {
                     migration_source_view: None,
                     migration_target_view: None,
                     migration_terminal: None,
+                    pending_member: None,
+                    pending_members: BTreeMap::new(),
+                    pending_view: None,
                 },
                 // Membership-only floating boundary: follow names the mover.
                 // Stay keeps the native boundary focus (no engine MRU to
@@ -406,6 +409,9 @@ impl WorldEngine {
                         migration_source_view: None,
                         migration_target_view: None,
                         migration_terminal: None,
+                        pending_member: None,
+                        pending_members: BTreeMap::new(),
+                        pending_view: None,
                     },
                     focus,
                 ))
@@ -521,6 +527,9 @@ impl WorldEngine {
                     migration_source_view: None,
                     migration_target_view: None,
                     migration_terminal: None,
+                    pending_member: None,
+                    pending_members: BTreeMap::new(),
+                    pending_view: None,
                 },
                 // Membership-only floating boundary: follow names the mover.
                 // Stay keeps the native boundary focus (no engine MRU to
@@ -627,6 +636,9 @@ impl WorldEngine {
                         migration_source_view: None,
                         migration_target_view: None,
                         migration_terminal: None,
+                        pending_member: None,
+                        pending_members: BTreeMap::new(),
+                        pending_view: None,
                     },
                     focus,
                 ))

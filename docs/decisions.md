@@ -2699,6 +2699,18 @@ platform API behavior.
   dispatch, but no float outcome classifier or applied-float policy memory.
   Transfer/view completion remains a separate extraction.
   [Acceptance and limits](changes/core-world-model-rearchitecture.md#stage-3b2-accepted-outcome-2026-10-22).
+- Transfer/view completion extraction, 2026-10-23: core derives window,
+  standalone/follow and migration target/refill settlement from raw member and
+  view attempts correlated by operation, target and member lifetime. Retained
+  evidence survives acknowledgement and observation gaps; explicit refusal
+  needs unchanged readable proof, and unknown view baselines cannot prove
+  external supersession. Same-output membership precedes its separate follow
+  view flight; cross-output follow waits for observed view proof. Windows keeps
+  mechanical at-most-once dispatch and last-moment safety gates, not applied
+  or ambiguous policy maps. No-write arrivals still prove through independent
+  native receipts; an attempt row is not a completion prerequisite. External
+  transfer/view verdict ingress is retired without a compatibility route.
+  [Acceptance and remaining placement work](changes/core-world-model-rearchitecture.md#stage-3b3-accepted-outcome-2026-10-23).
 - User approved 2026-10-20: platforms detect and report host gesture start
   (window, move or resize), cursor updates, release and cancel, and render/apply.
   Core owns the drag session, target, overlay shape, release outcome

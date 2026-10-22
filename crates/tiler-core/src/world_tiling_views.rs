@@ -4,6 +4,8 @@
 //! Split from [`crate::world_commands`]: this module only extends the
 //! [`crate::world_engine::WorldEngine`] `impl`.
 
+use std::collections::BTreeMap;
+
 use crate::directional::OutputId;
 use crate::session::DomainKey;
 use crate::world_commands::CommandApplied;
@@ -117,6 +119,9 @@ impl WorldEngine {
             migration_source_view: None,
             migration_target_view: None,
             migration_terminal: None,
+            pending_member: None,
+            pending_members: BTreeMap::new(),
+            pending_view: None,
         });
         self.views.insert(output.0.clone(), workspace.to_owned());
     }

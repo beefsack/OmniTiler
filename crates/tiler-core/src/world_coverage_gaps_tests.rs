@@ -12,8 +12,8 @@ use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
 use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
-    CommandResult, ScopeAuthority, ScreenReport, TransferKind, WORLD_CONTRACT_VERSION, WindowFact,
-    WorldCommand, WorldReport,
+    CommandResult, FrameSetter, MemberAttempt, ScopeAuthority, ScreenReport, TransferKind,
+    WORLD_CONTRACT_VERSION, WindowFact, WorldCommand, WorldReport,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -112,6 +112,8 @@ fn report(
         feedback: Vec::new(),
         monotonic_ms: 0,
         frames: Vec::new(),
+        member_attempts: Vec::new(),
+        view_attempts: Vec::new(),
     }
 }
 
@@ -1433,7 +1435,6 @@ fn floating_source_migration_refusal_after_ack_rolls_back() {
     // sessionless carry back with stable identities: no transfers, the
     // logical id and its floating mode return to the source ring, and
     // members rehome at the source. No tree is fabricated either way.
-    use crate::world_report::{AttemptFeedback, AttemptKind, AttemptOutcome};
     let screens = two_roomy();
     let mut engine = WorldEngine::new("gen-1").expect("generation");
     let first = accepted(
@@ -1498,12 +1499,28 @@ fn floating_source_migration_refusal_after_ack_rolls_back() {
         None,
         None,
     );
-    refused.feedback = vec![AttemptFeedback {
-        operation_id: "op-12".to_owned(),
-        kind: AttemptKind::Transfer,
-        outcome: AttemptOutcome::RefusedProven,
-        hold: None,
-    }];
+    refused.member_attempts = vec![
+        MemberAttempt {
+            operation_id: "op-12".to_owned(),
+            window: WindowId("w0".to_owned()),
+            target_output: OutputId("out-b".to_owned()),
+            target_workspace: view_a.clone(),
+            setter: FrameSetter::Refused,
+            pre: Some((OutputId("out-a".to_owned()), view_a.clone())),
+            post: Some((OutputId("out-a".to_owned()), view_a.clone())),
+            attempt_ms: 4,
+        },
+        MemberAttempt {
+            operation_id: "op-12".to_owned(),
+            window: WindowId("wf".to_owned()),
+            target_output: OutputId("out-b".to_owned()),
+            target_workspace: view_a.clone(),
+            setter: FrameSetter::Refused,
+            pre: Some((OutputId("out-a".to_owned()), view_a.clone())),
+            post: Some((OutputId("out-a".to_owned()), view_a.clone())),
+            attempt_ms: 4,
+        },
+    ];
     let settled = accepted(&mut engine, &refused);
     assert!(
         settled.transfers.is_empty(),

@@ -60,7 +60,7 @@ fn report(
     focused: &str,
     command_seq: Option<u64>,
     command: Option<WorldCommand>,
-    feedback: Vec<tiler_core::world_report::AttemptFeedback>,
+    member_attempts: Vec<tiler_core::world_report::MemberAttempt>,
 ) -> WorldReport {
     WorldReport {
         contract_version: tiler_core::world_report::WORLD_CONTRACT_VERSION,
@@ -102,9 +102,11 @@ fn report(
         focused_global: focused.to_owned(),
         inventory_complete: true,
         gesture_barrier: false,
-        feedback,
+        feedback: Vec::new(),
         monotonic_ms: 0,
         frames: Vec::new(),
+        member_attempts,
+        view_attempts: Vec::new(),
     }
 }
 
@@ -739,7 +741,7 @@ fn unknown_membership_never_counts_as_target_receipt() {
 
 #[test]
 fn migration_partial_arrival_holds_narrowly_on_refusal() {
-    use tiler_core::world_report::{AttemptFeedback, AttemptKind, AttemptOutcome};
+    use tiler_core::world_report::{FrameSetter, MemberAttempt};
     let mut engine = WorldEngine::new("gen-1").expect("generation");
     let first = accepted(
         &mut engine,
@@ -792,11 +794,15 @@ fn migration_partial_arrival_holds_narrowly_on_refusal() {
             "",
             None,
             None,
-            vec![AttemptFeedback {
+            vec![MemberAttempt {
                 operation_id: "op-11".to_owned(),
-                kind: AttemptKind::Transfer,
-                outcome: AttemptOutcome::RefusedProven,
-                hold: None,
+                window: WindowId("win-b".to_owned()),
+                target_output: OutputId("out-b".to_owned()),
+                target_workspace: view_a.clone(),
+                setter: FrameSetter::Refused,
+                pre: Some((OutputId("out-a".to_owned()), view_a.clone())),
+                post: Some((OutputId("out-a".to_owned()), view_a.clone())),
+                attempt_ms: 3,
             }],
         ),
     );

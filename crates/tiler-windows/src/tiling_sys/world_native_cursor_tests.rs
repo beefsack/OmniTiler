@@ -365,9 +365,10 @@ fn shared_fresh_cases_route_against_affinity_and_settle() {
             settled.reply.transfers
         );
         assert!(
-            settled.feedback.is_empty(),
-            "{name}: no replay: {:?}",
-            settled.feedback
+            settled.members.is_empty() && settled.views.is_empty(),
+            "{name}: no replay: {:?} {:?}",
+            settled.members,
+            settled.views
         );
         assert_eq!(
             env.state.applied_homing.get(new_id),
@@ -560,9 +561,10 @@ fn shared_fresh_cases_cover_foreground_steal_and_loss() {
                 settled.reply.transfers
             );
             assert!(
-                settled.feedback.is_empty(),
-                "{tag}: no replay: {:?}",
-                settled.feedback
+                settled.members.is_empty() && settled.views.is_empty(),
+                "{tag}: no replay: {:?} {:?}",
+                settled.members,
+                settled.views
             );
             assert_eq!(
                 env.state.applied_homing.get(new_id),
@@ -710,9 +712,10 @@ fn shared_switch_and_send_cases_resolve_per_fixture() {
                     tick.reply.transfers
                 );
                 assert!(
-                    applied_of(&tick.feedback, &op),
-                    "{name}: send applies: {:?}",
-                    tick.feedback
+                    applied_of_members(&tick.members, &tick.views, &op),
+                    "{name}: send applies: {:?} {:?}",
+                    tick.members,
+                    tick.views
                 );
                 assert_eq!(
                     env.state.applied_homing.get(mover).map(|(o, _)| o),

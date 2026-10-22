@@ -40,12 +40,14 @@
 //!   This module emits no float outcome verdict: a setter boolean or a
 //!   readback alone never settles a placement.
 //! - Feedback is emitted ONLY with operation ids the core actually consumes:
-//!   retained window/view/migration transfer ids (see
-//!   `WorldEngine::settle_retained`). Creation, removal, and effect
-//!   outcomes are proven by read-back and counted in stats; inventing
-//!   `prop-*`/`remove-*`/`create-*` feedback would ride reports pointlessly
-//!   since the core matches feedback by operation id only and ignores the
-//!   rest. Float placements specifically never emit feedback rows.
+//!   retained window/migration transfer ids are retired: the transport now
+//!   reports raw membership/view attempt facts (setter disposition plus
+//!   immediate pre/post proof) and the core derives every verdict.
+//!   Creation, removal, and effect outcomes are proven by read-back and
+//!   counted in stats; inventing `prop-*`/`remove-*`/`create-*` feedback
+//!   would ride reports pointlessly since the core matches feedback by
+//!   operation id only and ignores the rest. Float placements specifically
+//!   never emit feedback rows.
 //!
 //! Freshness and proof rules (shared core contract):
 //! - The reply must be ready, bound to the current adapter/core generation,
@@ -61,12 +63,13 @@
 //!   one-shot effects arm BEFORE the first native setter and never repeat
 //!   while ambiguous: the transport reports mechanical facts once, and the
 //!   core derives every verdict. Refused-proven transfers settle only on
-//!   fresh proof that nothing happened plus an explicit native refusal;
-//!   float refusal is proven by an unchanged readable preimage in the raw
-//!   attempt, never by a verdict here. Third-location proof settles
-//!   superseded-external instead of fighting the user. Follow-view failure
-//!   holds the window transfer as possibly-executed: a view outcome is never
-//!   claimed on a window transfer id, and focus requires the exact live view.
+//!   fresh proof of nothing happened plus an explicit native refusal (both
+//!   derived core-side from the raw attempt); float refusal is proven by
+//!   an unchanged readable preimage in the raw attempt, never by a verdict
+//!   here. Third-location proof settles superseded-external instead of
+//!   fighting the user. Follow-view failure holds the window transfer as
+//!   possibly-executed: the core consumes the raw follow-view attempt and
+//!   holds the parent ambiguous, never a refused window.
 //! - Desired absence is removal eligibility only: the facade requires a
 //!   managed, non-displaced binding plus fresh occupant/visibility proof.
 //!   Unknown occupancy keeps.
@@ -79,10 +82,11 @@ use super::{ObservedWindow, RetainedRow};
 use crate::native_guards::WindowKey;
 use crate::tiling::WindowFacts;
 use std::collections::{HashMap, HashSet};
+use tiler_core::directional::OutputId;
 use tiler_core::geometry::Rect;
 use tiler_core::world_report::{
-    AttemptFeedback, AttemptKind, AttemptOutcome, FrameAttempt, FrameSetter, HoldReason,
-    ScopeAuthority, TransferKind, TransferTarget, WorldReply,
+    FrameAttempt, FrameSetter, HoldReason, MemberAttempt, ScopeAuthority, TransferKind,
+    TransferTarget, ViewAttempt, WorldReply,
 };
 
 /// Fresh offline window facts for one managed lifetime: the observation-time
@@ -490,12 +494,20 @@ impl NativeOps for FakeNative {
     }
 }
 
-/// At-most-once and ambiguity state for transfers, floats, views, effects.
-/// Operation-scoped entries (ambiguous, spent, applied) live and die with the
-/// core generation; [`HostDiff::reset_generation`] clears them.
+/// At-most-once dispatch fences for transfers, floats, views, and effects.
+/// All entries are mechanical transport state, never policy verdicts:
+/// completion, refusal, and ambiguity all live in the core over reported
+/// raw facts plus native observation. Operation-scoped entries live and
+/// die with the core generation; [`HostDiff::reset_generation`] clears
+/// them.
 #[derive(Debug, Default)]
 pub(super) struct EffectTracker {
-    pub(super) ambiguous: HashMap<String, String>,
+    /// Membership phases already dispatched, per operation window:
+    /// a possibly-executed write never repeats without fresh unambiguous
+    /// proof. Retired only by [`HostDiff::prune`] (operation left the
+    /// reply) or generation reset. Distinct from core `held`: this blocks
+    /// the duplicate dispatch itself, the core owns the verdict.
+    pub(super) attempted_members: HashSet<(String, String)>,
     pub(super) spent_effects: HashSet<String>,
     pub(super) spent_floats: HashSet<String>,
     /// Distinct local view-phase memory per owning core id: the retained
@@ -506,19 +518,19 @@ pub(super) struct EffectTracker {
     /// immediately before its setter; exact target proof may settle without
     /// a dispatch.
     pub(super) spent_views: HashSet<String>,
-    pub(super) applied_window: HashMap<String, (String, String, String)>,
-    pub(super) applied_view: HashMap<String, (String, String)>,
 }
 
 impl EffectTracker {
-    pub(super) fn is_ambiguous(&self, op: &str) -> bool {
-        self.ambiguous.contains_key(op)
+    /// Membership-phase fence: true once this operation window attempted
+    /// its membership setter. A possibly-executed write never repeats.
+    pub(super) fn is_member_attempted(&self, op: &str, window: &str) -> bool {
+        self.attempted_members
+            .contains(&(op.to_owned(), window.to_owned()))
     }
-    pub(super) fn arm(&mut self, op: &str, context: String) {
-        self.ambiguous.entry(op.to_owned()).or_insert(context);
-    }
-    fn settle_applied(&mut self, op: &str) {
-        self.ambiguous.remove(op);
+    /// Arm one membership phase immediately before its setter.
+    pub(super) fn mark_member_attempted(&mut self, op: &str, window: &str) {
+        self.attempted_members
+            .insert((op.to_owned(), window.to_owned()));
     }
     /// Mark one effect spent BEFORE dispatch. Returns false when already
     /// spent: duplicates never reapply.
@@ -547,12 +559,10 @@ impl EffectTracker {
     // Reset the generation-scoped tables together.
     #[allow(dead_code)]
     fn clear_generation(&mut self) {
-        self.ambiguous.clear();
+        self.attempted_members.clear();
         self.spent_effects.clear();
         self.spent_floats.clear();
         self.spent_views.clear();
-        self.applied_window.clear();
-        self.applied_view.clear();
     }
 }
 
@@ -594,12 +604,14 @@ impl HostDiff {
     }
 
     /// Bound every table against the current reply and baseline: spent and
-    /// ambiguous entries survive only for operation ids the reply still
-    /// carries, and applied proofs only for baselined lifetimes (view proofs
-    /// additionally only for live outputs and live operation ids, since
-    /// hotplug can retire an output while its proof entry would otherwise
-    /// linger).
-    fn prune(&mut self, reply: &WorldReply, fresh: &FreshHost) {
+    /// attempted entries survive only for operation ids the reply still
+    /// carries. Attempted membership survives on the live operation alone:
+    /// pruning against the fresh baseline would erase the at-most-once
+    /// dispatch fence across observation gaps (unreadable/incomplete
+    /// inventory) and acknowledgement loss, allowing a possibly-executed
+    /// write to repeat. Departed lifetimes retire with the operation id
+    /// (the core forgets them on close when the reply drops the transfer).
+    fn prune(&mut self, reply: &WorldReply, _fresh: &FreshHost) {
         let mut live_ops: HashSet<&str> = HashSet::new();
         for effect in &reply.effects {
             live_ops.insert(effect.id.as_str());
@@ -624,23 +636,8 @@ impl HostDiff {
             .spent_views
             .retain(|op| live_ops.contains(op.as_str()));
         self.effects
-            .ambiguous
-            .retain(|op, _| live_ops.contains(op.as_str()));
-        self.effects
-            .applied_window
-            .retain(|token, _| fresh.baseline.contains_key(token));
-        // View proofs are keyed by output (not by window token), so neither
-        // baseline retention above covers them: keep only proofs whose
-        // output is still observed and whose operation the reply still
-        // carries. A retired hotplug output or a settled operation must not
-        // linger and suppress a later same-output view outcome.
-        let mut live_outputs: HashSet<&str> = HashSet::new();
-        for output in fresh.views.keys() {
-            live_outputs.insert(output.as_str());
-        }
-        self.effects.applied_view.retain(|output, (op, _)| {
-            live_outputs.contains(output.as_str()) && live_ops.contains(op.as_str())
-        });
+            .attempted_members
+            .retain(|key| live_ops.contains(key.0.as_str()));
     }
 }
 
@@ -720,7 +717,7 @@ enum SetterKind {
     Membership,
 }
 
-fn lifetime_ok(fresh: &FreshWindow, stored: &HashMap<String, String>) -> bool {
+pub(super) fn lifetime_ok(fresh: &FreshWindow, stored: &HashMap<String, String>) -> bool {
     if fresh.key.hwnd == 0 || fresh.key.pid == 0 || fresh.key.creation.is_empty() {
         return false;
     }
@@ -836,18 +833,9 @@ fn homing_proven(
         .is_some_and(|(out, ws)| out == output && ws == workspace)
 }
 
-fn feedback(
-    operation_id: &str,
-    kind: AttemptKind,
-    outcome: AttemptOutcome,
-    hold: Option<HoldReason>,
-) -> AttemptFeedback {
-    AttemptFeedback {
-        operation_id: operation_id.to_owned(),
-        kind,
-        outcome,
-        hold,
-    }
+/// Read one homing as the carried report pair (`None` = unreadable).
+fn homing_pair(homing: Option<(String, String)>) -> Option<(OutputId, String)> {
+    homing.map(|(out, ws)| (OutputId(out), ws))
 }
 
 /// Migration-member arrival proof shared by every gate in the migration
@@ -914,60 +902,14 @@ fn migration_arrival_pending(
 }
 
 /// Follow-view outcome for one window transfer whose membership proof
-/// already arrived. The transfer id carries no view outcome: only the
-/// transfer's ambiguous/confirmed state is reported on it.
+/// already arrived. The core consumes the raw follow-view attempt and
+/// holds the parent ambiguous on a miss: no view outcome is ever claimed
+/// on a window id here, and no verdict is emitted.
 enum FollowOutcome {
     Shown,
-    Switched,
-    /// First failed attempt: the caller replaces Applied with
-    /// PossiblyExecuted once and the phase is now spent.
-    HeldEmit,
-    /// Already spent: silent hold, no dispatch and no repeat feedback.
-    HeldSilent,
-}
-
-/// Third-location proof: a readable live view that is neither the
-/// observation baseline nor the requested target proves newer external
-/// input, never a refusal of this target.
-fn view_third_location(proof: &Option<String>, baseline: Option<&String>, target: &str) -> bool {
-    match proof {
-        Some(view) => view != target && Some(view) != baseline,
-        None => false,
-    }
-}
-
-/// Shared view truth table for standalone and refill view attempts over
-/// the exact-output proof:
-/// - proof == target: Applied even if the setter threw;
-/// - explicit false with unchanged readable preimage: RefusedProven;
-/// - unchanged proof (old after success, or unresolved throw without
-///   external change): PossiblyExecuted;
-/// - readable changed proof that is neither the baseline nor the target
-///   (newer external input during the setter): SupersededExternal.
-fn settle_view_attempt(
-    pre: &Option<String>,
-    proof: &Option<String>,
-    baseline: Option<&String>,
-    target: &str,
-    result: &Result<bool, ()>,
-) -> AttemptOutcome {
-    if proof.as_deref() == Some(target) {
-        return AttemptOutcome::Applied;
-    }
-    if matches!(result, Ok(false))
-        && pre.is_some()
-        && pre == proof
-        && pre.as_deref() != Some(target)
-    {
-        return AttemptOutcome::RefusedProven;
-    }
-    if pre == proof {
-        return AttemptOutcome::PossiblyExecuted;
-    }
-    if view_third_location(proof, baseline, target) {
-        return AttemptOutcome::SupersededExternal;
-    }
-    AttemptOutcome::PossiblyExecuted
+    Dispatched,
+    /// Already spent or freshness lost: silent hold, no dispatch.
+    Held,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -979,7 +921,9 @@ fn actuate_follow_view(
     stats: &mut ApplyStats,
     transfer: &TransferTarget,
     effects: &mut EffectTracker,
-    _fresh: &FreshHost,
+    fresh: &FreshHost,
+    view_out: &mut Vec<ViewAttempt>,
+    attempt_ms: u64,
 ) -> FollowOutcome {
     let out = transfer.target_output.0.clone();
     let ws = transfer.target_workspace.clone();
@@ -988,35 +932,48 @@ fn actuate_follow_view(
         return FollowOutcome::Shown;
     }
     // Late membership arrival never rearms a spent follow-view phase:
-    // exact target proof above may settle without dispatch, otherwise an
-    // attempted phase holds silently without another switch.
+    // exact target proof above reports nothing, otherwise an attempted
+    // phase holds silently without another switch.
     if effects.is_view_spent(&parent) {
         stats.held += 1;
-        return FollowOutcome::HeldSilent;
+        return FollowOutcome::Held;
     }
     if !ensure_fresh(reply, gate, entry_obs, ops) {
         stats.stopped_mid_apply = true;
-        return FollowOutcome::HeldEmit;
+        return FollowOutcome::Held;
     }
     // Arm the follow-view phase immediately before dispatch so a
     // possibly-executed switch never repeats.
     if !effects.mark_view_spent(&parent) {
         stats.held += 1;
-        return FollowOutcome::HeldSilent;
+        return FollowOutcome::Held;
     }
-    match ops.switch_view(&out, &ws) {
-        Ok(_) if ops.read_view(&out).as_deref() == Some(ws.as_str()) => {
-            stats.view_writes += 1;
-            FollowOutcome::Switched
-        }
-        _ => {
-            // Membership is proven but the follow view is not: hold the
-            // transfer ambiguous without claiming a view outcome on its id.
-            // Never RefusedProven here: the membership already landed, so a
-            // view miss cannot prove the window transfer refused.
-            stats.held += 1;
-            FollowOutcome::HeldEmit
-        }
+    let pre = ops.read_view(&out);
+    let baseline = fresh.views.get(&out).cloned();
+    let result = ops.switch_view(&out, &ws);
+    let proof = ops.read_view(&out);
+    // Mechanical facts only: the setter boolean is never proof, the
+    // pre/post/baseline views are the refusal/third-location preimage,
+    // and no outcome is claimed on the window id. The core holds the
+    // parent ambiguous on a miss (never a refused window).
+    view_out.push(ViewAttempt {
+        operation_id: parent,
+        target_output: transfer.target_output.clone(),
+        target_workspace: ws.clone(),
+        setter: frame_setter(result.as_ref().ok().copied()),
+        pre,
+        post: proof.clone(),
+        baseline,
+        attempt_ms,
+    });
+    if result.is_ok() && proof.as_deref() == Some(ws.as_str()) {
+        stats.view_writes += 1;
+        FollowOutcome::Dispatched
+    } else {
+        // Membership is proven but the follow view is not: hold without
+        // claiming a view outcome on the window id.
+        stats.held += 1;
+        FollowOutcome::Dispatched
     }
 }
 
@@ -1031,73 +988,42 @@ fn finalize(stats: &mut ApplyStats) {
 }
 
 /// Record one proven window-transfer arrival plus its follow view.
-/// Pushes Applied feedback; when follow actuation cannot prove the
-/// view, the transfer degrades to PossiblyExecuted (HeldEmit) or holds
-/// silently (HeldSilent) without claiming a view outcome on its id.
-/// `count_write` marks a confirmed native write (post-setter proof);
-/// pre-proven arrivals (no setter ran) record no write.
+/// Pre-proven arrivals (no setter ran) record no write; post-setter proof
+/// records one membership write. Follow actuation reports its raw attempt
+/// for the core to hold the parent ambiguous on a miss. `count_write`
+/// marks a confirmed native write (post-setter proof).
 #[allow(clippy::too_many_arguments)]
-fn settle_transfer_applied(
+fn settle_transfer_proven(
     reply: &WorldReply,
     gate: &mut DiffGate,
     entry_obs: u64,
     ops: &mut dyn NativeOps,
     stats: &mut ApplyStats,
-    out_feedback: &mut Vec<AttemptFeedback>,
     transfer: &TransferTarget,
     effects: &mut EffectTracker,
     fresh: &FreshHost,
-    token: &str,
+    view_out: &mut Vec<ViewAttempt>,
+    attempt_ms: u64,
     count_write: bool,
 ) {
     if count_write {
         stats.membership_writes += 1;
     }
-    effects.settle_applied(&transfer.operation_id);
-    effects.applied_window.insert(
-        token.to_owned(),
-        (
-            transfer.operation_id.clone(),
-            transfer.target_output.0.clone(),
-            transfer.target_workspace.clone(),
-        ),
-    );
-    out_feedback.push(feedback(
-        &transfer.operation_id,
-        AttemptKind::Transfer,
-        AttemptOutcome::Applied,
-        None,
-    ));
     if transfer.follow {
-        match actuate_follow_view(reply, gate, entry_obs, ops, stats, transfer, effects, fresh) {
-            FollowOutcome::Shown | FollowOutcome::Switched => {}
-            FollowOutcome::HeldEmit => {
-                // Membership is proven but the follow view is not:
-                // the transfer stays ambiguous without claiming a
-                // view outcome on its id.
-                out_feedback.pop();
-                out_feedback.push(feedback(
-                    &transfer.operation_id,
-                    AttemptKind::Transfer,
-                    AttemptOutcome::PossiblyExecuted,
-                    None,
-                ));
-            }
-            FollowOutcome::HeldSilent => {
-                out_feedback.pop();
-                stats.held += 1;
-            }
-        }
+        let _ = actuate_follow_view(
+            reply, gate, entry_obs, ops, stats, transfer, effects, fresh, view_out, attempt_ms,
+        );
     }
 }
 
-/// Logical no-effect receipt for a floating membership-only move: the
-/// live window still names the key with a matching stored tag and the
-/// physical frame is preserved exactly. Never reinterprets the
-/// physical output (no affinity check): the logical arrival is proven
-/// by the explicit commanded application (identity plus preserved
-/// frame plus visibility), not by screen position.
-fn float_no_effect_proven(
+/// Logical no-effect receipt for a floating membership-only move, shared
+/// with the receipt merge below: the live window still names the key with
+/// a matching stored tag and the physical frame is preserved exactly.
+/// Never reinterprets the physical output (no affinity check): the
+/// logical arrival is proven by the explicit commanded application
+/// (identity plus preserved frame plus visibility), not by screen
+/// position.
+pub(super) fn float_no_effect_proven(
     ops: &mut dyn NativeOps,
     base: &FreshWindow,
     stored: &HashMap<String, String>,
@@ -1129,31 +1055,32 @@ fn frame_setter(wrote: Option<bool>) -> FrameSetter {
 ///
 /// The caller owns generation/observation advancement: `state.gate.current_obs`
 /// is the CURRENT watermark at entry. Racing input is consumed through
-/// [`NativeOps::poll_external_invalidation`] before every setter; within a
-/// operation ids the core consumes ever produce feedback (float placements
-/// never do: their verdicts live in the core). Every attempted frame write
-/// appends one mechanical [`FrameAttempt`] to `frame_out` for the next
-/// report (stamped with `attempt_ms`, the tick's monotonic clock, plus the
-/// stable operation id and the immediate pre-write frame for explicit float
-/// placements); the core owns all suppression and completion and the next
-/// desire is obeyed as-is.
-#[allow(clippy::too_many_lines)]
+/// [`NativeOps::poll_external_invalidation`] before every setter; the core
+/// consumes no verdicts from this pass (float placements never did: their
+/// verdicts live in the core). Every attempted frame write appends one
+/// mechanical [`FrameAttempt`] to `frame_out`, every membership write one
+/// [`MemberAttempt`] to `member_out`, and every view write one
+/// [`ViewAttempt`] to `view_out` for the next report (each stamped with
+/// `attempt_ms`, the tick's monotonic clock); the core owns all completion
+/// and the next desire is obeyed as-is.
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 pub(super) fn apply_world_reply(
     state: &mut HostDiff,
     reply: &WorldReply,
     fresh: &FreshHost,
     ops: &mut dyn NativeOps,
     frame_out: &mut Vec<FrameAttempt>,
+    member_out: &mut Vec<MemberAttempt>,
+    view_out: &mut Vec<ViewAttempt>,
     attempt_ms: u64,
-) -> (ApplyStats, Vec<AttemptFeedback>) {
+) -> ApplyStats {
     let mut stats = ApplyStats::default();
-    let mut out_feedback: Vec<AttemptFeedback> = Vec::new();
     let entry_obs = state.gate.current_obs;
 
     if !state.gate.fresh_reply(reply) {
         stats.held += 1;
         stats.stopped_mid_apply = true;
-        return (stats, out_feedback);
+        return stats;
     }
     state.prune(reply, fresh);
 
@@ -1323,45 +1250,22 @@ pub(super) fn apply_world_reply(
             continue;
         }
         if homing_proven(ops, base, &fresh.stored_tags, &target_out, &target_ws) {
-            settle_transfer_applied(
-                reply,
-                gate,
-                entry_obs,
-                ops,
-                &mut stats,
-                &mut out_feedback,
-                t,
-                effects,
-                fresh,
-                &row.lifetime.0,
+            // Pre-proven arrival (no setter ran): the core settles from
+            // staged observation alone. Only the follow phase may still
+            // need actuation.
+            settle_transfer_proven(
+                reply, gate, entry_obs, ops, &mut stats, t, effects, fresh, view_out, attempt_ms,
                 false,
             );
             continue;
         }
-        if t.held || effects.is_ambiguous(&op) {
-            // Possibly-executed stays held without repeating: source homing
-            // after a throw cannot prove non-execution (the attempt may have
-            // landed and been moved back), so only completion, proven
-            // refusal, or third-location proof settles.
+        if t.held || effects.is_member_attempted(&op, &row.lifetime.0) {
+            // Held or already attempted: a possibly-executed write never
+            // repeats. Source homing after a throw cannot prove
+            // non-execution, so the core holds from its retained evidence
+            // until completion, proven refusal, or third-location proof
+            // settles. No verdict is emitted here.
             stats.held += 1;
-            continue;
-        }
-        if let Some((applied_op, applied_out, applied_ws)) =
-            effects.applied_window.get(&row.lifetime.0)
-            && applied_op == &op
-            && !base.workspace.is_empty()
-            && (base.output != *applied_out || base.workspace != *applied_ws)
-        {
-            // Same operation already applied elsewhere, but the current
-            // observation shows the window left the proven target: newer
-            // external input supersedes instead of fighting the user.
-            out_feedback.push(feedback(
-                &op,
-                AttemptKind::Transfer,
-                AttemptOutcome::SupersededExternal,
-                None,
-            ));
-            effects.settle_applied(&op);
             continue;
         }
         let Some(home) = ops.read_homing(&row.lifetime.0) else {
@@ -1373,7 +1277,8 @@ pub(super) fn apply_world_reply(
             // Unknown preimage (missing receipts): never positive
             // third-location evidence. Hold for the next proven observation
             // instead of misclassifying unknown as external; the transfer
-            // stays retained and retries.
+            // stays retained and retries. No raw attempt is reported: an
+            // unknown preimage never proves anything.
             stats.held += 1;
             continue;
         }
@@ -1381,13 +1286,11 @@ pub(super) fn apply_world_reply(
         let partial = (home.0 == target_out && home.1 == base_home.1)
             || (home.0 == base_home.0 && home.1 == target_ws);
         if !at_source && !partial {
-            out_feedback.push(feedback(
-                &op,
-                AttemptKind::Transfer,
-                AttemptOutcome::SupersededExternal,
-                None,
-            ));
-            effects.settle_applied(&op);
+            // Live homing off both the source and the target: hold without
+            // dispatch and report nothing. The core derives external
+            // supersession from staged observation (unknown preimages
+            // never count, contradictory receipts hold there too).
+            stats.held += 1;
             continue;
         }
         if !ensure_fresh(reply, gate, entry_obs, ops) {
@@ -1412,7 +1315,9 @@ pub(super) fn apply_world_reply(
             }
             Gate::Pass => {}
         }
-        effects.arm(&op, format!("{target_out}/{target_ws}"));
+        // Arm the membership phase immediately before dispatch so a
+        // possibly-executed write never repeats.
+        effects.mark_member_attempted(&op, &row.lifetime.0);
         let before = ops.read_homing(&row.lifetime.0);
         // Tiled rows carry their desired frame as the actuation target
         // (the production seam writes it as part of the move);
@@ -1435,91 +1340,42 @@ pub(super) fn apply_world_reply(
             frame_target,
             remap,
         );
+        // Re-read for the mechanical post proof BEFORE any early
+        // invalidation break: the setter boolean is never proof, and the
+        // raw attempt must survive even when racing input stopped the pass.
+        // The core derives confirmation, proven refusal, and ambiguity from
+        // this raw attempt plus the staged observation.
+        let post = ops.read_homing(&row.lifetime.0);
+        member_out.push(MemberAttempt {
+            operation_id: op.clone(),
+            window: row.lifetime.clone(),
+            target_output: t.target_output.clone(),
+            target_workspace: target_ws.clone(),
+            setter: frame_setter(moved.as_ref().ok().copied()),
+            pre: homing_pair(before),
+            post: homing_pair(post),
+            attempt_ms,
+        });
         if gate.current_obs != entry_obs {
             stats.held += 1;
             stats.stopped_mid_apply = true;
             break;
         }
-        // Re-read before settling: the setter boolean is never proof. A
-        // throw that still landed (ambiguous call, proven target) settles
-        // applied without counting a confirmed write.
+        // A throw that still landed (ambiguous call, proven target)
+        // reports like any other attempt; the setter boolean alone never
+        // counts a confirmed write.
         let proven = homing_proven(ops, base, &fresh.stored_tags, &target_out, &target_ws);
-        match (moved, proven) {
-            (Ok(_), true) => {
-                settle_transfer_applied(
-                    reply,
-                    gate,
-                    entry_obs,
-                    ops,
-                    &mut stats,
-                    &mut out_feedback,
-                    t,
-                    effects,
-                    fresh,
-                    &row.lifetime.0,
-                    true,
-                );
-            }
-            (Err(_), true) => {
-                effects.settle_applied(&op);
-                effects.applied_window.insert(
-                    row.lifetime.0.clone(),
-                    (op.clone(), target_out.clone(), target_ws.clone()),
-                );
-                out_feedback.push(feedback(
-                    &op,
-                    AttemptKind::Transfer,
-                    AttemptOutcome::Applied,
-                    None,
-                ));
-            }
-            (Ok(true), false)
-                if base.floating && float_no_effect_proven(ops, base, &fresh.stored_tags) =>
-            {
-                // Existing-float crossing: membership-only, physical
-                // rectangle preserved. The logical arrival settles on
-                // the explicit commanded application (identity plus
-                // preserved frame plus visibility), never on a
-                // reinterpreted physical output.
-                settle_transfer_applied(
-                    reply,
-                    gate,
-                    entry_obs,
-                    ops,
-                    &mut stats,
-                    &mut out_feedback,
-                    t,
-                    effects,
-                    fresh,
-                    &row.lifetime.0,
-                    true,
-                );
-            }
-            (Ok(false), false)
-                if before.is_some_and(|(b_out, b_ws)| {
-                    ops.read_homing(&row.lifetime.0)
-                        .is_some_and(|(o, w)| o == b_out && w == b_ws)
-                }) =>
-            {
-                out_feedback.push(feedback(
-                    &op,
-                    AttemptKind::Transfer,
-                    AttemptOutcome::RefusedProven,
-                    Some(HoldReason::RefusedTarget),
-                ));
-                stats.held += 1;
-            }
-            _ => {
-                // Throw or partial write: stays ambiguous, never repeated
-                // without fresh unambiguous proof.
-                out_feedback.push(feedback(
-                    &op,
-                    AttemptKind::Transfer,
-                    AttemptOutcome::PossiblyExecuted,
-                    None,
-                ));
-                stats.held += 1;
-            }
+        let float_ok = base.floating && float_no_effect_proven(ops, base, &fresh.stored_tags);
+        if moved.is_ok() && (proven || (moved == Ok(true) && float_ok)) {
+            settle_transfer_proven(
+                reply, gate, entry_obs, ops, &mut stats, t, effects, fresh, view_out, attempt_ms,
+                true,
+            );
+        } else {
+            // Explicit refusal, throw, partial write, or unreadable proof:
+            // the reported raw attempt holds the core ambiguous without
+            // re-actuation. No verdict is emitted here.
+            stats.held += 1;
         }
         if gate.current_obs != entry_obs {
             stats.stopped_mid_apply = true;
@@ -1528,7 +1384,7 @@ pub(super) fn apply_world_reply(
     }
     if stats.stopped_mid_apply {
         finalize(&mut stats);
-        return (stats, out_feedback);
+        return stats;
     }
 
     // 1b. Explicit float placements: the stable `frame_operation` token is
@@ -1579,17 +1435,10 @@ pub(super) fn apply_world_reply(
             stats.held += 1;
             continue;
         }
-        if effects.is_ambiguous(op) {
-            // A correlated raw attempt already ran under this operation:
-            // hold without repeating, even when the live frame still names
-            // the baseline (an ambiguous write may have landed and been
-            // moved back). Strictly at-most-once transport; the core owns
-            // the retained target and derives confirmation, proven refusal,
-            // or continued ambiguity from the reported raw facts plus the
-            // next staged observation. No verdict is emitted here.
-            stats.held += 1;
-            continue;
-        }
+        // Strictly at-most-once dispatch, never a policy verdict: the
+        // spent mark alone blocks repeats, and the core owns the verdict
+        // over the reported raw attempt. Holds below never consume the
+        // placement; only a dispatch arms the phase.
         let live = ops.read_frame(&row.lifetime.0);
         match live {
             Some(rect) if rect == target => {
@@ -1639,7 +1488,6 @@ pub(super) fn apply_world_reply(
             stats.held += 1;
             continue;
         }
-        effects.arm(op, format!("{}/{}", row.output.0, row.workspace));
         let dpi_before = ops.read_dpi(&row.lifetime.0);
         let prewrite = ops.read_frame(&row.lifetime.0);
         let wrote = ops.write_frame(&row.lifetime.0, target).ok();
@@ -1674,7 +1522,7 @@ pub(super) fn apply_world_reply(
     }
     if stats.stopped_mid_apply {
         finalize(&mut stats);
-        return (stats, out_feedback);
+        return stats;
     }
 
     // Paired migration source-refill views (`{migration-op}-refill`) defer
@@ -1697,7 +1545,10 @@ pub(super) fn apply_world_reply(
 
     // 3. Output views: retained transfer targets only, proven on the exact
     // target output. Unresolvable targets hold with no attempt recorded, so
-    // the retained core target retries on a later report.
+    // the retained core target retries on a later report. Every dispatch
+    // reports its raw attempt; the core derives confirmation, proven
+    // refusal, ambiguity, and external supersession from the raw facts plus
+    // staged echoes. No verdict is emitted here.
     for t in &reply.transfers {
         if !matches!(t.kind, TransferKind::View) {
             continue;
@@ -1717,54 +1568,18 @@ pub(super) fn apply_world_reply(
             continue;
         }
         if ops.read_view(&out).as_deref() == Some(ws.as_str()) {
-            effects.settle_applied(&op);
-            effects
-                .applied_view
-                .insert(out.clone(), (op.clone(), ws.clone()));
-            out_feedback.push(feedback(
-                &op,
-                AttemptKind::View,
-                AttemptOutcome::Applied,
-                None,
-            ));
+            // Already shown: no write, no attempt. The core settles from
+            // the staged echo itself.
             continue;
         }
         if t.held || effects.is_view_spent(&op) {
-            // A live view that is neither the observation baseline nor the
-            // target proves newer external input: supersede instead of
-            // fighting the user. Anything else holds without repeating: a
-            // failed switch cannot prove non-execution, so retrying could
-            // fight a user who switched away after an executed attempt.
-            // Late target proof above already settles without a dispatch;
-            // this fence is never rearmed by other proofs.
-            let baseline_view = fresh.views.get(&out);
-            if ops
-                .read_view(&out)
-                .is_some_and(|live| Some(&live) != baseline_view && live != ws)
-            {
-                out_feedback.push(feedback(
-                    &op,
-                    AttemptKind::View,
-                    AttemptOutcome::SupersededExternal,
-                    None,
-                ));
-                effects.settle_applied(&op);
-                continue;
-            }
+            // Held or already attempted: a failed switch cannot prove
+            // non-execution, so retrying could fight a user who switched
+            // away after an executed attempt. Late target proof above
+            // reports nothing; this fence is never rearmed by other
+            // proofs. The core derives any third-location supersession
+            // from staged echoes plus retained raw evidence.
             stats.held += 1;
-            continue;
-        }
-        if let Some((applied_op, applied_ws)) = effects.applied_view.get(&out)
-            && applied_op == &op
-            && ops.read_view(&out).as_deref() != Some(applied_ws.as_str())
-        {
-            out_feedback.push(feedback(
-                &op,
-                AttemptKind::View,
-                AttemptOutcome::SupersededExternal,
-                None,
-            ));
-            effects.settle_applied(&op);
             continue;
         }
         if !ensure_fresh(reply, gate, entry_obs, ops) {
@@ -1772,7 +1587,7 @@ pub(super) fn apply_world_reply(
             break;
         }
         let pre = ops.read_view(&out);
-        let baseline = fresh.views.get(&out);
+        let baseline = fresh.views.get(&out).cloned();
         // Arm the view phase immediately before dispatch; late proofs
         // cannot rearm it, so a possibly-executed switch never repeats.
         if !effects.mark_view_spent(&op) {
@@ -1781,50 +1596,25 @@ pub(super) fn apply_world_reply(
         }
         let result = ops.switch_view(&out, &ws);
         let proof = ops.read_view(&out);
-        match settle_view_attempt(&pre, &proof, baseline, &ws, &result) {
-            AttemptOutcome::Applied => {
-                if result.is_ok() && proof.as_deref() == Some(ws.as_str()) {
-                    stats.view_writes += 1;
-                }
-                effects.settle_applied(&op);
-                effects
-                    .applied_view
-                    .insert(out.clone(), (op.clone(), ws.clone()));
-                out_feedback.push(feedback(
-                    &op,
-                    AttemptKind::View,
-                    AttemptOutcome::Applied,
-                    None,
-                ));
-            }
-            AttemptOutcome::SupersededExternal => {
-                out_feedback.push(feedback(
-                    &op,
-                    AttemptKind::View,
-                    AttemptOutcome::SupersededExternal,
-                    None,
-                ));
-                effects.settle_applied(&op);
-                stats.held += 1;
-            }
-            AttemptOutcome::RefusedProven => {
-                out_feedback.push(feedback(
-                    &op,
-                    AttemptKind::View,
-                    AttemptOutcome::RefusedProven,
-                    Some(HoldReason::RefusedTarget),
-                ));
-                stats.held += 1;
-            }
-            _ => {
-                out_feedback.push(feedback(
-                    &op,
-                    AttemptKind::View,
-                    AttemptOutcome::PossiblyExecuted,
-                    None,
-                ));
-                stats.held += 1;
-            }
+        // Mechanical facts only: the setter boolean is never proof, and
+        // no outcome is claimed here. The core settles from this attempt
+        // plus the next staged echo.
+        view_out.push(ViewAttempt {
+            operation_id: op,
+            target_output: t.target_output.clone(),
+            target_workspace: ws.clone(),
+            setter: frame_setter(result.as_ref().ok().copied()),
+            pre,
+            post: proof.clone(),
+            baseline,
+            attempt_ms,
+        });
+        if result.is_ok() && proof.as_deref() == Some(ws.as_str()) {
+            stats.view_writes += 1;
+        } else {
+            // Setter refusal, throw, or unreadable proof: the reported raw
+            // attempt holds the core without re-actuation.
+            stats.held += 1;
         }
         if gate.current_obs != entry_obs {
             stats.stopped_mid_apply = true;
@@ -1833,13 +1623,16 @@ pub(super) fn apply_world_reply(
     }
     if stats.stopped_mid_apply {
         finalize(&mut stats);
-        return (stats, out_feedback);
+        return stats;
     }
 
     // 3b. Whole-workspace migration: membership-only moves under one stable
     // operation, then views. No view switches until ALL fresh member arrival
     // proof is in: a partial failure holds truthfully under the same id, and
     // the paired source refill actuates only after the target view proves.
+    // Every dispatch reports its raw attempt; the core derives every
+    // verdict from the raw facts plus staged observation. No verdict is
+    // emitted here.
     for t in &reply.transfers {
         if !matches!(t.kind, TransferKind::Migration) {
             continue;
@@ -1868,73 +1661,43 @@ pub(super) fn apply_world_reply(
             stats.held += 1;
             continue;
         }
-        if t.held || effects.is_ambiguous(&op) {
-            // Late full-membership proof settles an ambiguous parent without
-            // member replay: every member homing proven at the target with a
-            // valid lifetime is unambiguous proof of completion. Anything
-            // less holds without repeating.
-            let mut late_proof = true;
-            for id in &members {
-                if !migration_member_proven(ops, reply, fresh, id, &out, &ws) {
-                    late_proof = false;
-                    break;
-                }
-            }
-            if !late_proof {
-                stats.held += 1;
-                continue;
-            }
-        }
-        let mut superseded = false;
-        for id in &members {
-            let base = &fresh.baseline[id];
-            let Some(home) = ops.read_homing(id) else {
-                stats.held += 1;
-                superseded = true;
-                break;
-            };
-            if home.0 == out && home.1 == ws {
-                continue;
-            }
-            if base.workspace.is_empty() {
-                // Unknown preimage (missing receipts): never positive
-                // third-location evidence. Hold without settling so the
-                // migration retries on the next proven observation.
-                stats.held += 1;
-                superseded = true;
-                break;
-            }
-            let at_source = home.0 == base.output && home.1 == base.workspace;
-            let partial_progress = (home.0 == out && home.1 == base.workspace)
-                || (home.0 == base.output && home.1 == ws);
-            if !at_source && !partial_progress {
-                out_feedback.push(feedback(
-                    &op,
-                    AttemptKind::Transfer,
-                    AttemptOutcome::SupersededExternal,
-                    None,
-                ));
-                effects.settle_applied(&op);
-                superseded = true;
-                break;
-            }
-        }
-        if superseded {
-            continue;
-        }
-        let mut armed = false;
-        let mut failed = false;
         for id in &members {
             let base = &fresh.baseline[id];
             if migration_member_proven(ops, reply, fresh, id, &out, &ws) {
                 stats.migration_total += 1;
                 stats.migration_proven += 1;
-                effects
-                    .applied_window
-                    .insert(id.clone(), (op.clone(), out.clone(), ws.clone()));
                 continue;
             }
             stats.migration_total += 1;
+            if t.held || effects.is_member_attempted(&op, id) {
+                // Held or already attempted: a possibly-executed write
+                // never repeats. The core holds from its retained raw
+                // evidence until arrival proves.
+                stats.held += 1;
+                continue;
+            }
+            let Some(home) = ops.read_homing(id) else {
+                stats.held += 1;
+                continue;
+            };
+            if base.workspace.is_empty() {
+                // Unknown preimage (missing receipts): never positive
+                // third-location evidence and never a dispatch. Hold
+                // without reporting so the migration retries on the next
+                // proven observation.
+                stats.held += 1;
+                continue;
+            }
+            let at_source = home.0 == base.output && home.1 == base.workspace;
+            let partial_progress = (home.0 == out && home.1 == base.workspace)
+                || (home.0 == base.output && home.1 == ws);
+            if !at_source && !partial_progress {
+                // Live homing off both the source and the target: hold
+                // without dispatch and report nothing. The core derives
+                // external supersession from staged observation.
+                stats.held += 1;
+                continue;
+            }
             if !ensure_fresh(reply, gate, entry_obs, ops) {
                 stats.stopped_mid_apply = true;
                 break;
@@ -1960,10 +1723,9 @@ pub(super) fn apply_world_reply(
                 }
                 Gate::Pass => {}
             }
-            if !armed {
-                armed = true;
-                effects.arm(&op, format!("{out}/{ws}"));
-            }
+            // Arm the member phase immediately before dispatch so a
+            // possibly-executed write never repeats.
+            effects.mark_member_attempted(&op, id);
             // Migration members ride their desired frames as actuation
             // targets exactly like window transfers (frameless redirect
             // lanes carry none and remap mechanically instead); floats
@@ -1978,56 +1740,58 @@ pub(super) fn apply_world_reply(
                     (frame, remap)
                 })
                 .unwrap_or((None, false));
+            let before = ops.read_homing(id);
             let moved = ops.move_membership(id, &out, &ws, member_frame, member_remap);
+            // Mechanical facts only, staged before any early-invalidation
+            // break so the raw attempt survives racing input: the setter
+            // boolean is never proof. The core derives arrival, refusal, and
+            // ambiguity from this raw attempt plus the staged observation.
+            let post = ops.read_homing(id);
+            member_out.push(MemberAttempt {
+                operation_id: op.clone(),
+                window: tiler_core::directional::WindowId(id.clone()),
+                target_output: t.target_output.clone(),
+                target_workspace: ws.clone(),
+                setter: frame_setter(moved.as_ref().ok().copied()),
+                pre: homing_pair(before),
+                post: homing_pair(post),
+                attempt_ms,
+            });
             if gate.current_obs != entry_obs {
+                stats.held += 1;
                 stats.stopped_mid_apply = true;
                 break;
             }
             if moved.is_ok() && migration_member_proven(ops, reply, fresh, id, &out, &ws) {
                 stats.membership_writes += 1;
                 stats.migration_proven += 1;
-                effects
-                    .applied_window
-                    .insert(id.clone(), (op.clone(), out.clone(), ws.clone()));
             } else {
-                failed = true;
+                // Explicit refusal, throw, or unreadable proof: the
+                // reported raw attempt holds the core without re-actuation.
                 stats.held += 1;
-                break;
             }
         }
         if stats.stopped_mid_apply {
             break;
         }
-        if failed {
-            out_feedback.push(feedback(
-                &op,
-                AttemptKind::Transfer,
-                AttemptOutcome::PossiblyExecuted,
-                None,
-            ));
-            continue;
-        }
         let all_homed = members
             .iter()
             .all(|id| migration_member_proven(ops, reply, fresh, id, &out, &ws));
         if !all_homed {
-            out_feedback.push(feedback(
-                &op,
-                AttemptKind::Transfer,
-                AttemptOutcome::PossiblyExecuted,
-                None,
-            ));
+            // Partial arrival or partial failure holds truthfully under
+            // the same id; the core owns the verdict over the raw
+            // attempts, never a replay.
             stats.held += 1;
             continue;
         }
         // Target view only after every member arrival proof. The phase is
         // owned by the migration parent: late member proof never rearms an
-        // attempted target view, and exact target proof settles without a
-        // dispatch. Successful members/views are never replayed.
+        // attempted target view, and exact target proof reports nothing.
+        // Successful members/views are never replayed.
         if ops.read_view(&out).as_deref() != Some(ws.as_str()) {
             if effects.is_view_spent(&op) {
                 // Late member proof never rearms an attempted target view:
-                // silent hold without another switch or repeat feedback.
+                // silent hold without another switch.
                 stats.held += 1;
                 continue;
             }
@@ -2040,26 +1804,35 @@ pub(super) fn apply_world_reply(
                 stats.held += 1;
                 continue;
             }
-            match ops.switch_view(&out, &ws) {
-                Ok(_) if ops.read_view(&out).as_deref() == Some(ws.as_str()) => {
+            let pre = ops.read_view(&out);
+            let baseline = fresh.views.get(&out).cloned();
+            let result = ops.switch_view(&out, &ws);
+            let proof = ops.read_view(&out);
+            // Mechanical facts only; the core settles from this attempt
+            // plus the next staged echo. Proof decides, never the setter
+            // boolean: a throw that still landed proceeds to refill.
+            view_out.push(ViewAttempt {
+                operation_id: op.clone(),
+                target_output: t.target_output.clone(),
+                target_workspace: ws.clone(),
+                setter: frame_setter(result.as_ref().ok().copied()),
+                pre,
+                post: proof.clone(),
+                baseline,
+                attempt_ms,
+            });
+            if proof.as_deref() == Some(ws.as_str()) {
+                if result.is_ok() {
                     stats.view_writes += 1;
                 }
-                _ => {
-                    out_feedback.push(feedback(
-                        &op,
-                        AttemptKind::Transfer,
-                        AttemptOutcome::PossiblyExecuted,
-                        None,
-                    ));
-                    stats.held += 1;
-                    continue;
-                }
+            } else {
+                stats.held += 1;
+                continue;
             }
         }
         // Paired source refill only after the target view proves: never
         // ahead of arrival. The refill owns its own view phase under the
-        // actual refill id, with its own held/scope/binding/spent gates.
-        // Parent partial stays truthful without replaying successful phases.
+        // actual refill id, with its own held/scope/spent gates.
         let refill_op = format!("{op}-refill");
         if let Some(refill) = reply
             .transfers
@@ -2069,37 +1842,16 @@ pub(super) fn apply_world_reply(
             let refill_out = refill.target_output.0.clone();
             let refill_ws = refill.target_workspace.clone();
             if ops.read_view(&refill_out).as_deref() == Some(refill_ws.as_str()) {
-                effects.settle_applied(&refill.operation_id);
-                out_feedback.push(feedback(
-                    &refill.operation_id,
-                    AttemptKind::View,
-                    AttemptOutcome::Applied,
-                    None,
-                ));
+                // Already shown: nothing to report; the core settles from
+                // the staged echo itself.
             } else if refill.held
                 || !scope_controlled(reply, &refill_out, &refill_ws)
                 || effects.is_view_spent(&refill.operation_id)
             {
                 // Held, scope-held, or already attempted refill:
-                // never switch a view that must remain untouched. A live
-                // third-location view proves external input; anything else
-                // holds truthfully with the parent unresolved.
-                let baseline_refill = fresh.views.get(&refill_out);
-                if view_third_location(&ops.read_view(&refill_out), baseline_refill, &refill_ws) {
-                    out_feedback.push(feedback(
-                        &refill.operation_id,
-                        AttemptKind::View,
-                        AttemptOutcome::SupersededExternal,
-                        None,
-                    ));
-                    effects.settle_applied(&refill.operation_id);
-                }
-                out_feedback.push(feedback(
-                    &op,
-                    AttemptKind::Transfer,
-                    AttemptOutcome::PossiblyExecuted,
-                    None,
-                ));
+                // never switch a view that must remain untouched. The
+                // core derives any third-location supersession from
+                // staged echoes plus retained raw evidence.
                 stats.held += 1;
                 continue;
             } else {
@@ -2108,7 +1860,7 @@ pub(super) fn apply_world_reply(
                     break;
                 }
                 let pre = ops.read_view(&refill_out);
-                let baseline_refill = fresh.views.get(&refill_out);
+                let baseline_refill = fresh.views.get(&refill_out).cloned();
                 if !effects.mark_view_spent(&refill.operation_id) {
                     // Raced arming: silent hold without another switch.
                     stats.held += 1;
@@ -2116,78 +1868,28 @@ pub(super) fn apply_world_reply(
                 }
                 let result = ops.switch_view(&refill_out, &refill_ws);
                 let proof = ops.read_view(&refill_out);
-                match settle_view_attempt(&pre, &proof, baseline_refill, &refill_ws, &result) {
-                    AttemptOutcome::Applied => {
-                        if result.is_ok() && proof.as_deref() == Some(refill_ws.as_str()) {
-                            stats.view_writes += 1;
-                        }
-                        effects.settle_applied(&refill.operation_id);
-                        out_feedback.push(feedback(
-                            &refill.operation_id,
-                            AttemptKind::View,
-                            AttemptOutcome::Applied,
-                            None,
-                        ));
+                // Mechanical facts only; the core settles from this
+                // attempt plus the next staged echo.
+                view_out.push(ViewAttempt {
+                    operation_id: refill.operation_id.clone(),
+                    target_output: refill.target_output.clone(),
+                    target_workspace: refill_ws.clone(),
+                    setter: frame_setter(result.as_ref().ok().copied()),
+                    pre,
+                    post: proof.clone(),
+                    baseline: baseline_refill,
+                    attempt_ms,
+                });
+                if proof.as_deref() == Some(refill_ws.as_str()) {
+                    if result.is_ok() {
+                        stats.view_writes += 1;
                     }
-                    AttemptOutcome::SupersededExternal => {
-                        out_feedback.push(feedback(
-                            &refill.operation_id,
-                            AttemptKind::View,
-                            AttemptOutcome::SupersededExternal,
-                            None,
-                        ));
-                        effects.settle_applied(&refill.operation_id);
-                        out_feedback.push(feedback(
-                            &op,
-                            AttemptKind::Transfer,
-                            AttemptOutcome::PossiblyExecuted,
-                            None,
-                        ));
-                        stats.held += 1;
-                        continue;
-                    }
-                    AttemptOutcome::RefusedProven => {
-                        out_feedback.push(feedback(
-                            &refill.operation_id,
-                            AttemptKind::View,
-                            AttemptOutcome::RefusedProven,
-                            Some(HoldReason::RefusedTarget),
-                        ));
-                        out_feedback.push(feedback(
-                            &op,
-                            AttemptKind::Transfer,
-                            AttemptOutcome::PossiblyExecuted,
-                            None,
-                        ));
-                        stats.held += 1;
-                        continue;
-                    }
-                    _ => {
-                        out_feedback.push(feedback(
-                            &refill.operation_id,
-                            AttemptKind::View,
-                            AttemptOutcome::PossiblyExecuted,
-                            None,
-                        ));
-                        out_feedback.push(feedback(
-                            &op,
-                            AttemptKind::Transfer,
-                            AttemptOutcome::PossiblyExecuted,
-                            None,
-                        ));
-                        stats.held += 1;
-                        continue;
-                    }
+                } else {
+                    stats.held += 1;
+                    continue;
                 }
             }
         }
-        effects.settle_applied(&op);
-        out_feedback.push(feedback(
-            &op,
-            AttemptKind::Transfer,
-            AttemptOutcome::Applied,
-            None,
-        ));
         if gate.current_obs != entry_obs {
             stats.stopped_mid_apply = true;
             break;
@@ -2195,7 +1897,7 @@ pub(super) fn apply_world_reply(
     }
     if stats.stopped_mid_apply {
         finalize(&mut stats);
-        return (stats, out_feedback);
+        return stats;
     }
 
     // 4. One-shot effects: spent BEFORE dispatch, proven by read-back, gated
@@ -2270,13 +1972,11 @@ pub(super) fn apply_world_reply(
         if !effects.mark_effect_spent(&effect.id) {
             continue;
         }
-        effects.arm(&effect.id, effect.target.0.clone());
         // Foreground read-back is authoritative even if the setter throws:
         // a throwing call that still landed proves focus.
         let _ = ops.focus_window(&effect.target.0);
         if ops.is_foreground(&effect.target.0) {
             stats.effects += 1;
-            effects.settle_applied(&effect.id);
         } else {
             stats.held += 1;
         }
@@ -2287,5 +1987,5 @@ pub(super) fn apply_world_reply(
     }
 
     finalize(&mut stats);
-    (stats, out_feedback)
+    stats
 }

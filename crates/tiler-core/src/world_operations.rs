@@ -831,6 +831,9 @@ impl WorldEngine {
                             migration_source_view: None,
                             migration_target_view: None,
                             migration_terminal: None,
+                            pending_member: None,
+                            pending_members: BTreeMap::new(),
+                            pending_view: None,
                         });
                         return CommandApplied::NoEffect;
                     }
@@ -1214,6 +1217,9 @@ impl WorldEngine {
                             migration_source_view: None,
                             migration_target_view: None,
                             migration_terminal: None,
+                            pending_member: None,
+                            pending_members: BTreeMap::new(),
+                            pending_view: None,
                         });
                     }
                 }
@@ -1295,6 +1301,9 @@ impl WorldEngine {
                         migration_source_view: None,
                         migration_target_view: None,
                         migration_terminal: None,
+                        pending_member: None,
+                        pending_members: BTreeMap::new(),
+                        pending_view: None,
                     });
                 }
                 self.note_command(command_seq);

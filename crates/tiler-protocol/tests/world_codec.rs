@@ -537,12 +537,150 @@ fn frame_attempts_decode_tolerantly_and_stay_bounded() {
 }
 
 #[test]
+fn member_and_view_attempts_decode_tolerantly_and_stay_bounded() {
+    use tiler_core::world_report::FrameSetter;
+    // Absent keys backfill: predates-the-field adapters stay valid with no
+    // transfer/view attempts.
+    let report = decode_request(&one_window_request()).expect("decodes");
+    assert!(report.member_attempts.is_empty());
+    assert!(report.view_attempts.is_empty());
+    // Present keys decode to the typed mechanical shape: operation plus
+    // window plus target correlation, setter disposition, and nullable
+    // immediate pre/post proofs. No verdict rides either lane.
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["memberAttempts"] = serde_json::json!([{
+        "op": "op-11", "win": "win-a", "out": "out-b", "ws": "ws-2",
+        "setter": "refused",
+        "pre": {"out": "out-a", "ws": "ws-1"},
+        "post": {"out": "out-a", "ws": "ws-1"},
+        "attemptMs": "2000",
+    }]);
+    value["viewAttempts"] = serde_json::json!([{
+        "op": "op-9", "out": "out-a", "ws": "ws-2", "setter": "threw",
+        "pre": "ws-1", "post": "ws-x", "base": "ws-1", "attemptMs": "2001",
+    }]);
+    let wire = value.to_string();
+    let report = decode_request(&wire).expect("attempts decode");
+    assert_eq!(report.member_attempts.len(), 1);
+    let member = &report.member_attempts[0];
+    assert_eq!(member.operation_id, "op-11");
+    assert_eq!(member.window.0, "win-a");
+    assert_eq!(member.target_output.0, "out-b");
+    assert_eq!(member.target_workspace, "ws-2");
+    assert_eq!(member.setter, FrameSetter::Refused);
+    assert_eq!(
+        member.pre,
+        Some((
+            tiler_core::directional::OutputId("out-a".to_owned()),
+            "ws-1".to_owned()
+        ))
+    );
+    assert_eq!(member.post, member.pre);
+    assert_eq!(member.attempt_ms, 2000);
+    assert_eq!(report.view_attempts.len(), 1);
+    let view = &report.view_attempts[0];
+    assert_eq!(view.operation_id, "op-9");
+    assert_eq!(view.setter, FrameSetter::Threw);
+    assert_eq!(view.pre.as_deref(), Some("ws-1"));
+    assert_eq!(view.post.as_deref(), Some("ws-x"));
+    assert_eq!(view.baseline.as_deref(), Some("ws-1"));
+    assert_eq!(view.attempt_ms, 2001);
+    // Unknown views ride null (never an empty id, never inferred proof).
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["viewAttempts"] = serde_json::json!([{
+        "op": "op-9", "out": "out-a", "ws": "ws-2", "setter": "accepted",
+        "pre": null, "post": null, "base": null, "attemptMs": "1",
+    }]);
+    let null_report = decode_request(&value.to_string()).expect("null views decode");
+    assert_eq!(null_report.view_attempts[0].pre, None);
+    assert_eq!(null_report.view_attempts[0].post, None);
+    assert_eq!(null_report.view_attempts[0].baseline, None);
+    // A missing attemptMs refuses like every other counter.
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["viewAttempts"] = serde_json::json!([{
+        "op": "op-9", "out": "out-a", "ws": "ws-2", "setter": "accepted",
+        "pre": null, "post": null, "base": null,
+    }]);
+    let error = decode_request(&value.to_string()).expect_err("missing stamp refuses");
+    assert_eq!(error.kind, "malformed");
+    // Duplicate operation windows refuse with fixed vocabulary.
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["memberAttempts"] = serde_json::json!([
+        {"op": "op-9", "win": "win-a", "out": "out-a", "ws": "ws-2",
+         "setter": "accepted", "pre": null, "post": null, "attemptMs": "1"},
+        {"op": "op-9", "win": "win-a", "out": "out-a", "ws": "ws-2",
+         "setter": "accepted", "pre": null, "post": null, "attemptMs": "2"},
+    ]);
+    let error = decode_request(&value.to_string()).expect_err("duplicate refuses");
+    assert_eq!(error.kind, "snapshot-invalid");
+    assert_eq!(error.message, "duplicate-member");
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["viewAttempts"] = serde_json::json!([
+        {"op": "op-9", "out": "out-a", "ws": "ws-2", "setter": "accepted",
+         "pre": null, "post": null, "base": null, "attemptMs": "1"},
+        {"op": "op-9", "out": "out-a", "ws": "ws-2", "setter": "accepted",
+         "pre": null, "post": null, "base": null, "attemptMs": "1"},
+    ]);
+    let error = decode_request(&value.to_string()).expect_err("duplicate refuses");
+    assert_eq!(error.kind, "snapshot-invalid");
+    assert_eq!(error.message, "duplicate-view-attempt");
+    // Unknown setter vocabulary refuses; unknown attempt fields refuse.
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["memberAttempts"] = serde_json::json!([{
+        "op": "op-9", "win": "win-a", "out": "out-a", "ws": "ws-2",
+        "setter": "clamped", "pre": null, "post": null, "attemptMs": "1",
+    }]);
+    let error = decode_request(&value.to_string()).expect_err("bad setter refuses");
+    assert_eq!(error.kind, "unknown-value");
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["viewAttempts"] = serde_json::json!([{
+        "op": "op-9", "out": "out-a", "ws": "ws-2", "setter": "accepted",
+        "pre": null, "post": null, "base": null, "attemptMs": "1", "verdict": "applied",
+    }]);
+    let error = decode_request(&value.to_string()).expect_err("unknown field refuses");
+    assert_eq!(error.kind, "unknown-field");
+    // Transfer/view verdict ingress stays retired: the core derives every
+    // verdict from raw attempts, never from feedback rows.
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["feedback"] = serde_json::json!([{
+        "op": "op-9", "kind": "transfer", "outcome": "applied", "hold": "",
+    }]);
+    let error = decode_request(&value.to_string()).expect_err("verdict ingress refuses");
+    assert_eq!(error.kind, "snapshot-invalid");
+    assert_eq!(error.message, "feedback-kind-retired");
+    // Estimates bound the wider wire shape.
+    let estimate = tiler_core::world_report::report_estimate(&report);
+    assert!(
+        estimate >= wire.len(),
+        "estimate {estimate} bounds wire {}",
+        wire.len()
+    );
+}
+
+#[test]
 fn overbound_request_refuses_before_core_mutation() {
     let big = "w".repeat(WORLD_MAX_REQUEST_BYTES + 1);
     let request = one_window_request().replace("win-a", &big);
     assert!(request.len() > WORLD_MAX_REQUEST_BYTES);
     let error = decode_request(&request).expect_err("oversized refuses");
     assert_eq!(error.kind, "oversized");
+}
+
+#[test]
+fn empty_view_strings_normalize_to_unknown_instead_of_rejecting() {
+    // Empty pre/post/base normalize to None (unknown), consistently with
+    // views[]/current empty-means-unknown: validation rejects empty proof
+    // rows outright, so decoding must not produce Some("").
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["viewAttempts"] = serde_json::json!([{
+        "op": "op-9", "out": "out-a", "ws": "ws-2", "setter": "threw",
+        "pre": "", "post": "", "base": "", "attemptMs": "1",
+    }]);
+    let report = decode_request(&value.to_string()).expect("empty views decode");
+    assert_eq!(report.view_attempts.len(), 1);
+    assert_eq!(report.view_attempts[0].pre, None);
+    assert_eq!(report.view_attempts[0].post, None);
+    assert_eq!(report.view_attempts[0].baseline, None);
 }
 
 #[test]

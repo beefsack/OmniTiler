@@ -18,40 +18,66 @@ use super::world_diff::{FreshHost, NativeOps};
 use super::world_native::{LiveNative, NativePrimitives};
 use super::{MonitorArea, ObservedWindow, RetainedRow, TileLoop};
 use std::collections::HashMap;
-use tiler_core::world_report::{
-    AttemptFeedback, AttemptOutcome, CommandResult, TransferKind, WorldCommand, WorldReply,
-};
+use tiler_core::world_report::{CommandResult, TransferKind, WorldCommand, WorldReply};
 
 /// Merge applied transfer effects into the proven receipt maps. Each
-/// `Applied` feedback revalidates against independent fresh native proof
-/// (never the native cache alone): a window transfer merges only when
-/// the live homing still names the target under full identity/tag
-/// checks (plus, for tiled rows, the exact live frame on the target),
-/// and a view or migration merges only when the live view still names
-/// the target. Possibly-executed, refused, and superseded outcomes never
-/// merge. Empty views merge only on explicit finished batch proof
-/// (the live view names the target with zero stray visibility), never
-/// on a desired id echo when no work ran.
+/// staged raw attempt with post proof at the target revalidates against
+/// independent fresh native proof (never the native cache alone): a window
+/// transfer merges only when the live homing still names the target under
+/// full identity/tag checks (plus, for tiled rows, the exact live frame
+/// on the target), and a view or migration merges only when the live view
+/// still names the target. Attempts whose post proof is elsewhere merge
+/// nothing. Floating membership-only crossings preserve the physical frame
+/// while arriving logically: an accepted attempt merges through the
+/// no-effect proof below (identity plus preserved frame plus visibility),
+/// never on a reinterpreted physical output. Empty views merge only on
+/// explicit finished batch proof (the live view names the target with zero
+/// stray visibility), never on a desired id echo when no work ran.
 pub(super) fn merge_applied_transfers(
     reply: &tiler_core::world_report::WorldReply,
-    feedback: &[tiler_core::world_report::AttemptFeedback],
+    member_attempts: &[tiler_core::world_report::MemberAttempt],
+    view_attempts: &[tiler_core::world_report::ViewAttempt],
+    fresh: &FreshHost,
     native: &mut LiveNative,
     proven_h: &mut HashMap<String, (String, String)>,
     proven_v: &mut HashMap<String, String>,
 ) {
-    use tiler_core::world_report::{AttemptKind, TransferKind};
+    use tiler_core::world_report::{FrameSetter, TransferKind};
     for transfer in &reply.transfers {
-        let proven = feedback.iter().any(|item| {
-            item.operation_id == transfer.operation_id
-                && matches!(item.kind, AttemptKind::Transfer)
-                && item.outcome == AttemptOutcome::Applied
-        });
+        let proven = match &transfer.kind {
+            TransferKind::Window(window) => member_attempts.iter().any(|attempt| {
+                attempt.operation_id == transfer.operation_id
+                    && attempt.window == *window
+                    && attempt.target_output == transfer.target_output
+                    && attempt.target_workspace == transfer.target_workspace
+                    && (attempt.post.as_ref().is_some_and(|(out, ws)| {
+                        out == &transfer.target_output && ws == &transfer.target_workspace
+                    }) || (matches!(attempt.setter, FrameSetter::Accepted)
+                        && reply
+                            .windows
+                            .iter()
+                            .any(|row| row.lifetime == *window && row.floating)
+                        && fresh.baseline.get(&window.0).is_some_and(|base| {
+                            super::world_diff::float_no_effect_proven(
+                                native,
+                                base,
+                                &fresh.stored_tags,
+                            )
+                        })))
+            }),
+            TransferKind::View | TransferKind::Migration => view_attempts.iter().any(|attempt| {
+                attempt.operation_id == transfer.operation_id
+                    && attempt.target_output == transfer.target_output
+                    && attempt.target_workspace == transfer.target_workspace
+                    && attempt.post.as_deref() == Some(transfer.target_workspace.as_str())
+            }),
+        };
         if !proven {
             continue;
         }
-        // Independent fresh proof at merge time: the `Applied` outcome
-        // alone never merges. A recycled HWND or a raced hide between
-        // the diff pass and this snapshot must not plant a receipt.
+        // Independent fresh proof at merge time: the raw post alone
+        // never merges. A recycled HWND or a raced hide between the
+        // diff pass and this snapshot must not plant a receipt.
         match &transfer.kind {
             TransferKind::Window(window) => {
                 if native.read_homing(&window.0).is_some_and(|(out, ws)| {
@@ -150,20 +176,22 @@ fn command_result_kind(result: &Option<CommandResult>) -> &'static str {
 }
 
 /// Event-driven throttle: commands always log (the owner trace only runs on
-/// dispatch), while observation ticks log only on change: staged feedback,
-/// landed writes, or a stopped/partial pass. Pure-held observation ticks
-/// (steady-state holds with no attempt) stay quiet; a command that holds
-/// with no attempt still logs on its own command row with `held > 0` and
-/// empty feedback, which is exactly the no-attempt Hold signature.
+/// dispatch), while observation ticks log only on change: staged raw
+/// attempts, landed writes, or a stopped/partial pass. Pure-held
+/// observation ticks (steady-state holds with no attempt) stay quiet; a
+/// command that holds with no attempt still logs on its own command row
+/// with `held > 0` and empty attempt rows, which is exactly the no-attempt
+/// Hold signature.
 fn should_log_apply(
     command_kind: &str,
     stats: &super::world_diff::ApplyStats,
-    feedback: &[AttemptFeedback],
+    member_attempts: &[tiler_core::world_report::MemberAttempt],
+    view_attempts: &[tiler_core::world_report::ViewAttempt],
 ) -> bool {
     if command_kind != "observation" {
         return true;
     }
-    if !feedback.is_empty() {
+    if !member_attempts.is_empty() || !view_attempts.is_empty() {
         return true;
     }
     if stats.stopped_mid_apply || stats.partial {
@@ -208,32 +236,54 @@ fn fresh_route_value(
 }
 
 /// Pure trace-row builder for one apply pass (TRACE-ONLY: no actuation
-/// input, no retry, no interpretation). `Applied` appears only when the
-/// diff's own feedback says so: setter-side write counts never fabricate
-/// an applied row. Desired homing/views ride labeled `desired_*`, never as
-/// observed proof. The only refusal detail available from existing values
-/// is the feedback `hold` reason vocabulary: the [`NativeOps`] contract
+/// input, no retry, no interpretation). Raw attempt rows appear only when
+/// the diff dispatched a setter this pass: setter-side write counts never
+/// fabricate a proof row. Desired homing/views ride labeled `desired_*`,
+/// never as observed proof. The only refusal detail available from existing
+/// values is the raw setter vocabulary: the [`NativeOps`] contract
 /// surfaces explicit refusal as `Ok(false)` and torn state as `Err`
 /// without a native errno, so deeper refusal detail would need a broader
 /// seam change (reported as a limitation, not papered over here).
+// Nine inputs are the disjoint trace context plus the pass products;
+// bundling would hide the call-site borrow split the tick relies on.
+#[allow(clippy::too_many_arguments)]
 fn apply_diag_value(
     tick: u64,
     reply: &WorldReply,
     delivery: &'static str,
     command_kind: &str,
     stats: &super::world_diff::ApplyStats,
-    feedback: &[AttemptFeedback],
+    member_attempts: &[tiler_core::world_report::MemberAttempt],
+    view_attempts: &[tiler_core::world_report::ViewAttempt],
     fresh_route: serde_json::Value,
 ) -> serde_json::Value {
-    let feedback_rows: Vec<serde_json::Value> = feedback
+    let member_rows: Vec<serde_json::Value> = member_attempts
         .iter()
         .take(MAX_APPLY_DIAG_FEEDBACK)
         .map(|item| {
             serde_json::json!({
                 "op": item.operation_id.clone(),
-                "kind": item.kind.as_str(),
-                "outcome": item.outcome.as_str(),
-                "hold": item.hold.map(|reason| reason.as_str()),
+                "window": item.window.0.clone(),
+                "out": item.target_output.0.clone(),
+                "ws": item.target_workspace.clone(),
+                "setter": item.setter.as_str(),
+                "pre": item.pre.as_ref().map(|(out, ws)| format!("{out}/{ws}", out = out.0)),
+                "post": item.post.as_ref().map(|(out, ws)| format!("{out}/{ws}", out = out.0)),
+            })
+        })
+        .collect();
+    let view_rows: Vec<serde_json::Value> = view_attempts
+        .iter()
+        .take(MAX_APPLY_DIAG_FEEDBACK)
+        .map(|item| {
+            serde_json::json!({
+                "op": item.operation_id.clone(),
+                "out": item.target_output.0.clone(),
+                "ws": item.target_workspace.clone(),
+                "setter": item.setter.as_str(),
+                "pre": item.pre,
+                "post": item.post,
+                "base": item.baseline,
             })
         })
         .collect();
@@ -294,8 +344,14 @@ fn apply_diag_value(
             "stopped_mid_apply": stats.stopped_mid_apply,
             "partial": stats.partial,
         },
-        "feedback": feedback_rows,
-        "feedback_omitted": feedback.len().saturating_sub(feedback_rows.len()),
+        "members": member_rows,
+        "members_omitted": member_attempts
+            .len()
+            .saturating_sub(MAX_APPLY_DIAG_FEEDBACK.min(member_attempts.len())),
+        "views": view_rows,
+        "views_omitted": view_attempts
+            .len()
+            .saturating_sub(MAX_APPLY_DIAG_FEEDBACK.min(view_attempts.len())),
         "held_scopes": held_scopes,
         "held_scopes_omitted": reply
             .scopes
@@ -317,8 +373,8 @@ fn apply_diag_value(
 /// Trace-only emission for one apply pass. Event-driven owner trace only:
 /// no input-hook cost, no native re-read, no per-window dump.
 // Eight inputs are the disjoint trace context plus the pass products
-// (reply, delivery, command kind, stats, feedback); bundling would hide
-// the call-site borrow split the tick relies on.
+// (reply, delivery, command kind, stats, raw attempts); bundling would
+// hide the call-site borrow split the tick relies on.
 #[allow(clippy::too_many_arguments)]
 fn log_apply_diag(
     log_path: &std::path::Path,
@@ -328,10 +384,11 @@ fn log_apply_diag(
     delivery: &'static str,
     command_kind: &str,
     stats: &super::world_diff::ApplyStats,
-    feedback: &[AttemptFeedback],
+    member_attempts: &[tiler_core::world_report::MemberAttempt],
+    view_attempts: &[tiler_core::world_report::ViewAttempt],
     fresh_route: serde_json::Value,
 ) {
-    if !trace || !should_log_apply(command_kind, stats, feedback) {
+    if !trace || !should_log_apply(command_kind, stats, member_attempts, view_attempts) {
         return;
     }
     super::trace::log_json_at(
@@ -342,7 +399,8 @@ fn log_apply_diag(
             delivery,
             command_kind,
             stats,
-            feedback,
+            member_attempts,
+            view_attempts,
             fresh_route,
         ),
     );
@@ -764,8 +822,17 @@ pub(super) fn run_observation_tick(
     );
     world.sync_diff_gate();
     let mut frame_attempts = Vec::new();
-    let (stats, feedback) =
-        world.apply_accepted(&reply, &fresh, &mut native, &mut frame_attempts, tick_ms);
+    let mut member_attempts = Vec::new();
+    let mut view_attempts = Vec::new();
+    let stats = world.apply_accepted(
+        &reply,
+        &fresh,
+        &mut native,
+        &mut frame_attempts,
+        &mut member_attempts,
+        &mut view_attempts,
+        tick_ms,
+    );
     log_apply_diag(
         &log_path,
         trace,
@@ -774,7 +841,8 @@ pub(super) fn run_observation_tick(
         delivery,
         "observation",
         &stats,
-        &feedback,
+        &member_attempts,
+        &view_attempts,
         fresh_route_value(
             &captured.focused_global,
             captured.cursor,
@@ -786,10 +854,18 @@ pub(super) fn run_observation_tick(
     // Proven receipt snapshot: desired values only where live native
     // evidence proves arrival (identity/tag/claim/visibility/scope
     // gates, exact frame on the target for tiled rows). Changed homing
-    // additionally merges from applied transfer feedback with
+    // additionally merges from staged raw attempt post proofs with
     // independent fresh revalidation. Never wholesale desire.
     let (mut proven_h, mut proven_v) = native.receipt_updates(&reply);
-    merge_applied_transfers(&reply, &feedback, &mut native, &mut proven_h, &mut proven_v);
+    merge_applied_transfers(
+        &reply,
+        &member_attempts,
+        &view_attempts,
+        &fresh,
+        &mut native,
+        &mut proven_h,
+        &mut proven_v,
+    );
     drop(native);
     for (token, home) in proven_h {
         applied_homing.insert(token, home);
@@ -797,23 +873,17 @@ pub(super) fn run_observation_tick(
     for (output, view) in proven_v {
         applied_views.insert(output, view);
     }
-    for item in &feedback {
-        // Only core-consumed operation feedback rides the next report;
-        // creation/removal/effect outcomes prove by read-back.
-        if matches!(
-            item.outcome,
-            AttemptOutcome::PossiblyExecuted
-                | AttemptOutcome::RefusedProven
-                | AttemptOutcome::SupersededExternal
-                | AttemptOutcome::Applied
-        ) {
-            world.note_feedback(item.clone());
-        }
-    }
-    // Mechanical frame facts ride the next report exactly once per window
-    // (latest wins); the core consumes each stamp idempotently.
+    // Mechanical raw facts ride the next report exactly once per key
+    // (latest wins); the core consumes each idempotently and reconciles
+    // retained evidence across acknowledgement gaps.
     for attempt in frame_attempts {
         world.note_frame_attempt(attempt);
+    }
+    for attempt in member_attempts {
+        world.note_member_attempt(attempt);
+    }
+    for attempt in view_attempts {
+        world.note_view_attempt(attempt);
     }
     let mut pending = std::mem::take(pending_closed);
     let (ack_outcome, pruned) = world.ack(&reply, &mut pending);
@@ -1092,8 +1162,17 @@ pub(super) fn run_world_command(
     );
     world.sync_diff_gate();
     let mut frame_attempts = Vec::new();
-    let (stats, feedback) =
-        world.apply_accepted(&reply, &fresh, &mut native, &mut frame_attempts, tick_ms);
+    let mut member_attempts = Vec::new();
+    let mut view_attempts = Vec::new();
+    let stats = world.apply_accepted(
+        &reply,
+        &fresh,
+        &mut native,
+        &mut frame_attempts,
+        &mut member_attempts,
+        &mut view_attempts,
+        tick_ms,
+    );
     log_apply_diag(
         &log_path,
         trace,
@@ -1102,7 +1181,8 @@ pub(super) fn run_world_command(
         delivery,
         command_kind,
         &stats,
-        &feedback,
+        &member_attempts,
+        &view_attempts,
         fresh_route_value(
             &captured.focused_global,
             captured.cursor,
@@ -1111,11 +1191,19 @@ pub(super) fn run_world_command(
             world.engine().fresh_focus_trace(),
         ),
     );
-    // Proven receipt snapshot plus applied transfer effects (see the
+    // Proven receipt snapshot plus raw-attempt post proofs (see the
     // observation path): re-proof of unchanged homing plus exact proven
     // arrivals with independent fresh revalidation. Never wholesale desire.
     let (mut proven_h, mut proven_v) = native.receipt_updates(&reply);
-    merge_applied_transfers(&reply, &feedback, &mut native, &mut proven_h, &mut proven_v);
+    merge_applied_transfers(
+        &reply,
+        &member_attempts,
+        &view_attempts,
+        &fresh,
+        &mut native,
+        &mut proven_h,
+        &mut proven_v,
+    );
     drop(native);
     for (token, home) in proven_h {
         applied_homing.insert(token, home);
@@ -1123,21 +1211,17 @@ pub(super) fn run_world_command(
     for (output, view) in proven_v {
         applied_views.insert(output, view);
     }
-    for item in &feedback {
-        if matches!(
-            item.outcome,
-            AttemptOutcome::PossiblyExecuted
-                | AttemptOutcome::RefusedProven
-                | AttemptOutcome::SupersededExternal
-                | AttemptOutcome::Applied
-        ) {
-            world.note_feedback(item.clone());
-        }
-    }
-    // Mechanical frame facts ride the next report exactly once per window
-    // (latest wins); the core consumes each stamp idempotently.
+    // Mechanical raw facts ride the next report exactly once per key
+    // (latest wins); the core consumes each idempotently and reconciles
+    // retained evidence across acknowledgement gaps.
     for attempt in frame_attempts {
         world.note_frame_attempt(attempt);
+    }
+    for attempt in member_attempts {
+        world.note_member_attempt(attempt);
+    }
+    for attempt in view_attempts {
+        world.note_view_attempt(attempt);
     }
     let mut pending = std::mem::take(pending_closed);
     let (ack_outcome, pruned) = world.ack(&reply, &mut pending);
@@ -1296,9 +1380,7 @@ pub(super) fn dispatch_test_observation(
 mod apply_diag_tests {
     use super::*;
     use tiler_core::directional::{OutputId, WindowId};
-    use tiler_core::world_report::{
-        AttemptKind, HoldReason, ScopeAuthority, ScopeStatus, TransferTarget,
-    };
+    use tiler_core::world_report::{HoldReason, ScopeAuthority, ScopeStatus, TransferTarget};
 
     fn reply_shell() -> WorldReply {
         WorldReply {
@@ -1355,30 +1437,36 @@ mod apply_diag_tests {
 
     #[test]
     fn diag_shape_uses_fixed_vocab_and_bounds_rows() {
+        use tiler_core::world_report::{FrameSetter, MemberAttempt, ViewAttempt};
         let reply = reply_shell();
         let stats = stats_shell();
-        let outcomes = [
-            AttemptOutcome::Applied,
-            AttemptOutcome::PossiblyExecuted,
-            AttemptOutcome::RefusedProven,
-            AttemptOutcome::SupersededExternal,
-            AttemptOutcome::Unattempted,
+        let setters = [
+            FrameSetter::Accepted,
+            FrameSetter::Refused,
+            FrameSetter::Threw,
+            FrameSetter::Accepted,
         ];
-        let feedback: Vec<AttemptFeedback> = (0..20)
-            .map(|n| AttemptFeedback {
+        let members: Vec<MemberAttempt> = (0..20)
+            .map(|n| MemberAttempt {
                 operation_id: format!("op-{n}"),
-                kind: AttemptKind::Transfer,
-                outcome: outcomes[n % outcomes.len()],
-                hold: (n % 2 == 0).then_some(HoldReason::GestureBarrier),
+                window: WindowId(format!("w{n}")),
+                target_output: OutputId("o1".to_owned()),
+                target_workspace: "w2".to_owned(),
+                setter: setters[n % setters.len()],
+                pre: (n % 2 == 0).then(|| (OutputId("o1".to_owned()), format!("w{}", n % 3))),
+                post: (n % 3 == 0).then(|| (OutputId("o1".to_owned()), "w2".to_owned())),
+                attempt_ms: n as u64,
             })
             .collect();
+        let views: Vec<ViewAttempt> = Vec::new();
         let value = apply_diag_value(
             11,
             &reply,
             "accepted",
             "send",
             &stats,
-            &feedback,
+            &members,
+            &views,
             fresh_route_value(
                 "w1",
                 Some((10, 20)),
@@ -1404,18 +1492,21 @@ mod apply_diag_tests {
         assert_eq!(value["stats"]["held"], serde_json::json!(2));
         assert_eq!(value["stats"]["migration_total"], serde_json::json!(0));
         assert_eq!(value["stats"]["migration_proven"], serde_json::json!(0));
-        let rows = value["feedback"].as_array().expect("feedback rows");
+        let rows = value["members"].as_array().expect("member rows");
         assert_eq!(rows.len(), MAX_APPLY_DIAG_FEEDBACK);
         assert_eq!(
-            value["feedback_omitted"],
+            value["members_omitted"],
             serde_json::json!(20 - MAX_APPLY_DIAG_FEEDBACK)
         );
-        assert_eq!(rows[0]["outcome"], serde_json::json!("applied"));
-        assert_eq!(rows[1]["outcome"], serde_json::json!("possibly-executed"));
-        assert_eq!(rows[2]["outcome"], serde_json::json!("refused-proven"));
-        assert_eq!(rows[0]["kind"], serde_json::json!("transfer"));
-        assert_eq!(rows[0]["hold"], serde_json::json!("gesture-barrier"));
-        assert!(rows[1]["hold"].is_null());
+        assert_eq!(rows[0]["setter"], serde_json::json!("accepted"));
+        assert_eq!(rows[1]["setter"], serde_json::json!("refused"));
+        assert_eq!(rows[2]["setter"], serde_json::json!("threw"));
+        assert_eq!(rows[0]["ws"], serde_json::json!("w2"));
+        assert_eq!(rows[0]["pre"], serde_json::json!("o1/w0"));
+        assert!(rows[1]["pre"].is_null());
+        let view_rows = value["views"].as_array().expect("view rows");
+        assert!(view_rows.is_empty());
+        assert_eq!(value["views_omitted"], serde_json::json!(0));
         let scopes = value["held_scopes"].as_array().expect("held scopes");
         assert_eq!(scopes.len(), 1);
         assert_eq!(scopes[0]["scope"], serde_json::json!("o1/w2"));
@@ -1473,72 +1564,100 @@ mod apply_diag_tests {
 
     #[test]
     fn diag_throttles_quiet_observation_ticks_only() {
+        use tiler_core::world_report::{FrameSetter, MemberAttempt};
         let quiet = super::super::world_diff::ApplyStats::default();
-        let empty: Vec<AttemptFeedback> = Vec::new();
-        assert!(!should_log_apply("observation", &quiet, &empty));
+        let empty_members: Vec<MemberAttempt> = Vec::new();
+        let empty_views: Vec<tiler_core::world_report::ViewAttempt> = Vec::new();
+        assert!(!should_log_apply(
+            "observation",
+            &quiet,
+            &empty_members,
+            &empty_views
+        ));
         // Pure-held observation ticks stay quiet: steady-state holds with no
         // attempt carry no new evidence.
         let held_only = super::super::world_diff::ApplyStats {
             held: 5,
             ..Default::default()
         };
-        assert!(!should_log_apply("observation", &held_only, &empty));
+        assert!(!should_log_apply(
+            "observation",
+            &held_only,
+            &empty_members,
+            &empty_views
+        ));
         // Commands always log, so a no-attempt Hold on a command still shows
-        // as `held > 0` with empty feedback.
-        assert!(should_log_apply("send", &held_only, &empty));
+        // as `held > 0` with empty attempt rows.
+        assert!(should_log_apply(
+            "send",
+            &held_only,
+            &empty_members,
+            &empty_views
+        ));
         assert!(should_log_apply(
             "observation",
             &quiet,
-            &[AttemptFeedback {
+            &[MemberAttempt {
                 operation_id: "op-3".to_owned(),
-                kind: AttemptKind::Transfer,
-                outcome: AttemptOutcome::PossiblyExecuted,
-                hold: None,
-            }]
+                window: WindowId("w3".to_owned()),
+                target_output: OutputId("o1".to_owned()),
+                target_workspace: "w2".to_owned(),
+                setter: FrameSetter::Threw,
+                pre: None,
+                post: None,
+                attempt_ms: 3,
+            }],
+            &empty_views,
         ));
         let writes = super::super::world_diff::ApplyStats {
             geometry_writes: 1,
             ..Default::default()
         };
-        assert!(should_log_apply("observation", &writes, &empty));
+        assert!(should_log_apply(
+            "observation",
+            &writes,
+            &empty_members,
+            &empty_views
+        ));
         let stopped = super::super::world_diff::ApplyStats {
             stopped_mid_apply: true,
             held: 1,
             ..Default::default()
         };
-        assert!(should_log_apply("observation", &stopped, &empty));
+        assert!(should_log_apply(
+            "observation",
+            &stopped,
+            &empty_members,
+            &empty_views
+        ));
     }
 
     #[test]
     fn diag_never_reports_applied_from_setter_counts() {
-        // Setter-side write counts with no diff feedback must not fabricate
-        // an applied row: only the diff's own feedback outcome speaks.
+        // Setter-side write counts with no raw attempts must not fabricate
+        // a proof row: only the diff's own attempt rows speak.
         let reply = reply_shell();
         let stats = super::super::world_diff::ApplyStats {
             geometry_writes: 3,
             held: 1,
             ..Default::default()
         };
-        let empty: Vec<AttemptFeedback> = Vec::new();
+        let empty_members: Vec<tiler_core::world_report::MemberAttempt> = Vec::new();
+        let empty_views: Vec<tiler_core::world_report::ViewAttempt> = Vec::new();
         let value = apply_diag_value(
             12,
             &reply,
             "accepted",
             "send",
             &stats,
-            &empty,
+            &empty_members,
+            &empty_views,
             serde_json::json!({}),
         );
-        let rows = value["feedback"].as_array().expect("feedback rows");
+        let rows = value["members"].as_array().expect("member rows");
         assert!(rows.is_empty());
-        assert_eq!(value["feedback_omitted"], serde_json::json!(0));
+        assert_eq!(value["members_omitted"], serde_json::json!(0));
         assert_eq!(value["stats"]["geometry_writes"], serde_json::json!(3));
-        assert!(
-            !rows
-                .iter()
-                .any(|row| row["outcome"] == serde_json::json!("applied")),
-            "{rows:?}"
-        );
     }
 
     #[test]
@@ -1558,6 +1677,7 @@ mod apply_diag_tests {
             "accepted",
             world_command_kind(&send),
             &stats,
+            &[],
             &[],
             serde_json::json!({}),
         );

@@ -108,6 +108,8 @@ fn report_obs(
         feedback: Vec::new(),
         monotonic_ms: 0,
         frames: Vec::new(),
+        member_attempts: Vec::new(),
+        view_attempts: Vec::new(),
     }
 }
 

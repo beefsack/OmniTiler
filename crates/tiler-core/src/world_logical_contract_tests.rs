@@ -104,6 +104,43 @@ fn report_mode(
     feedback: Vec<crate::world_report::AttemptFeedback>,
     workspace_mode: crate::workspace_scope::WorkspaceMode,
 ) -> WorldReport {
+    report_attempts(
+        request_seq,
+        observation_seq,
+        screens,
+        windows,
+        views,
+        closed,
+        focused,
+        command_seq,
+        command,
+        inventory_complete,
+        gesture_barrier,
+        feedback,
+        workspace_mode,
+        Vec::new(),
+        Vec::new(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn report_attempts(
+    request_seq: u64,
+    observation_seq: u64,
+    screens: Vec<ScreenReport>,
+    windows: Vec<WindowFact>,
+    views: Vec<(&str, &str)>,
+    closed: Vec<&str>,
+    focused: &str,
+    command_seq: Option<u64>,
+    command: Option<WorldCommand>,
+    inventory_complete: bool,
+    gesture_barrier: bool,
+    feedback: Vec<crate::world_report::AttemptFeedback>,
+    workspace_mode: crate::workspace_scope::WorkspaceMode,
+    member_attempts: Vec<crate::world_report::MemberAttempt>,
+    view_attempts: Vec<crate::world_report::ViewAttempt>,
+) -> WorldReport {
     WorldReport {
         contract_version: WORLD_CONTRACT_VERSION,
         owner: "owner-a".to_owned(),
@@ -147,6 +184,8 @@ fn report_mode(
         feedback,
         monotonic_ms: 0,
         frames: Vec::new(),
+        member_attempts,
+        view_attempts,
     }
 }
 
@@ -442,12 +481,19 @@ fn send_follow_and_stay_commit_window_transfers() {
     assert_eq!(row.frame_authority, ScopeAuthority::Controlled);
     assert!(row.effective_frame.is_some(), "{row:?}");
     // Arrival proves through the staged homing: same fact on out-b.
+    // Follow proves through the exact observed view: the target output
+    // must echo the destination, otherwise the cross-output Window holds
+    // persistently (never silently settling on membership alone).
     follow.request_seq = 3;
     follow.request_id = "req-3".to_string();
     follow.observation_seq = 3;
     follow.command_seq = None;
     follow.command = None;
     follow.windows = vec![fact("win-a", "out-b", 800), fact("win-b", "out-a", 100)];
+    follow.views = vec![crate::world_report::ScreenView {
+        output: OutputId("out-b".to_owned()),
+        view: view_b.clone(),
+    }];
     let settled = accepted(&mut engine, &follow);
     assert!(settled.transfers.is_empty());
     let row = window_row(&settled, "win-a");
@@ -1971,11 +2017,8 @@ fn migration_holds_narrowly_on_incomplete_unreadable_and_gesture_evidence() {
 
 #[test]
 fn migration_refused_or_superseded_settles_without_fighting() {
-    use crate::world_report::{AttemptFeedback, AttemptKind, AttemptOutcome};
-    for (name, outcome) in [
-        ("refused", AttemptOutcome::RefusedProven),
-        ("superseded", AttemptOutcome::SupersededExternal),
-    ] {
+    use crate::world_report::{FrameSetter, MemberAttempt, ViewAttempt};
+    for name in ["refused", "superseded"] {
         let mut engine = WorldEngine::new("gen-1").expect("valid generation");
         let first = accepted(
             &mut engine,
@@ -2016,12 +2059,47 @@ fn migration_refused_or_superseded_settles_without_fighting() {
                 vec![],
             ),
         );
-        // Terminal feedback on a wholly-unarrived migration reconciles
-        // to the observed source: the logical id returns to the source
-        // screen with a coherent source view, and no token is reissued.
+        // Terminal raw evidence on a wholly-unarrived migration reconciles
+        // to the observed source: refused members carry unchanged readable
+        // preimages at the source, while the superseded arm proves newer
+        // external input through a third-location target-view attempt. The
+        // logical id returns to the source screen with a coherent source
+        // view, and no token is reissued.
+        let (member_attempts, view_attempts) = if name == "refused" {
+            (
+                vec![MemberAttempt {
+                    operation_id: "op-11".to_owned(),
+                    window: WindowId("win-a".to_owned()),
+                    target_output: OutputId("out-b".to_owned()),
+                    target_workspace: view_a.clone(),
+                    setter: FrameSetter::Refused,
+                    pre: Some((OutputId("out-a".to_owned()), view_a.clone())),
+                    post: Some((OutputId("out-a".to_owned()), view_a.clone())),
+                    attempt_ms: 3,
+                }],
+                Vec::new(),
+            )
+        } else {
+            (
+                Vec::new(),
+                vec![ViewAttempt {
+                    operation_id: "op-11".to_owned(),
+                    target_output: OutputId("out-b".to_owned()),
+                    target_workspace: view_a.clone(),
+                    setter: FrameSetter::Threw,
+                    pre: None,
+                    post: output_view(&first, "out-b"),
+                    // KNOWN nonempty baseline distinct from the post: the
+                    // observation showed the target before newer external
+                    // input moved it to the original out-b view.
+                    baseline: Some(view_a.clone()),
+                    attempt_ms: 3,
+                }],
+            )
+        };
         let settled = accepted(
             &mut engine,
-            &report(
+            &report_attempts(
                 3,
                 3,
                 two_screens(),
@@ -2033,12 +2111,10 @@ fn migration_refused_or_superseded_settles_without_fighting() {
                 None,
                 true,
                 false,
-                vec![AttemptFeedback {
-                    operation_id: "op-11".to_owned(),
-                    kind: AttemptKind::Transfer,
-                    outcome,
-                    hold: None,
-                }],
+                Vec::new(),
+                crate::workspace_scope::WorkspaceMode::PerOutputLocal,
+                member_attempts,
+                view_attempts,
             ),
         );
         assert!(
@@ -3192,4 +3268,471 @@ fn hotplug_displacement_preserves_logical_units_on_the_survivor() {
         ),
     );
     assert!(!workspace_ids(&back, "out-b").is_empty());
+}
+
+#[test]
+fn cross_output_follow_holds_across_ack_gap_until_exact_view() {
+    // Membership arrival alone never settles a cross-output follow parent:
+    // absent/stale views and failed phases persist across acknowledgement
+    // and gaps with the staged follow evidence retained (never retrying),
+    // settling only on the exact observed view or genuine third-location
+    // proof. Same-output membership-before-follow is preserved elsewhere.
+    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            two_screens(),
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            vec![],
+            vec![],
+            "",
+            None,
+            None,
+            true,
+            false,
+            vec![],
+        ),
+    );
+    let view_b = output_view(&first, "out-b").expect("view b");
+    accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            two_screens(),
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            vec![],
+            vec![],
+            "win-a",
+            Some(11),
+            Some(WorldCommand::SendDirectional {
+                window: WindowId("win-a".to_owned()),
+                direction: "right".to_owned(),
+                follow: true,
+            }),
+            true,
+            false,
+            vec![],
+        ),
+    );
+    // Membership arrives but the follow view misses (failed setter): hold.
+    let failed = accepted(
+        &mut engine,
+        &report_attempts(
+            3,
+            3,
+            two_screens(),
+            vec![fact("win-a", "out-b", 800), fact("win-b", "out-a", 100)],
+            vec![],
+            vec![],
+            "",
+            None,
+            None,
+            true,
+            false,
+            vec![],
+            crate::workspace_scope::WorkspaceMode::PerOutputLocal,
+            Vec::new(),
+            vec![crate::world_report::ViewAttempt {
+                operation_id: "op-11".to_owned(),
+                target_output: OutputId("out-b".to_owned()),
+                target_workspace: view_b.clone(),
+                setter: crate::world_report::FrameSetter::Threw,
+                pre: None,
+                post: None,
+                baseline: None,
+                attempt_ms: 3,
+            }],
+        ),
+    );
+    assert!(
+        failed
+            .transfers
+            .iter()
+            .any(|t| t.operation_id == "op-11" && t.held),
+        "failed follow holds: {:?}",
+        failed.transfers
+    );
+    // Ack with no new attempt and still-stale echo: still holds (pending
+    // follow evidence survives the acknowledgement, never silently settling
+    // on membership alone).
+    let acked = accepted(
+        &mut engine,
+        &report(
+            4,
+            4,
+            two_screens(),
+            vec![fact("win-a", "out-b", 800), fact("win-b", "out-a", 100)],
+            vec![],
+            vec![],
+            "",
+            None,
+            None,
+            true,
+            false,
+            vec![],
+        ),
+    );
+    assert!(
+        acked
+            .transfers
+            .iter()
+            .any(|t| t.operation_id == "op-11" && t.held),
+        "follow persists across ack: {:?}",
+        acked.transfers
+    );
+    // Gap also holds.
+    let gapped = accepted(
+        &mut engine,
+        &report(
+            5,
+            5,
+            two_screens(),
+            vec![fact("win-a", "out-b", 800), fact("win-b", "out-a", 100)],
+            vec![],
+            vec![],
+            "",
+            None,
+            None,
+            false,
+            false,
+            vec![],
+        ),
+    );
+    assert!(
+        gapped.transfers.iter().any(|t| t.operation_id == "op-11"),
+        "follow persists across gap: {:?}",
+        gapped.transfers
+    );
+    // Late exact view settles without requiring a new write.
+    let settled = accepted(
+        &mut engine,
+        &report(
+            6,
+            6,
+            two_screens(),
+            vec![fact("win-a", "out-b", 800), fact("win-b", "out-a", 100)],
+            vec![("out-b", view_b.as_str())],
+            vec![],
+            "",
+            None,
+            None,
+            true,
+            false,
+            vec![],
+        ),
+    );
+    assert!(
+        settled.transfers.is_empty(),
+        "exact view settles: {:?}",
+        settled.transfers
+    );
+}
+
+#[test]
+fn window_refusal_needs_readable_source_proof_and_holds_across_gap() {
+    // Raw refusal alone across missing facts never settles: incomplete
+    // inventory holds with the raw retained (as floats do). Target arrival
+    // wins over stale refusal elsewhere; here the gap hold is the
+    // regression.
+    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            two_screens(),
+            vec![fact("win-a", "out-a", 0)],
+            vec![],
+            vec![],
+            "",
+            None,
+            None,
+            true,
+            false,
+            vec![],
+        ),
+    );
+    let view_a = output_view(&first, "out-a").expect("view a");
+    let view_b = output_view(&first, "out-b").expect("view b");
+    accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            two_screens(),
+            vec![fact("win-a", "out-a", 0)],
+            vec![],
+            vec![],
+            "win-a",
+            Some(11),
+            Some(WorldCommand::SendDirectional {
+                window: WindowId("win-a".to_owned()),
+                direction: "right".to_owned(),
+                follow: false,
+            }),
+            true,
+            false,
+            vec![],
+        ),
+    );
+    // Refusal with incomplete inventory: hold, never settle from absence.
+    let gapped = accepted(
+        &mut engine,
+        &report_attempts(
+            3,
+            3,
+            two_screens(),
+            vec![],
+            vec![],
+            vec![],
+            "",
+            None,
+            None,
+            false,
+            false,
+            vec![],
+            crate::workspace_scope::WorkspaceMode::PerOutputLocal,
+            vec![crate::world_report::MemberAttempt {
+                operation_id: "op-11".to_owned(),
+                window: WindowId("win-a".to_owned()),
+                target_output: OutputId("out-b".to_owned()),
+                target_workspace: view_b.clone(),
+                setter: crate::world_report::FrameSetter::Refused,
+                pre: Some((OutputId("out-a".to_owned()), view_a.clone())),
+                post: Some((OutputId("out-a".to_owned()), view_a.clone())),
+                attempt_ms: 3,
+            }],
+            Vec::new(),
+        ),
+    );
+    assert!(
+        gapped
+            .transfers
+            .iter()
+            .any(|t| t.operation_id == "op-11" && t.held),
+        "refusal across gap holds: {:?}",
+        gapped.transfers
+    );
+}
+
+#[test]
+fn standalone_view_refusal_holds_on_gap_then_reconciles_to_pre() {
+    // Missing/gapped echo holds with the raw staged; a later readable echo
+    // naming the refused preimage settles to observed; an exact target echo
+    // would win as confirmation (covered elsewhere).
+    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            two_screens(),
+            vec![fact("win-a", "out-a", 0)],
+            vec![],
+            vec![],
+            "",
+            None,
+            None,
+            true,
+            false,
+            vec![],
+        ),
+    );
+    let ring_a = workspace_ids(&first, "out-a");
+    assert!(ring_a.len() >= 2);
+    let target = ring_a[1].clone();
+    let current = output_view(&first, "out-a").expect("current view");
+    accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            two_screens(),
+            vec![fact("win-a", "out-a", 0)],
+            vec![],
+            vec![],
+            "",
+            Some(11),
+            Some(WorldCommand::SwitchView {
+                output: OutputId("out-a".to_owned()),
+                workspace: target.clone(),
+            }),
+            true,
+            false,
+            vec![],
+        ),
+    );
+    // Gapped echo (missing) with refusal proof: hold.
+    let gapped = accepted(
+        &mut engine,
+        &report_attempts(
+            3,
+            3,
+            two_screens(),
+            vec![fact("win-a", "out-a", 0)],
+            vec![],
+            vec![],
+            "",
+            None,
+            None,
+            true,
+            false,
+            vec![],
+            crate::workspace_scope::WorkspaceMode::PerOutputLocal,
+            Vec::new(),
+            vec![crate::world_report::ViewAttempt {
+                operation_id: "op-11".to_owned(),
+                target_output: OutputId("out-a".to_owned()),
+                target_workspace: target.clone(),
+                setter: crate::world_report::FrameSetter::Refused,
+                pre: Some(current.clone()),
+                post: Some(current.clone()),
+                baseline: Some(target.clone()),
+                attempt_ms: 3,
+            }],
+        ),
+    );
+    assert!(
+        !gapped.transfers.is_empty(),
+        "gapped view refusal holds: {:?}",
+        gapped.transfers
+    );
+    // Later readable echo naming the preimage settles to observed.
+    let settled = accepted(
+        &mut engine,
+        &report(
+            4,
+            4,
+            two_screens(),
+            vec![fact("win-a", "out-a", 0)],
+            vec![("out-a", current.as_str())],
+            vec![],
+            "",
+            None,
+            None,
+            true,
+            false,
+            vec![],
+        ),
+    );
+    assert!(
+        settled.transfers.is_empty(),
+        "readable pre reconciles: {:?}",
+        settled.transfers
+    );
+}
+
+#[test]
+fn standalone_view_refusal_holds_on_current_incomplete_screen() {
+    // The refusal bar reads the CURRENT report screens: an incomplete
+    // current screen holds even after a complete prior and even with a
+    // readable echo naming the refused preimage. A later complete screen
+    // with the same echo settles to observed.
+    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            two_screens(),
+            vec![fact("win-a", "out-a", 0)],
+            vec![],
+            vec![],
+            "",
+            None,
+            None,
+            true,
+            false,
+            vec![],
+        ),
+    );
+    let ring_a = workspace_ids(&first, "out-a");
+    assert!(ring_a.len() >= 2);
+    let target = ring_a[1].clone();
+    let current = output_view(&first, "out-a").expect("current view");
+    accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            two_screens(),
+            vec![fact("win-a", "out-a", 0)],
+            vec![],
+            vec![],
+            "",
+            Some(11),
+            Some(WorldCommand::SwitchView {
+                output: OutputId("out-a".to_owned()),
+                workspace: target.clone(),
+            }),
+            true,
+            false,
+            vec![],
+        ),
+    );
+    // Prior screens were complete; the current report marks out-a
+    // incomplete while the echo still names the refused preimage.
+    let mut incomplete_a = screen("out-a", 0, true);
+    incomplete_a.complete = false;
+    let incomplete = vec![incomplete_a, screen("out-b", 800, false)];
+    let held = accepted(
+        &mut engine,
+        &report_attempts(
+            3,
+            3,
+            incomplete,
+            vec![fact("win-a", "out-a", 0)],
+            vec![("out-a", current.as_str())],
+            vec![],
+            "",
+            None,
+            None,
+            true,
+            false,
+            vec![],
+            crate::workspace_scope::WorkspaceMode::PerOutputLocal,
+            Vec::new(),
+            vec![crate::world_report::ViewAttempt {
+                operation_id: "op-11".to_owned(),
+                target_output: OutputId("out-a".to_owned()),
+                target_workspace: target.clone(),
+                setter: crate::world_report::FrameSetter::Refused,
+                pre: Some(current.clone()),
+                post: Some(current.clone()),
+                baseline: Some(target.clone()),
+                attempt_ms: 3,
+            }],
+        ),
+    );
+    assert!(
+        !held.transfers.is_empty(),
+        "current incomplete screen holds: {:?}",
+        held.transfers
+    );
+    // Same echo on a complete screen settles to observed.
+    let settled = accepted(
+        &mut engine,
+        &report(
+            4,
+            4,
+            two_screens(),
+            vec![fact("win-a", "out-a", 0)],
+            vec![("out-a", current.as_str())],
+            vec![],
+            "",
+            None,
+            None,
+            true,
+            false,
+            vec![],
+        ),
+    );
+    assert!(
+        settled.transfers.is_empty(),
+        "complete screen with pre echo settles: {:?}",
+        settled.transfers
+    );
 }

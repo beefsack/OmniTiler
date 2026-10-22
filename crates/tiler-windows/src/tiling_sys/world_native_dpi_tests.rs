@@ -393,11 +393,21 @@ fn cross_dpi_shrink_arrives_exact_and_proves() {
     let tgt = (rig.tgt_out.clone(), rig.tgt_ws.clone());
     let reply = cross_reply(&rig, target);
     let (mut native, fresh, mut diff) = cross_native(&mut rig, cross_dpi_prims(), target);
-    let (stats, feedback) =
-        apply_world_reply(&mut diff, &reply, &fresh, &mut native, &mut Vec::new(), 0);
+    let mut members = Vec::new();
+    let mut views = Vec::new();
+    let stats = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut native,
+        &mut Vec::new(),
+        &mut members,
+        &mut views,
+        0,
+    );
     assert!(
-        applied_of(&feedback, "op-x"),
-        "shrink transfer applies: {feedback:?} {stats:?}"
+        applied_of_members(&members, &views, "op-x"),
+        "shrink transfer applies: {members:?} {views:?} {stats:?}"
     );
     assert_eq!(stats.membership_writes, 1, "{stats:?}");
     assert_eq!(stats.held, 0, "{stats:?}");
@@ -432,11 +442,21 @@ fn cross_dpi_grow_arrives_exact_and_proves() {
     let tgt = (rig.tgt_out.clone(), rig.tgt_ws.clone());
     let reply = cross_reply(&rig, target);
     let (mut native, fresh, mut diff) = cross_native(&mut rig, cross_dpi_prims(), target);
-    let (stats, feedback) =
-        apply_world_reply(&mut diff, &reply, &fresh, &mut native, &mut Vec::new(), 0);
+    let mut members = Vec::new();
+    let mut views = Vec::new();
+    let stats = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut native,
+        &mut Vec::new(),
+        &mut members,
+        &mut views,
+        0,
+    );
     assert!(
-        applied_of(&feedback, "op-x"),
-        "grow transfer applies: {feedback:?} {stats:?}"
+        applied_of_members(&members, &views, "op-x"),
+        "grow transfer applies: {members:?} {views:?} {stats:?}"
     );
     assert_eq!(stats.membership_writes, 1, "{stats:?}");
     assert_eq!(stats.held, 0, "{stats:?}");
@@ -488,17 +508,25 @@ fn cross_dpi_identity_drift_holds_ambiguous_without_correction() {
         moved
     };
     let (mut native, fresh, mut diff) = cross_native(&mut rig, prims, target);
-    let (stats, feedback) =
-        apply_world_reply(&mut diff, &reply, &fresh, &mut native, &mut Vec::new(), 0);
-    assert!(
-        feedback
-            .iter()
-            .any(|f| f.operation_id == "op-x" && f.outcome == AttemptOutcome::PossiblyExecuted),
-        "drifted transfer holds ambiguous: {feedback:?}"
+    let mut members = Vec::new();
+    let mut views = Vec::new();
+    let stats = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut native,
+        &mut Vec::new(),
+        &mut members,
+        &mut views,
+        0,
     );
     assert!(
-        !applied_of(&feedback, "op-x"),
-        "no fabricated arrival: {feedback:?}"
+        members.iter().any(|a| a.operation_id == "op-x"),
+        "drifted transfer holds ambiguous: {members:?} {views:?}"
+    );
+    assert!(
+        !applied_of_members(&members, &views, "op-x"),
+        "no fabricated arrival: {members:?} {views:?}"
     );
     assert_eq!(set_calls(), 1, "no correction into drifted identity");
     assert_eq!(stats.held, 1, "{stats:?}");
@@ -511,10 +539,22 @@ fn cross_dpi_identity_drift_holds_ambiguous_without_correction() {
     assert!(homing.is_empty(), "no receipt from drift: {homing:?}");
     // The spent flight retries silently without new writes or resolution.
     let (mut native, fresh, _) = cross_native(&mut rig, cross_dpi_prims(), target);
-    let (_, second) = apply_world_reply(&mut diff, &reply, &fresh, &mut native, &mut Vec::new(), 0);
+    let mut members = Vec::new();
+    let mut views = Vec::new();
+    let stats = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut native,
+        &mut Vec::new(),
+        &mut members,
+        &mut views,
+        0,
+    );
+    assert!(stats.held > 0);
     assert!(
-        second.iter().all(|f| f.operation_id != "op-x"),
-        "spent flight holds silent: {second:?}"
+        members.is_empty() && views.is_empty(),
+        "spent flight holds silent"
     );
     assert_eq!(set_calls(), 1, "no repeat writes");
 }
@@ -532,15 +572,24 @@ fn cross_dpi_racing_fullscreen_vetoes_correction() {
     let mut prims = cross_dpi_prims();
     prims.set_outer = s_set_outer_cross_dpi_with_game_race;
     let (mut native, fresh, mut diff) = cross_native(&mut rig, prims, target);
-    let (_, feedback) =
-        apply_world_reply(&mut diff, &reply, &fresh, &mut native, &mut Vec::new(), 0);
-    assert!(
-        feedback
-            .iter()
-            .any(|f| f.operation_id == "op-x" && f.outcome == AttemptOutcome::PossiblyExecuted),
-        "vetoed transfer holds ambiguous: {feedback:?}"
+    let mut members = Vec::new();
+    let mut views = Vec::new();
+    let stats = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut native,
+        &mut Vec::new(),
+        &mut members,
+        &mut views,
+        0,
     );
-    assert!(!applied_of(&feedback, "op-x"));
+    assert!(
+        members.iter().any(|a| a.operation_id == "op-x"),
+        "vetoed transfer holds ambiguous: {members:?} {views:?}"
+    );
+    assert!(!applied_of_members(&members, &views, "op-x"));
+    assert_eq!(stats.held, 1, "{stats:?}");
     assert_eq!(set_calls(), 1, "no correction into fullscreen race");
     assert!(
         S_SET_CALLS.with(|m| m.borrow().iter().all(|(hwnd, _)| *hwnd != game)),
@@ -600,16 +649,24 @@ fn cross_dpi_freshly_ineligible_takes_no_correction() {
         let mut prims = cross_dpi_prims();
         prims.set_outer = s_set_outer_cross_dpi_with_ineligible_facts;
         let (mut native, fresh, mut diff) = cross_native(&mut rig, prims, target);
-        let (stats, feedback) =
-            apply_world_reply(&mut diff, &reply, &fresh, &mut native, &mut Vec::new(), 0);
-        assert!(
-            feedback
-                .iter()
-                .any(|f| f.operation_id == "op-x" && f.outcome == AttemptOutcome::PossiblyExecuted),
-            "{name}: ineligible transfer holds ambiguous: {feedback:?}"
+        let mut members = Vec::new();
+        let mut views = Vec::new();
+        let stats = apply_world_reply(
+            &mut diff,
+            &reply,
+            &fresh,
+            &mut native,
+            &mut Vec::new(),
+            &mut members,
+            &mut views,
+            0,
         );
         assert!(
-            !applied_of(&feedback, "op-x"),
+            members.iter().any(|a| a.operation_id == "op-x"),
+            "{name}: ineligible transfer holds ambiguous: {members:?} {views:?}"
+        );
+        assert!(
+            !applied_of_members(&members, &views, "op-x"),
             "{name}: no fabricated arrival"
         );
         assert_eq!(set_calls(), 1, "{name}: no corrective setter");

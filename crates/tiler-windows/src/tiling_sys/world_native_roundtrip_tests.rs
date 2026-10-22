@@ -64,7 +64,7 @@ fn source_refill_migration_arrival_and_views_settle() {
         .expect("migration retained")
         .operation_id
         .clone();
-    let refill_op = moved
+    let _refill_op = moved
         .reply
         .transfers
         .iter()
@@ -74,12 +74,31 @@ fn source_refill_migration_arrival_and_views_settle() {
         .clone();
     // Tick 1 actuates member arrival; the source refill view cannot prove
     // until every member arrival is proven, so the migration holds.
+    let arrivals: Vec<_> = moved
+        .members
+        .iter()
+        .filter(|a| a.operation_id == migration_op)
+        .collect();
     assert!(
-        moved.feedback.iter().any(
-            |f| f.operation_id == migration_op && f.outcome == AttemptOutcome::PossiblyExecuted
-        ),
-        "migration holds until views prove: {:?}",
-        moved.feedback
+        !arrivals.is_empty(),
+        "member attempts ride: {:?}",
+        moved.members
+    );
+    assert!(
+        arrivals
+            .iter()
+            .all(|a| a.post.as_ref() == Some(&(OutputId(o2.clone()), ws_m.clone()))),
+        "arrival proves: {:?}",
+        moved.members
+    );
+    assert!(
+        moved
+            .reply
+            .transfers
+            .iter()
+            .any(|t| t.operation_id == migration_op),
+        "migration holds for the refill: {:?}",
+        moved.reply.transfers
     );
     for token in ["w1", "w2"] {
         assert_eq!(
@@ -101,21 +120,19 @@ fn source_refill_migration_arrival_and_views_settle() {
         0,
         None,
     );
+    // Tick 2: members and the target view already prove, so the seam
+    // dispatches nothing; the refill echo from the next observation is
+    // what settles the parent. Assert the hold plus the proven receipts
+    // rather than a redundant re-dispatch.
+    assert!(proved.members.is_empty() && proved.views.is_empty());
     assert!(
         proved
-            .feedback
+            .reply
+            .transfers
             .iter()
-            .any(|f| f.operation_id == migration_op && f.outcome == AttemptOutcome::Applied),
-        "migration applies: {:?}",
-        proved.feedback
-    );
-    assert!(
-        proved
-            .feedback
-            .iter()
-            .any(|f| f.operation_id == refill_op && f.outcome == AttemptOutcome::Applied),
-        "refill applies: {:?}",
-        proved.feedback
+            .any(|t| t.operation_id == migration_op),
+        "migration holds for the refill echo: {:?}",
+        proved.reply.transfers
     );
     // Tick 3 settles: no migration flight survives proven arrival.
     let observed = live_visible_observed();
@@ -233,12 +250,32 @@ fn occupied_target_migration_arrival_proves_without_deferred_view() {
     // target view still names the occupants' workspace natively: the
     // remapped frames land on the target output. The migration itself
     // holds only for the deferred source refill.
+    let arrivals: Vec<_> = moved
+        .members
+        .iter()
+        .filter(|a| a.operation_id == migration_op)
+        .collect();
+    assert_eq!(
+        arrivals.len(),
+        3,
+        "member attempts ride: {:?}",
+        moved.members
+    );
     assert!(
-        moved.feedback.iter().any(
-            |f| f.operation_id == migration_op && f.outcome == AttemptOutcome::PossiblyExecuted
-        ),
+        arrivals
+            .iter()
+            .all(|a| a.post.as_ref() == Some(&(OutputId(o2.clone()), ws_m.clone()))),
+        "arrival proves: {:?}",
+        moved.members
+    );
+    assert!(
+        moved
+            .reply
+            .transfers
+            .iter()
+            .any(|t| t.operation_id == migration_op),
         "migration holds only for the refill: {:?}",
-        moved.feedback
+        moved.reply.transfers
     );
     for token in ["w1", "w2", "w3"] {
         assert_eq!(
@@ -277,13 +314,18 @@ fn occupied_target_migration_arrival_proves_without_deferred_view() {
         0,
         None,
     );
+    // Tick 2: members and the target view already prove, so the seam
+    // dispatches nothing; the refill echo from the next observation is
+    // what settles the parent.
+    assert!(proved.members.is_empty() && proved.views.is_empty());
     assert!(
         proved
-            .feedback
+            .reply
+            .transfers
             .iter()
-            .any(|f| f.operation_id == migration_op && f.outcome == AttemptOutcome::Applied),
-        "migration applies: {:?}",
-        proved.feedback
+            .any(|t| t.operation_id == migration_op),
+        "migration holds for the refill echo: {:?}",
+        proved.reply.transfers
     );
     // Tick 3 settles: no migration flight survives proven arrival.
     let observed = live_visible_observed();
@@ -451,12 +493,32 @@ fn asymmetric_migration_members_land_on_published_slots_both_prove() {
     for token in ["w1", "w2"] {
         slots.push(assert_migration_slot(&moved.reply, token, work2));
     }
+    let arrivals: Vec<_> = moved
+        .members
+        .iter()
+        .filter(|a| a.operation_id == migration_op)
+        .collect();
+    assert_eq!(
+        arrivals.len(),
+        2,
+        "member attempts ride: {:?}",
+        moved.members
+    );
     assert!(
-        moved.feedback.iter().any(
-            |f| f.operation_id == migration_op && f.outcome == AttemptOutcome::PossiblyExecuted
-        ),
+        arrivals
+            .iter()
+            .all(|a| a.post.as_ref() == Some(&(OutputId(o2.clone()), ws_m.clone()))),
+        "arrival proves: {:?}",
+        moved.members
+    );
+    assert!(
+        moved
+            .reply
+            .transfers
+            .iter()
+            .any(|t| t.operation_id == migration_op),
         "migration holds only for the refill: {:?}",
-        moved.feedback
+        moved.reply.transfers
     );
     for token in ["w1", "w2"] {
         assert_eq!(
@@ -487,13 +549,18 @@ fn asymmetric_migration_members_land_on_published_slots_both_prove() {
         0,
         None,
     );
+    // Tick 2: members and the target view already prove, so the seam
+    // dispatches nothing; the refill echo from the next observation is
+    // what settles the parent.
+    assert!(proved.members.is_empty() && proved.views.is_empty());
     assert!(
         proved
-            .feedback
+            .reply
+            .transfers
             .iter()
-            .any(|f| f.operation_id == migration_op && f.outcome == AttemptOutcome::Applied),
-        "migration applies: {:?}",
-        proved.feedback
+            .any(|t| t.operation_id == migration_op),
+        "migration holds for the refill echo: {:?}",
+        proved.reply.transfers
     );
     // Tick 3 settles: no migration flight survives proven arrival.
     let observed = live_visible_observed();
@@ -623,7 +690,8 @@ fn roundtrip_migration_select_occupied_then_close_reflows_and_settles() {
                 .transfers
                 .iter()
                 .all(|t| !matches!(t.kind, TransferKind::Migration))
-                && tick.feedback.is_empty();
+                && tick.members.is_empty()
+                && tick.views.is_empty();
             if clean {
                 return;
             }
@@ -645,14 +713,16 @@ fn roundtrip_migration_select_occupied_then_close_reflows_and_settles() {
                 .transfers
                 .iter()
                 .all(|t| !matches!(t.kind, TransferKind::Migration)),
-            "{label}: migration flight survives: {:?} feedback {:?}",
+            "{label}: migration flight survives: {:?} members {:?} views {:?}",
             tick.reply.transfers,
-            tick.feedback
+            tick.members,
+            tick.views
         );
         assert!(
-            tick.feedback.is_empty(),
-            "{label}: held feedback survives: {:?}",
-            tick.feedback
+            tick.members.is_empty() && tick.views.is_empty(),
+            "{label}: held attempts survive: {:?} {:?}",
+            tick.members,
+            tick.views
         );
     }
     // Stay-send r1 to trailing: the occupied hidden second workspace on o1.
@@ -675,9 +745,10 @@ fn roundtrip_migration_select_occupied_then_close_reflows_and_settles() {
     );
     let stay_op = window_op(&stay.reply, "w4");
     assert!(
-        applied_of(&stay.feedback, &stay_op),
-        "stay applies: {:?}",
-        stay.feedback
+        applied_of_members(&stay.members, &stay.views, &stay_op),
+        "stay applies: {:?} {:?}",
+        stay.members,
+        stay.views
     );
     assert!(
         !S_VISIBLE.with(|m| m.borrow().contains(&r1.hwnd)),
@@ -817,8 +888,9 @@ fn roundtrip_migration_select_occupied_then_close_reflows_and_settles() {
     );
     assert!(
         S_VISIBLE.with(|m| m.borrow().contains(&r1.hwnd)),
-        "select reveals r1 natively: feedback {:?}",
-        select.feedback
+        "select reveals r1 natively: members {:?} views {:?}",
+        select.members,
+        select.views
     );
     for (key, token) in [(&m1, "w1"), (&m2, "w2"), (&m3, "w3")] {
         assert!(
@@ -895,7 +967,8 @@ fn roundtrip_migration_select_occupied_then_close_reflows_and_settles() {
     // then re-tile); the live stall held zero writes across sixteen.
     // Bound the wait tightly so a genuine stall still fails.
     let mut reflowed = false;
-    let mut last_feedback = Vec::new();
+    let mut last_members = Vec::new();
+    let mut last_views = Vec::new();
     for _ in 0..5 {
         let observed = live_visible_observed();
         let tick = live_tick(
@@ -909,7 +982,8 @@ fn roundtrip_migration_select_occupied_then_close_reflows_and_settles() {
             0,
             None,
         );
-        last_feedback = tick.feedback.clone();
+        last_members = tick.members.clone();
+        last_views = tick.views.clone();
         let forgotten = !env.state.applied_homing.contains_key("w3");
         let post: std::collections::HashMap<u64, Rect> = live_visible_observed()
             .into_iter()
@@ -931,20 +1005,22 @@ fn roundtrip_migration_select_occupied_then_close_reflows_and_settles() {
         .collect();
     assert!(
         reflowed,
-        "survivors reflow after close (no zero-write stall): pre_m1 {pre_m1:?} post {:?} feedback {last_feedback:?}",
+        "survivors reflow after close (no zero-write stall): pre_m1 {pre_m1:?} post {:?} members {last_members:?} views {last_views:?}",
         post.get(&m1.hwnd)
     );
     assert_ne!(
         post.get(&m1.hwnd),
         Some(&pre_m1),
-        "m1 reflows after close (no zero-write stall): {:?}",
-        last_feedback
+        "m1 reflows after close (no zero-write stall): {:?} {:?}",
+        last_members,
+        last_views
     );
     assert_ne!(
         post.get(&m2.hwnd),
         Some(&pre_m2),
-        "m2 reflows after close (no zero-write stall): {:?}",
-        last_feedback
+        "m2 reflows after close (no zero-write stall): {:?} {:?}",
+        last_members,
+        last_views
     );
     assert!(
         S_SET_CALLS.with(|m| m

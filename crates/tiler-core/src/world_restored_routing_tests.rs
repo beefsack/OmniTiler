@@ -155,6 +155,8 @@ fn report_full(
         feedback,
         monotonic_ms: 0,
         frames: Vec::new(),
+        member_attempts: Vec::new(),
+        view_attempts: Vec::new(),
     }
 }
 
@@ -672,13 +674,17 @@ fn exhausted_move_retains_identity_pinned_transfer_and_settles_on_arrival() {
     assert_eq!(lagged[0].operation_id, "op-112");
     assert_eq!(row_of(&lag_reply, "win-a").output.0, "u2");
     // Arrival proof (observed at the target screen with the exact target
-    // logical membership) settles the flight.
+    // logical membership) plus the exact follow-view echo settles the
+    // cross-output follow parent: membership alone never settles while the
+    // target view is still stale.
     let mut arrived = fact("win-a", "u2", 960);
     arrived.observed_workspace = Some(transfer.target_workspace.clone());
-    let settled = accepted(
-        &mut engine,
-        &report(4, 4, stacked_screens(), vec![arrived], "win-a", None, None),
-    );
+    let mut arrival_report = report(4, 4, stacked_screens(), vec![arrived], "win-a", None, None);
+    arrival_report.views = vec![crate::world_report::ScreenView {
+        output: crate::directional::OutputId(transfer.target_output.0.clone()),
+        view: transfer.target_workspace.clone(),
+    }];
+    let settled = accepted(&mut engine, &arrival_report);
     assert!(
         settled.transfers.is_empty(),
         "arrival proof settles: {:?}",

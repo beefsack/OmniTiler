@@ -312,8 +312,18 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
     let mut vnative = FakeNative::seeded(&fresh);
     let mut vdiff = HostDiff::new("adapter-1", "gen-1");
     vdiff.gate.current_obs = unrelated.observation_seq;
-    let (vstats, vproduced) =
-        apply_world_reply(&mut vdiff, &reply, &fresh, &mut vnative, &mut Vec::new(), 0);
+    let mut vmembers = Vec::new();
+    let mut vviews = Vec::new();
+    let vstats = apply_world_reply(
+        &mut vdiff,
+        &reply,
+        &fresh,
+        &mut vnative,
+        &mut Vec::new(),
+        &mut vmembers,
+        &mut vviews,
+        0,
+    );
     assert_eq!(vstats.view_writes, 1, "stats: {vstats:?}");
     let view_op = reply
         .transfers
@@ -322,9 +332,10 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
         .map(|t| t.operation_id.clone())
         .expect("view flight");
     assert!(
-        vproduced.iter().any(|f| f.operation_id == view_op
-            && f.outcome == tiler_core::world_report::AttemptOutcome::Applied),
-        "view actuation proves, got {vproduced:?}"
+        vviews
+            .iter()
+            .any(|a| a.operation_id == view_op && a.post.as_deref() == Some(target.as_str())),
+        "view actuation proves: {vviews:?}"
     );
     vdiff.gate.note_applied(&reply);
     state
@@ -375,11 +386,13 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
     let mut native = FakeNative::seeded(&fresh);
     let mut diff = HostDiff::new("adapter-1", "gen-1");
     diff.gate.current_obs = second.observation_seq;
-    let (stats, _feedback) = apply_world_reply(
+    let stats = apply_world_reply(
         &mut diff,
         &geometry_reply,
         &fresh,
         &mut native,
+        &mut Vec::new(),
+        &mut Vec::new(),
         &mut Vec::new(),
         0,
     );
@@ -388,11 +401,13 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
     diff.gate.note_applied(&geometry_reply);
     // A racing native invalidation stops the pass before any setter.
     native.pending_invalidation = true;
-    let (stats, _) = apply_world_reply(
+    let stats = apply_world_reply(
         &mut diff,
         &geometry_reply,
         &fresh,
         &mut native,
+        &mut Vec::new(),
+        &mut Vec::new(),
         &mut Vec::new(),
         0,
     );
@@ -438,6 +453,8 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
         closed_acked: vec![("w9".to_owned(), homing)],
         feedback_acked: Vec::new(),
         frames_acked: Vec::new(),
+        members_acked: Vec::new(),
+        views_acked: Vec::new(),
     };
     let pruned = seq.apply_close_receipt(&mut pending, &ack_receipt);
     assert_eq!(pruned, vec!["w9".to_owned()]);

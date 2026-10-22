@@ -120,18 +120,34 @@ impl WorldOwner {
         self.diff.gate.note_applied(reply);
     }
 
-    /// Run one diff pass for an accepted reply. Returns stats plus feedback
-    /// rows for the next report. Attempted frame writes append mechanical
-    /// rows to `frame_out` for the next report (stamped with `attempt_ms`).
+    /// Run one diff pass for an accepted reply. Returns stats; attempted
+    /// writes append mechanical rows to `frame_out`, `member_out`, and
+    /// `view_out` for the next report (each stamped with `attempt_ms`).
+    /// No verdicts are produced: the core derives every completion from
+    /// the raw attempts plus staged observation. Eight inputs are the
+    /// disjoint pass products; bundling would hide the borrow split the
+    /// tick relies on.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn apply_accepted(
         &mut self,
         reply: &WorldReply,
         fresh: &FreshHost,
         ops: &mut dyn super::world_diff::NativeOps,
         frame_out: &mut Vec<tiler_core::world_report::FrameAttempt>,
+        member_out: &mut Vec<tiler_core::world_report::MemberAttempt>,
+        view_out: &mut Vec<tiler_core::world_report::ViewAttempt>,
         attempt_ms: u64,
-    ) -> (super::world_diff::ApplyStats, Vec<AttemptFeedback>) {
-        apply_world_reply(&mut self.diff, reply, fresh, ops, frame_out, attempt_ms)
+    ) -> super::world_diff::ApplyStats {
+        apply_world_reply(
+            &mut self.diff,
+            reply,
+            fresh,
+            ops,
+            frame_out,
+            member_out,
+            view_out,
+            attempt_ms,
+        )
     }
 
     pub(super) fn last_reply(&self) -> Option<&WorldReply> {
@@ -144,6 +160,9 @@ impl WorldOwner {
     }
 
     /// Stage per-operation actuation feedback for the next report.
+    /// (Retained for test scaffolding; production transfer/view verdicts
+    /// are retired in favor of raw attempts.)
+    #[allow(dead_code)]
     pub(super) fn note_feedback(&mut self, feedback: AttemptFeedback) {
         self.seq.note_feedback(feedback);
     }
@@ -151,6 +170,16 @@ impl WorldOwner {
     /// Stage one mechanical frame attempt for the next report.
     pub(super) fn note_frame_attempt(&mut self, attempt: tiler_core::world_report::FrameAttempt) {
         self.seq.note_frame_attempt(attempt);
+    }
+
+    /// Stage one raw membership attempt for the next report.
+    pub(super) fn note_member_attempt(&mut self, attempt: tiler_core::world_report::MemberAttempt) {
+        self.seq.note_member_attempt(attempt);
+    }
+
+    /// Stage one raw view attempt for the next report.
+    pub(super) fn note_view_attempt(&mut self, attempt: tiler_core::world_report::ViewAttempt) {
+        self.seq.note_view_attempt(attempt);
     }
 
     /// No durable restoration ingress exists.

@@ -70,12 +70,14 @@ fn test_report() -> WorldReport {
         gesture_barrier: false,
         feedback: vec![AttemptFeedback {
             operation_id: "op-1".to_owned(),
-            kind: AttemptKind::Transfer,
+            kind: AttemptKind::Effect,
             outcome: AttemptOutcome::Unattempted,
             hold: None,
         }],
         monotonic_ms: 0,
         frames: Vec::new(),
+        member_attempts: Vec::new(),
+        view_attempts: Vec::new(),
     }
 }
 
@@ -133,6 +135,30 @@ fn digest_covers_every_section() {
     assert_ne!(report_digest(&changed), digest);
     let mut changed = base.clone();
     changed.feedback[0].outcome = AttemptOutcome::Applied;
+    assert_ne!(report_digest(&changed), digest);
+    let mut changed = base.clone();
+    changed.member_attempts.push(MemberAttempt {
+        operation_id: "op-9".to_owned(),
+        window: WindowId("win-a".to_owned()),
+        target_output: OutputId("out".to_owned()),
+        target_workspace: "ws-1".to_owned(),
+        setter: FrameSetter::Accepted,
+        pre: None,
+        post: None,
+        attempt_ms: 9,
+    });
+    assert_ne!(report_digest(&changed), digest);
+    let mut changed = base.clone();
+    changed.view_attempts.push(ViewAttempt {
+        operation_id: "op-9".to_owned(),
+        target_output: OutputId("out".to_owned()),
+        target_workspace: "ws-1".to_owned(),
+        setter: FrameSetter::Accepted,
+        pre: None,
+        post: None,
+        baseline: None,
+        attempt_ms: 9,
+    });
     assert_ne!(report_digest(&changed), digest);
     let mut changed = base.clone();
     changed.observation_seq = 2;
@@ -221,6 +247,81 @@ fn validation_gates_shapes() {
     let mut good = base.clone();
     good.windows[0].rect = None;
     assert!(validate_report(&good));
+    // Retired external verdict ingress refuses: transfer/view completion
+    // rides raw member/view attempts, never feedback rows.
+    for kind in [AttemptKind::Transfer, AttemptKind::View] {
+        let mut bad = base.clone();
+        bad.feedback[0].kind = kind;
+        assert_eq!(validate_report_reason(&bad), Some("feedback-kind-retired"));
+    }
+    // Member attempt shapes: bad operation, target, and homing ids refuse;
+    // unknown pre/post homings ride None; duplicate operation windows
+    // refuse.
+    let mut bad = base.clone();
+    bad.member_attempts.push(MemberAttempt {
+        operation_id: String::new(),
+        window: WindowId("win-a".to_owned()),
+        target_output: OutputId("out".to_owned()),
+        target_workspace: "ws-1".to_owned(),
+        setter: FrameSetter::Accepted,
+        pre: None,
+        post: None,
+        attempt_ms: 1,
+    });
+    assert_eq!(validate_report_reason(&bad), Some("member-window-invalid"));
+    let mut bad = base.clone();
+    bad.member_attempts.push(MemberAttempt {
+        operation_id: "op-9".to_owned(),
+        window: WindowId("win-a".to_owned()),
+        target_output: OutputId("out".to_owned()),
+        target_workspace: "ws-1".to_owned(),
+        setter: FrameSetter::Accepted,
+        pre: Some((OutputId(String::new()), "ws-0".to_owned())),
+        post: None,
+        attempt_ms: 1,
+    });
+    assert_eq!(validate_report_reason(&bad), Some("member-homing-invalid"));
+    let mut bad = base.clone();
+    for _ in 0..2 {
+        bad.member_attempts.push(MemberAttempt {
+            operation_id: "op-9".to_owned(),
+            window: WindowId("win-a".to_owned()),
+            target_output: OutputId("out".to_owned()),
+            target_workspace: "ws-1".to_owned(),
+            setter: FrameSetter::Accepted,
+            pre: None,
+            post: None,
+            attempt_ms: 1,
+        });
+    }
+    assert_eq!(validate_report_reason(&bad), Some("duplicate-member"));
+    // View attempt shapes mirror the member rules over exact-output views.
+    let mut bad = base.clone();
+    bad.view_attempts.push(ViewAttempt {
+        operation_id: String::new(),
+        target_output: OutputId("out".to_owned()),
+        target_workspace: "ws-1".to_owned(),
+        setter: FrameSetter::Accepted,
+        pre: None,
+        post: None,
+        baseline: None,
+        attempt_ms: 1,
+    });
+    assert_eq!(validate_report_reason(&bad), Some("view-operation-invalid"));
+    let mut bad = base.clone();
+    for _ in 0..2 {
+        bad.view_attempts.push(ViewAttempt {
+            operation_id: "op-9".to_owned(),
+            target_output: OutputId("out".to_owned()),
+            target_workspace: "ws-1".to_owned(),
+            setter: FrameSetter::Accepted,
+            pre: None,
+            post: None,
+            baseline: None,
+            attempt_ms: 1,
+        });
+    }
+    assert_eq!(validate_report_reason(&bad), Some("duplicate-view-attempt"));
     // Command pair mismatch.
     let mut bad = base.clone();
     bad.command_seq = Some(1);

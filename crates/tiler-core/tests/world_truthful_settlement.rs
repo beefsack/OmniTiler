@@ -9,8 +9,8 @@ use tiler_core::size_hints::WindowSizeHints;
 use tiler_core::workspace_scope::WorkspaceMode;
 use tiler_core::world_engine::{WorldEngine, WorldOutcome};
 use tiler_core::world_report::{
-    AttemptFeedback, AttemptKind, AttemptOutcome, ScreenReport, ScreenView, TransferKind,
-    WORLD_CONTRACT_VERSION, WindowFact, WorldCommand, WorldReport,
+    FrameSetter, MemberAttempt, ScreenReport, ScreenView, TransferKind, WORLD_CONTRACT_VERSION,
+    WindowFact, WorldCommand, WorldReport,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -55,7 +55,7 @@ fn report(
     views: Vec<(&str, &str)>,
     command_seq: Option<u64>,
     command: Option<WorldCommand>,
-    feedback: Vec<AttemptFeedback>,
+    member_attempts: Vec<MemberAttempt>,
     host_owned: bool,
     inventory_complete: bool,
 ) -> WorldReport {
@@ -99,9 +99,11 @@ fn report(
         focus_follows_cursor: false,
         cursor_warp: false,
         cursor: None,
-        feedback,
+        feedback: Vec::new(),
         monotonic_ms: 0,
         frames: Vec::new(),
+        member_attempts,
+        view_attempts: Vec::new(),
     }
 }
 
@@ -316,12 +318,24 @@ fn host_owned_unknown_holds_exact_settles() {
         "host-owned raw holds: {:?}",
         held.transfers
     );
-    // Exact logical receipt settles.
+    // Exact logical receipt plus the exact follow-view echo settles: a
+    // cross-output follow parent never settles on membership alone while
+    // the target view is still stale.
     let mut exact = fact("win-a", "out-b", 800);
-    exact.observed_workspace = Some(view_b);
+    exact.observed_workspace = Some(view_b.clone());
     let settled = accepted(
         &mut engine,
-        &report(4, 4, vec![exact], vec![], None, None, vec![], true, true),
+        &report(
+            4,
+            4,
+            vec![exact],
+            vec![("out-b", view_b.as_str())],
+            None,
+            None,
+            vec![],
+            true,
+            true,
+        ),
     );
     assert!(
         settled.transfers.is_empty(),
@@ -523,6 +537,12 @@ fn possibly_executed_persists_held_across_disappearance() {
         .map(|row| row.id.clone())
         .collect();
     let target = ring[1].clone();
+    let source = first
+        .outputs
+        .iter()
+        .find(|row| row.output.0 == "out-a")
+        .and_then(|row| row.logical_view.clone())
+        .expect("source view");
     accepted(
         &mut engine,
         &report(
@@ -552,11 +572,15 @@ fn possibly_executed_persists_held_across_disappearance() {
             vec![],
             None,
             None,
-            vec![AttemptFeedback {
+            vec![MemberAttempt {
                 operation_id: "op-11".to_owned(),
-                kind: AttemptKind::Transfer,
-                outcome: AttemptOutcome::PossiblyExecuted,
-                hold: None,
+                window: WindowId("win-a".to_owned()),
+                target_output: OutputId("out-a".to_owned()),
+                target_workspace: target.clone(),
+                setter: FrameSetter::Threw,
+                pre: Some((OutputId("out-a".to_owned()), source.clone())),
+                post: Some((OutputId("out-a".to_owned()), source)),
+                attempt_ms: 3,
             }],
             false,
             true,

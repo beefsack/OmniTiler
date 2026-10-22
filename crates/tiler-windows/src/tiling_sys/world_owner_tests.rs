@@ -324,6 +324,8 @@ fn t2_staged_decline_leaves_committed_world_unchanged() {
                 feedback: Vec::new(),
                 monotonic_ms: 0,
                 frames: Vec::new(),
+                member_attempts: Vec::new(),
+                view_attempts: Vec::new(),
             }
         };
     let first = report_with(windows.clone(), None, None);
@@ -467,6 +469,8 @@ fn t2_supported_and_floating_movers_adopt_once() {
                     feedback: Vec::new(),
                     monotonic_ms: 0,
                     frames: Vec::new(),
+                    member_attempts: Vec::new(),
+                    view_attempts: Vec::new(),
                 }
             };
         let base = match world.deliver_production(&report_with(windows.clone(), None, None)) {

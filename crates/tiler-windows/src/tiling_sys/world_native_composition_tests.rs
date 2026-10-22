@@ -11,6 +11,7 @@
 //! composition-local helpers live here alongside the tests.
 
 use super::*;
+use tiler_core::world_report::FrameSetter;
 
 #[test]
 fn bootstrap_first_binding_proves_homing_and_views_then_settles() {
@@ -129,20 +130,153 @@ fn published_view(reply: &WorldReply, output: &str) -> Option<String> {
         .and_then(|o| o.logical_view.clone())
 }
 
-fn has_outcome(feedback: &[AttemptFeedback], op: &str, outcome: AttemptOutcome) -> bool {
-    feedback
-        .iter()
-        .any(|f| f.operation_id == op && f.kind == AttemptKind::Transfer && f.outcome == outcome)
+fn has_member_row(tick: &LiveTick, op: &str) -> bool {
+    tick.members.iter().any(|a| a.operation_id == op)
 }
 
-fn has_view_outcome(feedback: &[AttemptFeedback], op: &str, outcome: AttemptOutcome) -> bool {
-    feedback
-        .iter()
-        .any(|f| f.operation_id == op && f.kind == AttemptKind::View && f.outcome == outcome)
+/// Ambiguous member evidence: a raw attempt for `op` that proves no
+/// arrival (post unreadable, off-target, or a refused/throwing setter).
+/// Never a verdict; the core owns the hold.
+fn has_ambiguous_member(tick: &LiveTick, op: &str, out: &str, ws: &str) -> bool {
+    tick.members.iter().any(|a| {
+        a.operation_id == op
+            && a.post
+                .as_ref()
+                .is_none_or(|(post_out, post_ws)| post_out.0 != out || post_ws != ws)
+    })
 }
 
-fn has_any_feedback(feedback: &[AttemptFeedback], op: &str) -> bool {
-    feedback.iter().any(|f| f.operation_id == op)
+fn has_view_row(tick: &LiveTick, op: &str) -> bool {
+    tick.views.iter().any(|a| a.operation_id == op)
+}
+
+/// Proven view evidence: a raw view attempt for the owning phase id with
+/// post proof at the target.
+fn has_proven_view(tick: &LiveTick, op: &str, ws: &str) -> bool {
+    tick.views
+        .iter()
+        .any(|a| a.operation_id == op && a.post.as_deref() == Some(ws))
+}
+
+fn has_any_attempt(tick: &LiveTick, op: &str) -> bool {
+    has_member_row(tick, op) || has_view_row(tick, op)
+}
+
+/// Pre-proven singleton follow: the mover already shows full-frame on the
+/// target with no sibling to hide, so the diff proves arrival with no
+/// setter, emits no raw attempts, merges the receipts, and the next report
+/// settles both flights. A raw-attempt oracle must not require a member row
+/// here: the no-write proof is the correct production behavior.
+#[test]
+fn singleton_follow_preproven_settles_without_attempts() {
+    let mut env = env_with(202_901);
+    let out = env.state.output_token(DEV1);
+    let mover = win_key(202_901, 2391, "proc-291");
+    admit_bare(&mut env, &mover, "w1");
+    script_live(&mover, "w1", rect(0, 0, 800, 600), plain_facts());
+    S_ADMIT.with(|m| {
+        m.borrow_mut().insert(
+            mover.hwnd,
+            Ok(script_claim(mover.hwnd, &identity_of(&mover))),
+        )
+    });
+    S_HIDE.with(|m| {
+        m.borrow_mut().insert(
+            mover.hwnd,
+            Ok(valid_claim(mover.hwnd, &identity_of(&mover))),
+        )
+    });
+    S_REVEAL.with(|m| m.borrow_mut().insert(mover.hwnd, Ok(Revealed::Shown)));
+    let mut owner = WorldOwner::bootstrap_ids(ADAPTER, GENERATION).expect("owner");
+    let areas = one_area();
+    let fulls = env.fulls.clone();
+    let observed = live_visible_observed();
+    live_tick(
+        &mut env,
+        &mut owner,
+        &observed,
+        &[],
+        &areas,
+        &fulls,
+        moving_prims(),
+        0,
+        None,
+    );
+    let (current, target, index) = follow_target(&owner, &out);
+    // Force the live frame to already equal the published target slot: the
+    // singleton already shows full-frame, so no geometry write is required.
+    // The bootstrap placed the slot; the trailing target reuses the same full
+    // slot shape, so the pre-move frame already proves.
+    let observed = live_visible_observed();
+    let tick = live_tick(
+        &mut env,
+        &mut owner,
+        &observed,
+        &[],
+        &areas,
+        &fulls,
+        moving_prims(),
+        mover.hwnd,
+        Some(WorldCommand::SendNumbered {
+            window: WindowId("w1".to_owned()),
+            output: OutputId(out.clone()),
+            index,
+            follow: true,
+        }),
+    );
+    let op = window_op(&tick.reply, "w1");
+    let view_op = tick
+        .reply
+        .transfers
+        .iter()
+        .find(|t| matches!(t.kind, TransferKind::View))
+        .expect("follow retains its view flight")
+        .operation_id
+        .clone();
+    assert_eq!(view_op, format!("{op}-follow"));
+    // No setter ran: the native already proves the target.
+    assert!(
+        tick.members.is_empty() && tick.views.is_empty(),
+        "pre-proven emits no attempts: {:?} {:?}",
+        tick.members,
+        tick.views
+    );
+    // Receipts still merge from independent fresh proof.
+    assert_eq!(
+        env.state.applied_homing.get("w1"),
+        Some(&(out.clone(), target.clone())),
+        "homing merges without a setter"
+    );
+    assert_eq!(
+        env.state.applied_views.get(&out),
+        Some(&target),
+        "view merges without a setter"
+    );
+    assert_ne!(current, target);
+    // Next observation settles both flights with no replay.
+    let observed = live_visible_observed();
+    let settled = live_tick(
+        &mut env,
+        &mut owner,
+        &observed,
+        &[],
+        &areas,
+        &fulls,
+        moving_prims(),
+        0,
+        None,
+    );
+    assert!(
+        settled.reply.transfers.is_empty(),
+        "pre-proven follow settles: {:?}",
+        settled.reply.transfers
+    );
+    assert!(
+        settled.members.is_empty() && settled.views.is_empty(),
+        "no replay: {:?} {:?}",
+        settled.members,
+        settled.views
+    );
 }
 
 /// Scopes of one tick reply as `scope=authority` pairs for failure output.
@@ -217,19 +351,20 @@ fn same_output_numbered_send_follow_selects_proves_and_settles() {
         .operation_id
         .clone();
     assert_eq!(view_op, format!("{op}-follow"));
-    // Two-phase proof: the window transfer holds ambiguous until the
-    // switch runs, while the follow's own view flight actuates and proves
-    // the switch in the same tick.
+    // Two-phase proof: the window transfer reports one ambiguous member
+    // attempt until the switch proves, while the follow's own view flight
+    // actuates and proves the switch in the same tick.
     assert!(
-        has_outcome(&tick.feedback, &op, AttemptOutcome::PossiblyExecuted),
-        "membership unproven pre-switch: {:?}",
-        tick.feedback
+        has_ambiguous_member(&tick, &op, &out, &target),
+        "membership unproven pre-switch: {:?} {:?}",
+        tick.members,
+        tick.views
     );
-    assert!(!applied_of(&tick.feedback, &op));
+    assert!(!applied_of_members(&tick.members, &tick.views, &op));
     assert!(
-        has_view_outcome(&tick.feedback, &view_op, AttemptOutcome::Applied),
+        has_proven_view(&tick, &view_op, &target),
         "view flight proves the switch: {:?}",
-        tick.feedback
+        tick.views
     );
     assert!(
         tick.reply.effects.iter().any(|e| e.target.0 == "w1"),
@@ -276,14 +411,16 @@ fn same_output_numbered_send_follow_selects_proves_and_settles() {
         settled.reply.transfers
     );
     assert!(
-        !has_any_feedback(&settled.feedback, &op),
-        "no replay: {:?}",
-        settled.feedback
+        !has_any_attempt(&settled, &op),
+        "no replay: {:?} {:?}",
+        settled.members,
+        settled.views
     );
     assert!(
-        !has_any_feedback(&settled.feedback, &view_op),
-        "view flight settles too: {:?}",
-        settled.feedback
+        !has_any_attempt(&settled, &view_op),
+        "view flight settles too: {:?} {:?}",
+        settled.members,
+        settled.views
     );
     assert_eq!(
         env.state.applied_homing.get("w1"),
@@ -368,15 +505,16 @@ fn same_output_follow_lying_frame_setter_holds_without_applied() {
         .operation_id
         .clone();
     assert!(
-        has_outcome(&tick.feedback, &op, AttemptOutcome::PossiblyExecuted),
-        "membership unproven pre-switch: {:?}",
-        tick.feedback
+        has_ambiguous_member(&tick, &op, &out, &target),
+        "membership unproven pre-switch: {:?} {:?}",
+        tick.members,
+        tick.views
     );
-    assert!(!applied_of(&tick.feedback, &op));
+    assert!(!applied_of_members(&tick.members, &tick.views, &op));
     assert!(
-        has_view_outcome(&tick.feedback, &view_op, AttemptOutcome::Applied),
+        has_proven_view(&tick, &view_op, &target),
         "honest hide leg proves the view: {:?}",
-        tick.feedback
+        tick.views
     );
     assert_eq!(
         set_calls(),
@@ -416,9 +554,10 @@ fn same_output_follow_lying_frame_setter_holds_without_applied() {
         held.reply.transfers
     );
     assert!(
-        held.feedback.is_empty(),
-        "clamp holds without feedback: {:?}",
-        held.feedback
+        held.members.is_empty() && held.views.is_empty(),
+        "clamp holds without attempts: {:?} {:?}",
+        held.members,
+        held.views
     );
     assert_eq!(
         set_calls(),
@@ -452,9 +591,10 @@ fn same_output_follow_lying_frame_setter_holds_without_applied() {
     );
     assert!(quiet.reply.transfers.is_empty());
     assert!(
-        quiet.feedback.is_empty(),
-        "clamp recorded once: {:?}",
-        quiet.feedback
+        quiet.members.is_empty() && quiet.views.is_empty(),
+        "clamp recorded once: {:?} {:?}",
+        quiet.members,
+        quiet.views
     );
     assert_eq!(set_calls(), calls_before + 2);
 }
@@ -487,7 +627,7 @@ fn same_output_follow_partial_sibling_hide_holds_view_unproven() {
         0,
         None,
     );
-    let (current, _target, index) = follow_target(&owner, &out);
+    let (current, target, index) = follow_target(&owner, &out);
     let calls_before = set_calls();
     let observed = live_visible_observed();
     let tick = live_tick(
@@ -515,17 +655,23 @@ fn same_output_follow_partial_sibling_hide_holds_view_unproven() {
         .expect("follow retains its view flight")
         .operation_id
         .clone();
+    // Both transfers report ambiguous attempts exactly once: the refused
+    // hide leg proves nothing, so the member attempt and the view attempt
+    // each ride once and the spent phases stay silent after.
     assert!(
-        has_outcome(&tick.feedback, &op, AttemptOutcome::PossiblyExecuted),
-        "partial holds ambiguous: {:?}",
-        tick.feedback
+        has_ambiguous_member(&tick, &op, &out, &target),
+        "partial holds ambiguous: {:?} {:?}",
+        tick.members,
+        tick.views
     );
     assert!(
-        has_view_outcome(&tick.feedback, &view_op, AttemptOutcome::PossiblyExecuted),
+        tick.views
+            .iter()
+            .any(|a| a.operation_id == view_op && a.post.as_deref() != Some(target.as_str())),
         "thrown switch leg holds ambiguous: {:?}",
-        tick.feedback
+        tick.views
     );
-    assert!(!applied_of(&tick.feedback, &op));
+    assert!(!applied_of_members(&tick.members, &tick.views, &op));
     assert!(S_VISIBLE.with(|m| m.borrow().contains(&mover.hwnd)));
     assert!(
         S_VISIBLE.with(|m| m.borrow().contains(&sibling.hwnd)),
@@ -544,9 +690,9 @@ fn same_output_follow_partial_sibling_hide_holds_view_unproven() {
         calls_before + 1,
         "source collapse re-tiles the sibling"
     );
-    // The carried PE marks the window flight held, so later ticks hold
-    // silently: no re-attempt, no replay, no Applied. The spent view phase
-    // stays silent too. Both flights stay retained with everything static.
+    // The carried ambiguity marks both flights held, so later ticks
+    // hold silently: no re-attempt, no replay, no proof. The spent phases
+    // stay silent too. Both flights stay retained with everything static.
     for _ in 0..2 {
         let observed = live_visible_observed();
         let held = live_tick(
@@ -561,9 +707,10 @@ fn same_output_follow_partial_sibling_hide_holds_view_unproven() {
             None,
         );
         assert!(
-            held.feedback.is_empty(),
-            "held flights stay silent: {:?}",
-            held.feedback
+            held.members.is_empty() && held.views.is_empty(),
+            "held flights stay silent: {:?} {:?}",
+            held.members,
+            held.views
         );
         assert_eq!(
             held.reply
@@ -643,20 +790,19 @@ fn same_output_follow_hook_busy_stops_then_recovers_without_replay() {
         .operation_id
         .clone();
     // The busy hook stops the pass before any setter: no attempt runs, so
-    // nothing is spent and the feedback is empty. The commit still stands
-    // (both flights retained, target view published).
+    // nothing is spent and the attempt rows are empty. The commit still
+    // stands (both flights retained, target view published).
     assert!(
-        tick.feedback.is_empty(),
-        "busy native stops the pass: {:?}",
-        tick.feedback
+        tick.members.is_empty() && tick.views.is_empty(),
+        "busy native stops the pass: {:?} {:?}",
+        tick.members,
+        tick.views
     );
     assert!(
-        !tick
-            .feedback
-            .iter()
-            .any(|f| f.outcome == AttemptOutcome::Applied),
-        "nothing proves on refusal: {:?}",
-        tick.feedback
+        !applied_of_members(&tick.members, &tick.views, &op),
+        "nothing proves on refusal: {:?} {:?}",
+        tick.members,
+        tick.views
     );
     assert!(S_VISIBLE.with(|m| m.borrow().contains(&mover.hwnd)));
     assert!(S_VISIBLE.with(|m| m.borrow().contains(&sibling.hwnd)));
@@ -666,7 +812,7 @@ fn same_output_follow_hook_busy_stops_then_recovers_without_replay() {
         Some(&(out.clone(), current.clone()))
     );
     // Gap cleared: nothing was spent, so the next tick runs the full
-    // two-phase proof cleanly (window ambiguous pre-switch, view Applied),
+    // two-phase proof cleanly (window ambiguous pre-switch, view proves),
     // then the following observation settles with no replay.
     S_HOOK.with(|m| *m.borrow_mut() = false);
     let observed = live_visible_observed();
@@ -682,14 +828,15 @@ fn same_output_follow_hook_busy_stops_then_recovers_without_replay() {
         None,
     );
     assert!(
-        has_outcome(&recovered.feedback, &op, AttemptOutcome::PossiblyExecuted),
-        "clean two-phase proof: {:?}",
-        recovered.feedback
+        has_ambiguous_member(&recovered, &op, &out, &target),
+        "clean two-phase proof: {:?} {:?}",
+        recovered.members,
+        recovered.views
     );
     assert!(
-        has_view_outcome(&recovered.feedback, &view_op, AttemptOutcome::Applied),
+        has_proven_view(&recovered, &view_op, &target),
         "recovery proves the view: {:?}",
-        recovered.feedback
+        recovered.views
     );
     assert_eq!(
         env.state.applied_homing.get("w1"),
@@ -718,9 +865,10 @@ fn same_output_follow_hook_busy_stops_then_recovers_without_replay() {
         settled.reply.transfers
     );
     assert!(
-        settled.feedback.is_empty(),
-        "no replay: {:?}",
-        settled.feedback
+        settled.members.is_empty() && settled.views.is_empty(),
+        "no replay: {:?} {:?}",
+        settled.members,
+        settled.views
     );
 }
 
@@ -799,23 +947,30 @@ fn same_output_follow_iconic_mover_proves_homing_without_writes_or_focus() {
         .expect("follow retains its view flight")
         .operation_id
         .clone();
+    // The iconic member vetoes both proofs: no member row is dispatched
+    // under the iconic veto, while the follow phase and the retained
+    // follow view each report the missed switch with unreadable proof.
+    // Nothing fabricates arrival.
+    assert!(tick.members.iter().all(|a| a.operation_id != op));
     assert!(
-        has_outcome(&tick.feedback, &op, AttemptOutcome::PossiblyExecuted),
-        "membership unproven pre-switch: {:?}",
-        tick.feedback
-    );
-    assert!(
-        has_view_outcome(&tick.feedback, &view_op, AttemptOutcome::PossiblyExecuted),
-        "iconic member vetoes the view proof: {:?}",
-        tick.feedback
-    );
-    assert!(
-        !tick
-            .feedback
+        tick.views
             .iter()
-            .any(|f| f.outcome == AttemptOutcome::Applied),
-        "nothing fabricates arrival: {:?}",
-        tick.feedback
+            .any(|a| a.operation_id == op && a.post.as_deref() != Some(target.as_str())),
+        "unproven follow view: {:?}",
+        tick.views
+    );
+    assert!(
+        tick.views
+            .iter()
+            .any(|a| a.operation_id == view_op && a.post.as_deref() != Some(target.as_str())),
+        "iconic member vetoes the view proof: {:?}",
+        tick.views
+    );
+    assert!(
+        !applied_of_members(&tick.members, &tick.views, &op),
+        "nothing fabricates arrival: {:?} {:?}",
+        tick.members,
+        tick.views
     );
     // The switch still runs (sibling hides, mover stays visible), the
     // iconic arrival proof merges homing truthfully, and the view stays
@@ -861,9 +1016,10 @@ fn same_output_follow_iconic_mover_proves_homing_without_writes_or_focus() {
         None,
     );
     assert!(
-        held.feedback.is_empty(),
-        "held flights stay silent: {:?}",
-        held.feedback
+        held.members.is_empty() && held.views.is_empty(),
+        "held flights stay silent: {:?} {:?}",
+        held.members,
+        held.views
     );
     assert_eq!(
         held.reply
@@ -940,7 +1096,12 @@ fn same_output_send_stay_hides_and_settles() {
         }),
     );
     let op = window_op(&tick.reply, "w1");
-    assert!(applied_of(&tick.feedback, &op), "{:?}", tick.feedback);
+    assert!(
+        applied_of_members(&tick.members, &tick.views, &op),
+        "stay homing proves: {:?} {:?}",
+        tick.members,
+        tick.views
+    );
     assert_eq!(
         env.state.applied_homing.get("w1"),
         Some(&(out.clone(), target.clone())),
@@ -1053,8 +1214,9 @@ fn composed_follow_selectback_stay_hides_and_settles() {
     );
     assert!(
         !S_VISIBLE.with(|m| m.borrow().contains(&n2.hwnd)),
-        "sibling hidden: {:?}",
-        follow.feedback
+        "sibling hidden: {:?} {:?}",
+        follow.members,
+        follow.views
     );
     assert!(
         S_VISIBLE.with(|m| m.borrow().contains(&anchor.hwnd)),
@@ -1080,9 +1242,10 @@ fn composed_follow_selectback_stay_hides_and_settles() {
         converged.reply.transfers
     );
     assert!(
-        !has_any_feedback(&converged.feedback, &follow_op),
-        "no replay: {:?}",
-        converged.feedback
+        !has_any_attempt(&converged, &follow_op),
+        "no replay: {:?} {:?}",
+        converged.members,
+        converged.views
     );
     assert_eq!(
         env.state.applied_homing.get("w1"),
@@ -1163,14 +1326,10 @@ fn composed_follow_selectback_stay_hides_and_settles() {
     );
     let stay_op = window_op(&stay.reply, "w2");
     assert!(
-        !has_outcome(&stay.feedback, &stay_op, AttemptOutcome::SupersededExternal),
-        "stay never superseded by the hidden sibling: {:?}",
-        stay.feedback
-    );
-    assert!(
-        applied_of(&stay.feedback, &stay_op),
-        "stay transfer applies: {:?}",
-        stay.feedback
+        applied_of_members(&stay.members, &stay.views, &stay_op),
+        "stay transfer applies: {:?} {:?}",
+        stay.members,
+        stay.views
     );
     assert!(
         !S_VISIBLE.with(|m| m.borrow().contains(&n2.hwnd)),
@@ -1320,7 +1479,12 @@ fn composed_stay_return_select_reveals_hidden_and_settles() {
         "follow settles: {:?}",
         converged.reply.transfers
     );
-    assert!(!has_any_feedback(&converged.feedback, &follow_op));
+    assert!(
+        !has_any_attempt(&converged, &follow_op),
+        "no replay: {:?} {:?}",
+        converged.members,
+        converged.views
+    );
     assert_all_controlled("follow-settle", &converged.reply);
     // Select back to source: n1 hidden, n2 back.
     let observed = live_visible_observed();
@@ -1382,9 +1546,10 @@ fn composed_stay_return_select_reveals_hidden_and_settles() {
     );
     let stay_op = window_op(&stay.reply, "w2");
     assert!(
-        applied_of(&stay.feedback, &stay_op),
-        "stay applies: {:?}",
-        stay.feedback
+        applied_of_members(&stay.members, &stay.views, &stay_op),
+        "stay applies: {:?} {:?}",
+        stay.members,
+        stay.views
     );
     assert!(
         !S_VISIBLE.with(|m| m.borrow().contains(&n2.hwnd)),
@@ -1438,8 +1603,9 @@ fn composed_stay_return_select_reveals_hidden_and_settles() {
     );
     assert!(
         S_VISIBLE.with(|m| m.borrow().contains(&n1.hwnd)),
-        "n1 revealed: {:?}",
-        back.feedback
+        "n1 revealed: {:?} {:?}",
+        back.members,
+        back.views
     );
     assert!(
         !S_VISIBLE.with(|m| m.borrow().contains(&n2.hwnd)),
@@ -1483,10 +1649,18 @@ fn composed_stay_return_select_reveals_hidden_and_settles() {
         }),
     );
     let sendback_op = window_op(&sendback.reply, "w1");
+    // Pre-proven hidden arrival: no member or view setter runs, so no raw
+    // attempt rides. Settlement happens on the next report from the staged
+    // hidden receipt; the transfer is retained meanwhile.
+    assert!(sendback.members.is_empty() && sendback.views.is_empty());
     assert!(
-        applied_of(&sendback.feedback, &sendback_op),
-        "sendback applies: {:?}",
-        sendback.feedback
+        sendback
+            .reply
+            .transfers
+            .iter()
+            .any(|t| t.operation_id == sendback_op),
+        "sendback retained for settlement: {:?}",
+        sendback.reply.transfers
     );
     assert!(
         S_VISIBLE.with(|m| m.borrow().contains(&n1.hwnd)),
@@ -1544,9 +1718,10 @@ fn composed_stay_return_select_reveals_hidden_and_settles() {
     );
     assert!(
         S_VISIBLE.with(|m| m.borrow().contains(&n2.hwnd)),
-        "n2 revealed by select into stay domain: scopes {:?} feedback {:?}",
+        "n2 revealed by select into stay domain: scopes {:?} members {:?} views {:?}",
         select.reply.scopes,
-        select.feedback
+        select.members,
+        select.views
     );
     assert_eq!(
         owner.engine().logical_view(&out).as_deref(),
@@ -1790,15 +1965,10 @@ fn unknown_baseline_holds_transfer_without_supersession() {
         });
         reply
     }
-    fn superseded(feedback: &[AttemptFeedback]) -> bool {
-        feedback.iter().any(|f| {
-            f.operation_id == "op-9"
-                && f.kind == AttemptKind::Transfer
-                && f.outcome == AttemptOutcome::SupersededExternal
-        })
-    }
     // Unknown baseline ("") with live homing anywhere else: hold, never
-    // supersede, and never settle the transfer.
+    // report, and never settle the transfer. The core derives any genuine
+    // supersession from staged observation; the transport reports nothing
+    // off an unknown preimage.
     let mut diff = HostDiff::new(ADAPTER, GENERATION);
     diff.gate.current_obs = 7;
     let reply = reply_for(&out);
@@ -1809,37 +1979,47 @@ fn unknown_baseline_holds_transfer_without_supersession() {
         .get_mut("w1")
         .expect("seeded mover")
         .workspace = "ws-X".to_owned();
-    let (stats, feedback) =
-        apply_world_reply(&mut diff, &reply, &fresh, &mut native, &mut Vec::new(), 0);
-    assert!(
-        !superseded(&feedback),
-        "unknown preimage superseded: {feedback:?}"
+    let mut members = Vec::new();
+    let mut views = Vec::new();
+    let stats = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut native,
+        &mut Vec::new(),
+        &mut members,
+        &mut views,
+        0,
     );
     assert!(
-        feedback
-            .iter()
-            .all(|f| f.outcome != AttemptOutcome::Applied),
-        "nothing proves off unknown: {feedback:?}"
+        members.is_empty() && views.is_empty(),
+        "unknown preimage reports nothing"
     );
     assert!(stats.held > 0, "{stats:?}");
     // The retained transfer retries once the preimage proves: home at the
-    // source actuates and applies.
+    // source actuates and reports one raw attempt.
     let fresh = host_for(&key, &out, "ws-X", frame);
-    let (stats, feedback) =
-        apply_world_reply(&mut diff, &reply, &fresh, &mut native, &mut Vec::new(), 0);
-    assert!(
-        applied_of(&feedback, "op-9"),
-        "retained transfer converges: {feedback:?}"
+    let mut members = Vec::new();
+    let mut views = Vec::new();
+    let stats = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut native,
+        &mut Vec::new(),
+        &mut members,
+        &mut views,
+        0,
     );
+    assert_eq!(members.len(), 1);
+    assert_eq!(members[0].operation_id, "op-9");
+    assert_eq!(members[0].setter, FrameSetter::Accepted);
     assert_eq!(stats.membership_writes, 1, "{stats:?}");
-    // A prior applied proof plus an unknown baseline still holds: the empty
-    // preimage cannot contradict the proven target either.
+    // A prior dispatch plus an unknown baseline still holds: the empty
+    // preimage cannot contradict anything either.
     let mut diff = HostDiff::new(ADAPTER, GENERATION);
     diff.gate.current_obs = 7;
-    diff.effects.applied_window.insert(
-        "w1".to_owned(),
-        ("op-9".to_owned(), out.clone(), "ws-2".to_owned()),
-    );
+    diff.effects.mark_member_attempted("op-9", "w1");
     let fresh = host_for(&key, &out, "", frame);
     let mut native = FakeNative::seeded(&fresh);
     native
@@ -1847,13 +2027,23 @@ fn unknown_baseline_holds_transfer_without_supersession() {
         .get_mut("w1")
         .expect("seeded mover")
         .workspace = "ws-X".to_owned();
-    let (_stats, feedback) =
-        apply_world_reply(&mut diff, &reply, &fresh, &mut native, &mut Vec::new(), 0);
-    assert!(
-        !superseded(&feedback),
-        "unknown contradicts proof: {feedback:?}"
+    let mut members = Vec::new();
+    let mut views = Vec::new();
+    let stats = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut native,
+        &mut Vec::new(),
+        &mut members,
+        &mut views,
+        0,
     );
-    // Genuine third location with a known preimage still supersedes.
+    assert!(members.is_empty() && views.is_empty());
+    assert!(stats.held > 0, "{stats:?}");
+    // Genuine third location with a known preimage still holds without
+    // dispatch: the core derives the supersession from staged
+    // observation, never from a verdict here.
     let mut diff = HostDiff::new(ADAPTER, GENERATION);
     diff.gate.current_obs = 7;
     let fresh = host_for(&key, &out, "ws-1", frame);
@@ -1863,12 +2053,20 @@ fn unknown_baseline_holds_transfer_without_supersession() {
         .get_mut("w1")
         .expect("seeded mover")
         .workspace = "ws-X".to_owned();
-    let (_stats, feedback) =
-        apply_world_reply(&mut diff, &reply, &fresh, &mut native, &mut Vec::new(), 0);
-    assert!(
-        superseded(&feedback),
-        "genuine external move must supersede: {feedback:?}"
+    let mut members = Vec::new();
+    let mut views = Vec::new();
+    let stats = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut native,
+        &mut Vec::new(),
+        &mut members,
+        &mut views,
+        0,
     );
+    assert!(members.is_empty() && views.is_empty());
+    assert!(stats.held > 0, "{stats:?}");
 }
 
 fn cross_output_target(owner: &WorldOwner, output: &str) -> String {
@@ -1998,7 +2196,12 @@ fn tiled_cross_output_send_writes_target_frame_both_ways() {
     let op = window_op(&forward.reply, "w1");
     let slot = mover_slot(&forward.reply, "w1");
     assert_slot_in_work(slot, areas[1].work);
-    assert!(applied_of(&forward.feedback, &op), "{:?}", forward.feedback);
+    assert!(
+        applied_of_members(&forward.members, &forward.views, &op),
+        "{:?} {:?}",
+        forward.members,
+        forward.views
+    );
     let expected_outer = Rect {
         x: slot.x - 8,
         y: slot.y - 8,
@@ -2059,7 +2262,12 @@ fn tiled_cross_output_send_writes_target_frame_both_ways() {
     let back_op = window_op(&back.reply, "w1");
     let slot_back = mover_slot(&back.reply, "w1");
     assert_slot_in_work(slot_back, areas[0].work);
-    assert!(applied_of(&back.feedback, &back_op), "{:?}", back.feedback);
+    assert!(
+        applied_of_members(&back.members, &back.views, &back_op),
+        "{:?} {:?}",
+        back.members,
+        back.views
+    );
     assert_eq!(mover_live("w1"), slot_back, "return frame lands exactly");
     assert_eq!(
         env.state.applied_homing.get("w1"),
@@ -2132,17 +2340,21 @@ fn lying_setter_keeps_no_receipt_and_flight_pending() {
         }),
     );
     let op = window_op(&tick.reply, "w1");
+    // The lie reports one raw accepted attempt whose post proof never
+    // reaches the target: ambiguous, never an arrival.
     assert!(
-        tick.feedback.iter().any(|f| f.operation_id == op
-            && f.kind == AttemptKind::Transfer
-            && f.outcome == AttemptOutcome::PossiblyExecuted),
+        tick.members
+            .iter()
+            .any(|a| a.operation_id == op
+                && a.setter == tiler_core::world_report::FrameSetter::Accepted),
         "lie holds ambiguous: {:?}",
-        tick.feedback
+        tick.members
     );
     assert!(
-        !applied_of(&tick.feedback, &op),
-        "no fabricated arrival: {:?}",
-        tick.feedback
+        !applied_of_members(&tick.members, &tick.views, &op),
+        "no fabricated arrival: {:?} {:?}",
+        tick.members,
+        tick.views
     );
     assert_eq!(
         S_SET_CALLS.with(|m| m.borrow().iter().filter(|(h, _)| *h == key.hwnd).count()),
@@ -2226,7 +2438,21 @@ fn floating_cross_output_send_preserves_rectangle_and_settles() {
         }),
     );
     let op = window_op(&tick.reply, "w1");
-    assert!(applied_of(&tick.feedback, &op), "{:?}", tick.feedback);
+    // Membership-only crossing: the accepted attempt preserves the physical
+    // frame (pre == post on the source output) while the logical home
+    // arrives through the no-effect receipt. Never a frame write, never a
+    // reinterpreted physical output.
+    let attempt = tick
+        .members
+        .iter()
+        .find(|a| a.operation_id == op)
+        .expect("float crossing reports one member attempt");
+    assert_eq!(
+        attempt.setter,
+        tiler_core::world_report::FrameSetter::Accepted
+    );
+    assert_eq!(attempt.pre, attempt.post);
+    assert!(attempt.post.is_some());
     assert_eq!(
         S_SET_CALLS.with(|m| m.borrow().len()),
         writes_before,
@@ -2361,14 +2587,22 @@ fn switch_view_two_entering_two_leaving_proves_only_when_complete() {
         .entry(out.clone())
         .or_default()
         .extend([ws1.clone(), ws2.clone()]);
-    let (stats, feedback) =
-        apply_world_reply(&mut diff, &reply, &fresh, &mut native, &mut Vec::new(), 0);
-    assert!(
-        feedback.iter().any(|f| f.operation_id == "op-view-2x2"
-            && f.kind == AttemptKind::View
-            && f.outcome == AttemptOutcome::Applied),
-        "2+2 batch proves: {feedback:?}"
+    let mut members = Vec::new();
+    let mut views = Vec::new();
+    let stats = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut native,
+        &mut Vec::new(),
+        &mut members,
+        &mut views,
+        0,
     );
+    assert!(members.is_empty());
+    assert_eq!(views.len(), 1);
+    assert_eq!(views[0].operation_id, "op-view-2x2");
+    assert_eq!(views[0].post.as_deref(), Some(ws2.as_str()));
     assert_eq!(stats.view_writes, 1, "{stats:?}");
     drop(native);
     // Partial completion: the second reveal refuses, so nothing proves.
@@ -2452,21 +2686,26 @@ fn switch_view_two_entering_two_leaving_proves_only_when_complete() {
         .entry(out2.clone())
         .or_default()
         .extend([ws1.clone(), ws2.clone()]);
-    let (_stats, feedback) =
-        apply_world_reply(&mut diff, &reply, &fresh, &mut native, &mut Vec::new(), 0);
-    assert!(
-        feedback
-            .iter()
-            .all(|f| f.outcome != AttemptOutcome::Applied),
-        "partial batch proves nothing: {feedback:?}"
+    let mut members = Vec::new();
+    let mut views = Vec::new();
+    let stats = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut native,
+        &mut Vec::new(),
+        &mut members,
+        &mut views,
+        0,
     );
-    assert!(
-        feedback
-            .iter()
-            .any(|f| f.operation_id == "op-view-2x2-partial"
-                && f.outcome == AttemptOutcome::PossiblyExecuted),
-        "partial batch holds truthfully: {feedback:?}"
-    );
+    assert!(members.is_empty());
+    // Partial batch proves nothing: the refused reveal leaves the view
+    // off-target, so the raw attempt holds truthfully with no proof row
+    // that names the target.
+    assert_eq!(views.len(), 1);
+    assert_eq!(views[0].operation_id, "op-view-2x2-partial");
+    assert_ne!(views[0].post.as_deref(), Some(ws2.as_str()));
+    assert_eq!(stats.view_writes, 0, "{stats:?}");
 }
 
 // ---------------------------------------------------------------------------

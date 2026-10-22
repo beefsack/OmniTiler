@@ -58,6 +58,8 @@
 //! feedback[]: {op, kind:transfer|view|creation|effect|property,
 //!              outcome:unattempted|possibly-executed|refused-proven|
 //!                      superseded-external|applied, hold:""|token}
+//!   Transfer/view verdict rows are retired and reject the report; use
+//!   memberAttempts/viewAttempts for their raw mechanical facts instead.
 //! monotonicMs: "u64" adapter monotonic milliseconds, arbitrary process
 //!   epoch, never wall-clock (optional, tolerant: missing backfills 0 =
 //!   unreported, which never suppresses the transient lane)
@@ -69,6 +71,16 @@
 //!   per window. `op` names the retained float-placement operation the
 //!   write ran under ("" for ordinary writes, never inferred); `pre` is
 //!   the live frame immediately before the write and requires `op`.
+//! memberAttempts[] (optional, tolerant: missing backfills []):
+//!   {op, win, out, ws, setter:accepted|refused|threw,
+//!    pre:{out,ws}|null, post:{out,ws}|null, attemptMs:"u64"} -
+//!   mechanical membership write/homing facts only; at most one entry per
+//!   operation window. The core owns window/migration completion.
+//! viewAttempts[] (optional, tolerant: missing backfills []):
+//!   {op, out, ws, setter:accepted|refused|threw,
+//!    pre:""|id|null, post:""|id|null, base:""|id|null,
+//!    attemptMs:"u64"} - mechanical view write/proof facts only; at most
+//!   one entry per owning view phase. The core owns every view verdict.
 //! command.op: focus|send|switch-view|select-workspace|select-numbered|
 //!   select-relative|select-previous|select-trailing|send-relative|
 //!   send-numbered|set-workspace-tiling|
@@ -597,6 +609,103 @@ fn decode_closed_ids(value: &serde_json::Value) -> Result<Vec<WindowId>> {
         closed.push(WindowId(id.to_owned()));
     }
     Ok(closed)
+}
+
+fn opt_homing_or_null(
+    map: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Result<Option<(OutputId, String)>> {
+    match map.get(key) {
+        None => Err(malformed()),
+        Some(serde_json::Value::Null) => Ok(None),
+        Some(value) => {
+            let homing = as_object(value)?;
+            check_keys(homing, &["out", "ws"])?;
+            Ok(Some((
+                OutputId(req_id(homing, "out")?),
+                req_id(homing, "ws")?,
+            )))
+        }
+    }
+}
+
+fn opt_view_or_null(
+    map: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Result<Option<String>> {
+    match map.get(key) {
+        None => Err(malformed()),
+        Some(serde_json::Value::Null) => Ok(None),
+        // Empty string normalizes to unknown (None), consistently with
+        // `views[]`/`current` empty-means-unknown: validation rejects empty
+        // proof rows outright, so decoding must not produce `Some("")`.
+        Some(serde_json::Value::String(text)) if text.is_empty() => Ok(None),
+        Some(serde_json::Value::String(text)) => {
+            if !is_opaque_id(text) {
+                return Err(unknown_value());
+            }
+            Ok(Some(text.clone()))
+        }
+        Some(_) => Err(malformed()),
+    }
+}
+
+fn decode_member_attempt(
+    value: &serde_json::Value,
+) -> Result<tiler_core::world_report::MemberAttempt> {
+    use tiler_core::world_report::MemberAttempt;
+    let map = as_object(value)?;
+    check_keys(
+        map,
+        &[
+            "op",
+            "win",
+            "out",
+            "ws",
+            "setter",
+            "pre",
+            "post",
+            "attemptMs",
+        ],
+    )?;
+    Ok(MemberAttempt {
+        operation_id: req_id(map, "op")?,
+        window: WindowId(req_id(map, "win")?),
+        target_output: OutputId(req_id(map, "out")?),
+        target_workspace: req_id(map, "ws")?,
+        setter: parse_frame_setter(req_str(map, "setter")?)?,
+        pre: opt_homing_or_null(map, "pre")?,
+        post: opt_homing_or_null(map, "post")?,
+        attempt_ms: req_u64_str(map, "attemptMs")?,
+    })
+}
+
+fn decode_view_attempt(value: &serde_json::Value) -> Result<tiler_core::world_report::ViewAttempt> {
+    use tiler_core::world_report::ViewAttempt;
+    let map = as_object(value)?;
+    check_keys(
+        map,
+        &[
+            "op",
+            "out",
+            "ws",
+            "setter",
+            "pre",
+            "post",
+            "base",
+            "attemptMs",
+        ],
+    )?;
+    Ok(ViewAttempt {
+        operation_id: req_id(map, "op")?,
+        target_output: OutputId(req_id(map, "out")?),
+        target_workspace: req_id(map, "ws")?,
+        setter: parse_frame_setter(req_str(map, "setter")?)?,
+        pre: opt_view_or_null(map, "pre")?,
+        post: opt_view_or_null(map, "post")?,
+        baseline: opt_view_or_null(map, "base")?,
+        attempt_ms: req_u64_str(map, "attemptMs")?,
+    })
 }
 
 fn decode_feedback(value: &serde_json::Value) -> Result<AttemptFeedback> {
@@ -1139,6 +1248,8 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
             "noSpaceResult",
             "monotonicMs",
             "frameAttempts",
+            "memberAttempts",
+            "viewAttempts",
         ],
     )?;
     let version = map
@@ -1206,6 +1317,19 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
     if let Some(frames_value) = map.get("frameAttempts") {
         for item in frames_value.as_array().ok_or_else(malformed)? {
             frames.push(decode_frame_attempt(item)?);
+        }
+    }
+    // Tolerant membership/view attempts: missing backfills empty.
+    let mut member_attempts = Vec::new();
+    if let Some(value) = map.get("memberAttempts") {
+        for item in value.as_array().ok_or_else(malformed)? {
+            member_attempts.push(decode_member_attempt(item)?);
+        }
+    }
+    let mut view_attempts = Vec::new();
+    if let Some(value) = map.get("viewAttempts") {
+        for item in value.as_array().ok_or_else(malformed)? {
+            view_attempts.push(decode_view_attempt(item)?);
         }
     }
     let predicate =
@@ -1283,6 +1407,8 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
         feedback,
         monotonic_ms,
         frames,
+        member_attempts,
+        view_attempts,
     };
     if let Some(reason) = validate_report_reason(&report) {
         return Err(WorldProtocolError {
