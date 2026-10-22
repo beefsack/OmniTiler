@@ -329,8 +329,11 @@ pub fn command_result_estimate(result: &Option<CommandResult>) -> usize {
 /// per-row overhead derived field-by-field from the protocol wire layout
 /// (`v`, `owner`, `adapter`, `gen`, `obs`/`reqSeq`/`cmdSeq` decimal strings,
 /// nullable command, `screens`, `windows`, `views`, `closed`, capability
-/// flags, `native`, `predicate`, `refill`, `defaultTiled`/`focused`/
-/// `complete`/`gesture` values, `feedback`).
+/// flags, `native`, `predicate`, `refill`, `anchorFallback`,
+/// `noSpaceResult`, `switchTarget`, `freshPlacement`, nullable `cursor`,
+/// `defaultTiled`/`focused`/`complete`/`gesture`/`focusFollowsCursor`/
+/// `cursorWarp` values, `feedback`, `monotonicMs` decimal string,
+/// `frameAttempts`).
 /// Conservative: any compact encoding of the report fits within this
 /// bound (locked by `request_estimate_bounds_actual_wire_bytes`). The
 /// adapter must emit compact JSON with no whitespace; key order does not
@@ -340,12 +343,16 @@ pub fn report_estimate(report: &WorldReport) -> usize {
     // Envelope fixed bytes: {"v":2,"owner":,"adapter":,"gen":,"obs":"","reqSeq":"",
     // "req":,"cmdSeq":,"command":,"screens":[],"windows":[],"views":[],"closed":[],
     // "hostOwned":,"equalCount":,"native":[],"predicate":,"refill":,"defaultTiled":,
-    // "complete":,"gesture":,"feedback":[]} = 233
+    // "complete":,"gesture":,"feedback":[]} = 233, plus the cursor-first
+    // targeting keys (10 + 16 + 18 + 22 + 13 = 79):
+    // ,"cursor":,"switchTarget":,"freshPlacement":,"focusFollowsCursor":,
+    // "cursorWarp": = 322
+    // plus ,"monotonicMs":"" (19) and ,"frameAttempts":[] (19) = 360,
     // plus the version digits. Values counted separately below; nullable
-    // command slots count `null` (4) when absent. The workspace mode token
-    // rides as `"mode":S` (9 fixed plus the token); membership evidence
-    // rides per fact below (absent counts `null`).
-    let mut bytes = 243
+    // command and cursor slots count `null` (4) when absent. The workspace
+    // mode token rides as `"mode":S` (9 fixed plus the token); membership
+    // evidence rides per fact below (absent counts `null`).
+    let mut bytes = 360
         + usize_len(report.contract_version as usize)
         + json_string_len(&report.owner)
         + json_string_len(&report.adapter_incarnation)
@@ -356,8 +363,14 @@ pub fn report_estimate(report: &WorldReport) -> usize {
         + json_string_len(report.migration_source_refill.as_wire_str())
         + json_string_len(report.anchor_fallback.as_wire_str())
         + json_string_len(report.no_space_result.as_wire_str())
+        + json_string_len(report.switch_target.as_wire_str())
+        + json_string_len(report.fresh_placement.as_wire_str())
+        + report
+            .cursor
+            .map_or(4, |(x, y)| 3 + int_len(x) + int_len(y))
         + u64_len(report.request_seq)
         + u64_len(report.observation_seq)
+        + u64_len(report.monotonic_ms)
         + report.command_seq.map_or(4, |seq| 2 + u64_len(seq))
         + report.command.as_ref().map_or(4, command_estimate_owned)
         + bool_len(report.default_tiled)
@@ -365,7 +378,9 @@ pub fn report_estimate(report: &WorldReport) -> usize {
         + bool_len(report.equal_workspace_count)
         + json_string_len(&report.focused_global)
         + bool_len(report.inventory_complete)
-        + bool_len(report.gesture_barrier);
+        + bool_len(report.gesture_barrier)
+        + bool_len(report.focus_follows_cursor)
+        + bool_len(report.cursor_warp);
     for screen in &report.screens {
         // {"out":S,"full":R|null,"work":R|null,"gap":N,"outer":N,
         // "complete":B,"primary":B} = 72 fixed plus rect digits, gap
@@ -430,6 +445,26 @@ pub fn report_estimate(report: &WorldReport) -> usize {
             + json_string_len(feedback.outcome.as_str())
             + json_string_len(feedback.hold.map_or("", HoldReason::as_str));
     }
+    for attempt in &report.frames {
+        // {"win":S,"target":[x,y,w,h],"setter":S,"readback":R|null,
+        // "dpiBefore":N|null,"dpiAfter":N|null,"attemptMs":"u64"} = 85 fixed
+        // (7 + 1 + 10 + 3 + 2 + 9 + 1 + 11 + 1 + 12 + 1 + 11 + 1 + 13 + 2)
+        // plus ids, rect digits, setter token, DPI digits, and the stamp.
+        // Absent readback/DPI count `null` (4).
+        bytes += 85
+            + json_string_len(&attempt.window.0)
+            + int_len(attempt.target.x)
+            + int_len(attempt.target.y)
+            + int_len(attempt.target.w)
+            + int_len(attempt.target.h)
+            + json_string_len(attempt.setter.as_str())
+            + attempt.readback.map_or(4, |rect| {
+                5 + int_len(rect.x) + int_len(rect.y) + int_len(rect.w) + int_len(rect.h)
+            })
+            + attempt.dpi_before.map_or(4, |dpi| u64_len(u64::from(dpi)))
+            + attempt.dpi_after.map_or(4, |dpi| u64_len(u64::from(dpi)))
+            + u64_len(attempt.attempt_ms);
+    }
     // No restoration ingress exists on the wire: every report is a
     // fresh-observation report and the adapter sends no restoration key.
     bytes
@@ -492,20 +527,22 @@ fn command_estimate_owned(command: &WorldCommand) -> usize {
             38 + json_string_len(&output.0) + json_string_len(workspace)
         }
         WorldCommand::SelectNumbered { output, index } => {
-            // {"op":"select-numbered","out":S,"index":N} = 40 fixed.
-            40 + json_string_len(&output.0) + usize_len(usize::from(*index))
+            // {"op":"select-numbered","out":S|null,"index":N} = 40 fixed;
+            // a resolved (adapter-absent) output counts `null` (4).
+            40 + output.as_ref().map_or(4, |out| json_string_len(&out.0))
+                + usize_len(usize::from(*index))
         }
         WorldCommand::SelectRelative { output, delta } => {
-            // {"op":"select-relative","out":S,"delta":N} = 40 fixed.
-            40 + json_string_len(&output.0) + int_len(*delta)
+            // {"op":"select-relative","out":S|null,"delta":N} = 40 fixed.
+            40 + output.as_ref().map_or(4, |out| json_string_len(&out.0)) + int_len(*delta)
         }
         WorldCommand::SelectPrevious { output } => {
-            // {"op":"select-previous","out":S} = 31 fixed.
-            31 + json_string_len(&output.0)
+            // {"op":"select-previous","out":S|null} = 31 fixed.
+            31 + output.as_ref().map_or(4, |out| json_string_len(&out.0))
         }
         WorldCommand::SelectTrailing { output } => {
-            // {"op":"select-trailing","out":S} = 31 fixed.
-            31 + json_string_len(&output.0)
+            // {"op":"select-trailing","out":S|null} = 31 fixed.
+            31 + output.as_ref().map_or(4, |out| json_string_len(&out.0))
         }
         WorldCommand::SendRelative {
             window,

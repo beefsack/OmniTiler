@@ -74,6 +74,7 @@ pub(super) fn workspace_do_select(
             output: tiler_core::directional::OutputId(wire),
             workspace: target.to_owned(),
         },
+        super::observation::sample_cursor(),
     );
     let transition_ms = ctx.start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
     match reply {

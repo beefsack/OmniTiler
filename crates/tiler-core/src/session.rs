@@ -801,6 +801,15 @@ pub struct Session {
     /// state (D10).
     anchor_fallback: crate::admission::AnchorFallback,
     no_space: crate::admission::NoSpaceResult,
+    /// Cursor-first fresh placement (2026-10-20) for subsequent fresh
+    /// admissions only: which output a truly new lifetime admits into
+    /// and which anchor it splits. Never moves existing members or
+    /// reflows retained state on change.
+    fresh_placement: crate::cursor_targeting::FreshPlacement,
+    /// Normalized cursor retained from the latest accepted report, `None`
+    /// when the adapter could not read it. Refreshed per accepted
+    /// report, never on a separate stale timer.
+    fresh_cursor: Option<(i32, i32)>,
     /// Diagnostic capacity-float origin (D4): windows floating because no
     /// split was available. Functionally ordinary floats with no
     /// capacity-specific behavior; distinct from `automatic_fixed`.
@@ -930,6 +939,8 @@ impl Session {
             fixed_tile_override: BTreeSet::new(),
             anchor_fallback: crate::admission::AnchorFallback::default(),
             no_space: crate::admission::NoSpaceResult::default(),
+            fresh_placement: crate::cursor_targeting::FreshPlacement::default(),
+            fresh_cursor: None,
             capacity_floats: BTreeSet::new(),
             admission_order: BTreeMap::new(),
             admission_counter: 0,
@@ -1288,6 +1299,8 @@ impl Session {
         pair.fixed_tile_override = source.fixed_tile_override.clone();
         pair.anchor_fallback = source.anchor_fallback;
         pair.no_space = source.no_space;
+        pair.fresh_placement = source.fresh_placement;
+        pair.fresh_cursor = source.fresh_cursor;
         pair.capacity_floats = source.capacity_floats.clone();
         pair.admission_order = source.admission_order.clone();
         pair.admission_counter = source
@@ -1534,6 +1547,10 @@ impl Session {
         target.anchor_fallback = self.anchor_fallback;
         source.no_space = self.no_space;
         target.no_space = self.no_space;
+        source.fresh_placement = self.fresh_placement;
+        target.fresh_placement = self.fresh_placement;
+        source.fresh_cursor = self.fresh_cursor;
+        target.fresh_cursor = self.fresh_cursor;
         source.admission_counter = self.admission_counter;
         target.admission_counter = self.admission_counter;
         for id in &self.capacity_floats {

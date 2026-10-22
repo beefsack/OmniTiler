@@ -113,51 +113,81 @@ pub(super) fn workspace_tick(
             );
             continue;
         };
-        let Some(wire) = state.output_tokens.get(&device).cloned() else {
-            log_json_at(
-                &log_path,
-                serde_json::json!({
-                    "event": "workspace",
-                    "op": intent.op.as_str(),
-                    "index": intent.index,
-                    "edge": intent.edge.as_str(),
-                    "disposition": "consumed",
-                    "outcome": "unknown-output",
-                }),
-            );
-            continue;
-        };
         let op = intent.op;
         let index = intent.index;
         let edge = intent.edge;
         let tick = state.tick;
         match op {
             WorkspaceOp::Select => {
-                let output = tiler_core::directional::OutputId(wire);
+                // The adapter selects no output: the core resolves
+                // numbered/trailing from the cursor-first switch target.
+                // Diagnostics read the resolved target from the reply.
+                let before = state.world.core_projections().2;
                 let command = if index == 0 {
-                    WorldCommand::SelectTrailing { output }
+                    WorldCommand::SelectTrailing { output: None }
                 } else {
-                    WorldCommand::SelectNumbered { output, index }
+                    WorldCommand::SelectNumbered {
+                        output: None,
+                        index,
+                    }
                 };
-                super::world_tick::observe_and_command(
+                let reply = super::world_tick::observe_and_command(
                     state, me, store, dir, fulls, areas, command,
                 );
-                let outcome: &'static str = if state.world.last_reply().is_some() {
-                    state.tick += 1;
-                    "ok"
-                } else {
-                    "unverified"
+                let line = match reply.as_ref() {
+                    Some(applied) => {
+                        state.tick += 1;
+                        match super::history::resolved_select_view(state, &before, applied) {
+                            Some((resolved, view)) => super::history::select_resolved_log(
+                                "workspace",
+                                tick,
+                                &resolved,
+                                &view,
+                                op.as_str(),
+                                index,
+                                edge.as_str(),
+                                "ok",
+                            ),
+                            None => {
+                                workspace_log(state, tick, op.as_str(), index, edge.as_str(), "ok")
+                            }
+                        }
+                    }
+                    None => {
+                        workspace_log(state, tick, op.as_str(), index, edge.as_str(), "unverified")
+                    }
                 };
-                log_json_at(
-                    &log_path,
-                    workspace_log(state, tick, op.as_str(), index, edge.as_str(), outcome),
-                );
+                log_json_at(&log_path, line);
             }
             WorkspaceOp::Send => {
                 let foreground_hwnd = crate::ffi::foreground_window();
                 let origin = intent.origin.clone();
                 match origin.filter(|o| o.hwnd == foreground_hwnd) {
                     Some(o) if !o.token.is_empty() => {
+                        // Focused window source output as the existing
+                        // contract: the mover's own homed output, never the
+                        // cursor output.
+                        let mover_wire = state
+                            .member_tokens
+                            .iter()
+                            .find(|(_, token)| token.as_str() == o.token.as_str())
+                            .and_then(|(key, _)| state.member_home(key))
+                            .and_then(|home| state.wire_of(&home.output))
+                            .or_else(|| state.output_tokens.get(&device).cloned());
+                        let Some(wire) = mover_wire else {
+                            log_json_at(
+                                &log_path,
+                                workspace_log(
+                                    state,
+                                    tick,
+                                    op.as_str(),
+                                    index,
+                                    edge.as_str(),
+                                    "unknown-output",
+                                ),
+                            );
+                            continue;
+                        };
                         let command = WorldCommand::SendNumbered {
                             window: tiler_core::directional::WindowId(o.token.clone()),
                             output: tiler_core::directional::OutputId(wire),

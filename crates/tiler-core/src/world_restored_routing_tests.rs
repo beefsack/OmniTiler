@@ -143,11 +143,18 @@ fn report_full(
         migration_source_refill: crate::output_selection::MigrationSourceRefill::LastRemaining,
         anchor_fallback: crate::admission::AnchorFallback::default(),
         no_space_result: crate::admission::NoSpaceResult::default(),
+        switch_target: crate::cursor_targeting::SwitchTarget::default(),
+        fresh_placement: crate::cursor_targeting::FreshPlacement::default(),
+        focus_follows_cursor: false,
+        cursor_warp: false,
+        cursor: None,
         default_tiled,
         focused_global: focused.to_owned(),
         inventory_complete: true,
         gesture_barrier: false,
         feedback,
+        monotonic_ms: 0,
+        frames: Vec::new(),
     }
 }
 

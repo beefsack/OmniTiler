@@ -93,11 +93,18 @@ fn report(
         migration_source_refill: tiler_core::output_selection::MigrationSourceRefill::LastRemaining,
         anchor_fallback: tiler_core::admission::AnchorFallback::default(),
         no_space_result: tiler_core::admission::NoSpaceResult::default(),
+        switch_target: tiler_core::cursor_targeting::SwitchTarget::default(),
+        fresh_placement: tiler_core::cursor_targeting::FreshPlacement::default(),
+        focus_follows_cursor: false,
+        cursor_warp: false,
+        cursor: None,
         default_tiled: true,
         focused_global: focused.to_owned(),
         inventory_complete: true,
         gesture_barrier: false,
         feedback,
+        monotonic_ms: 0,
+        frames: Vec::new(),
     }
 }
 
@@ -178,7 +185,7 @@ fn local_modes_keep_independent_numbered_rings() {
                 "",
                 Some(11),
                 Some(WorldCommand::SelectNumbered {
-                    output: OutputId("out-a".to_owned()),
+                    output: Some(OutputId("out-a".to_owned())),
                     index: 2,
                 }),
                 vec![],
@@ -257,7 +264,7 @@ fn global_unique_swaps_visible_elsewhere_instead_of_duplicating() {
             "",
             Some(12),
             Some(WorldCommand::SelectPrevious {
-                output: OutputId("out-a".to_owned()),
+                output: Some(OutputId("out-a".to_owned())),
             }),
             vec![],
         ),
@@ -349,7 +356,7 @@ fn shared_mode_shares_one_ring_view_and_history() {
             "",
             Some(11),
             Some(WorldCommand::SelectTrailing {
-                output: OutputId("out-a".to_owned()),
+                output: Some(OutputId("out-a".to_owned())),
             }),
             vec![],
         ),
@@ -375,7 +382,7 @@ fn shared_mode_shares_one_ring_view_and_history() {
             "",
             Some(12),
             Some(WorldCommand::SelectPrevious {
-                output: OutputId("out-b".to_owned()),
+                output: Some(OutputId("out-b".to_owned())),
             }),
             vec![],
         ),

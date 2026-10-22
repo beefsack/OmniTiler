@@ -197,6 +197,20 @@ do not broaden cleanup or repeatedly restart the experiment.
   another output; the dispatch gate recognizes only proven admitted floats
   across that home/physical mismatch. Wrong-origin tiles and stale subjects
   still refuse. This is not permission to change output-targeting policy.
+- **Tentative, pending review (2026-10-22):** dev-only `migrate-workspace
+  --direction (left|right|up|down)` mirrors the exact-owner, normal-owner-only
+  control boundary and invokes the production whole-workspace migration
+  handler. Proof owners refuse; suspension, scope and topology fences remain.
+  Source resolution uses the same live output context as the migration chord.
+  It adds no binding, default chord, input hook or injected-key exception.
+  Join its serial `migrate-workspace` / `edge: cli` dispatch to
+  `workspace-migrate`, the retained Migration and refill View operations, and
+  independent member/frame/view/focus readbacks. Queue acceptance and
+  `migrate-applied` do not establish native completion. Include
+  `migrate-workspace.request` in final residue checks. Controls are polled on
+  owner ticks; an idle queued request is not proof of dispatch. Do not use a
+  post-migration numbered select as a supposedly harmless wake: indices refer
+  to the changed ring and can switch views.
 - The agent-owned identity-tagged `tiler-test-window.exe` is retained only for
   the proofs explicitly bound to it until ported: the non-hooking lifecycle
   `run --hide` proof and the documented private cloak proof (`cloak HWND

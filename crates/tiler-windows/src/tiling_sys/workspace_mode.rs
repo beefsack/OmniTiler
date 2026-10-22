@@ -168,6 +168,7 @@ pub(super) fn toggle_workspace_tiling(
             workspace: current.clone(),
             tiled: !tiled_now,
         },
+        super::observation::sample_cursor(),
     );
     let outcome = match reply {
         Some(_) => "applied",

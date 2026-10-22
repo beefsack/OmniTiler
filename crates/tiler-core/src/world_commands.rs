@@ -21,7 +21,10 @@ use crate::workspace_scope::{
 use crate::world_engine::{
     KIND_CREATION_EXHAUSTED, KIND_DIRECTION, KIND_FOCUS, KIND_MIGRATION, KIND_SCOPE_HELD,
     KIND_SELECT_UNKNOWN, KIND_SEND_TARGET, KIND_SEND_WINDOW, KIND_SNAPSHOT, MSG_CREATION_EXHAUSTED,
-    MSG_DIRECTION, MSG_FOCUS, MSG_MIGRATION, MSG_SCOPE_HELD, MSG_SELECT_UNKNOWN, MSG_SEND_TARGET,
+    MSG_DIRECTION, MSG_FOCUS, MSG_MIGRATION, MSG_MIGRATION_FLIGHT, MSG_MIGRATION_INVENTORY,
+    MSG_MIGRATION_RECIPROCAL, MSG_MIGRATION_RESIDUE, MSG_MIGRATION_SHARED, MSG_MIGRATION_SOURCE,
+    MSG_MIGRATION_SOURCE_UNREADABLE, MSG_MIGRATION_TARGET_GEOMETRY,
+    MSG_MIGRATION_TARGET_INCOMPLETE, MSG_SCOPE_HELD, MSG_SELECT_UNKNOWN, MSG_SEND_TARGET,
     MSG_SEND_WINDOW, MSG_SNAPSHOT, RetainedTransfer, WorldEngine,
 };
 use crate::world_report::{
@@ -483,8 +486,14 @@ impl WorldEngine {
                 self.retain_view(report, command_seq, output, workspace)
             }
             WorldCommand::SelectNumbered { output, index } => {
+                let Some(resolved) = self.resolve_selection_output(report, output.as_ref()) else {
+                    return CommandApplied::Rejected {
+                        kind: KIND_SELECT_UNKNOWN,
+                        message: MSG_SELECT_UNKNOWN,
+                    };
+                };
                 let Some(target) = self
-                    .resolve_selection_ring(report, output)
+                    .resolve_selection_ring(report, &resolved)
                     .and_then(|ring| resolve_numbered(&ring, *index))
                 else {
                     return CommandApplied::Rejected {
@@ -492,12 +501,18 @@ impl WorldEngine {
                         message: MSG_SELECT_UNKNOWN,
                     };
                 };
-                self.retain_view(report, command_seq, output, &target)
+                self.retain_view(report, command_seq, &resolved, &target)
             }
             WorldCommand::SelectRelative { output, delta } => {
-                let current = self.effective_view(output).unwrap_or_default();
+                let Some(resolved) = self.resolve_selection_output(report, output.as_ref()) else {
+                    return CommandApplied::Rejected {
+                        kind: KIND_SELECT_UNKNOWN,
+                        message: MSG_SELECT_UNKNOWN,
+                    };
+                };
+                let current = self.effective_view(&resolved).unwrap_or_default();
                 let Some(target) = self
-                    .resolve_selection_ring(report, output)
+                    .resolve_selection_ring(report, &resolved)
                     .and_then(|ring| resolve_relative_step(&ring, &current, *delta))
                 else {
                     return CommandApplied::Rejected {
@@ -505,17 +520,23 @@ impl WorldEngine {
                         message: MSG_SELECT_UNKNOWN,
                     };
                 };
-                self.retain_view(report, command_seq, output, &target)
+                self.retain_view(report, command_seq, &resolved, &target)
             }
             WorldCommand::SelectPrevious { output } => {
+                let Some(resolved) = self.resolve_selection_output(report, output.as_ref()) else {
+                    return CommandApplied::Rejected {
+                        kind: KIND_SELECT_UNKNOWN,
+                        message: MSG_SELECT_UNKNOWN,
+                    };
+                };
                 // Shared mode walks the one shared history over the
                 // unified order; scoped modes use the per-output entry.
                 if report.workspace_mode == crate::workspace_scope::WorkspaceMode::Shared {
-                    let live: Vec<String> = self.selection_ring(report, output);
-                    let current = self.effective_view(output).unwrap_or_default();
+                    let live: Vec<String> = self.selection_ring(report, &resolved);
+                    let current = self.effective_view(&resolved).unwrap_or_default();
                     match self.history.resolve_shared_for(&live, &current) {
                         PreviousTarget::Select(target) => {
-                            self.retain_view(report, command_seq, output, &target)
+                            self.retain_view(report, command_seq, &resolved, &target)
                         }
                         PreviousTarget::AlreadyThere(_) | PreviousTarget::NoHistory => {
                             self.note_command(command_seq);
@@ -523,14 +544,14 @@ impl WorldEngine {
                         }
                     }
                 } else {
-                    let live: Vec<String> = self.selection_ring(report, output);
-                    let current = self.effective_view(output).unwrap_or_default();
+                    let live: Vec<String> = self.selection_ring(report, &resolved);
+                    let current = self.effective_view(&resolved).unwrap_or_default();
                     match self
                         .history
-                        .resolve_previous_for(&output.0, &live, &current)
+                        .resolve_previous_for(&resolved.0, &live, &current)
                     {
                         PreviousTarget::Select(target) => {
-                            self.retain_view(report, command_seq, output, &target)
+                            self.retain_view(report, command_seq, &resolved, &target)
                         }
                         PreviousTarget::AlreadyThere(_) | PreviousTarget::NoHistory => {
                             // No-op until the next recorded change: reconcile
@@ -542,24 +563,31 @@ impl WorldEngine {
                 }
             }
             WorldCommand::SelectTrailing { output } => {
-                let ring = self.selection_ring(report, output);
-                let occupied = self.ring_occupied(output);
+                let Some(resolved) = self.resolve_selection_output(report, output.as_ref()) else {
+                    return CommandApplied::Rejected {
+                        kind: KIND_SELECT_UNKNOWN,
+                        message: MSG_SELECT_UNKNOWN,
+                    };
+                };
+                let ring = self.selection_ring(report, &resolved);
+                let occupied = self.ring_occupied(&resolved);
                 let selection = resolve_trailing(&ring, &occupied);
                 match selection {
                     TrailingSelection::Reuse(target) => {
-                        self.retain_view(report, command_seq, output, &target)
+                        self.retain_view(report, command_seq, &resolved, &target)
                     }
                     TrailingSelection::Create => {
                         // Trailing workspaces exist immediately in the
                         // logical contract: mint, then select.
-                        let created = self.create_trailing_workspace(output, report.default_tiled);
+                        let created =
+                            self.create_trailing_workspace(&resolved, report.default_tiled);
                         let Some(logical) = created else {
                             return CommandApplied::Rejected {
                                 kind: KIND_CREATION_EXHAUSTED,
                                 message: MSG_CREATION_EXHAUSTED,
                             };
                         };
-                        self.retain_view(report, command_seq, output, &logical)
+                        self.retain_view(report, command_seq, &resolved, &logical)
                     }
                 }
             }
@@ -749,14 +777,14 @@ impl WorldEngine {
         if report.workspace_mode == crate::workspace_scope::WorkspaceMode::Shared {
             return CommandApplied::Rejected {
                 kind: KIND_MIGRATION,
-                message: MSG_MIGRATION,
+                message: MSG_MIGRATION_SHARED,
             };
         }
         // Partial inventory fences: members and views must prove fully.
         if !report.inventory_complete {
             return CommandApplied::Rejected {
                 kind: KIND_MIGRATION,
-                message: MSG_MIGRATION,
+                message: MSG_MIGRATION_INVENTORY,
             };
         }
         let source_key = DomainKey {
@@ -779,16 +807,22 @@ impl WorldEngine {
         if !homed_source {
             return CommandApplied::Rejected {
                 kind: KIND_MIGRATION,
-                message: MSG_MIGRATION,
+                message: MSG_MIGRATION_SOURCE,
             };
         }
         let source_staged = self.staged.domains.iter().find(|d| d.key == source_key);
         let source_readable = source_staged.is_some_and(|d| d.readable);
         let target_complete = self.screen_complete(target_output) == Some(true);
-        if !source_readable || !target_complete {
+        if !source_readable {
             return CommandApplied::Rejected {
                 kind: KIND_MIGRATION,
-                message: MSG_MIGRATION,
+                message: MSG_MIGRATION_SOURCE_UNREADABLE,
+            };
+        }
+        if !target_complete {
+            return CommandApplied::Rejected {
+                kind: KIND_MIGRATION,
+                message: MSG_MIGRATION_TARGET_INCOMPLETE,
             };
         }
         if held_scopes.contains(&source_key) || held_scopes.contains(&target_key) {
@@ -806,7 +840,7 @@ impl WorldEngine {
         }) {
             return CommandApplied::Rejected {
                 kind: KIND_MIGRATION,
-                message: MSG_MIGRATION,
+                message: MSG_MIGRATION_FLIGHT,
             };
         }
         // Target residue refuses as occupied: a homed fact at the target
@@ -814,7 +848,7 @@ impl WorldEngine {
         if self.staged.homing.values().any(|key| key == &target_key) {
             return CommandApplied::Rejected {
                 kind: KIND_MIGRATION,
-                message: MSG_MIGRATION,
+                message: MSG_MIGRATION_RESIDUE,
             };
         }
         let Some((direction, direction_token)) =
@@ -822,7 +856,7 @@ impl WorldEngine {
         else {
             return CommandApplied::Rejected {
                 kind: KIND_MIGRATION,
-                message: MSG_MIGRATION,
+                message: MSG_MIGRATION_RECIPROCAL,
             };
         };
         let _ = direction;
@@ -838,13 +872,13 @@ impl WorldEngine {
         else {
             return CommandApplied::Rejected {
                 kind: KIND_MIGRATION,
-                message: MSG_MIGRATION,
+                message: MSG_MIGRATION_TARGET_GEOMETRY,
             };
         };
         let Some(work_area) = work_area else {
             return CommandApplied::Rejected {
                 kind: KIND_MIGRATION,
-                message: MSG_MIGRATION,
+                message: MSG_MIGRATION_TARGET_GEOMETRY,
             };
         };
         let projected = match crate::geometry::inset_bounds(work_area, outer_gap) {
@@ -852,7 +886,7 @@ impl WorldEngine {
             Err(_) => {
                 return CommandApplied::Rejected {
                     kind: KIND_MIGRATION,
-                    message: MSG_MIGRATION,
+                    message: MSG_MIGRATION_TARGET_GEOMETRY,
                 };
             }
         };
@@ -866,7 +900,7 @@ impl WorldEngine {
         if !target_domain.validate() {
             return CommandApplied::Rejected {
                 kind: KIND_MIGRATION,
-                message: MSG_MIGRATION,
+                message: MSG_MIGRATION_TARGET_GEOMETRY,
             };
         }
         let (Some(owner), Some(correlation)) = (

@@ -66,6 +66,24 @@ pub fn validate_settings(settings: &Settings) -> Result<(), SettingsError> {
                 .to_owned(),
         ));
     }
+    // Stage 2c: exact switch-target tokens only (never a silent default);
+    // unknown values refuse through the existing invalid-file path.
+    if tiler_core::cursor_targeting::SwitchTarget::parse_wire(&settings.core.switch_target)
+        .is_none()
+    {
+        return Err(SettingsError::Invalid(
+            "core.switch_target needs cursor-output|focused-output".to_owned(),
+        ));
+    }
+    // Stage 2c: exact fresh-placement tokens only; unknown values refuse.
+    if tiler_core::cursor_targeting::FreshPlacement::parse_wire(&settings.core.fresh_placement)
+        .is_none()
+    {
+        return Err(SettingsError::Invalid(
+            "core.fresh_placement needs cursor-output-last-focused|cursor-output-cursor-closest|focused-output-last-focused"
+                .to_owned(),
+        ));
+    }
     // Item 12: strict token check against the shared table (never
     // `parse_workspace_mode`, which silently defaults unknown values).
     if !tiler_core::workspace_scope::WORKSPACE_MODE_TOKENS

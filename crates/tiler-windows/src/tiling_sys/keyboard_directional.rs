@@ -1114,7 +1114,17 @@ pub(super) fn dispatch_directional_intent(
         },
     };
     let reply = super::world_tick::run_world_command(
-        state, me, store, dir, &observed, &retained, areas, foreground, fulls, command,
+        state,
+        me,
+        store,
+        dir,
+        &observed,
+        &retained,
+        areas,
+        foreground,
+        fulls,
+        command,
+        super::observation::sample_cursor(),
     );
     // Resolve the world outcome into the snap vocabulary. Focus actuates
     // the core's explicit target and syncs the advance chain only on

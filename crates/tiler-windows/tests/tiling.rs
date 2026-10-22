@@ -6,26 +6,26 @@ use tiler_core::window_policy::{
 };
 use tiler_windows::tiling::{
     CaptureOptions, DirectionalOp, DirectionalRequest, FrameInsets, FullscreenToggle,
-    GestureIntent, OWN_SETTINGS_WINDOW_CLASS, ObservedTarget, ObservedTargetRef, ReadbackOutcome,
-    RefusedTracker, ResizeOptions, ResizeRepeat, ResizeRequest, ScopeHostChild, SendOutputRequest,
-    SkipReason, StatelessVerdict, TokenMap, WindowFacts, WorkspaceAction, WorkspaceRequest,
-    allow_match, allowlist_digest, canonical_retained_rect, classify, classify_focus,
-    classify_gesture, fingerprint, float_topmost_restore_needed, fullscreen_toggle_decision,
-    hosted_child_allows, inspect_stateless_verdict, is_borderless_fullscreen,
-    is_own_settings_window, min_hints_from_outer, normalize_min_track, parse_allowlist,
-    parse_capture_args, parse_children_args, parse_directional_args, parse_directional_request,
-    parse_hide_proof_args, parse_inspect_args, parse_resize_args, parse_resize_request,
-    parse_scope_host_child, parse_send_output_args, parse_send_output_request,
-    parse_shortcut_proof_args, parse_tile_args, parse_tile_proof_args, parse_workspace_args,
-    parse_workspace_proof_args, parse_workspace_request, prefer_modal_move, readback_outcome,
-    render_directional_request, render_resize_request, render_send_output_request,
-    render_workspace_request, resize_direction_valid, resize_mode_valid, resize_repeat_next,
-    scope_allows, scope_exe_basename, send_flags_stable, tick_summary_signature,
-    tiling_domain_bounds, toggle_gate_outcome, verify_directional_argv_consistency,
-    verify_hide_proof_argv_consistency, verify_proof_argv_consistency,
-    verify_resize_argv_consistency, verify_send_output_argv_consistency,
-    verify_shortcut_proof_argv_consistency, verify_workspace_argv_consistency,
-    verify_workspace_proof_argv_consistency, visible_min_from_outer, workspace_dialog_refuses,
+    GestureIntent, OWN_SETTINGS_WINDOW_CLASS, ObservedTarget, ObservedTargetRef, ResizeOptions,
+    ResizeRepeat, ResizeRequest, ScopeHostChild, SendOutputRequest, SkipReason, StatelessVerdict,
+    TokenMap, WindowFacts, WorkspaceAction, WorkspaceRequest, allow_match, allowlist_digest,
+    canonical_retained_rect, classify, classify_focus, classify_gesture, fingerprint,
+    float_topmost_restore_needed, fullscreen_toggle_decision, hosted_child_allows,
+    inspect_stateless_verdict, is_borderless_fullscreen, is_own_settings_window,
+    min_hints_from_outer, normalize_min_track, parse_allowlist, parse_capture_args,
+    parse_children_args, parse_directional_args, parse_directional_request, parse_hide_proof_args,
+    parse_inspect_args, parse_resize_args, parse_resize_request, parse_scope_host_child,
+    parse_send_output_args, parse_send_output_request, parse_shortcut_proof_args, parse_tile_args,
+    parse_tile_proof_args, parse_workspace_args, parse_workspace_proof_args,
+    parse_workspace_request, prefer_modal_move, render_directional_request, render_resize_request,
+    render_send_output_request, render_workspace_request, resize_direction_valid,
+    resize_mode_valid, resize_repeat_next, scope_allows, scope_exe_basename, send_flags_stable,
+    tick_summary_signature, tiling_domain_bounds, toggle_gate_outcome,
+    verify_directional_argv_consistency, verify_hide_proof_argv_consistency,
+    verify_proof_argv_consistency, verify_resize_argv_consistency,
+    verify_send_output_argv_consistency, verify_shortcut_proof_argv_consistency,
+    verify_workspace_argv_consistency, verify_workspace_proof_argv_consistency,
+    visible_min_from_outer, workspace_dialog_refuses,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -1107,42 +1107,6 @@ fn allowlist_digest_stable_and_bound() {
 }
 
 #[test]
-fn refused_tracker_clamp_and_transient_lanes() {
-    use std::time::{Duration, Instant};
-    let mut tracker = RefusedTracker::default();
-    let desired = rect(0, 0, 800, 600);
-    let observed = rect(0, 0, 700, 600);
-    let now = Instant::now();
-    assert!(!tracker.should_skip("w1", &desired, &observed, now));
-    // App-held size after a successful write: suppressed while identical.
-    tracker.note_clamp("w1", &desired, &observed);
-    assert!(tracker.should_skip("w1", &desired, &observed, now));
-    // Genuine native change re-arms.
-    assert!(!tracker.should_skip("w1", &desired, &rect(0, 0, 710, 600), now));
-    // Exact application clears.
-    tracker.note_clamp("w1", &desired, &desired);
-    assert!(!tracker.should_skip("w1", &desired, &observed, now));
-    // Transient setter failure: suppressed inside backoff, recovered after.
-    tracker.note_transient("w2", &desired, &observed, now);
-    assert!(tracker.should_skip("w2", &desired, &observed, now));
-    assert!(!tracker.should_skip("w2", &desired, &observed, now + Duration::from_secs(30)));
-    // New intent re-arms immediately even inside backoff.
-    assert!(!tracker.should_skip("w2", &rect(0, 0, 900, 600), &observed, now));
-    // Transient backoff is bounded and never a permanent disable: repeated
-    // failures cap at 5s and any observation change re-arms.
-    tracker.note_transient("w3", &desired, &observed, now);
-    for _ in 0..10 {
-        tracker.note_transient("w3", &desired, &observed, now);
-    }
-    assert!(tracker.should_skip("w3", &desired, &observed, now + Duration::from_secs(4)));
-    assert!(!tracker.should_skip("w3", &desired, &observed, now + Duration::from_secs(6)));
-    assert!(!tracker.should_skip("w3", &desired, &rect(0, 0, 701, 600), now));
-    // Clamp lane never captures a failed setter: Pending leaves lanes alone.
-    tracker.note_match("w4");
-    assert!(!tracker.should_skip("w4", &desired, &observed, now));
-}
-
-#[test]
 fn gesture_true_move_same_size() {
     let before = rect(0, 0, 800, 600);
     let after = rect(100, 100, 800, 600);
@@ -1262,32 +1226,6 @@ fn gesture_resize_edges() {
             direction2: Some("down"),
             boundary2: Some(700),
         })
-    );
-}
-
-#[test]
-fn readback_outcome_never_clamps_without_write() {
-    let desired = rect(0, 0, 800, 600);
-    // Exact readback always matches, with or without a write behind it.
-    assert_eq!(
-        readback_outcome(true, &desired, &desired),
-        ReadbackOutcome::Match
-    );
-    assert_eq!(
-        readback_outcome(false, &desired, &desired),
-        ReadbackOutcome::Match
-    );
-    // A mismatch after a successful write is an app-held size.
-    assert_eq!(
-        readback_outcome(true, &desired, &rect(0, 0, 700, 600)),
-        ReadbackOutcome::Clamp
-    );
-    // A mismatch with no write (failed or skipped setter) stays pending:
-    // transient backoff and later re-reads keep working instead of being
-    // pinned as a permanent clamp.
-    assert_eq!(
-        readback_outcome(false, &desired, &rect(0, 0, 700, 600)),
-        ReadbackOutcome::Pending
     );
 }
 
@@ -1577,30 +1515,6 @@ fn tick_summary_stable_noop_without_tick() {
     assert_eq!(a, b, "identical observations must dedupe across ticks");
     let changed = tick_summary_signature(5, 1, &skips, 1, "reconcile", 7);
     assert_ne!(a, changed);
-}
-
-#[test]
-fn readback_coverage_match_clamp_pending() {
-    assert_eq!(
-        readback_outcome(true, &rect(0, 0, 800, 600), &rect(0, 0, 800, 600)),
-        ReadbackOutcome::Match
-    );
-    assert_eq!(
-        readback_outcome(false, &rect(0, 0, 800, 600), &rect(0, 0, 800, 600)),
-        ReadbackOutcome::Match
-    );
-    assert_eq!(
-        readback_outcome(true, &rect(0, 0, 800, 600), &rect(0, 0, 700, 600)),
-        ReadbackOutcome::Clamp
-    );
-    assert_eq!(
-        readback_outcome(false, &rect(0, 0, 800, 600), &rect(0, 0, 700, 600)),
-        ReadbackOutcome::Pending
-    );
-    assert_eq!(
-        readback_outcome(true, &rect(8, 8, 788, 884), &rect(8, 8, 787, 884)),
-        ReadbackOutcome::Clamp
-    );
 }
 
 #[test]

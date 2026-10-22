@@ -145,10 +145,6 @@ fn has_any_feedback(feedback: &[AttemptFeedback], op: &str) -> bool {
     feedback.iter().any(|f| f.operation_id == op)
 }
 
-fn set_calls() -> usize {
-    S_SET_CALLS.with(|m| m.borrow().len())
-}
-
 /// Scopes of one tick reply as `scope=authority` pairs for failure output.
 fn scope_summary(reply: &WorldReply) -> Vec<String> {
     reply
@@ -1111,7 +1107,7 @@ fn composed_follow_selectback_stay_hides_and_settles() {
         moving_prims(),
         n1.hwnd,
         Some(WorldCommand::SelectNumbered {
-            output: OutputId(out.clone()),
+            output: Some(OutputId(out.clone())),
             index: back_index,
         }),
     );
@@ -1339,7 +1335,7 @@ fn composed_stay_return_select_reveals_hidden_and_settles() {
         moving_prims(),
         n1.hwnd,
         Some(WorldCommand::SelectNumbered {
-            output: OutputId(out.clone()),
+            output: Some(OutputId(out.clone())),
             index: back_index,
         }),
     );
@@ -1432,7 +1428,7 @@ fn composed_stay_return_select_reveals_hidden_and_settles() {
         moving_prims(),
         n1.hwnd,
         Some(WorldCommand::SelectNumbered {
-            output: OutputId(out.clone()),
+            output: Some(OutputId(out.clone())),
             index: trail_index,
         }),
     );
@@ -1532,7 +1528,7 @@ fn composed_stay_return_select_reveals_hidden_and_settles() {
         moving_prims(),
         n1.hwnd,
         Some(WorldCommand::SelectNumbered {
-            output: OutputId(out.clone()),
+            output: Some(OutputId(out.clone())),
             index: stay_index,
         }),
     );
@@ -1614,6 +1610,7 @@ fn cycle_prims() -> NativePrimitives {
         focus: |hwnd| S_FOCUS_OK.with(|m| m.borrow().get(&hwnd).copied().unwrap_or(true)),
         member_tag: crate::product_hide::sys::read_member_tag,
         hook_pending: || false,
+        dpi: s_dpi,
         process_identity: fake_backed_identity,
         read_topmost: |_| false,
         admit: real.admit,
@@ -1812,7 +1809,8 @@ fn unknown_baseline_holds_transfer_without_supersession() {
         .get_mut("w1")
         .expect("seeded mover")
         .workspace = "ws-X".to_owned();
-    let (stats, feedback) = apply_world_reply(&mut diff, &reply, &fresh, &mut native);
+    let (stats, feedback) =
+        apply_world_reply(&mut diff, &reply, &fresh, &mut native, &mut Vec::new(), 0);
     assert!(
         !superseded(&feedback),
         "unknown preimage superseded: {feedback:?}"
@@ -1827,7 +1825,8 @@ fn unknown_baseline_holds_transfer_without_supersession() {
     // The retained transfer retries once the preimage proves: home at the
     // source actuates and applies.
     let fresh = host_for(&key, &out, "ws-X", frame);
-    let (stats, feedback) = apply_world_reply(&mut diff, &reply, &fresh, &mut native);
+    let (stats, feedback) =
+        apply_world_reply(&mut diff, &reply, &fresh, &mut native, &mut Vec::new(), 0);
     assert!(
         applied_of(&feedback, "op-9"),
         "retained transfer converges: {feedback:?}"
@@ -1848,7 +1847,8 @@ fn unknown_baseline_holds_transfer_without_supersession() {
         .get_mut("w1")
         .expect("seeded mover")
         .workspace = "ws-X".to_owned();
-    let (_stats, feedback) = apply_world_reply(&mut diff, &reply, &fresh, &mut native);
+    let (_stats, feedback) =
+        apply_world_reply(&mut diff, &reply, &fresh, &mut native, &mut Vec::new(), 0);
     assert!(
         !superseded(&feedback),
         "unknown contradicts proof: {feedback:?}"
@@ -1863,31 +1863,13 @@ fn unknown_baseline_holds_transfer_without_supersession() {
         .get_mut("w1")
         .expect("seeded mover")
         .workspace = "ws-X".to_owned();
-    let (_stats, feedback) = apply_world_reply(&mut diff, &reply, &fresh, &mut native);
+    let (_stats, feedback) =
+        apply_world_reply(&mut diff, &reply, &fresh, &mut native, &mut Vec::new(), 0);
     assert!(
         superseded(&feedback),
         "genuine external move must supersede: {feedback:?}"
     );
 }
-
-fn two_output_areas() -> (Vec<super::super::super::MonitorArea>, Vec<Rect>) {
-    let areas = vec![
-        super::super::super::MonitorArea {
-            device: DEV1.to_owned(),
-            work: rect(0, 0, 1920, 1040),
-            full: rect(0, 0, 1920, 1080),
-        },
-        super::super::super::MonitorArea {
-            device: DEV2.to_owned(),
-            work: rect(1920, 0, 1920, 1040),
-            full: rect(1920, 0, 1920, 1080),
-        },
-    ];
-    let fulls = vec![rect(0, 0, 1920, 1080), rect(1920, 0, 1920, 1080)];
-    (areas, fulls)
-}
-
-const DEV2: &str = "DEV2";
 
 fn cross_output_target(owner: &WorldOwner, output: &str) -> String {
     // The output's own active view: arrival needs no view switch, so the
@@ -1898,13 +1880,75 @@ fn cross_output_target(owner: &WorldOwner, output: &str) -> String {
         .expect("target output view")
 }
 
+/// Live stage3a-send topology (20261022-1640): asymmetric FULL/work
+/// geometries with a y-offset second output. A FULL-delta mechanical
+/// remap of an edge tile cannot land here, so the core must publish the
+/// actionable target slot with the desire; the seam writes it as part of
+/// the move and proves arrival by the exact frame plus affinity.
+fn asymmetric_send_areas() -> (Vec<super::super::MonitorArea>, Vec<Rect>) {
+    let areas = vec![
+        super::super::MonitorArea {
+            device: DEV1.to_owned(),
+            work: rect(0, 0, 2560, 1380),
+            full: rect(0, 0, 2560, 1440),
+        },
+        super::super::MonitorArea {
+            device: DEV2.to_owned(),
+            work: rect(2560, 355, 1920, 1032),
+            full: rect(2560, 355, 1920, 1080),
+        },
+    ];
+    let fulls = vec![rect(0, 0, 2560, 1440), rect(2560, 355, 1920, 1080)];
+    (areas, fulls)
+}
+
+/// The published slot must sit fully inside the target work area: the
+/// live defect stranded the mover beyond it via FULL-delta translation.
+fn assert_slot_in_work(slot: Rect, work: Rect) {
+    assert!(
+        slot.x >= work.x
+            && slot.y >= work.y
+            && slot.x + slot.w <= work.x + work.w
+            && slot.y + slot.h <= work.y + work.h,
+        "slot {slot:?} inside work {work:?}"
+    );
+}
+
+fn mover_slot(reply: &WorldReply, window: &str) -> Rect {
+    let row = reply
+        .windows
+        .iter()
+        .find(|w| w.lifetime.0 == window)
+        .expect("mover row");
+    assert_eq!(
+        row.membership_authority,
+        Auth::Controlled,
+        "mover membership desired"
+    );
+    assert_eq!(
+        row.frame_authority,
+        Auth::Controlled,
+        "core owns the target geometry, never a native remap guess"
+    );
+    row.effective_frame
+        .expect("core publishes the actionable target slot pre-arrival")
+}
+
+fn mover_live(token: &str) -> Rect {
+    live_visible_observed()
+        .iter()
+        .find(|w| w.token == token)
+        .expect("mover stays visible")
+        .visible
+}
+
 #[test]
 fn tiled_cross_output_send_writes_target_frame_both_ways() {
     let mut env = env_with(204_001);
     env.state.ensure_device(DEV2);
     let o1 = env.state.output_token(DEV1);
     let o2 = env.state.output_token(DEV2);
-    let (areas, fulls) = two_output_areas();
+    let (areas, fulls) = asymmetric_send_areas();
     let key = win_key(204_001, 2204, "proc-104");
     // Residents keep both outputs' engine domains live: the mover never
     // targets an empty domain the session cannot plan.
@@ -1915,7 +1959,7 @@ fn tiled_cross_output_send_writes_target_frame_both_ways() {
     admit_bare(&mut env, &stay2, "w2");
     script_live(&key, "w1", rect(100, 100, 400, 300), plain_facts());
     script_live(&stay1, "w0", rect(200, 200, 300, 200), plain_facts());
-    script_live(&stay2, "w2", rect(2000, 100, 400, 300), plain_facts());
+    script_live(&stay2, "w2", rect(2700, 400, 400, 300), plain_facts());
     let mut owner = WorldOwner::bootstrap_ids(ADAPTER, GENERATION).expect("owner");
     let observed = live_visible_observed();
     live_tick(
@@ -1929,24 +1973,12 @@ fn tiled_cross_output_send_writes_target_frame_both_ways() {
         0,
         None,
     );
-    // Forward: o1 -> o2 active view with follow. The directional send
-    // resolves the strict neighbor plus its current view; the redirect
-    // lane publishes no frame, so the seam translates the live frame
-    // mechanically (FULL-delta) and proves arrival by affinity plus
-    // the view batch; the sweep re-tiles to the exact slot after.
+    // Forward: o1 -> o2 active view with follow. The core publishes the
+    // exact target slot with the desire (never a FULL-delta remap of the
+    // source position); the seam writes it as part of the move and the
+    // sweep converges around the same slot after arrival proves.
     let target_b = cross_output_target(&owner, &o2);
     let observed = live_visible_observed();
-    let pre = observed
-        .iter()
-        .find(|w| w.token == "w1")
-        .expect("mover observed")
-        .visible;
-    let remapped = Rect {
-        x: pre.x + 1920,
-        y: pre.y,
-        w: pre.w,
-        h: pre.h,
-    };
     let before_writes = S_SET_CALLS.with(|m| m.borrow().len());
     let forward = live_tick(
         &mut env,
@@ -1964,12 +1996,14 @@ fn tiled_cross_output_send_writes_target_frame_both_ways() {
         }),
     );
     let op = window_op(&forward.reply, "w1");
+    let slot = mover_slot(&forward.reply, "w1");
+    assert_slot_in_work(slot, areas[1].work);
     assert!(applied_of(&forward.feedback, &op), "{:?}", forward.feedback);
     let expected_outer = Rect {
-        x: remapped.x - 8,
-        y: remapped.y - 8,
-        w: remapped.w + 16,
-        h: remapped.h + 16,
+        x: slot.x - 8,
+        y: slot.y - 8,
+        w: slot.w + 16,
+        h: slot.h + 16,
     };
     let writes: Vec<(u64, Rect)> = S_SET_CALLS.with(|m| m.borrow().clone());
     assert!(
@@ -1980,14 +2014,9 @@ fn tiled_cross_output_send_writes_target_frame_both_ways() {
         writes
             .iter()
             .any(|(hwnd, outer)| *hwnd == key.hwnd && *outer == expected_outer),
-        "DWM-inset outer write for the translated target: {writes:?} vs {expected_outer:?}"
+        "DWM-inset outer write for the published slot: {writes:?} vs {expected_outer:?}"
     );
-    let live = live_visible_observed();
-    let w1live = live
-        .iter()
-        .find(|w| w.token == "w1")
-        .expect("mover stays visible");
-    assert_eq!(w1live.visible, remapped, "frame lands exactly on target");
+    assert_eq!(mover_live("w1"), slot, "frame lands exactly on target");
     assert_eq!(
         env.state.applied_homing.get("w1"),
         Some(&(o2.clone(), target_b.clone()))
@@ -2009,20 +2038,9 @@ fn tiled_cross_output_send_writes_target_frame_both_ways() {
         "forward crossing settles: {:?}",
         settled.reply.transfers
     );
-    // Back: o2 -> o1 active view with follow (same mechanical proof).
+    // Back: o2 -> o1 active view with follow (same slot-owned proof).
     let target_a = cross_output_target(&owner, &o1);
     let observed = live_visible_observed();
-    let pre_back = observed
-        .iter()
-        .find(|w| w.token == "w1")
-        .expect("mover observed")
-        .visible;
-    let remapped_back = Rect {
-        x: pre_back.x - 1920,
-        y: pre_back.y,
-        w: pre_back.w,
-        h: pre_back.h,
-    };
     let back = live_tick(
         &mut env,
         &mut owner,
@@ -2039,13 +2057,10 @@ fn tiled_cross_output_send_writes_target_frame_both_ways() {
         }),
     );
     let back_op = window_op(&back.reply, "w1");
+    let slot_back = mover_slot(&back.reply, "w1");
+    assert_slot_in_work(slot_back, areas[0].work);
     assert!(applied_of(&back.feedback, &back_op), "{:?}", back.feedback);
-    let live = live_visible_observed();
-    let w1live = live
-        .iter()
-        .find(|w| w.token == "w1")
-        .expect("mover stays visible on return");
-    assert_eq!(w1live.visible, remapped_back, "return frame lands exactly");
+    assert_eq!(mover_live("w1"), slot_back, "return frame lands exactly");
     assert_eq!(
         env.state.applied_homing.get("w1"),
         Some(&(o1.clone(), target_a.clone()))
@@ -2346,7 +2361,8 @@ fn switch_view_two_entering_two_leaving_proves_only_when_complete() {
         .entry(out.clone())
         .or_default()
         .extend([ws1.clone(), ws2.clone()]);
-    let (stats, feedback) = apply_world_reply(&mut diff, &reply, &fresh, &mut native);
+    let (stats, feedback) =
+        apply_world_reply(&mut diff, &reply, &fresh, &mut native, &mut Vec::new(), 0);
     assert!(
         feedback.iter().any(|f| f.operation_id == "op-view-2x2"
             && f.kind == AttemptKind::View
@@ -2436,7 +2452,8 @@ fn switch_view_two_entering_two_leaving_proves_only_when_complete() {
         .entry(out2.clone())
         .or_default()
         .extend([ws1.clone(), ws2.clone()]);
-    let (_stats, feedback) = apply_world_reply(&mut diff, &reply, &fresh, &mut native);
+    let (_stats, feedback) =
+        apply_world_reply(&mut diff, &reply, &fresh, &mut native, &mut Vec::new(), 0);
     assert!(
         feedback
             .iter()
@@ -2449,138 +2466,6 @@ fn switch_view_two_entering_two_leaving_proves_only_when_complete() {
             .any(|f| f.operation_id == "op-view-2x2-partial"
                 && f.outcome == AttemptOutcome::PossiblyExecuted),
         "partial batch holds truthfully: {feedback:?}"
-    );
-}
-
-#[test]
-fn source_refill_migration_arrival_and_views_settle() {
-    let mut env = env_with(208_001);
-    env.state.ensure_device(DEV2);
-    let o1 = env.state.output_token(DEV1);
-    let o2 = env.state.output_token(DEV2);
-    let (areas, fulls) = two_output_areas();
-    let a1 = win_key(208_001, 2211, "proc-121");
-    let a2 = win_key(208_002, 2212, "proc-122");
-    admit_bare(&mut env, &a1, "w1");
-    admit_bare(&mut env, &a2, "w2");
-    script_live(&a1, "w1", rect(0, 0, 800, 600), plain_facts());
-    script_live(&a2, "w2", rect(0, 610, 800, 400), plain_facts());
-    let mut owner = WorldOwner::bootstrap_ids(ADAPTER, GENERATION).expect("owner");
-    let observed = live_visible_observed();
-    live_tick(
-        &mut env,
-        &mut owner,
-        &observed,
-        &[],
-        &areas,
-        &fulls,
-        moving_prims(),
-        0,
-        None,
-    );
-    let ws_m = owner
-        .engine()
-        .logical_view(&o1)
-        .expect("migrated workspace");
-    // Migrate the whole workspace o1 -> o2 through the real command.
-    let observed = live_visible_observed();
-    let moved = live_tick(
-        &mut env,
-        &mut owner,
-        &observed,
-        &[],
-        &areas,
-        &fulls,
-        moving_prims(),
-        0,
-        Some(WorldCommand::MigrateWorkspace {
-            source_output: OutputId(o1.clone()),
-            target_output: OutputId(o2.clone()),
-            workspace: ws_m.clone(),
-        }),
-    );
-    let migration_op = moved
-        .reply
-        .transfers
-        .iter()
-        .find(|t| matches!(t.kind, TransferKind::Migration))
-        .expect("migration retained")
-        .operation_id
-        .clone();
-    let refill_op = moved
-        .reply
-        .transfers
-        .iter()
-        .find(|t| t.operation_id == format!("{migration_op}-refill"))
-        .expect("source refill retained")
-        .operation_id
-        .clone();
-    // Tick 1 actuates member arrival; the source refill view cannot prove
-    // until every member arrival is proven, so the migration holds.
-    assert!(
-        moved.feedback.iter().any(
-            |f| f.operation_id == migration_op && f.outcome == AttemptOutcome::PossiblyExecuted
-        ),
-        "migration holds until views prove: {:?}",
-        moved.feedback
-    );
-    for token in ["w1", "w2"] {
-        assert_eq!(
-            env.state.applied_homing.get(token),
-            Some(&(o2.clone(), ws_m.clone())),
-            "{token} arrival proves"
-        );
-    }
-    // Tick 2 proves the refill view behind the arrived members.
-    let observed = live_visible_observed();
-    let proved = live_tick(
-        &mut env,
-        &mut owner,
-        &observed,
-        &[],
-        &areas,
-        &fulls,
-        moving_prims(),
-        0,
-        None,
-    );
-    assert!(
-        proved
-            .feedback
-            .iter()
-            .any(|f| f.operation_id == migration_op && f.outcome == AttemptOutcome::Applied),
-        "migration applies: {:?}",
-        proved.feedback
-    );
-    assert!(
-        proved
-            .feedback
-            .iter()
-            .any(|f| f.operation_id == refill_op && f.outcome == AttemptOutcome::Applied),
-        "refill applies: {:?}",
-        proved.feedback
-    );
-    // Tick 3 settles: no migration flight survives proven arrival.
-    let observed = live_visible_observed();
-    let settled = live_tick(
-        &mut env,
-        &mut owner,
-        &observed,
-        &[],
-        &areas,
-        &fulls,
-        moving_prims(),
-        0,
-        None,
-    );
-    assert!(
-        settled
-            .reply
-            .transfers
-            .iter()
-            .all(|t| !matches!(t.kind, TransferKind::Migration)),
-        "migration settles: {:?}",
-        settled.reply.transfers
     );
 }
 
@@ -2624,6 +2509,8 @@ fn world_fixed_hint_producer_shapes_fixed_admission() {
         &observed,
         &[],
         &areas,
+        0,
+        None,
         0,
     )
     .expect("dispatch converges");
@@ -2934,6 +2821,8 @@ fn world_first_exit_tiles_quietly() {
         &observed,
         &[],
         &areas,
+        0,
+        None,
         0,
     )
     .expect("dispatch converges");

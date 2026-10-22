@@ -990,7 +990,15 @@ mod pager_host_tests {
             work: pager_full(),
             full: pager_full(),
         }];
-        super::super::world_tick::dispatch_test_observation(&mut state, &[], &[], &areas, 0);
+        super::super::world_tick::dispatch_test_observation(
+            &mut state,
+            &[],
+            &[],
+            &areas,
+            0,
+            None,
+            0,
+        );
         let ids = state.workspace_ids(&output);
         assert!(ids.len() >= 2, "active plus a distinct target");
         // Hermetic observation insurance: any accidental dispatch below
@@ -1465,6 +1473,8 @@ mod pager_host_tests {
             }],
             &seed_areas,
             0,
+            None,
+            0,
         );
         inject_pending_observe(
             vec![mk_observed(701, "tok-live", 7, "creation-live"), foreign],
@@ -1649,6 +1659,8 @@ mod pager_host_tests {
             }],
             &seed_areas,
             0,
+            None,
+            0,
         );
         inject_pending_observe(
             vec![
@@ -1755,6 +1767,8 @@ mod pager_host_tests {
             &[],
             &seed_areas,
             0,
+            None,
+            0,
         );
         // Tick 1: both visible, native top-to-bottom [x, y].
         inject_pending_observe(
@@ -1822,6 +1836,8 @@ mod pager_host_tests {
             &[live_observed_hwnd(902, 7, "creation-y", frame_y)],
             &[],
             &seed_areas,
+            0,
+            None,
             0,
         );
         inject_pending_observe(

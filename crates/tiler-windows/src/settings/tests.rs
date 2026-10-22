@@ -59,6 +59,21 @@ fn defaults_match_kde_parity() {
         settings.core.workspace.mode_enum(),
         tiler_core::workspace_scope::WorkspaceMode::PerOutputLocal
     );
+    // Stage 2c cursor-first targeting: COSMIC-flavored defaults (cursor
+    // output, MRU anchors), focus-follows-cursor and warp off. The two
+    // bools retain only; actuation is stage 4.
+    assert_eq!(settings.core.switch_target, SWITCH_TARGET_CURSOR);
+    assert_eq!(
+        settings.core.switch_target_mode(),
+        tiler_core::cursor_targeting::SwitchTarget::Cursor
+    );
+    assert_eq!(settings.core.fresh_placement, FRESH_PLACEMENT_CURSOR_MRU);
+    assert_eq!(
+        settings.core.fresh_placement_mode(),
+        tiler_core::cursor_targeting::FreshPlacement::CursorOutputMru
+    );
+    assert!(!settings.core.focus_follows_cursor);
+    assert!(!settings.core.cursor_warp);
     assert!(validate_settings(&settings).is_ok());
 }
 
@@ -1585,4 +1600,197 @@ fn history_rebind_needs_ctrl_and_shares_vk_across_actions() {
         },
     );
     assert!(validate_settings(&settings).is_err());
+}
+#[test]
+fn cursor_targeting_tokens_map_exactly_with_cursor_defaults() {
+    use tiler_core::cursor_targeting::{FreshPlacement, SwitchTarget};
+    assert_eq!(
+        SwitchTarget::parse_wire(SWITCH_TARGET_CURSOR),
+        Some(SwitchTarget::Cursor)
+    );
+    assert_eq!(
+        SwitchTarget::parse_wire(SWITCH_TARGET_FOCUSED),
+        Some(SwitchTarget::Focused)
+    );
+    assert_eq!(SwitchTarget::Cursor.as_wire_str(), SWITCH_TARGET_CURSOR);
+    assert_eq!(SwitchTarget::Focused.as_wire_str(), SWITCH_TARGET_FOCUSED);
+    assert_eq!(SwitchTarget::default(), SwitchTarget::Cursor);
+    assert_eq!(
+        FreshPlacement::parse_wire(FRESH_PLACEMENT_CURSOR_MRU),
+        Some(FreshPlacement::CursorOutputMru)
+    );
+    assert_eq!(
+        FreshPlacement::parse_wire(FRESH_PLACEMENT_CURSOR_CLOSEST),
+        Some(FreshPlacement::CursorOutputCursorClosest)
+    );
+    assert_eq!(
+        FreshPlacement::parse_wire(FRESH_PLACEMENT_FOCUSED_MRU),
+        Some(FreshPlacement::FocusedOutputMru)
+    );
+    assert_eq!(
+        FreshPlacement::CursorOutputMru.as_wire_str(),
+        FRESH_PLACEMENT_CURSOR_MRU
+    );
+    assert_eq!(
+        FreshPlacement::CursorOutputCursorClosest.as_wire_str(),
+        FRESH_PLACEMENT_CURSOR_CLOSEST
+    );
+    assert_eq!(
+        FreshPlacement::FocusedOutputMru.as_wire_str(),
+        FRESH_PLACEMENT_FOCUSED_MRU
+    );
+    assert_eq!(FreshPlacement::default(), FreshPlacement::CursorOutputMru);
+    // No aliases, no case folding, no empty token, no retired IDs.
+    for bad in [
+        "",
+        "cursor",
+        "focused",
+        "mru",
+        "hyprland",
+        "CURSOR-OUTPUT",
+        "cursor_output",
+    ] {
+        assert!(SwitchTarget::parse_wire(bad).is_none(), "{bad}");
+        assert!(FreshPlacement::parse_wire(bad).is_none(), "{bad}");
+    }
+    let mut settings = Settings::default();
+    settings.core.switch_target = SWITCH_TARGET_FOCUSED.to_owned();
+    assert_eq!(settings.core.switch_target_mode(), SwitchTarget::Focused);
+    settings.core.fresh_placement = FRESH_PLACEMENT_FOCUSED_MRU.to_owned();
+    assert_eq!(
+        settings.core.fresh_placement_mode(),
+        FreshPlacement::FocusedOutputMru
+    );
+    assert!(validate_settings(&settings).is_ok());
+    // Hand-built unknown values fail closed to the defaults but refuse
+    // through validation (last-good on disk, never live).
+    settings.core.switch_target = "focused".to_owned();
+    assert_eq!(settings.core.switch_target_mode(), SwitchTarget::Cursor);
+    assert!(matches!(
+        validate_settings(&settings),
+        Err(SettingsError::Invalid(_))
+    ));
+    settings.core.switch_target = SWITCH_TARGET_CURSOR.to_owned();
+    settings.core.fresh_placement = "mru".to_owned();
+    assert_eq!(
+        settings.core.fresh_placement_mode(),
+        FreshPlacement::CursorOutputMru
+    );
+    assert!(matches!(
+        validate_settings(&settings),
+        Err(SettingsError::Invalid(_))
+    ));
+}
+
+#[test]
+fn cursor_targeting_options_carry_functional_labels_and_wm_tips() {
+    assert_eq!(
+        switch_target_options(),
+        [
+            (SWITCH_TARGET_CURSOR, "Cursor output", "COSMIC"),
+            (SWITCH_TARGET_FOCUSED, "Focused output", "i3, sway"),
+        ]
+    );
+    assert_eq!(
+        fresh_placement_options(),
+        [
+            (
+                FRESH_PLACEMENT_CURSOR_MRU,
+                "Cursor output, last-focused window",
+                "COSMIC"
+            ),
+            (
+                FRESH_PLACEMENT_CURSOR_CLOSEST,
+                "Cursor output, cursor-closest window",
+                "Hyprland"
+            ),
+            (
+                FRESH_PLACEMENT_FOCUSED_MRU,
+                "Focused output, last-focused window",
+                "i3, sway"
+            ),
+        ]
+    );
+}
+
+#[test]
+fn cursor_targeting_missing_keys_default_and_invalid_strings_refuse() {
+    // Producer-shaped additive schema-v1 docs: older files without the
+    // keys deserialize to the selected defaults and validate; explicit
+    // values round-trip; unknown strings deserialize but refuse in
+    // validation (last-good kept, never normalized into live). The two
+    // bools are plain schema defaults (missing and false read the same).
+    let missing: Settings =
+        serde_json::from_str(r#"{"v":1,"core":{}}"#).expect("missing keys parse");
+    assert_eq!(missing.core.switch_target, SWITCH_TARGET_CURSOR);
+    assert_eq!(missing.core.fresh_placement, FRESH_PLACEMENT_CURSOR_MRU);
+    assert!(!missing.core.focus_follows_cursor);
+    assert!(!missing.core.cursor_warp);
+    assert!(validate_settings(&missing).is_ok());
+    for (key, good) in [
+        ("switch_target", SWITCH_TARGET_FOCUSED),
+        ("fresh_placement", FRESH_PLACEMENT_CURSOR_CLOSEST),
+        ("fresh_placement", FRESH_PLACEMENT_FOCUSED_MRU),
+    ] {
+        let doc = serde_json::json!({
+            "v": SETTINGS_SCHEMA_VERSION,
+            "revision": 1,
+            "core": {key: good},
+            "bindings": {}
+        });
+        let parsed: Settings = serde_json::from_value(doc).expect("explicit value parses");
+        assert!(validate_settings(&parsed).is_ok());
+        let round_tripped: Settings =
+            serde_json::from_str(&serde_json::to_string(&parsed).expect("serializes"))
+                .expect("round-trips");
+        assert_eq!(round_tripped, parsed);
+    }
+    for (key, bad) in [
+        ("switch_target", "focused"),
+        ("switch_target", ""),
+        ("fresh_placement", "mru"),
+        ("fresh_placement", ""),
+    ] {
+        let doc = serde_json::json!({
+            "v": SETTINGS_SCHEMA_VERSION,
+            "revision": 1,
+            "core": {key: bad},
+            "bindings": {}
+        });
+        let parsed: Settings = serde_json::from_value(doc).expect("invalid string parses");
+        assert!(
+            matches!(validate_settings(&parsed), Err(SettingsError::Invalid(_))),
+            "{key}={bad}"
+        );
+    }
+    // Stage 4 owns actuation: staging true persists and validates, with
+    // no effect claim here.
+    let mut retained = Settings::default();
+    retained.core.focus_follows_cursor = true;
+    retained.core.cursor_warp = true;
+    assert!(validate_settings(&retained).is_ok());
+    let round_tripped: Settings =
+        serde_json::from_str(&serde_json::to_string(&retained).expect("serializes"))
+            .expect("round-trips");
+    assert!(round_tripped.core.focus_follows_cursor);
+    assert!(round_tripped.core.cursor_warp);
+}
+
+#[test]
+fn cursor_targeting_presets_leave_core_fields_unchanged() {
+    // No all-settings presets exist: binding presets never touch these
+    // lanes (or any core lane).
+    for preset in [Preset::Authentic, Preset::Compatible] {
+        let mut settings = Settings::default();
+        settings.core.switch_target = SWITCH_TARGET_FOCUSED.to_owned();
+        settings.core.fresh_placement = FRESH_PLACEMENT_FOCUSED_MRU.to_owned();
+        settings.core.focus_follows_cursor = true;
+        settings.core.cursor_warp = true;
+        apply_preset(&mut settings, preset);
+        assert_eq!(settings.core.switch_target, SWITCH_TARGET_FOCUSED);
+        assert_eq!(settings.core.fresh_placement, FRESH_PLACEMENT_FOCUSED_MRU);
+        assert!(settings.core.focus_follows_cursor);
+        assert!(settings.core.cursor_warp);
+        assert!(validate_settings(&settings).is_ok());
+    }
 }

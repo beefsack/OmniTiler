@@ -26,7 +26,10 @@
 //! - Geometry writes convert the desired visible frame to the native outer
 //!   frame through the measured insets (`FrameInsets::visible_to_outer`,
 //!   the same conversion as the legacy write path) and post one
-//!   `SetWindowPos` with `SWP_NOACTIVATE | SWP_NOZORDER`. A recycled HWND
+//!   `SetWindowPos` with `SWP_NOACTIVATE | SWP_NOZORDER`. A cross-monitor
+//!   write that changes the window DPI under the call reasserts the same
+//!   intended frame once through the fresh insets (invalidated placement,
+//!   never a clamp). A recycled HWND
 //!   (pid/creation drift across the call) is ambiguous, never success.
 //! - Focus is one verified `SetForegroundWindow` with an exact foreground
 //!   readback only (no pumped settle: a miss holds and converges next
@@ -66,6 +69,9 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use tiler_core::geometry::Rect;
 use windows_sys::Win32::Foundation::HWND;
+
+#[path = "world_native_frame.rs"]
+mod frame;
 
 /// Outcome classes for one hide admission, mirroring the hide-effect
 /// admission fences without the owner borrow: proof-mode gate, scope,
@@ -114,6 +120,10 @@ pub(super) struct NativePrimitives {
     pub focus: fn(u64) -> bool,
     pub member_tag: fn(u64) -> Option<String>,
     pub hook_pending: fn() -> bool,
+    /// Live window DPI in physical pixels per inch (`None` when unreadable,
+    /// never guessed). Cross-monitor writes can change this under the call;
+    /// the frame path re-bases once through it instead of pinning a clamp.
+    pub dpi: fn(u64) -> Option<u32>,
     pub process_identity: fn(u64) -> Option<ProcessIdentity>,
     pub read_topmost: fn(u64) -> bool,
     pub admit: fn(
@@ -191,6 +201,11 @@ fn real_hook_pending() -> bool {
     super::hook_edges_pending()
 }
 
+fn real_dpi(hwnd: u64) -> Option<u32> {
+    let dpi = crate::ffi::dpi_for_window(hwnd);
+    (dpi != 0).then_some(dpi)
+}
+
 fn real_process_identity(hwnd: u64) -> Option<ProcessIdentity> {
     let pid = crate::ffi::window_pid(hwnd);
     if pid == 0 {
@@ -264,6 +279,7 @@ impl Default for NativePrimitives {
             focus: real_focus,
             member_tag: real_member_tag,
             hook_pending: real_hook_pending,
+            dpi: real_dpi,
             process_identity: real_process_identity,
             read_topmost: real_read_topmost,
             admit: real_admit,
@@ -748,63 +764,6 @@ impl<'a> LiveNative<'a> {
         })
     }
 
-    /// Shared host-mechanical frame write: fresh eligibility, scope,
-    /// hosted-child fence, full identity, and lifetime tag. Row-local
-    /// drift refuses without writes (`Ok(false)`); torn state across the
-    /// call is ambiguous (`Err`). The setter boolean is never proof: the
-    /// caller re-reads the exact frame before claiming arrival.
-    fn frame_write_inner(
-        &mut self,
-        key: &WindowKey,
-        expected: &ProcessIdentity,
-        rect: Rect,
-    ) -> Result<bool, ()> {
-        // TOCTOU revalidation before the setter: fresh eligibility, scope,
-        // hosted-child fence, full identity, and lifetime tag.
-        let w = (self.prims.observe)(key.hwnd, self.me, self.fulls, &mut self.tokens)
-            .map_err(|_| ())?;
-        if w.hwnd != key.hwnd
-            || w.identity.pid != key.pid
-            || w.identity.process_creation != key.creation
-        {
-            return Err(());
-        }
-        if !crate::tiling::scope_allows(self.scope, &w.identity.exe_path) {
-            return Ok(false);
-        }
-        if !super::inspection::hosted_gate_allows(
-            &w.identity.exe_path,
-            key.hwnd,
-            key.pid,
-            self.scope_hosts,
-        ) {
-            return Ok(false);
-        }
-        if !self.identity_ok(key, expected) {
-            return Err(());
-        }
-        if !self.lifetime_ok(key) {
-            return Err(());
-        }
-        if self.write_vetoed(key.hwnd) {
-            return Ok(false);
-        }
-        if crate::tiling::classify(&w.facts).is_err() {
-            // No window authority lane (cloaked, elevated, shell, tool,
-            // owned, dialog, no-activate, hidden, minimized): overlays keep
-            // membership but take no tiled writes here.
-            return Ok(false);
-        }
-        let Some(outer) = w.insets.visible_to_outer(rect) else {
-            return Ok(false);
-        };
-        let ok = (self.prims.set_outer)(key.hwnd, outer);
-        if (self.prims.window_pid)(key.hwnd) != key.pid {
-            return Err(());
-        }
-        Ok(ok)
-    }
-
     /// Retained proven homing for one token, if any. Never the desired core
     /// target.
     fn committed_homing(&self, token: &str) -> Option<(String, String)> {
@@ -1070,6 +1029,11 @@ impl NativeOps for LiveNative<'_> {
         !self.active.is_empty()
     }
 
+    fn read_dpi(&mut self, token: &str) -> Option<u32> {
+        let key = self.key_of(token)?;
+        (self.prims.dpi)(key.hwnd)
+    }
+
     fn write_frame(&mut self, token: &str, rect: Rect) -> Result<bool, ()> {
         let key = self.key_of(token).ok_or(())?;
         if (self.prims.hook_pending)() {
@@ -1171,6 +1135,82 @@ impl NativeOps for LiveNative<'_> {
             return settle_commit(self.commit_hide(&key, &expected, iconic));
         }
         Ok(true)
+    }
+
+    fn migration_arrival_proven(
+        &mut self,
+        token: &str,
+        out: &str,
+        ws: &str,
+        frame: Option<Rect>,
+        floating: bool,
+        baseline_frame: Option<Rect>,
+    ) -> bool {
+        // View-independent member proof for the migration membership
+        // phase: the target view flips only after every member proves,
+        // so this proof must never wait for it. Tiled arrivals prove
+        // through the actuation frame (`frame` when published, else the
+        // mechanical remap) landing on the target output; floats prove
+        // through their preserved frame. Identity, lifetime, scope,
+        // hosted-child, and visibility gates match the receipt path;
+        // the setter boolean is never proof.
+        let Some(key) = self.key_of(token) else {
+            return false;
+        };
+        let Some(expected) = self.member_identity.get(&key).cloned() else {
+            return false;
+        };
+        if !self.identity_ok(&key, &expected) || !self.lifetime_ok(&key) {
+            return false;
+        }
+        if !crate::tiling::scope_allows(self.scope, &expected.exe_path) {
+            return false;
+        }
+        if !super::inspection::hosted_gate_allows(
+            &expected.exe_path,
+            key.hwnd,
+            expected.pid,
+            self.scope_hosts,
+        ) {
+            return false;
+        }
+        if self.allowlist.is_some() && !self.workspace_proof {
+            return false;
+        }
+        if (self.prims.is_iconic)(key.hwnd) {
+            return true;
+        }
+        let hidden = self.committed_hidden(&key);
+        let visible = (self.prims.is_visible)(key.hwnd);
+        let expected_visible = self.expected_visible(&key, &(out.to_owned(), ws.to_owned()));
+        if hidden {
+            return !visible && !expected_visible;
+        }
+        if visible != expected_visible || !visible {
+            return false;
+        }
+        if self.sticky.contains_key(&key) {
+            return true;
+        }
+        if floating {
+            // Floats preserve their physical frame by design (never
+            // remapped): the live frame must still equal the observation
+            // baseline exactly. Never affinity and never the deferred view.
+            return self
+                .read_frame(token)
+                .is_some_and(|live| Some(live) == baseline_frame);
+        }
+        let Some(live) = self.read_frame(token) else {
+            return false;
+        };
+        if let Some(target) = frame {
+            return live == target && self.affinity_of(&live).as_deref() == Some(out);
+        }
+        // Redirect lane (no published frame): the mechanical remap lands
+        // the live frame on the target output. Screen affinity plus the
+        // visibility proof above is the arrival; the deferred target view
+        // is not required.
+        self.affinity_of(&live).as_deref() == Some(out)
     }
 
     fn switch_view(&mut self, output: &str, logical: &str) -> Result<bool, ()> {

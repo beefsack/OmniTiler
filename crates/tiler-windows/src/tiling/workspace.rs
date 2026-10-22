@@ -854,6 +854,114 @@ pub fn parse_send_output_request(json: &str) -> Result<SendOutputRequest, String
     Ok(request)
 }
 
+/// Exact-owner whole-workspace migration control (test-needed, tentative
+/// pending user review): `migrate-workspace --direction DIR` queues one
+/// bounded request for the normal `tile` loop only. The owner consumes it
+/// once and dispatches through the real whole-workspace migration production
+/// route (`workspace_migrate_one`) with production origin, lifetime, scope,
+/// topology and suspension fences. Like send-output, it does not require
+/// keyboard takeover. No synthetic input; never a proof path. The CLI carries
+/// direction only, never an HWND. Proof owners and suspended/elevated
+/// sessions refuse.
+pub const MIGRATE_WORKSPACE_REQUEST_FILE: &str = "migrate-workspace.request";
+pub const MIGRATE_WORKSPACE_REQUEST_VERSION: u32 = 1;
+
+/// CLI options for the exact-owner test-needed `migrate-workspace` control
+/// (normal `tile` only): `--direction` with `left`|`right`|`up`|`down`. The
+/// CLI only queues a bounded single-pending request file; the owner loop
+/// validates the full owner binding and dispatches through the production
+/// migration arm.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MigrateWorkspaceOptions {
+    pub direction: String,
+}
+
+/// Parse the test-needed `migrate-workspace` CLI form. Exactly `--direction`
+/// `DIR`; anything else (including a missing value or repeated flags)
+/// refuses.
+pub fn parse_migrate_workspace_args(args: &[String]) -> Result<MigrateWorkspaceOptions, String> {
+    let usage = "usage: migrate-workspace --direction (left|right|up|down)";
+    if args.len() != 2 {
+        return Err(usage.to_owned());
+    }
+    if args[0] != "--direction" {
+        return Err(usage.to_owned());
+    }
+    if !resize_direction_valid(&args[1]) {
+        return Err("refuse: migrate-workspace direction must be left|right|up|down".to_owned());
+    }
+    Ok(MigrateWorkspaceOptions {
+        direction: args[1].clone(),
+    })
+}
+
+/// Verify the raw received argv against the parsed `migrate-workspace`
+/// options: exactly `--direction DIR` with a matching value, no unknown
+/// flags.
+pub fn verify_migrate_workspace_argv_consistency(
+    raw: &[String],
+    parsed: &MigrateWorkspaceOptions,
+) -> Result<(), String> {
+    let usage = "usage: migrate-workspace --direction (left|right|up|down)";
+    if raw.len() != 2 || raw[0] != "--direction" {
+        return Err(usage.to_owned());
+    }
+    if raw[1] != parsed.direction {
+        return Err("error: argv/parsed migrate-workspace mismatch (impossible)".to_owned());
+    }
+    Ok(())
+}
+
+/// Versioned exact-owner workspace-migration request body. `creation`/`pid`/
+/// `exe_path`/`user_sid`/`session_id` bind the exact ledger owner;
+/// `direction` is the validated wire token; `correlation` is a
+/// client-generated opaque transport token. No titles, no geometry, no HWNDs,
+/// no secrets.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct MigrateWorkspaceRequest {
+    pub v: u32,
+    pub creation: String,
+    pub pid: u32,
+    pub exe_path: String,
+    pub user_sid: String,
+    pub session_id: u32,
+    pub direction: String,
+    pub correlation: String,
+}
+
+/// Render one workspace-migration request body. Bounds only; full owner
+/// equality stays with the owner-side check.
+pub fn render_migrate_workspace_request(request: &MigrateWorkspaceRequest) -> String {
+    serde_json::to_string(request).unwrap_or_default()
+}
+
+/// Parse and bound one workspace-migration request body. Refuses malformed
+/// JSON, version drift, empty identity, unknown direction tokens, and invalid
+/// correlation tokens. Owner equality (exact creation/pid/exe/sid/session)
+/// stays with the caller, which holds the live owner identity.
+pub fn parse_migrate_workspace_request(json: &str) -> Result<MigrateWorkspaceRequest, String> {
+    let request: MigrateWorkspaceRequest = serde_json::from_str(json)
+        .map_err(|_| "refuse: malformed migrate-workspace request".to_owned())?;
+    if request.v != MIGRATE_WORKSPACE_REQUEST_VERSION {
+        return Err("refuse: migrate-workspace request version".to_owned());
+    }
+    if request.creation.is_empty()
+        || request.pid == 0
+        || request.exe_path.is_empty()
+        || request.user_sid.is_empty()
+        || request.correlation.is_empty()
+    {
+        return Err("refuse: malformed migrate-workspace request".to_owned());
+    }
+    if !resize_direction_valid(&request.direction) {
+        return Err("refuse: malformed migrate-workspace request".to_owned());
+    }
+    if tiler_core::ids::CorrelationId::parse(&request.correlation).is_none() {
+        return Err("refuse: malformed migrate-workspace request".to_owned());
+    }
+    Ok(request)
+}
+
 /// Central portable borderless-fullscreen predicate: a captionless window
 /// whose visible frame completely contains any monitor's full bounds
 /// (`rcMonitor`, not `rcWork`). Dimensions alone never classify: captioned

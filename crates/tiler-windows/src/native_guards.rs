@@ -862,6 +862,19 @@ mod tests {
     }
 
     #[test]
+    fn output_context_live_foreground_beats_live_stale_cache() {
+        // Live focus/cache disagreement: focus moved to mon-b while the
+        // last-switch cache still names the live mon-a. The cached value
+        // stays last, so migration/chord source resolution follows live
+        // focus instead of pinning the stale output.
+        let keys = vec!["mon-a".to_owned(), "mon-b".to_owned()];
+        assert_eq!(
+            output_context_keys(&keys, Some("mon-a"), Some("mon-b"), None),
+            Some("mon-b".to_owned())
+        );
+    }
+
+    #[test]
     fn hidden_snapshot_prefers_float_lane_with_tiled_fallback() {
         let float = Some(rect(1, 2, 3, 4));
         let slot = Some(rect(5, 6, 7, 8));

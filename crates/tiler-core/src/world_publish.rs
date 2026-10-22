@@ -59,7 +59,11 @@ impl WorldEngine {
     /// scopes carry their retained lifetimes as hold rows. Logical
     /// authority means the target of an outstanding migration publishes
     /// Controlled membership desire before any native arrival (frames hold
-    /// until arrival proof); unchanged reports never flap the source.
+    /// until arrival proof); cross-output tiled movers (window transfers
+    /// and migration members) additionally carry their actionable target
+    /// slot (core-owned geometry actuated only as part of the membership
+    /// move, never a native remap guess); unchanged reports never flap
+    /// the source.
     /// Floating scopes carry explicit untouched lifetime rows (never
     /// emptiness): observed non-movers publish with no authority, and
     /// movers under an outstanding boundary transfer publish one
@@ -106,11 +110,15 @@ impl WorldEngine {
         // Backstop dedupe among non-live rows themselves.
         let mut emitted: BTreeSet<String> = BTreeSet::new();
         // Movers with an outstanding transfer whose staged homing has not
-        // yet reached the target present one membership-only row at the
-        // target homing (one homing): the logical target is authoritative
-        // before any arrival, so membership desire is Controlled while
-        // frames hold until observed arrival. Arrived movers already home
-        // at the target and ride their sweep rows below.
+        // yet reached the target keep one homing at the target: the
+        // logical target is authoritative before any arrival, so
+        // membership desire is Controlled. Cross-output tiled movers
+        // (window transfers and migration members) whose target scope
+        // projects ride their sweep row (actionable slot included);
+        // every other flight (no Engine plan, unprojectable scopes)
+        // presents one membership-only row at the target homing below.
+        // Arrived movers already home at the target and ride their
+        // sweep rows below.
         let mut redirect: BTreeMap<String, DomainKey> = BTreeMap::new();
         for retained in &self.retained {
             let (window, key) = match &retained.target.kind {
@@ -480,31 +488,76 @@ impl WorldEngine {
                 None
             };
             for geometry in plan.iter().flat_map(|plan| plan.geometry.iter()) {
-                // Outstanding movers ride the redirect lane instead (one
-                // homing) until they home at the transfer target: a sweep
-                // row here would publish Controlled frames before the
-                // member arrives. Arrived movers home at this same scope
-                // and the engine-committed row below is correct. A stale
-                // source session (floating-boundary sends commit no Engine
-                // plan) must never project a mover the truthful staged
+                // Outstanding movers keep one homing at the transfer target.
+                // Cross-output tiled movers (window transfers and migration
+                // members) publish their actionable target slot here
+                // (core-owned geometry, written only as part of the
+                // membership move; sweep frame writes stay deferred until
+                // membership proves, and arrival still needs the exact live
+                // frame plus affinity): a FULL-delta mechanical remap cannot
+                // place across asymmetric FULL/work geometries, so the slot
+                // must ride the desire itself. Same-output movers need no
+                // translation (the view batch proves on the shared screen)
+                // and keep the established ordering. Every other scope emits
+                // nothing for the mover. Flights the sweep cannot project
+                // (floating-boundary sends commit no Engine plan,
+                // unprojectable migration scopes) still ride the
+                // membership-only redirect row below, and a stale source
+                // session must never project a mover the truthful staged
                 // homing already placed elsewhere.
-                let arrived_here = redirect
+                let window_flight = self.retained.iter().any(
+                    |r| matches!(&r.target.kind, TransferKind::Window(w) if w == &geometry.window),
+                );
+                let migration_flight = self.retained.iter().any(|r| {
+                    matches!(&r.target.kind, TransferKind::Migration)
+                        && r.target.target_output == key.output
+                        && r.target.target_workspace == key.workspace.0
+                        && r.members.iter().any(|m| m == &geometry.window)
+                });
+                let redirect_target_is_here = redirect
                     .get(&geometry.window.0)
-                    .is_some_and(|target| *target == key)
-                    && self.staged_homing(&geometry.window).as_ref() == Some(&key);
-                if redirect.contains_key(&geometry.window.0) && !arrived_here {
+                    .is_some_and(|target| *target == key);
+                let staged_home = self.staged_homing(&geometry.window);
+                let cross_output_flight = (window_flight || migration_flight)
+                    && redirect_target_is_here
+                    && staged_home
+                        .as_ref()
+                        .is_some_and(|home| home.output != key.output);
+                let arrived_here = redirect_target_is_here && staged_home.as_ref() == Some(&key);
+                if redirect.contains_key(&geometry.window.0)
+                    && !arrived_here
+                    && !cross_output_flight
+                {
                     continue;
                 }
-                let flight_elsewhere = self.retained.iter().any(
-                    |r| matches!(&r.target.kind, TransferKind::Window(w) if w == &geometry.window),
-                ) && self.staged_homing(&geometry.window).as_ref()
-                    != Some(&key);
+                let flight_elsewhere =
+                    window_flight && staged_home.as_ref() != Some(&key) && !cross_output_flight;
                 if flight_elsewhere {
                     continue;
                 }
                 let member_hold = window_holds.get(&geometry.window.0).copied();
                 let fullscreen = fullscreen_windows.contains(geometry.window.0.as_str());
                 emitted.insert(geometry.window.0.clone());
+                // Core-owned frame policy (stage 3a): an exact desired match
+                // clears retained memory (completion is desired == observed,
+                // never setter success); a suppressed pair publishes a
+                // constraint-clamp hold with the desire intact so the adapter
+                // skips the write and retries only on genuine change.
+                let observed = staged
+                    .facts
+                    .get(&geometry.window)
+                    .and_then(|fact| fact.rect);
+                if observed == Some(geometry.rect) {
+                    self.frames.remove(&geometry.window);
+                }
+                let frame_suppressed = observed.is_some_and(|current| {
+                    self.frame_suppressed(
+                        &geometry.window,
+                        &geometry.rect,
+                        Some(current),
+                        report.monotonic_ms,
+                    )
+                });
                 windows.push(WindowDesire {
                     lifetime: geometry.window.clone(),
                     output: geometry.output.clone(),
@@ -517,6 +570,8 @@ impl WorldEngine {
                     },
                     frame_authority: if fullscreen {
                         ScopeAuthority::Untouched
+                    } else if frame_suppressed {
+                        ScopeAuthority::Hold(HoldReason::ConstraintClamp)
                     } else if frame_hold {
                         ScopeAuthority::Hold(HoldReason::GestureBarrier)
                     } else {
@@ -553,12 +608,38 @@ impl WorldEngine {
                 // Explicit retained float target, if outstanding: the row
                 // carries the stable property operation id so the adapter
                 // places the exact retained frame exactly once. Ordinary
-                // floats carry none and never take frame writes.
-                let frame_operation = self
+                // floats carry none and never take frame writes. A
+                // core-suppressed pair withholds the token while the
+                // retained target stays outstanding (same clamp/transient
+                // owner as tiled rows); an exact match clears memory.
+                let mut frame_operation = self
                     .retained_floats
                     .iter()
                     .find(|held| held.window == observed.window)
                     .map(|held| held.operation_id.clone());
+                if frame_operation.is_some() {
+                    let target = session.floating_geometry(&observed.window);
+                    let fact_rect = staged
+                        .facts
+                        .get(&observed.window)
+                        .and_then(|fact| fact.rect);
+                    match (target, fact_rect) {
+                        (Some(desired), Some(current)) if desired == current => {
+                            self.frames.remove(&observed.window);
+                        }
+                        (Some(desired), current)
+                            if self.frame_suppressed(
+                                &observed.window,
+                                &desired,
+                                current,
+                                report.monotonic_ms,
+                            ) =>
+                        {
+                            frame_operation = None;
+                        }
+                        _ => {}
+                    }
+                }
                 // Explicit ordinary-float classification (D4/D5): every
                 // retained exception row in a controlled scope converges
                 // adapter float intent. The diagnostic capacity origin

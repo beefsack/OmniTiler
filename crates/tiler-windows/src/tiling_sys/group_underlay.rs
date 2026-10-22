@@ -322,6 +322,7 @@ pub(super) fn refresh_group_underlay(
         foreground,
         fulls,
         tiler_core::world_report::WorldCommand::Operation(CoreCommand::ActiveGroup),
+        super::observation::sample_cursor(),
     );
     let Some(result) = reply
         .as_ref()

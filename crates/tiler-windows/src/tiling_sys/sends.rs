@@ -63,7 +63,20 @@ pub(super) fn workspace_do_send(
     {
         return fail("unmanaged");
     }
-    let Some(wire) = state.output_tokens.get(output).cloned() else {
+    // Focused window source output as the existing contract: the mover's own
+    // homed output, never the cursor output. Falls back to the passed device
+    // context only while homing is not yet known.
+    let mover_device = state
+        .member_tokens
+        .iter()
+        .find(|(_, token)| token.as_str() == origin_token)
+        .and_then(|(key, _)| state.member_home(key))
+        .map(|home| home.output);
+    let wire = mover_device
+        .as_deref()
+        .and_then(|device| state.wire_of(device))
+        .or_else(|| state.output_tokens.get(output).cloned());
+    let Some(wire) = wire else {
         return fail("unknown-output");
     };
     if state.allowlist.is_some() && !state.workspace_proof {
@@ -87,7 +100,17 @@ pub(super) fn workspace_do_send(
     };
     let foreground = crate::ffi::foreground_window();
     let reply = super::world_tick::run_world_command(
-        state, me, store, dir, observed, retained, areas, foreground, fulls, command,
+        state,
+        me,
+        store,
+        dir,
+        observed,
+        retained,
+        areas,
+        foreground,
+        fulls,
+        command,
+        super::observation::sample_cursor(),
     );
     let transition_ms = ctx.start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
     match reply {
@@ -105,7 +128,7 @@ pub(super) fn workspace_do_send(
             focus_ms: 0,
             source_plan_ms: 0,
             target_plan_ms: 0,
-            source_workspace: output.to_owned(),
+            source_workspace: mover_device.unwrap_or_else(|| output.to_owned()),
             target_workspace: target.log_op().to_owned(),
         },
         None => {

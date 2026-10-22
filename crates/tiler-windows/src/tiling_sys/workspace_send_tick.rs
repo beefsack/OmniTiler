@@ -113,20 +113,6 @@ pub(super) fn workspace_relative_send_tick(
             );
             continue;
         };
-        let Some(wire) = state.output_tokens.get(&device).cloned() else {
-            log_json_at(
-                &log_path,
-                serde_json::json!({
-                    "event": "workspace-send",
-                    "delta": intent.delta,
-                    "follow": intent.follow,
-                    "edge": intent.edge.as_str(),
-                    "disposition": "consumed",
-                    "outcome": "unknown-output",
-                }),
-            );
-            continue;
-        };
         let target = SendTarget::Relative(intent.delta);
         let op = target.log_op();
         let edge = intent.edge;
@@ -135,6 +121,29 @@ pub(super) fn workspace_relative_send_tick(
         let tick = state.tick;
         match origin.filter(|o| o.hwnd == foreground_hwnd) {
             Some(o) if !o.token.is_empty() => {
+                // Focused window source output as the existing contract:
+                // the mover's own homed output, never the cursor output.
+                let mover_wire = state
+                    .member_tokens
+                    .iter()
+                    .find(|(_, token)| token.as_str() == o.token.as_str())
+                    .and_then(|(key, _)| state.member_home(key))
+                    .and_then(|home| state.wire_of(&home.output))
+                    .or_else(|| state.output_tokens.get(&device).cloned());
+                let Some(wire) = mover_wire else {
+                    log_json_at(
+                        &log_path,
+                        serde_json::json!({
+                            "event": "workspace-send",
+                            "delta": intent.delta,
+                            "follow": intent.follow,
+                            "edge": intent.edge.as_str(),
+                            "disposition": "consumed",
+                            "outcome": "unknown-output",
+                        }),
+                    );
+                    continue;
+                };
                 let command = WorldCommand::SendRelative {
                     window: tiler_core::directional::WindowId(o.token.clone()),
                     output: tiler_core::directional::OutputId(wire),
@@ -386,6 +395,7 @@ pub(super) fn workspace_output_send_one(
             direction: direction_name(intent.direction).to_owned(),
             follow: intent.follow,
         },
+        super::observation::sample_cursor(),
     );
     match reply {
         Some(_) => {

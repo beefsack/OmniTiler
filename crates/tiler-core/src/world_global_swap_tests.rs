@@ -108,11 +108,18 @@ fn report(
         migration_source_refill: crate::output_selection::MigrationSourceRefill::LastRemaining,
         anchor_fallback: crate::admission::AnchorFallback::default(),
         no_space_result: crate::admission::NoSpaceResult::default(),
+        switch_target: crate::cursor_targeting::SwitchTarget::default(),
+        fresh_placement: crate::cursor_targeting::FreshPlacement::default(),
+        focus_follows_cursor: false,
+        cursor_warp: false,
+        cursor: None,
         default_tiled: true,
         focused_global: focused.to_owned(),
         inventory_complete: true,
         gesture_barrier: false,
         feedback: vec![],
+        monotonic_ms: 0,
+        frames: Vec::new(),
     }
 }
 
@@ -430,7 +437,7 @@ fn global_unique_swap_preserves_nonempty_units() {
             "",
             Some(12),
             Some(WorldCommand::SelectPrevious {
-                output: OutputId("out-a".to_owned()),
+                output: Some(OutputId("out-a".to_owned())),
             }),
         ),
     );

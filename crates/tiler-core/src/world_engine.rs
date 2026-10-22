@@ -107,6 +107,19 @@ pub(crate) const MSG_CREATION_EXHAUSTED: &str =
     "logical creation counter exhausted; rebootstrap under a new core generation";
 pub(crate) const MSG_SELECT_UNKNOWN: &str = "selection target is not a known workspace";
 pub(crate) const MSG_MIGRATION: &str = "workspace migration refused by scope policy";
+pub(crate) const MSG_MIGRATION_TOPOLOGY: &str = "workspace migration has no adjacent target";
+pub(crate) const MSG_MIGRATION_TOPOLOGY_UNREADABLE: &str =
+    "workspace migration topology is unreadable";
+pub(crate) const MSG_MIGRATION_SHARED: &str = "workspace migration refused in shared mode";
+pub(crate) const MSG_MIGRATION_INVENTORY: &str = "workspace migration needs complete inventory";
+pub(crate) const MSG_MIGRATION_SOURCE: &str = "workspace migration source is not homed";
+pub(crate) const MSG_MIGRATION_SOURCE_UNREADABLE: &str = "workspace migration source is unreadable";
+pub(crate) const MSG_MIGRATION_TARGET_INCOMPLETE: &str = "workspace migration target is incomplete";
+pub(crate) const MSG_MIGRATION_FLIGHT: &str = "workspace migration already in flight for source";
+pub(crate) const MSG_MIGRATION_RESIDUE: &str = "workspace migration target is occupied";
+pub(crate) const MSG_MIGRATION_RECIPROCAL: &str = "workspace migration lacks reciprocal topology";
+pub(crate) const MSG_MIGRATION_TARGET_GEOMETRY: &str =
+    "workspace migration target geometry is invalid";
 pub(crate) const MSG_OPERATION: &str = "operation route refused without mutation";
 pub(crate) const MSG_TILING_TARGET: &str = "tiling target is not a known live workspace";
 
@@ -301,6 +314,19 @@ pub struct WorldEngine {
     /// Outstanding explicit float-placement targets, at most one per window.
     /// Bounded by the window inventory itself.
     pub(crate) retained_floats: Vec<RetainedFloat>,
+    /// Core-owned frame anti-fighting memory (stage 3a): per-lifetime clamp
+    /// suppression plus transient retry backoff over mechanical
+    /// [`FrameAttempt`](crate::world_report::FrameAttempt) facts. Bounded by
+    /// the window inventory itself; pruned every accepted report.
+    pub(crate) frames: BTreeMap<WindowId, crate::world_frames::FrameMemory>,
+    /// Last consumed raw frame attempt per lifetime, retained independently
+    /// of [`Self::frames`] so an exact-match clear never forgets what was
+    /// already consumed: a lost-ack redelivery of an older or identical
+    /// attempt is ignored instead of resurrecting stale suppression or
+    /// clobbering newer authority. Same lifetime bound and pruning as
+    /// [`Self::frames`]; cleared on incarnation reset, fresh on a new
+    /// core generation with the engine itself.
+    pub(crate) consumed_frames: BTreeMap<WindowId, crate::world_report::FrameAttempt>,
     pub(crate) creation_counter: u64,
     pub(crate) last_views: BTreeMap<OutputId, String>,
     /// Core-owned logical workspace rings (D2): per-screen ordered lists of
@@ -360,6 +386,15 @@ pub struct WorldEngine {
     /// run and published by [`WorldEngine::publish`]; never survives across
     /// reports, incarnations, or generations.
     pub(crate) hold_reasons: BTreeMap<DomainKey, HoldReason>,
+    /// Fresh-placement bootstrap phase: false until the first accepted
+    /// complete inventory establishes the startup lifetime set (including
+    /// an empty roster). Once true, genuinely new lifetimes observed
+    /// under complete inventory route by cursor/focus policy, even after
+    /// an empty seed, close-all, or an incomplete gap. Incomplete reports
+    /// never set it, so unseen startup stays quiet/native until the first
+    /// complete baseline. Adapter rebind clears it for a new adoption
+    /// baseline; retained engine sessions still shield known lifetimes.
+    pub(crate) placement_bootstrapped: bool,
     /// Minimize slots to forget after the sweep (proven-refusal cleanup:
     /// converge may re-store the slot during the unshielded sweep, so the
     /// forget runs after, never before).
@@ -377,6 +412,26 @@ pub struct WorldEngine {
     /// generation (retained sessions persist there too); a new generation
     /// constructs a new [`WorldEngine`].
     pub(crate) admission_focus_spent: BTreeSet<String>,
+    /// Cursor-first behavior settings retained from the latest accepted
+    /// report (2026-10-20): switch target, fresh placement, and the
+    /// stage-4-owned focus-follows-cursor/cursor-warp flags. Refreshed per
+    /// accepted run alongside the ingress capacity settings below; never
+    /// move existing members or reflow retained state on change.
+    pub(crate) switch_target: crate::cursor_targeting::SwitchTarget,
+    pub(crate) fresh_placement: crate::cursor_targeting::FreshPlacement,
+    pub(crate) focus_follows_cursor: bool,
+    pub(crate) cursor_warp: bool,
+    /// Normalized cursor retained from the latest accepted report, `None`
+    /// when the adapter could not read it. Seated with its observation
+    /// sequence and refreshed per accepted run, never on a separate stale
+    /// timer; an absent cursor falls back through focused output to the
+    /// primary/first readable output.
+    pub(crate) last_cursor: Option<(i32, i32)>,
+    /// Retained last-known focused output for fresh-window homing (i3/sway
+    /// focused-output placement): genuine managed focus only, cleared on
+    /// adapter incarnation reset, filtered against live topology at use.
+    /// Never moves existing members or reflows retained state.
+    pub(crate) fresh_focus: crate::fresh_focus::FreshFocusMemory,
     /// Staged logical observation for the report currently being staged:
     /// screens, one domain per known logical workspace, view echoes, raw
     /// facts, homing, and the carried gesture barrier. Built once per
@@ -447,6 +502,8 @@ impl WorldEngine {
             command_highwater: None,
             retained: Vec::new(),
             retained_floats: Vec::new(),
+            frames: BTreeMap::new(),
+            consumed_frames: BTreeMap::new(),
             creation_counter: 0,
             last_views: BTreeMap::new(),
             mapping: BTreeMap::new(),
@@ -461,7 +518,14 @@ impl WorldEngine {
             hold_reasons: BTreeMap::new(),
             pending_forget: Vec::new(),
             command_result: None,
+            placement_bootstrapped: false,
             admission_focus_spent: BTreeSet::new(),
+            switch_target: crate::cursor_targeting::SwitchTarget::default(),
+            fresh_placement: crate::cursor_targeting::FreshPlacement::default(),
+            focus_follows_cursor: false,
+            cursor_warp: false,
+            last_cursor: None,
+            fresh_focus: crate::fresh_focus::FreshFocusMemory::default(),
             staged: StagedReport::default(),
         })
     }
@@ -507,6 +571,8 @@ impl WorldEngine {
         self.command_highwater = None;
         self.retained.clear();
         self.retained_floats.clear();
+        self.frames.clear();
+        self.consumed_frames.clear();
         self.tiling.clear();
         self.members.clear();
         self.floating_scopes.clear();
@@ -519,6 +585,8 @@ impl WorldEngine {
         self.live_topology.clear();
         self.command_result = None;
         self.staged = StagedReport::default();
+        self.placement_bootstrapped = false;
+        self.fresh_focus = crate::fresh_focus::FreshFocusMemory::default();
         self.last_adapter_incarnation = Some(adapter_incarnation.to_owned());
     }
 
@@ -527,6 +595,75 @@ impl WorldEngine {
     #[allow(dead_code)]
     pub(crate) fn engine(&self) -> &Engine {
         &self.engine
+    }
+
+    /// Fresh-placement bootstrap gate: policy routing applies only for a
+    /// genuinely new lifetime observed under complete inventory after the
+    /// startup baseline was accepted. The baseline report itself (first
+    /// complete) and every pre-bootstrap report adopt native affinity;
+    /// once bootstrapped, newcomers route even after an empty seed,
+    /// close-all, or an incomplete gap. Retained homings never re-route.
+    pub(crate) fn fresh_placement_armed_for(
+        &self,
+        report: &crate::world_report::WorldReport,
+    ) -> bool {
+        self.placement_bootstrapped && report.inventory_complete
+    }
+
+    /// Retained cursor-first switch target from the latest accepted
+    /// report (cursor-output default).
+    #[must_use]
+    pub fn switch_target(&self) -> crate::cursor_targeting::SwitchTarget {
+        self.switch_target
+    }
+
+    /// Retained fresh-window placement from the latest accepted report
+    /// (cursor-output/last-focused default).
+    #[must_use]
+    pub fn fresh_placement(&self) -> crate::cursor_targeting::FreshPlacement {
+        self.fresh_placement
+    }
+
+    /// Retained focus-follows-cursor setting (default off). Stage-4-owned
+    /// actuation; core retains the setting only.
+    #[must_use]
+    pub fn focus_follows_cursor(&self) -> bool {
+        self.focus_follows_cursor
+    }
+
+    /// Retained cursor-warp setting (default off). Stage-4-owned
+    /// actuation; core retains the setting only.
+    #[must_use]
+    pub fn cursor_warp(&self) -> bool {
+        self.cursor_warp
+    }
+
+    /// Normalized cursor retained from the latest accepted report, `None`
+    /// when the adapter could not read it.
+    #[must_use]
+    pub fn last_cursor(&self) -> Option<(i32, i32)> {
+        self.last_cursor
+    }
+
+    /// Trace-only snapshot of the last fresh focused-leg routing decision:
+    /// the current managed output, the retained last-known output, the
+    /// chosen leg output, and the winning basis. This is the cached
+    /// historical leg decision, not the current report's focus fact; the
+    /// adapter pairs it with the current reported token. Stable output ids
+    /// only; no titles, pids, frames, or input. The chosen leg feeds fresh
+    /// placement (cursor-first), so it is the focused leg alone, not the
+    /// final policy output.
+    #[must_use]
+    pub fn fresh_focus_trace(
+        &self,
+    ) -> (Option<String>, Option<String>, Option<String>, &'static str) {
+        let trace = &self.fresh_focus.trace;
+        (
+            trace.current.as_ref().map(|output| output.0.clone()),
+            trace.retained.as_ref().map(|output| output.0.clone()),
+            trace.chosen.as_ref().map(|output| output.0.clone()),
+            trace.basis.as_str(),
+        )
     }
 
     /// Outstanding retained transfer/view targets.
@@ -938,6 +1075,10 @@ impl WorldEngine {
         // domains, never the pre-rollback ones.
         self.settle_rest(report);
         self.build_staged_domains(report);
+        // Core-owned frame policy: fold mechanical write/readback facts into
+        // retained clamp/transient memory (scoped by exact staged lifetime)
+        // so this same reply publishes suppression.
+        self.settle_frames(report);
         // Bind the engine owner/generation (rebinding clears sessions).
         self.engine.sync_binding(owner, &self.core_generation);
         // Ingress settings: the reported fixed-size predicate selects
@@ -948,6 +1089,17 @@ impl WorldEngine {
             .set_fixed_size_predicate(report.fixed_size_predicate);
         self.engine.set_anchor_fallback(report.anchor_fallback);
         self.engine.set_no_space_result(report.no_space_result);
+        // Cursor-first ingress: switch target, fresh placement, the
+        // stage-4-owned coupling flags, and the normalized cursor seat
+        // with this observation. All apply to subsequent selections and
+        // admissions only, never to retained state.
+        self.switch_target = report.switch_target;
+        self.fresh_placement = report.fresh_placement;
+        self.focus_follows_cursor = report.focus_follows_cursor;
+        self.cursor_warp = report.cursor_warp;
+        self.last_cursor = report.cursor;
+        self.engine.set_fresh_placement(report.fresh_placement);
+        self.engine.set_fresh_cursor(report.cursor);
         // Floating workspaces skip convergence entirely: no session is
         // created or converged there, and no frame writes publish for them.
         self.floating_scopes = self
@@ -1115,6 +1267,11 @@ impl WorldEngine {
     /// semantic no-op. The revision cannot wrap: exhaustion is refused
     /// before staging.
     fn finish(&mut self, report: &WorldReport, digest: u64, mut reply: WorldReply) -> WorldOutcome {
+        // Retain the last-known focused output before membership converges,
+        // so the latch reflects strictly prior retention: a stealing
+        // newcomer or an empty report never overwrites pre-admission
+        // context. Genuine managed focus only.
+        self.note_focused_output(report);
         // Membership owner settles last on the staged candidate so the next
         // report homes through retained truth (floating release, minimized
         // and unreadable holds, view-switch stability). Included in the
@@ -1143,6 +1300,11 @@ impl WorldEngine {
         self.last_request_seq = report.request_seq;
         self.last_digest = digest;
         self.last_report = Some(report.clone());
+        // First accepted complete inventory establishes the startup set
+        // (possibly empty). Later complete reports route newcomers.
+        if report.inventory_complete {
+            self.placement_bootstrapped = true;
+        }
         for view in &report.views {
             if view.view.is_empty() {
                 continue;

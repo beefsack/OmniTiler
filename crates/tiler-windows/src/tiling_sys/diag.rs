@@ -11,9 +11,11 @@ use super::*;
 /// when no query was attempted), the carried min/max, fallback use plus age
 /// and explicit reason, the Engine-planned vs effective requested visible
 /// rectangle, the native outer target when a setter ran, native pre/post
-/// readback rectangles, the write disposition, and the [`RefusedTracker`]
-/// suppression/re-arm reason. A successful setter alone proves nothing here:
-/// only the readback comparison speaks.
+/// readback rectangles, and the write disposition. A successful setter
+/// alone proves nothing here: only the readback comparison speaks. Frame
+/// suppression/re-arm reasons are core-owned (see
+/// `tiler_core::world_frames`) and ride the world reply holds, never a
+/// local tracker.
 ///
 /// Batching contract: at most one event per second globally, bounded entries
 /// per event. Every entry carries its own operation/correlation/tick context from the assembly that staged it,

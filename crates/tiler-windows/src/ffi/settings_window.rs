@@ -494,6 +494,11 @@ impl SettingsWindow {
                 crate::settings_ui::ID_ANCHOR_NO_SEARCH,
                 crate::settings_ui::ID_NO_SPACE_FLOAT,
                 crate::settings_ui::ID_NO_SPACE_OVERLAP,
+                crate::settings_ui::ID_SWITCH_CURSOR,
+                crate::settings_ui::ID_SWITCH_FOCUSED,
+                crate::settings_ui::ID_PLACE_CURSOR_MRU,
+                crate::settings_ui::ID_PLACE_CURSOR_CLOSEST,
+                crate::settings_ui::ID_PLACE_FOCUSED_MRU,
             ]
             .iter()
             .enumerate()

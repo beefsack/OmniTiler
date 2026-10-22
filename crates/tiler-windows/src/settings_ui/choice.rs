@@ -199,22 +199,91 @@ pub(super) fn apply_workspace_mode_selection(draft: &mut Settings, index: usize)
     };
 }
 
-/// All thirteen choice tooltip buffers in control order: the two
-/// R-MOV-03 buffers, the two R-MAX-06 buffers, the two R-SPC-04 D1
-/// fixed-size buffers, the two R-WS-12e G-37 migration-refill buffers,
-/// then the three best-effort admission D2 buffers and the two D3 buffers.
-pub(super) fn choice_tip_texts() -> [Vec<u16>; 13] {
+/// All choice tooltip buffers in control order: the two R-MOV-03 buffers,
+/// the two R-MAX-06 buffers, the two R-SPC-04 D1 fixed-size buffers, the
+/// two R-WS-12e G-37 migration-refill buffers, then the three best-effort
+/// admission D2 buffers, the two D3 buffers, the two stage 2c switch-target
+/// buffers, and the three stage 2c fresh-placement buffers. Each tooltip
+/// tool reads its own choice text.
+pub(super) fn choice_tip_texts() -> [Vec<u16>; 18] {
     let axis = same_axis_tip_texts();
     let born = born_maximized_tip_texts();
     let fixed = fixed_size_tip_texts();
     let refill = migration_refill_tip_texts();
     let anchor = anchor_fallback_tip_texts();
     let no_space = no_space_tip_texts();
+    let switch = switch_target_tip_texts();
+    let place = fresh_placement_tip_texts();
     let [a0, a1] = axis;
     let [b0, b1] = born;
     let [c0, c1] = fixed;
     let [d0, d1] = refill;
     let [e0, e1, e2] = anchor;
     let [f0, f1] = no_space;
-    [a0, a1, b0, b1, c0, c1, d0, d1, e0, e1, e2, f0, f1]
+    let [g0, g1] = switch;
+    let [h0, h1, h2] = place;
+    [
+        a0, a1, b0, b1, c0, c1, d0, d1, e0, e1, e2, f0, f1, g0, g1, h0, h1, h2,
+    ]
+}
+
+/// Stage 2c switch-target radio selection from saved/draft settings: true
+/// selects the focused-output radio, false the cursor-output default.
+/// Unknown values (possible only in hand-built drafts, never from disk)
+/// show the default.
+pub(super) fn switch_focused_selected(settings: &Settings) -> bool {
+    settings.core.switch_target == crate::settings::SWITCH_TARGET_FOCUSED
+}
+
+/// Stage 2c switch-target draft staging from the focused radio state:
+/// writes the exact wire token for the selected choice, so Apply persists
+/// a validated value.
+pub(super) fn apply_switch_target_selection(draft: &mut Settings, focused: bool) {
+    draft.core.switch_target = if focused {
+        crate::settings::SWITCH_TARGET_FOCUSED.to_owned()
+    } else {
+        crate::settings::SWITCH_TARGET_CURSOR.to_owned()
+    };
+}
+
+/// Stage 2c switch-target native tooltip text buffers from the shared
+/// options table: the WM reference per choice (`COSMIC` / `i3, sway`),
+/// wide-encoded for the tooltip control. Radio labels stay functional-only
+/// per the naming rule.
+pub(super) fn switch_target_tip_texts() -> [Vec<u16>; 2] {
+    let options = crate::settings::switch_target_options();
+    [wide(options[0].2), wide(options[1].2)]
+}
+
+/// Stage 2c placement selector state from saved/draft settings: the index
+/// into [`crate::settings::fresh_placement_options`] (0
+/// cursor-output/last-focused default, 1 cursor-output/cursor-closest, 2
+/// focused-output/last-focused). Unknown values (possible only in hand-built
+/// drafts, never from disk) show the default.
+pub(super) fn fresh_placement_selected(settings: &Settings) -> usize {
+    match settings.core.fresh_placement.as_str() {
+        s if s == crate::settings::FRESH_PLACEMENT_CURSOR_CLOSEST => 1,
+        s if s == crate::settings::FRESH_PLACEMENT_FOCUSED_MRU => 2,
+        _ => 0,
+    }
+}
+
+/// Stage 2c placement draft staging from the selector index: writes the
+/// exact wire token for the selected choice, so Apply persists a validated
+/// value. Out-of-range indices stage the default, never an unknown token.
+pub(super) fn apply_fresh_placement_selection(draft: &mut Settings, index: usize) {
+    draft.core.fresh_placement = match index {
+        1 => crate::settings::FRESH_PLACEMENT_CURSOR_CLOSEST.to_owned(),
+        2 => crate::settings::FRESH_PLACEMENT_FOCUSED_MRU.to_owned(),
+        _ => crate::settings::FRESH_PLACEMENT_CURSOR_MRU.to_owned(),
+    };
+}
+
+/// Stage 2c placement native tooltip text buffers from the shared options
+/// table: the WM reference per choice (`COSMIC` / `Hyprland` / `i3, sway`),
+/// wide-encoded for the tooltip control. Radio labels stay functional-only
+/// per the naming rule.
+pub(super) fn fresh_placement_tip_texts() -> [Vec<u16>; 3] {
+    let options = crate::settings::fresh_placement_options();
+    [wide(options[0].2), wide(options[1].2), wide(options[2].2)]
 }

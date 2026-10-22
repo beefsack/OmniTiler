@@ -201,6 +201,29 @@ impl WorldEngine {
         if ring.is_empty() { None } else { Some(ring) }
     }
 
+    /// Resolve the switch output for numbered/relative/previous/trailing
+    /// selections. An explicit output names a genuinely semantic target
+    /// and passes through (the retain path below validates it); `None`
+    /// resolves in core from the cursor-first switch target over the
+    /// report cursor and retained focused facts, then the primary/first
+    /// fallback. `None` only when every source is unknown: callers refuse
+    /// without inventing focus.
+    pub(crate) fn resolve_selection_output(
+        &self,
+        report: &WorldReport,
+        explicit: Option<&OutputId>,
+    ) -> Option<OutputId> {
+        if let Some(output) = explicit {
+            return Some(output.clone());
+        }
+        crate::cursor_targeting::resolve_switch_output(
+            report.switch_target,
+            self.fresh_cursor_output(report).as_ref(),
+            self.focused_output(report).as_ref(),
+            &self.primary_first_outputs(report),
+        )
+    }
+
     /// Send ring for a window homed on `output`: the same ring as
     /// selection, resolved once before transfer.
     pub(crate) fn send_ring(&self, report: &WorldReport, output: &OutputId) -> Vec<String> {

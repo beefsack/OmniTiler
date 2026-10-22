@@ -49,6 +49,10 @@ pub const MAX_WORLD_FACTS: usize = 10_000;
 /// Bound on explicit-close ids per report (same lifetime alphabet as windows).
 pub const MAX_WORLD_CLOSED: usize = 10_000;
 pub const MAX_WORLD_VIEWS: usize = 16;
+/// Bound on mechanical frame attempts per report (same lifetime alphabet as
+/// windows). Matches the feedback cap: one latest-wins attempt per window at
+/// most, so the worst case is bounded by the window inventory itself.
+pub const MAX_WORLD_FRAMES: usize = 1024;
 /// Bound on host-owned native observations per report (only carried when the
 /// `host_owned_workspace_domains` capability is set).
 pub const MAX_WORLD_NATIVE: usize = 4096;
@@ -386,6 +390,58 @@ pub struct AttemptFeedback {
     pub hold: Option<HoldReason>,
 }
 
+/// Mechanical outcome of one native frame setter call. Pure actuator
+/// disposition, never a policy conclusion: `Accepted` means the setter
+/// reported success (the caller still re-reads the frame; success alone
+/// never proves geometry completion), `Refused` is an explicit native
+/// refusal, and `Threw` is a throwing/ambiguous call that may have executed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FrameSetter {
+    Accepted,
+    Refused,
+    Threw,
+}
+
+impl FrameSetter {
+    /// Wire token for this value, matching the protocol codec vocabulary.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Accepted => "accepted",
+            Self::Refused => "refused",
+            Self::Threw => "threw",
+        }
+    }
+}
+
+/// One normalized raw frame attempt: the mechanical facts behind a single
+/// native frame write, reported on the next report for the core-owned
+/// anti-fighting policy (see [`crate::world_frames`]). The adapter writes,
+/// re-reads, and reports; the core compares desired and observed and owns
+/// suppression, retry backoff, and completion. Never a policy conclusion:
+/// no clamp/suppress verdict rides here.
+///
+/// - `target` is the attempted frame (the core's published desire, echoed
+///   as correlation so the core matches the attempt to its desire).
+/// - `readback` is the immediate post-write frame (`None` = unreadable).
+/// - `dpi_before`/`dpi_after` are the live window DPI around the write
+///   (`None` = unreadable, never guessed). A changed basis invalidates the
+///   placement: it never becomes a stable clamp.
+/// - `attempt_ms` is the adapter monotonic clock at the write, in the same
+///   arbitrary-epoch milliseconds as the report `monotonic_ms`. The core
+///   consumes each attempt idempotently by this stamp, so redelivery after
+///   a lost acknowledgement never renews backoff.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrameAttempt {
+    pub window: WindowId,
+    pub target: Rect,
+    pub setter: FrameSetter,
+    pub readback: Option<Rect>,
+    pub dpi_before: Option<u32>,
+    pub dpi_after: Option<u32>,
+    pub attempt_ms: u64,
+}
+
 /// One screen observation: the stable output id, the FULL native output
 /// rectangle in one coherent adapter coordinate space, and the distinct
 /// work area the core tiles into. `gap`/`outer_gap` are settings carried
@@ -492,16 +548,22 @@ pub enum WorldCommand {
     SelectWorkspace { output: OutputId, workspace: String },
     /// Planner-resolved numbered selection (D2): positional `1..=9` over
     /// the scoped ring (`0` is the trailing path and is invalid here).
-    SelectNumbered { output: OutputId, index: u8 },
+    /// `None` resolves the output in core from the cursor-first switch
+    /// target; `Some` names a genuinely semantic explicit output.
+    SelectNumbered { output: Option<OutputId>, index: u8 },
     /// Planner-resolved relative selection (D2): `delta` is `-1`/`+1` with
-    /// first/last wrap over the scoped ring.
-    SelectRelative { output: OutputId, delta: i32 },
+    /// first/last wrap over the scoped ring. Output resolution as above.
+    SelectRelative {
+        output: Option<OutputId>,
+        delta: i32,
+    },
     /// Planner-resolved previous-toggle selection (D2): no-op without
-    /// recorded history, never recreates.
-    SelectPrevious { output: OutputId },
+    /// recorded history, never recreates. Output resolution as above.
+    SelectPrevious { output: Option<OutputId> },
     /// Trailing selection (D2): reuse the live trailing empty or create a
-    /// stable pending logical token, exactly like lifecycle.
-    SelectTrailing { output: OutputId },
+    /// stable pending logical token, exactly like lifecycle. Output
+    /// resolution as above.
+    SelectTrailing { output: Option<OutputId> },
     /// Relative send (D2): the scoped ring resolves once before transfer;
     /// filling a resolved trailing empty is an ordinary transfer.
     SendRelative {
@@ -661,6 +723,34 @@ pub struct WorldReport {
     /// it never reflows retained overlap allocations until a real capacity
     /// decision (D10).
     pub no_space_result: crate::admission::NoSpaceResult,
+    /// Ingress cursor-first targeting (2026-10-20): selects the output
+    /// numbered/relative/previous/trailing selections act on
+    /// (cursor-output default, focused-output option). Applies to
+    /// subsequent selections only, never to retained views.
+    pub switch_target: crate::cursor_targeting::SwitchTarget,
+    /// Ingress fresh-window placement (2026-10-20): selects the output and
+    /// anchor for truly new lifetimes (cursor-output/last-focused default,
+    /// cursor-output/cursor-closest, or focused-output/last-focused).
+    /// Applies to subsequent fresh admissions only: never moves existing
+    /// members and never reflows, retries, or reclassifies retained state
+    /// on change. Reports before any accepted complete adoption adopt
+    /// native affinity (startup/restart/rebind quiet).
+    pub fresh_placement: crate::cursor_targeting::FreshPlacement,
+    /// Ingress focus-follows-cursor setting (default off). Retained only;
+    /// no focus coupling actuation lives in core (stage 4 owns it).
+    pub focus_follows_cursor: bool,
+    /// Ingress cursor-warp setting (default off). Retained only; no warp
+    /// actuation lives in core (stage 4 owns it, including any
+    /// preset-specific cross-output default).
+    pub cursor_warp: bool,
+    /// Normalized cursor position in adapter units (same space as screen
+    /// FULL rectangles and fact frames), `None` when the adapter cannot
+    /// read it. Seated with `observation_seq`: retained per accepted
+    /// report with the behavior settings and focused facts above, never
+    /// on a separate stale timer. Cursor lookup uses FULL bounds; an
+    /// absent cursor or a point outside every screen falls back through
+    /// the focused output to the primary/first readable output.
+    pub cursor: Option<(i32, i32)>,
     /// Global active window id ("" when none): the adapter-observed
     /// foreground lifetime across all outputs. Drives focus-conditioned
     /// policy (hotplug survivor/return views); never focus proof.
@@ -674,6 +764,19 @@ pub struct WorldReport {
     pub inventory_complete: bool,
     pub gesture_barrier: bool,
     pub feedback: Vec<AttemptFeedback>,
+    /// Neutral adapter monotonic clock in milliseconds (arbitrary process
+    /// epoch, never wall-clock): the observation time of this report. Times
+    /// frame retry backoff together with the per-attempt stamps in
+    /// [`FrameAttempt::attempt_ms`]; `0` means unreported (unknown). A
+    /// separate sample per report only, never a continuous poll. Duplicate
+    /// detection still compares full typed input equality; the clock never
+    /// aliases reports by itself.
+    pub monotonic_ms: u64,
+    /// Mechanical frame attempts since the previous report (at most one
+    /// latest-wins entry per window, bounded by [`MAX_WORLD_FRAMES`]).
+    /// Raw write/readback facts only; the core owns the clamp/transient
+    /// policy over them (see [`crate::world_frames`]).
+    pub frames: Vec<FrameAttempt>,
 }
 
 /// World reply: single globally ordered full desired snapshot. No
@@ -829,8 +932,11 @@ pub fn classify_request(
 /// state), view echoes, explicit closes, capability flags, host-owned
 /// native observations, inventory completeness, the default-tiling seed,
 /// the migration source-refill mode, the D2/D3 capacity settings, the
-/// global focus, the gesture barrier, and feedback (identity, kind,
-/// outcome, hold).
+/// switch-target and fresh-placement modes, the focus-follows-cursor and
+/// cursor-warp settings, the cursor position, the global focus, the
+/// gesture barrier, feedback (identity, kind, outcome, hold), the monotonic
+/// clock, and frame attempts (window, target, setter, readback, DPI pair,
+/// attempt stamp).
 /// Duplicate detection still compares full typed input equality (see
 /// [`WorldEngine`](crate::world_engine::WorldEngine)); the digest is only
 /// a fast pre-check, never the identity.
@@ -880,6 +986,8 @@ pub fn report_digest(report: &WorldReport) -> u64 {
     feed(&mut hash, &report.focused_global);
     sep(&mut hash);
     flag(&mut hash, report.gesture_barrier);
+    flag(&mut hash, report.focus_follows_cursor);
+    flag(&mut hash, report.cursor_warp);
     feed(&mut hash, report.fixed_size_predicate.as_wire_str());
     sep(&mut hash);
     feed(&mut hash, report.migration_source_refill.as_wire_str());
@@ -887,6 +995,18 @@ pub fn report_digest(report: &WorldReport) -> u64 {
     feed(&mut hash, report.anchor_fallback.as_wire_str());
     sep(&mut hash);
     feed(&mut hash, report.no_space_result.as_wire_str());
+    sep(&mut hash);
+    feed(&mut hash, report.switch_target.as_wire_str());
+    sep(&mut hash);
+    feed(&mut hash, report.fresh_placement.as_wire_str());
+    sep(&mut hash);
+    feed(
+        &mut hash,
+        &report
+            .cursor
+            .map(|(x, y)| format!("{x},{y}"))
+            .unwrap_or_default(),
+    );
     sep(&mut hash);
     for screen in &report.screens {
         for part in [
@@ -964,6 +1084,48 @@ pub fn report_digest(report: &WorldReport) -> u64 {
         feed(&mut hash, &format!("{:?}", feedback.hold));
         sep(&mut hash);
     }
+    feed(&mut hash, &report.monotonic_ms.to_string());
+    sep(&mut hash);
+    for attempt in &report.frames {
+        feed(&mut hash, &attempt.window.0);
+        sep(&mut hash);
+        feed(
+            &mut hash,
+            &format!(
+                "{},{},{},{}",
+                attempt.target.x, attempt.target.y, attempt.target.w, attempt.target.h
+            ),
+        );
+        sep(&mut hash);
+        feed(&mut hash, attempt.setter.as_str());
+        sep(&mut hash);
+        feed(
+            &mut hash,
+            &attempt
+                .readback
+                .map(|rect| format!("{},{},{},{}", rect.x, rect.y, rect.w, rect.h))
+                .unwrap_or_default(),
+        );
+        sep(&mut hash);
+        feed(
+            &mut hash,
+            &attempt
+                .dpi_before
+                .map(|dpi| dpi.to_string())
+                .unwrap_or_default(),
+        );
+        sep(&mut hash);
+        feed(
+            &mut hash,
+            &attempt
+                .dpi_after
+                .map(|dpi| dpi.to_string())
+                .unwrap_or_default(),
+        );
+        sep(&mut hash);
+        feed(&mut hash, &attempt.attempt_ms.to_string());
+        sep(&mut hash);
+    }
     hash
 }
 
@@ -1003,8 +1165,17 @@ pub fn validate_report_reason(report: &WorldReport) -> Option<&'static str> {
         || report.views.len() > MAX_WORLD_VIEWS
         || report.native.len() > MAX_WORLD_SCREENS
         || report.feedback.len() > MAX_WORLD_FEEDBACK
+        || report.frames.len() > MAX_WORLD_FRAMES
     {
         return Some("section-over-cap");
+    }
+    // The cursor rides the same carried geometry bounds as rects so the
+    // estimators and the lookup stay exact over the full `i32` range.
+    if let Some((x, y)) = report.cursor
+        && (!(-GEOMETRY_BOUND..=GEOMETRY_BOUND).contains(&x)
+            || !(-GEOMETRY_BOUND..=GEOMETRY_BOUND).contains(&y))
+    {
+        return Some("cursor-invalid");
     }
     if !report.host_owned_workspace_domains && !report.native.is_empty() {
         return Some("native-without-capability");
@@ -1143,6 +1314,30 @@ pub fn validate_report_reason(report: &WorldReport) -> Option<&'static str> {
             return Some("feedback-invalid");
         }
     }
+    {
+        let mut seen_frames = BTreeSet::new();
+        for attempt in &report.frames {
+            if !is_opaque_id(&attempt.window.0) {
+                return Some("frame-window-invalid");
+            }
+            if !valid_carried_rect(
+                attempt.target.x,
+                attempt.target.y,
+                attempt.target.w,
+                attempt.target.h,
+            ) {
+                return Some("frame-target-invalid");
+            }
+            if let Some(readback) = attempt.readback
+                && !valid_carried_rect(readback.x, readback.y, readback.w, readback.h)
+            {
+                return Some("frame-readback-invalid");
+            }
+            if !seen_frames.insert(attempt.window.0.clone()) {
+                return Some("duplicate-frame");
+            }
+        }
+    }
     None
 }
 
@@ -1171,13 +1366,13 @@ pub fn valid_command(command: &WorldCommand) -> bool {
             is_opaque_id(&output.0) && is_opaque_id(workspace)
         }
         WorldCommand::SelectNumbered { output, index } => {
-            is_opaque_id(&output.0) && (1..=9).contains(index)
+            output.as_ref().is_none_or(|out| is_opaque_id(&out.0)) && (1..=9).contains(index)
         }
         WorldCommand::SelectRelative { output, delta } => {
-            is_opaque_id(&output.0) && (*delta == -1 || *delta == 1)
+            output.as_ref().is_none_or(|out| is_opaque_id(&out.0)) && (*delta == -1 || *delta == 1)
         }
         WorldCommand::SelectPrevious { output } | WorldCommand::SelectTrailing { output } => {
-            is_opaque_id(&output.0)
+            output.as_ref().is_none_or(|out| is_opaque_id(&out.0))
         }
         WorldCommand::SendRelative {
             window,

@@ -92,7 +92,7 @@ pub(super) fn workspace_migrate_tick(
             );
             continue;
         }
-        let Some(device) = migrate_device(state, areas) else {
+        let Some(device) = chord_output(state, areas) else {
             log_json_at(
                 &log_path,
                 serde_json::json!({
@@ -124,15 +124,6 @@ pub(super) fn workspace_migrate_tick(
         );
         let _ = outcome;
     }
-}
-
-/// Native device key for one migration intent: the cached output when live,
-/// else the first live area.
-fn migrate_device(state: &TileLoop, areas: &[MonitorArea]) -> Option<String> {
-    if !state.active_output.is_empty() && areas.iter().any(|a| a.device == state.active_output) {
-        return Some(state.active_output.clone());
-    }
-    areas.first().map(|a| a.device.clone())
 }
 
 /// Dispatch one migration intent: shared-mode guard, then a single

@@ -59,6 +59,11 @@ fn test_report() -> WorldReport {
         migration_source_refill: crate::output_selection::MigrationSourceRefill::LastRemaining,
         anchor_fallback: crate::admission::AnchorFallback::default(),
         no_space_result: crate::admission::NoSpaceResult::default(),
+        switch_target: crate::cursor_targeting::SwitchTarget::default(),
+        fresh_placement: crate::cursor_targeting::FreshPlacement::default(),
+        focus_follows_cursor: false,
+        cursor_warp: false,
+        cursor: None,
         default_tiled: true,
         focused_global: String::new(),
         inventory_complete: true,
@@ -69,6 +74,8 @@ fn test_report() -> WorldReport {
             outcome: AttemptOutcome::Unattempted,
             hold: None,
         }],
+        monotonic_ms: 0,
+        frames: Vec::new(),
     }
 }
 
@@ -274,19 +281,19 @@ fn command_validation_keeps_closed_vocabularies() {
         follow: false,
     }));
     assert!(valid_command(&C::SelectNumbered {
-        output: out.clone(),
+        output: Some(out.clone()),
         index: 9,
     }));
     assert!(!valid_command(&C::SelectNumbered {
-        output: out.clone(),
+        output: Some(out.clone()),
         index: 0,
     }));
     assert!(valid_command(&C::SelectRelative {
-        output: out.clone(),
+        output: Some(out.clone()),
         delta: -1,
     }));
     assert!(!valid_command(&C::SelectRelative {
-        output: out.clone(),
+        output: Some(out.clone()),
         delta: 2,
     }));
 }

@@ -178,6 +178,35 @@ fn should_log_apply(
         > 0
 }
 
+/// Bounded fresh-focus trace row for the `world-apply` diag (TRACE-ONLY).
+/// The token/cursor/settings describe the CURRENT report; the nested
+/// `last_focused_leg` is the core's cached historical leg decision (last
+/// fresh admission), never the current focus fact. Never mixed: the stale
+/// misread this split prevents is treating the cached leg's reported flag
+/// as the current token's presence. Fixed shape, no payload bytes, no
+/// input; the token is a stable lifetime id, never a title.
+fn fresh_route_value(
+    focused_token: &str,
+    cursor: Option<(i32, i32)>,
+    fresh_placement: &str,
+    switch_target: &str,
+    trace: (Option<String>, Option<String>, Option<String>, &'static str),
+) -> serde_json::Value {
+    serde_json::json!({
+        "focused_token": focused_token,
+        "focused_reported": !focused_token.is_empty(),
+        "cursor": cursor,
+        "fresh_placement": fresh_placement,
+        "switch_target": switch_target,
+        "last_focused_leg": {
+            "current": trace.0,
+            "retained": trace.1,
+            "chosen": trace.2,
+            "basis": trace.3,
+        },
+    })
+}
+
 /// Pure trace-row builder for one apply pass (TRACE-ONLY: no actuation
 /// input, no retry, no interpretation). `Applied` appears only when the
 /// diff's own feedback says so: setter-side write counts never fabricate
@@ -194,6 +223,7 @@ fn apply_diag_value(
     command_kind: &str,
     stats: &super::world_diff::ApplyStats,
     feedback: &[AttemptFeedback],
+    fresh_route: serde_json::Value,
 ) -> serde_json::Value {
     let feedback_rows: Vec<serde_json::Value> = feedback
         .iter()
@@ -259,6 +289,8 @@ fn apply_diag_value(
             "removals": stats.removals,
             "effects": stats.effects,
             "held": stats.held,
+            "migration_total": stats.migration_total,
+            "migration_proven": stats.migration_proven,
             "stopped_mid_apply": stats.stopped_mid_apply,
             "partial": stats.partial,
         },
@@ -278,6 +310,7 @@ fn apply_diag_value(
             .transfers
             .len()
             .saturating_sub(desired_transfers.len()),
+        "fresh_route": fresh_route,
     })
 }
 
@@ -296,13 +329,22 @@ fn log_apply_diag(
     command_kind: &str,
     stats: &super::world_diff::ApplyStats,
     feedback: &[AttemptFeedback],
+    fresh_route: serde_json::Value,
 ) {
     if !trace || !should_log_apply(command_kind, stats, feedback) {
         return;
     }
     super::trace::log_json_at(
         log_path,
-        apply_diag_value(tick, reply, delivery, command_kind, stats, feedback),
+        apply_diag_value(
+            tick,
+            reply,
+            delivery,
+            command_kind,
+            stats,
+            feedback,
+            fresh_route,
+        ),
     );
 }
 
@@ -514,6 +556,7 @@ pub(super) fn run_observation_tick(
     areas: &[MonitorArea],
     foreground_hwnd: u64,
     fulls: &[tiler_core::geometry::Rect],
+    cursor: Option<(i32, i32)>,
 ) -> Option<tiler_core::world_report::WorldReply> {
     let trace = state.trace;
     let tick = state.tick;
@@ -559,6 +602,10 @@ pub(super) fn run_observation_tick(
     } = *state;
     // Invalidate synchronously on every tick input (dirty-until-ack).
     world.invalidate();
+    // One monotonic sample for this tick (same epoch as the log stamp):
+    // the report observation time and the stamp for any frame attempt the
+    // apply pass below produces. Never wall-clock, never polled.
+    let tick_ms = super::trace::log_mono_ms();
     let inputs = TileLoop::owner_inputs(
         member_tokens,
         member_identity,
@@ -585,6 +632,7 @@ pub(super) fn run_observation_tick(
         inner_gap,
         outer_gap,
         active,
+        cursor,
     );
     let report = match world.try_dispatch_observation(
         &inputs,
@@ -592,6 +640,7 @@ pub(super) fn run_observation_tick(
         retained,
         areas,
         foreground_hwnd,
+        tick_ms,
     ) {
         Ok(report) => report,
         // The observation never dispatched (busy flight, catch-up owed to
@@ -640,6 +689,7 @@ pub(super) fn run_observation_tick(
         inner_gap,
         outer_gap,
         active,
+        cursor,
     );
     let captured = capture_world(&inputs, Some(observed), retained, areas, foreground_hwnd);
     let inputs = TileLoop::owner_inputs(
@@ -668,6 +718,7 @@ pub(super) fn run_observation_tick(
         inner_gap,
         outer_gap,
         active,
+        cursor,
     );
     let fresh = FreshHost::from_sources(&inputs, observed, retained, &captured);
     let (homing, rings, views) = world.core_projections();
@@ -712,7 +763,9 @@ pub(super) fn run_observation_tick(
         NativePrimitives::default(),
     );
     world.sync_diff_gate();
-    let (stats, feedback) = world.apply_accepted(&reply, &fresh, &mut native);
+    let mut frame_attempts = Vec::new();
+    let (stats, feedback) =
+        world.apply_accepted(&reply, &fresh, &mut native, &mut frame_attempts, tick_ms);
     log_apply_diag(
         &log_path,
         trace,
@@ -722,6 +775,13 @@ pub(super) fn run_observation_tick(
         "observation",
         &stats,
         &feedback,
+        fresh_route_value(
+            &captured.focused_global,
+            captured.cursor,
+            captured.fresh_placement.as_wire_str(),
+            captured.switch_target.as_wire_str(),
+            world.engine().fresh_focus_trace(),
+        ),
     );
     // Proven receipt snapshot: desired values only where live native
     // evidence proves arrival (identity/tag/claim/visibility/scope
@@ -749,6 +809,11 @@ pub(super) fn run_observation_tick(
         ) {
             world.note_feedback(item.clone());
         }
+    }
+    // Mechanical frame facts ride the next report exactly once per window
+    // (latest wins); the core consumes each stamp idempotently.
+    for attempt in frame_attempts {
+        world.note_frame_attempt(attempt);
     }
     let mut pending = std::mem::take(pending_closed);
     let (ack_outcome, pruned) = world.ack(&reply, &mut pending);
@@ -784,6 +849,7 @@ pub(super) fn run_world_command(
     foreground_hwnd: u64,
     fulls: &[tiler_core::geometry::Rect],
     command: WorldCommand,
+    cursor: Option<(i32, i32)>,
 ) -> Option<tiler_core::world_report::WorldReply> {
     let trace = state.trace;
     let tick = state.tick;
@@ -829,6 +895,9 @@ pub(super) fn run_world_command(
         ..
     } = *state;
     world.invalidate();
+    // One monotonic sample for this command tick (same contract as the
+    // observation path above).
+    let tick_ms = super::trace::log_mono_ms();
     let report = {
         let inputs = TileLoop::owner_inputs(
             member_tokens,
@@ -856,6 +925,7 @@ pub(super) fn run_world_command(
             inner_gap,
             outer_gap,
             active,
+            cursor,
         );
         match world.try_dispatch_command(
             &inputs,
@@ -863,6 +933,7 @@ pub(super) fn run_world_command(
             retained,
             areas,
             foreground_hwnd,
+            tick_ms,
             command,
         ) {
             Ok(report) => report,
@@ -870,7 +941,30 @@ pub(super) fn run_world_command(
             // the command never dispatched (never queued, never replayed),
             // so no cached reply may stand in as its outcome. The caller
             // resubmits after the next observation tick runs the catch-up.
-            Err(_) => return None,
+            // Unconditional bounded refusal row (trace-independent) so a
+            // live leg can tell dispatch fences from core refusals: the
+            // existing `world-apply` diag only runs on accepted replies
+            // under trace, so rejected commands previously left no row.
+            Err(dispatch) => {
+                let reason = match dispatch {
+                    super::world_sequencer::DispatchError::Busy => "busy",
+                    super::world_sequencer::DispatchError::CatchupRequired => "catchup-required",
+                    super::world_sequencer::DispatchError::CountersExhausted => {
+                        "counters-exhausted"
+                    }
+                };
+                super::trace::log_json_at(
+                    &log_path,
+                    serde_json::json!({
+                        "event": "world-apply",
+                        "tick": tick,
+                        "delivery": "dispatch-refused",
+                        "command": command_kind,
+                        "reason": reason,
+                    }),
+                );
+                return None;
+            }
         }
     };
     let outcome = world.deliver_production(&report);
@@ -880,7 +974,23 @@ pub(super) fn run_world_command(
         tiler_core::world_engine::WorldOutcome::CommandConsumed(reply) => {
             ("command-consumed", reply)
         }
-        tiler_core::world_engine::WorldOutcome::Rejected { .. } => {
+        tiler_core::world_engine::WorldOutcome::Rejected { kind, message } => {
+            // Unconditional bounded core-refusal row (trace-independent):
+            // `kind`/`message` are the core fixed refusal vocabulary, never
+            // payload bytes. Without this, a refused command (e.g. the live
+            // `migrate-unverified` fence) leaves no `world-apply` row at all.
+            super::trace::log_json_at(
+                &log_path,
+                serde_json::json!({
+                    "event": "world-apply",
+                    "tick": tick,
+                    "request": report.request_id.clone(),
+                    "delivery": "rejected",
+                    "command": command_kind,
+                    "reject_kind": kind,
+                    "reject_message": message,
+                }),
+            );
             world.note_rejected_or_lost(&report.request_id);
             return None;
         }
@@ -911,6 +1021,7 @@ pub(super) fn run_world_command(
         inner_gap,
         outer_gap,
         active,
+        cursor,
     );
     let captured = capture_world(&inputs, Some(observed), retained, areas, foreground_hwnd);
     let inputs = TileLoop::owner_inputs(
@@ -939,6 +1050,7 @@ pub(super) fn run_world_command(
         inner_gap,
         outer_gap,
         active,
+        cursor,
     );
     let fresh = FreshHost::from_sources(&inputs, observed, retained, &captured);
     let (homing, rings, views) = world.core_projections();
@@ -979,7 +1091,9 @@ pub(super) fn run_world_command(
         NativePrimitives::default(),
     );
     world.sync_diff_gate();
-    let (stats, feedback) = world.apply_accepted(&reply, &fresh, &mut native);
+    let mut frame_attempts = Vec::new();
+    let (stats, feedback) =
+        world.apply_accepted(&reply, &fresh, &mut native, &mut frame_attempts, tick_ms);
     log_apply_diag(
         &log_path,
         trace,
@@ -989,6 +1103,13 @@ pub(super) fn run_world_command(
         command_kind,
         &stats,
         &feedback,
+        fresh_route_value(
+            &captured.focused_global,
+            captured.cursor,
+            captured.fresh_placement.as_wire_str(),
+            captured.switch_target.as_wire_str(),
+            world.engine().fresh_focus_trace(),
+        ),
     );
     // Proven receipt snapshot plus applied transfer effects (see the
     // observation path): re-proof of unchanged homing plus exact proven
@@ -1012,6 +1133,11 @@ pub(super) fn run_world_command(
         ) {
             world.note_feedback(item.clone());
         }
+    }
+    // Mechanical frame facts ride the next report exactly once per window
+    // (latest wins); the core consumes each stamp idempotently.
+    for attempt in frame_attempts {
+        world.note_frame_attempt(attempt);
     }
     let mut pending = std::mem::take(pending_closed);
     let (ack_outcome, pruned) = world.ack(&reply, &mut pending);
@@ -1046,9 +1172,13 @@ pub(super) fn observe_and_command(
     let mut skipped: Vec<(String, String)> = Vec::new();
     let mut retained: Vec<RetainedRow> = Vec::new();
     let foreground = crate::ffi::foreground_window();
+    // One normalized sample for this command snapshot (existing capture
+    // sampling only; the focused-fullscreen-game lane never reaches here,
+    // so no cursor work runs under it).
+    let cursor = super::observation::sample_cursor();
     let observed = state.observe(me, fulls, &mut skipped, &mut retained)?;
     run_world_command(
-        state, me, store, dir, &observed, &retained, areas, foreground, fulls, command,
+        state, me, store, dir, &observed, &retained, areas, foreground, fulls, command, cursor,
     )
 }
 
@@ -1066,6 +1196,8 @@ pub(super) fn dispatch_test_observation(
     retained: &[RetainedRow],
     areas: &[MonitorArea],
     foreground_hwnd: u64,
+    cursor: Option<(i32, i32)>,
+    monotonic_ms: u64,
 ) -> Option<tiler_core::world_report::WorldReply> {
     super::rows::refresh_world_hints(state, observed, retained);
     let TileLoop {
@@ -1124,6 +1256,7 @@ pub(super) fn dispatch_test_observation(
         inner_gap,
         outer_gap,
         active,
+        cursor,
     );
     let report = match world.try_dispatch_observation(
         &inputs,
@@ -1131,6 +1264,7 @@ pub(super) fn dispatch_test_observation(
         retained,
         areas,
         foreground_hwnd,
+        monotonic_ms,
     ) {
         Ok(report) => report,
         Err(_) => return world.last_reply().cloned(),
@@ -1212,6 +1346,8 @@ mod apply_diag_tests {
             removals: 0,
             effects: 0,
             held: 2,
+            migration_total: 0,
+            migration_proven: 0,
             stopped_mid_apply: false,
             partial: false,
         }
@@ -1236,7 +1372,26 @@ mod apply_diag_tests {
                 hold: (n % 2 == 0).then_some(HoldReason::GestureBarrier),
             })
             .collect();
-        let value = apply_diag_value(11, &reply, "accepted", "send", &stats, &feedback);
+        let value = apply_diag_value(
+            11,
+            &reply,
+            "accepted",
+            "send",
+            &stats,
+            &feedback,
+            fresh_route_value(
+                "w1",
+                Some((10, 20)),
+                "focused-output-last-focused",
+                "cursor-output",
+                (
+                    Some("o1".to_owned()),
+                    Some("o2".to_owned()),
+                    Some("o2".to_owned()),
+                    "retained",
+                ),
+            ),
+        );
         assert_eq!(value["event"], serde_json::json!("world-apply"));
         assert_eq!(value["tick"], serde_json::json!(11));
         assert_eq!(value["request"], serde_json::json!("req-9"));
@@ -1247,6 +1402,8 @@ mod apply_diag_tests {
         assert_eq!(value["command_result"], serde_json::json!("none"));
         assert_eq!(value["stats"]["membership_writes"], serde_json::json!(1));
         assert_eq!(value["stats"]["held"], serde_json::json!(2));
+        assert_eq!(value["stats"]["migration_total"], serde_json::json!(0));
+        assert_eq!(value["stats"]["migration_proven"], serde_json::json!(0));
         let rows = value["feedback"].as_array().expect("feedback rows");
         assert_eq!(rows.len(), MAX_APPLY_DIAG_FEEDBACK);
         assert_eq!(
@@ -1271,6 +1428,47 @@ mod apply_diag_tests {
         assert_eq!(transfers[0]["kind"], serde_json::json!("window"));
         assert_eq!(transfers[0]["target_workspace"], serde_json::json!("w2"));
         assert_eq!(value["desired_transfers_omitted"], serde_json::json!(0));
+        assert_eq!(
+            value["fresh_route"]["focused_token"],
+            serde_json::json!("w1")
+        );
+        // `focused_reported` derives from the CURRENT token, never from
+        // the cached leg: a nonempty current token reports true even when
+        // the cached leg is historical (or default).
+        assert_eq!(
+            value["fresh_route"]["focused_reported"],
+            serde_json::json!(true)
+        );
+        assert_eq!(value["fresh_route"]["cursor"], serde_json::json!([10, 20]));
+        assert_eq!(
+            value["fresh_route"]["fresh_placement"],
+            serde_json::json!("focused-output-last-focused")
+        );
+        let leg = &value["fresh_route"]["last_focused_leg"];
+        assert_eq!(leg["basis"], serde_json::json!("retained"));
+        assert_eq!(leg["chosen"], serde_json::json!("o2"));
+        assert_eq!(leg["current"], serde_json::json!("o1"));
+        assert_eq!(leg["retained"], serde_json::json!("o2"));
+        // Empty current token reports false while the cached leg stands
+        // apart under its explicit label.
+        let stale = fresh_route_value(
+            "",
+            None,
+            "focused-output-last-focused",
+            "cursor-output",
+            (
+                Some("o1".to_owned()),
+                Some("o2".to_owned()),
+                Some("o2".to_owned()),
+                "retained",
+            ),
+        );
+        assert_eq!(stale["focused_reported"], serde_json::json!(false));
+        assert_eq!(
+            stale["last_focused_leg"]["basis"],
+            serde_json::json!("retained")
+        );
+        assert!(stale["last_focused_leg"].is_object());
     }
 
     #[test]
@@ -1322,7 +1520,15 @@ mod apply_diag_tests {
             ..Default::default()
         };
         let empty: Vec<AttemptFeedback> = Vec::new();
-        let value = apply_diag_value(12, &reply, "accepted", "send", &stats, &empty);
+        let value = apply_diag_value(
+            12,
+            &reply,
+            "accepted",
+            "send",
+            &stats,
+            &empty,
+            serde_json::json!({}),
+        );
         let rows = value["feedback"].as_array().expect("feedback rows");
         assert!(rows.is_empty());
         assert_eq!(value["feedback_omitted"], serde_json::json!(0));
@@ -1353,6 +1559,7 @@ mod apply_diag_tests {
             world_command_kind(&send),
             &stats,
             &[],
+            serde_json::json!({}),
         );
         assert_eq!(value["command"], serde_json::json!("send"));
         let rendered = value.to_string();

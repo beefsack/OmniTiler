@@ -30,7 +30,7 @@ fn request_json(
          \"views\":[{{\"out\":\"out\",\"view\":\"\"}}],\"closed\":[],\"mode\":\"per-output-local\",
          \"hostOwned\":false,\"equalCount\":false,\"native\":[],\
          \"predicate\":\"both-axes-fixed\",\"refill\":\"last-remaining-workspace\",\
-         \"defaultTiled\":true,\"focused\":\"\",\
+         \"switchTarget\":\"cursor-output\",\"freshPlacement\":\"cursor-output-last-focused\",\"cursor\":null,\"focusFollowsCursor\":false,\"cursorWarp\":false,\"defaultTiled\":true,\"focused\":\"\",\
          \"complete\":true,\"gesture\":false,\"feedback\":[]}}"
     )
 }
@@ -283,6 +283,36 @@ fn all_commands_decode_typed_and_refuse_bad_vocab() {
     assert!(decode_request(&with_command(&bad_same_axis, "7")).is_err());
     let bad_unknown = serde_json::json!({"op": "frobnicate", "out": "o"});
     assert!(decode_request(&with_command(&bad_unknown, "7")).is_err());
+    // A null selection output resolves in core: it decodes to `None`,
+    // never to an invented output.
+    for (op, extra) in [
+        (
+            "select-numbered",
+            serde_json::json!({"out": null, "index": 9}),
+        ),
+        (
+            "select-relative",
+            serde_json::json!({"out": null, "delta": -1}),
+        ),
+        ("select-previous", serde_json::json!({"out": null})),
+        ("select-trailing", serde_json::json!({"out": null})),
+    ] {
+        let mut map = serde_json::Map::new();
+        map.insert("op".to_owned(), serde_json::Value::String(op.to_owned()));
+        for (key, value) in extra.as_object().expect("object") {
+            map.insert(key.clone(), value.clone());
+        }
+        let command = serde_json::Value::Object(map);
+        let report = decode_request(&with_command(&command, "7")).expect("null out decodes");
+        let resolved = match report.command {
+            Some(C::SelectNumbered { output, .. })
+            | Some(C::SelectRelative { output, .. })
+            | Some(C::SelectPrevious { output })
+            | Some(C::SelectTrailing { output }) => output,
+            _ => panic!("{op} decoded"),
+        };
+        assert_eq!(resolved, None, "{op}");
+    }
 }
 
 fn with_command(command: &serde_json::Value, seq: &str) -> String {
@@ -321,6 +351,77 @@ fn tolerance_backfills_capacity_settings() {
 }
 
 #[test]
+fn cursor_targeting_settings_decode_strictly() {
+    use tiler_core::cursor_targeting::{FreshPlacement, SwitchTarget};
+    // Defaults ride the envelope: cursor output, last-focused anchors,
+    // no cursor, no coupling.
+    let report = decode_request(&one_window_request()).expect("decodes");
+    assert_eq!(report.switch_target, SwitchTarget::Cursor);
+    assert_eq!(report.fresh_placement, FreshPlacement::CursorOutputMru);
+    assert_eq!(report.cursor, None);
+    assert!(!report.focus_follows_cursor);
+    assert!(!report.cursor_warp);
+    // Every approved token decodes, including a carried cursor point.
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["switchTarget"] = serde_json::Value::String("focused-output".to_owned());
+    value["freshPlacement"] = serde_json::Value::String("cursor-output-cursor-closest".to_owned());
+    value["cursor"] = serde_json::json!([100, 200]);
+    value["focusFollowsCursor"] = serde_json::Value::Bool(true);
+    value["cursorWarp"] = serde_json::Value::Bool(true);
+    let report = decode_request(&value.to_string()).expect("targeting decodes");
+    assert_eq!(report.switch_target, SwitchTarget::Focused);
+    assert_eq!(
+        report.fresh_placement,
+        FreshPlacement::CursorOutputCursorClosest
+    );
+    assert_eq!(report.cursor, Some((100, 200)));
+    assert!(report.focus_follows_cursor);
+    assert!(report.cursor_warp);
+    // Unknown tokens refuse loudly: no silent wrong-policy fallback.
+    for (key, token) in [
+        ("switchTarget", "bogus"),
+        ("freshPlacement", "bogus"),
+        ("freshPlacement", "cursor-output"),
+    ] {
+        let mut value: serde_json::Value =
+            serde_json::from_str(&one_window_request()).expect("valid");
+        value[key] = serde_json::Value::String(token.to_owned());
+        let error = decode_request(&value.to_string()).expect_err("bad token refuses");
+        assert_eq!(error.kind, "unknown-value", "{key}={token}");
+    }
+    // Missing keys refuse as malformed (strict, no compat backfill).
+    for key in [
+        "switchTarget",
+        "freshPlacement",
+        "cursor",
+        "focusFollowsCursor",
+        "cursorWarp",
+    ] {
+        let mut value: serde_json::Value =
+            serde_json::from_str(&one_window_request()).expect("valid");
+        value.as_object_mut().expect("object").remove(key);
+        assert!(
+            decode_request(&value.to_string()).is_err(),
+            "missing {key} refuses"
+        );
+    }
+    // Wrong cursor shapes refuse; out-of-bound coordinates refuse.
+    for cursor in [
+        serde_json::json!([1]),
+        serde_json::json!([1, 2, 3]),
+        serde_json::json!("here"),
+        serde_json::json!([1.5, 2]),
+        serde_json::json!([20000, 0]),
+        serde_json::json!([0, -20000]),
+    ] {
+        let mut value: serde_json::Value =
+            serde_json::from_str(&one_window_request()).expect("valid");
+        value["cursor"] = cursor;
+        assert!(decode_request(&value.to_string()).is_err());
+    }
+}
+
+#[test]
 fn request_estimate_bounds_actual_wire_bytes() {
     let compact = one_window_request();
     let report = decode_request(&compact).expect("decodes");
@@ -334,6 +435,72 @@ fn request_estimate_bounds_actual_wire_bytes() {
     let report = decode_request(&empty).expect("empty decodes");
     let estimate = tiler_core::world_report::report_estimate(&report);
     assert!(estimate >= empty.len());
+}
+
+#[test]
+fn frame_attempts_decode_tolerantly_and_stay_bounded() {
+    use tiler_core::world_report::FrameSetter;
+    // Absent keys backfill: predates-the-field adapters stay valid with an
+    // unreported clock and no attempts.
+    let report = decode_request(&one_window_request()).expect("decodes");
+    assert_eq!(report.monotonic_ms, 0);
+    assert!(report.frames.is_empty());
+    // Present keys decode to the typed mechanical shape.
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["monotonicMs"] = serde_json::Value::String("1200".to_owned());
+    value["frameAttempts"] = serde_json::json!([{
+        "win": "win-a", "target": [0, 0, 800, 560], "setter": "accepted",
+        "readback": [0, 0, 700, 560], "dpiBefore": 96, "dpiAfter": 120,
+        "attemptMs": "1000",
+    }]);
+    let wire = value.to_string();
+    let report = decode_request(&wire).expect("attempts decode");
+    assert_eq!(report.monotonic_ms, 1200);
+    assert_eq!(report.frames.len(), 1);
+    let attempt = &report.frames[0];
+    assert_eq!(attempt.window.0, "win-a");
+    assert_eq!(attempt.setter, FrameSetter::Accepted);
+    assert_eq!(attempt.dpi_before, Some(96));
+    assert_eq!(attempt.dpi_after, Some(120));
+    assert_eq!(attempt.attempt_ms, 1000);
+    let estimate = tiler_core::world_report::report_estimate(&report);
+    assert!(
+        estimate >= wire.len(),
+        "estimate {estimate} bounds wire {}",
+        wire.len()
+    );
+    // A JSON number where the clock belongs refuses like every counter.
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["monotonicMs"] = serde_json::json!(1200);
+    assert!(decode_request(&value.to_string()).is_err());
+    // Unknown setter vocabulary refuses; unknown attempt fields refuse.
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["frameAttempts"] = serde_json::json!([{
+        "win": "win-a", "target": [0, 0, 800, 560], "setter": "clamped",
+        "readback": null, "dpiBefore": null, "dpiAfter": null,
+        "attemptMs": "1000",
+    }]);
+    let error = decode_request(&value.to_string()).expect_err("bad setter refuses");
+    assert_eq!(error.kind, "unknown-value");
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["frameAttempts"] = serde_json::json!([{
+        "win": "win-a", "target": [0, 0, 800, 560], "setter": "threw",
+        "readback": null, "dpiBefore": null, "dpiAfter": null,
+        "attemptMs": "1000", "verdict": "clamp",
+    }]);
+    let error = decode_request(&value.to_string()).expect_err("unknown field refuses");
+    assert_eq!(error.kind, "unknown-field");
+    // Duplicate windows refuse with fixed vocabulary, never payload bytes.
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["frameAttempts"] = serde_json::json!([
+        {"win": "win-a", "target": [0, 0, 800, 560], "setter": "refused",
+         "readback": null, "dpiBefore": null, "dpiAfter": null, "attemptMs": "1000"},
+        {"win": "win-a", "target": [0, 0, 800, 560], "setter": "refused",
+         "readback": null, "dpiBefore": null, "dpiAfter": null, "attemptMs": "1001"},
+    ]);
+    let error = decode_request(&value.to_string()).expect_err("duplicate refuses");
+    assert_eq!(error.kind, "snapshot-invalid");
+    assert_eq!(error.message, "duplicate-frame");
 }
 
 #[test]

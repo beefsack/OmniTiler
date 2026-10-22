@@ -78,11 +78,18 @@ fn report(
         migration_source_refill: crate::output_selection::MigrationSourceRefill::LastRemaining,
         anchor_fallback: crate::admission::AnchorFallback::default(),
         no_space_result: crate::admission::NoSpaceResult::default(),
+        switch_target: crate::cursor_targeting::SwitchTarget::default(),
+        fresh_placement: crate::cursor_targeting::FreshPlacement::default(),
+        focus_follows_cursor: false,
+        cursor_warp: false,
+        cursor: None,
         default_tiled: true,
         focused_global: focused.to_owned(),
         inventory_complete: true,
         gesture_barrier: false,
         feedback,
+        monotonic_ms: 0,
+        frames: Vec::new(),
     }
 }
 
@@ -576,11 +583,18 @@ fn report_with_screens(
         migration_source_refill: crate::output_selection::MigrationSourceRefill::LastRemaining,
         anchor_fallback: crate::admission::AnchorFallback::default(),
         no_space_result: crate::admission::NoSpaceResult::default(),
+        switch_target: crate::cursor_targeting::SwitchTarget::default(),
+        fresh_placement: crate::cursor_targeting::FreshPlacement::default(),
+        focus_follows_cursor: false,
+        cursor_warp: false,
+        cursor: None,
         default_tiled: true,
         focused_global: focused.to_owned(),
         inventory_complete,
         gesture_barrier: false,
         feedback,
+        monotonic_ms: 0,
+        frames: Vec::new(),
     }
 }
 
@@ -1597,4 +1611,327 @@ fn possibly_executed_never_rolls_back() {
         .find(|row| row.id == view_a)
         .expect("mapping held");
     assert_eq!(row.output.0, "out-b", "no rollback after ack: {row:?}");
+}
+
+#[test]
+fn directional_fences_carry_distinct_fixed_reasons() {
+    use crate::world_engine::{
+        MSG_MIGRATION_INVENTORY, MSG_MIGRATION_SOURCE, MSG_MIGRATION_SOURCE_UNREADABLE,
+        MSG_MIGRATION_TARGET_INCOMPLETE, MSG_MIGRATION_TOPOLOGY, MSG_MIGRATION_TOPOLOGY_UNREADABLE,
+    };
+    use crate::world_report::{ScreenReport, WindowFact};
+
+    fn screens_two() -> Vec<ScreenReport> {
+        vec![screen("out-a", 0, true), screen("out-b", 800, false)]
+    }
+
+    fn dir_cmd(ws: &str) -> WorldCommand {
+        WorldCommand::MigrateDirectional {
+            source_output: OutputId("out-a".to_owned()),
+            workspace: ws.to_owned(),
+            direction: "right".to_owned(),
+        }
+    }
+
+    // Seed once for view ids.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![fact("win-a", "out-a", 0)],
+            "win-a",
+            None,
+            None,
+            vec![],
+        ),
+    );
+    let view_a = first
+        .outputs
+        .iter()
+        .find(|row| row.output.0 == "out-a")
+        .and_then(|row| row.logical_view.clone())
+        .expect("view a");
+
+    // No adjacent target: eastmost output heading right.
+    let east = WorldReport {
+        screens: screens_two(),
+        windows: vec![fact("win-a", "out-b", 800)],
+        focused_global: "win-a".to_owned(),
+        request_seq: 2,
+        observation_seq: 2,
+        request_id: "req-2".to_owned(),
+        command_seq: Some(11),
+        command: Some(WorldCommand::MigrateDirectional {
+            source_output: OutputId("out-b".to_owned()),
+            workspace: view_a.clone(),
+            direction: "right".to_owned(),
+        }),
+        inventory_complete: true,
+        ..report(2, 2, vec![], "", None, None, vec![])
+    };
+    match engine.handle_report(&east) {
+        WorldOutcome::Rejected { kind, message } => {
+            assert_eq!(kind, "migration-refused");
+            assert_eq!(message, MSG_MIGRATION_TOPOLOGY);
+        }
+        other => panic!("eastmost right must refuse no-target, got {other:?}"),
+    }
+
+    // Incomplete inventory.
+    let mut inv = report(
+        3,
+        3,
+        vec![fact("win-a", "out-a", 0)],
+        "win-a",
+        Some(12),
+        Some(dir_cmd(&view_a)),
+        vec![],
+    );
+    inv.inventory_complete = false;
+    match engine.handle_report(&inv) {
+        WorldOutcome::Rejected { kind, message } => {
+            assert_eq!(kind, "migration-refused");
+            assert_eq!(message, MSG_MIGRATION_INVENTORY);
+        }
+        other => panic!("incomplete inventory must refuse, got {other:?}"),
+    }
+
+    // Source workspace not homed.
+    let ghost = report(
+        4,
+        4,
+        vec![fact("win-a", "out-a", 0)],
+        "win-a",
+        Some(13),
+        Some(dir_cmd("ws-ghost")),
+        vec![],
+    );
+    match engine.handle_report(&ghost) {
+        WorldOutcome::Rejected { kind, message } => {
+            assert_eq!(kind, "migration-refused");
+            assert_eq!(message, MSG_MIGRATION_SOURCE);
+        }
+        other => panic!("ghost source must refuse, got {other:?}"),
+    }
+
+    // Source unreadable: homed window with no rect.
+    let unread = WindowFact {
+        rect: None,
+        ..fact("win-a", "out-a", 0)
+    };
+    let bad_src = report(
+        5,
+        5,
+        vec![unread],
+        "",
+        Some(14),
+        Some(dir_cmd(&view_a)),
+        vec![],
+    );
+    match engine.handle_report(&bad_src) {
+        WorldOutcome::Rejected { kind, message } => {
+            assert_eq!(kind, "migration-refused");
+            assert_eq!(message, MSG_MIGRATION_SOURCE_UNREADABLE);
+        }
+        other => panic!("unreadable source must refuse, got {other:?}"),
+    }
+
+    // Target incomplete via the named path (directional topology runs
+    // first, so an incomplete screen there reads as unreadable topology).
+    let mut inc_screens = screens_two();
+    inc_screens[1].complete = false;
+    let mut tgt = report(
+        6,
+        6,
+        vec![fact("win-a", "out-a", 0)],
+        "win-a",
+        Some(15),
+        Some(WorldCommand::MigrateWorkspace {
+            source_output: OutputId("out-a".to_owned()),
+            target_output: OutputId("out-b".to_owned()),
+            workspace: view_a.clone(),
+        }),
+        vec![],
+    );
+    tgt.screens = inc_screens.clone();
+    match engine.handle_report(&tgt) {
+        WorldOutcome::Rejected { kind, message } => {
+            assert_eq!(kind, "migration-refused");
+            assert_eq!(message, MSG_MIGRATION_TARGET_INCOMPLETE);
+        }
+        other => panic!("incomplete target must refuse, got {other:?}"),
+    }
+
+    // Directional topology unreadable: incomplete screens clear the
+    // retained FULL topology, so the directional layer cannot rank.
+    let mut topo = report(
+        7,
+        7,
+        vec![fact("win-a", "out-a", 0)],
+        "win-a",
+        Some(16),
+        Some(dir_cmd(&view_a)),
+        vec![],
+    );
+    topo.screens = inc_screens;
+    match engine.handle_report(&topo) {
+        WorldOutcome::Rejected { kind, message } => {
+            assert_eq!(kind, "migration-refused");
+            assert_eq!(message, MSG_MIGRATION_TOPOLOGY_UNREADABLE);
+        }
+        other => panic!("unreadable topology must refuse, got {other:?}"),
+    }
+
+    // Second migrate after a commit: the source workspace has moved, so
+    // the homed fence (not flight) names the refusal. Flight stays as a
+    // defensive fence for retained-but-still-homed states.
+    let mut flight_engine = WorldEngine::new("gen-1").expect("generation");
+    let seed = accepted(
+        &mut flight_engine,
+        &report(
+            1,
+            1,
+            vec![fact("win-a", "out-a", 0)],
+            "win-a",
+            None,
+            None,
+            vec![],
+        ),
+    );
+    let seed_view = seed
+        .outputs
+        .iter()
+        .find(|row| row.output.0 == "out-a")
+        .and_then(|row| row.logical_view.clone())
+        .expect("seed view");
+    accepted(
+        &mut flight_engine,
+        &report(
+            2,
+            2,
+            vec![fact("win-a", "out-a", 0)],
+            "win-a",
+            Some(21),
+            Some(dir_cmd(&seed_view)),
+            vec![],
+        ),
+    );
+    let again = report(
+        3,
+        3,
+        vec![fact("win-a", "out-a", 0)],
+        "win-a",
+        Some(22),
+        Some(dir_cmd(&seed_view)),
+        vec![],
+    );
+    match flight_engine.handle_report(&again) {
+        WorldOutcome::Rejected { kind, message } => {
+            assert_eq!(kind, "migration-refused");
+            assert_eq!(message, MSG_MIGRATION_SOURCE);
+        }
+        other => panic!("second migrate after commit must refuse homed, got {other:?}"),
+    }
+}
+
+#[test]
+fn offset_two_output_migration_applies() {
+    // Generic y-offset shape (never local specifics): primary plus a
+    // narrower x-touching secondary offset in y. Proves offset geometry
+    // alone never fences directional migration.
+    use crate::directional::OutputId;
+    use crate::geometry::Rect;
+    use crate::size_hints::WindowSizeHints;
+    use crate::world_report::{ScreenReport, WindowFact};
+
+    fn r(x: i32, y: i32, w: i32, h: i32) -> Rect {
+        Rect { x, y, w, h }
+    }
+    fn scr(output: &str, full: Rect, work: Rect, primary: bool) -> ScreenReport {
+        ScreenReport {
+            output: OutputId(output.to_owned()),
+            full_rect: Some(full),
+            work_area: Some(work),
+            gap: 0,
+            outer_gap: 0,
+            complete: true,
+            primary,
+        }
+    }
+    fn wf(window: &str, output: &str, rect: Rect) -> WindowFact {
+        WindowFact {
+            window: crate::directional::WindowId(window.to_owned()),
+            output: OutputId(output.to_owned()),
+            rect: Some(rect),
+            floating: false,
+            fit_excluded: false,
+            fullscreen: false,
+            maximized: false,
+            sticky: false,
+            fixed_auto: false,
+            fixed_suppress: false,
+            hints: WindowSizeHints::none(),
+            minimized: false,
+            observed_workspace: None,
+        }
+    }
+    let screens = vec![
+        scr("out-a", r(0, 0, 800, 600), r(0, 0, 800, 560), true),
+        scr("out-b", r(800, 100, 640, 440), r(800, 100, 640, 420), false),
+    ];
+    let wins = || {
+        vec![
+            wf("m1", "out-a", r(10, 10, 200, 200)),
+            wf("m2", "out-a", r(300, 10, 200, 200)),
+            wf("m3", "out-a", r(300, 300, 200, 200)),
+            wf("n1", "out-b", r(810, 110, 200, 200)),
+            wf("n2", "out-b", r(1100, 110, 200, 200)),
+        ]
+    };
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &WorldReport {
+            screens: screens.clone(),
+            windows: wins(),
+            focused_global: "m1".to_owned(),
+            request_seq: 1,
+            observation_seq: 1,
+            request_id: "req-1".to_owned(),
+            ..report(1, 1, vec![], "", None, None, vec![])
+        },
+    );
+    let view_a = first
+        .outputs
+        .iter()
+        .find(|row| row.output.0 == "out-a")
+        .and_then(|row| row.logical_view.clone())
+        .expect("view a");
+    let reply = accepted(
+        &mut engine,
+        &WorldReport {
+            screens: screens.clone(),
+            windows: wins(),
+            focused_global: "m1".to_owned(),
+            request_seq: 2,
+            observation_seq: 2,
+            request_id: "req-2".to_owned(),
+            command_seq: Some(11),
+            command: Some(WorldCommand::MigrateDirectional {
+                source_output: OutputId("out-a".to_owned()),
+                workspace: view_a,
+                direction: "right".to_owned(),
+            }),
+            ..report(2, 2, vec![], "", None, None, vec![])
+        },
+    );
+    assert!(
+        reply
+            .transfers
+            .iter()
+            .any(|t| matches!(t.kind, crate::world_report::TransferKind::Migration)),
+        "offset 3+2 must retain migration transfer"
+    );
 }

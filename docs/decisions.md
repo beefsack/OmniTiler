@@ -2374,7 +2374,8 @@ platform API behavior.
   default, with focused-output placement as an option, superseding the
   2026-10-10 focused-output default on the
   [Tier 1 evidence](changes/archive/cursor-first-output-evidence.md).
-  The configurable replacement below is not implemented on any platform.
+  Windows implements the configurable replacement below in stage 2c;
+  KDE/macOS adoption remains pending.
   Historical 2026-10-14 approval: KDE adapter routing for 0.1, with output
   selection planned for Rust core/Planner in post-0.1 Push code down alongside born-maximized;
   the current Planner receives an already selected native domain. Native
@@ -2399,9 +2400,11 @@ platform API behavior.
   verb-dependent evidence row establishes the behavior.
   [Tier 1 evidence](changes/archive/cursor-first-output-evidence.md),
   [matrix discriminators](spec/reference-outcomes.md#cursor-first-output-targeting-discriminators).
-  Not implemented on any platform. Next: Windows first to unblock defect 4
-  admission; KDE/macOS by their streams. Interim Windows foreground-first
-  workspace-command routing (`1e7bfaf4`) remains until implementation.
+  Windows stage 2c implements switch targeting and fresh placement, closing
+  defect 4 admission; KDE/macOS adoption remains with their streams. Windows
+  foreground-first workspace-switch routing (`1e7bfaf4`) is superseded.
+  Focus-follows-cursor and cursor-warp are retained settings only until
+  stage 4 implements their behavior and the i3/sway preset's cross-output warp.
   User 2026-10-20 explicitly approves the platform-neutral shared-core addition:
   implement the three-way new-window placement logic in shared core where
   possible, with each platform supplying cursor position and settings.
@@ -2607,6 +2610,38 @@ platform API behavior.
   selects policy. Stage 2a implements this logical boundary; Windows owner
   adoption and cursor-first placement remain separate slices.
   [Implementation and evidence](changes/core-world-model-rearchitecture.md#stage-2a-accepted-outcome-2026-10-21).
+- Windows world-owner adoption, 2026-10-22: stage 2b uses the retained
+  `WorldOwner` as the sole workspace/layout policy owner. Native member/view
+  receipts remain distinct from core desires; scoped inventory completeness
+  excludes never-managed foreign windows without weakening bound-member holds.
+  Migration member arrival can prove before its deferred target-view switch;
+  empty refill views can prove despite valid hidden members of other
+  workspaces. Both proofs require native evidence, not setter success or a
+  desired-state echo. Superseded Windows owners and public per-domain Engine
+  interfaces are removed. Startup/restart adopt native markers but introduce
+  no durable workspace-ring or hidden-view store. Cursor-first switch and fresh
+  placement remain stage 2c, not part of this adoption.
+  [Acceptance and limits](changes/core-world-model-rearchitecture.md#stage-2b-accepted-outcome-2026-10-22).
+- Cursor-first world adoption, 2026-10-22: core resolves implicit numbered,
+  relative, previous and trailing selection from the configured cursor/focused
+  target; explicit screen selections remain explicit. Core chooses fresh
+  tiled admission's output and neighbor under the three approved placements.
+  The first complete inventory is startup/restart adoption, including an empty
+  roster; later new lifetimes route without rehoming retained members. For
+  fresh admission only, genuine retained managed focus survives absent,
+  unknown or stealing-new foregrounds; a current managed focus supersedes it.
+  Windows reports a bounded cursor sample with each normal world snapshot,
+  not a new hook or continuous pointer poll, and skips it in the focused
+  fullscreen-game lane. Native DPI rebasing can reassert the same intended
+  physical frame once after an observed DPI transition, with renewed safety
+  gates; stable clamp/adoption policy is not part of that conversion.
+  [Acceptance and remaining stages](changes/core-world-model-rearchitecture.md#stage-2c-accepted-outcome-2026-10-22).
+- **Tentative, pending review (2026-10-22):** retain a dev-only exact-owner
+  `migrate-workspace --direction` control, parallel to `send-output`, for
+  whole-workspace native acceptance. It invokes the existing production
+  handler with unchanged identity, scope, suspension and topology gates; no
+  product binding or input-hook exception is added.
+  [Control and evidence rules](live-windows-testing.md#agent-live-test-practice).
 - User approved 2026-10-20: core owns shapes and bounds of the active border,
   group underlays and drop overlays. Platforms report cursor position so core
   computes drop targets. Try this first; optimise only if dogfooding shows cost.
@@ -2625,6 +2660,17 @@ platform API behavior.
   coordinate/DPI conversion, invisible-border insets and lifetime/replacement
   detection. User caveat: rough edges are expected where a platform cannot
   apply core's state; work through them to optimise UX.
+- Frame convergence extraction, 2026-10-22: core retains identical-pair clamp
+  suppression and bounded transient retry policy from raw lifetime-scoped
+  write/readback facts. Unreadable proof cannot establish a clamp; consumed
+  evidence survives exact-match clears without resurrecting old suppression.
+  Retry remains event-driven. Native DPI/inset conversion and freshness vetoes
+  remain mechanical. Tiled cross-output sends and migrations publish the core's
+  destination slot before arrival instead of delegating placement to a native
+  origin-delta remap; observed arrival/view/refill still proves completion.
+  Same-output sequencing is unchanged. Learned constraints, remaining operation
+  completion and frameless migration placement remain separate stage 3 work.
+  [Acceptance and limits](changes/core-world-model-rearchitecture.md#stage-3a-accepted-outcome-2026-10-22).
 - User approved 2026-10-20: platforms detect and report host gesture start
   (window, move or resize), cursor updates, release and cancel, and render/apply.
   Core owns the drag session, target, overlay shape, release outcome

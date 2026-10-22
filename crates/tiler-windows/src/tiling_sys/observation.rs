@@ -17,6 +17,27 @@ pub(super) fn cursor_pos() -> Option<(i32, i32)> {
     crate::ffi::cursor_pos()
 }
 
+/// Normalized per-tick cursor sample in adapter units (same space as
+/// screen FULL rectangles and fact frames): `None` when unreadable or
+/// outside the carried geometry bounds (fail-closed to the focused
+/// fallback, never an invented position). One sample per capture or
+/// command snapshot only: no hooks, no polling, and no sampling at all on
+/// the focused-fullscreen-game lane (callers pass `None` there).
+pub(super) fn sample_cursor() -> Option<(i32, i32)> {
+    normalize_cursor(cursor_pos())
+}
+
+/// Pure normalization for one cursor read: values outside the carried
+/// geometry bounds drop to `None` so an out-of-range read can never
+/// refuse a report (`cursor-invalid`) or steer policy.
+pub(super) fn normalize_cursor(raw: Option<(i32, i32)>) -> Option<(i32, i32)> {
+    raw.filter(|(x, y)| {
+        (-tiler_core::bounds::GEOMETRY_BOUND..=tiler_core::bounds::GEOMETRY_BOUND).contains(x)
+            && (-tiler_core::bounds::GEOMETRY_BOUND..=tiler_core::bounds::GEOMETRY_BOUND)
+                .contains(y)
+    })
+}
+
 impl TileLoop {
     pub(super) fn correlation(&self) -> CorrelationId {
         CorrelationId::parse(&format!("tick-{}", self.tick))

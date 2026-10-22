@@ -617,6 +617,7 @@ pub(super) fn service_pending_drop(
         foreground,
         fulls,
         tiler_core::world_report::WorldCommand::Operation(command),
+        super::observation::sample_cursor(),
     );
     match reply {
         Some(reply) => {

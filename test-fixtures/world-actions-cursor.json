@@ -1,0 +1,110 @@
+{
+  "version": 1,
+  "description": "Stage 2c shared world-action acceptance: normalized dual-output scene plus per-case cursor/focus actions. Core (tests/world_actions_cursor.rs) and Windows production LiveNative seam (tiling_sys/world_native_cursor_tests.rs) consume the SAME cases; a later live external PowerShell connector scales the normalized 800x600 scene to host pixels and asserts the same relationships (never exact host pixels). Ordinary fresh windows are physically created on the focused (native-affinity) output yet must land on the policy target: cursor-output placements route against affinity, focused-output placement stays. The target output always carries two peers (X left, Y right, Y is the target MRU) with the cursor over X, so COSMIC (cursor-output/last-focused) must split Y while Hyprland (cursor-output/cursor-closest) must split X; i3/sway (focused-output/last-focused) must stay on the focused source and split its MRU. Relationships asserted: newcomer homing names the policy output, exactly the anchor peer shrinks, newcomer-plus-anchor union equals the anchor's pre-arrival tile, the stable peer and the listed source windows keep their tiles, the reply carries the newcomer frame, the target view proves, and the next observation settles with no replay.",
+  "scene": {
+    "output_size": [800, 600],
+    "work_height": 560,
+    "outputs": [
+      { "id": "out-a", "x": 0, "primary": true },
+      { "id": "out-b", "x": 800, "primary": false }
+    ],
+    "windows": [
+      { "id": "a1", "output": "out-a", "rect": [0, 0, 400, 560] },
+      { "id": "a2", "output": "out-a", "rect": [400, 0, 400, 560] },
+      { "id": "b1", "output": "out-b", "rect": [800, 0, 400, 560] },
+      { "id": "b2", "output": "out-b", "rect": [1200, 0, 400, 560] }
+    ]
+  },
+  "cases": [
+    {
+      "name": "fresh-cosmic-ab",
+      "kind": "fresh",
+      "settings": { "switch_target": "cursor-output", "fresh_placement": "cursor-output-last-focused" },
+      "seed_focus_order": ["b2", "a1"],
+      "focus": "a1",
+      "cursor": [900, 300],
+      "newcomer": { "id": "win-n", "native_output": "out-a", "rect": [100, 100, 200, 150] },
+      "expect": { "output": "out-b", "anchor": "b2", "stable_peer": "b1", "source_unchanged": ["a1", "a2"] }
+    },
+    {
+      "name": "fresh-hypr-ab",
+      "kind": "fresh",
+      "settings": { "switch_target": "cursor-output", "fresh_placement": "cursor-output-cursor-closest" },
+      "seed_focus_order": ["b2", "a1"],
+      "focus": "a1",
+      "cursor": [900, 300],
+      "newcomer": { "id": "win-n", "native_output": "out-a", "rect": [100, 100, 200, 150] },
+      "expect": { "output": "out-b", "anchor": "b1", "stable_peer": "b2", "source_unchanged": ["a1", "a2"] }
+    },
+    {
+      "name": "fresh-i3-ab",
+      "kind": "fresh",
+      "settings": { "switch_target": "cursor-output", "fresh_placement": "focused-output-last-focused" },
+      "seed_focus_order": ["b2", "a1"],
+      "focus": "a1",
+      "cursor": [900, 300],
+      "newcomer": { "id": "win-n", "native_output": "out-a", "rect": [100, 100, 200, 150] },
+      "expect": { "output": "out-a", "anchor": "a1", "stable_peer": "a2", "source_unchanged": ["a2"] }
+    },
+    {
+      "name": "fresh-cosmic-ba",
+      "kind": "fresh",
+      "settings": { "switch_target": "cursor-output", "fresh_placement": "cursor-output-last-focused" },
+      "seed_focus_order": ["a2", "b1"],
+      "focus": "b1",
+      "cursor": [100, 300],
+      "newcomer": { "id": "win-n", "native_output": "out-b", "rect": [900, 100, 200, 150] },
+      "expect": { "output": "out-a", "anchor": "a2", "stable_peer": "a1", "source_unchanged": ["b1", "b2"] }
+    },
+    {
+      "name": "fresh-hypr-ba",
+      "kind": "fresh",
+      "settings": { "switch_target": "cursor-output", "fresh_placement": "cursor-output-cursor-closest" },
+      "seed_focus_order": ["a2", "b1"],
+      "focus": "b1",
+      "cursor": [100, 300],
+      "newcomer": { "id": "win-n", "native_output": "out-b", "rect": [900, 100, 200, 150] },
+      "expect": { "output": "out-a", "anchor": "a1", "stable_peer": "a2", "source_unchanged": ["b1", "b2"] }
+    },
+    {
+      "name": "fresh-i3-ba",
+      "kind": "fresh",
+      "settings": { "switch_target": "cursor-output", "fresh_placement": "focused-output-last-focused" },
+      "seed_focus_order": ["a2", "b1"],
+      "focus": "b1",
+      "cursor": [100, 300],
+      "newcomer": { "id": "win-n", "native_output": "out-b", "rect": [900, 100, 200, 150] },
+      "expect": { "output": "out-b", "anchor": "b1", "stable_peer": "b2", "source_unchanged": ["b2"] }
+    },
+    {
+      "name": "switch-cursor-trailing-lands-on-cursor-output",
+      "kind": "switch",
+      "settings": { "switch_target": "cursor-output", "fresh_placement": "cursor-output-last-focused" },
+      "seed_focus_order": ["b2", "a1"],
+      "focus": "a1",
+      "cursor": [900, 300],
+      "command": { "kind": "select-trailing" },
+      "expect": { "output": "out-b", "other_output": "out-a" }
+    },
+    {
+      "name": "switch-focused-trailing-lands-on-focused-output",
+      "kind": "switch",
+      "settings": { "switch_target": "focused-output", "fresh_placement": "cursor-output-last-focused" },
+      "seed_focus_order": ["b2", "a1"],
+      "focus": "a1",
+      "cursor": [900, 300],
+      "command": { "kind": "select-trailing" },
+      "expect": { "output": "out-a", "other_output": "out-b" }
+    },
+    {
+      "name": "send-numbered-stays-on-mover-output",
+      "kind": "send",
+      "settings": { "switch_target": "cursor-output", "fresh_placement": "cursor-output-last-focused" },
+      "seed_focus_order": ["a2", "b1"],
+      "focus": "b1",
+      "cursor": [100, 300],
+      "command": { "kind": "send-numbered", "window": "b1", "index": 0, "follow": false },
+      "expect": { "output": "out-b" }
+    }
+  ]
+}

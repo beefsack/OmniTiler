@@ -23,7 +23,7 @@ fn adopt_seeded(
     areas: &[super::MonitorArea],
     hint_cx: &mut super::HintCx,
 ) {
-    super::world_tick::dispatch_test_observation(state, observed, retained, areas, 0);
+    super::world_tick::dispatch_test_observation(state, observed, retained, areas, 0, None, 0);
     super::adopt_restart_markers(state, me, observed, retained, areas, hint_cx);
 }
 
@@ -1263,6 +1263,8 @@ fn monitorless_adoption_still_adopts_marker_intent_without_hold() {
         &rig.observed,
         &[],
         &reject_areas_for(&rig.output),
+        0,
+        None,
         0,
     );
     let mut hint_cx = super::HintCx::new();

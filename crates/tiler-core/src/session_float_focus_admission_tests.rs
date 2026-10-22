@@ -385,11 +385,14 @@ fn float_focus_convergence_admits_newcomer_at_prior_tiled_focus() {
 }
 
 #[test]
-fn genuine_no_anchor_admission_still_root_wraps() {
-    // No-anchor boundary characterization on the unchanged policy: a
+fn seeded_mru_admission_anchors_without_focus() {
+    // No-focus boundary characterization under cursor-first placement: a
     // multi-leaf tree built with no tiled focus history at all (focusless
-    // converges, so no eligible focus anywhere) still root-wraps on the next
-    // admission.
+    // converges, so no evolving focus anywhere) anchors the next admission
+    // at the seeded MRU leaf — the per-leg commit history the D8 seeding
+    // preserves for focused-removal fallback — rather than root-wrapping.
+    // Genuine per-domain focus history (remembered last-active) would win
+    // over this seed; with none anywhere the seed is the last activity.
     let mut session = single_domain_session();
     for (window, extra) in [
         ("win-a", vec![tiled_observed("win-a", "out-1", "ws-1")]),
@@ -418,17 +421,17 @@ fn genuine_no_anchor_admission_still_root_wraps() {
             assert_eq!(*axis, Axis::Horizontal);
             assert_eq!(*shares, vec![1, 1]);
             assert_eq!(children.len(), 2);
-            match &children[0] {
+            assert_eq!(children[0].id().0, "leaf-win-a");
+            match &children[1] {
                 Node::Group { children, .. } => {
                     assert_eq!(children.len(), 2);
-                    assert_eq!(children[0].id().0, "leaf-win-a");
-                    assert_eq!(children[1].id().0, "leaf-win-b");
+                    assert_eq!(children[0].id().0, "leaf-win-b");
+                    assert_eq!(children[1].id().0, "leaf-win-c");
                 }
-                other => panic!("expected wrapped H[A,B] first, got {other:?}"),
+                other => panic!("expected wrapped H[B,C] second, got {other:?}"),
             }
-            assert_eq!(children[1].id().0, "leaf-win-c");
         }
-        other => panic!("expected root-wrap H[H[A,B],C], got {other:?}"),
+        other => panic!("expected H[A,H[B,C]], got {other:?}"),
     }
     assert_eq!(session.focus(), (None, None));
 }

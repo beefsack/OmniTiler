@@ -14,10 +14,11 @@ use crate::settings::{
 
 use super::choice::{
     anchor_fallback_selected, apply_anchor_fallback_selection, apply_born_maximized_selection,
-    apply_fixed_size_selection, apply_migration_refill_selection, apply_no_space_selection,
-    apply_same_axis_selection, apply_workspace_mode_selection, born_overlay_selected,
-    fixed_size_either_selected, migration_refill_mru_selected, no_space_overlap_selected,
-    same_axis_swap_selected, workspace_mode_selected,
+    apply_fixed_size_selection, apply_fresh_placement_selection, apply_migration_refill_selection,
+    apply_no_space_selection, apply_same_axis_selection, apply_switch_target_selection,
+    apply_workspace_mode_selection, born_overlay_selected, fixed_size_either_selected,
+    fresh_placement_selected, migration_refill_mru_selected, no_space_overlap_selected,
+    same_axis_swap_selected, switch_focused_selected, workspace_mode_selected,
 };
 use super::ctl::{checked, enable, get_text, set_checked, set_text};
 use super::dialogs::{DiscardEnd, PreviewEnd};
@@ -29,9 +30,11 @@ use super::{
     ID_BORDER_THEME, ID_BORDER_WIDTH, ID_BORN_MAX_OVERLAY, ID_BORN_MAX_TILE, ID_DEFAULT_FLOATING,
     ID_DEFAULT_TILED, ID_FIXED_SIZE_BOTH, ID_FIXED_SIZE_EITHER, ID_INNER_GAP, ID_KEYBOARD_TAKEOVER,
     ID_MIGRATION_REFILL_LAST, ID_MIGRATION_REFILL_MRU, ID_MOUSE_SNAP, ID_NO_SPACE_FLOAT,
-    ID_NO_SPACE_OVERLAP, ID_OUTER_GAP, ID_SAME_AXIS_GROUP, ID_SAME_AXIS_SWAP, ID_TASKBAR_PAGER,
-    ID_UNDERLAY_COLOR, ID_UNDERLAY_ENABLED, ID_UNDERLAY_EXTENSION, ID_WORKSPACE_MODE_GLOBAL,
-    ID_WORKSPACE_MODE_LOCAL, ID_WORKSPACE_MODE_SHARED,
+    ID_NO_SPACE_OVERLAP, ID_OUTER_GAP, ID_PLACE_CURSOR_CLOSEST, ID_PLACE_CURSOR_MRU,
+    ID_PLACE_FOCUSED_MRU, ID_SAME_AXIS_GROUP, ID_SAME_AXIS_SWAP, ID_SWITCH_CURSOR,
+    ID_SWITCH_FOCUSED, ID_TASKBAR_PAGER, ID_UNDERLAY_COLOR, ID_UNDERLAY_ENABLED,
+    ID_UNDERLAY_EXTENSION, ID_WORKSPACE_MODE_GLOBAL, ID_WORKSPACE_MODE_LOCAL,
+    ID_WORKSPACE_MODE_SHARED,
 };
 
 /// Push the saved/draft values into every control and rebuild the list.
@@ -95,6 +98,22 @@ pub(super) fn refresh_all(app: &mut App) {
     let overlap = no_space_overlap_selected(&app.work);
     set_checked(app.ctl(ID_NO_SPACE_FLOAT), !overlap);
     set_checked(app.ctl(ID_NO_SPACE_OVERLAP), overlap);
+    // Stage 2c two-choice control: cursor output versus the focused
+    // window's output for numbered/relative/previous/trailing selections.
+    // Same functional-labels-only rule; its own WS_GROUP pair below keeps
+    // it independent from every control above.
+    let switch_focused = switch_focused_selected(&app.work);
+    set_checked(app.ctl(ID_SWITCH_CURSOR), !switch_focused);
+    set_checked(app.ctl(ID_SWITCH_FOCUSED), switch_focused);
+    // Stage 2c three-choice control: cursor output with its last-focused
+    // window (COSMIC), cursor output with the cursor-closest window
+    // (Hyprland), or focused output with its last-focused window
+    // (i3/sway). Same functional-labels-only rule; its own WS_GROUP triple
+    // below keeps it independent from every pair above.
+    let placement = fresh_placement_selected(&app.work);
+    set_checked(app.ctl(ID_PLACE_CURSOR_MRU), placement == 0);
+    set_checked(app.ctl(ID_PLACE_CURSOR_CLOSEST), placement == 1);
+    set_checked(app.ctl(ID_PLACE_FOCUSED_MRU), placement == 2);
     // Item 12 three-choice control: functional labels only; the group title
     // carries the honest restart-required note (stage A persists the choice,
     // the running owner keeps its startup scope until restart). Its own
@@ -218,6 +237,23 @@ pub(super) fn collect_draft(app: &mut App) -> Result<Settings, String> {
     // allow-overlap token, otherwise the exact float token; only these two
     // values can reach validation. Same subsequent-decisions-only timing.
     apply_no_space_selection(&mut draft, checked(app.ctl(ID_NO_SPACE_OVERLAP)));
+    // Stage 2c: the focused radio stages the exact focused-output token,
+    // otherwise the exact cursor-output token; only these two values can
+    // reach validation. The choice saves immediately but takes effect on
+    // subsequent selections only.
+    apply_switch_target_selection(&mut draft, checked(app.ctl(ID_SWITCH_FOCUSED)));
+    // Stage 2c: the cursor-closest radio stages the exact cursor-closest
+    // token, the focused radio the exact focused-output token, otherwise
+    // the exact cursor-output/last-focused token; only these three values
+    // can reach validation. Same subsequent-admissions-only timing.
+    let placement_index = if checked(app.ctl(ID_PLACE_CURSOR_CLOSEST)) {
+        1
+    } else if checked(app.ctl(ID_PLACE_FOCUSED_MRU)) {
+        2
+    } else {
+        0
+    };
+    apply_fresh_placement_selection(&mut draft, placement_index);
     // Item 12: the global-unique radio stages the exact global-unique token,
     // the shared radio the exact shared token, otherwise the exact
     // per-output-local token; only these three values can reach validation.

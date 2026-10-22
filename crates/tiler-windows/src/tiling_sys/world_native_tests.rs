@@ -128,6 +128,15 @@ thread_local! {
     static S_TAG: RefCell<HashMap<u64, String>> = RefCell::new(HashMap::new());
     static S_HOOK: RefCell<bool> = const { RefCell::new(false) };
     static S_IDENT: RefCell<HashMap<u64, ProcessIdentity>> = RefCell::new(HashMap::new());
+    /// Scripted per-window DPI (`None` = unreadable). Reset per test; the
+    /// cross-DPI fake flips this on a monitor-changing write.
+    static S_DPI: RefCell<HashMap<u64, u32>> = RefCell::new(HashMap::new());
+    /// Scripted monitor DPI map: `(full, dpi)` entries the cross-DPI fake
+    /// uses to resolve a written outer rect to its target DPI.
+    static S_MONITORS: RefCell<Vec<(Rect, u32)>> = const { RefCell::new(Vec::new()) };
+    /// Scripted racing game HWND for the veto test: when set, the
+    /// cross-DPI fake raises a fullscreen foreground mid-call.
+    static S_GAME_FG: RefCell<Option<u64>> = const { RefCell::new(None) };
     static S_ADMIT: RefCell<HashMap<u64, Result<WindowIdentity, AdmitOutcome>>> =
         RefCell::new(HashMap::new());
     static S_HIDE: RefCell<HashMap<u64, Result<WindowIdentity, String>>> =
@@ -153,6 +162,9 @@ fn reset_script() {
     S_HIDE.with(|m| m.borrow_mut().clear());
     S_REVEAL.with(|m| m.borrow_mut().clear());
     S_ADMIT_CALLS.with(|m| m.borrow_mut().clear());
+    S_DPI.with(|m| m.borrow_mut().clear());
+    S_MONITORS.with(|m| m.borrow_mut().clear());
+    S_GAME_FG.with(|m| *m.borrow_mut() = None);
 }
 
 fn script_claim(hwnd: u64, identity: &ProcessIdentity) -> WindowIdentity {
@@ -190,6 +202,10 @@ fn s_observe(
         .ok_or(super::ObserveError::Unknown)
 }
 
+fn s_dpi(hwnd: u64) -> Option<u32> {
+    S_DPI.with(|m| m.borrow().get(&hwnd).copied())
+}
+
 fn scripted() -> NativePrimitives {
     NativePrimitives {
         observe: s_observe,
@@ -204,6 +220,7 @@ fn scripted() -> NativePrimitives {
         focus: |hwnd| S_FOCUS_OK.with(|m| m.borrow().get(&hwnd).copied().unwrap_or(true)),
         member_tag: |hwnd| S_TAG.with(|m| m.borrow().get(&hwnd).cloned()),
         hook_pending: || S_HOOK.with(|m| *m.borrow()),
+        dpi: s_dpi,
         process_identity: |hwnd| S_IDENT.with(|m| m.borrow().get(&hwnd).cloned()),
         read_topmost: |_| false,
         admit: |hwnd, _me, _expected, _tag, _topmost| {
@@ -453,7 +470,8 @@ fn production_setter_lie_never_reports_applied() {
         .windows
         .push(float_row(&out, &ws, "w1", rect(100, 100, 400, 300), "op-1"));
     let mut native = assemble(&mut env, scripted());
-    let (stats, feedback) = apply_world_reply(&mut diff, &reply, &fresh, &mut native);
+    let (stats, feedback) =
+        apply_world_reply(&mut diff, &reply, &fresh, &mut native, &mut Vec::new(), 0);
     assert!(applied_outcomes(&feedback).is_empty(), "{feedback:?}");
     assert!(
         feedback.iter().any(|f| f.operation_id == "op-1"
@@ -484,7 +502,8 @@ fn production_explicit_refusal_settles_refused_proven() {
         .windows
         .push(float_row(&out, &ws, "w1", rect(100, 100, 400, 300), "op-1"));
     let mut native = assemble(&mut env, scripted());
-    let (_stats, feedback) = apply_world_reply(&mut diff, &reply, &fresh, &mut native);
+    let (_stats, feedback) =
+        apply_world_reply(&mut diff, &reply, &fresh, &mut native, &mut Vec::new(), 0);
     assert!(applied_outcomes(&feedback).is_empty(), "{feedback:?}");
     assert!(
         feedback
@@ -518,7 +537,8 @@ fn production_identity_drift_holds_without_receipt() {
         .windows
         .push(float_row(&out, &ws, "w1", rect(100, 100, 400, 300), "op-1"));
     let mut native = assemble(&mut env, scripted());
-    let (stats, feedback) = apply_world_reply(&mut diff, &reply, &fresh, &mut native);
+    let (stats, feedback) =
+        apply_world_reply(&mut diff, &reply, &fresh, &mut native, &mut Vec::new(), 0);
     assert!(applied_outcomes(&feedback).is_empty(), "{feedback:?}");
     // The recycled HWND fails the fresh frame read first: narrow hold with
     // no writes and no receipt, never a fabricated frame proof.
@@ -544,7 +564,8 @@ fn production_racing_invalidation_stops_before_any_setter() {
         .windows
         .push(float_row(&out, &ws, "w1", rect(100, 100, 400, 300), "op-1"));
     let mut native = assemble(&mut env, scripted());
-    let (stats, feedback) = apply_world_reply(&mut diff, &reply, &fresh, &mut native);
+    let (stats, feedback) =
+        apply_world_reply(&mut diff, &reply, &fresh, &mut native, &mut Vec::new(), 0);
     assert!(applied_outcomes(&feedback).is_empty(), "{feedback:?}");
     // Racing input stops the pass before the first setter: no writes and
     // no receipt.
@@ -592,7 +613,8 @@ fn production_ambiguous_view_arms_at_most_once() {
         .entry(out.clone())
         .or_default()
         .push(ws2.clone());
-    let (_stats, first) = apply_world_reply(&mut diff, &reply, &fresh, &mut native);
+    let (_stats, first) =
+        apply_world_reply(&mut diff, &reply, &fresh, &mut native, &mut Vec::new(), 0);
     assert!(
         first.iter().any(|f| f.operation_id == "op-view-1"
             && f.outcome == AttemptOutcome::PossiblyExecuted),
@@ -606,7 +628,8 @@ fn production_ambiguous_view_arms_at_most_once() {
     // proves the desired view or nothing, so the flight persists until a
     // later pass proves arrival. No Applied is fabricated either way; the
     // admit call count is frozen.
-    let (_stats2, second) = apply_world_reply(&mut diff, &reply, &fresh, &mut native);
+    let (_stats2, second) =
+        apply_world_reply(&mut diff, &reply, &fresh, &mut native, &mut Vec::new(), 0);
     assert!(
         second.iter().all(|f| f.operation_id != "op-view-1"),
         "spent flight holds with no repeat feedback, got {second:?}"
@@ -691,7 +714,8 @@ fn production_fullscreen_foreground_vetoes_frame_write() {
         .windows
         .push(float_row(&out, &ws, "w1", rect(100, 100, 400, 300), "op-1"));
     let mut native = assemble(&mut env, scripted());
-    let (stats, feedback) = apply_world_reply(&mut diff, &reply, &fresh, &mut native);
+    let (stats, feedback) =
+        apply_world_reply(&mut diff, &reply, &fresh, &mut native, &mut Vec::new(), 0);
     assert!(applied_outcomes(&feedback).is_empty(), "{feedback:?}");
     assert_eq!(S_SET_CALLS.with(|m| m.borrow().len()), 0);
     assert!(stats.held > 0, "{stats:?}");
@@ -723,7 +747,8 @@ fn memberless_migration_actuates_views_without_members() {
         follow: false,
         held: false,
     });
-    let (stats, feedback) = apply_world_reply(&mut diff, &reply, &fresh, &mut native);
+    let (stats, feedback) =
+        apply_world_reply(&mut diff, &reply, &fresh, &mut native, &mut Vec::new(), 0);
     assert!(
         feedback.iter().any(|f| f.operation_id == "op-m1"
             && f.kind == AttemptKind::Transfer
@@ -847,6 +872,176 @@ fn receipts_require_member_stamp_never_helper_tag() {
     let (workspace, views) = rig(None, "");
     assert_eq!(workspace, None);
     assert!(views.is_empty(), "{views:?}");
+}
+
+/// Empty-refill view receipts with hidden homing: a memberless applied
+/// view still carrying hidden homing proves only through the same fresh
+/// claim association the membership receipts require, with zero managed
+/// presence on the output. Rig: one member homed on the output's other
+/// workspace, applied view naming the fresh refill, plus caller-supplied
+/// observed rows (the hidden member itself never enumerates).
+fn empty_refill_views(
+    claim: Option<WindowIdentity>,
+    member_tag: Option<&str>,
+    minimized_omitted: bool,
+    observed_extra: Vec<super::super::ObservedWindow>,
+) -> Vec<tiler_core::world_report::ScreenView> {
+    reset_script();
+    let mut state = test_state();
+    state.ensure_device(DEV1);
+    let refill = "ws-9".to_owned();
+    let other = "ws-3".to_owned();
+    let key = win_key(109_021, 2021, "proc-14");
+    state.member_tokens.insert(key.clone(), "w1".to_owned());
+    if let Some(tag) = member_tag {
+        state.member_tags.insert(key.clone(), tag.to_owned());
+    }
+    state.member_identity.insert(key.clone(), identity_of(&key));
+    if minimized_omitted {
+        state.minimized_omitted.insert(key.clone());
+    }
+    let out = state.output_token(DEV1);
+    state
+        .applied_homing
+        .insert("w1".to_owned(), (out.clone(), other.clone()));
+    state.applied_views.insert(out, refill.clone());
+    if let Some(claim) = claim {
+        state.hidden_claims.insert(
+            key.clone(),
+            super::super::HiddenRecord {
+                claim,
+                iconic: false,
+            },
+        );
+    }
+    let areas = one_area();
+    let inputs = state.inputs();
+    observed_view_receipts(&inputs, &observed_extra, &areas)
+}
+
+#[test]
+fn empty_refill_receipt_proves_with_associated_hidden_homing() {
+    let key = win_key(109_021, 2021, "proc-14");
+    let views = empty_refill_views(
+        Some(valid_claim(key.hwnd, &identity_of(&key))),
+        Some("member-tag-1"),
+        false,
+        Vec::new(),
+    );
+    assert_eq!(views.len(), 1, "{views:?}");
+    assert_eq!(views[0].view, "ws-9");
+}
+
+#[test]
+fn empty_refill_receipt_withholds_on_malformed_claim_tag() {
+    // `script_claim` tags ("nonce-<hwnd>") fail `valid_claim_tag`: a bare
+    // hide-ledger entry never proves deliberate hiding.
+    let key = win_key(109_021, 2021, "proc-14");
+    let views = empty_refill_views(
+        Some(script_claim(key.hwnd, &identity_of(&key))),
+        Some("member-tag-1"),
+        false,
+        Vec::new(),
+    );
+    assert!(views.is_empty(), "{views:?}");
+}
+
+#[test]
+fn empty_refill_receipt_withholds_on_claim_identity_mismatch() {
+    // Claim bound to another lifetime (wrong HWND/PID/creation): stale
+    // association proves nothing about this member.
+    let other = win_key(109_099, 2099, "proc-99");
+    let views = empty_refill_views(
+        Some(valid_claim(other.hwnd, &identity_of(&other))),
+        Some("member-tag-1"),
+        false,
+        Vec::new(),
+    );
+    assert!(views.is_empty(), "{views:?}");
+}
+
+#[test]
+fn empty_refill_receipt_withholds_without_member_tag() {
+    let key = win_key(109_021, 2021, "proc-14");
+    let views = empty_refill_views(
+        Some(valid_claim(key.hwnd, &identity_of(&key))),
+        None,
+        false,
+        Vec::new(),
+    );
+    assert!(views.is_empty(), "{views:?}");
+}
+
+#[test]
+fn empty_refill_receipt_withholds_on_drifted_hidden_window() {
+    // The hidden member enumerates live (external reveal or HWND drift):
+    // continued invisibility fails, so the empty screen proves nothing.
+    // The drift row carries a stale stamp so it cannot enter the visible
+    // set; only the drift check withholds.
+    let key = win_key(109_021, 2021, "proc-14");
+    let mut drifted = observed_for(&key, "w1", rect(0, 0, 800, 600), plain_facts());
+    drifted.member_tag = None;
+    let views = empty_refill_views(
+        Some(valid_claim(key.hwnd, &identity_of(&key))),
+        Some("member-tag-1"),
+        false,
+        vec![drifted],
+    );
+    assert!(views.is_empty(), "{views:?}");
+}
+
+#[test]
+fn empty_refill_receipt_withholds_on_visible_capable_homing() {
+    // Homing with no hidden claim at all: the member could be visibly
+    // showing its workspace, so the refill view stays unknown.
+    let views = empty_refill_views(None, Some("member-tag-1"), false, Vec::new());
+    assert!(views.is_empty(), "{views:?}");
+}
+
+#[test]
+fn empty_refill_receipt_withholds_on_minimized_homing() {
+    // Minimized homing is not hidden-claim hiding: without the fresh
+    // claim association the refill view stays unknown, preserving the
+    // existing minimized semantics.
+    let views = empty_refill_views(None, Some("member-tag-1"), true, Vec::new());
+    assert!(views.is_empty(), "{views:?}");
+}
+
+#[test]
+fn empty_refill_receipt_ignores_minimized_foreign_presence() {
+    // Minimized rows never count as on-output presence (matching the
+    // visible set): a minimized foreign window does not fence the proof.
+    let fkey = win_key(109_031, 2031, "proc-15");
+    let mut row = observed_for(&fkey, "fx", rect(0, 0, 800, 600), plain_facts());
+    row.facts.minimized = true;
+    let key = win_key(109_021, 2021, "proc-14");
+    let views = empty_refill_views(
+        Some(valid_claim(key.hwnd, &identity_of(&key))),
+        Some("member-tag-1"),
+        false,
+        vec![row],
+    );
+    assert_eq!(views.len(), 1, "{views:?}");
+    assert_eq!(views[0].view, "ws-9");
+}
+
+#[test]
+fn empty_refill_receipt_ignores_foreign_visible_presence() {
+    // Scoped inventory ignores foreign never-member windows (capture
+    // never admits them): a raw foreign window visibly on the output
+    // never fences the managed empty-screen proof, so a legitimately
+    // scoped-empty output cannot pin flights on foreign absence.
+    let fkey = win_key(109_031, 2031, "proc-15");
+    let row = observed_for(&fkey, "fx", rect(0, 0, 800, 600), plain_facts());
+    let key = win_key(109_021, 2021, "proc-14");
+    let views = empty_refill_views(
+        Some(valid_claim(key.hwnd, &identity_of(&key))),
+        Some("member-tag-1"),
+        false,
+        vec![row],
+    );
+    assert_eq!(views.len(), 1, "{views:?}");
+    assert_eq!(views[0].view, "ws-9");
 }
 
 #[test]
@@ -1255,6 +1450,7 @@ struct LiveTick {
 /// dispatch, deliver, diff-apply, receipt, merge with independent fresh
 /// revalidation, feedback staging, and acknowledgement. Mirrors
 /// `run_observation_tick`/`run_world_command` with injectable prims.
+/// Cursor-absent: every pre-existing caller keeps this shape.
 #[allow(clippy::too_many_arguments)]
 fn live_tick(
     env: &mut Env,
@@ -1267,18 +1463,75 @@ fn live_tick(
     foreground: u64,
     command: Option<WorldCommand>,
 ) -> LiveTick {
+    live_tick_cursor(
+        env, owner, observed, retained, areas, fulls, prims, foreground, command, None,
+    )
+}
+
+// Deterministic harness monotonic clock: one 1000ms sample per production
+// tick, thread-local so parallel tests never share a stamp. Mirrors the
+// production one-sample-per-tick contract without wall-clock flakiness;
+// transient backoff (500ms base) always expires between ticks here.
+thread_local! {
+    static LIVE_TICK_MS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+fn live_tick_ms() -> u64 {
+    LIVE_TICK_MS.with(|slot| {
+        let next = slot.get().saturating_add(1000);
+        slot.set(next);
+        next
+    })
+}
+
+/// Cursor-carrying sibling of [`live_tick`]: the sampled cursor rides the
+/// owner inputs so core cursor-first policy (fresh placement, switch
+/// target) resolves exactly like production. Old callers stay on
+/// [`live_tick`]; cursor cases use this entry point.
+#[allow(clippy::too_many_arguments)]
+fn live_tick_cursor(
+    env: &mut Env,
+    owner: &mut WorldOwner,
+    observed: &[super::super::ObservedWindow],
+    retained: &[super::super::RetainedRow],
+    areas: &[super::super::MonitorArea],
+    fulls: &[Rect],
+    prims: NativePrimitives,
+    foreground: u64,
+    command: Option<WorldCommand>,
+    cursor: Option<(i32, i32)>,
+) -> LiveTick {
     // Production fidelity: snapshot last-known frames before dispatch so
     // hidden members keep riding snapshot rectangles (readable domains),
     // exactly like `run_observation_tick`/`run_world_command`.
     super::super::world_tick::snapshot_frames(&mut env.state, observed);
     owner.invalidate();
-    let inputs = env.state.inputs();
+    // One deterministic monotonic sample for this tick: the report
+    // observation time and the stamp for any frame attempt below.
+    let tick_ms = live_tick_ms();
+    let mut inputs = env.state.inputs();
+    inputs.cursor = cursor;
     let report = match command {
         None => owner
-            .try_dispatch_observation(&inputs, Some(observed), retained, areas, foreground)
+            .try_dispatch_observation(
+                &inputs,
+                Some(observed),
+                retained,
+                areas,
+                foreground,
+                tick_ms,
+            )
             .expect("dispatch observation"),
         Some(cmd) => owner
-            .try_dispatch_command(&inputs, Some(observed), retained, areas, foreground, cmd)
+            .try_dispatch_command(
+                &inputs,
+                Some(observed),
+                retained,
+                areas,
+                foreground,
+                tick_ms,
+                cmd,
+            )
             .expect("dispatch command"),
     };
     let reply = match owner.deliver_production(&report) {
@@ -1287,7 +1540,8 @@ fn live_tick(
         | WorldOutcome::CommandConsumed(reply) => reply,
         WorldOutcome::Rejected { kind, message } => panic!("production rejected {kind}: {message}"),
     };
-    let inputs = env.state.inputs();
+    let mut inputs = env.state.inputs();
+    inputs.cursor = cursor;
     let captured = capture_world(&inputs, Some(observed), retained, areas, foreground);
     let fresh = FreshHost::from_sources(&inputs, observed, retained, &captured);
     let (homing, rings, views) = owner.core_projections();
@@ -1326,7 +1580,9 @@ fn live_tick(
         prims,
     );
     owner.sync_diff_gate();
-    let (_stats, feedback) = owner.apply_accepted(&reply, &fresh, &mut native);
+    let mut frame_attempts = Vec::new();
+    let (_stats, feedback) =
+        owner.apply_accepted(&reply, &fresh, &mut native, &mut frame_attempts, tick_ms);
     let (mut proven_h, mut proven_v) = native.receipt_updates(&reply);
     merge_applied_transfers(&reply, &feedback, &mut native, &mut proven_h, &mut proven_v);
     drop(native);
@@ -1338,6 +1594,9 @@ fn live_tick(
     }
     for item in &feedback {
         owner.note_feedback(item.clone());
+    }
+    for attempt in frame_attempts {
+        owner.note_frame_attempt(attempt);
     }
     let mut pending = std::mem::take(&mut env.state.pending_closed);
     let (ack, pruned) = owner.ack(&reply, &mut pending);
@@ -1380,5 +1639,36 @@ fn second_workspace(owner: &WorldOwner, output: &str, current: &str) -> String {
         .expect("second workspace")
 }
 
+const DEV2: &str = "DEV2";
+
+fn two_output_areas() -> (Vec<super::super::MonitorArea>, Vec<Rect>) {
+    let areas = vec![
+        super::super::MonitorArea {
+            device: DEV1.to_owned(),
+            work: rect(0, 0, 1920, 1040),
+            full: rect(0, 0, 1920, 1080),
+        },
+        super::super::MonitorArea {
+            device: DEV2.to_owned(),
+            work: rect(1920, 0, 1920, 1040),
+            full: rect(1920, 0, 1920, 1080),
+        },
+    ];
+    let fulls = vec![rect(0, 0, 1920, 1080), rect(1920, 0, 1920, 1080)];
+    (areas, fulls)
+}
+
+fn set_calls() -> usize {
+    S_SET_CALLS.with(|m| m.borrow().len())
+}
+
 #[path = "world_native_composition_tests.rs"]
 mod composition;
+#[path = "world_native_dpi_tests.rs"]
+mod dpi_cases;
+
+#[path = "world_native_cursor_tests.rs"]
+mod cursor_cases;
+
+#[path = "world_native_roundtrip_tests.rs"]
+mod roundtrip;

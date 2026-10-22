@@ -439,6 +439,7 @@ fn pd_fixture(with_occupant: bool) -> Fx {
         &areas,
         0,
         &fulls,
+        None,
     )
     .expect("seed converges");
     let home = state.member_home(&mover).expect("mover homed");

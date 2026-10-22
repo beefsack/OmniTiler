@@ -46,12 +46,13 @@ use self::chord_resolution::{
     orientation_overlay_refusal, resolve_chord_target, settle_chord_reject,
 };
 use self::cli_directional::poll_directional_cli_request;
+use self::cli_migrate_workspace::poll_migrate_workspace_cli_request;
 use self::cli_resize::poll_resize_cli_request;
 use self::cli_send_output::poll_send_output_cli_request;
 use self::cli_workspace::poll_workspace_cli_request;
 pub use self::commands::{
-    cmd_capture, cmd_directional, cmd_inventory, cmd_resize, cmd_send_output, cmd_tile,
-    cmd_workspace, load_normal_tile_base,
+    cmd_capture, cmd_directional, cmd_inventory, cmd_migrate_workspace, cmd_resize,
+    cmd_send_output, cmd_tile, cmd_workspace, load_normal_tile_base,
 };
 use self::cross_drag::{
     CrossDragSettle, DropDestination, resolve_drop_destination, settle_cross_drag_drop,
@@ -111,7 +112,7 @@ pub use self::inspection::{
 use self::inspection::{hosted_gate_allows, medium_caller};
 use self::keyboard_resize::dispatch_resize_intent;
 use self::keyboard_tick::keyboard_tick;
-use self::migration::workspace_migrate_tick;
+use self::migration::{workspace_migrate_one, workspace_migrate_tick};
 use self::minmax::{FreshHint, fixed_birth_for_slotless, hidden_hint_for, min_hint_for};
 pub(crate) use self::monitors::ensure_pm_v2;
 use self::monitors::{MonitorArea, all_monitors, monitor_fulls};
@@ -258,15 +259,15 @@ use crate::snapkey::{
 use crate::storage::LedgerStore;
 use crate::tiling::{
     AllowEntry, CaptureOptions, ChildrenOptions, DIRECTIONAL_REQUEST_FILE, DirectionalOptions,
-    FrameInsets, GestureIntent, HideProofOptions, INNER_GAP, InspectOptions, OUTER_GAP, OWNER_ID,
-    ObservedTarget, ObservedTargetRef, RESIZE_REQUEST_FILE, ReadbackOutcome, ResizeOptions,
-    SEND_OUTPUT_REQUEST_FILE, ScopeHostChild, SendOutputOptions, SkipReason, StatelessVerdict,
-    TileOptions, TileProofOptions, TokenMap, WindowFacts, WorkspaceAction, WorkspaceOptions,
-    allow_match, allowlist_digest, classify, classify_focus, classify_gesture,
-    drop_point_in_domain, fullscreen_toggle_decision, hosted_child_allows,
-    inspect_stateless_verdict, is_borderless_fullscreen, parse_allowlist,
-    parse_directional_request, parse_resize_request, parse_send_output_request,
-    parse_workspace_request, readback_outcome, scope_allows, scope_exe_basename,
+    FrameInsets, GestureIntent, HideProofOptions, INNER_GAP, InspectOptions,
+    MIGRATE_WORKSPACE_REQUEST_FILE, MigrateWorkspaceOptions, OUTER_GAP, OWNER_ID, ObservedTarget,
+    ObservedTargetRef, RESIZE_REQUEST_FILE, ResizeOptions, SEND_OUTPUT_REQUEST_FILE,
+    ScopeHostChild, SendOutputOptions, SkipReason, StatelessVerdict, TileOptions, TileProofOptions,
+    TokenMap, WindowFacts, WorkspaceAction, WorkspaceOptions, allow_match, allowlist_digest,
+    classify, classify_focus, classify_gesture, drop_point_in_domain, fullscreen_toggle_decision,
+    hosted_child_allows, inspect_stateless_verdict, is_borderless_fullscreen, parse_allowlist,
+    parse_directional_request, parse_migrate_workspace_request, parse_resize_request,
+    parse_send_output_request, parse_workspace_request, scope_allows, scope_exe_basename,
     tiling_domain_bounds_with,
 };
 type DynError = Box<dyn std::error::Error>;
@@ -983,6 +984,12 @@ mod world_diff_tests;
 #[cfg(test)]
 mod world_route_tests;
 
+// Stage 2c cursor-first boundary: capture/sequencer projection, production
+// selects and sends under cursor/focus disagreement, explicit outputs,
+// and the focused-fullscreen-game cursor guard.
+#[cfg(test)]
+mod tests_cursor_targeting;
+
 mod reconcile;
 
 mod geometry;
@@ -1038,6 +1045,8 @@ mod pager_host;
 mod cli_directional;
 
 mod cli_resize;
+
+mod cli_migrate_workspace;
 
 mod cli_send_output;
 
@@ -1127,6 +1136,10 @@ mod directional_cli_tests;
 #[cfg(test)]
 #[path = "tests_send_output_cli.rs"]
 mod send_output_cli_tests;
+
+#[cfg(test)]
+#[path = "tests_migrate_workspace_cli.rs"]
+mod migrate_workspace_cli_tests;
 
 #[cfg(test)]
 #[path = "tests_intent_wake.rs"]

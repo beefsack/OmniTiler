@@ -135,11 +135,18 @@ fn report_mode(
         migration_source_refill: crate::output_selection::MigrationSourceRefill::LastRemaining,
         anchor_fallback: crate::admission::AnchorFallback::default(),
         no_space_result: crate::admission::NoSpaceResult::default(),
+        switch_target: crate::cursor_targeting::SwitchTarget::default(),
+        fresh_placement: crate::cursor_targeting::FreshPlacement::default(),
+        focus_follows_cursor: false,
+        cursor_warp: false,
+        cursor: None,
         default_tiled: true,
         focused_global: focused.to_owned(),
         inventory_complete,
         gesture_barrier,
         feedback,
+        monotonic_ms: 0,
+        frames: Vec::new(),
     }
 }
 
@@ -423,14 +430,17 @@ fn send_follow_and_stay_commit_window_transfers() {
     assert_eq!(reply.transfers.len(), 1);
     assert_eq!(reply.transfers[0].operation_id, "op-11");
     // Before arrival the mover publishes Controlled membership desire at
-    // the target with no frame authority, and the source does not flap.
+    // the target with its actionable target slot (core-owned geometry
+    // actuated only as part of the membership move, never a native remap
+    // guess), and the source does not flap.
     let row = window_row(&reply, "win-a");
     assert_eq!(
         (row.output.0.as_str(), row.workspace.as_str()),
         ("out-b", view_b.as_str())
     );
     assert_eq!(row.membership_authority, ScopeAuthority::Controlled);
-    assert_ne!(row.frame_authority, ScopeAuthority::Controlled);
+    assert_eq!(row.frame_authority, ScopeAuthority::Controlled);
+    assert!(row.effective_frame.is_some(), "{row:?}");
     // Arrival proves through the staged homing: same fact on out-b.
     follow.request_seq = 3;
     follow.request_id = "req-3".to_string();
@@ -870,7 +880,7 @@ fn selection_commands_resolve_over_logical_rings() {
             "",
             Some(11),
             Some(WorldCommand::SelectNumbered {
-                output: OutputId("out-a".to_owned()),
+                output: Some(OutputId("out-a".to_owned())),
                 index: 2,
             }),
             true,
@@ -896,7 +906,7 @@ fn selection_commands_resolve_over_logical_rings() {
             "",
             Some(12),
             Some(WorldCommand::SelectRelative {
-                output: OutputId("out-a".to_owned()),
+                output: Some(OutputId("out-a".to_owned())),
                 delta: 1,
             }),
             true,
@@ -944,7 +954,7 @@ fn selection_commands_resolve_over_logical_rings() {
             "",
             Some(14),
             Some(WorldCommand::SelectPrevious {
-                output: OutputId("out-a".to_owned()),
+                output: Some(OutputId("out-a".to_owned())),
             }),
             true,
             false,
@@ -1179,7 +1189,7 @@ fn numbered_send_trailing_create_stages_fresh_target_and_commits() {
             "",
             Some(11),
             Some(WorldCommand::SelectTrailing {
-                output: OutputId("out-a".to_owned()),
+                output: Some(OutputId("out-a".to_owned())),
             }),
             true,
             false,
@@ -1413,7 +1423,7 @@ fn numbered_follow_selects_target_view_and_stay_keeps_source() {
             "",
             Some(13),
             Some(WorldCommand::SelectPrevious {
-                output: OutputId("out-a".to_owned()),
+                output: Some(OutputId("out-a".to_owned())),
             }),
             true,
             false,
@@ -1666,7 +1676,8 @@ fn valid_migration_proves_controlled_target_before_arrival_then_settles_in_phase
         ("out-b", view_a.as_str())
     );
     assert_eq!(member.membership_authority, ScopeAuthority::Controlled);
-    assert_ne!(member.frame_authority, ScopeAuthority::Controlled);
+    assert_eq!(member.frame_authority, ScopeAuthority::Controlled);
+    assert!(member.effective_frame.is_some(), "{member:?}");
     assert!(
         reply
             .transfers
@@ -2935,7 +2946,7 @@ fn generations_watermarks_and_command_consumption_hold() {
             "",
             Some(11),
             Some(WorldCommand::SelectTrailing {
-                output: OutputId("out-a".to_owned()),
+                output: Some(OutputId("out-a".to_owned())),
             }),
             true,
             false,
@@ -2954,7 +2965,7 @@ fn generations_watermarks_and_command_consumption_hold() {
         "",
         Some(11),
         Some(WorldCommand::SelectTrailing {
-            output: OutputId("out-a".to_owned()),
+            output: Some(OutputId("out-a".to_owned())),
         }),
         true,
         false,

@@ -1034,6 +1034,54 @@ impl super::Session {
         self.focus_stack_fallback_on(&self.focus_stack, domain, trees, windows)
     }
 
+    /// Cursor-first fresh-admission anchor for a newcomer homed in `key`
+    /// when the primary anchor does not apply (evolving admission focus
+    /// for other placements, observed focus leaf for Hyprland). Under the
+    /// Hyprland placement with a known cursor this returns the
+    /// cursor-closest retained leaf (`DwindleAlgorithm::getClosestNode` at
+    /// pin `19fb395d`); otherwise the target domain's last-focused leaf,
+    /// then its MRU stack fallback. Hyprland's final fallback is the first
+    /// layout leaf, never a root wrap; other placements root-wrap when the
+    /// domain carries no resolvable anchor.
+    pub(super) fn fresh_admit_anchor(
+        &self,
+        key: &DomainKey,
+        current: Option<&Node>,
+        trees: &BTreeMap<DomainKey, Option<Node>>,
+        windows: &BTreeMap<WindowId, WindowLink>,
+        domain: &OutputDomain,
+    ) -> Option<NodeId> {
+        let hypr = self.fresh_placement
+            == crate::cursor_targeting::FreshPlacement::CursorOutputCursorClosest;
+        // Project once for the cursor-closest and first-leaf fallbacks;
+        // child-order visitation matches the pinned first-wins ties.
+        let projected: Vec<(NodeId, Rect)> = current
+            .and_then(|tree| crate::geometry::project(tree, domain.bounds, domain.gap).ok())
+            .map(|leaves| {
+                leaves
+                    .into_iter()
+                    .map(|entry| (entry.leaf, entry.rect))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if hypr
+            && let Some(cursor) = self.fresh_cursor
+            && let Some(closest) = crate::cursor_targeting::cursor_closest_leaf(&projected, cursor)
+        {
+            return Some(closest);
+        }
+        if let Some(leaf) = self
+            .remembered_leaf(key)
+            .or_else(|| self.focus_stack_fallback(key, trees, windows))
+        {
+            return Some(leaf);
+        }
+        if hypr {
+            return projected.into_iter().next().map(|(leaf, _)| leaf);
+        }
+        None
+    }
+
     pub(super) fn focus_stack_fallback_on(
         &self,
         base: &BTreeMap<DomainKey, Vec<NodeId>>,
@@ -1558,15 +1606,50 @@ impl super::Session {
             let Some(domain) = self.domains.iter().find(|d| d.key() == key) else {
                 return Err(ProposeError::Refused(RefusalKind::CrossDomainMismatch));
             };
-            // Eligible focus is the evolving admission focus when homed here
-            // and still resolved; otherwise the helper root-wraps.
-            let eligible = match (&adomain, &aleaf) {
+            // Anchor order. Non-Hypr placements lead with the evolving
+            // admission focus when homed here and still resolved, else the
+            // fresh anchor below. Hyprland instead leads with the observed
+            // focus leaf when it names a converged tiled link here (the
+            // pinned `addTarget` active-window branch at 19fb395d covers
+            // the global active window on its own workspace only), else
+            // the fresh anchor (cursor-closest, MRU, first leaf). An
+            // off-target global focus therefore never anchors under Hypr.
+            let current = new_trees.get(&key).cloned().flatten();
+            let hypr = self.fresh_placement
+                == crate::cursor_targeting::FreshPlacement::CursorOutputCursorClosest;
+            let observed_leaf = observed_focus.and_then(|window| {
+                new_windows
+                    .get(window)
+                    .filter(|link| link.output == key.output && link.workspace == key.workspace)
+                    .map(|link| link.leaf.clone())
+            });
+            let evolving = match (&adomain, &aleaf) {
                 (Some(d), Some(l)) if d == &key => self
                     .focus_resolves(&adomain, &aleaf, &new_trees, &new_windows)
                     .then(|| l.clone()),
                 _ => None,
             };
-            let current = new_trees.get(&key).cloned().flatten();
+            let eligible = if hypr {
+                observed_leaf.or_else(|| {
+                    self.fresh_admit_anchor(
+                        &key,
+                        current.as_ref(),
+                        &new_trees,
+                        &new_windows,
+                        domain,
+                    )
+                })
+            } else {
+                evolving.or_else(|| {
+                    self.fresh_admit_anchor(
+                        &key,
+                        current.as_ref(),
+                        &new_trees,
+                        &new_windows,
+                        domain,
+                    )
+                })
+            };
             let placement =
                 super::admission_placement_for(domain, current.as_ref(), eligible.as_ref());
             let orientation = self.policy().admission_axis_for_rect(&placement);

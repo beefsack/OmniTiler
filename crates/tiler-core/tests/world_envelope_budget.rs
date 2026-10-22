@@ -96,11 +96,18 @@ fn report_obs(
         migration_source_refill: tiler_core::output_selection::MigrationSourceRefill::LastRemaining,
         anchor_fallback: tiler_core::admission::AnchorFallback::default(),
         no_space_result: tiler_core::admission::NoSpaceResult::default(),
+        switch_target: tiler_core::cursor_targeting::SwitchTarget::default(),
+        fresh_placement: tiler_core::cursor_targeting::FreshPlacement::default(),
+        focus_follows_cursor: false,
+        cursor_warp: false,
+        cursor: None,
         default_tiled: true,
         focused_global: String::new(),
         inventory_complete: true,
         gesture_barrier: false,
         feedback: Vec::new(),
+        monotonic_ms: 0,
+        frames: Vec::new(),
     }
 }
 
@@ -227,7 +234,7 @@ fn malformed_reports_are_transactional() {
     // pair violation, never executing.
     let mut bad = report(2, vec![fact("win-a", "out-a", 0)], None, None);
     bad.command = Some(WorldCommand::SelectTrailing {
-        output: OutputId("out-a".to_owned()),
+        output: Some(OutputId("out-a".to_owned())),
     });
     assert_eq!(rejected_kind(&mut engine, &bad), "snapshot-invalid");
     assert_eq!(engine.state_revision(), revision);

@@ -119,7 +119,7 @@ fn observation_dispatch_applies_and_projects_presentation() {
     let retained: Vec<RetainedRow> = Vec::new();
     let areas = vec![area()];
     let report = world
-        .try_dispatch_observation(&state.inputs(), Some(&observed), &retained, &areas, 0)
+        .try_dispatch_observation(&state.inputs(), Some(&observed), &retained, &areas, 0, 0)
         .expect("dispatch");
     // Fresh bootstrap carries no view receipts: the core mints
     // rings/views from the live screens, and receipts only ever echo
@@ -153,7 +153,7 @@ fn select_command_retains_view_transfer_without_self_echo() {
     let retained: Vec<RetainedRow> = Vec::new();
     let areas = vec![area()];
     let first = world
-        .try_dispatch_observation(&state.inputs(), Some(&observed), &retained, &areas, 0)
+        .try_dispatch_observation(&state.inputs(), Some(&observed), &retained, &areas, 0, 0)
         .expect("dispatch");
     // Fresh bootstrap proves nothing yet: no view receipts (the core
     // mints rings/views from the live screens).
@@ -168,7 +168,7 @@ fn select_command_retains_view_transfer_without_self_echo() {
     // the report stays receipt-free instead of echoing desire.
     world.invalidate();
     let second = world
-        .try_dispatch_observation(&state.inputs(), Some(&observed), &retained, &areas, 0)
+        .try_dispatch_observation(&state.inputs(), Some(&observed), &retained, &areas, 0, 0)
         .expect("dispatch");
     assert_eq!(
         second.views, first.views,
@@ -204,6 +204,7 @@ fn select_command_retains_view_transfer_without_self_echo() {
             Some(&observed),
             &retained,
             &areas,
+            0,
             0,
             WorldCommand::SelectWorkspace {
                 output: tiler_core::directional::OutputId(out_token),
@@ -311,11 +312,18 @@ fn t2_staged_decline_leaves_committed_world_unchanged() {
                     tiler_core::output_selection::MigrationSourceRefill::LastRemaining,
                 anchor_fallback: tiler_core::admission::AnchorFallback::default(),
                 no_space_result: tiler_core::admission::NoSpaceResult::default(),
+                switch_target: tiler_core::cursor_targeting::SwitchTarget::Cursor,
+                fresh_placement: tiler_core::cursor_targeting::FreshPlacement::CursorOutputMru,
+                focus_follows_cursor: false,
+                cursor_warp: false,
+                cursor: None,
                 default_tiled: true,
                 focused_global: "win-a".to_owned(),
                 inventory_complete: true,
                 gesture_barrier: false,
                 feedback: Vec::new(),
+                monotonic_ms: 0,
+                frames: Vec::new(),
             }
         };
     let first = report_with(windows.clone(), None, None);
@@ -447,11 +455,18 @@ fn t2_supported_and_floating_movers_adopt_once() {
                         tiler_core::output_selection::MigrationSourceRefill::LastRemaining,
                     anchor_fallback: tiler_core::admission::AnchorFallback::default(),
                     no_space_result: tiler_core::admission::NoSpaceResult::default(),
+                    switch_target: tiler_core::cursor_targeting::SwitchTarget::Cursor,
+                    fresh_placement: tiler_core::cursor_targeting::FreshPlacement::CursorOutputMru,
+                    focus_follows_cursor: false,
+                    cursor_warp: false,
+                    cursor: None,
                     default_tiled: true,
                     focused_global: "win-a".to_owned(),
                     inventory_complete: true,
                     gesture_barrier: false,
                     feedback: Vec::new(),
+                    monotonic_ms: 0,
+                    frames: Vec::new(),
                 }
             };
         let base = match world.deliver_production(&report_with(windows.clone(), None, None)) {

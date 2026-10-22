@@ -765,3 +765,320 @@ than serializing or suppressing the test.
   fresh-placement/switch policy, then the remaining convergence/presentation
   stages. Startup/restart is not fresh placement. Three-way placement subsuming
   launch targeting remains tentative, not selected by this checkpoint.
+
+## Stage 2b accepted outcome (2026-10-22)
+
+This supersedes the missing whole-workspace migration acceptance above.
+Stages 2a and 2b are accepted together for the logical-world/Windows-owner
+boundary. Stage 2c and stages 3-5 remain incomplete; this is not acceptance
+of cursor-first fresh placement or the entire rearchitecture.
+
+### Final migration and receipt corrections
+
+- Added the tentative dev-only exact-owner `migrate-workspace --direction`
+  control, using the existing normal-owner control boundary and production
+  migration handler. Proof owners refuse; lifecycle cleanup covers its request
+  file. No binding, default chord, input hook or injected-input exception was
+  added. Both physical and CLI migration use the existing live output-context
+  selector instead of an initialization-only output cache; the later
+  cursor-first policy is not selected early.
+- Reproduced the initial native rejection as incomplete inventory despite
+  readable managed members. Capture now ignores foreign never-member rows and
+  orphan non-member bookkeeping; bound-member drift, unreadable facts,
+  incomplete enumeration, hidden/minimized truth and explicit closes retain
+  their safety fences. Core and owner diagnostics expose bounded fixed refusal
+  reasons rather than hiding command rejection behind `migrate-unverified`.
+- Reproduced the occupied-target migration deadlock: frameless redirect-member
+  arrival required the target view, while the target view awaited all members.
+  Native migration member proof is now independent of that deferred view,
+  using the effective actuation frame or mechanical output landing, preserved
+  float frames, and existing lifetime/identity/scope/visibility gates. Setter
+  success and canonical allocation are not arrival proof. Retained ambiguity
+  and spent view phases still prohibit replay.
+- Reproduced a second composition defect: empty source-refill views never
+  receipted when other hidden workspaces retained homing on the output. The
+  empty receipt now requires valid claim identity/tag association, a nonempty
+  member stamp, no observed reuse/reveal of that HWND, and no visible managed
+  presence. Foreign never-members do not fence scoped completion. Invalid or
+  stale claims, visible-capable or unclaimed homing and genuinely unreadable
+  members do not fabricate proof. This lets the parent settle before inverse
+  migration, selection and close/reflow.
+- Producer-shaped regressions cover occupied-target arrival, both-direction
+  migration with hidden source members, target/refill settlement, selection
+  into the retained occupied workspace, return, and close/reflow. Nine direct
+  empty-receipt cases pin claim drift, identity/tag/stamp failures, minimized
+  homing and foreign presence. Migration composition tests moved into a focused
+  module at the test-file review boundary.
+- Independent reviews accepted control authentication/cleanup, managed-scope
+  completeness, migration arrival proof and the hardened empty-refill receipt.
+  Review found and corrected the first receipt draft's insufficient claim
+  association and oversized test module before final native acceptance.
+
+### Final native acceptance
+
+- The final artifact passed fixture-only native Windows checks on both outputs.
+  Six caller-identified windows were joined to exact native lifetimes and
+  managed tokens; physical frames, visibility and foreground independently
+  established outcomes. Three members migrated as one workspace into an
+  occupied target and back. Order, layout shares, identities and follow focus
+  survived both directions; each membership phase proved all three arrivals.
+- Both default source refills showed the last remaining trailing empty, not the
+  occupied hidden workspace. The other source/target workspaces remained hidden
+  with their members intact. Target and refill views settled, and no Migration
+  or View flight remained before subsequent actions. Later observations showed
+  no membership flap or effect replay.
+- Post-roundtrip numbered selection revealed the retained occupied workspace;
+  previous restored the migrated unit. Trailing selection and previous return
+  preserved its order and shares. Previous without a distinct post-migration
+  history entry correctly remained a self-no-op.
+- Closing the focused bottom tile of a stacked pair expanded its sibling to
+  their full column while preserving the full-height singleton. Native frames,
+  stable survivor lifetimes, victim absence and controlled/no-flight output
+  established reflow. Closing a hidden member on the other output preserved
+  its hidden sibling. Earlier timeout assertions requiring both survivors to
+  grow were an incorrect harness oracle, not a product reflow defect.
+- Exact-owner stop, independent restore and fixture shutdown left no owned
+  processes/windows, ledger or pending controls, including the migration
+  request. Settings bytes, relevant SPI/taskbar state and protected-window
+  geometry matched baseline. Raw source/artifact provenance, scripts, native
+  snapshots and owner trace remain outside the repository.
+- Other corrected live expectations were ordinal rebinding after migration and
+  the default last-remaining versus opt-in MRU refill distinction. They did not
+  change product policy. Physical shortcuts/drag and games are not established
+  by these exact-owner fixture controls.
+
+### Gates, limits and next boundary
+
+- Final locked core/protocol/Windows build, all-target tests and strict
+  all-target clippy pass: **2,223 passed, zero failed, one ignored across 46
+  suites**. Workspace formatting and whitespace checks pass. No dependency,
+  unsafe code or input hook was added. The fixture checks use the final
+  production source; the last added close regression is test-only.
+- The public per-domain API deletion and sole Windows owner remain as recorded
+  above. KDE/macOS intentionally still require their v2 port; they are not
+  repaired or claimed to compile by these Windows gates.
+- Separate native gaps remain: MRU occupied-source-refill staging,
+  global-unique/shared modes, tile-override restart staging and user-owned
+  physical shortcut/drag/game acceptance. The default local migration and
+  empty-refill acceptance gap is closed, not substituted with output sends.
+- Next: stage 2c retained cursor/settings/focus, approved cursor-first switch
+  and fresh-placement policy, shared world-action/native acceptance and both
+  outputs' cursor/focus-disagreement checks. Startup/restart is not fresh
+  placement. Three-way placement subsuming launch targeting remains tentative;
+  all four parked focus/send questions remain unchanged. Do not start stages
+  3-5 as though 2c or the dual-output fresh-placement defect were complete.
+
+## Stage 2c implementation and native correction checkpoint (2026-10-22)
+
+- Core now retains cursor and targeting settings, resolves implicit numbered,
+  relative, previous and trailing selection, and routes fresh tiled lifetimes
+  through the approved COSMIC, Hyprland and i3/sway placements. Explicit
+  screen selections remain explicit; sends retain focused-member origin.
+- The first complete inventory establishes the startup/restart baseline,
+  including an empty roster. Later fresh lifetimes route after empty-start,
+  close-all and incomplete gaps. Native marker restoration remains adoption,
+  not fresh placement. Settings changes never rehome retained members.
+- A shared nine-case world-action fixture now drives core-only and production
+  Windows native-seam assertions for target output, anchor, unchanged peers,
+  frame/member/view proof and no replay. This does not substitute for live
+  acceptance.
+- Native testing reproduced cross-output size scaling during a DPI transition.
+  The native frame actuator now reobserves a real DPI change and reasserts the
+  same intended physical frame once through fresh insets, with renewed
+  eligibility, identity, lifetime, input and fullscreen vetoes. Stable clamp
+  policy is unchanged. Subsequent native checks passed both directions of
+  COSMIC and Hyprland placement and one i3/sway direction.
+- The inverse i3/sway native case exposed a missing retained-focus fallback.
+  Its exact admission-time foreground was not recorded, so foreground loss is
+  a tested causal hypothesis, not a recovered native fact. Core now retains
+  genuine managed output focus for fresh admission; unknown or stealing-new
+  foregrounds cannot erase that context. Regression cases cover missing,
+  unknown and new-lifetime foregrounds. Bounded trace output exposes future
+  fresh-routing evidence without titles or raw input.
+- This checkpoint preceded the final acceptance below. Focus-follows-cursor and cursor-warp
+  are retained-only settings, default off; their behavior and i3/sway preset
+  warp belong to stage 4. No input hook or continuous cursor poll was added.
+
+## Stage 2c accepted outcome (2026-10-22)
+
+- The final Windows artifact passed all nine shared
+  `test-fixtures/world-actions-cursor.json` cases and an additional empty-start
+  first-newcomer discriminator. Both outputs passed all three placements under
+  cursor/focus disagreement, including native birth on the opposite policy
+  output and foreground-stealing newcomers. Native physical frames prove the
+  correct target and split anchor: COSMIC target MRU, Hyprland cursor-closest,
+  i3/sway focused-output MRU. Stable peers and source tiles stayed unchanged;
+  newcomer plus anchor covered the anchor's prior tile across DPI transitions.
+- Both switch-target settings selected their expected output while leaving the
+  other output's members visible and unchanged. A focused-origin numbered stay
+  send ignored the opposite cursor, hid the mover, expanded its source survivor
+  and proved the target member transfer. The empty-start newcomer followed the
+  cursor rather than native birth affinity. Exact native lifetime joins,
+  visibility, foreground and physical frames corroborated the case assertions;
+  late reads found no flap or replay.
+- Core-only and Windows production-native-seam runners consume the same case
+  data. Additional regressions cover all four selection verbs, sends,
+  same-output Hyprland focus anchoring, startup/restart, close-all, incomplete
+  gaps, incarnation resets, focus handoffs and settings changes without rehome.
+  Native DPI tests cover both directions and refusal of the corrective write
+  after identity drift, new ineligibility or focused-fullscreen veto.
+- Independent integration/safety review accepted the final source and native
+  evidence. Locked core/protocol/Windows build, all-target tests and strict
+  all-target clippy pass: **2,296 passed, zero failed, one ignored across 48
+  suites**. Workspace formatting and whitespace checks pass. No dependencies,
+  unsafe code or input hooks were added. Snapshot cursor sampling adds one
+  bounded native cursor read per normal capture, not continuous mouse work;
+  focused fullscreen games skip that sample. No zero-cost claim is made.
+- Exact-owner stop, independent restore and fixture shutdown after every leg
+  left no owned processes/windows, ledger or pending controls. Settings bytes,
+  relevant SPI/taskbar state and protected-window geometry matched baseline.
+  Raw source/artifact provenance, scripts, native readbacks and traces remain
+  outside the repository.
+- Two product defects were reproduced and corrected: cross-DPI framework
+  resizing and loss of pre-admission focused-output context. Earlier script
+  property/arithmetic/shell issues were harness failures. The extra expectation
+  that previous must restore an output after focus moved elsewhere, and that
+  a stay-send source survivor must not reflow, were incorrect harness oracles.
+  Neither caused a product-policy change. The parked empty-workspace focus
+  behavior remains unchanged; current focus can legitimately retarget a later
+  focused-output previous command.
+
+### Remaining boundary and exact next stage
+
+- Stage 2c switch/fresh-placement adoption and the dual-output fresh-admission
+  defect are complete. Focus-follows-cursor and cursor-warp are persisted and
+  retained, default off, but deliberately have no active dialog controls or
+  behavior yet. Stage 4 must implement their policy, including the i3/sway
+  preset's cross-output warp; no all-settings reference preset is introduced.
+- KDE/macOS must add the required world report fields `cursor`, `switchTarget`,
+  `freshPlacement`, `focusFollowsCursor`, `cursorWarp`; implicit selection uses
+  nullable `out`, while explicit screen selections remain explicit. The four
+  new core catalog fields also need native settings/exporter coverage; the KDE
+  exporter's old catalog-partition assertion is not a supported port. These
+  consumers are intentionally outside the Windows gates.
+- Stages 3-5 remain. Next: move observed convergence, stable clamp/refusal/
+  adoption, anti-fighting and completion from Windows into the retained core.
+  Keep mechanical DPI/inset conversion and freshness/lifetime vetoes native.
+  Then extract gesture, focus/warp and desired presentation, followed by the
+  inventory/common-connector audit. Do not treat this slice's native geometry
+  checks as stage 3 completion or synthetic input as physical acceptance.
+- Existing native gaps remain MRU occupied refill, global-unique/shared modes,
+  tile-override restart and physical shortcut/drag/game acceptance. The disabled
+  synthetic drag driver stays disabled. The four parked focus/send questions
+  remain unchanged; three-way placement subsuming launch targeting remains
+  tentative pending review.
+
+## Stage 3a accepted outcome (2026-10-22)
+
+### Frame convergence ownership
+
+- Core now owns the existing identical-pair clamp suppression and transient
+  retry policy. `WorldReport.frames` carries raw `FrameAttempt` facts: exact
+  lifetime, requested frame, setter result, immediate readback, DPI basis and
+  attempt time. Windows reports no clamp/suppress verdict. Core compares
+  desired and observed frames and publishes a narrow frame-authority hold or
+  withholds an explicit float-placement token. Membership authority remains
+  independent; ordinary floats never acquire automatic frame authority.
+- An accepted write with a stable readable mismatch suppresses only that
+  desired/observed pair. A changed desire or observation re-arms; exact arrival
+  clears. Refused/throwing setters and accepted writes without readable proof
+  use the existing 500ms doubling backoff, capped at 5s. Retry still rides the
+  next eligible event, not a newly introduced timer or polling loop.
+- Consumed-attempt watermarks survive exact-match clears: lost acknowledgements
+  cannot resurrect an old clamp or replace newer-pair authority. Equal-time
+  changed evidence remains actionable; time is not a unique attempt id. Both
+  suppression and watermark maps prune against the same retained lifetime
+  predicate, explicit closes and incarnation resets. An unreported clock
+  (`0`) provides neither transient suppression nor replay deduplication.
+- Changed DPI basis invalidates accepted placement evidence, never establishing
+  a stable clamp. Native conversion still owns invisible-border insets and one
+  freshly gated DPI reassertion. Identity, lifetime, scope, input, fullscreen
+  and last-moment freshness vetoes remain native. Removed Windows
+  `RefusedTracker`, its backoff constants, readback verdict helpers and obsolete
+  exports/tests; core frame-policy and Windows roundtrip tests replace them.
+- Review reproduced and corrected three evidence defects before acceptance:
+  unreadable accepted-write proof incorrectly becoming a permanent clamp;
+  stale feedback resurrecting suppression after an exact clear; and consumed
+  watermarks surviving complete-inventory departure without an explicit close.
+  Each has a failed-before/passing-after core regression.
+
+### Actionable cross-output placement
+
+- Native verification reproduced an off-screen return send between asymmetric
+  outputs: a membership-only pre-arrival row left Windows to translate the
+  source rectangle by the output-origin delta. That translation preserved the
+  wrong slot size and could land beyond the target's exclusive edge. A
+  producer-shaped negative-origin migration case reproduced the same failure
+  for tiled workspace members.
+- Core now publishes the destination Engine slot before arrival for tiled
+  cross-output window transfers and migration members. Native sweep writes
+  defer until the membership phase, which consumes that exact target; readback,
+  affinity, membership and view/refill receipts still establish completion.
+  A desired slot or successful setter never proves arrival. Same-output
+  ordering, floating-boundary transactions and held/unprojectable lanes remain
+  unchanged.
+- One rejected intermediate approach also exposed slots for same-output
+  movers, breaking five follow/view-ordering regressions. The accepted rule is
+  cross-output-only; do not broaden it to same-output transfers without
+  resolving that sequencing contract.
+
+### Verification and native evidence
+
+- Locked core/protocol/Windows build, all-target tests and strict all-target
+  clippy pass: **2,317 passed, zero failed, one ignored across 48 suites**.
+  Workspace formatting and whitespace checks pass. The core frame suite has
+  23 cases, including suppression/rearm, bounded retries, unreadable/DPI facts,
+  replacement, close, replay-after-clear and watermark pruning. Production
+  Windows diff/seam tests exercise the raw-attempt/report/desire/obey loop,
+  asymmetric slot landing, partial settlement and lying setters.
+- Fixture-only native checks on both outputs proved three-member whole-workspace
+  migration into an occupied target and back, destination coverage, preserved
+  order/shares/lifetimes, hidden peers, follow focus and target/source-refill
+  completion. Fresh non-geometric focus-command replies showed no retained
+  transfers in either direction. Quiet observation ticks omit trace rows, so
+  absence of a terminal trace line is not proof of a retained flight.
+- After the final replay/pruning corrections, the final artifact separately
+  passed four frame perturb/reconvergence cases, two per output, with one
+  geometry-write row per perturbation, unchanged peers and stable later reads.
+  Both outputs passed close/reflow and fresh replacement/lifetime joins;
+  visibility select-away/back, float/unfloat and both-direction cross-DPI sends
+  also passed. A fresh focus-command snapshot showed no retained transfers.
+  Whole-workspace migration was verified before those core-only corrections,
+  not repeated on the final binary; its migration implementation was unchanged.
+- Earlier harness failures were native-stderr handling and incorrect oracles:
+  no-op selection diagnostics do not identify workspace tokens, quiet logs do
+  not expose every settlement, and an ordinary send return need not restore
+  its old slot/order/shares. Native occupancy, fresh reply snapshots and actual
+  frame coverage replaced those assumptions; no product policy was changed.
+- Exact-owner stop, independent restore and graceful fixture shutdown after
+  each leg left no owned processes/windows, ledger or pending controls.
+  Settings bytes, relevant SPI/taskbar state and protected geometry matched
+  baseline. Raw provenance, scripts, artifact hashes and readbacks remain
+  outside the repository.
+- Fixture size hints are not programmatic clamps. Clamp/refusal/backoff and
+  lost-ack predicates are offline evidence only; sub-sample transient frames
+  were not observed and no visible-duration claim is made. No dependency,
+  unsafe code, input hook or polling loop was added. Actual frame attempts
+  add two DPI reads and bounded feedback bookkeeping; cost was not benchmarked.
+
+### Remaining stage 3 and next boundary
+
+- This is a working Windows slice, not completion of stage 3. Next: core-owned
+  learned-constraint adoption and remaining transfer/view/float completion and
+  anti-fighting decisions. `world_diff.rs` still interprets operation outcomes,
+  while core settlement retains their results. Finish that extraction without
+  weakening ambiguous-effect, hidden/incomplete or partial-transfer fences.
+- Frameless floating-source/unprojectable migrations still use the native
+  remap fallback. The tiled asymmetric-output hazard is fixed; the frameless
+  boundary needs its own placement contract and regression before claiming
+  all cross-output geometry is core-owned. Do not substitute a native clamp.
+- Shared convergence case data/core runner/native connector remain stage 3
+  acceptance work; the existing cursor-action connector is not that coverage.
+  KDE/macOS ports must supply raw `frameAttempts` and a coherent `monotonicMs`
+  clock to use this policy; zero/missing timing cannot promise retry backoff or
+  deduplication. Their old policy copies remain unported and outside the gates.
+- Stages 4 and 5 remain: gestures, focus/warp, desired presentation and pager
+  content, then the ownership/dead-API/common-connector audit. Existing MRU
+  refill, shared/global modes, tile-override restart and physical acceptance
+  gaps remain. All four parked focus/send questions and tentative placement
+  subsuming launch targeting remain unchanged.

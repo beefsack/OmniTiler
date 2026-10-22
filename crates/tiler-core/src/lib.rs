@@ -10,8 +10,10 @@ pub mod boundary;
 pub mod bounds;
 pub mod contract;
 pub mod cosmic_v1;
+pub mod cursor_targeting;
 pub mod directional;
 pub(crate) mod engine;
+pub mod fresh_focus;
 pub mod geometry;
 pub mod ids;
 pub mod output_selection;
@@ -27,6 +29,7 @@ pub mod workspace;
 pub mod workspace_scope;
 pub mod world_commands;
 pub mod world_engine;
+mod world_frames;
 pub mod world_members;
 pub mod world_model;
 pub mod world_observe;
@@ -78,6 +81,8 @@ mod world_coverage_gaps_tests;
 mod world_float_boundary_tests;
 #[cfg(test)]
 mod world_float_membership_tests;
+#[cfg(test)]
+mod world_frame_policy_tests;
 #[cfg(test)]
 mod world_global_swap_tests;
 #[cfg(test)]

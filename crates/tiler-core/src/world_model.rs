@@ -854,6 +854,13 @@ impl WorldEngine {
         }
         self.admission_focus_spent
             .retain(|id| known_now.contains(id));
+        // Admission policy shares the fresh-placement bootstrap phase:
+        // the baseline report itself stays quiet (startup adoption), and
+        // incomplete inventories never mint (no speculative ingress
+        // across a gap). Only a complete report after the baseline mints.
+        if !self.placement_bootstrapped || !report.inventory_complete {
+            return Vec::new();
+        }
         let transferred: BTreeSet<&str> = self
             .retained
             .iter()

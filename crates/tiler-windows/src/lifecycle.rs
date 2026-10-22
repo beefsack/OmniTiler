@@ -308,6 +308,29 @@ pub mod sys {
         }
     }
 
+    /// Remove the owner's own workspace-migration request marker (exact
+    /// creation match only). Malformed or foreign bodies are left for the
+    /// owner loop's consume-once refusal, never deleted blindly here.
+    fn cleanup_own_migrate_workspace_request(dir: &Path, own_creation: &str) {
+        let path = dir.join(crate::tiling::MIGRATE_WORKSPACE_REQUEST_FILE);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return;
+        };
+        if let Ok(request) = crate::tiling::parse_migrate_workspace_request(text.trim())
+            && request.creation == own_creation
+        {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
+    /// Remove a stale out-of-hook workspace-migration request left by a dead
+    /// owner. Only called when no ledger is committed (no live owner), so any
+    /// residue is dead and safe to drop; the live single-pending queue is
+    /// never touched under a lease.
+    fn cleanup_stale_migrate_workspace_request(dir: &Path) {
+        let _ = std::fs::remove_file(dir.join(crate::tiling::MIGRATE_WORKSPACE_REQUEST_FILE));
+    }
+
     /// Remove a stale out-of-hook output-send request left by a dead owner.
     /// Only called when no ledger is committed (no live owner), so any
     /// residue is dead and safe to drop; the live single-pending queue is
@@ -792,6 +815,7 @@ pub mod sys {
         cleanup_stale_workspace_request(dir);
         cleanup_stale_directional_request(dir);
         cleanup_stale_send_output_request(dir);
+        cleanup_stale_migrate_workspace_request(dir);
         // Same lease, same guarantee: no live project icon exists, so prune
         // a crash ghost through the stable GUID before this owner adds its
         // own (tolerant, unclaimed).
@@ -873,6 +897,7 @@ pub mod sys {
                     cleanup_stale_workspace_request(dir);
                     cleanup_stale_directional_request(dir);
                     cleanup_stale_send_output_request(dir);
+                    cleanup_stale_migrate_workspace_request(dir);
                     return Err(e);
                 }
             }
@@ -913,6 +938,7 @@ pub mod sys {
         cleanup_own_workspace_request(dir, &me.process_creation);
         cleanup_own_directional_request(dir, &me.process_creation);
         cleanup_own_send_output_request(dir, &me.process_creation);
+        cleanup_own_migrate_workspace_request(dir, &me.process_creation);
         if snap_want {
             snap_drive_restore(dir, me, &store, "teardown");
         }
@@ -1125,6 +1151,7 @@ pub mod sys {
             cleanup_own_workspace_request(&dir, &me.process_creation);
             cleanup_own_directional_request(&dir, &me.process_creation);
             cleanup_own_send_output_request(&dir, &me.process_creation);
+            cleanup_own_migrate_workspace_request(&dir, &me.process_creation);
             // No committed owner means no live icon: prune a crash ghost, if
             // any, through the stable project GUID (tolerant, unclaimed).
             let _ = crate::tray_sys::remove_stale_icon();
@@ -1219,6 +1246,7 @@ pub mod sys {
         cleanup_own_workspace_request(&dir, &record.owner.process_creation);
         cleanup_own_directional_request(&dir, &record.owner.process_creation);
         cleanup_own_send_output_request(&dir, &record.owner.process_creation);
+        cleanup_own_migrate_workspace_request(&dir, &record.owner.process_creation);
         std::fs::remove_file(dir.join(LEDGER_FILE_NAME))
             .map_err(|e| err(format!("error: ledger cleanup: {e}")))?;
         Ok((count, snap_restored))
@@ -1290,6 +1318,7 @@ pub mod sys {
         cleanup_own_workspace_request(&dir, &record.owner.process_creation);
         cleanup_own_directional_request(&dir, &record.owner.process_creation);
         cleanup_own_send_output_request(&dir, &record.owner.process_creation);
+        cleanup_own_migrate_workspace_request(&dir, &record.owner.process_creation);
         Ok(stop_json(terminate, true, true))
     }
 

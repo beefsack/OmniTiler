@@ -1,7 +1,8 @@
 #![forbid(unsafe_code)]
 use super::*;
 use crate::settings::{
-    NATIVE_PANELS, WINDOWS_FIELD_MAPPINGS, WINDOWS_ONLY_FIELDS, WINDOWS_UNSUPPORTED_FIELDS,
+    NATIVE_PANELS, STAGE4_DEFERRED_FIELDS, WINDOWS_FIELD_MAPPINGS, WINDOWS_ONLY_FIELDS,
+    WINDOWS_UNSUPPORTED_FIELDS,
 };
 use std::collections::BTreeSet;
 use tiler_core::settings_catalog::{ALL_FIELDS, ALL_TABS, find_section, find_tab};
@@ -44,7 +45,7 @@ fn windows_sections_point_at_known_tabs() {
 
 #[test]
 fn every_scalar_field_renders_exactly_once() {
-    assert_eq!(WINDOWS_FIELD_MAPPINGS.len(), 23);
+    assert_eq!(WINDOWS_FIELD_MAPPINGS.len(), 27);
     let mut seen: BTreeSet<&str> = BTreeSet::new();
     for id in ALL_CONTROL_IDS {
         if let Some(field) = control_field(*id) {
@@ -52,9 +53,22 @@ fn every_scalar_field_renders_exactly_once() {
         }
     }
     for entry in WINDOWS_FIELD_MAPPINGS {
+        // Stage 4 defers the focus/warp toggles: persisted and reported,
+        // but with no dialog control and no effect claim.
+        if STAGE4_DEFERRED_FIELDS.contains(&entry.field) {
+            assert!(
+                !seen.contains(entry.field),
+                "deferred {} must stay unrendered",
+                entry.field
+            );
+            continue;
+        }
         assert!(seen.contains(entry.field), "unrendered {}", entry.field);
     }
-    assert_eq!(seen.len(), WINDOWS_FIELD_MAPPINGS.len());
+    assert_eq!(
+        seen.len(),
+        WINDOWS_FIELD_MAPPINGS.len() - STAGE4_DEFERRED_FIELDS.len()
+    );
     for field in ["gaps.inner", "border.color", "keyboard.takeover"] {
         let count = ALL_CONTROL_IDS
             .iter()
@@ -66,6 +80,8 @@ fn every_scalar_field_renders_exactly_once() {
         ("move.same-axis", 2),
         ("workspace.mode", 3),
         ("workspace.default-tiled", 2),
+        ("output.switch-target", 2),
+        ("output.fresh-placement", 3),
     ] {
         let count = ALL_CONTROL_IDS
             .iter()
@@ -133,8 +149,12 @@ fn control_text_comes_from_the_catalog() {
     for field in ALL_FIELDS.iter().chain(WINDOWS_ONLY_FIELDS.iter()) {
         // Portable fields without a Windows mapping stay off the dialog;
         // the unsupported partition is currently empty since the runtime
-        // adoption maps both admission settings.
-        if WINDOWS_UNSUPPORTED_FIELDS.contains(&field.id) {
+        // adoption maps both admission settings. Stage 2c additionally
+        // defers the focus/warp toggles to stage 4 (persisted, reported,
+        // no control, no effect claim).
+        if WINDOWS_UNSUPPORTED_FIELDS.contains(&field.id)
+            || STAGE4_DEFERRED_FIELDS.contains(&field.id)
+        {
             continue;
         }
         let rendered: Vec<u32> = ALL_CONTROL_IDS
@@ -397,7 +417,7 @@ fn radio_starters_cover_every_field_exactly_once() {
             }
         }
     }
-    assert_eq!(by_field.len(), 8);
+    assert_eq!(by_field.len(), 10);
     for (field, ids) in &by_field {
         let starters = ids.iter().filter(|id| is_radio_first(**id)).count();
         assert_eq!(starters, 1, "{field} needs one WS_GROUP starter");
@@ -478,8 +498,11 @@ fn note_edits_scroll_instead_of_clipping() {
     }
     assert_eq!(label_class(2), "EDIT");
     assert_eq!(label_class(3), "EDIT");
-    // ... while short labels stay plain statics.
-    for index in [0, 1, 4, 5, 6, 7, 8, 12, 15, 16, 17] {
+    // ... while short labels stay plain statics. Indices track
+    // `LABEL_RECTS` order (the migration timing note is gone: its radios
+    // ride the workspaces group and the catalog plus adoption logs carry
+    // the timing truth).
+    for index in [0, 1, 4, 5, 6, 7, 11, 14, 15, 16] {
         assert_eq!(label_class(index), "STATIC", "{index}");
     }
 }

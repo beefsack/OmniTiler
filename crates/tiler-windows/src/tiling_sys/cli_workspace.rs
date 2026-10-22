@@ -669,59 +669,37 @@ pub(super) fn poll_workspace_cli_request(
         }
         return;
     }
-    // Resolve without preactivating (same as the hook select path).
-    // Numbered digits resolve positionally over the core logical ring;
-    // previous/relative/trailing resolve core-side through their dedicated
-    // world commands (history and trailing are core-owned).
-    let Some(wire) = state.wire_of(&output) else {
-        log_json_at(
-            &state.log_path,
-            workspace_log(state, tick, op, request.index, "cli", "unknown-output"),
-        );
-        return;
-    };
-    enum CliSelect {
-        Explicit(String),
-        Cmd(Box<tiler_core::world_report::WorldCommand>),
-    }
-    let (target, none_outcome, dispatch_op, dispatch_index): (
-        Option<CliSelect>,
-        &'static str,
+    // Resolve without preactivating (same as the hook select path). The
+    // adapter selects no output: every verb carries `output: None` and the
+    // core resolves from the cursor-first switch target. Diagnostics read
+    // the resolved target back from the applied reply, never from the
+    // adapter output cache.
+    let before = state.world.core_projections().2;
+    let (command, dispatch_op, dispatch_index): (
+        Option<tiler_core::world_report::WorldCommand>,
         &'static str,
         u8,
     ) = match request.action {
         WorkspaceAction::Select => {
             if request.index == 0 {
                 (
-                    Some(CliSelect::Cmd(Box::new(
-                        tiler_core::world_report::WorldCommand::SelectTrailing {
-                            output: tiler_core::directional::OutputId(wire.clone()),
-                        },
-                    ))),
-                    "unknown-output",
+                    Some(tiler_core::world_report::WorldCommand::SelectTrailing { output: None }),
                     "select",
                     request.index,
                 )
             } else {
-                let ring = state.world.engine().logical_ring(&wire);
-                match tiler_core::workspace_scope::resolve_numbered(&ring, request.index) {
-                    Some(id) => (
-                        Some(CliSelect::Explicit(id)),
-                        "unknown-target",
-                        "select",
-                        request.index,
-                    ),
-                    None => (None, "unknown-target", "select", request.index),
-                }
+                (
+                    Some(tiler_core::world_report::WorldCommand::SelectNumbered {
+                        output: None,
+                        index: request.index,
+                    }),
+                    "select",
+                    request.index,
+                )
             }
         }
         WorkspaceAction::Previous => (
-            Some(CliSelect::Cmd(Box::new(
-                tiler_core::world_report::WorldCommand::SelectPrevious {
-                    output: tiler_core::directional::OutputId(wire.clone()),
-                },
-            ))),
-            "unknown-target",
+            Some(tiler_core::world_report::WorldCommand::SelectPrevious { output: None }),
             "previous",
             0,
         ),
@@ -729,13 +707,10 @@ pub(super) fn poll_workspace_cli_request(
             Some(direction) => {
                 let delta = direction.delta();
                 (
-                    Some(CliSelect::Cmd(Box::new(
-                        tiler_core::world_report::WorldCommand::SelectRelative {
-                            output: tiler_core::directional::OutputId(wire.clone()),
-                            delta,
-                        },
-                    ))),
-                    "unknown-target",
+                    Some(tiler_core::world_report::WorldCommand::SelectRelative {
+                        output: None,
+                        delta,
+                    }),
                     if delta < 0 {
                         "relative-prev"
                     } else {
@@ -744,7 +719,7 @@ pub(super) fn poll_workspace_cli_request(
                     0,
                 )
             }
-            None => (None, "refused", "relative", 0),
+            None => (None, "relative", 0),
         },
         WorkspaceAction::Send
         | WorkspaceAction::Stay
@@ -752,78 +727,64 @@ pub(super) fn poll_workspace_cli_request(
         | WorkspaceAction::Float
         | WorkspaceAction::Sticky
         | WorkspaceAction::RelativeSend
-        | WorkspaceAction::RelativeStay => (None, "refused", op, request.index),
+        | WorkspaceAction::RelativeStay => (None, op, request.index),
     };
-    let Some(target) = target else {
+    let Some(command) = command else {
         log_json_at(
             &state.log_path,
-            workspace_log(
-                state,
-                tick,
-                dispatch_op,
-                dispatch_index,
-                "cli",
-                none_outcome,
-            ),
+            workspace_log(state, tick, dispatch_op, dispatch_index, "cli", "refused"),
         );
         return;
     };
     // Departure memory is core-owned history now: the select command below
     // records it, so the adapter logs nothing here.
-    let effect = match target {
-        CliSelect::Explicit(id) => workspace_do_select(
-            state,
-            me,
-            store,
-            dir,
-            fulls,
-            areas,
-            &mut observed,
-            &output,
-            &id,
-            &ctx,
-            None,
-            false,
-            false,
-        ),
-        CliSelect::Cmd(command) => {
-            let foreground = crate::ffi::foreground_window();
-            // Causal source before dispatch: the core's current logical view
-            // on the ACTUAL resolved output (never the stale init-only
-            // `active_output` cache, never an op literal).
-            let source_view = state
-                .active_view(&output)
-                .unwrap_or_else(|| "ws?".to_owned());
-            let reply = super::world_tick::run_world_command(
-                state, me, store, dir, &observed, &retained, areas, foreground, fulls, *command,
-            );
-            let transition_ms = ctx.start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-            // Post-command core view on the same resolved output: the actual
-            // commanded target on `ok`, the unchanged source on `unverified`.
-            // Still core state (not native proof); arrival proves separately.
-            let target_view = state
-                .active_view(&output)
-                .unwrap_or_else(|| "ws?".to_owned());
-            cmd_select_effect(
-                transition_ms,
-                if reply.is_some() { "ok" } else { "unverified" },
-                source_view,
-                target_view,
-            )
-        }
+    let foreground = crate::ffi::foreground_window();
+    let reply = super::world_tick::run_world_command(
+        state,
+        me,
+        store,
+        dir,
+        &observed,
+        &retained,
+        areas,
+        foreground,
+        fulls,
+        command,
+        super::observation::sample_cursor(),
+    );
+    let transition_ms = ctx.start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+    // Post-command resolved output plus the core view there (target on ok,
+    // unchanged source otherwise): still core state, never native proof;
+    // arrival proves separately.
+    let (resolved_output, source_view, target_view) = match reply.as_ref() {
+        Some(applied) => match super::history::resolved_select_view(state, &before, applied) {
+            Some((device, view)) => {
+                let source = before
+                    .iter()
+                    .find(|(wire, _)| state.device_of(wire).as_deref() == Some(device.as_str()))
+                    .map(|(_, view)| view.clone())
+                    .unwrap_or_else(|| "ws?".to_owned());
+                (device, source, view)
+            }
+            None => ("ws?".to_owned(), "ws?".to_owned(), "ws?".to_owned()),
+        },
+        None => ("ws?".to_owned(), "ws?".to_owned(), "ws?".to_owned()),
     };
+    let effect = cmd_select_effect(
+        transition_ms,
+        if reply.is_some() { "ok" } else { "unverified" },
+        source_view,
+        target_view.clone(),
+    );
     // Primary workspace line carries the ACTUAL resolved output plus the
-    // post-command core view there (target on ok, unchanged source
-    // otherwise): never the stale init-only cache. Same event vocabulary.
-    let post_view = state
-        .active_view(&output)
-        .unwrap_or_else(|| "ws?".to_owned());
+    // post-command core view there: never the stale init-only cache and
+    // never an adapter-preselected output. Same event vocabulary.
     log_json_at(
         &state.log_path,
         select_primary_line(
             tick,
-            &output,
-            &post_view,
+            &resolved_output,
+            &target_view,
             dispatch_op,
             dispatch_index,
             effect.outcome,

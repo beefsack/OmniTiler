@@ -115,6 +115,17 @@ pub(crate) struct Engine {
     /// either never reflows, retries, or reclassifies retained state.
     anchor_fallback: crate::admission::AnchorFallback,
     no_space: crate::admission::NoSpaceResult,
+    /// Cursor-first fresh placement (2026-10-20) for subsequent fresh
+    /// admissions only. Propagates to every retained session on store;
+    /// fresh sessions adopt it at creation. Never moves existing members
+    /// or reflows retained state on change.
+    fresh_placement: crate::cursor_targeting::FreshPlacement,
+    /// Normalized cursor position retained from the latest accepted
+    /// report, `None` when the adapter could not read it. Refreshed per
+    /// accepted report (seated with its observation sequence), never on a
+    /// separate stale timer. Propagates to every retained session on
+    /// store; fresh sessions adopt the current value at creation.
+    fresh_cursor: Option<(i32, i32)>,
     /// R-SPC-04 D1 fixed-size admission predicate. Both-axes default
     /// (current delivered behavior). Changing it never reclassifies
     /// retained windows, only subsequent admissions.
@@ -441,6 +452,8 @@ impl Default for Engine {
             fixed_send_admission: false,
             anchor_fallback: crate::admission::AnchorFallback::default(),
             no_space: crate::admission::NoSpaceResult::default(),
+            fresh_placement: crate::cursor_targeting::FreshPlacement::default(),
+            fresh_cursor: None,
             last_fixed_admission: None,
             last_migration: None,
             last_drag_preview_stage: None,
@@ -716,6 +729,45 @@ impl Engine {
         }
     }
 
+    /// Current cursor-first fresh placement. Cursor-output/last-focused
+    /// default (COSMIC).
+    #[must_use]
+    #[allow(dead_code)]
+    pub(crate) fn fresh_placement(&self) -> crate::cursor_targeting::FreshPlacement {
+        self.fresh_placement
+    }
+
+    /// Select the fresh placement for subsequent fresh admissions only.
+    /// Propagates to every retained session; fresh sessions adopt it at
+    /// creation. Never moves existing members or reflows retained state.
+    pub(crate) fn set_fresh_placement(
+        &mut self,
+        placement: crate::cursor_targeting::FreshPlacement,
+    ) {
+        self.fresh_placement = placement;
+        for session in self.sessions.values_mut() {
+            session.set_fresh_placement(placement);
+        }
+    }
+
+    /// Normalized cursor retained from the latest accepted report, if any.
+    #[must_use]
+    #[allow(dead_code)]
+    pub(crate) fn fresh_cursor(&self) -> Option<(i32, i32)> {
+        self.fresh_cursor
+    }
+
+    /// Retain the latest accepted report's cursor for subsequent fresh
+    /// admissions. Propagates to every retained session; fresh sessions
+    /// adopt the current value at creation. Never touches topology,
+    /// revision, or existing classifications.
+    pub(crate) fn set_fresh_cursor(&mut self, cursor: Option<(i32, i32)>) {
+        self.fresh_cursor = cursor;
+        for session in self.sessions.values_mut() {
+            session.set_fresh_cursor(cursor);
+        }
+    }
+
     /// Last fixed-size admission report for protocol logging, if the
     /// current [`Engine::handle`] admitted automatic fixed floats.
     /// Bounded counts plus correlation/op/reason only.
@@ -769,6 +821,8 @@ impl Engine {
         session.set_fixed_send_admission(self.fixed_send_admission);
         session.set_anchor_fallback(self.anchor_fallback);
         session.set_no_space_result(self.no_space);
+        session.set_fresh_placement(self.fresh_placement);
+        session.set_fresh_cursor(self.fresh_cursor);
     }
 
     /// Current Engine-wide admission sequence floor: the recorded

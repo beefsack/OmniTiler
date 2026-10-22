@@ -155,6 +155,11 @@ pub(super) struct OwnerInputs<'a> {
     pub pending_closed: &'a BTreeMap<String, PendingClosed>,
     pub scope: &'a [String],
     pub settings_live: &'a Option<LiveSettings>,
+    /// Per-tick sampled cursor in adapter units (same space as screen FULL
+    /// rectangles), `None` when unreadable, out of carried bounds, or
+    /// deliberately unsampled (focused fullscreen game). Never a placement
+    /// or output policy here: only the carried observation the core resolves.
+    pub cursor: Option<(i32, i32)>,
     /// Mechanical device-to-wire-output map (native device keys to opaque
     /// `oN` ids). Native-wire ids only, never rings/views/tiling/history.
     pub output_tokens: &'a HashMap<String, String>,
@@ -202,6 +207,7 @@ impl TileLoop {
         inner_gap: i32,
         outer_gap: i32,
         active: &'a HashSet<u64>,
+        cursor: Option<(i32, i32)>,
     ) -> OwnerInputs<'a> {
         OwnerInputs {
             member_tokens,
@@ -229,12 +235,14 @@ impl TileLoop {
             inner_gap,
             outer_gap,
             active,
+            cursor,
         }
     }
 
     /// Test/offline convenience: build the seam from a shared borrow.
     /// Production ticks use the disjoint associated function above to hold
-    /// `&mut world` alongside; offline code holds no such split.
+    /// `&mut world` alongside; offline code holds no such split. The cursor
+    /// reads absent: tests needing one override the field after construction.
     #[cfg(test)]
     pub(super) fn inputs(&self) -> OwnerInputs<'_> {
         OwnerInputs {
@@ -263,6 +271,7 @@ impl TileLoop {
             inner_gap: self.inner_gap,
             outer_gap: self.outer_gap,
             active: &self.active,
+            cursor: None,
         }
     }
 }
@@ -271,8 +280,10 @@ impl TileLoop {
 /// will envelope into a `WorldReport`. Sequencing fields (contract version,
 /// owner/incarnation/generation, observation/request/command counters,
 /// commands, feedback) and view echoes are deliberately absent here:
-/// screens plus window facts are the only observation prerequisites, and
-/// views echo the core's last desired logical views out of band.
+/// screens plus window facts are the only topology prerequisites, with the
+/// sampled cursor and the retained targeting settings riding as core
+/// ingress (never an adapter placement or output policy). Views echo the
+/// core's last desired logical views out of band.
 #[derive(Debug, Clone)]
 pub(super) struct CapturedWorld {
     pub(super) screens: Vec<ScreenReport>,
@@ -289,6 +300,22 @@ pub(super) struct CapturedWorld {
     pub(super) workspace_mode: tiler_core::workspace_scope::WorkspaceMode,
     /// Equal-workspace-count parity capability for the report.
     pub(super) equal_workspace_count: bool,
+    /// Cursor-first switch target for subsequent selections (report ingress
+    /// only; never an adapter output decision). Backfills the default when
+    /// no live settings exist (proof owners).
+    pub(super) switch_target: tiler_core::cursor_targeting::SwitchTarget,
+    /// Fresh-window placement for subsequent admissions (report ingress
+    /// only; never an adapter placement policy). Marker-restored lifetimes
+    /// are restored intent, not fresh placement (core-owned).
+    pub(super) fresh_placement: tiler_core::cursor_targeting::FreshPlacement,
+    /// Retained focus-follows-cursor setting (stage 4 owns actuation).
+    pub(super) focus_follows_cursor: bool,
+    /// Retained cursor-warp setting (stage 4 owns actuation).
+    pub(super) cursor_warp: bool,
+    /// Normalized cursor position in adapter units (`None` when unreadable
+    /// or deliberately unsampled). Never continuous polling: one sample per
+    /// capture, none during focused fullscreen game.
+    pub(super) cursor: Option<(i32, i32)>,
     pub(super) inventory_complete: bool,
     pub(super) gesture_barrier: bool,
     pub(super) focused_global: String,
@@ -591,6 +618,14 @@ pub(super) fn capture_world(
             };
             let exe_path = exe_path.unwrap_or_default();
             if !crate::tiling::scope_allows(state.scope, &exe_path) {
+                // Scoped inventory ignores foreign (out-of-scope,
+                // never-member) windows: they are not managed inventory
+                // and must not fence scoped commands. A bound member
+                // that drifts out of scope is still managed inventory,
+                // so it holds narrowly as unreadable.
+                if !state.member_tokens.contains_key(&key) {
+                    continue;
+                }
                 unreadable_fact!(
                     facts,
                     held_members,
@@ -740,8 +775,10 @@ pub(super) fn capture_world(
                 continue;
             }
             let key = &row.key;
+            // Retained occupancy for windows that never became members is
+            // not managed inventory: ignore it without fencing scoped
+            // commands. Member rows keep every genuine hold below.
             let Some(live_token) = state.member_tokens.get(key) else {
-                inventory_complete = false;
                 continue;
             };
             if *live_token != row.token {
@@ -855,6 +892,8 @@ pub(super) fn capture_world(
             });
         }
         // Hidden-claim members with no live row: snapshot or minimized lanes.
+        // Orphaned claims (no member token) are not managed inventory:
+        // ignore them without fencing scoped commands.
         for (key, record) in state.hidden_claims {
             if facts.iter().any(|f| {
                 state
@@ -865,7 +904,6 @@ pub(super) fn capture_world(
                 continue;
             }
             let Some(live_token) = state.member_tokens.get(key) else {
-                inventory_complete = false;
                 continue;
             };
             let sticky = state.sticky.contains_key(key);
@@ -951,6 +989,8 @@ pub(super) fn capture_world(
             });
         }
         // Iconic omission without any row minimizes with no frame.
+        // Omission keys that never became members are not managed
+        // inventory: ignore them without fencing scoped commands.
         for key in state.minimized_omitted.iter() {
             if facts.iter().any(|f| {
                 state
@@ -961,7 +1001,6 @@ pub(super) fn capture_world(
                 continue;
             }
             let Some(live_token) = state.member_tokens.get(key) else {
-                inventory_complete = false;
                 continue;
             };
             let mapped = state
@@ -1100,6 +1139,25 @@ pub(super) fn capture_world(
             .as_ref()
             .map(|live| live.settings.core.migration_source_refill_mode())
             .unwrap_or_default(),
+        switch_target: state
+            .settings_live
+            .as_ref()
+            .map(|live| live.settings.core.switch_target_mode())
+            .unwrap_or_default(),
+        fresh_placement: state
+            .settings_live
+            .as_ref()
+            .map(|live| live.settings.core.fresh_placement_mode())
+            .unwrap_or_default(),
+        focus_follows_cursor: state
+            .settings_live
+            .as_ref()
+            .is_some_and(|live| live.settings.core.focus_follows_cursor),
+        cursor_warp: state
+            .settings_live
+            .as_ref()
+            .is_some_and(|live| live.settings.core.cursor_warp),
+        cursor: state.cursor,
         dropped_stale_closed,
         #[cfg(test)]
         unhomed_closed,

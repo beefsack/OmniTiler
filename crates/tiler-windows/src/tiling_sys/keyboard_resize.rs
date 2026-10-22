@@ -217,6 +217,7 @@ pub(super) fn dispatch_resize_intent(
             mode,
             press_index,
         }),
+        super::observation::sample_cursor(),
     );
     let outcome = match reply {
         Some(_) => "resize-applied",

@@ -589,6 +589,74 @@ pub(super) fn apply_live_settings(
             }),
         );
     }
+    // Stage 2c cursor-first targeting: switch target and fresh placement
+    // adopt for subsequent selections and fresh admissions only. The core
+    // reads both from every report ingress without touching retained views
+    // or members (settings changes never rehome). A change to only these
+    // fields returns false, so no rebuild follows.
+    let switch_target = settings.core.switch_target_mode();
+    let last_switch = state
+        .settings_live
+        .as_ref()
+        .map(|live| live.settings.core.switch_target_mode());
+    if last_switch != Some(switch_target) {
+        log_json_at(
+            &log_path,
+            serde_json::json!({
+                "event": "settings-switch-target",
+                "switch_target": switch_target.as_wire_str(),
+                "outcome": "adopted",
+                "scope": "subsequent-selections",
+            }),
+        );
+    }
+    let placement = settings.core.fresh_placement_mode();
+    let last_placement = state
+        .settings_live
+        .as_ref()
+        .map(|live| live.settings.core.fresh_placement_mode());
+    if last_placement != Some(placement) {
+        log_json_at(
+            &log_path,
+            serde_json::json!({
+                "event": "settings-fresh-placement",
+                "fresh_placement": placement.as_wire_str(),
+                "outcome": "adopted",
+                "scope": "subsequent-admissions",
+            }),
+        );
+    }
+    // Stage 2c retained settings: focus-follows-cursor and cursor-warp are
+    // reported on every capture but actuate nothing until stage 4. Adoption
+    // only updates the retained document below, like the predicate lanes.
+    if state.settings_live.as_ref().is_none_or(|live| {
+        live.settings.core.focus_follows_cursor != settings.core.focus_follows_cursor
+    }) {
+        log_json_at(
+            &log_path,
+            serde_json::json!({
+                "event": "settings-focus-follows-cursor",
+                "focus_follows_cursor": settings.core.focus_follows_cursor,
+                "outcome": "adopted",
+                "scope": "retained-until-stage-4",
+            }),
+        );
+    }
+    if state
+        .settings_live
+        .as_ref()
+        .is_none_or(|live| live.settings.core.cursor_warp != settings.core.cursor_warp)
+    {
+        log_json_at(
+            &log_path,
+            serde_json::json!({
+                "event": "settings-cursor-warp",
+                "cursor_warp": settings.core.cursor_warp,
+                "outcome": "adopted",
+                "scope": "retained-until-stage-4",
+            }),
+        );
+    }
     if let Some(live) = state.settings_live.as_mut() {
         let saved_scope = crate::settings::saved_mode(&settings);
         let status = if saved_scope == state.scope_adopted {

@@ -170,7 +170,15 @@ pub struct FieldStorageMap {
 /// future unmapped portable field cannot silently drift.
 pub const WINDOWS_UNSUPPORTED_FIELDS: &[&str] = &[];
 
-/// Every scalar Windows-exposed field mapped exactly once (19 portable plus
+/// Portable fields persisted, validated, and reported on every capture but
+/// with no dialog control yet: focus-follows-cursor and cursor-warp actuate
+/// nothing until stage 4, so this unit defers their visible toggles rather
+/// than claiming an effect. The storage mapping above stays so files,
+/// staging, and validation cover them; the dialog tests exempt exactly
+/// these two ids with this reason.
+pub const STAGE4_DEFERRED_FIELDS: &[&str] = &["output.focus-follows-cursor", "output.cursor-warp"];
+
+/// Every scalar Windows-exposed field mapped exactly once (23 portable plus
 /// 4 Windows-only). Storage keys are the existing schema-v1 nested
 /// snake_case keys; this table renames nothing.
 pub const WINDOWS_FIELD_MAPPINGS: &[FieldStorageMap] = &[
@@ -213,6 +221,22 @@ pub const WINDOWS_FIELD_MAPPINGS: &[FieldStorageMap] = &[
     FieldStorageMap {
         field: "migration.refill",
         storage_key: "core.migration_source_refill",
+    },
+    FieldStorageMap {
+        field: "output.switch-target",
+        storage_key: "core.switch_target",
+    },
+    FieldStorageMap {
+        field: "output.fresh-placement",
+        storage_key: "core.fresh_placement",
+    },
+    FieldStorageMap {
+        field: "output.focus-follows-cursor",
+        storage_key: "core.focus_follows_cursor",
+    },
+    FieldStorageMap {
+        field: "output.cursor-warp",
+        storage_key: "core.cursor_warp",
     },
     FieldStorageMap {
         field: "border.enabled",
@@ -362,6 +386,12 @@ pub fn windows_field_value(settings: &Settings, field: &str) -> Option<WindowsVa
         "migration.refill" => Some(WindowsValue::Text(
             settings.core.migration_source_refill.clone(),
         )),
+        "output.switch-target" => Some(WindowsValue::Text(settings.core.switch_target.clone())),
+        "output.fresh-placement" => Some(WindowsValue::Text(settings.core.fresh_placement.clone())),
+        "output.focus-follows-cursor" => {
+            Some(WindowsValue::Bool(settings.core.focus_follows_cursor))
+        }
+        "output.cursor-warp" => Some(WindowsValue::Bool(settings.core.cursor_warp)),
         "workspace.mode" => Some(WindowsValue::Text(settings.core.workspace.mode.clone())),
         "keyboard.takeover" => Some(WindowsValue::Bool(settings.core.keyboard.takeover)),
         "keyboard.allow-win-l" => Some(WindowsValue::Bool(settings.core.keyboard.allow_win_l)),
@@ -442,6 +472,18 @@ fn apply_typed(settings: &mut Settings, field: &str, value: &WindowsValue) -> Re
         ("migration.refill", WindowsValue::Text(got)) => {
             settings.core.migration_source_refill = got.clone();
         }
+        ("output.switch-target", WindowsValue::Text(got)) => {
+            settings.core.switch_target = got.clone();
+        }
+        ("output.fresh-placement", WindowsValue::Text(got)) => {
+            settings.core.fresh_placement = got.clone();
+        }
+        ("output.focus-follows-cursor", WindowsValue::Bool(got)) => {
+            settings.core.focus_follows_cursor = *got;
+        }
+        ("output.cursor-warp", WindowsValue::Bool(got)) => {
+            settings.core.cursor_warp = *got;
+        }
         ("workspace.mode", WindowsValue::Text(got)) => settings.core.workspace.mode = got.clone(),
         ("border.color", WindowsValue::Text(got)) => settings.core.border.color = got.clone(),
         ("underlay.color", WindowsValue::Text(got)) => {
@@ -513,6 +555,12 @@ mod tests {
             }
             "admission.no-space" => WindowsValue::Text("allow-overlap".to_owned()),
             "migration.refill" => WindowsValue::Text("most-recently-used-workspace".to_owned()),
+            "output.switch-target" => WindowsValue::Text("focused-output".to_owned()),
+            "output.fresh-placement" => {
+                WindowsValue::Text("focused-output-last-focused".to_owned())
+            }
+            "output.focus-follows-cursor" => WindowsValue::Bool(true),
+            "output.cursor-warp" => WindowsValue::Bool(true),
             "border.enabled" => WindowsValue::Bool(false),
             "border.width" => WindowsValue::Float(4.0),
             "border.gap" => WindowsValue::Float(1.0),
@@ -532,7 +580,7 @@ mod tests {
 
     #[test]
     fn every_scalar_field_mapped_exactly_once() {
-        assert_eq!(WINDOWS_FIELD_MAPPINGS.len(), 23);
+        assert_eq!(WINDOWS_FIELD_MAPPINGS.len(), 27);
         let mut fields = BTreeSet::new();
         let mut keys = BTreeSet::new();
         for entry in WINDOWS_FIELD_MAPPINGS {

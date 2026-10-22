@@ -155,6 +155,34 @@ impl super::Session {
         self.no_space = result;
     }
 
+    /// Cursor-first fresh placement for subsequent fresh admissions only.
+    /// Cursor-output/last-focused default (COSMIC).
+    #[must_use]
+    pub fn fresh_placement(&self) -> crate::cursor_targeting::FreshPlacement {
+        self.fresh_placement
+    }
+
+    /// Select the fresh placement for subsequent fresh admissions only.
+    /// Never moves existing members or touches topology, membership,
+    /// focus, revision, or existing classifications on change.
+    pub fn set_fresh_placement(&mut self, placement: crate::cursor_targeting::FreshPlacement) {
+        self.fresh_placement = placement;
+    }
+
+    /// Normalized cursor retained from the latest accepted report, `None`
+    /// when the adapter could not read it.
+    #[must_use]
+    pub fn fresh_cursor(&self) -> Option<(i32, i32)> {
+        self.fresh_cursor
+    }
+
+    /// Retain the latest accepted report's cursor for subsequent fresh
+    /// admissions. Never touches topology, membership, focus, revision,
+    /// or existing classifications.
+    pub fn set_fresh_cursor(&mut self, cursor: Option<(i32, i32)>) {
+        self.fresh_cursor = cursor;
+    }
+
     /// Whether a window floats with diagnostic capacity origin (D4):
     /// no split was available and the no-space setting selected float.
     /// Functionally an ordinary float; distinct from automatic fixed.

@@ -299,6 +299,7 @@ pub(super) fn settle_cross_drag_drop(
             target_workspace: settle.dest_workspace.clone(),
             follow: true,
         },
+        super::observation::sample_cursor(),
     );
     let Some(reply) = reply.as_ref() else {
         log_json_at(

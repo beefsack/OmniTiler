@@ -25,13 +25,15 @@
 //! - [`capture_facts_rideable`](super::world_capture::capture_facts_rideable):
 //!   eligible or overlay facts ride; every other `classify` refusal has no
 //!   window authority lane.
-//! - [`readback_outcome`](crate::tiling::readback_outcome) plus the
-//!   [`RefusedTracker`](crate::tiling::RefusedTracker) clamp/transient lanes:
-//!   a successful write whose readback still mismatches is an app-held size;
-//!   a failed setter is a bounded-backoff transient; an exact match clears
-//!   both lanes. Identical intent stays suppressed; a real target,
-//!   constraint, or observation change re-arms. Ordinary geometry emits no
-//!   feedback at all: refusal memory lives in the tracker and observations.
+//! - Frame anti-fighting is core-owned (see `tiler_core::world_frames`):
+//!   this module attempts every authorized write through [`NativeOps`],
+//!   then reports the mechanical facts (setter disposition plus immediate
+//!   readback and DPI pair) as [`FrameAttempt`](tiler_core::world_report::FrameAttempt)
+//!   rows for the next report. The core compares desired and observed and
+//!   publishes suppression (tiled constraint-clamp holds, withheld float
+//!   tokens), which the next pass obeys without re-writing. Ordinary
+//!   geometry emits no operation feedback at all: attempt rows plus
+//!   observations are the whole contract.
 //! - Feedback is emitted ONLY with operation ids the core actually consumes:
 //!   retained window/view/migration transfer ids (see
 //!   `WorldEngine::settle_retained`) and retained explicit float-placement
@@ -68,12 +70,12 @@
 use super::world_capture::{CapturedWorld, OwnerInputs, capture_facts_rideable};
 use super::{ObservedWindow, RetainedRow};
 use crate::native_guards::WindowKey;
-use crate::tiling::{ReadbackOutcome, RefusedTracker, WindowFacts, readback_outcome};
+use crate::tiling::WindowFacts;
 use std::collections::{HashMap, HashSet};
 use tiler_core::geometry::Rect;
 use tiler_core::world_report::{
-    AttemptFeedback, AttemptKind, AttemptOutcome, HoldReason, ScopeAuthority, TransferKind,
-    TransferTarget, WorldReply,
+    AttemptFeedback, AttemptKind, AttemptOutcome, FrameAttempt, FrameSetter, HoldReason,
+    ScopeAuthority, TransferKind, TransferTarget, WorldReply,
 };
 
 /// Fresh offline window facts for one managed lifetime: the observation-time
@@ -277,6 +279,11 @@ pub(super) trait NativeOps {
     fn read_view(&mut self, output: &str) -> Option<String>;
     fn is_foreground(&mut self, token: &str) -> bool;
     fn gesture_barrier(&mut self) -> bool;
+    /// Live window DPI in physical pixels per inch (`None` when unreadable,
+    /// never guessed). Read around each frame write so the core can tell an
+    /// invalidated placement (changed basis, never a stable clamp) from an
+    /// app-held size.
+    fn read_dpi(&mut self, token: &str) -> Option<u32>;
     fn write_frame(&mut self, token: &str, rect: Rect) -> Result<bool, ()>;
     /// Membership actuation toward `(out, ws)` with the desired visible
     /// frame as an actuation TARGET only (`None` for membership-only
@@ -296,6 +303,26 @@ pub(super) trait NativeOps {
         frame: Option<Rect>,
         remap: bool,
     ) -> Result<bool, ()>;
+    /// View-independent arrival proof for one migration member. The
+    /// migration target view flips only after every member proves, so
+    /// member proof must never wait for it: tiled arrivals prove through
+    /// the actuation frame (`frame` when published, else the mechanical
+    /// remap) landing on the target output, floats through their
+    /// preserved frame (`baseline_frame`), always under full
+    /// identity/lifetime/scope/visibility gates. The default holds (no
+    /// proof); the production seam overrides. The setter boolean is never
+    /// proof here either.
+    fn migration_arrival_proven(
+        &mut self,
+        _token: &str,
+        _out: &str,
+        _ws: &str,
+        _frame: Option<Rect>,
+        _floating: bool,
+        _baseline_frame: Option<Rect>,
+    ) -> bool {
+        false
+    }
     fn switch_view(&mut self, output: &str, logical: &str) -> Result<bool, ()>;
     fn focus_window(&mut self, token: &str) -> Result<bool, ()>;
     /// One external invalidation consumed per call: racing native input that
@@ -329,6 +356,11 @@ pub(super) struct FakeNative {
     pub(super) pending_invalidation: bool,
     pub(super) frame_writes: usize,
     pub(super) membership_writes: usize,
+    /// Scripted live DPI per window (`None` = unreadable, never guessed).
+    pub(super) dpi: HashMap<String, u32>,
+    /// Windows whose DPI changes across the write (deterministic stand-in
+    /// for a cross-monitor rescale under the call).
+    pub(super) dpi_flip: HashSet<String>,
 }
 
 #[cfg(test)]
@@ -367,6 +399,9 @@ impl NativeOps for FakeNative {
     fn gesture_barrier(&mut self) -> bool {
         self.gesture
     }
+    fn read_dpi(&mut self, token: &str) -> Option<u32> {
+        self.dpi.get(token).copied()
+    }
     fn write_frame(&mut self, token: &str, rect: Rect) -> Result<bool, ()> {
         if self.throw_frame.contains(token) {
             return Err(());
@@ -374,6 +409,11 @@ impl NativeOps for FakeNative {
         if self.fail_frame.contains(token) {
             self.note_write();
             return Ok(false);
+        }
+        if self.dpi_flip.contains(token)
+            && let Some(dpi) = self.dpi.get_mut(token)
+        {
+            *dpi = dpi.wrapping_add(24);
         }
         if !self.clamp_frame.contains(token)
             && let Some(window) = self.windows.get_mut(token)
@@ -508,16 +548,17 @@ impl EffectTracker {
     }
 }
 
-/// One offline diff unit: freshness gate plus the refusal and at-most-once
-/// tables behind [`apply_world_reply`]. All maps stay bounded:
-/// [`Self::prune`] retains entries against the current reply and baseline
-/// every pass, and [`Self::reset_generation`] clears generation-scoped state.
+/// One offline diff unit: freshness gate plus the at-most-once tables
+/// behind [`apply_world_reply`]. Frame anti-fighting lives in the core
+/// (attempt rows out, suppression in the next desire); this side keeps no
+/// refusal memory. All maps stay bounded: [`Self::prune`] retains entries
+/// against the current reply and baseline every pass, and
+/// [`Self::reset_generation`] clears generation-scoped state.
 /// (Native workspace lifecycle needs no table: the core owns logical
 /// workspaces outright, so the adapter never creates or removes them.)
 #[derive(Debug)]
 pub(super) struct HostDiff {
     pub(super) gate: DiffGate,
-    pub(super) refused: RefusedTracker,
     pub(super) effects: EffectTracker,
 }
 
@@ -531,37 +572,26 @@ impl HostDiff {
                 last_rev: 0,
                 has_accepted: false,
             },
-            refused: RefusedTracker::default(),
             effects: EffectTracker::default(),
         }
     }
 
     /// Generation reset: new core namespace clears operation-scoped tables
     /// (reused operation ids must never inherit spent/ambiguous/applied
-    /// state) and the refusal memory (no stale suppression under a fresh
-    /// world). The caller re-derives the watermark from the new bootstrap.
+    /// state). The caller re-derives the watermark from the new bootstrap.
     #[allow(dead_code)]
     pub(super) fn reset_generation(&mut self, generation: &str) {
         self.gate.reset_generation(generation);
-        self.refused = RefusedTracker::default();
         self.effects.clear_generation();
     }
 
-    /// Bound every table against the current reply and baseline: refusal
-    /// entries survive only for live reply/baseline lifetimes, spent and
-    /// ambiguous entries only for operation ids the reply still carries,
-    /// and applied proofs only for baselined lifetimes (view proofs
+    /// Bound every table against the current reply and baseline: spent and
+    /// ambiguous entries survive only for operation ids the reply still
+    /// carries, and applied proofs only for baselined lifetimes (view proofs
     /// additionally only for live outputs and live operation ids, since
     /// hotplug can retire an output while its proof entry would otherwise
     /// linger).
     fn prune(&mut self, reply: &WorldReply, fresh: &FreshHost) {
-        let mut live_tokens: Vec<&str> = fresh.baseline.keys().map(String::as_str).collect();
-        for row in &reply.windows {
-            if !live_tokens.contains(&row.lifetime.0.as_str()) {
-                live_tokens.push(row.lifetime.0.as_str());
-            }
-        }
-        self.refused.retain(&live_tokens);
         let mut live_ops: HashSet<&str> = HashSet::new();
         for effect in &reply.effects {
             live_ops.insert(effect.id.as_str());
@@ -611,6 +641,11 @@ impl HostDiff {
 
 /// Honest outcome of one diff pass. `partial` is true when at least one
 /// write landed while at least one row held: never atomic.
+/// `migration_total`/`migration_proven` bound the migration membership
+/// phase per pass (members carried vs members proven at the actuation
+/// gates): the deferred target/refill views actuate only after every
+/// member proves, so a stuck migration reads as proven < total with
+/// held > 0 instead of silent zero-write ambiguity.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct ApplyStats {
     pub(super) geometry_writes: usize,
@@ -620,6 +655,8 @@ pub(super) struct ApplyStats {
     pub(super) removals: usize,
     pub(super) effects: usize,
     pub(super) held: usize,
+    pub(super) migration_total: usize,
+    pub(super) migration_proven: usize,
     pub(super) stopped_mid_apply: bool,
     pub(super) partial: bool,
 }
@@ -808,6 +845,36 @@ fn feedback(
     }
 }
 
+/// Migration-member arrival proof shared by every gate in the migration
+/// section: the retained homing proof first (covers post-view arrivals
+/// and logical seams), else the view-independent physical proof (covers
+/// pre-view redirect arrivals whose target view flips only after every
+/// member proves). The setter boolean is never proof in either lane.
+fn migration_member_proven(
+    ops: &mut dyn NativeOps,
+    reply: &WorldReply,
+    fresh: &FreshHost,
+    id: &str,
+    out: &str,
+    ws: &str,
+) -> bool {
+    let base = &fresh.baseline[id];
+    if homing_proven(ops, base, &fresh.stored_tags, out, ws) {
+        return true;
+    }
+    let (frame, floating, baseline) = reply
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == id)
+        .map(|row| {
+            let floating = row.floating || base.floating;
+            let frame = if floating { None } else { row.effective_frame };
+            (frame, floating, base.frame)
+        })
+        .unwrap_or((None, false, base.frame));
+    ops.migration_arrival_proven(id, out, ws, frame, floating, baseline)
+}
+
 fn window_transfer_for<'a>(reply: &'a WorldReply, window: &str) -> Option<&'a TransferTarget> {
     reply.transfers.iter().find(|t| {
         matches!(t.kind, TransferKind::Window(_)) && {
@@ -816,6 +883,28 @@ fn window_transfer_for<'a>(reply: &'a WorldReply, window: &str) -> Option<&'a Tr
                 _ => false,
             }
         }
+    })
+}
+
+/// Pending whole-workspace migration arrival for one row: a retained
+/// migration flight targets the row's home while proven homing still
+/// names elsewhere. Mirrors the window-transfer deferral so pre-arrival
+/// member slots write only through the migration membership phase, never
+/// as bare sweep geometry.
+fn migration_arrival_pending(
+    reply: &WorldReply,
+    ops: &mut dyn NativeOps,
+    token: &str,
+    output: &str,
+    workspace: &str,
+) -> bool {
+    reply.transfers.iter().any(|t| {
+        matches!(t.kind, TransferKind::Migration)
+            && t.target_output.0 == output
+            && t.target_workspace == workspace
+            && ops
+                .read_homing(token)
+                .is_some_and(|(out, ws)| out != t.target_output.0 || ws != t.target_workspace)
     })
 }
 
@@ -1020,6 +1109,17 @@ fn float_no_effect_proven(
         && live.frame.is_some()
 }
 
+/// Map one setter disposition onto the mechanical attempt vocabulary.
+/// `Some(true)` is an accepted call (never proof by itself), `Some(false)`
+/// an explicit refusal, `None` a throwing/ambiguous call.
+fn frame_setter(wrote: Option<bool>) -> FrameSetter {
+    match wrote {
+        Some(true) => FrameSetter::Accepted,
+        Some(false) => FrameSetter::Refused,
+        None => FrameSetter::Threw,
+    }
+}
+
 /// Diff one ready reply against fresh proof and actuate through `ops`.
 ///
 /// The caller owns generation/observation advancement: `state.gate.current_obs`
@@ -1027,13 +1127,18 @@ fn float_no_effect_proven(
 /// [`NativeOps::poll_external_invalidation`] before every setter; within a
 /// pass the facade stops before remaining unsafe writes when the watermark
 /// moves. State tables stay bounded through [`HostDiff::prune`]; only
-/// operation ids the core consumes ever produce feedback.
+/// operation ids the core consumes ever produce feedback. Every attempted
+/// frame write appends one mechanical [`FrameAttempt`] to `frame_out` for
+/// the next report (stamped with `attempt_ms`, the tick's monotonic clock);
+/// the core owns all suppression and the next desire is obeyed as-is.
 #[allow(clippy::too_many_lines)]
 pub(super) fn apply_world_reply(
     state: &mut HostDiff,
     reply: &WorldReply,
     fresh: &FreshHost,
     ops: &mut dyn NativeOps,
+    frame_out: &mut Vec<FrameAttempt>,
+    attempt_ms: u64,
 ) -> (ApplyStats, Vec<AttemptFeedback>) {
     let mut stats = ApplyStats::default();
     let mut out_feedback: Vec<AttemptFeedback> = Vec::new();
@@ -1050,11 +1155,7 @@ pub(super) fn apply_world_reply(
     // outright, so membership, view, and migration targets never wait for
     // a binding that will never arrive.
 
-    let HostDiff {
-        gate,
-        refused,
-        effects,
-    } = state;
+    let HostDiff { gate, effects } = state;
 
     // 1. Window rows: per-property authority against FRESH proof.
     for row in &reply.windows {
@@ -1090,7 +1191,13 @@ pub(super) fn apply_world_reply(
         let arrival_pending = transfer.is_some_and(|t| {
             ops.read_homing(&row.lifetime.0)
                 .is_some_and(|(out, ws)| out != t.target_output.0 || ws != t.target_workspace)
-        });
+        }) || migration_arrival_pending(
+            reply,
+            ops,
+            &row.lifetime.0,
+            &row.output.0,
+            &row.workspace,
+        );
         // The writable frame target is `effective_frame` only: `allocation`
         // is the canonical slot, never a write target.
         if frame_controlled && row.effective_frame.is_some() && arrival_pending {
@@ -1108,13 +1215,11 @@ pub(super) fn apply_world_reply(
                 match live {
                     None => stats.held += 1,
                     Some(live_rect) if live_rect == target => {
-                        refused.note_match(&row.lifetime.0);
+                        // Exact: no write needed. The core clears retained
+                        // frame memory on the observed match itself.
                     }
-                    Some(live_rect) => {
-                        let now = std::time::Instant::now();
-                        if refused.should_skip(&row.lifetime.0, &target, &live_rect, now) {
-                            stats.held += 1;
-                        } else if !ensure_fresh(reply, gate, entry_obs, ops) {
+                    Some(_) => {
+                        if !ensure_fresh(reply, gate, entry_obs, ops) {
                             stats.stopped_mid_apply = true;
                             break;
                         } else {
@@ -1134,52 +1239,39 @@ pub(super) fn apply_world_reply(
                                     break;
                                 }
                                 Gate::Pass => {
+                                    let dpi_before = ops.read_dpi(&row.lifetime.0);
                                     let wrote = ops.write_frame(&row.lifetime.0, target).ok();
-                                    match (wrote, ops.read_frame(&row.lifetime.0)) {
-                                        (Some(true), Some(proof)) => {
-                                            match readback_outcome(true, &target, &proof) {
-                                                ReadbackOutcome::Match => {
-                                                    stats.geometry_writes += 1;
-                                                    refused.note_match(&row.lifetime.0);
-                                                }
-                                                ReadbackOutcome::Clamp => {
-                                                    stats.geometry_writes += 1;
-                                                    refused.note_clamp(
-                                                        &row.lifetime.0,
-                                                        &target,
-                                                        &proof,
-                                                    );
-                                                    stats.held += 1;
-                                                }
-                                                ReadbackOutcome::Pending => {
-                                                    // Unreachable: a write
-                                                    // sits behind this
-                                                    // mismatch, so it is a
-                                                    // clamp.
-                                                    stats.geometry_writes += 1;
-                                                    refused.note_clamp(
-                                                        &row.lifetime.0,
-                                                        &target,
-                                                        &proof,
-                                                    );
-                                                    stats.held += 1;
-                                                }
-                                            }
+                                    let proof = ops.read_frame(&row.lifetime.0);
+                                    let dpi_after = ops.read_dpi(&row.lifetime.0);
+                                    // Mechanical facts only: the setter
+                                    // boolean is never proof, and the
+                                    // readback never carries a verdict. The
+                                    // core compares desired and observed.
+                                    frame_out.push(FrameAttempt {
+                                        window: row.lifetime.clone(),
+                                        target,
+                                        setter: frame_setter(wrote),
+                                        readback: proof,
+                                        dpi_before,
+                                        dpi_after,
+                                        attempt_ms,
+                                    });
+                                    match (wrote, proof) {
+                                        (Some(true), Some(proven)) if proven == target => {
+                                            stats.geometry_writes += 1;
+                                        }
+                                        (Some(true), _) => {
+                                            stats.geometry_writes += 1;
+                                            stats.held += 1;
                                         }
                                         _ => {
-                                            // Explicit refusal or throw: the
-                                            // bounded transient lane, exactly
-                                            // like the native setter-failed
-                                            // path. No feedback: ordinary
-                                            // geometry results are proven by
+                                            // Explicit refusal, throw, or
+                                            // unreadable proof: bounded
+                                            // transient lane upstream. No
+                                            // feedback: ordinary geometry
+                                            // results are proven by
                                             // read-back, not by invented
                                             // operation ids.
-                                            refused.note_transient(
-                                                &row.lifetime.0,
-                                                &target,
-                                                &live_rect,
-                                                now,
-                                            );
                                             stats.held += 1;
                                         }
                                     }
@@ -1189,6 +1281,17 @@ pub(super) fn apply_world_reply(
                     }
                 }
             }
+        }
+        // Core-owned frame suppression (stage 3a): the identical pair
+        // holds upstream. No write, no re-proof, no feedback; the held
+        // count preserves the historical suppressed-tick witness.
+        if row.effective_frame.is_some()
+            && matches!(
+                row.frame_authority,
+                ScopeAuthority::Hold(HoldReason::ConstraintClamp)
+            )
+        {
+            stats.held += 1;
         }
         // Membership rides only under a retained core window transfer with
         // its stable operation identity. A Controlled frame authority with
@@ -1305,11 +1408,12 @@ pub(super) fn apply_world_reply(
         let before = ops.read_homing(&row.lifetime.0);
         // Tiled rows carry their desired frame as the actuation target
         // (the production seam writes it as part of the move);
-        // membership-only lanes (redirect movers, floats/sticky/overlays)
-        // pass `None`. Tiled cross-output arrivals additionally allow a
-        // mechanical remap onto the target output (position preserved,
-        // never resized: the sweep re-tiles after arrival); floats pass
-        // `false` and preserve their physical frame.
+        // membership-only lanes (frameless redirect rows, floats/sticky/
+        // overlays) pass `None`. Tiled cross-output rows without a
+        // published frame additionally allow a mechanical remap onto the
+        // target output (position preserved, never resized: the sweep
+        // re-tiles after arrival); floats pass `false` and preserve
+        // their physical frame.
         let frame_target = if row.floating || base.floating {
             None
         } else {
@@ -1475,7 +1579,6 @@ pub(super) fn apply_world_reply(
                 effects
                     .applied_float
                     .insert(row.lifetime.0.clone(), (op.to_owned(), target));
-                refused.note_match(&row.lifetime.0);
                 out_feedback.push(feedback(
                     op,
                     AttemptKind::Property,
@@ -1539,39 +1642,47 @@ pub(super) fn apply_world_reply(
             continue;
         }
         effects.arm(op, format!("{}/{}", row.output.0, row.workspace));
-        let now = std::time::Instant::now();
+        let dpi_before = ops.read_dpi(&row.lifetime.0);
         let wrote = ops.write_frame(&row.lifetime.0, target).ok();
         let proof = ops.read_frame(&row.lifetime.0);
+        let dpi_after = ops.read_dpi(&row.lifetime.0);
+        // Mechanical facts for the core-owned policy (same owner as tiled
+        // rows); the settlement feedback below stays on the existing truth
+        // table until stage 3b moves it.
+        frame_out.push(FrameAttempt {
+            window: row.lifetime.clone(),
+            target,
+            setter: frame_setter(wrote),
+            readback: proof,
+            dpi_before,
+            dpi_after,
+            attempt_ms,
+        });
         match (wrote, proof) {
-            (Some(true), Some(rect)) => match readback_outcome(true, &target, &rect) {
-                ReadbackOutcome::Match => {
-                    stats.geometry_writes += 1;
-                    refused.note_match(&row.lifetime.0);
-                    effects.settle_applied(op);
-                    effects
-                        .applied_float
-                        .insert(row.lifetime.0.clone(), (op.to_owned(), target));
-                    out_feedback.push(feedback(
-                        op,
-                        AttemptKind::Property,
-                        AttemptOutcome::Applied,
-                        None,
-                    ));
-                }
-                ReadbackOutcome::Clamp | ReadbackOutcome::Pending => {
-                    stats.geometry_writes += 1;
-                    refused.note_clamp(&row.lifetime.0, &target, &rect);
-                    out_feedback.push(feedback(
-                        op,
-                        AttemptKind::Property,
-                        AttemptOutcome::PossiblyExecuted,
-                        None,
-                    ));
-                    stats.held += 1;
-                }
-            },
+            (Some(true), Some(rect)) if rect == target => {
+                stats.geometry_writes += 1;
+                effects.settle_applied(op);
+                effects
+                    .applied_float
+                    .insert(row.lifetime.0.clone(), (op.to_owned(), target));
+                out_feedback.push(feedback(
+                    op,
+                    AttemptKind::Property,
+                    AttemptOutcome::Applied,
+                    None,
+                ));
+            }
+            (Some(true), Some(_)) => {
+                stats.geometry_writes += 1;
+                out_feedback.push(feedback(
+                    op,
+                    AttemptKind::Property,
+                    AttemptOutcome::PossiblyExecuted,
+                    None,
+                ));
+                stats.held += 1;
+            }
             (Some(false), Some(rect)) if rect == live_rect => {
-                refused.note_transient(&row.lifetime.0, &target, &live_rect, now);
                 out_feedback.push(feedback(
                     op,
                     AttemptKind::Property,
@@ -1581,7 +1692,6 @@ pub(super) fn apply_world_reply(
                 stats.held += 1;
             }
             _ => {
-                refused.note_transient(&row.lifetime.0, &target, &live_rect, now);
                 out_feedback.push(feedback(
                     op,
                     AttemptKind::Property,
@@ -1799,8 +1909,7 @@ pub(super) fn apply_world_reply(
             // less holds without repeating.
             let mut late_proof = true;
             for id in &members {
-                let base = &fresh.baseline[id];
-                if !homing_proven(ops, base, &fresh.stored_tags, &out, &ws) {
+                if !migration_member_proven(ops, reply, fresh, id, &out, &ws) {
                     late_proof = false;
                     break;
                 }
@@ -1851,12 +1960,15 @@ pub(super) fn apply_world_reply(
         let mut failed = false;
         for id in &members {
             let base = &fresh.baseline[id];
-            if homing_proven(ops, base, &fresh.stored_tags, &out, &ws) {
+            if migration_member_proven(ops, reply, fresh, id, &out, &ws) {
+                stats.migration_total += 1;
+                stats.migration_proven += 1;
                 effects
                     .applied_window
                     .insert(id.clone(), (op.clone(), out.clone(), ws.clone()));
                 continue;
             }
+            stats.migration_total += 1;
             if !ensure_fresh(reply, gate, entry_obs, ops) {
                 stats.stopped_mid_apply = true;
                 break;
@@ -1887,9 +1999,9 @@ pub(super) fn apply_world_reply(
                 effects.arm(&op, format!("{out}/{ws}"));
             }
             // Migration members ride their desired frames as actuation
-            // targets exactly like window transfers (redirect-lane
-            // members carry none and remap mechanically instead);
-            // floats preserve their frame.
+            // targets exactly like window transfers (frameless redirect
+            // lanes carry none and remap mechanically instead); floats
+            // preserve their frame.
             let (member_frame, member_remap) = reply
                 .windows
                 .iter()
@@ -1905,8 +2017,9 @@ pub(super) fn apply_world_reply(
                 stats.stopped_mid_apply = true;
                 break;
             }
-            if moved.is_ok() && homing_proven(ops, base, &fresh.stored_tags, &out, &ws) {
+            if moved.is_ok() && migration_member_proven(ops, reply, fresh, id, &out, &ws) {
                 stats.membership_writes += 1;
+                stats.migration_proven += 1;
                 effects
                     .applied_window
                     .insert(id.clone(), (op.clone(), out.clone(), ws.clone()));
@@ -1930,7 +2043,7 @@ pub(super) fn apply_world_reply(
         }
         let all_homed = members
             .iter()
-            .all(|id| homing_proven(ops, &fresh.baseline[id], &fresh.stored_tags, &out, &ws));
+            .all(|id| migration_member_proven(ops, reply, fresh, id, &out, &ws));
         if !all_homed {
             out_feedback.push(feedback(
                 &op,

@@ -139,6 +139,80 @@ pub(super) fn attach_workspace_receipts(
     }
 }
 
+/// Empty-screen proof for a memberless applied view that still carries
+/// hidden homing: every member homed on `output` proves deliberately
+/// hidden through the same fresh claim association the membership
+/// receipts require (well-formed claim tag, claim identity equals the
+/// member key, stored member tag present) plus continued invisibility
+/// (no live observation of the number anywhere). Proven-hidden homing
+/// is invisible by design under every view, so it never counts as
+/// on-output presence; any other homing on the output keeps the view
+/// unknown. Observed presence likewise counts only managed members:
+/// minimized rows never count (matching the visible set), and foreign
+/// never-member rows never fence scoped inventory (matching capture,
+/// which ignores out-of-scope never-members). A bound member HWND
+/// showing on the output always blocks, even with lapsed proofs: fail
+/// closed. Anything else keeps the view unknown instead of settling on
+/// a guess.
+fn empty_screen_proven(
+    inputs: &OwnerInputs<'_>,
+    observed: &[ObservedWindow],
+    areas: &[super::MonitorArea],
+    output: &str,
+) -> bool {
+    for (token, (dev, _)) in inputs.applied_homing.iter() {
+        if dev != output {
+            continue;
+        }
+        let key = inputs
+            .member_tokens
+            .iter()
+            .find(|(_, t)| t.as_str() == token.as_str())
+            .map(|(k, _)| k);
+        let Some(key) = key else {
+            return false;
+        };
+        // Same fresh association the membership receipts require: a
+        // bare hide-ledger entry never proves deliberate hiding.
+        let associated = inputs.hidden_claims.get(key).is_some_and(|record| {
+            crate::model::valid_claim_tag(&record.claim.tag)
+                && record.claim.hwnd == key.hwnd
+                && record.claim.process.pid == key.pid
+                && record.claim.process.process_creation == key.creation
+        }) && inputs
+            .member_tags
+            .get(key)
+            .is_some_and(|tag| !tag.is_empty())
+            // Continued invisibility: any live observation of the number
+            // while logically hidden (external reveal, HWND recycle)
+            // proves nothing, never the stale homing.
+            && !observed.iter().any(|w| w.hwnd == key.hwnd);
+        if !associated {
+            return false;
+        }
+    }
+    !observed.iter().any(|w| {
+        if w.facts.minimized {
+            return false;
+        }
+        let key = WindowKey {
+            hwnd: w.hwnd,
+            pid: w.identity.pid,
+            creation: w.identity.process_creation.clone(),
+        };
+        // Scoped inventory ignores foreign never-member windows, so raw
+        // foreign presence never fences the managed empty-screen proof.
+        if !inputs.member_tokens.contains_key(&key) {
+            return false;
+        }
+        let device = super::directional_resolution::output_for_rect(areas, &w.visible);
+        inputs
+            .output_tokens
+            .get(&device)
+            .is_some_and(|out| out == output)
+    })
+}
+
 /// Per-screen applied-view receipts: exactly one non-sticky applied
 /// workspace with fresh visible members proves the applied view; a
 /// memberless applied view with zero visible members on the output proves
@@ -215,6 +289,19 @@ pub(super) fn observed_view_receipts(
             // the whole output while the applied view holds nothing.
             let holds_anything = inputs.applied_homing.values().any(|(dev, _)| dev == output);
             if !holds_anything {
+                out.push(ScreenView {
+                    output: tiler_core::directional::OutputId(output.clone()),
+                    view: active.clone(),
+                });
+            } else if empty_screen_proven(inputs, observed, areas, output) {
+                // A twice-visited output keeps hidden homing (an occupied
+                // workspace stayed behind) while the applied refill shows
+                // nothing: proven-hidden members are invisible by design
+                // under every view, so with zero managed presence on the
+                // output the empty screen genuinely proves the memberless
+                // applied view. Unproven homing, or any managed window
+                // physically on the output, keeps the view unknown
+                // instead of settling on a guess.
                 out.push(ScreenView {
                     output: tiler_core::directional::OutputId(output.clone()),
                     view: active.clone(),

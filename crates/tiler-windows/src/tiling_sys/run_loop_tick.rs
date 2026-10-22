@@ -167,6 +167,7 @@ fn drop_blocked_intents(
     poll_resize_cli_request(state, me, store, dir, fulls, areas);
     poll_directional_cli_request(state, me, store, dir, fulls, areas);
     poll_send_output_cli_request(state, me, store, dir, fulls, areas);
+    poll_migrate_workspace_cli_request(state, me, store, dir, fulls, areas);
 }
 
 /// Clear held-gesture and preview state on a blocked turn plus the
@@ -700,6 +701,7 @@ pub(super) fn run_active_tick(
             poll_resize_cli_request(state, me, store, dir, &fulls, areas);
             poll_directional_cli_request(state, me, store, dir, &fulls, areas);
             poll_send_output_cli_request(state, me, store, dir, &fulls, areas);
+            poll_migrate_workspace_cli_request(state, me, store, dir, &fulls, areas);
         } else {
             if !snap_events.is_empty() {
                 keyboard_tick(state, me, store, dir, &fulls, areas, snap_events, None);
@@ -742,6 +744,7 @@ pub(super) fn run_active_tick(
             poll_pager_select(state, me, store, dir, &fulls, areas);
             poll_directional_cli_request(state, me, store, dir, &fulls, areas);
             poll_send_output_cli_request(state, me, store, dir, &fulls, areas);
+            poll_migrate_workspace_cli_request(state, me, store, dir, &fulls, areas);
         }
     } else {
         // A just-ended managed gesture settles before keyboard
@@ -825,6 +828,7 @@ pub(super) fn run_active_tick(
         poll_pager_select(state, me, store, dir, &fulls, areas);
         poll_directional_cli_request(state, me, store, dir, &fulls, areas);
         poll_send_output_cli_request(state, me, store, dir, &fulls, areas);
+        poll_migrate_workspace_cli_request(state, me, store, dir, &fulls, areas);
     }
     // Post-mutation border refresh: reconciliation may have moved the
     // target this tick, so re-read the fresh frame instead of leaving

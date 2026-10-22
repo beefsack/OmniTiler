@@ -124,7 +124,15 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
     // core bootstraps logical state from the live screens.
     let out_token = state.output_token("DEV1");
     let report = seq
-        .try_dispatch(&state.inputs(), Some(&observed), &retained, &areas, 0, None)
+        .try_dispatch(
+            &state.inputs(),
+            Some(&observed),
+            &retained,
+            &areas,
+            0,
+            0,
+            None,
+        )
         .expect("dispatch");
     // Fresh bootstrap proves nothing yet: no view receipts (nothing
     // applied, so nothing is proven).
@@ -152,7 +160,15 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
     // receipt, so the report stays receipt-free instead of echoing desire.
     seq.invalidate();
     let second = seq
-        .try_dispatch(&state.inputs(), Some(&observed), &retained, &areas, 0, None)
+        .try_dispatch(
+            &state.inputs(),
+            Some(&observed),
+            &retained,
+            &areas,
+            0,
+            0,
+            None,
+        )
         .expect("dispatch");
     assert_eq!(
         second.views, report.views,
@@ -193,6 +209,7 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
             &retained,
             &areas,
             0,
+            0,
             Some(tiler_core::world_report::WorldCommand::SelectWorkspace {
                 output: tiler_core::directional::OutputId(state.output_token("DEV1")),
                 workspace: target.clone(),
@@ -224,7 +241,15 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
     // re-actuation.
     seq.invalidate();
     let pending = seq
-        .try_dispatch(&state.inputs(), Some(&observed), &retained, &areas, 0, None)
+        .try_dispatch(
+            &state.inputs(),
+            Some(&observed),
+            &retained,
+            &areas,
+            0,
+            0,
+            None,
+        )
         .expect("dispatch");
     assert_eq!(
         pending.views, report.views,
@@ -250,7 +275,15 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
     // path, not invented here).
     seq.invalidate();
     let unrelated = seq
-        .try_dispatch(&state.inputs(), Some(&observed), &retained, &areas, 0, None)
+        .try_dispatch(
+            &state.inputs(),
+            Some(&observed),
+            &retained,
+            &areas,
+            0,
+            0,
+            None,
+        )
         .expect("dispatch");
     let reply = match seq.deliver(&unrelated) {
         WorldOutcome::Accepted(reply) => reply,
@@ -279,7 +312,8 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
     let mut vnative = FakeNative::seeded(&fresh);
     let mut vdiff = HostDiff::new("adapter-1", "gen-1");
     vdiff.gate.current_obs = unrelated.observation_seq;
-    let (vstats, vproduced) = apply_world_reply(&mut vdiff, &reply, &fresh, &mut vnative);
+    let (vstats, vproduced) =
+        apply_world_reply(&mut vdiff, &reply, &fresh, &mut vnative, &mut Vec::new(), 0);
     assert_eq!(vstats.view_writes, 1, "stats: {vstats:?}");
     let view_op = reply
         .transfers
@@ -298,7 +332,15 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
         .insert(out_token.clone(), target.clone());
     seq.invalidate();
     let echoed = seq
-        .try_dispatch(&state.inputs(), Some(&observed), &retained, &areas, 0, None)
+        .try_dispatch(
+            &state.inputs(),
+            Some(&observed),
+            &retained,
+            &areas,
+            0,
+            0,
+            None,
+        )
         .expect("dispatch");
     assert_eq!(
         echoed.views.len(),
@@ -333,13 +375,27 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
     let mut native = FakeNative::seeded(&fresh);
     let mut diff = HostDiff::new("adapter-1", "gen-1");
     diff.gate.current_obs = second.observation_seq;
-    let (stats, _feedback) = apply_world_reply(&mut diff, &geometry_reply, &fresh, &mut native);
+    let (stats, _feedback) = apply_world_reply(
+        &mut diff,
+        &geometry_reply,
+        &fresh,
+        &mut native,
+        &mut Vec::new(),
+        0,
+    );
     assert_eq!(stats.held, 0, "stats: {stats:?}");
     assert!(stats.geometry_writes > 0, "stats: {stats:?}");
     diff.gate.note_applied(&geometry_reply);
     // A racing native invalidation stops the pass before any setter.
     native.pending_invalidation = true;
-    let (stats, _) = apply_world_reply(&mut diff, &geometry_reply, &fresh, &mut native);
+    let (stats, _) = apply_world_reply(
+        &mut diff,
+        &geometry_reply,
+        &fresh,
+        &mut native,
+        &mut Vec::new(),
+        0,
+    );
     assert!(stats.stopped_mid_apply, "stats: {stats:?}");
     assert_eq!(stats.geometry_writes, 0, "stats: {stats:?}");
     // Feedback stages for the next report; a lost flight stays dirty.
@@ -353,7 +409,15 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
     assert!(seq.has_pending_feedback());
     seq.invalidate();
     let third = seq
-        .try_dispatch(&state.inputs(), Some(&observed), &retained, &areas, 0, None)
+        .try_dispatch(
+            &state.inputs(),
+            Some(&observed),
+            &retained,
+            &areas,
+            0,
+            0,
+            None,
+        )
         .expect("dispatch");
     assert!(seq.has_flight());
     assert!(seq.note_rejected_or_lost("gen-1", &third.request_id));
@@ -373,6 +437,7 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
         request_id: "req-x".to_owned(),
         closed_acked: vec![("w9".to_owned(), homing)],
         feedback_acked: Vec::new(),
+        frames_acked: Vec::new(),
     };
     let pruned = seq.apply_close_receipt(&mut pending, &ack_receipt);
     assert_eq!(pruned, vec!["w9".to_owned()]);
@@ -453,6 +518,7 @@ fn production_observation_tick_proves_nothing_on_unreadable_natives() {
         &areas,
         0,
         &fulls,
+        None,
     )
     .expect("tick converges");
     assert!(reply.ready);
@@ -514,6 +580,7 @@ fn production_select_route_reports_honest_outcome_without_proof() {
         &areas,
         0,
         &fulls,
+        None,
     )
     .expect("seed tick converges");
     assert!(first.ready);
@@ -613,6 +680,7 @@ fn production_send_route_reports_honest_outcome_without_proof() {
         &areas,
         0,
         &fulls,
+        None,
     )
     .expect("seed tick converges");
     assert!(first.ready);
@@ -653,6 +721,7 @@ fn production_send_route_reports_honest_outcome_without_proof() {
             target_workspace: target.clone(),
             follow: false,
         },
+        None,
     );
     let reply = reply.expect("send converges");
     assert!(reply.ready);
@@ -895,6 +964,7 @@ fn busy_command_reports_unverified_not_cached_reply() {
         &areas,
         0,
         &fulls,
+        None,
     )
     .expect("seed converges");
     assert!(
@@ -960,9 +1030,10 @@ fn busy_command_reports_unverified_not_cached_reply() {
             *inner_gap,
             *outer_gap,
             active,
+            None,
         );
         world
-            .try_dispatch_observation(&inputs, Some(&observed), &[], &areas, 0)
+            .try_dispatch_observation(&inputs, Some(&observed), &[], &areas, 0, 0)
             .expect("flight opens");
     }
     let out = state.output_token("DEV1");
@@ -977,8 +1048,9 @@ fn busy_command_reports_unverified_not_cached_reply() {
         0,
         &fulls,
         tiler_core::world_report::WorldCommand::SelectTrailing {
-            output: tiler_core::directional::OutputId(out),
+            output: Some(tiler_core::directional::OutputId(out)),
         },
+        None,
     );
     assert!(
         reply.is_none(),

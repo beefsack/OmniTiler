@@ -198,7 +198,7 @@ pub(super) fn apply_float_from_tiled(
             if fresh.token == placement.window.token
                 && pid_current(hwnd_u64, fresh.identity.pid) =>
         {
-            if readback_outcome(true, &effective, &fresh.visible) == ReadbackOutcome::Match {
+            if effective == fresh.visible {
                 effective
             } else {
                 fresh.visible
@@ -241,6 +241,7 @@ pub(super) fn apply_float_from_tiled(
             window: from.to_owned(),
             float_rect: Some(effective),
         }),
+        super::observation::sample_cursor(),
     );
     let committed = reply.is_some();
     state.float_rects.insert(from.to_owned(), actual);
@@ -604,6 +605,7 @@ pub(super) fn apply_unfloat_to_tiled(
             window: from.to_owned(),
             float_rect,
         }),
+        super::observation::sample_cursor(),
     );
     let capacity_refloat = reply.as_ref().is_some_and(|reply| {
         matches!(

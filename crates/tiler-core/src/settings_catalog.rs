@@ -10,6 +10,7 @@
 
 use crate::admission::{AnchorFallback, NoSpaceResult};
 use crate::born_maximized::BornMaximized;
+use crate::cursor_targeting::{FreshPlacement, SwitchTarget};
 use crate::directional::SameAxisMove;
 use crate::output_selection::MigrationSourceRefill;
 use crate::size_hints::FixedSizePredicate;
@@ -69,6 +70,9 @@ pub const SECTION_MOVE: &str = "tiling.move";
 pub const SECTION_ADMISSION: &str = "tiling.admission";
 /// Migration refill section.
 pub const SECTION_MIGRATION_REFILL: &str = "tiling.migration-refill";
+/// Output-targeting section (workspace-switch target, fresh placement,
+/// focus-follows-cursor, cursor-warp).
+pub const SECTION_OUTPUT_TARGETING: &str = "tiling.output-targeting";
 /// Border section.
 pub const SECTION_BORDER: &str = "appearance.border";
 /// Underlay section.
@@ -108,6 +112,11 @@ pub const ALL_SECTIONS: &[SectionDef] = &[
         id: SECTION_MIGRATION_REFILL,
         tab: TAB_TILING_WORKSPACES,
         label: "Migration refill",
+    },
+    SectionDef {
+        id: SECTION_OUTPUT_TARGETING,
+        tab: TAB_TILING_WORKSPACES,
+        label: "Output targeting",
     },
     SectionDef {
         id: SECTION_BORDER,
@@ -258,6 +267,10 @@ pub const FIELD_UNDERLAY_COLOR: &str = "underlay.color";
 pub const FIELD_UNDERLAY_EXTENSION: &str = "underlay.extension";
 pub const FIELD_WORKSPACE_DEFAULT_TILED: &str = "workspace.default-tiled";
 pub const FIELD_WORKSPACE_MODE: &str = "workspace.mode";
+pub const FIELD_SWITCH_TARGET: &str = "output.switch-target";
+pub const FIELD_FRESH_PLACEMENT: &str = "output.fresh-placement";
+pub const FIELD_FOCUS_FOLLOWS_CURSOR: &str = "output.focus-follows-cursor";
+pub const FIELD_CURSOR_WARP: &str = "output.cursor-warp";
 
 // ---------------------------------------------------------------------------
 // Portable defaults and bounds (single source owned here)
@@ -399,6 +412,37 @@ pub const MIGRATION_REFILL_OPTIONS: [EnumOption; 2] = [
     },
 ];
 
+pub const SWITCH_TARGET_OPTIONS: [EnumOption; 2] = [
+    EnumOption {
+        token: SwitchTarget::Cursor.as_wire_str(),
+        label: "Cursor output",
+        tip: "COSMIC",
+    },
+    EnumOption {
+        token: SwitchTarget::Focused.as_wire_str(),
+        label: "Focused output",
+        tip: "i3, sway",
+    },
+];
+
+pub const FRESH_PLACEMENT_OPTIONS: [EnumOption; 3] = [
+    EnumOption {
+        token: FreshPlacement::CursorOutputMru.as_wire_str(),
+        label: "Cursor output, last-focused window",
+        tip: "COSMIC",
+    },
+    EnumOption {
+        token: FreshPlacement::CursorOutputCursorClosest.as_wire_str(),
+        label: "Cursor output, cursor-closest window",
+        tip: "Hyprland",
+    },
+    EnumOption {
+        token: FreshPlacement::FocusedOutputMru.as_wire_str(),
+        label: "Focused output, last-focused window",
+        tip: "i3, sway",
+    },
+];
+
 pub const WORKSPACE_MODE_OPTIONS: [EnumOption; 3] = [
     EnumOption {
         token: workspace_scope::WORKSPACE_MODE_TOKENS[0],
@@ -418,7 +462,7 @@ pub const WORKSPACE_MODE_OPTIONS: [EnumOption; 3] = [
 ];
 
 // ---------------------------------------------------------------------------
-// Portable field table (19 fields)
+// Portable field table (23 fields)
 // ---------------------------------------------------------------------------
 
 /// All portable fields in stable order.
@@ -592,6 +636,74 @@ pub const ALL_FIELDS: &[FieldDef] = &[
         timing_help: "Applies to subsequent migrations only; already-migrated workspaces keep their state.",
         capabilities: PORTABLE_CAPS,
         bounds_reason: "Closed token set; unknown tokens refuse instead of migrating.",
+    },
+    FieldDef {
+        id: FIELD_SWITCH_TARGET,
+        section: SECTION_OUTPUT_TARGETING,
+        label: "Workspace-switch target",
+        help: "Which output numbered, relative, previous and trailing selections act on: the cursor output or the focused window's output.",
+        field_type: FieldType::Enum,
+        default: SettingValue::Text(SwitchTarget::Cursor.as_wire_str()),
+        min_int: None,
+        max_int: None,
+        min_float: None,
+        max_float: None,
+        options: &SWITCH_TARGET_OPTIONS,
+        timing: Timing::NextAdmission,
+        timing_help: "Applies to subsequent selections only; retained views keep their state.",
+        capabilities: PORTABLE_CAPS,
+        bounds_reason: "Closed token set; unknown tokens refuse instead of migrating.",
+    },
+    FieldDef {
+        id: FIELD_FRESH_PLACEMENT,
+        section: SECTION_OUTPUT_TARGETING,
+        label: "New-window placement",
+        help: "Which output a newly opened window admits into and which anchor it splits: cursor output with its last-focused window, cursor output with the cursor-closest window, or focused output with its last-focused window.",
+        field_type: FieldType::Enum,
+        default: SettingValue::Text(FreshPlacement::CursorOutputMru.as_wire_str()),
+        min_int: None,
+        max_int: None,
+        min_float: None,
+        max_float: None,
+        options: &FRESH_PLACEMENT_OPTIONS,
+        timing: Timing::NextAdmission,
+        timing_help: "Applies to subsequent admissions only; admitted windows keep their state.",
+        capabilities: PORTABLE_CAPS,
+        bounds_reason: "Closed token set; unknown tokens refuse instead of migrating.",
+    },
+    FieldDef {
+        id: FIELD_FOCUS_FOLLOWS_CURSOR,
+        section: SECTION_OUTPUT_TARGETING,
+        label: "Focus follows cursor",
+        help: "Move keyboard focus when the cursor crosses into another window. Retained setting only; focus coupling actuation is later work.",
+        field_type: FieldType::Bool,
+        default: SettingValue::Bool(false),
+        min_int: None,
+        max_int: None,
+        min_float: None,
+        max_float: None,
+        options: &[],
+        timing: Timing::NextAdmission,
+        timing_help: "Retained now; focus coupling actuation is later work.",
+        capabilities: PORTABLE_CAPS,
+        bounds_reason: "Boolean field; no numeric bound.",
+    },
+    FieldDef {
+        id: FIELD_CURSOR_WARP,
+        section: SECTION_OUTPUT_TARGETING,
+        label: "Cursor warp",
+        help: "Move the cursor to follow focus. Retained setting only; warp actuation is later work.",
+        field_type: FieldType::Bool,
+        default: SettingValue::Bool(false),
+        min_int: None,
+        max_int: None,
+        min_float: None,
+        max_float: None,
+        options: &[],
+        timing: Timing::NextAdmission,
+        timing_help: "Retained now; warp actuation is later work.",
+        capabilities: PORTABLE_CAPS,
+        bounds_reason: "Boolean field; no numeric bound.",
     },
     FieldDef {
         id: FIELD_BORDER_ENABLED,
@@ -952,7 +1064,7 @@ mod tests {
             assert!(!field.timing_help.is_empty(), "{}", field.id);
             assert!(!field.bounds_reason.is_empty(), "{}", field.id);
         }
-        assert_eq!(ALL_FIELDS.len(), 19);
+        assert_eq!(ALL_FIELDS.len(), 23);
     }
 
     #[test]
@@ -1104,8 +1216,14 @@ mod tests {
             (FIELD_WORKSPACE_MODE, |token| {
                 workspace_scope::WORKSPACE_MODE_TOKENS.contains(&token)
             }),
+            (FIELD_SWITCH_TARGET, |token| {
+                SwitchTarget::parse_wire(token).is_some()
+            }),
+            (FIELD_FRESH_PLACEMENT, |token| {
+                FreshPlacement::parse_wire(token).is_some()
+            }),
         ];
-        assert_eq!(tables.len(), 7);
+        assert_eq!(tables.len(), 9);
         for (field_id, parses) in tables {
             let field = find_field(field_id).expect("enum field");
             assert!(!field.options.is_empty(), "{field_id}");

@@ -1,14 +1,69 @@
 #![forbid(unsafe_code)]
 use super::*;
+use std::collections::HashMap as SelectViewMap;
+use tiler_core::world_report::{TransferKind as SelectTransferKind, WorldReply as SelectReply};
 
-/// Native device key for the next world-routed history intent: the cached
-/// output when it is still live, else the first live area. Pure native
-/// topology; never rings or views.
-fn history_device(state: &TileLoop, areas: &[MonitorArea]) -> Option<String> {
-    if !state.active_output.is_empty() && areas.iter().any(|a| a.device == state.active_output) {
-        return Some(state.active_output.clone());
-    }
-    areas.first().map(|a| a.device.clone())
+/// Core-resolved select diagnostics for one applied select reply: the
+/// commanded output (native device key) plus the logical view there. The
+/// adapter passes no output for numbered/relative/previous/trailing
+/// selections, so only the core reply knows the target: prefer the output
+/// whose view changed and carries the retained view transfer, else the
+/// first changed view in wire order. `None` when no view moved (verified
+/// no-op) or the wire has no live device.
+pub(super) fn resolved_select_view(
+    state: &TileLoop,
+    before: &SelectViewMap<String, String>,
+    reply: &SelectReply,
+) -> Option<(String, String)> {
+    let mut changed: Vec<(String, String)> = reply
+        .outputs
+        .iter()
+        .filter_map(|out| {
+            let view = out.logical_view.clone()?;
+            (before.get(&out.output.0) != Some(&view)).then(|| (out.output.0.clone(), view))
+        })
+        .collect();
+    changed.sort();
+    changed
+        .iter()
+        .find(|(wire, _)| {
+            reply.transfers.iter().any(|transfer| {
+                matches!(transfer.kind, SelectTransferKind::View)
+                    && transfer.target_output.0 == *wire
+            })
+        })
+        .or_else(|| changed.first())
+        .cloned()
+        .and_then(|(wire, view)| state.device_of(&wire).map(|device| (device, view)))
+}
+
+/// Bounded select log line with an explicitly resolved output and view:
+/// same vocabulary as [`workspace_log`], but the values come from the
+/// applied core reply, never from the adapter output cache. `event` names
+/// the originating route (`workspace` or `workspace-history`).
+// Eight scalar log parts ride one call so every select site logs the same
+// vocabulary without rebuilding the JSON shape per call.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn select_resolved_log(
+    event: &str,
+    tick: u64,
+    device: &str,
+    view: &str,
+    op: &str,
+    index: u8,
+    edge: &str,
+    outcome: &'static str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "event": event,
+        "tick": tick,
+        "output": device,
+        "workspace": view,
+        "op": op,
+        "index": index,
+        "edge": edge,
+        "outcome": outcome,
+    })
 }
 
 /// Drain one bounded batch of workspace history intents through the world
@@ -91,59 +146,48 @@ pub(super) fn workspace_history_tick(
             );
             continue;
         }
-        let Some(device) = history_device(state, areas) else {
-            log_json_at(
-                &log_path,
-                serde_json::json!({
-                    "event": "workspace-history",
-                    "op": intent.op.as_str(),
-                    "edge": intent.edge.as_str(),
-                    "disposition": "consumed",
-                    "outcome": "unknown-output",
-                }),
-            );
-            continue;
-        };
-        let Some(wire) = state.output_tokens.get(&device).cloned() else {
-            log_json_at(
-                &log_path,
-                serde_json::json!({
-                    "event": "workspace-history",
-                    "tick": state.tick,
-                    "op": intent.op.as_str(),
-                    "edge": intent.edge.as_str(),
-                    "disposition": "consumed",
-                    "outcome": "unknown-output",
-                }),
-            );
-            continue;
-        };
-        let output = tiler_core::directional::OutputId(wire);
+        // The adapter selects no output: numbered/relative/previous/trailing
+        // resolve in core from the cursor-first switch target. Diagnostics
+        // below read the resolved target back from the applied reply.
+        let before = state.world.core_projections().2;
         let command = match intent.op {
             WorkspaceHistoryOp::Previous => {
-                tiler_core::world_report::WorldCommand::SelectPrevious { output }
+                tiler_core::world_report::WorldCommand::SelectPrevious { output: None }
             }
-            WorkspaceHistoryOp::Prev => {
-                tiler_core::world_report::WorldCommand::SelectRelative { output, delta: -1 }
-            }
-            WorkspaceHistoryOp::Next => {
-                tiler_core::world_report::WorldCommand::SelectRelative { output, delta: 1 }
-            }
+            WorkspaceHistoryOp::Prev => tiler_core::world_report::WorldCommand::SelectRelative {
+                output: None,
+                delta: -1,
+            },
+            WorkspaceHistoryOp::Next => tiler_core::world_report::WorldCommand::SelectRelative {
+                output: None,
+                delta: 1,
+            },
         };
         let op = intent.op.as_str();
         let edge = intent.edge;
         let tick = state.tick;
-        super::world_tick::observe_and_command(state, me, _store, _dir, fulls, areas, command);
-        let outcome: &'static str = if state.world.last_reply().is_some() {
-            state.tick += 1;
-            "ok"
-        } else {
-            "unverified"
+        let reply =
+            super::world_tick::observe_and_command(state, me, _store, _dir, fulls, areas, command);
+        let line = match reply.as_ref() {
+            Some(applied) => {
+                state.tick += 1;
+                match resolved_select_view(state, &before, applied) {
+                    Some((device, view)) => select_resolved_log(
+                        "workspace-history",
+                        tick,
+                        &device,
+                        &view,
+                        op,
+                        0,
+                        edge.as_str(),
+                        "ok",
+                    ),
+                    None => workspace_history_log(state, tick, op, edge.as_str(), "ok"),
+                }
+            }
+            None => workspace_history_log(state, tick, op, edge.as_str(), "unverified"),
         };
-        log_json_at(
-            &log_path,
-            workspace_history_log(state, tick, op, edge.as_str(), outcome),
-        );
+        log_json_at(&log_path, line);
     }
 }
 

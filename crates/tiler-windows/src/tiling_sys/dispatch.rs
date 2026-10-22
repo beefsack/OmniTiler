@@ -528,6 +528,7 @@ pub(super) fn dispatch_orientation_intent(
         tiler_core::world_report::WorldCommand::Operation(CoreCommand::ToggleOrientation {
             window: from.clone(),
         }),
+        super::observation::sample_cursor(),
     );
     let outcome = match reply {
         Some(reply) => {
@@ -813,6 +814,7 @@ fn sticky_rehome_to_current(
             target_workspace: current_ws.to_owned(),
             follow: false,
         },
+        super::observation::sample_cursor(),
     );
     let focus = match observed.iter().find(|w| w.hwnd == member_key.hwnd) {
         Some(expected) => retain_float_focus_validated(state, me, fulls, expected, member_key),
@@ -1103,7 +1105,16 @@ fn sticky_off_to_current(
                 // the window in place with no transfer.
                 let foreground = crate::ffi::foreground_window();
                 let reply = super::world_tick::run_observation_tick(
-                    state, me, store, dir, observed, retained, areas, foreground, fulls,
+                    state,
+                    me,
+                    store,
+                    dir,
+                    observed,
+                    retained,
+                    areas,
+                    foreground,
+                    fulls,
+                    super::observation::sample_cursor(),
                 );
                 let focus = match observed.iter().find(|w| w.hwnd == member_key.hwnd) {
                     Some(expected) => {

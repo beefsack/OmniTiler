@@ -583,6 +583,123 @@ pub fn cmd_send_output(options: &SendOutputOptions) -> Result<String> {
     Ok(serde_json::json!({"dispatched": true, "op": if options.follow { "follow" } else { "stay" }, "direction": options.direction, "route": "test-needed-tentative"}).to_string())
 }
 
+/// Test-needed exact-owner whole-workspace migration control for the normal
+/// `tile` loop only (tentative, pending user review; the product hook still
+/// filters injected chords, so synthetic input can never drive a migration).
+/// Mirrors `cmd_send_output` exactly: same-path medium caller, exact
+/// ledger-owner liveness, proof-owner refusal, and a bounded single-pending
+/// request file (`migrate-workspace.request`). The owner consumes the request
+/// once and dispatches through the real production migration route without
+/// changing the hook classifier. The CLI carries direction only, never an
+/// HWND.
+pub fn cmd_migrate_workspace(options: &MigrateWorkspaceOptions) -> Result<String> {
+    use crate::tiling::{
+        MIGRATE_WORKSPACE_REQUEST_VERSION, MigrateWorkspaceRequest,
+        render_migrate_workspace_request,
+    };
+    ensure_pm_v2()?;
+    let me = medium_caller()?;
+    // Like `cmd_stop`, the CLI itself may run from any shell; only the
+    // ledger owner liveness plus the same-path medium binding gate below.
+    let dir =
+        crate::native::ledger_directory().map_err(|e| err(format!("error: ledger dir: {e}")))?;
+    let ledger_text =
+        std::fs::read_to_string(dir.join(crate::storage::LEDGER_FILE_NAME)).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                err("refuse: no owner running")
+            } else {
+                err(format!("error: ledger read: {e}"))
+            }
+        })?;
+    let record: crate::model::RecoveryLedger =
+        crate::model::parse_ledger(&ledger_text).map_err(|_| err("refuse: corrupt ledger"))?;
+    // Same-path medium caller check, mirroring `cmd_stop`: SID, session, exe.
+    if me.user_sid != record.owner.user_sid || me.session_id != record.owner.session_id {
+        return Err(err("refuse: owner mismatch"));
+    }
+    let exe = crate::native::current_exe_path().map_err(|e| err(format!("error: exe {e}")))?;
+    if !exe_paths_equal(&exe, &record.owner.exe_path) {
+        return Err(err("refuse: owner mismatch"));
+    }
+    // Proof owners never serve the normal control: a proof audit marker for
+    // this exact owner creation proves proof mode (normal runs write none).
+    let audit = dir.join(format!(
+        "proof-audit-{}.jsonl",
+        record.owner.process_creation
+    ));
+    if audit.exists() {
+        return Err(err("refuse: proof owner"));
+    }
+    // The ledger owner must be exactly alive (full identity, no PID reuse).
+    let held = HeldProcess::open(record.owner.pid).map_err(|e| match e {
+        crate::native::IdentityError::Absent => err("refuse: owner not running"),
+        other => err(format!("error: owner {other}")),
+    })?;
+    let live = held.identity().map_err(|e| match e {
+        crate::native::IdentityError::Absent => err("refuse: owner not running"),
+        other => err(format!("error: owner {other}")),
+    })?;
+    if live != record.owner || !held.is_alive() {
+        return Err(err("refuse: owner not running"));
+    }
+    let rid = held
+        .integrity()
+        .map_err(|e| err(format!("error: target integrity {e}")))?;
+    if !is_medium_rid(rid) {
+        return Err(err(format!("refuse: target integrity {rid} is not medium")));
+    }
+    if !crate::tiling::resize_direction_valid(&options.direction) {
+        return Err(err(
+            "refuse: migrate-workspace direction must be left|right|up|down",
+        ));
+    }
+    let path = dir.join(MIGRATE_WORKSPACE_REQUEST_FILE);
+    if path.exists() {
+        return Err(err("refuse: migrate-workspace request pending"));
+    }
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(1);
+    let correlation = format!("cli-{}-{:x}", me.pid, nanos);
+    if tiler_core::ids::CorrelationId::parse(&correlation).is_none() {
+        return Err(err("error: correlation render"));
+    }
+    let request = MigrateWorkspaceRequest {
+        v: MIGRATE_WORKSPACE_REQUEST_VERSION,
+        creation: record.owner.process_creation.clone(),
+        pid: record.owner.pid,
+        exe_path: record.owner.exe_path.clone(),
+        user_sid: record.owner.user_sid.clone(),
+        session_id: record.owner.session_id,
+        direction: options.direction.clone(),
+        correlation: correlation.clone(),
+    };
+    let body = render_migrate_workspace_request(&request);
+    if body.is_empty() {
+        return Err(err("error: request render"));
+    }
+    // Bounded single-pending queue: the body is written and synced to a
+    // same-directory unique temp first and only then published atomically
+    // with no-overwrite semantics, so the owner never observes a partial
+    // body. A publish race against an already-queued request refuses.
+    match crate::storage::publish_no_overwrite(
+        &dir,
+        MIGRATE_WORKSPACE_REQUEST_FILE,
+        body.as_bytes(),
+        &correlation,
+    ) {
+        Ok(()) => {}
+        Err(crate::storage::PublishError::Pending) => {
+            return Err(err("refuse: migrate-workspace request pending"));
+        }
+        Err(crate::storage::PublishError::Io(e)) => {
+            return Err(err(format!("error: request write: {e}")));
+        }
+    }
+    Ok(serde_json::json!({"dispatched": true, "op": "migrate-workspace", "direction": options.direction, "route": "test-needed-tentative"}).to_string())
+}
+
 /// `capture` command: read-only frozen-allowlist capture of explicitly listed
 /// owned-helper windows only. Each `--hwnd` target is fully validated
 /// (owned-helper identity with lifetime tag, proof-mode eligibility, fresh

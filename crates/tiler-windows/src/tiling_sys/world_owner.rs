@@ -121,14 +121,17 @@ impl WorldOwner {
     }
 
     /// Run one diff pass for an accepted reply. Returns stats plus feedback
-    /// rows for the next report.
+    /// rows for the next report. Attempted frame writes append mechanical
+    /// rows to `frame_out` for the next report (stamped with `attempt_ms`).
     pub(super) fn apply_accepted(
         &mut self,
         reply: &WorldReply,
         fresh: &FreshHost,
         ops: &mut dyn super::world_diff::NativeOps,
+        frame_out: &mut Vec<tiler_core::world_report::FrameAttempt>,
+        attempt_ms: u64,
     ) -> (super::world_diff::ApplyStats, Vec<AttemptFeedback>) {
-        apply_world_reply(&mut self.diff, reply, fresh, ops)
+        apply_world_reply(&mut self.diff, reply, fresh, ops, frame_out, attempt_ms)
     }
 
     pub(super) fn last_reply(&self) -> Option<&WorldReply> {
@@ -145,6 +148,11 @@ impl WorldOwner {
         self.seq.note_feedback(feedback);
     }
 
+    /// Stage one mechanical frame attempt for the next report.
+    pub(super) fn note_frame_attempt(&mut self, attempt: tiler_core::world_report::FrameAttempt) {
+        self.seq.note_frame_attempt(attempt);
+    }
+
     /// No durable restoration ingress exists.
     /// Capture source-first and sequence one typed report. Read-only over
     /// the inputs; the seam (never `&TileLoop`) keeps the `&mut WorldOwner`
@@ -157,13 +165,22 @@ impl WorldOwner {
         retained: &[RetainedRow],
         areas: &[MonitorArea],
         foreground_hwnd: u64,
+        monotonic_ms: u64,
     ) -> Result<WorldReport, DispatchError> {
-        self.seq
-            .try_dispatch(inputs, observed, retained, areas, foreground_hwnd, None)
+        self.seq.try_dispatch(
+            inputs,
+            observed,
+            retained,
+            areas,
+            foreground_hwnd,
+            monotonic_ms,
+            None,
+        )
     }
 
     /// Capture plus one explicit command, refused while busy or during
     /// observation-only catch-up (caller dispatches the catch-up first).
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn try_dispatch_command(
         &mut self,
         inputs: &OwnerInputs<'_>,
@@ -171,6 +188,7 @@ impl WorldOwner {
         retained: &[RetainedRow],
         areas: &[MonitorArea],
         foreground_hwnd: u64,
+        monotonic_ms: u64,
         command: WorldCommand,
     ) -> Result<WorldReport, DispatchError> {
         self.seq.try_dispatch_with_command(
@@ -179,6 +197,7 @@ impl WorldOwner {
             retained,
             areas,
             foreground_hwnd,
+            monotonic_ms,
             command,
         )
     }

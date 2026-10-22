@@ -384,7 +384,7 @@ impl WorldEngine {
     /// screen's effective view (external moves adopted, newcomers placed).
     /// `None` when the window carries no fact on a known screen.
     pub(crate) fn logical_homing(
-        &self,
+        &mut self,
         report: &WorldReport,
         window: &WindowId,
     ) -> Option<DomainKey> {
@@ -542,6 +542,26 @@ impl WorldEngine {
                 workspace: WorkspaceId(observed.to_owned()),
             });
         }
+        // Fresh-placement routing for a truly new lifetime: no retained
+        // homing anywhere (members map plus every Engine session; sticky
+        // lifetimes never join the map) and no trusted receipt above. The
+        // bootstrap gate (`fresh_placement_armed_for`) keeps startup, restart,
+        // rebind, first observations, and post-gap inventory native.
+        // Restored intent lanes (floating, sticky, automatic-fixed,
+        // explicit tile wins) and unreadable facts keep native affinity:
+        // only a readable tiled candidate routes by policy.
+        if self.core_homing(window).is_none()
+            && !self.engine_knows_window(window)
+            && self.fresh_placement_armed_for(report)
+            && !fact.floating
+            && !fact.sticky
+            && !fact.fixed_auto
+            && !fact.fixed_suppress
+            && fact.rect.is_some()
+            && let Some(key) = self.resolve_fresh_key(report)
+        {
+            return Some(key);
+        }
         if let Some(key) = self.core_homing(window) {
             if key.output == fact.output {
                 return Some(key);
@@ -554,6 +574,112 @@ impl WorldEngine {
         }
         self.effective_view(&fact.output).map(|view| DomainKey {
             output: fact.output.clone(),
+            workspace: WorkspaceId(view),
+        })
+    }
+
+    /// Whether any retained Engine session knows this lifetime: tiled
+    /// membership, deferred exceptions (sticky/float/fullscreen), or
+    /// minimized slots. The members map alone cannot answer this: sticky
+    /// lifetimes never join it, so map absence alone would mistake them
+    /// for newcomers.
+    pub(crate) fn engine_knows_window(&self, window: &WindowId) -> bool {
+        self.engine.domain_keys().iter().any(|key| {
+            self.engine.session(key).is_some_and(|session| {
+                session
+                    .snapshot()
+                    .windows
+                    .iter()
+                    .any(|link| &link.window == window)
+                    || session.is_exception(window)
+                    || session
+                        .minimized_entries()
+                        .iter()
+                        .any(|(id, _, _)| id == window)
+            })
+        })
+    }
+
+    /// Cursor output for one report: the reported cursor position looked
+    /// up over the report's FULL screen rectangles. `None` when the
+    /// adapter could not read the cursor or the point falls outside every
+    /// known screen.
+    pub(crate) fn fresh_cursor_output(&self, report: &WorldReport) -> Option<OutputId> {
+        let _ = self;
+        let cursor = report.cursor?;
+        let screens: Vec<(OutputId, Rect)> = report
+            .screens
+            .iter()
+            .filter_map(|screen| screen.full_rect.map(|rect| (screen.output.clone(), rect)))
+            .collect();
+        crate::cursor_targeting::output_at_cursor(&screens, cursor)
+    }
+
+    /// Focused output for one report: the retained homing of the
+    /// adapter-observed focused lifetime; when the focused window has no
+    /// retained homing yet (a brand-new focused lifetime), its reported
+    /// fact output on a known screen (native truth, never a guess).
+    /// `None` when no focus is observed or the focused window is unknown
+    /// on every known screen.
+    pub(crate) fn focused_output(&self, report: &WorldReport) -> Option<OutputId> {
+        if report.focused_global.is_empty() {
+            return None;
+        }
+        if let Some(key) = self.core_homing(&WindowId(report.focused_global.clone())) {
+            return Some(key.output);
+        }
+        let fact = report
+            .windows
+            .iter()
+            .find(|fact| fact.window.0 == report.focused_global)?;
+        if report
+            .screens
+            .iter()
+            .any(|screen| screen.output == fact.output)
+        {
+            return Some(fact.output.clone());
+        }
+        None
+    }
+
+    /// Report outputs primary-first for the safe fallback chain.
+    pub(crate) fn primary_first_outputs(&self, report: &WorldReport) -> Vec<OutputId> {
+        let _ = self;
+        report
+            .screens
+            .iter()
+            .filter(|screen| screen.primary)
+            .map(|screen| screen.output.clone())
+            .chain(
+                report
+                    .screens
+                    .iter()
+                    .filter(|screen| !screen.primary)
+                    .map(|screen| screen.output.clone()),
+            )
+            .collect()
+    }
+
+    /// Fresh-placement target domain for a truly new lifetime: the policy
+    /// output (cursor or focused facts plus retained last-known focus and
+    /// primary/first fallback) paired with that output's current view.
+    /// `None` when no output resolves or
+    /// the resolved output owns no ring: the caller falls back to native
+    /// affinity instead of inventing focus.
+    pub(crate) fn resolve_fresh_key(&mut self, report: &WorldReport) -> Option<DomainKey> {
+        let cursor_output = self.fresh_cursor_output(report);
+        let (focused_output, trace) = self.fresh_focused_output(report);
+        self.fresh_focus.trace = trace;
+        let primary_first = self.primary_first_outputs(report);
+        let output = crate::cursor_targeting::resolve_fresh_output(
+            report.fresh_placement,
+            cursor_output.as_ref(),
+            focused_output.as_ref(),
+            &primary_first,
+        )?;
+        let view = self.effective_view(&output)?;
+        Some(DomainKey {
+            output,
             workspace: WorkspaceId(view),
         })
     }

@@ -29,7 +29,9 @@
 //! {v:2, owner, adapter, gen, obs:"u64", reqSeq:"u64", req, cmdSeq:"u64"|null,
 //!  command:{op,...}|null, screens, windows, views, closed,
 //!  hostOwned:bool, equalCount:bool, native, predicate, refill,
-//!  defaultTiled:bool, focused:""|id, complete:bool, gesture:bool, feedback}
+//!  defaultTiled:bool, focused:""|id, complete:bool, gesture:bool,
+//!  switchTarget, freshPlacement, cursor:[x,y]|null,
+//!  focusFollowsCursor:bool, cursorWarp:bool, feedback}
 //! (plus optional tolerant D2/D3 settings: anchorFallback, noSpaceResult;
 //!  missing or invalid values backfill the defaults)
 //! screens[]: {out, full:[x,y,w,h]|null, work:[x,y,w,h]|null, gap, outer,
@@ -48,15 +50,30 @@
 //!   (optional, tolerant: missing or invalid backfills the default)
 //! noSpaceResult: "float"|"allow-overlap"
 //!   (optional, tolerant: missing or invalid backfills the default)
+//! switchTarget: "cursor-output"|"focused-output" (strict: unknown refuses)
+//! freshPlacement: "cursor-output-last-focused"|"cursor-output-cursor-closest"|"focused-output-last-focused"
+//!   (strict: unknown refuses)
+//! cursor: [x,y] in adapter units (FULL-rect space) or null when unreadable
+//! focusFollowsCursor/cursorWarp: bool (retained settings; stage-4 actuation)
 //! feedback[]: {op, kind:transfer|view|creation|effect|property,
 //!              outcome:unattempted|possibly-executed|refused-proven|
 //!                      superseded-external|applied, hold:""|token}
+//! monotonicMs: "u64" adapter monotonic milliseconds, arbitrary process
+//!   epoch, never wall-clock (optional, tolerant: missing backfills 0 =
+//!   unreported, which never suppresses the transient lane)
+//! frameAttempts[] (optional, tolerant: missing backfills []):
+//!   {win, target:[x,y,w,h], setter:accepted|refused|threw,
+//!    readback:[x,y,w,h]|null, dpiBefore:number|null, dpiAfter:number|null,
+//!    attemptMs:"u64"} - mechanical write/readback facts only, never a
+//!   policy verdict; at most one entry per window
 //! command.op: focus|send|switch-view|select-workspace|select-numbered|
 //!   select-relative|select-previous|select-trailing|send-relative|
 //!   send-numbered|set-workspace-tiling|
 //!   migrate-workspace|focus-directional|move-directional|send-directional|
 //!   migrate-directional|operation (fields per variant, see decode; every
-//!   `ws` field names a stable core logical workspace id)
+//!   `ws` field names a stable core logical workspace id; the four
+//!   selection commands carry `"out":null` for core-resolved output or an
+//!   opaque id for a genuinely semantic explicit output)
 //! ```
 //!
 //! Reply keys are exactly the core canonical reply encoding (`v`, `adapter`,
@@ -375,6 +392,15 @@ fn parse_attempt_outcome(text: &str) -> Result<AttemptOutcome> {
     }
 }
 
+fn parse_frame_setter(text: &str) -> Result<tiler_core::world_report::FrameSetter> {
+    match text {
+        "accepted" => Ok(tiler_core::world_report::FrameSetter::Accepted),
+        "refused" => Ok(tiler_core::world_report::FrameSetter::Refused),
+        "threw" => Ok(tiler_core::world_report::FrameSetter::Threw),
+        _ => Err(unknown_value()),
+    }
+}
+
 fn parse_direction_token(text: &str) -> Result<String> {
     match text {
         "left" | "right" | "up" | "down" => Ok(text.to_owned()),
@@ -419,6 +445,40 @@ fn opt_id_or_null(
             Ok(Some(text.to_owned()))
         }
         Some(_) => Err(unknown_value()),
+    }
+}
+
+/// Nullable cursor point: `null` when the adapter could not read it, else
+/// an exact `[x, y]` pair of carried-geometry integers in adapter units
+/// (the same space as screen FULL rectangles and fact frames).
+fn opt_point_or_null(
+    map: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Result<Option<(i32, i32)>> {
+    match map.get(key) {
+        None => Err(malformed()),
+        Some(serde_json::Value::Null) => Ok(None),
+        Some(value) => {
+            let items = value.as_array().ok_or_else(malformed)?;
+            if items.len() != 2 {
+                return Err(malformed());
+            }
+            let mut nums = [0i32; 2];
+            for (i, item) in items.iter().enumerate() {
+                nums[i] = item
+                    .as_i64()
+                    .and_then(|v| i32::try_from(v).ok())
+                    .ok_or_else(malformed)?;
+            }
+            if !(-tiler_core::bounds::GEOMETRY_BOUND..=tiler_core::bounds::GEOMETRY_BOUND)
+                .contains(&nums[0])
+                || !(-tiler_core::bounds::GEOMETRY_BOUND..=tiler_core::bounds::GEOMETRY_BOUND)
+                    .contains(&nums[1])
+            {
+                return Err(unknown_value());
+            }
+            Ok(Some((nums[0], nums[1])))
+        }
     }
 }
 
@@ -544,6 +604,49 @@ fn decode_feedback(value: &serde_json::Value) -> Result<AttemptFeedback> {
         kind: parse_attempt_kind(req_str(map, "kind")?)?,
         outcome: parse_attempt_outcome(req_str(map, "outcome")?)?,
         hold: parse_hold_token(req_str(map, "hold")?)?,
+    })
+}
+
+fn opt_u32_or_null(
+    map: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Result<Option<u32>> {
+    match map.get(key) {
+        None => Err(malformed()),
+        Some(serde_json::Value::Null) => Ok(None),
+        Some(value) => value
+            .as_i64()
+            .and_then(|v| u32::try_from(v).ok())
+            .map(Some)
+            .ok_or_else(malformed),
+    }
+}
+
+fn decode_frame_attempt(
+    value: &serde_json::Value,
+) -> Result<tiler_core::world_report::FrameAttempt> {
+    let map = as_object(value)?;
+    check_keys(
+        map,
+        &[
+            "win",
+            "target",
+            "setter",
+            "readback",
+            "dpiBefore",
+            "dpiAfter",
+            "attemptMs",
+        ],
+    )?;
+    let target_value = map.get("target").ok_or_else(malformed)?;
+    Ok(tiler_core::world_report::FrameAttempt {
+        window: WindowId(req_id(map, "win")?),
+        target: req_rect_value(target_value)?,
+        setter: parse_frame_setter(req_str(map, "setter")?)?,
+        readback: opt_rect_or_null(map, "readback")?,
+        dpi_before: opt_u32_or_null(map, "dpiBefore")?,
+        dpi_after: opt_u32_or_null(map, "dpiAfter")?,
+        attempt_ms: req_u64_str(map, "attemptMs")?,
     })
 }
 
@@ -838,10 +941,11 @@ fn decode_command(value: &serde_json::Value) -> Result<WorldCommand> {
             if !(1..=9).contains(&index) {
                 return Err(unknown_value());
             }
-            Ok(WorldCommand::SelectNumbered {
-                output: OutputId(req_id(map, "out")?),
-                index,
-            })
+            // `null` resolves the output in core from the cursor-first
+            // switch target; an opaque id names a genuinely semantic
+            // explicit output.
+            let output = opt_id_or_null(map, "out")?.map(OutputId);
+            Ok(WorldCommand::SelectNumbered { output, index })
         }
         "select-relative" => {
             check_keys(map, &["op", "out", "delta"])?;
@@ -853,22 +957,18 @@ fn decode_command(value: &serde_json::Value) -> Result<WorldCommand> {
             if delta != -1 && delta != 1 {
                 return Err(unknown_value());
             }
-            Ok(WorldCommand::SelectRelative {
-                output: OutputId(req_id(map, "out")?),
-                delta,
-            })
+            let output = opt_id_or_null(map, "out")?.map(OutputId);
+            Ok(WorldCommand::SelectRelative { output, delta })
         }
         "select-previous" => {
             check_keys(map, &["op", "out"])?;
-            Ok(WorldCommand::SelectPrevious {
-                output: OutputId(req_id(map, "out")?),
-            })
+            let output = opt_id_or_null(map, "out")?.map(OutputId);
+            Ok(WorldCommand::SelectPrevious { output })
         }
         "select-trailing" => {
             check_keys(map, &["op", "out"])?;
-            Ok(WorldCommand::SelectTrailing {
-                output: OutputId(req_id(map, "out")?),
-            })
+            let output = opt_id_or_null(map, "out")?.map(OutputId);
+            Ok(WorldCommand::SelectTrailing { output })
         }
         "send-relative" => {
             check_keys(map, &["op", "win", "out", "delta", "follow"])?;
@@ -1010,8 +1110,18 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
             "complete",
             "gesture",
             "feedback",
+            "switchTarget",
+            "freshPlacement",
+            "cursor",
+            "focusFollowsCursor",
+            "cursorWarp",
         ],
-        &["anchorFallback", "noSpaceResult"],
+        &[
+            "anchorFallback",
+            "noSpaceResult",
+            "monotonicMs",
+            "frameAttempts",
+        ],
     )?;
     let version = map
         .get("v")
@@ -1062,11 +1172,39 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
     for item in feedback_value.as_array().ok_or_else(malformed)? {
         feedback.push(decode_feedback(item)?);
     }
+    // Tolerant monotonic clock: missing backfills 0 (unreported, never
+    // suppresses the transient lane). A present value must be a canonical
+    // decimal string like every other counter; JSON numbers refuse.
+    let monotonic_ms = match map.get("monotonicMs") {
+        None => 0,
+        Some(serde_json::Value::String(text)) => {
+            parse_u64_decimal(text).ok_or_else(unknown_value)?
+        }
+        Some(_) => return Err(unknown_value()),
+    };
+    // Tolerant frame attempts: missing backfills empty. Present entries
+    // carry the exact mechanical shape; unknown fields/values refuse.
+    let mut frames = Vec::new();
+    if let Some(frames_value) = map.get("frameAttempts") {
+        for item in frames_value.as_array().ok_or_else(malformed)? {
+            frames.push(decode_frame_attempt(item)?);
+        }
+    }
     let predicate =
         tiler_core::size_hints::FixedSizePredicate::parse_wire(req_str(map, "predicate")?)
             .ok_or_else(unknown_value)?;
     let refill =
         tiler_core::output_selection::MigrationSourceRefill::parse_wire(req_str(map, "refill")?)
+            .ok_or_else(unknown_value)?;
+    // Cursor-first targeting (strict, no tolerant backfill): unknown
+    // tokens refuse like the predicate/refill above, so an adapter that
+    // predates these keys fails loudly instead of silently running the
+    // wrong targeting policy.
+    let switch_target =
+        tiler_core::cursor_targeting::SwitchTarget::parse_wire(req_str(map, "switchTarget")?)
+            .ok_or_else(unknown_value)?;
+    let fresh_placement =
+        tiler_core::cursor_targeting::FreshPlacement::parse_wire(req_str(map, "freshPlacement")?)
             .ok_or_else(unknown_value)?;
     // Tolerant D2/D3 capacity settings: missing, non-string, or invalid
     // tokens backfill the defaults (never refuse old adapters or typos).
@@ -1109,6 +1247,11 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
         migration_source_refill: refill,
         anchor_fallback,
         no_space_result,
+        switch_target,
+        fresh_placement,
+        cursor: opt_point_or_null(map, "cursor")?,
+        focus_follows_cursor: req_bool(map, "focusFollowsCursor")?,
+        cursor_warp: req_bool(map, "cursorWarp")?,
         default_tiled: req_bool(map, "defaultTiled")?,
         focused_global: {
             let text = req_str(map, "focused")?;
@@ -1120,6 +1263,8 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
         inventory_complete: req_bool(map, "complete")?,
         gesture_barrier: req_bool(map, "gesture")?,
         feedback,
+        monotonic_ms,
+        frames,
     };
     if let Some(reason) = validate_report_reason(&report) {
         return Err(WorldProtocolError {

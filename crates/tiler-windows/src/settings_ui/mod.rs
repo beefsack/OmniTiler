@@ -118,6 +118,13 @@ pub const ID_GAMING_OPEN_APP: u32 = 147;
 pub const ID_GAMING_RECHECK: u32 = 148;
 pub const ID_TABS: u32 = 150;
 pub const ID_TAB_BADGE: u32 = 151;
+/// Stage 2c cursor-first targeting radios: workspace-switch target pair.
+pub const ID_SWITCH_CURSOR: u32 = 157;
+pub const ID_SWITCH_FOCUSED: u32 = 158;
+/// Stage 2c fresh-window placement radios.
+pub const ID_PLACE_CURSOR_MRU: u32 = 159;
+pub const ID_PLACE_CURSOR_CLOSEST: u32 = 160;
+pub const ID_PLACE_FOCUSED_MRU: u32 = 161;
 
 pub(crate) const GAMING_TIMER_ID: usize = 1;
 pub(crate) const GAMING_TIMER_MS: u32 = 1000;
@@ -134,7 +141,7 @@ pub(crate) struct App {
     pub(crate) work: Settings,
     pub(crate) selected: Option<usize>,
     pub(crate) invalid: Option<String>,
-    pub(crate) tip_text: [Vec<u16>; 13],
+    pub(crate) tip_text: [Vec<u16>; 18],
     pub(crate) gaming: crate::gaming::GamingMonitor,
     pub(crate) gaming_generation: u64,
     pub(crate) current_tab: usize,
@@ -322,6 +329,11 @@ fn on_command(app: &mut App, id: u32, notify: u32) -> bool {
         | ID_ANCHOR_NO_SEARCH
         | ID_NO_SPACE_FLOAT
         | ID_NO_SPACE_OVERLAP
+        | ID_SWITCH_CURSOR
+        | ID_SWITCH_FOCUSED
+        | ID_PLACE_CURSOR_MRU
+        | ID_PLACE_CURSOR_CLOSEST
+        | ID_PLACE_FOCUSED_MRU
         | ID_WORKSPACE_MODE_LOCAL
         | ID_WORKSPACE_MODE_GLOBAL
         | ID_WORKSPACE_MODE_SHARED => {
@@ -522,6 +534,9 @@ pub fn cmd_settings() -> Result<String, DynError> {
             | ID_ANCHOR_CLOSEST
             | ID_ANCHOR_NO_SEARCH
             | ID_NO_SPACE_OVERLAP
+            | ID_SWITCH_FOCUSED
+            | ID_PLACE_CURSOR_CLOSEST
+            | ID_PLACE_FOCUSED_MRU
             | ID_WORKSPACE_MODE_GLOBAL
             | ID_WORKSPACE_MODE_SHARED => {
                 return radio | tab;

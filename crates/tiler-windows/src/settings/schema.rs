@@ -369,6 +369,96 @@ fn default_workspace_mode() -> String {
         .to_owned()
 }
 
+/// Cursor-first workspace-switch target wire values (stage 2c, exact
+/// tokens only: no aliases, no migration; unknown or mistyped values
+/// refuse through the existing invalid-file/last-good path).
+/// Single source: the shared portable catalog and core enum.
+pub const SWITCH_TARGET_CURSOR: &str =
+    tiler_core::cursor_targeting::SwitchTarget::Cursor.as_wire_str();
+/// Focused-output alternative wire value.
+pub const SWITCH_TARGET_FOCUSED: &str =
+    tiler_core::cursor_targeting::SwitchTarget::Focused.as_wire_str();
+/// Functional label for the default (catalog parity).
+pub const SWITCH_TARGET_CURSOR_LABEL: &str = catalog::SWITCH_TARGET_OPTIONS[0].label;
+/// Reference WM named by the default's tooltip (catalog parity: never a setting id).
+pub const SWITCH_TARGET_CURSOR_TIP: &str = catalog::SWITCH_TARGET_OPTIONS[0].tip;
+/// Functional label for the focused-output alternative.
+pub const SWITCH_TARGET_FOCUSED_LABEL: &str = catalog::SWITCH_TARGET_OPTIONS[1].label;
+/// Reference WMs named by the alternative's tooltip.
+pub const SWITCH_TARGET_FOCUSED_TIP: &str = catalog::SWITCH_TARGET_OPTIONS[1].tip;
+
+/// Fresh-window placement wire values (stage 2c, exact tokens only: no
+/// aliases, no migration; unknown or mistyped values refuse through the
+/// existing invalid-file/last-good path).
+/// Single source: the shared portable catalog and core enum.
+pub const FRESH_PLACEMENT_CURSOR_MRU: &str =
+    tiler_core::cursor_targeting::FreshPlacement::CursorOutputMru.as_wire_str();
+/// Cursor-output cursor-closest alternative wire value.
+pub const FRESH_PLACEMENT_CURSOR_CLOSEST: &str =
+    tiler_core::cursor_targeting::FreshPlacement::CursorOutputCursorClosest.as_wire_str();
+/// Focused-output alternative wire value.
+pub const FRESH_PLACEMENT_FOCUSED_MRU: &str =
+    tiler_core::cursor_targeting::FreshPlacement::FocusedOutputMru.as_wire_str();
+/// Functional label for the default (catalog parity).
+pub const FRESH_PLACEMENT_CURSOR_MRU_LABEL: &str = catalog::FRESH_PLACEMENT_OPTIONS[0].label;
+/// Reference WM named by the default's tooltip (catalog parity).
+pub const FRESH_PLACEMENT_CURSOR_MRU_TIP: &str = catalog::FRESH_PLACEMENT_OPTIONS[0].tip;
+/// Functional label for the cursor-closest alternative.
+pub const FRESH_PLACEMENT_CURSOR_CLOSEST_LABEL: &str = catalog::FRESH_PLACEMENT_OPTIONS[1].label;
+/// Reference WM named by the alternative's tooltip.
+pub const FRESH_PLACEMENT_CURSOR_CLOSEST_TIP: &str = catalog::FRESH_PLACEMENT_OPTIONS[1].tip;
+/// Functional label for the focused-output alternative.
+pub const FRESH_PLACEMENT_FOCUSED_MRU_LABEL: &str = catalog::FRESH_PLACEMENT_OPTIONS[2].label;
+/// Reference WMs named by the alternative's tooltip.
+pub const FRESH_PLACEMENT_FOCUSED_MRU_TIP: &str = catalog::FRESH_PLACEMENT_OPTIONS[2].tip;
+
+/// Stage 2c two-choice control rows: `(wire token, functional label, WM note)`.
+#[must_use]
+pub const fn switch_target_options() -> [(&'static str, &'static str, &'static str); 2] {
+    [
+        (
+            SWITCH_TARGET_CURSOR,
+            SWITCH_TARGET_CURSOR_LABEL,
+            SWITCH_TARGET_CURSOR_TIP,
+        ),
+        (
+            SWITCH_TARGET_FOCUSED,
+            SWITCH_TARGET_FOCUSED_LABEL,
+            SWITCH_TARGET_FOCUSED_TIP,
+        ),
+    ]
+}
+
+fn default_switch_target() -> String {
+    SWITCH_TARGET_CURSOR.to_owned()
+}
+
+/// Stage 2c three-choice control rows: `(wire token, functional label, WM note)`.
+#[must_use]
+pub const fn fresh_placement_options() -> [(&'static str, &'static str, &'static str); 3] {
+    [
+        (
+            FRESH_PLACEMENT_CURSOR_MRU,
+            FRESH_PLACEMENT_CURSOR_MRU_LABEL,
+            FRESH_PLACEMENT_CURSOR_MRU_TIP,
+        ),
+        (
+            FRESH_PLACEMENT_CURSOR_CLOSEST,
+            FRESH_PLACEMENT_CURSOR_CLOSEST_LABEL,
+            FRESH_PLACEMENT_CURSOR_CLOSEST_TIP,
+        ),
+        (
+            FRESH_PLACEMENT_FOCUSED_MRU,
+            FRESH_PLACEMENT_FOCUSED_MRU_LABEL,
+            FRESH_PLACEMENT_FOCUSED_MRU_TIP,
+        ),
+    ]
+}
+
+fn default_fresh_placement() -> String {
+    FRESH_PLACEMENT_CURSOR_MRU.to_owned()
+}
+
 /// Core tiling/visual/takeover settings. All values are validated on load
 /// and on save; out-of-range values refuse instead of clamping.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -415,6 +505,29 @@ pub struct CoreSettings {
     /// subsequent migrations only, never to an already-migrated workspace.
     #[serde(default = "default_migration_source_refill")]
     pub migration_source_refill: String,
+    /// Stage 2c workspace-switch target. Additive schema-v1 field: a
+    /// missing value defaults to [`SWITCH_TARGET_CURSOR`]; any other value
+    /// besides the two exact tokens refuses in [`validate_settings`].
+    /// Changes apply to subsequent selections only, never to retained views.
+    #[serde(default = "default_switch_target")]
+    pub switch_target: String,
+    /// Stage 2c fresh-window placement. Additive schema-v1 field: a
+    /// missing value defaults to [`FRESH_PLACEMENT_CURSOR_MRU`]; any other
+    /// value besides the three exact tokens refuses in [`validate_settings`].
+    /// Changes apply to subsequent fresh admissions only: never moves existing
+    /// members and never reflows, retries, or reclassifies retained state.
+    #[serde(default = "default_fresh_placement")]
+    pub fresh_placement: String,
+    /// Stage 2c focus-follows-cursor. Additive schema-v1 field: missing
+    /// defaults off. Retained and reported only; no focus actuation lives
+    /// behind it until stage 4.
+    #[serde(default)]
+    pub focus_follows_cursor: bool,
+    /// Stage 2c cursor-warp. Additive schema-v1 field: missing defaults
+    /// off. Retained and reported only; no warp actuation lives behind it
+    /// until stage 4.
+    #[serde(default)]
+    pub cursor_warp: bool,
     #[serde(default)]
     pub border: BorderSettings,
     #[serde(default)]
@@ -451,6 +564,10 @@ impl Default for CoreSettings {
             anchor_fallback: default_anchor_fallback(),
             no_space_result: default_no_space(),
             migration_source_refill: default_migration_source_refill(),
+            switch_target: default_switch_target(),
+            fresh_placement: default_fresh_placement(),
+            focus_follows_cursor: false,
+            cursor_warp: false,
             border: BorderSettings::default(),
             underlay: UnderlaySettings::default(),
             keyboard: KeyboardSettings::default(),
@@ -542,6 +659,30 @@ impl CoreSettings {
             &self.migration_source_refill,
         )
         .unwrap_or_default()
+    }
+
+    /// Typed stage 2c switch-target mode for subsequent selections.
+    /// Shared policy only: the exact tokens parse through
+    /// [`tiler_core::cursor_targeting::SwitchTarget::parse_wire`]. Live
+    /// settings are always validated, so the fallback only covers hand-built
+    /// defaults; invalid files never become live (they keep last-good
+    /// instead).
+    #[must_use]
+    pub fn switch_target_mode(&self) -> tiler_core::cursor_targeting::SwitchTarget {
+        tiler_core::cursor_targeting::SwitchTarget::parse_wire(&self.switch_target)
+            .unwrap_or_default()
+    }
+
+    /// Typed stage 2c fresh-placement mode for subsequent fresh admissions.
+    /// Shared policy only: the exact tokens parse through
+    /// [`tiler_core::cursor_targeting::FreshPlacement::parse_wire`]. Live
+    /// settings are always validated, so the fallback only covers hand-built
+    /// defaults; invalid files never become live (they keep last-good
+    /// instead).
+    #[must_use]
+    pub fn fresh_placement_mode(&self) -> tiler_core::cursor_targeting::FreshPlacement {
+        tiler_core::cursor_targeting::FreshPlacement::parse_wire(&self.fresh_placement)
+            .unwrap_or_default()
     }
 }
 

@@ -30,6 +30,7 @@ fn real_main() -> Result<(), (i32, String)> {
   resize --direction (left|right|up|down) --mode (outwards|inwards)  test-needed exact-owner keyboard-resize control for the normal tile loop only, tentative pending user review (queues one bounded request; the owner resolves the live foreground as the subject and dispatches through the real keyboard_tick resize arm with all production fences and the repeat tracker; proof owners refuse; synthetic input can never drive a resize)
   directional (--move|--focus) --direction (left|right|up|down)  test-needed exact-owner directional move/focus control for the normal tile loop only, tentative pending user review (queues one bounded request; the owner resolves the live foreground as the subject and dispatches through the real keyboard_tick directional arm with production fences, keyboard takeover not required; proof owners refuse; injected keyboard filtering unchanged)
   send-output (--follow|--stay) --direction (left|right|up|down)  test-needed exact-owner explicit output-send control for the normal tile loop only, tentative pending user review (queues one bounded request; the owner resolves the live foreground as the subject and dispatches through the real SendToOutput production route with production fences, keyboard takeover not required; proof owners refuse; injected keyboard filtering unchanged)
+  migrate-workspace --direction (left|right|up|down)  test-needed exact-owner whole-workspace migration control for the normal tile loop only, tentative pending user review (queues one bounded request; the owner dispatches through the real MigrateDirectional production route with production fences, keyboard takeover not required; proof owners refuse; injected keyboard filtering unchanged)
   settings  open the native settings window (gaps, border, underlay, takeover, shortcuts with authentic/compatible presets; Apply validates and saves, Revert discards edits, Close never applies)\n  capture --out PATH --hwnd HWND [--hwnd HWND ...]  read-only frozen-allowlist capture of explicitly listed owned helpers\n  inventory  read-only top-level window list for selecting capture targets (no titles)\n  children --hwnd HWND [--hwnd HWND ...]  read-only child-window report with verified process identity (no titles)\n  inspect --allowlist PATH  read-only fresh-state report for exactly the frozen allowlist (no titles)\n  border-inspect  read-only report of the running owner's process-owned border overlay (geometry/visibility only; no titles, no content, no screen capture)\n             underlay-inspect  read-only report of the running owner's process-owned group-underlay fill
            (geometry/visibility only; no titles, no content, no screen capture)\n  preview-inspect  read-only report of the running owner's
            process-owned drop-preview fill (geometry/visibility only; no titles, no content, no screen capture)"
@@ -124,6 +125,14 @@ fn real_main() -> Result<(), (i32, String)> {
                 .map_err(|message| (2, message))?;
             tiler_windows::tiling_sys::cmd_send_output(&options).map_err(|e| (1, e.to_string()))?
         }
+        "migrate-workspace" => {
+            let options = tiler_windows::tiling::parse_migrate_workspace_args(rest)
+                .map_err(|message| (2, message))?;
+            tiler_windows::tiling::verify_migrate_workspace_argv_consistency(rest, &options)
+                .map_err(|message| (2, message))?;
+            tiler_windows::tiling_sys::cmd_migrate_workspace(&options)
+                .map_err(|e| (1, e.to_string()))?
+        }
         "hide-proof" => {
             let options = tiler_windows::tiling::parse_hide_proof_args(rest)
                 .map_err(|message| (2, message))?;
@@ -189,7 +198,7 @@ fn real_main() -> Result<(), (i32, String)> {
         _ => {
             return Err((
                 2,
-                "usage: tiler-windows identity|run --seconds N [--trace] [--hide HWND]|ready|restore|stop|emergency-stop|watch-owner --pid PID --creation HEX|tile --user-start [--seconds N] [--trace] [--no-keyboard-snap-takeover] [--allow-win-l] [--no-mouse-snap-prevention] [--inner-gap N] [--outer-gap N] [--scope-exe NAME ...] [--scope-host-child HOST=CHILD ...]|tile-proof --allowlist PATH [--seconds N] [--trace]|shortcut-proof --allowlist PATH [--seconds N] [--trace] [--no-mouse-snap-prevention]|workspace-proof --allowlist PATH [--seconds N] [--trace] [--no-mouse-snap-prevention]|workspace (--select|--send) INDEX|resize --direction DIR --mode MODE|directional (--move|--focus) --direction DIR|send-output (--follow|--stay) --direction DIR|hide-proof --allowlist PATH [--seconds N] [--trace]|capture --out PATH --hwnd HWND|inventory|children --hwnd HWND|inspect --allowlist            PATH|border-inspect|underlay-inspect|preview-inspect|settings"
+                "usage: tiler-windows identity|run --seconds N [--trace] [--hide HWND]|ready|restore|stop|emergency-stop|watch-owner --pid PID --creation HEX|tile --user-start [--seconds N] [--trace] [--no-keyboard-snap-takeover] [--allow-win-l] [--no-mouse-snap-prevention] [--inner-gap N] [--outer-gap N] [--scope-exe NAME ...] [--scope-host-child HOST=CHILD ...]|tile-proof --allowlist PATH [--seconds N] [--trace]|shortcut-proof --allowlist PATH [--seconds N] [--trace] [--no-mouse-snap-prevention]|workspace-proof --allowlist PATH [--seconds N] [--trace] [--no-mouse-snap-prevention]|workspace (--select|--send) INDEX|resize --direction DIR --mode MODE|directional (--move|--focus) --direction DIR|send-output (--follow|--stay) --direction DIR|migrate-workspace --direction DIR|hide-proof --allowlist PATH [--seconds N] [--trace]|capture --out PATH --hwnd HWND|inventory|children --hwnd HWND|inspect --allowlist            PATH|border-inspect|underlay-inspect|preview-inspect|settings"
                     .to_owned(),
             ));
         }

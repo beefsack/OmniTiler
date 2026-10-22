@@ -4,20 +4,23 @@
 
 use super::choice::{
     anchor_fallback_selected, anchor_fallback_tip_texts, apply_anchor_fallback_selection,
-    apply_born_maximized_selection, apply_fixed_size_selection, apply_migration_refill_selection,
-    apply_no_space_selection, apply_same_axis_selection, apply_workspace_mode_selection,
-    born_maximized_tip_texts, born_overlay_selected, choice_tip_texts, fixed_size_either_selected,
-    fixed_size_tip_texts, migration_refill_mru_selected, migration_refill_tip_texts,
-    no_space_overlap_selected, no_space_tip_texts, same_axis_swap_selected, same_axis_tip_texts,
+    apply_born_maximized_selection, apply_fixed_size_selection, apply_fresh_placement_selection,
+    apply_migration_refill_selection, apply_no_space_selection, apply_same_axis_selection,
+    apply_switch_target_selection, apply_workspace_mode_selection, born_maximized_tip_texts,
+    born_overlay_selected, choice_tip_texts, fixed_size_either_selected, fixed_size_tip_texts,
+    fresh_placement_selected, fresh_placement_tip_texts, migration_refill_mru_selected,
+    migration_refill_tip_texts, no_space_overlap_selected, no_space_tip_texts,
+    same_axis_swap_selected, same_axis_tip_texts, switch_focused_selected, switch_target_tip_texts,
     workspace_mode_selected,
 };
 use super::ctl::wide;
 use crate::settings::{
     ANCHOR_FALLBACK_CLOSEST, ANCHOR_FALLBACK_LARGEST, ANCHOR_FALLBACK_NO_SEARCH,
     BORN_MAXIMIZED_OVERLAY, BORN_MAXIMIZED_TILE, FIXED_SIZE_BOTH_AXES, FIXED_SIZE_EITHER_AXIS,
+    FRESH_PLACEMENT_CURSOR_CLOSEST, FRESH_PLACEMENT_CURSOR_MRU, FRESH_PLACEMENT_FOCUSED_MRU,
     MIGRATION_REFILL_LAST_REMAINING, MIGRATION_REFILL_MRU, NO_SPACE_FLOAT, NO_SPACE_OVERLAP,
-    SAME_AXIS_MOVE_GROUP, SAME_AXIS_MOVE_SWAP, Settings, WORKSPACE_MODE_GLOBAL_UNIQUE,
-    WORKSPACE_MODE_PER_OUTPUT_LOCAL, WORKSPACE_MODE_SHARED,
+    SAME_AXIS_MOVE_GROUP, SAME_AXIS_MOVE_SWAP, SWITCH_TARGET_CURSOR, SWITCH_TARGET_FOCUSED,
+    Settings, WORKSPACE_MODE_GLOBAL_UNIQUE, WORKSPACE_MODE_PER_OUTPUT_LOCAL, WORKSPACE_MODE_SHARED,
 };
 
 #[test]
@@ -104,12 +107,13 @@ fn born_maximized_tip_texts_come_from_shared_options() {
 
 #[test]
 fn choice_tip_buffers_cover_all_radio_pairs() {
-    // Thirteen buffers in control order: same-axis pair, born-maximized
+    // Eighteen buffers in control order: same-axis pair, born-maximized
     // pair, fixed-size pair, migration-refill pair, the admission D2
-    // triple, then the admission D3 pair, so each tooltip tool reads its
-    // own choice text.
+    // triple, then the admission D3 pair, the stage 2c switch-target pair,
+    // and the stage 2c fresh-placement triple, so each tooltip tool reads
+    // its own choice text.
     let tips = choice_tip_texts();
-    assert_eq!(tips.len(), 13);
+    assert_eq!(tips.len(), 18);
     assert_eq!(tips[0], wide("COSMIC"));
     assert_eq!(tips[1], wide("i3, sway"));
     assert_eq!(tips[0], same_axis_tip_texts()[0]);
@@ -129,6 +133,16 @@ fn choice_tip_buffers_cover_all_radio_pairs() {
     assert_eq!(tips[10], anchor_fallback_tip_texts()[2]);
     assert_eq!(tips[11], no_space_tip_texts()[0]);
     assert_eq!(tips[12], no_space_tip_texts()[1]);
+    assert_eq!(tips[13], switch_target_tip_texts()[0]);
+    assert_eq!(tips[14], switch_target_tip_texts()[1]);
+    assert_eq!(tips[13], wide("COSMIC"));
+    assert_eq!(tips[14], wide("i3, sway"));
+    assert_eq!(tips[15], fresh_placement_tip_texts()[0]);
+    assert_eq!(tips[16], fresh_placement_tip_texts()[1]);
+    assert_eq!(tips[17], fresh_placement_tip_texts()[2]);
+    assert_eq!(tips[15], wide("COSMIC"));
+    assert_eq!(tips[16], wide("Hyprland"));
+    assert_eq!(tips[17], wide("i3, sway"));
 }
 
 #[test]
@@ -512,4 +526,98 @@ fn fixed_minmax_tracks_falls_back_on_unusable_outer() {
     let hints = crate::tiling::hints_from_outer(Some((800, 600)), None, insets);
     assert!(!is_fixed_size_with(hints, FixedSizePredicate::BothAxes));
     assert!(!is_fixed_size_with(hints, FixedSizePredicate::EitherAxis));
+}
+#[test]
+fn switch_target_radio_round_trips_both_tokens() {
+    let mut draft = Settings::default();
+    assert!(!switch_focused_selected(&draft));
+    apply_switch_target_selection(&mut draft, true);
+    assert_eq!(draft.core.switch_target, SWITCH_TARGET_FOCUSED);
+    assert!(switch_focused_selected(&draft));
+    apply_switch_target_selection(&mut draft, false);
+    assert_eq!(draft.core.switch_target, SWITCH_TARGET_CURSOR);
+    assert!(!switch_focused_selected(&draft));
+}
+
+#[test]
+fn switch_target_radio_shows_cursor_for_unknown_hand_built_value() {
+    let mut draft = Settings::default();
+    draft.core.switch_target = "retired-alias".to_owned();
+    assert!(!switch_focused_selected(&draft));
+}
+
+#[test]
+fn switch_target_selection_validates_after_apply() {
+    for focused in [false, true] {
+        let mut draft = Settings::default();
+        apply_switch_target_selection(&mut draft, focused);
+        crate::settings::validate_settings(&draft).expect("radio stages a valid token");
+    }
+}
+
+#[test]
+fn switch_target_tip_texts_come_from_shared_options() {
+    let options = crate::settings::switch_target_options();
+    let tips = switch_target_tip_texts();
+    assert_eq!(tips.len(), 2);
+    for (buffer, option) in tips.iter().zip(options.iter()) {
+        assert_eq!(*buffer, wide(option.2));
+    }
+    // Exact WM references, functional labels kept out of the tips: cursor
+    // output is the COSMIC default, focused output the i3/sway option.
+    assert_eq!(tips[0], wide("COSMIC"));
+    assert_eq!(tips[1], wide("i3, sway"));
+}
+
+#[test]
+fn fresh_placement_selector_round_trips_all_three_tokens() {
+    let mut draft = Settings::default();
+    assert_eq!(fresh_placement_selected(&draft), 0);
+    apply_fresh_placement_selection(&mut draft, 1);
+    assert_eq!(draft.core.fresh_placement, FRESH_PLACEMENT_CURSOR_CLOSEST);
+    assert_eq!(fresh_placement_selected(&draft), 1);
+    apply_fresh_placement_selection(&mut draft, 2);
+    assert_eq!(draft.core.fresh_placement, FRESH_PLACEMENT_FOCUSED_MRU);
+    assert_eq!(fresh_placement_selected(&draft), 2);
+    apply_fresh_placement_selection(&mut draft, 0);
+    assert_eq!(draft.core.fresh_placement, FRESH_PLACEMENT_CURSOR_MRU);
+    assert_eq!(fresh_placement_selected(&draft), 0);
+}
+
+#[test]
+fn fresh_placement_selector_shows_cursor_mru_for_unknown_hand_built_value() {
+    let mut draft = Settings::default();
+    draft.core.fresh_placement = "retired-alias".to_owned();
+    assert_eq!(fresh_placement_selected(&draft), 0);
+}
+
+#[test]
+fn fresh_placement_out_of_range_index_stages_the_default() {
+    let mut draft = Settings::default();
+    apply_fresh_placement_selection(&mut draft, 99);
+    assert_eq!(draft.core.fresh_placement, FRESH_PLACEMENT_CURSOR_MRU);
+}
+
+#[test]
+fn fresh_placement_selection_validates_after_apply() {
+    for index in [0, 1, 2] {
+        let mut draft = Settings::default();
+        apply_fresh_placement_selection(&mut draft, index);
+        crate::settings::validate_settings(&draft).expect("radio stages a valid token");
+    }
+}
+
+#[test]
+fn fresh_placement_tip_texts_come_from_shared_options() {
+    let options = crate::settings::fresh_placement_options();
+    let tips = fresh_placement_tip_texts();
+    assert_eq!(tips.len(), 3);
+    for (buffer, option) in tips.iter().zip(options.iter()) {
+        assert_eq!(*buffer, wide(option.2));
+    }
+    // Placement names: COSMIC (default cursor/MRU), Hyprland
+    // (cursor/closest), i3/sway (focused/MRU). No all-settings preset.
+    assert_eq!(tips[0], wide("COSMIC"));
+    assert_eq!(tips[1], wide("Hyprland"));
+    assert_eq!(tips[2], wide("i3, sway"));
 }

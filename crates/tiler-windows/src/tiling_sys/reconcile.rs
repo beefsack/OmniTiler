@@ -144,7 +144,16 @@ pub(super) fn reconcile_tick(
     // Committed floats join the ordinary float lanes with markers.
     let foreground = crate::ffi::foreground_window();
     if super::world_tick::run_observation_tick(
-        state, me, store, dir, &observed, &retained, areas, foreground, fulls,
+        state,
+        me,
+        store,
+        dir,
+        &observed,
+        &retained,
+        areas,
+        foreground,
+        fulls,
+        super::observation::sample_cursor(),
     )
     .is_some()
     {
@@ -200,5 +209,8 @@ pub(super) fn reconcile_limited_tick(
         areas,
         foreground_hw,
         fulls,
+        // Focused fullscreen game: geometry for other windows converges,
+        // but no cursor work runs here (no sampling, no overlay reads).
+        None,
     );
 }

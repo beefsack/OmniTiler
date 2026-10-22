@@ -92,11 +92,18 @@ fn report(
         migration_source_refill: crate::output_selection::MigrationSourceRefill::LastRemaining,
         anchor_fallback: crate::admission::AnchorFallback::default(),
         no_space_result: crate::admission::NoSpaceResult::default(),
+        switch_target: crate::cursor_targeting::SwitchTarget::default(),
+        fresh_placement: crate::cursor_targeting::FreshPlacement::default(),
+        focus_follows_cursor: false,
+        cursor_warp: false,
+        cursor: None,
         default_tiled,
         focused_global: String::new(),
         inventory_complete,
         gesture_barrier: false,
         feedback: vec![],
+        monotonic_ms: 0,
+        frames: Vec::new(),
     }
 }
 
@@ -474,7 +481,7 @@ fn three_output_displacement_preserves_unit_and_returns() {
             1,
             WorkspaceMode::PerOutputLocal,
             three.clone(),
-            vec![],
+            vec![fact("win-a", "out-c", 1600), fact("win-b", "out-c", 1700)],
             vec![],
             vec![],
             None,

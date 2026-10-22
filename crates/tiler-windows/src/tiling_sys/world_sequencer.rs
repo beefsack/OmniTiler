@@ -79,7 +79,8 @@ use std::collections::BTreeSet;
 use tiler_core::ids::{GenerationId, OwnerId};
 use tiler_core::world_engine::{WorldEngine, WorldEngineConfig, WorldOutcome};
 use tiler_core::world_report::{
-    AttemptFeedback, ScreenView, WORLD_CONTRACT_VERSION, WorldCommand, WorldReply, WorldReport,
+    AttemptFeedback, FrameAttempt, ScreenView, WORLD_CONTRACT_VERSION, WorldCommand, WorldReply,
+    WorldReport,
 };
 
 /// Windows carrier profile for the future world engine: automatic
@@ -110,6 +111,7 @@ struct SequencerFlight {
     request_id: String,
     delivered_closed: Vec<(String, PendingClosed)>,
     delivered_feedback: Vec<AttemptFeedback>,
+    delivered_frames: Vec<FrameAttempt>,
 }
 
 /// Exact incorporation receipt for the native owner to prune against. Close
@@ -127,6 +129,7 @@ pub(super) struct AckReceipt {
     pub(super) request_id: String,
     pub(super) closed_acked: Vec<(String, PendingClosed)>,
     pub(super) feedback_acked: Vec<String>,
+    pub(super) frames_acked: Vec<String>,
 }
 
 /// Outcome of offering one core reply to the sequencer.
@@ -175,6 +178,11 @@ pub(super) struct WorldSequencer {
     next_command_seq: u64,
     flight: Option<SequencerFlight>,
     pending_feedback: BTreeMap<String, AttemptFeedback>,
+    /// Latest-wins mechanical frame attempts per window lifetime, drained
+    /// into the next report. Stamped at the write with the tick's monotonic
+    /// clock; the core consumes each stamp idempotently, so redelivery
+    /// after a lost acknowledgement never renews backoff.
+    pending_frames: BTreeMap<String, FrameAttempt>,
     last_desired: Option<WorldReply>,
     last_accepted_obs: u64,
     last_accepted_rev: u64,
@@ -203,6 +211,7 @@ impl WorldSequencer {
             next_command_seq: 1,
             flight: None,
             pending_feedback: BTreeMap::new(),
+            pending_frames: BTreeMap::new(),
             last_desired: None,
             last_accepted_obs: 0,
             last_accepted_rev: 0,
@@ -239,6 +248,14 @@ impl WorldSequencer {
             .insert(feedback.operation_id.clone(), feedback);
     }
 
+    /// Stage one mechanical frame attempt for the next report, replacing any
+    /// entry for the same window lifetime. The acknowledgement path removes
+    /// only entries exactly equal to what the flight delivered.
+    pub(super) fn note_frame_attempt(&mut self, attempt: FrameAttempt) {
+        self.pending_frames
+            .insert(attempt.window.0.clone(), attempt);
+    }
+
     /// Closes the current capture still obliges: every carried close plus
     /// every unhomed (absent-workspace, uncarried) close. The native map is
     /// the sole authority, so obligations read straight from the capture with
@@ -257,14 +274,15 @@ impl WorldSequencer {
         out.into_iter().collect()
     }
 
-    /// Dirty means an outstanding OBSERVATION, CLOSE, or FEEDBACK obligation.
-    /// Event-driven catch-up wants the next trigger while any holds; nothing
-    /// here polls or spins.
+    /// Dirty means an outstanding OBSERVATION, CLOSE, FEEDBACK, or FRAME
+    /// obligation. Event-driven catch-up wants the next trigger while any
+    /// holds; nothing here polls or spins.
     #[must_use]
     #[cfg(test)]
     pub(super) fn is_dirty(&self, captured: &CapturedWorld) -> bool {
         self.obs_dirty
             || !self.pending_feedback.is_empty()
+            || !self.pending_frames.is_empty()
             || !self.outstanding_closes(captured).is_empty()
     }
 
@@ -284,9 +302,11 @@ impl WorldSequencer {
         request_seq: u64,
         command_seq: Option<u64>,
         command: Option<WorldCommand>,
+        monotonic_ms: u64,
     ) -> WorldReport {
         let mut feedback: Vec<AttemptFeedback> = self.pending_feedback.values().cloned().collect();
         feedback.sort_by(|a, b| a.operation_id.cmp(&b.operation_id));
+        let frames: Vec<FrameAttempt> = self.pending_frames.values().cloned().collect();
         // Observed applied views from capture (unknown when the facade has
         // no readback); never the last desired snapshot.
         let views: Vec<ScreenView> = captured.observed_views.clone();
@@ -316,11 +336,18 @@ impl WorldSequencer {
             migration_source_refill: captured.migration_source_refill,
             anchor_fallback: Default::default(),
             no_space_result: Default::default(),
+            switch_target: captured.switch_target,
+            fresh_placement: captured.fresh_placement,
+            focus_follows_cursor: captured.focus_follows_cursor,
+            cursor_warp: captured.cursor_warp,
+            cursor: captured.cursor,
             default_tiled: captured.default_tiled,
             focused_global: captured.focused_global.clone(),
             inventory_complete: captured.inventory_complete,
             gesture_barrier: captured.gesture_barrier,
             feedback,
+            monotonic_ms,
+            frames,
         }
     }
 
@@ -336,6 +363,7 @@ impl WorldSequencer {
     /// the owner inputs: native ledgers and maps cannot mutate through `&`.
     /// The seam (never `&TileLoop`) keeps the runtime borrow split: the
     /// caller holds `&mut WorldOwner` alongside these shared inputs.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn try_dispatch(
         &mut self,
         inputs: &OwnerInputs<'_>,
@@ -343,6 +371,7 @@ impl WorldSequencer {
         retained: &[RetainedRow],
         areas: &[MonitorArea],
         foreground_hwnd: u64,
+        monotonic_ms: u64,
         command: Option<WorldCommand>,
     ) -> Result<WorldReport, DispatchError> {
         if self.flight.is_some() {
@@ -365,8 +394,13 @@ impl WorldSequencer {
             None
         };
         let captured = capture_world(inputs, observed, retained, areas, foreground_hwnd);
+        // Attempts for explicitly closed lifetimes never ride: the core
+        // prunes them on the close itself.
+        for id in &captured.closed {
+            self.pending_frames.remove(&id.0);
+        }
         let request_seq = self.next_request_seq;
-        let report = self.assemble(&captured, request_seq, command_seq, command);
+        let report = self.assemble(&captured, request_seq, command_seq, command, monotonic_ms);
         // Snapshot the exact native homing for every carried close, read
         // from the same owner inputs as the capture. Entries without a
         // source record ride the report but settle no receipt pair.
@@ -383,6 +417,7 @@ impl WorldSequencer {
             request_id: report.request_id.clone(),
             delivered_closed,
             delivered_feedback: report.feedback.clone(),
+            delivered_frames: report.frames.clone(),
         });
         self.next_request_seq += 1;
         if command_seq.is_some() {
@@ -445,6 +480,7 @@ impl WorldSequencer {
                 request_id: flight.request_id,
                 closed_acked: Vec::new(),
                 feedback_acked: Vec::new(),
+                frames_acked: Vec::new(),
             });
         }
         let revision_new = !self.has_accepted || reply.state_revision > self.last_accepted_rev;
@@ -524,6 +560,7 @@ impl WorldSequencer {
         self.core_generation = core_generation.to_owned();
         self.flight = None;
         self.pending_feedback.clear();
+        self.pending_frames.clear();
         self.last_desired = None;
         self.has_accepted = false;
         self.last_accepted_obs = 0;
@@ -539,9 +576,9 @@ impl WorldSequencer {
 
     /// Acknowledge exactly the flight's delivered facts: every carried
     /// `(token, homing)` close pair (read from the flight snapshot, never
-    /// re-read from a newer report) plus pending feedback entries exactly
-    /// equal to the delivered value. A newer update for the same operation
-    /// survives and stays dirty.
+    /// re-read from a newer report) plus pending feedback and frame-attempt
+    /// entries exactly equal to the delivered value. A newer update for the
+    /// same operation or window survives and stays dirty.
     fn ack_flight_obligations(&mut self, flight: &SequencerFlight) -> AckReceipt {
         let mut closed_acked = Vec::new();
         for (token, homing) in &flight.delivered_closed {
@@ -558,12 +595,24 @@ impl WorldSequencer {
                 feedback_acked.push(delivered.operation_id.clone());
             }
         }
+        let mut frames_acked = Vec::new();
+        for delivered in &flight.delivered_frames {
+            if self
+                .pending_frames
+                .get(&delivered.window.0)
+                .is_some_and(|pending| pending == delivered)
+            {
+                self.pending_frames.remove(&delivered.window.0);
+                frames_acked.push(delivered.window.0.clone());
+            }
+        }
         AckReceipt {
             adapter_incarnation: self.adapter_incarnation.clone(),
             core_generation: self.core_generation.clone(),
             request_id: flight.request_id.clone(),
             closed_acked,
             feedback_acked,
+            frames_acked,
         }
     }
 
@@ -654,6 +703,7 @@ impl WorldSequencer {
 
     /// Capture plus one explicit command (single-flight). Thin wrapper over
     /// [`WorldSequencer::try_dispatch`] for the runtime owner call site.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn try_dispatch_with_command(
         &mut self,
         inputs: &OwnerInputs<'_>,
@@ -661,6 +711,7 @@ impl WorldSequencer {
         retained: &[RetainedRow],
         areas: &[MonitorArea],
         foreground_hwnd: u64,
+        monotonic_ms: u64,
         command: WorldCommand,
     ) -> Result<WorldReport, DispatchError> {
         self.try_dispatch(
@@ -669,6 +720,7 @@ impl WorldSequencer {
             retained,
             areas,
             foreground_hwnd,
+            monotonic_ms,
             Some(command),
         )
     }
@@ -794,6 +846,12 @@ impl WorldSequencer {
     #[cfg(test)]
     pub(super) fn pending_feedback_len(&self) -> usize {
         self.pending_feedback.len()
+    }
+
+    #[must_use]
+    #[cfg(test)]
+    pub(super) fn pending_frames_len(&self) -> usize {
+        self.pending_frames.len()
     }
 
     #[must_use]

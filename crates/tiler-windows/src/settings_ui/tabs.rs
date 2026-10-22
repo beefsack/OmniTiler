@@ -26,11 +26,12 @@ use super::{
     ID_DEFAULT_TILED, ID_FIXED_SIZE_BOTH, ID_FIXED_SIZE_EITHER, ID_GAMING_OPEN_APP,
     ID_GAMING_OPEN_GAMEBAR, ID_GAMING_OPEN_XBOX, ID_GAMING_RECHECK, ID_INNER_GAP,
     ID_KEYBOARD_TAKEOVER, ID_LOCK_WARNING, ID_MIGRATION_REFILL_LAST, ID_MIGRATION_REFILL_MRU,
-    ID_MOUSE_SNAP, ID_NO_SPACE_FLOAT, ID_NO_SPACE_OVERLAP, ID_OUTER_GAP, ID_PRESET_AUTHENTIC,
-    ID_PRESET_COMPATIBLE, ID_PRESET_EXPLAIN, ID_REBIND_NOTE, ID_REVERT, ID_SAME_AXIS_GROUP,
-    ID_SAME_AXIS_SWAP, ID_SNAP_MEANING, ID_STATUS, ID_TASKBAR_PAGER, ID_UNDERLAY_COLOR,
-    ID_UNDERLAY_ENABLED, ID_UNDERLAY_EXTENSION, ID_WORKSPACE_MODE_GLOBAL, ID_WORKSPACE_MODE_LOCAL,
-    ID_WORKSPACE_MODE_SHARED,
+    ID_MOUSE_SNAP, ID_NO_SPACE_FLOAT, ID_NO_SPACE_OVERLAP, ID_OUTER_GAP, ID_PLACE_CURSOR_CLOSEST,
+    ID_PLACE_CURSOR_MRU, ID_PLACE_FOCUSED_MRU, ID_PRESET_AUTHENTIC, ID_PRESET_COMPATIBLE,
+    ID_PRESET_EXPLAIN, ID_REBIND_NOTE, ID_REVERT, ID_SAME_AXIS_GROUP, ID_SAME_AXIS_SWAP,
+    ID_SNAP_MEANING, ID_STATUS, ID_SWITCH_CURSOR, ID_SWITCH_FOCUSED, ID_TASKBAR_PAGER,
+    ID_UNDERLAY_COLOR, ID_UNDERLAY_ENABLED, ID_UNDERLAY_EXTENSION, ID_WORKSPACE_MODE_GLOBAL,
+    ID_WORKSPACE_MODE_LOCAL, ID_WORKSPACE_MODE_SHARED,
 };
 use super::{ID_TAB_BADGE, ID_TABS};
 
@@ -38,17 +39,17 @@ use super::{ID_TAB_BADGE, ID_TABS};
 /// tests below prove the scaled outer fits a 1080p work area at 100% and
 /// 150% with room for the non-client frame.
 pub const CLIENT_W: i32 = 924;
-pub const CLIENT_H: i32 = 600;
+pub const CLIENT_H: i32 = 626;
 
 /// Top of the tab display area (logical). The tab strip occupies roughly
 /// the first 28px of the tab control; content starts at 40 with margin.
 pub const TAB_DISPLAY_TOP: i32 = 40;
 /// Bottom of the tab display area (logical): the tab control rect
-/// `(10, 8, 904, 488)` ends at 496. Every page control, groupbox, and
+/// `(10, 8, 904, 520)` ends at 528. Every page control, groupbox, and
 /// label must end at or above this line; nothing relies on slack.
-pub const TAB_DISPLAY_BOTTOM: i32 = 496;
+pub const TAB_DISPLAY_BOTTOM: i32 = 528;
 /// Footer (global badge, status, buttons) lives below the tab control.
-pub const FOOTER_TOP: i32 = 500;
+pub const FOOTER_TOP: i32 = 532;
 
 /// Horizontal non-client allowance (borders) added to the scaled client
 /// when proving 1080p fit. Reason: `AdjustWindowRect` side borders plus
@@ -178,6 +179,10 @@ pub const fn control_field(id: u32) -> Option<&'static str> {
         }
         ID_NO_SPACE_FLOAT | ID_NO_SPACE_OVERLAP => Some("admission.no-space"),
         ID_MIGRATION_REFILL_LAST | ID_MIGRATION_REFILL_MRU => Some("migration.refill"),
+        ID_SWITCH_CURSOR | ID_SWITCH_FOCUSED => Some("output.switch-target"),
+        ID_PLACE_CURSOR_MRU | ID_PLACE_CURSOR_CLOSEST | ID_PLACE_FOCUSED_MRU => {
+            Some("output.fresh-placement")
+        }
         ID_BORDER_ENABLED => Some("border.enabled"),
         ID_BORDER_WIDTH => Some("border.width"),
         ID_BORDER_GAP => Some("border.gap"),
@@ -222,12 +227,12 @@ pub const fn control_panel(id: u32) -> Option<&'static str> {
 #[must_use]
 pub const fn control_rect(id: u32) -> Option<(i32, i32, i32, i32)> {
     match id {
-        ID_TABS => Some((10, 8, 904, 488)),
-        ID_TAB_BADGE => Some((20, 500, 540, 32)),
-        ID_STATUS => Some((20, 534, 540, 48)),
-        ID_APPLY => Some((580, 528, 100, 30)),
-        ID_REVERT => Some((690, 528, 100, 30)),
-        ID_CLOSE => Some((800, 528, 100, 30)),
+        ID_TABS => Some((10, 8, 904, 520)),
+        ID_TAB_BADGE => Some((20, 532, 540, 32)),
+        ID_STATUS => Some((20, 566, 540, 48)),
+        ID_APPLY => Some((580, 560, 100, 30)),
+        ID_REVERT => Some((690, 560, 100, 30)),
+        ID_CLOSE => Some((800, 560, 100, 30)),
         // Tiling & Workspaces: gaps row, workspaces block, five radio rows.
         ID_INNER_GAP => Some((84, 66, 56, 22)),
         ID_OUTER_GAP => Some((206, 66, 56, 22)),
@@ -247,8 +252,17 @@ pub const fn control_rect(id: u32) -> Option<(i32, i32, i32, i32)> {
         ID_ANCHOR_NO_SEARCH => Some((468, 342, 150, 24)),
         ID_NO_SPACE_FLOAT => Some((28, 400, 200, 24)),
         ID_NO_SPACE_OVERLAP => Some((238, 400, 200, 24)),
-        ID_MIGRATION_REFILL_LAST => Some((28, 458, 210, 24)),
-        ID_MIGRATION_REFILL_MRU => Some((248, 458, 220, 24)),
+        // Migration refill rides the workspaces group third row: the
+        // bottom slot now belongs to the output-targeting group.
+        ID_MIGRATION_REFILL_LAST => Some((600, 134, 200, 24)),
+        ID_MIGRATION_REFILL_MRU => Some((600, 158, 220, 24)),
+        // Stage 2c output targeting: switch-target pair plus
+        // fresh-placement triple, one groupbox, two rows.
+        ID_SWITCH_CURSOR => Some((28, 466, 150, 24)),
+        ID_SWITCH_FOCUSED => Some((188, 466, 170, 24)),
+        ID_PLACE_CURSOR_MRU => Some((28, 490, 258, 24)),
+        ID_PLACE_CURSOR_CLOSEST => Some((296, 490, 286, 24)),
+        ID_PLACE_FOCUSED_MRU => Some((592, 490, 270, 24)),
         // Appearance: border block (left) plus underlay block (right).
         ID_BORDER_ENABLED => Some((28, 66, 200, 20)),
         ID_BORDER_THEME => Some((28, 88, 290, 20)),
@@ -334,6 +348,11 @@ pub const fn control_class(id: u32) -> Option<&'static str> {
         | ID_NO_SPACE_OVERLAP
         | ID_MIGRATION_REFILL_LAST
         | ID_MIGRATION_REFILL_MRU
+        | ID_SWITCH_CURSOR
+        | ID_SWITCH_FOCUSED
+        | ID_PLACE_CURSOR_MRU
+        | ID_PLACE_CURSOR_CLOSEST
+        | ID_PLACE_FOCUSED_MRU
         | ID_WORKSPACE_MODE_LOCAL
         | ID_WORKSPACE_MODE_GLOBAL
         | ID_WORKSPACE_MODE_SHARED => Some("BUTTON"),
@@ -397,12 +416,14 @@ pub const GROUPS: &[(GroupKey, i32, i32, i32, i32)] = &[
         886,
         52,
     ),
+    // Stage 2c output targeting owns the bottom slot: the
+    // migration-refill radios ride the workspaces group third row above.
     (
-        GroupKey::Section("tiling.migration-refill"),
+        GroupKey::Section("tiling.output-targeting"),
         18,
         448,
         886,
-        48,
+        72,
     ),
     (GroupKey::Section("appearance.border"), 18, 44, 560, 240),
     (GroupKey::Section("appearance.underlay"), 588, 44, 316, 180),
@@ -486,11 +507,15 @@ pub const LABEL_RECTS: &[(usize, i32, i32, i32, i32)] = &[
     (TAB_TILING, 28, 68, 52, 20),
     (TAB_TILING, 150, 68, 52, 20),
     (TAB_TILING, 610, 64, 284, 60),
-    (TAB_TILING, 310, 132, 584, 44),
+    // Scope note narrowed to the left column: the migration-refill radios
+    // ride the right column third row of the same group.
+    (TAB_TILING, 310, 132, 280, 48),
     (TAB_TILING, 448, 200, 448, 32),
     (TAB_TILING, 448, 246, 448, 32),
     (TAB_TILING, 448, 292, 448, 32),
-    (TAB_TILING, 478, 454, 418, 40),
+    // Stage 2c: the migration-refill radios ride the workspaces group
+    // third row, so this slot carries no timing note (timing truth stays
+    // in the catalog and the adoption log lines).
     (TAB_TILING, 628, 342, 266, 32),
     (TAB_TILING, 448, 394, 448, 48),
     // Appearance: border/underlay field labels plus two notes.
@@ -511,7 +536,7 @@ pub const LABEL_RECTS: &[(usize, i32, i32, i32, i32)] = &[
 
 /// Label index of the rebind-chord buddy label (no catalog field; the
 /// editor carries the pending chord, so the label is native wording).
-pub const LABEL_CHORD: usize = 20;
+pub const LABEL_CHORD: usize = 19;
 
 /// Catalog field behind a label-static index above.
 const LABEL_FIELDS: &[&str] = &[
@@ -522,7 +547,6 @@ const LABEL_FIELDS: &[&str] = &[
     "move.same-axis",
     "admission.born-maximized",
     "admission.fixed-size",
-    "migration.refill",
     "admission.anchor-fallback",
     "admission.no-space",
     "border.color",
@@ -553,12 +577,12 @@ pub const fn label_class(index: usize) -> &'static str {
 pub const BUDDY_LABELS: &[(u32, usize)] = &[
     (ID_INNER_GAP, 0),
     (ID_OUTER_GAP, 1),
-    (ID_BORDER_COLOR, 10),
-    (ID_BORDER_WIDTH, 11),
-    (ID_BORDER_GAP, 12),
-    (ID_BORDER_RADIUS, 13),
-    (ID_UNDERLAY_COLOR, 15),
-    (ID_UNDERLAY_EXTENSION, 16),
+    (ID_BORDER_COLOR, 9),
+    (ID_BORDER_WIDTH, 10),
+    (ID_BORDER_GAP, 11),
+    (ID_BORDER_RADIUS, 12),
+    (ID_UNDERLAY_COLOR, 14),
+    (ID_UNDERLAY_EXTENSION, 15),
     (ID_BIND_CHORD, LABEL_CHORD),
 ];
 
@@ -593,6 +617,8 @@ pub fn control_text(id: u32) -> String {
                     | ID_MIGRATION_REFILL_LAST
                     | ID_ANCHOR_LARGEST
                     | ID_NO_SPACE_FLOAT
+                    | ID_SWITCH_CURSOR
+                    | ID_PLACE_CURSOR_MRU
                     | ID_WORKSPACE_MODE_LOCAL => 0,
                     ID_SAME_AXIS_SWAP
                     | ID_BORN_MAX_OVERLAY
@@ -600,8 +626,10 @@ pub fn control_text(id: u32) -> String {
                     | ID_MIGRATION_REFILL_MRU
                     | ID_ANCHOR_CLOSEST
                     | ID_NO_SPACE_OVERLAP
+                    | ID_SWITCH_FOCUSED
+                    | ID_PLACE_CURSOR_CLOSEST
                     | ID_WORKSPACE_MODE_GLOBAL => 1,
-                    ID_ANCHOR_NO_SEARCH | ID_WORKSPACE_MODE_SHARED => 2,
+                    ID_ANCHOR_NO_SEARCH | ID_PLACE_FOCUSED_MRU | ID_WORKSPACE_MODE_SHARED => 2,
                     _ => return String::new(),
                 };
                 return def
@@ -653,13 +681,13 @@ pub fn label_text(index: usize) -> String {
         0 | 1 => format!("{}:", short_field_noun(field_id)),
         2 => format!("{} {}", def.help, def.timing_help),
         3 => format!("Scope (restart required): {}", def.timing_help),
-        4..=9 => def.timing_help.to_owned(),
-        10..=13 => format!("{}:", def.label),
-        14 => "Configured colour wins when theme is off or no accent.".to_owned(),
-        15 | 16 => format!("{}:", def.label),
-        17 => "-1 follows the border width.".to_owned(),
-        18 => def.timing_help.to_owned(),
-        19 => def.help.to_owned(),
+        4..=8 => def.timing_help.to_owned(),
+        9..=12 => format!("{}:", def.label),
+        13 => "Configured colour wins when theme is off or no accent.".to_owned(),
+        14 | 15 => format!("{}:", def.label),
+        16 => "-1 follows the border width.".to_owned(),
+        17 => def.timing_help.to_owned(),
+        18 => def.help.to_owned(),
         _ => def.label.to_owned(),
     }
 }
@@ -933,6 +961,8 @@ pub const fn is_radio_first(id: u32) -> bool {
             | ID_ANCHOR_LARGEST
             | ID_NO_SPACE_FLOAT
             | ID_MIGRATION_REFILL_LAST
+            | ID_SWITCH_CURSOR
+            | ID_PLACE_CURSOR_MRU
     )
 }
 
@@ -1054,6 +1084,11 @@ pub const ALL_CONTROL_IDS: &[u32] = &[
     ID_ANCHOR_NO_SEARCH,
     ID_NO_SPACE_FLOAT,
     ID_NO_SPACE_OVERLAP,
+    ID_SWITCH_CURSOR,
+    ID_SWITCH_FOCUSED,
+    ID_PLACE_CURSOR_MRU,
+    ID_PLACE_CURSOR_CLOSEST,
+    ID_PLACE_FOCUSED_MRU,
     ID_WORKSPACE_MODE_LOCAL,
     ID_WORKSPACE_MODE_GLOBAL,
     ID_WORKSPACE_MODE_SHARED,

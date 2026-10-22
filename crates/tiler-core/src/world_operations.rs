@@ -17,8 +17,8 @@ use crate::session::{DomainKey, OutputDomain};
 use crate::world_engine::{
     KIND_DIRECTION, KIND_FOCUS, KIND_IN_FLIGHT, KIND_MIGRATION, KIND_OPERATION, KIND_SCOPE_HELD,
     KIND_SEND_TARGET, KIND_SEND_WINDOW, KIND_SNAPSHOT, MSG_DIRECTION, MSG_FOCUS, MSG_IN_FLIGHT,
-    MSG_MIGRATION, MSG_OPERATION, MSG_SCOPE_HELD, MSG_SEND_TARGET, MSG_SEND_WINDOW, MSG_SNAPSHOT,
-    RetainedTransfer, WorldEngine,
+    MSG_MIGRATION_TOPOLOGY, MSG_MIGRATION_TOPOLOGY_UNREADABLE, MSG_OPERATION, MSG_SCOPE_HELD,
+    MSG_SEND_TARGET, MSG_SEND_WINDOW, MSG_SNAPSHOT, RetainedTransfer, WorldEngine,
 };
 use crate::world_report::{
     CommandResult, OneShotEffect, TransferKind, TransferTarget, WorldReport,
@@ -594,10 +594,16 @@ impl WorldEngine {
         };
         let target_output = match self.migration_topology_target(source_output, direction_parsed) {
             Ok(Some(target)) => target,
-            _ => {
+            Err(_) => {
                 return CommandApplied::Rejected {
                     kind: KIND_MIGRATION,
-                    message: MSG_MIGRATION,
+                    message: MSG_MIGRATION_TOPOLOGY_UNREADABLE,
+                };
+            }
+            Ok(None) => {
+                return CommandApplied::Rejected {
+                    kind: KIND_MIGRATION,
+                    message: MSG_MIGRATION_TOPOLOGY,
                 };
             }
         };

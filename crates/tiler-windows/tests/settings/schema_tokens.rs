@@ -484,3 +484,152 @@ fn born_maximized_presets_leave_core_field_unchanged() {
         assert!(validate_settings(&settings).is_ok());
     }
 }
+// Stage 2c cursor-first targeting: additive schema-v1 fields with strict
+// tokens, file-level backfill, invalid-file refusal with last-good kept,
+// and no preset coupling.
+
+#[test]
+fn cursor_targeting_schema_v1_missing_fields_default_cursor_off() {
+    use tiler_windows::settings::{
+        FRESH_PLACEMENT_CURSOR_MRU, SWITCH_TARGET_CURSOR, validate_settings,
+    };
+    // Older schema-v1 file without the additive fields: serde
+    // missing-defaults supply cursor-output/MRU plus off/off, schema v1.
+    let temp = Temp::new("cursor-targeting-missing");
+    std::fs::write(
+        temp.file(),
+        br#"{"v":1,"revision":1,"core":{"inner_gap":8,"outer_gap":8},"bindings":{}}"#,
+    )
+    .expect("write");
+    let LoadOutcome::Loaded(settings) = load_from_dir(&temp.path) else {
+        panic!("old file loads");
+    };
+    assert_eq!(settings.v, 1);
+    assert_eq!(settings.core.switch_target, SWITCH_TARGET_CURSOR);
+    assert_eq!(
+        settings.core.switch_target_mode(),
+        tiler_core::cursor_targeting::SwitchTarget::Cursor
+    );
+    assert_eq!(settings.core.fresh_placement, FRESH_PLACEMENT_CURSOR_MRU);
+    assert_eq!(
+        settings.core.fresh_placement_mode(),
+        tiler_core::cursor_targeting::FreshPlacement::CursorOutputMru
+    );
+    assert!(!settings.core.focus_follows_cursor);
+    assert!(!settings.core.cursor_warp);
+    assert!(validate_settings(&settings).is_ok());
+}
+
+#[test]
+fn cursor_targeting_tokens_round_trip() {
+    use tiler_windows::settings::{
+        FRESH_PLACEMENT_CURSOR_CLOSEST, FRESH_PLACEMENT_FOCUSED_MRU, SWITCH_TARGET_FOCUSED,
+    };
+    let temp = Temp::new("cursor-targeting-roundtrip");
+    for (switch, placement, ffc, warp) in [
+        (
+            SWITCH_TARGET_FOCUSED,
+            FRESH_PLACEMENT_FOCUSED_MRU,
+            true,
+            true,
+        ),
+        (
+            tiler_windows::settings::SWITCH_TARGET_CURSOR,
+            FRESH_PLACEMENT_CURSOR_CLOSEST,
+            false,
+            true,
+        ),
+    ] {
+        let mut settings = Settings::default();
+        settings.core.switch_target = switch.to_owned();
+        settings.core.fresh_placement = placement.to_owned();
+        settings.core.focus_follows_cursor = ffc;
+        settings.core.cursor_warp = warp;
+        save_to_dir(&temp.path, &mut settings).expect("save");
+        let LoadOutcome::Loaded(back) = load_from_dir(&temp.path) else {
+            panic!("reloads {switch}/{placement}");
+        };
+        assert_eq!(back.core.switch_target, switch);
+        assert_eq!(back.core.fresh_placement, placement);
+        assert_eq!(back.core.focus_follows_cursor, ffc);
+        assert_eq!(back.core.cursor_warp, warp);
+    }
+    // Atomic save leaves only the final name behind.
+    let entries: Vec<String> = std::fs::read_dir(&temp.path)
+        .expect("read dir")
+        .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(entries, vec!["settings.json".to_owned()]);
+}
+
+#[test]
+fn cursor_targeting_invalid_value_and_type_refuse() {
+    use tiler_windows::settings::SettingsError;
+    let temp = Temp::new("cursor-targeting-invalid");
+    // Unknown values (including near-miss aliases): invalid, bytes untouched.
+    for (key, bad) in [
+        ("switch_target", "focused"),
+        ("switch_target", ""),
+        ("fresh_placement", "mru"),
+        ("fresh_placement", ""),
+    ] {
+        let body = format!(
+            "{{\"v\":1,\"revision\":1,\"core\":{{\"{key}\":\"{bad}\"}},\"bindings\":{{}}}}"
+        );
+        std::fs::write(temp.file(), body).expect("write");
+        assert!(
+            matches!(
+                load_from_dir(&temp.path),
+                LoadOutcome::Invalid(SettingsError::Invalid(_))
+            ),
+            "{key}={bad}"
+        );
+    }
+    // Wrong JSON type: malformed, bytes untouched.
+    std::fs::write(
+        temp.file(),
+        br#"{"v":1,"revision":1,"core":{"switch_target":7},"bindings":{}}"#,
+    )
+    .expect("write");
+    assert!(matches!(
+        load_from_dir(&temp.path),
+        LoadOutcome::Invalid(SettingsError::Malformed)
+    ));
+    // Live poll keeps last-good with a degraded status; the file is never
+    // rewritten, so a later valid save still applies.
+    let mut live_settings = Settings::default();
+    live_settings.core.switch_target = "focused".to_owned();
+    let live = tiler_windows::settings::LiveSettings::fresh(live_settings, None);
+    let outcome = poll_for_change(&temp.path, &live);
+    assert!(
+        matches!(outcome, PollOutcome::InvalidKept(_)),
+        "keeps last-good, got {outcome:?}"
+    );
+    assert_eq!(live.settings.core.switch_target, "focused");
+    let mut valid = Settings::default();
+    save_to_dir(&temp.path, &mut valid).expect_err("invalid on-disk file blocks save");
+}
+
+#[test]
+fn cursor_targeting_presets_leave_core_fields_unchanged() {
+    use tiler_windows::settings::{SWITCH_TARGET_FOCUSED, validate_settings};
+    // No all-settings presets exist: binding presets never touch these
+    // lanes (or any core lane).
+    for preset in [Preset::Authentic, Preset::Compatible] {
+        let mut settings = Settings::default();
+        settings.core.switch_target = SWITCH_TARGET_FOCUSED.to_owned();
+        settings.core.fresh_placement =
+            tiler_windows::settings::FRESH_PLACEMENT_FOCUSED_MRU.to_owned();
+        settings.core.focus_follows_cursor = true;
+        settings.core.cursor_warp = true;
+        tiler_windows::settings::apply_preset(&mut settings, preset);
+        assert_eq!(settings.core.switch_target, SWITCH_TARGET_FOCUSED);
+        assert_eq!(
+            settings.core.fresh_placement,
+            tiler_windows::settings::FRESH_PLACEMENT_FOCUSED_MRU
+        );
+        assert!(settings.core.focus_follows_cursor);
+        assert!(settings.core.cursor_warp);
+        assert!(validate_settings(&settings).is_ok());
+    }
+}

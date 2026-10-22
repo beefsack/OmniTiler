@@ -94,7 +94,14 @@ fn report(
             .unwrap_or_default(),
         inventory_complete,
         gesture_barrier: false,
+        switch_target: tiler_core::cursor_targeting::SwitchTarget::default(),
+        fresh_placement: tiler_core::cursor_targeting::FreshPlacement::default(),
+        focus_follows_cursor: false,
+        cursor_warp: false,
+        cursor: None,
         feedback,
+        monotonic_ms: 0,
+        frames: Vec::new(),
     }
 }
 
@@ -396,7 +403,7 @@ fn missing_empty_stale_views_hold_external_known_settles() {
             vec![],
             Some(11),
             Some(WorldCommand::SelectNumbered {
-                output: OutputId("out-a".to_owned()),
+                output: Some(OutputId("out-a".to_owned())),
                 index: 2,
             }),
             vec![],
