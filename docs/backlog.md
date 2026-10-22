@@ -37,8 +37,8 @@ decisions of 2026-09-24 are under
     primary anchor churn looked fine once. Cross-output title-bar drag with
     drop overlay passed between outputs with different DPI. Task Manager stays
     untiled (elevated by default; expected unmanageable class, not a defect).
-  - (4) awaits cursor-first implementation below; interim foreground-first
-    command routing stays.
+  - (4) cursor-first fresh placement delivered in core and Windows
+    2026-10-22, fixture-verified on both outputs; user dogfood re-check pending.
   - Checklist sweep: W2M-02 tiled follow/stay and admitted-float return pass
     (`send-output` control User 2026-10-20 accepted); W2M-13 mouse selection, occupied
     hide/show and Explorer-restart recovery pass with event-driven anchor
@@ -63,10 +63,11 @@ decisions of 2026-09-24 are under
   Focus-follows-cursor on/off and cursor-warp are settings, both default off
   (Decision 1d, COSMIC); i3/sway preset enables cross-output focus warp.
   Hyprland preset leaves warp off pending its own verb-dependent evidence row.
-  Replaces R-OUT-05's old default;
-  not implemented anywhere. User explicitly approves shared-core placement logic
-  where possible; platforms supply cursor position/settings. Next: Windows first
-  (unblocks defect 4 admission), KDE/macOS by their streams.
+  Replaces R-OUT-05's old default. User explicitly approves shared-core
+  placement logic where possible; platforms supply cursor position/settings.
+  Core switch/placement/send targeting and Windows delivered 2026-10-22
+  (rearchitecture stage 2c); active focus-follows-cursor and warp are stage 4.
+  KDE/macOS by their ports.
   Tentative (user review pending): three-way placement subsumes launch targeting.
 - P1 | Empty-workspace focus across outputs | User physical 2026-10-20:
   Win+digit to an empty workspace on one output focused a window on another,
@@ -132,8 +133,12 @@ decisions of 2026-09-24 are under
   sequencing with the user. Status 2026-10-21: inventory and staged plan
   delivered (tentative sequencing, user review pending); stage 1 (core-owned
   ordered window eligibility, Windows duplicates removed) delivered with
-  fixture checks on both outputs; stages 2-5 pending, Windows first, KDE/macOS
-  ports follow separately
+  fixture checks on both outputs. 2026-10-22: stage 2 (core logical workspace
+  authority, sole Windows world owner, cursor-first switch and fresh placement),
+  3a (frame clamp/backoff) and 3b1 (learned minimum sizes) delivered with
+  both-output fixture checks; remaining 3b completion/anti-fighting and
+  frameless migration, stages 4-5 pending. KDE/macOS ports follow once the
+  core interface settles
   ([record](changes/core-world-model-rearchitecture.md)). Goal: a consistent test
   process over agreed cases, consistent with Tier 1 input tilers, for high
   quality and cross-platform consistency. A maximal, high-quality core also
