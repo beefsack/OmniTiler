@@ -1384,3 +1384,108 @@ of cursor-first fresh placement or the entire rearchitecture.
   physical acceptance remain gaps. Existing tentative decisions and the four
   parked focus/send questions are unchanged; no new product question blocks
   the next unit.
+
+## Stage 3b4 implementation plan
+
+- Move frameless/floating-source cross-output migration placement into core;
+  remove native `remap_to_output` and membership remap fallback. Core publishes
+  an explicit destination frame from normalized source geometry and target
+  work area, including asymmetric and negative-origin outputs. Preserve
+  same-output follow ordering, cross-output-only pre-arrival tile slots,
+  ordinary float membership-only sends and T2 source-state transactions.
+- Cover placement and arrival through core-only tests and production Windows
+  diff/readback/sequencer tests, then broaden shared convergence-table cases.
+  Verify locked core/protocol/Windows build, tests, strict clippy, formatting
+  and whitespace; independently review ownership and safety before fixture-only
+  both-output verification. Native readbacks, not setter success, prove arrival.
+- Stages 4 and 5 follow only from a verified working Windows slice. Existing
+  parked questions, tentative decisions and user-owned physical acceptance
+  remain unchanged.
+
+## Stage 3b4 accepted outcome (2026-10-23)
+
+### Frameless migration placement and shared convergence
+
+- Core publishes an explicit `effective_frame` for readable ordinary members
+  migrating from sessionless/floating workspaces across outputs. It translates
+  the observed frame by the FULL-output delta, then constrains its origin to
+  the destination work area without resizing. An oversized axis pins to that
+  work area's origin. Raw observed output, not retained logical homing, grounds
+  the translation; an already-target frame never translates twice.
+- These remain membership-actuation targets, not tile allocations or ordinary
+  float frame authority. Same-output follow ordering and cross-output-only
+  pre-arrival tile slots are unchanged. Intentional floats preserve physical
+  frames; sticky, overlay, minimized, unreadable and incomplete lanes acquire
+  no guessed placement. Unsupported tiled-to-float transactions are unchanged.
+- Deleted Windows `remap_to_output`, its membership fallback and the `remap`
+  switch. The adapter writes only core-published frames under its existing
+  freshness/lifetime/scope/input gates, then independently observes arrival.
+- Shared `test-fixtures/frame-convergence.json` now covers five frame cases
+  (learned growth, declared-cap conflict, refused/throwing retry, exact
+  reconvergence), retired-lifetime replacement, incomplete/hidden/unreadable
+  observations with recovery, and partial migration with late arrival. Core
+  and Windows use the same oracle. Windows attempts come from production
+  diff/write/readback sequencing, never hand-built verdicts or setter echoes.
+  Private learned/pair maps are asserted in core; native reply geometry and
+  authority expose their portable effects in Windows. Float-operation and
+  full view/refill completion retain their separate production seam suites.
+- Independent review caught and corrected differing normalized observation
+  ingress hidden behind platform-specific expectations, literal-only table
+  assertions, and logical-home-based double translation. A failed-before
+  already-target regression proves the latter fix. The unified oracle has no
+  platform-specific expected outcome overrides. Focused fixture test modules
+  replace growth of the existing large policy/seam modules.
+
+### Verification and limits
+
+- Final locked core/protocol/Windows build, all-target tests and strict
+  all-target clippy pass: **2,377 passed, zero failed, one ignored across 48
+  suites**. Workspace formatting and whitespace checks pass. Final independent
+  boundary/evidence review accepted the corrected source. No dependency,
+  unsafe code, input hook or polling loop was added; placement adds bounded
+  report-time geometry calculations, with no benchmark or zero-cost claim.
+- Final-source fixture-only native checks passed sessionless whole-workspace
+  migration into an occupied destination and back across both outputs. A
+  near-edge member discriminated constrained placement from blind translation;
+  an oversized member proved size preservation and axis-origin pinning. Exact
+  native physical frames, lifetime/token joins and foreground corroborated
+  both directions; hidden destination peers stayed intact. Later accepted
+  snapshots independently omitted each migration and its source-refill id.
+- Tiled admission, selection hide/reveal on both outputs and both-direction
+  tiled send-follow also passed with independent native readbacks and fresh
+  empty-flight snapshots. The sessionless leg's expected placements derive
+  from native source frames and topology: trace does not expose its effective
+  frame field. An attempted float toggle on a floating workspace was a no-op;
+  that sibling stayed ordinary, so intentional-float preservation is offline
+  evidence only. A later floating-scope selection retained its separate view
+  flight and was not treated as proof that every flight had retired.
+- Clamp/refusal/throw, lost observations and partial-arrival predicates remain
+  offline assertions; fixture track hints do not enforce programmatic clamps.
+  Physical shortcut/drag/game acceptance and sub-sample visible-duration
+  claims remain excluded. Harness corrections concerned shell encoding,
+  native-versus-client geometry, arithmetic grouping and unsupported probe
+  assumptions; none changed product policy or required a production workaround.
+- Exact-owner stop, independent restore and fixture shutdown left no owned
+  process/window, ledger or pending control. Settings bytes, relevant
+  SPI/taskbar state and protected-window geometry matched baseline. Raw
+  provenance, scripts, artifact identities and native readbacks remain outside
+  the repository.
+
+### Remaining boundary and exact next action
+
+- Stage 3's convergence/completion/frameless placement extraction is complete.
+  Windows remains a working dogfood slice, not the completed rearchitecture.
+  Stage 4 is next: report gesture lifecycle into core, retain drag session and
+  edge-share/release policy there, then publish desired shapes, active focus/
+  warp policy and per-screen pager content. Preserve the disabled synthetic
+  drag driver and focused-fullscreen-game pause; physical drag stays user-owned.
+- Stage 5 still needs the inventory/dead-API/common-connector audit and final
+  KDE/macOS port notes. The existing frame/member/view fields suffice for this
+  placement slice, but gesture/presentation changes remain ahead, so the core
+  interface is not yet settled enough for full ports. Audit floating-scope
+  standalone view flight behavior without treating migration retirement as
+  its acceptance. MRU occupied refill, shared/global native checks and
+  tile-override restart staging remain separate native gaps.
+- All four parked focus/send questions and the existing tentative learned-
+  minimum, placement and dev-control choices remain unchanged. No new product
+  decision or implementation blocker prevents stage 4.

@@ -15,11 +15,11 @@ use crate::world_report::{
     WORLD_CONTRACT_VERSION, WindowFact, WorldReport,
 };
 
-fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
+pub(crate) fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
     Rect { x, y, w, h }
 }
 
-fn attempt(
+pub(crate) fn attempt(
     window: &str,
     target: Rect,
     setter: FrameSetter,
@@ -418,7 +418,7 @@ fn changed_dpi_never_becomes_a_stable_clamp() {
 
 // --- engine publish behavior ---
 
-fn screen() -> ScreenReport {
+pub(crate) fn screen() -> ScreenReport {
     ScreenReport {
         output: OutputId("out-a".to_owned()),
         full_rect: Some(rect(0, 0, 800, 600)),
@@ -430,7 +430,7 @@ fn screen() -> ScreenReport {
     }
 }
 
-fn fact(window: &str, frame: Option<Rect>) -> WindowFact {
+pub(crate) fn fact(window: &str, frame: Option<Rect>) -> WindowFact {
     WindowFact {
         window: WindowId(window.to_owned()),
         output: OutputId("out-a".to_owned()),
@@ -448,7 +448,7 @@ fn fact(window: &str, frame: Option<Rect>) -> WindowFact {
     }
 }
 
-fn minimized_fact(window: &str) -> WindowFact {
+pub(crate) fn minimized_fact(window: &str) -> WindowFact {
     WindowFact {
         minimized: true,
         ..fact(window, None)
@@ -456,8 +456,9 @@ fn minimized_fact(window: &str) -> WindowFact {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn report(
+pub(crate) fn report_with_screens(
     request_seq: u64,
+    screens: Vec<ScreenReport>,
     windows: Vec<WindowFact>,
     closed: Vec<&str>,
     frames: Vec<FrameAttempt>,
@@ -475,7 +476,7 @@ fn report(
         command_seq: None,
         command: None,
         workspace_mode: crate::workspace_scope::WorkspaceMode::PerOutputLocal,
-        screens: vec![screen()],
+        screens,
         windows,
         views: vec![ScreenView {
             output: OutputId("out-a".to_owned()),
@@ -509,14 +510,37 @@ fn report(
     }
 }
 
-fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> crate::world_report::WorldReply {
+#[allow(clippy::too_many_arguments)]
+fn report(
+    request_seq: u64,
+    windows: Vec<WindowFact>,
+    closed: Vec<&str>,
+    frames: Vec<FrameAttempt>,
+    monotonic_ms: u64,
+    inventory_complete: bool,
+) -> WorldReport {
+    report_with_screens(
+        request_seq,
+        vec![screen()],
+        windows,
+        closed,
+        frames,
+        monotonic_ms,
+        inventory_complete,
+    )
+}
+
+pub(crate) fn accepted(
+    engine: &mut WorldEngine,
+    report: &WorldReport,
+) -> crate::world_report::WorldReply {
     match engine.handle_report(report) {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
 
-fn frame_row(
+pub(crate) fn frame_row(
     reply: &crate::world_report::WorldReply,
     window: &str,
 ) -> crate::world_report::WindowDesire {
@@ -1236,14 +1260,14 @@ fn stale_pair_redelivery_does_not_clobber_newer_authority() {
 
 // --- stage 3b learned minima ---
 
-fn two_facts() -> Vec<WindowFact> {
+pub(crate) fn two_facts() -> Vec<WindowFact> {
     vec![
         fact("w1", Some(rect(0, 0, 40, 90))),
         fact("w2", Some(rect(0, 0, 40, 90))),
     ]
 }
 
-fn learned_of(engine: &WorldEngine, window: &str) -> (Option<i32>, Option<i32>) {
+pub(crate) fn learned_of(engine: &WorldEngine, window: &str) -> (Option<i32>, Option<i32>) {
     engine
         .learned_mins
         .get(&WindowId(window.to_owned()))
@@ -2531,84 +2555,4 @@ fn learned_float_excursion_preserves_and_reapplies() {
         frame_row(&retiled, "w1").effective_frame.expect("tiled").w >= grown.w,
         "floor reapplies after the excursion"
     );
-}
-
-#[test]
-fn learned_shared_fixture_converges_through_raw_reports() {
-    let raw = include_str!("../../../test-fixtures/frame-convergence.json");
-    let fixture: serde_json::Value = serde_json::from_str(raw).expect("valid fixture");
-    assert_eq!(fixture["version"], serde_json::Value::from(1));
-    let cases = fixture["cases"].as_array().expect("cases array");
-    assert_eq!(cases.len(), 2);
-    for case in cases {
-        let name = case["name"].as_str().expect("name");
-        let window = case["window"].as_str().expect("window");
-        let extra_w = case["extra_w"].as_i64().expect("extra_w") as i32;
-        let extra_h = case["extra_h"].as_i64().expect("extra_h") as i32;
-        let mut engine = WorldEngine::new("gen-1").expect("generation");
-        let first = accepted(
-            &mut engine,
-            &report(1, two_facts(), vec![], vec![], 0, true),
-        );
-        let baseline = frame_row(&first, window).effective_frame.expect("tiled");
-        let other = if window == "w1" { "w2" } else { "w1" };
-        let other_base = frame_row(&first, other).effective_frame.expect("tiled");
-        let grown = Rect {
-            x: baseline.x,
-            y: baseline.y,
-            w: baseline.w + extra_w,
-            h: baseline.h + extra_h,
-        };
-        let mut wfact = fact(window, Some(grown));
-        if case["declared_max"].as_str() == Some("baseline-w") {
-            wfact.hints = crate::size_hints::WindowSizeHints {
-                min_w: None,
-                min_h: None,
-                max_w: Some(baseline.w),
-                max_h: None,
-            };
-        }
-        let second = accepted(
-            &mut engine,
-            &report(
-                2,
-                vec![wfact, fact(other, Some(other_base))],
-                vec![],
-                vec![attempt(
-                    window,
-                    baseline,
-                    FrameSetter::Accepted,
-                    Some(grown),
-                    1000,
-                )],
-                1000,
-                true,
-            ),
-        );
-        let expect_grows = case["expect_grows"].as_bool().expect("expect_grows");
-        let next = frame_row(&second, window).effective_frame.expect("tiled");
-        if expect_grows {
-            assert!(
-                next.w >= grown.w && next.h == grown.h,
-                "{name}: learned target {next:?} covers {grown:?}"
-            );
-            assert!(!engine.learned_mins.is_empty(), "{name}: learns");
-            assert_eq!(
-                frame_row(&second, window).frame_authority,
-                ScopeAuthority::Controlled,
-                "{name}: learned target is actionable, not a hold"
-            );
-        } else {
-            assert!(
-                engine.learned_mins.is_empty(),
-                "{name}: contradiction learns nothing"
-            );
-            assert_eq!(next, baseline, "{name}: target unchanged");
-            assert_eq!(
-                frame_row(&second, window).frame_authority,
-                ScopeAuthority::Hold(HoldReason::ConstraintClamp),
-                "{name}: stable pair still suppresses"
-            );
-        }
-    }
 }

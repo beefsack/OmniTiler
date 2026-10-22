@@ -979,6 +979,12 @@ mod world_reads;
 #[cfg(test)]
 mod world_diff_tests;
 
+// Shared frame-convergence through the production seam: the same fixture
+// sections the core runners consume, with every fact produced by the real
+// native seam. Split from `world_diff_tests`; rig helpers are imported.
+#[cfg(test)]
+mod world_diff_shared_convergence_tests;
+
 // Native-free route smoke test: capture shape plus sequencer plus offline
 // facade actuation with logical view echoes. Same W3 cutover gate.
 #[cfg(test)]

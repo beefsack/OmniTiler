@@ -76,6 +76,198 @@ fn member_thrown(op: &str, window: &str, target_ws: &str, attempt_ms: u64) -> Me
     }
 }
 
+/// Raw membership arrival for one migration member: accepted setter with
+/// a source preimage and a target postimage.
+fn member_arrived(op: &str, window: &str, target_ws: &str, attempt_ms: u64) -> MemberAttempt {
+    MemberAttempt {
+        operation_id: op.to_owned(),
+        window: WindowId(window.to_owned()),
+        target_output: OutputId("out-b".to_owned()),
+        target_workspace: target_ws.to_owned(),
+        setter: FrameSetter::Accepted,
+        pre: Some((OutputId("out-a".to_owned()), target_ws.to_owned())),
+        post: Some((OutputId("out-b".to_owned()), target_ws.to_owned())),
+        attempt_ms,
+    }
+}
+
+#[test]
+fn settlement_shared_fixture_partial_holds_then_completes() {
+    // Shared `test-fixtures/frame-convergence.json` settlement section: one
+    // member arrives while the other refuses, so the migration holds its
+    // operation; the refused member's late arrival then completes the
+    // migration to the source refill. Raw attempts only, no verdicts.
+    let raw = include_str!("../../../test-fixtures/frame-convergence.json");
+    let fixture: serde_json::Value = serde_json::from_str(raw).expect("valid fixture");
+    let cases = fixture["settlement_cases"]
+        .as_array()
+        .expect("settlement_cases array");
+    assert_eq!(cases.len(), 1);
+    for case in cases {
+        let name = case["name"].as_str().expect("name");
+        let members: Vec<String> = case["members"]
+            .as_array()
+            .expect("members")
+            .iter()
+            .map(|v| v.as_str().expect("member").to_owned())
+            .collect();
+        assert_eq!(members.len(), 2, "{name}: shared shape is two members");
+        let refuse_member = case["refuse_member"].as_str().expect("refuse_member");
+        let arrive_member = members
+            .iter()
+            .find(|m| m.as_str() != refuse_member)
+            .expect("arrive member");
+        let mut engine = WorldEngine::new("gen-1").expect("generation");
+        let first = accepted(
+            &mut engine,
+            &report(
+                1,
+                1,
+                vec![
+                    fact(&members[0], "out-a", 0),
+                    fact(&members[1], "out-a", 100),
+                ],
+                "",
+                None,
+                None,
+                vec![],
+                vec![],
+            ),
+        );
+        let view_a = first
+            .outputs
+            .iter()
+            .find(|row| row.output.0 == "out-a")
+            .and_then(|row| row.logical_view.clone())
+            .expect("view a");
+        accepted(
+            &mut engine,
+            &report(
+                2,
+                2,
+                vec![
+                    fact(&members[0], "out-a", 0),
+                    fact(&members[1], "out-a", 100),
+                ],
+                "",
+                Some(11),
+                Some(WorldCommand::MigrateWorkspace {
+                    source_output: OutputId("out-a".to_owned()),
+                    target_output: OutputId("out-b".to_owned()),
+                    workspace: view_a.clone(),
+                }),
+                vec![],
+                vec![],
+            ),
+        );
+        // Partial arrival: one member proves at the target while the other
+        // reports a raw refusal at the source. The operation stays retained.
+        let partial = accepted(
+            &mut engine,
+            &report(
+                3,
+                3,
+                vec![
+                    fact(arrive_member, "out-b", 0),
+                    fact(refuse_member, "out-a", 100),
+                ],
+                "",
+                None,
+                None,
+                vec![
+                    member_arrived("op-11", arrive_member, &view_a, 3),
+                    member_refused("op-11", refuse_member, &view_a, 3),
+                ],
+                vec![],
+            ),
+        );
+        assert_eq!(
+            case["expect_retained"].as_bool().expect("expect_retained"),
+            partial
+                .transfers
+                .iter()
+                .any(|t| t.operation_id == "op-11" && matches!(t.kind, TransferKind::Migration)),
+            "{name}: partial arrival retains the migration"
+        );
+        let arrived_row = partial
+            .windows
+            .iter()
+            .find(|row| row.lifetime.0 == *arrive_member)
+            .expect("arrived row");
+        assert_eq!(
+            (
+                arrived_row.output.0.as_str(),
+                arrived_row.workspace.as_str()
+            ),
+            ("out-b", view_a.as_str()),
+            "{name}: arrived member homed at target"
+        );
+        let expect_membership = match case["expect_authority"].as_str().expect("expect_authority") {
+            "controlled" => ScopeAuthority::Controlled,
+            other => panic!("{name}: unknown expect_authority {other}"),
+        };
+        assert_eq!(
+            arrived_row.membership_authority, expect_membership,
+            "{name}: arrived member actionable as tabled"
+        );
+        // Late external arrival of the refused member completes the
+        // migration to the source refill: no new actuation rides (the held
+        // transfer never re-actuates), target observation wins over the
+        // staged refusal. The tabled settlement selects which completion
+        // shape to verify against the real transfer ids.
+        let settled = accepted(
+            &mut engine,
+            &report(
+                4,
+                4,
+                vec![
+                    fact(arrive_member, "out-b", 0),
+                    fact(refuse_member, "out-b", 100),
+                ],
+                "",
+                None,
+                None,
+                vec![],
+                vec![],
+            ),
+        );
+        match case["expect_settled"].as_str().expect("expect_settled") {
+            "refill-only" => {
+                assert!(
+                    settled
+                        .transfers
+                        .iter()
+                        .any(|t| t.operation_id == "op-11"
+                            && matches!(t.kind, TransferKind::Migration)),
+                    "{name}: full arrival keeps the migration only for the refill: {:?}",
+                    settled.transfers
+                );
+                assert!(
+                    settled
+                        .transfers
+                        .iter()
+                        .any(|t| t.operation_id == "op-11-refill"),
+                    "{name}: the remaining work is the source refill: {:?}",
+                    settled.transfers
+                );
+                for member in &members {
+                    let row = settled
+                        .windows
+                        .iter()
+                        .find(|row| row.lifetime.0 == *member)
+                        .expect("settled row");
+                    assert_eq!(
+                        row.output.0.as_str(),
+                        "out-b",
+                        "{name}: {member} homed at target"
+                    );
+                }
+            }
+            other => panic!("{name}: unknown expect_settled {other}"),
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn report(
     request_seq: u64,

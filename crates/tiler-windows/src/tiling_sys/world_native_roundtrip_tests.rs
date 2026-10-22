@@ -162,10 +162,10 @@ fn source_refill_migration_arrival_and_views_settle() {
 fn occupied_target_migration_arrival_proves_without_deferred_view() {
     // Live-proportionate migration: three members move onto an occupied
     // target output while the deferred target view still names the old
-    // workspace. Member arrival must prove through the remapped frame's
-    // screen affinity (never the deferred view, never the setter
-    // boolean): the pre-fix seam held here with zero membership writes
-    // because the physical proof demanded the not-yet-flipped view.
+    // workspace. Member arrival must prove through the core-published
+    // actuation frame's screen affinity (never the deferred view, never
+    // the setter boolean): the pre-fix seam held here with zero membership
+    // writes because the physical proof demanded the not-yet-flipped view.
     // Two occupants ride the target's other workspace with working
     // hide legs so the target-view batch can complete after arrival.
     let mut env = env_with(208_101);
@@ -248,7 +248,7 @@ fn occupied_target_migration_arrival_proves_without_deferred_view() {
         .clone();
     // All three members prove arrival in the command tick even though the
     // target view still names the occupants' workspace natively: the
-    // remapped frames land on the target output. The migration itself
+    // core-published frames land on the target output. The migration itself
     // holds only for the deferred source refill.
     let arrivals: Vec<_> = moved
         .members
@@ -352,7 +352,7 @@ fn occupied_target_migration_arrival_proves_without_deferred_view() {
 }
 
 /// Asymmetric migration topology: a large negative-origin source and a
-/// small y-offset target. A FULL-delta mechanical remap of a source-edge
+/// small y-offset target. A blind FULL-delta translation of a source-edge
 /// member lands past the target's exclusive edge with zero overlap, so
 /// only the core-published target slot can place and prove arrival.
 fn asymmetric_migration_areas() -> (Vec<super::super::MonitorArea>, Vec<Rect>) {
@@ -373,7 +373,7 @@ fn asymmetric_migration_areas() -> (Vec<super::super::MonitorArea>, Vec<Rect>) {
 }
 
 /// The published migration slot must sit fully inside the target work
-/// area: the live defect class strands remapped members beyond it.
+/// area: the live defect class stranded translated members beyond it.
 fn assert_migration_slot(reply: &WorldReply, window: &str, work: Rect) -> Rect {
     let row = reply
         .windows
@@ -408,10 +408,11 @@ fn asymmetric_migration_members_land_on_published_slots_both_prove() {
     // Producer-shaped migration hazard: two members move from a large
     // negative-origin source onto a small offset target whose other
     // workspace stays occupied (hidden batch after arrival). Pre-fix the
-    // edge member's FULL-delta remap lands past the target exclusive
-    // edge with zero overlap: no affinity, no proof, PossiblyExecuted
-    // while the window walks further each retry. With core-owned slots
-    // both members place exactly and prove in the command tick.
+    // edge member's blind FULL-delta translation would land past the
+    // target exclusive edge with zero overlap: no affinity, no proof,
+    // PossiblyExecuted while the window walks further each retry. With
+    // core-owned slots both members place exactly and prove in the
+    // command tick.
     let mut env = env_with(208_201);
     env.state.ensure_device(DEV2);
     let o1 = env.state.output_token(DEV1);
@@ -1037,7 +1038,217 @@ fn roundtrip_migration_select_occupied_then_close_reflows_and_settles() {
     );
 }
 
-/// Native-arrangement focused close (stage2b live-close lock-in):
+/// Sessionless floating-source migration on asymmetric outputs: the
+/// non-float member's source rect FULL-delta translates off the small
+/// destination, so only the core-owned constrained placement can land and
+/// prove arrival. The seam must write the published slot as part of the
+/// membership move (never a native origin-delta guess), while the float
+/// member preserves its frame with no placement and still reports its
+/// membership attempt.
+#[test]
+fn floating_source_migration_writes_core_slot_and_preserves_float() {
+    let mut env = env_with(208_501);
+    env.state.ensure_device(DEV2);
+    let o1 = env.state.output_token(DEV1);
+    let o2 = env.state.output_token(DEV2);
+    let (areas, fulls) = asymmetric_migration_areas();
+    let a1 = win_key(208_501, 2261, "proc-161");
+    let f1 = win_key(208_502, 2262, "proc-162");
+    admit_bare(&mut env, &a1, "w1");
+    admit_bare(&mut env, &f1, "wf");
+    env.state.floated.insert(f1.clone());
+    let float_rect = rect(-2000, 100, 300, 200);
+    script_live(&a1, "w1", rect(-300, 1000, 400, 300), plain_facts());
+    script_live(&f1, "wf", float_rect, plain_facts());
+    let mut owner = WorldOwner::bootstrap_ids(ADAPTER, GENERATION).expect("owner");
+    let observed = live_visible_observed();
+    live_tick(
+        &mut env,
+        &mut owner,
+        &observed,
+        &[],
+        &areas,
+        &fulls,
+        moving_prims(),
+        0,
+        None,
+    );
+    let ws = owner.engine().logical_view(&o1).expect("source view");
+    // Toggle the source workspace to floating: the layout session releases,
+    // so the later migration carries by sessionless core membership.
+    let observed = live_visible_observed();
+    live_tick(
+        &mut env,
+        &mut owner,
+        &observed,
+        &[],
+        &areas,
+        &fulls,
+        moving_prims(),
+        0,
+        Some(WorldCommand::SetWorkspaceTiling {
+            output: OutputId(o1.clone()),
+            workspace: ws.clone(),
+            tiled: false,
+        }),
+    );
+    // The bootstrap tick tiles w1 into the roomy source slot; reposition
+    // it like an external app move so the migrate tick places from a
+    // source-edge rect whose blind FULL-delta translation lands off the
+    // small destination.
+    script_live(&a1, "w1", rect(-300, 1000, 400, 300), plain_facts());
+    // Migrate the floating workspace onto the small offset target.
+    let observed = live_visible_observed();
+    let writes_before = S_SET_CALLS.with(|m| m.borrow().len());
+    let moved = live_tick(
+        &mut env,
+        &mut owner,
+        &observed,
+        &[],
+        &areas,
+        &fulls,
+        moving_prims(),
+        0,
+        Some(WorldCommand::MigrateWorkspace {
+            source_output: OutputId(o1.clone()),
+            target_output: OutputId(o2.clone()),
+            workspace: ws.clone(),
+        }),
+    );
+    let migration_op = moved
+        .reply
+        .transfers
+        .iter()
+        .find(|t| matches!(t.kind, TransferKind::Migration))
+        .expect("migration retained")
+        .operation_id
+        .clone();
+    // The sessionless member carries a core-owned placement constrained
+    // into the destination work area (the blind FULL-delta translation
+    // lands off-screen); the float member carries none.
+    let work2 = areas[1].work;
+    let row_w1 = moved
+        .reply
+        .windows
+        .iter()
+        .find(|w| w.lifetime.0 == "w1")
+        .expect("sessionless member row");
+    assert_eq!(
+        row_w1.membership_authority,
+        Auth::Controlled,
+        "w1 membership desired"
+    );
+    assert_eq!(
+        row_w1.frame_authority,
+        Auth::Untouched,
+        "w1 placement rides the membership move, never a sweep write"
+    );
+    let slot = row_w1
+        .effective_frame
+        .expect("core publishes the sessionless placement pre-arrival");
+    assert_eq!((slot.w, slot.h), (400, 300), "size preserved: {slot:?}");
+    assert_eq!(
+        slot,
+        Rect {
+            x: 240,
+            y: 120,
+            w: 400,
+            h: 300,
+        },
+        "FULL-delta translation constrained into the destination work area"
+    );
+    assert!(
+        slot.x >= work2.x
+            && slot.y >= work2.y
+            && slot.x + slot.w <= work2.x + work2.w
+            && slot.y + slot.h <= work2.y + work2.h,
+        "slot {slot:?} constrained into work {work2:?}"
+    );
+    let row_wf = moved
+        .reply
+        .windows
+        .iter()
+        .find(|w| w.lifetime.0 == "wf")
+        .expect("float member row");
+    assert!(
+        row_wf.effective_frame.is_none(),
+        "float member carries no placement: {row_wf:?}"
+    );
+    // The seam writes the published slot for w1 exactly once and never
+    // touches the float's frame.
+    let calls = S_SET_CALLS.with(|m| m.borrow().clone());
+    let fresh: Vec<(u64, Rect)> = calls.into_iter().skip(writes_before).collect();
+    let w1_calls: Vec<Rect> = fresh
+        .iter()
+        .filter(|(hwnd, _)| *hwnd == a1.hwnd)
+        .map(|(_, frame)| *frame)
+        .collect();
+    assert_eq!(
+        w1_calls,
+        vec![Rect {
+            x: slot.x - 8,
+            y: slot.y - 8,
+            w: slot.w + 16,
+            h: slot.h + 16,
+        }],
+        "one placement write at the published slot, never a remap guess"
+    );
+    assert!(
+        fresh.iter().all(|(hwnd, _)| *hwnd != f1.hwnd),
+        "float takes no frame writes: {fresh:?}"
+    );
+    let live = live_visible_observed();
+    assert_eq!(
+        live.iter()
+            .find(|w| w.token == "w1")
+            .expect("mover stays visible")
+            .visible,
+        slot,
+        "w1 physically lands on the published slot"
+    );
+    assert_eq!(
+        live.iter()
+            .find(|w| w.token == "wf")
+            .expect("float stays visible")
+            .visible,
+        float_rect,
+        "float rectangle preserved across the migration"
+    );
+    // w1 reports its arrival attempt through the exact slot plus
+    // affinity; wf proves by preservation alone (no dispatch, no write).
+    // The migration holds only for the deferred source refill.
+    let arrivals: Vec<_> = moved
+        .members
+        .iter()
+        .filter(|a| a.operation_id == migration_op)
+        .collect();
+    assert_eq!(
+        arrivals.len(),
+        1,
+        "only the placed member dispatches: {:?}",
+        moved.members
+    );
+    assert_eq!(
+        arrivals[0].post.as_ref(),
+        Some(&(OutputId(o2.clone()), ws.clone())),
+        "arrival proves: {:?}",
+        moved.members
+    );
+    assert!(
+        moved
+            .reply
+            .transfers
+            .iter()
+            .any(|t| t.operation_id == migration_op),
+        "migration holds only for the refill: {:?}",
+        moved.reply.transfers
+    );
+    assert_eq!(
+        env.state.applied_homing.get("w1"),
+        Some(&(o2.clone(), ws.clone())),
+        "w1 arrival proves on the published slot"
+    );
+}
 /// D1 stages m1 as the full-left column with m2/m3 stacked in the right
 /// column, the live helper foregrounds m3, then closes focused m3. The
 /// sibling absorbs the right column while the left column keeps its slot,

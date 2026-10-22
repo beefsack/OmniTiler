@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::boundary::{CoreReply, ProjectionKind, project_retained_tiled_geometry};
 use crate::directional::{OutputId, WindowId, WorkspaceId};
+use crate::geometry::Rect;
 use crate::session::{DomainKey, RefusalKind};
 use crate::world_engine::WorldEngine;
 use crate::world_report::{
@@ -702,9 +703,16 @@ impl WorldEngine {
             }
         }
         // Redirected movers not yet homed at the target: one
-        // membership-only row at the transfer target homing (frame
-        // untouched, never allocation or geometry). Arrived movers already
-        // carry sweep rows, so the emitted guard keeps exactly one homing.
+        // membership row at the transfer target homing (never allocation).
+        // Cross-output migration members with a readable ordinary frame
+        // additionally carry a core-owned portable placement in
+        // `effective_frame` (FULL-delta translated, constrained to the
+        // destination work area): the adapter actuates it as part of the
+        // membership move, never a native origin-delta guess. Same-output
+        // migration members, floats, sticky, overlays, minimized, and
+        // unreadable/incomplete members carry no placement and ride
+        // membership only. Arrived movers already carry sweep rows, so the
+        // emitted guard keeps exactly one homing.
         // Minimized lifetimes never ride this lane: staged minimized facts
         // emit with minimized frame authority below.
         let minimized_ids: BTreeSet<&str> = staged
@@ -713,6 +721,23 @@ impl WorldEngine {
             .filter(|fact| fact.minimized)
             .map(|fact| fact.window.0.as_str())
             .collect();
+        let mut migration_redirect: BTreeSet<String> = BTreeSet::new();
+        for retained in &self.retained {
+            if !matches!(&retained.target.kind, TransferKind::Migration) {
+                continue;
+            }
+            let key = DomainKey {
+                output: retained.target.target_output.clone(),
+                workspace: WorkspaceId(retained.target.target_workspace.clone()),
+            };
+            for member in &retained.members {
+                if redirect.get(&member.0).as_ref() == Some(&&key)
+                    && self.staged_homing(member).as_ref() != Some(&key)
+                {
+                    migration_redirect.insert(member.0.clone());
+                }
+            }
+        }
         for (window_id, key) in &redirect {
             if minimized_ids.contains(window_id.as_str()) {
                 continue;
@@ -722,12 +747,17 @@ impl WorldEngine {
             }
             let member_hold = window_holds.get(window_id).copied();
             let window = WindowId(window_id.clone());
+            let placement = if migration_redirect.contains(window_id) {
+                migration_cross_output_placement(&staged, &window, key)
+            } else {
+                None
+            };
             windows.push(WindowDesire {
                 lifetime: window,
                 output: key.output.clone(),
                 workspace: key.workspace.0.clone(),
                 allocation: None,
-                effective_frame: None,
+                effective_frame: placement,
                 frame_authority: ScopeAuthority::Untouched,
                 membership_authority: match member_hold {
                     Some(reason) => ScopeAuthority::Hold(reason),
@@ -999,4 +1029,95 @@ impl WorldEngine {
             })
             .collect()
     }
+}
+
+/// Constrain one preserved-size rect inside the destination work area:
+/// the origin clamps into the area when the rect fits, else pins to the
+/// area origin (size preserved, never resized). Pure [`Rect`] math, no
+/// platform-channel checks.
+fn constrain_rect_to_area(rect: Rect, area: Rect) -> Rect {
+    let x = if rect.w <= area.w {
+        rect.x.clamp(area.x, area.x + area.w - rect.w)
+    } else {
+        area.x
+    };
+    let y = if rect.h <= area.h {
+        rect.y.clamp(area.y, area.y + area.h - rect.h)
+    } else {
+        area.y
+    };
+    Rect {
+        x,
+        y,
+        w: rect.w,
+        h: rect.h,
+    }
+}
+
+/// Portable cross-output placement for one sessionless migration member:
+/// the observed source frame FULL-delta translated onto the target output,
+/// then constrained to the destination work area. The translation grounds
+/// on the RAW observed screen (`staged.fact_output`), never the logical
+/// homing: midflight facts may read on another output than the homing
+/// (host-owned receipts hold a member at the source while its frame
+/// already shows at the target). An already-target frame takes no
+/// placement (never a double translation); the membership row alone
+/// suffices and the sweep re-tiles. `None` for same-output members
+/// (shared-screen view batch proves, ordering unchanged), floats, sticky,
+/// overlays, minimized, unreadable frames, unknown homing, and unreadable
+/// or incomplete screens (hold, never an invented placement). Ordinary
+/// float sends and tiled-to-floating crossings never reach here (migration
+/// members only, chosen by the caller).
+fn migration_cross_output_placement(
+    staged: &crate::world_engine::StagedReport,
+    window: &WindowId,
+    target: &DomainKey,
+) -> Option<Rect> {
+    let home = staged.homing.get(window)?;
+    if home.output == target.output {
+        return None;
+    }
+    let fact = staged.facts.get(window)?;
+    if fact.minimized
+        || fact.sticky
+        || fact.floating
+        || fact.fullscreen
+        || fact.maximized
+        || fact.fit_excluded
+    {
+        return None;
+    }
+    let source_rect = fact.rect?;
+    if source_rect.w <= 0 || source_rect.h <= 0 {
+        return None;
+    }
+    // Raw observation grounds the source screen: the index is total over
+    // staged facts, so a missing entry means unknown geometry and takes
+    // no placement, never a guess.
+    let observed_output = staged.fact_output.get(window)?;
+    if *observed_output == target.output {
+        return None;
+    }
+    let source_screen = staged
+        .screens
+        .iter()
+        .find(|s| &s.output == observed_output)?;
+    let target_screen = staged.screens.iter().find(|s| s.output == target.output)?;
+    if !source_screen.complete || !target_screen.complete {
+        return None;
+    }
+    let source_full = source_screen.full_rect?;
+    let target_full = target_screen.full_rect?;
+    let target_area = target_screen.work_area?;
+    if target_area.w <= 0 || target_area.h <= 0 {
+        return None;
+    }
+    let translated = Rect {
+        x: source_rect.x - source_full.x + target_full.x,
+        y: source_rect.y - source_full.y + target_full.y,
+        w: source_rect.w,
+        h: source_rect.h,
+    };
+    let placed = constrain_rect_to_area(translated, target_area);
+    crate::bounds::valid_carried_rect(placed.x, placed.y, placed.w, placed.h).then_some(placed)
 }

@@ -733,37 +733,6 @@ impl<'a> LiveNative<'a> {
         }
     }
 
-    /// Mechanical cross-output translation for tiled arrivals with no
-    /// published frame (redirect-lane movers): the live visible frame
-    /// shifted by the FULL-monitor delta onto the target output,
-    /// position and size preserved, never resized or refit. The sweep
-    /// re-tiles to the exact slot after arrival proves. `None` when
-    /// already on the target or when either monitor is unknown: hold,
-    /// never invent placement.
-    fn remap_to_output(&self, live: Rect, target_out: &str) -> Option<Rect> {
-        let source_device = super::directional_resolution::output_for_rect(&self.areas, &live);
-        if self.output_tokens.get(&source_device).map(String::as_str) == Some(target_out) {
-            return None;
-        }
-        let source_full = self
-            .areas
-            .iter()
-            .find(|area| area.device == source_device)
-            .map(|area| area.full)?;
-        let target_device = self.device_for_output(target_out)?;
-        let target_full = self
-            .areas
-            .iter()
-            .find(|area| area.device == target_device)
-            .map(|area| area.full)?;
-        Some(Rect {
-            x: live.x - source_full.x + target_full.x,
-            y: live.y - source_full.y + target_full.y,
-            w: live.w,
-            h: live.h,
-        })
-    }
-
     /// Retained proven homing for one token, if any. Never the desired core
     /// target.
     fn committed_homing(&self, token: &str) -> Option<(String, String)> {
@@ -1049,7 +1018,6 @@ impl NativeOps for LiveNative<'_> {
         out: &str,
         ws: &str,
         frame: Option<Rect>,
-        remap: bool,
     ) -> Result<bool, ()> {
         let key = self.key_of(token).ok_or(())?;
         if (self.prims.hook_pending)() {
@@ -1101,12 +1069,14 @@ impl NativeOps for LiveNative<'_> {
         let target_active = self.core_views.get(out).is_some_and(|view| view == ws);
         if target_active {
             // Reveal path (or plain reassignment when already visible),
-            // then the tiled frame write: the caller's desired visible
-            // frame when published, else a mechanical remap onto the
-            // target output for redirect-lane movers (position preserved,
-            // never resized: the sweep re-tiles after arrival proves).
-            // Membership alone never proves a cross-output arrival: the
-            // frame must physically land on the target output first.
+            // then the core-owned frame write when published. Cross-output
+            // tiled movers and sessionless migration members carry their
+            // actionable placement in `frame` (core-translated and
+            // work-area constrained); membership-only lanes (floats,
+            // sticky, overlays, frameless holds) carry none and preserve
+            // the physical frame. Membership alone never proves a
+            // cross-output arrival: the frame must physically land on the
+            // target output first.
             // Iconic minimized reads through with no placement.
             if self.committed_hidden(&key) {
                 let revealed = settle_commit(self.commit_reveal(&key, &expected))?;
@@ -1121,12 +1091,6 @@ impl NativeOps for LiveNative<'_> {
             }
             if let Some(target) = frame {
                 return self.frame_write_inner(&key, &expected, target);
-            }
-            if remap
-                && let Some(live) = self.read_frame(token)
-                && let Some(translated) = self.remap_to_output(live, out)
-            {
-                return self.frame_write_inner(&key, &expected, translated);
             }
         } else {
             // Hide path: the window leaves the visible set. Hidden
@@ -1149,11 +1113,10 @@ impl NativeOps for LiveNative<'_> {
         // View-independent member proof for the migration membership
         // phase: the target view flips only after every member proves,
         // so this proof must never wait for it. Tiled arrivals prove
-        // through the actuation frame (`frame` when published, else the
-        // mechanical remap) landing on the target output; floats prove
-        // through their preserved frame. Identity, lifetime, scope,
-        // hosted-child, and visibility gates match the receipt path;
-        // the setter boolean is never proof.
+        // through the core-published actuation frame landing on the target
+        // output; floats prove through their preserved frame. Identity,
+        // lifetime, scope, hosted-child, and visibility gates match the
+        // receipt path; the setter boolean is never proof.
         let Some(key) = self.key_of(token) else {
             return false;
         };
@@ -1193,9 +1156,10 @@ impl NativeOps for LiveNative<'_> {
             return true;
         }
         if floating {
-            // Floats preserve their physical frame by design (never
-            // remapped): the live frame must still equal the observation
-            // baseline exactly. Never affinity and never the deferred view.
+            // Floats preserve their physical frame by design (the
+            // membership move carries no placement): the live frame must
+            // still equal the observation baseline exactly. Never affinity
+            // and never the deferred view.
             return self
                 .read_frame(token)
                 .is_some_and(|live| Some(live) == baseline_frame);
@@ -1206,10 +1170,11 @@ impl NativeOps for LiveNative<'_> {
         if let Some(target) = frame {
             return live == target && self.affinity_of(&live).as_deref() == Some(out);
         }
-        // Redirect lane (no published frame): the mechanical remap lands
-        // the live frame on the target output. Screen affinity plus the
-        // visibility proof above is the arrival; the deferred target view
-        // is not required.
+        // Membership-only hold (no published frame): the live frame must
+        // already sit on the target output with the visibility proof above.
+        // The deferred target view is not required. Core publishes
+        // placements for cross-output migration members, so this lane only
+        // serves holds and same-output proofs, never a guessed placement.
         self.affinity_of(&live).as_deref() == Some(out)
     }
 
@@ -1383,8 +1348,9 @@ impl<'a> LiveNative<'a> {
         if !row.floating {
             // Tiled rows: exact frame when published, else affinity plus
             // the proven view. Plain visibility never proves cross-output
-            // arrival (the redirect lane publishes no frame, so the
-            // remapped frame's screen plus the view batch is the proof).
+            // arrival (membership-only lanes prove through the screen plus
+            // the view batch; core publishes placements for cross-output
+            // migration members).
             if let Some(target) = row.effective_frame {
                 let Some(live) = self.read_frame(token) else {
                     return false;

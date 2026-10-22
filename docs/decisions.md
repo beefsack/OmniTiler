@@ -2715,6 +2715,17 @@ platform API behavior.
   (window, move or resize), cursor updates, release and cancel, and render/apply.
   Core owns the drag session, target, overlay shape, release outcome
   (insert/swap/cross-output/float) and edge-drag share policy.
+- Frameless migration placement extraction, 2026-10-23: core publishes
+  cross-output sessionless migration placement as an effective frame consumed
+  by membership actuation, not as a tile allocation or ordinary float frame
+  authority. The observed source frame translates by the FULL-output delta;
+  its origin is constrained to the destination work area without resizing,
+  with oversized axes pinned to the work-area origin. Raw observed output
+  grounds the translation, so already-target frames never translate twice.
+  Windows no longer guesses a remap. Same-output follow ordering,
+  cross-output-only pre-arrival tile slots, intentional-float physical frames
+  and unsupported tiled-to-float source-state transactions are unchanged.
+  [Acceptance and limits](changes/core-world-model-rearchitecture.md#stage-3b4-accepted-outcome-2026-10-23).
 - User approved 2026-10-20: core publishes per-screen pager content in the
   world state: ordered workspaces with labels, current, occupied,
   contains-focused, and per-workspace window lists if icons need them.

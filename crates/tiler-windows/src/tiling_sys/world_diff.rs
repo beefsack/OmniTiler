@@ -298,28 +298,24 @@ pub(super) trait NativeOps {
     fn write_frame(&mut self, token: &str, rect: Rect) -> Result<bool, ()>;
     /// Membership actuation toward `(out, ws)` with the desired visible
     /// frame as an actuation TARGET only (`None` for membership-only
-    /// rows such as redirect-lane movers, floats/sticky/overlays, which
-    /// carry no published frame). `remap` allows a tiled cross-output
-    /// arrival to translate the live frame onto the target output
-    /// mechanically (position preserved, never resized or refit: the
-    /// sweep re-tiles after arrival); floats pass `false` and preserve
-    /// their physical frame. The setter boolean is never proof: the
-    /// caller re-reads exact homing/frame/visibility before settling
-    /// Applied.
+    /// rows such as floats/sticky/overlays, which carry no published
+    /// frame). Cross-output tiled movers and sessionless migration members
+    /// carry their core-owned placement here (translated and constrained
+    /// to the destination work area); the adapter never guesses placement.
+    /// The setter boolean is never proof: the caller re-reads exact
+    /// homing/frame/visibility before settling Applied.
     fn move_membership(
         &mut self,
         token: &str,
         out: &str,
         ws: &str,
         frame: Option<Rect>,
-        remap: bool,
     ) -> Result<bool, ()>;
     /// View-independent arrival proof for one migration member. The
     /// migration target view flips only after every member proves, so
     /// member proof must never wait for it: tiled arrivals prove through
-    /// the actuation frame (`frame` when published, else the mechanical
-    /// remap) landing on the target output, floats through their
-    /// preserved frame (`baseline_frame`), always under full
+    /// the core-published actuation frame landing on the target output,
+    /// floats through their preserved frame (`baseline_frame`), always under full
     /// identity/lifetime/scope/visibility gates. The default holds (no
     /// proof); the production seam overrides. The setter boolean is never
     /// proof here either.
@@ -441,7 +437,6 @@ impl NativeOps for FakeNative {
         out: &str,
         ws: &str,
         frame: Option<Rect>,
-        remap: bool,
     ) -> Result<bool, ()> {
         if self.throw_membership.contains(token) {
             return Err(());
@@ -454,11 +449,11 @@ impl NativeOps for FakeNative {
             window.output = out.to_owned();
             window.workspace = ws.to_owned();
             // Membership-only lane: the offline stand-in never moves
-            // frames here (production `LiveNative` remaps tiled targets
-            // and writes exact ones under the same gates; geometry still
-            // converges through the deferred frame phase). Both actuation
-            // targets ride only as inputs for the production seam.
-            let _ = (frame, remap);
+            // frames here (production `LiveNative` writes the core-owned
+            // frame under the same gates; geometry still converges
+            // through the deferred frame phase). The actuation target
+            // rides only as input for the production seam.
+            let _ = frame;
         }
         self.membership_writes += 1;
         self.note_write();
@@ -1319,27 +1314,19 @@ pub(super) fn apply_world_reply(
         // possibly-executed write never repeats.
         effects.mark_member_attempted(&op, &row.lifetime.0);
         let before = ops.read_homing(&row.lifetime.0);
-        // Tiled rows carry their desired frame as the actuation target
-        // (the production seam writes it as part of the move);
-        // membership-only lanes (frameless redirect rows, floats/sticky/
-        // overlays) pass `None`. Tiled cross-output rows without a
-        // published frame additionally allow a mechanical remap onto the
-        // target output (position preserved, never resized: the sweep
-        // re-tiles after arrival); floats pass `false` and preserve
-        // their physical frame.
+        // Tiled rows carry their core-owned desired frame as the actuation
+        // target (the production seam writes it as part of the move);
+        // membership-only lanes (floats/sticky/overlays, frameless holds)
+        // pass `None` and preserve the physical frame. Same-output movers
+        // need no translation (the view batch proves on the shared
+        // screen); cross-output movers ride the published slot or the
+        // sessionless migration placement.
         let frame_target = if row.floating || base.floating {
             None
         } else {
             row.effective_frame
         };
-        let remap = !row.floating && !base.floating;
-        let moved = ops.move_membership(
-            &row.lifetime.0,
-            &target_out,
-            &target_ws,
-            frame_target,
-            remap,
-        );
+        let moved = ops.move_membership(&row.lifetime.0, &target_out, &target_ws, frame_target);
         // Re-read for the mechanical post proof BEFORE any early
         // invalidation break: the setter boolean is never proof, and the
         // raw attempt must survive even when racing input stopped the pass.
@@ -1726,22 +1713,24 @@ pub(super) fn apply_world_reply(
             // Arm the member phase immediately before dispatch so a
             // possibly-executed write never repeats.
             effects.mark_member_attempted(&op, id);
-            // Migration members ride their desired frames as actuation
-            // targets exactly like window transfers (frameless redirect
-            // lanes carry none and remap mechanically instead); floats
-            // preserve their frame.
-            let (member_frame, member_remap) = reply
+            // Migration members ride their core-owned desired frames as
+            // actuation targets exactly like window transfers (tiled
+            // slots and sessionless cross-output placements); floats and
+            // frameless holds carry none and preserve their frame.
+            let member_frame = reply
                 .windows
                 .iter()
                 .find(|row| row.lifetime.0 == *id)
                 .map(|row| {
-                    let remap = !row.floating && !base.floating;
-                    let frame = if remap { row.effective_frame } else { None };
-                    (frame, remap)
+                    if row.floating || base.floating {
+                        None
+                    } else {
+                        row.effective_frame
+                    }
                 })
-                .unwrap_or((None, false));
+                .unwrap_or(None);
             let before = ops.read_homing(id);
-            let moved = ops.move_membership(id, &out, &ws, member_frame, member_remap);
+            let moved = ops.move_membership(id, &out, &ws, member_frame);
             // Mechanical facts only, staged before any early-invalidation
             // break so the raw attempt survives racing input: the setter
             // boolean is never proof. The core derives arrival, refusal, and

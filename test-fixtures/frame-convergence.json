@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "Stage 3b minimal shared frame-convergence: stable accepted growth at the requested origin learns a conservative minimum and changes the next tiled target; a contradictory declared maximum never learns. Core (world_frame_policy_tests) and Windows production sequencing (world_diff_tests) consume the SAME cases through the raw FrameAttempt/report path with separate runners. Fixture track hints are not programmatic clamps; the live clamp predicate stays offline.",
+  "description": "Stage 3b shared frame-convergence. Section cases: stable accepted growth at the requested origin learns a conservative minimum and changes the next tiled target; a contradictory declared maximum never learns; refused/throwing setters hold on the transient backoff with no learning and retry controlled past it; exact re-observation of the learned target converges with the floor retained. Section replacement_cases: a retired token reused as a fresh native lifetime never inherits suppression or floors. Section observation_cases: incomplete, hidden, and unreadable observations record no invented proof, then recovery observations converge as tabled. Core runners mirror the exact seam capture facts: the flagged report carries the pre-flag raw attempt (accepted setter, grown readback, attempt_ms 1000) with incomplete staging every fact unreadable on incomplete screens, hidden staging a minimized fact on a complete inventory, and unreadable staging w1 unreadable on complete screens with an incomplete inventory; recovery re-observes the tabled rect on a complete inventory. One oracle per lane, asserted identically by core and seam: incomplete holds incomplete-inventory with the clamp pair recorded and clears exact on the baseline recovery; hidden holds minimized with nothing recorded and converges controlled on the grown recovery; unreadable holds unreadable with the clamp pair recorded and re-holds clamp on the grown recovery. Neither runner learns bounds without proof. Section settlement_cases: a partially-arrived migration holds its operation, then full arrival completes to the source refill. Core (world_frame_policy_tests, world_migration_refusal_tests) and Windows production sequencing (world_diff_tests) consume the SAME sections with separate runners; every Windows growth/arrival fact is produced by the real native seam (clamp/fail/throw/membership) and only emitted raw attempts ride the sequencer, never a handbuilt echo. Observation conditions (failed enumeration, hidden facts, identity drift, close/re-admit) are scripted through the real capture path; the no-seam-knob claim applies to attempts only. Offline-only predicates (DPI rescale, fixed-size) stay in direct core tests, as do minimized/hidden native claim lanes beyond the capture facts used here.",
   "scene": {
     "output": "out-a",
     "full": [0, 0, 800, 600],
@@ -13,8 +13,11 @@
       "extra_w": 120,
       "extra_h": 0,
       "declared_max": null,
+      "setter": "accepted",
       "expect_learned": ["min_w"],
-      "expect_grows": true
+      "expect_grows": true,
+      "expect_reapply": false,
+      "expect_retry": false
     },
     {
       "name": "max-contradiction-no-learn",
@@ -22,8 +25,109 @@
       "extra_w": 120,
       "extra_h": 0,
       "declared_max": "baseline-w",
+      "setter": "accepted",
       "expect_learned": [],
-      "expect_grows": false
+      "expect_grows": false,
+      "expect_reapply": false,
+      "expect_retry": false
+    },
+    {
+      "name": "refused-growth-holds-then-retries",
+      "window": "w1",
+      "extra_w": 120,
+      "extra_h": 0,
+      "declared_max": null,
+      "setter": "refused",
+      "expect_learned": [],
+      "expect_grows": false,
+      "expect_reapply": false,
+      "expect_retry": true
+    },
+    {
+      "name": "threw-growth-holds-then-retries",
+      "window": "w1",
+      "extra_w": 120,
+      "extra_h": 0,
+      "declared_max": null,
+      "setter": "threw",
+      "expect_learned": [],
+      "expect_grows": false,
+      "expect_reapply": false,
+      "expect_retry": true
+    },
+    {
+      "name": "reapply-converges-keeps-floor",
+      "window": "w1",
+      "extra_w": 120,
+      "extra_h": 0,
+      "declared_max": null,
+      "setter": "accepted",
+      "expect_learned": ["min_w"],
+      "expect_grows": true,
+      "expect_reapply": true,
+      "expect_retry": false
+    }
+  ],
+  "replacement_cases": [
+    {
+      "name": "retired-token-reuse-stays-fresh",
+      "window": "w1",
+      "extra_w": 120,
+      "extra_h": 0,
+      "expect_authority": "controlled",
+      "expect_learned": [],
+      "expect_retained": false
+    }
+  ],
+  "observation_cases": [
+    {
+      "name": "incomplete-gap-holds-then-recovers",
+      "window": "w1",
+      "extra_w": 120,
+      "extra_h": 0,
+      "condition": "incomplete",
+      "expect_authority": "hold-incomplete",
+      "expect_complete": false,
+      "expect_suppressed": true,
+      "expect_learned": [],
+      "recover_rect": "baseline",
+      "recover_authority": "controlled"
+    },
+    {
+      "name": "hidden-fact-takes-no-proof",
+      "window": "w1",
+      "extra_w": 120,
+      "extra_h": 0,
+      "condition": "hidden",
+      "expect_authority": "hold-minimized",
+      "expect_complete": true,
+      "expect_suppressed": false,
+      "expect_learned": [],
+      "recover_rect": "grown",
+      "recover_authority": "controlled"
+    },
+    {
+      "name": "unreadable-fact-takes-no-proof",
+      "window": "w1",
+      "extra_w": 120,
+      "extra_h": 0,
+      "condition": "unreadable",
+      "expect_authority": "hold-unreadable",
+      "expect_complete": false,
+      "expect_suppressed": true,
+      "expect_learned": [],
+      "recover_rect": "grown",
+      "recover_authority": "hold-clamp"
+    }
+  ],
+  "settlement_cases": [
+    {
+      "name": "partial-migration-holds-then-completes",
+      "members": ["w0", "w1"],
+      "refuse_member": "w1",
+      "expect_authority": "controlled",
+      "expect_retained": true,
+      "expect_settled": "refill-only"
     }
   ]
 }

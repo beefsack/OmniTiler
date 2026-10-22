@@ -82,6 +82,8 @@ mod world_float_boundary_tests;
 #[cfg(test)]
 mod world_float_membership_tests;
 #[cfg(test)]
+mod world_frame_fixture_tests;
+#[cfg(test)]
 mod world_frame_policy_tests;
 #[cfg(test)]
 mod world_global_swap_tests;
@@ -91,3 +93,5 @@ mod world_logical_contract_tests;
 mod world_migration_refusal_tests;
 #[cfg(test)]
 mod world_restored_routing_tests;
+#[cfg(test)]
+mod world_sessionless_migration_tests;

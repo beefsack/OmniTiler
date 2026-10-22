@@ -1848,10 +1848,7 @@ fn second_hide_after_reveal_readmits_through_real_claims() {
         .core_homing
         .insert("w1".to_owned(), (out.clone(), ws2.clone()));
     // First hide through the real admit plus ledger claim.
-    assert_eq!(
-        native.move_membership("w1", &out, &ws2, None, false),
-        Ok(true)
-    );
+    assert_eq!(native.move_membership("w1", &out, &ws2, None), Ok(true));
     assert!(!fake_backed_visible(key.hwnd), "first hide conceals");
     assert_eq!(
         native.read_homing("w1"),
@@ -1866,10 +1863,7 @@ fn second_hide_after_reveal_readmits_through_real_claims() {
     native
         .core_homing
         .insert("w1".to_owned(), (out.clone(), ws1.clone()));
-    assert_eq!(
-        native.move_membership("w1", &out, &ws1, None, false),
-        Ok(true)
-    );
+    assert_eq!(native.move_membership("w1", &out, &ws1, None), Ok(true));
     assert!(fake_backed_visible(key.hwnd), "reveal shows");
     assert!(!native.hidden_claims.contains_key(&key));
     assert_eq!(
@@ -1886,7 +1880,7 @@ fn second_hide_after_reveal_readmits_through_real_claims() {
         .core_homing
         .insert("w1".to_owned(), (out.clone(), ws2.clone()));
     assert_eq!(
-        native.move_membership("w1", &out, &ws2, None, false),
+        native.move_membership("w1", &out, &ws2, None),
         Ok(true),
         "second hide re-admits: nonce={:?}",
         fake::with(key.hwnd, |w| w.nonce.clone())
@@ -2079,10 +2073,10 @@ fn cross_output_target(owner: &WorldOwner, output: &str) -> String {
 }
 
 /// Live stage3a-send topology (20261022-1640): asymmetric FULL/work
-/// geometries with a y-offset second output. A FULL-delta mechanical
-/// remap of an edge tile cannot land here, so the core must publish the
-/// actionable target slot with the desire; the seam writes it as part of
-/// the move and proves arrival by the exact frame plus affinity.
+/// geometries with a y-offset second output. A blind FULL-delta
+/// translation of an edge tile cannot land here, so the core must publish
+/// the actionable target slot with the desire; the seam writes it as part
+/// of the move and proves arrival by the exact frame plus affinity.
 fn asymmetric_send_areas() -> (Vec<super::super::MonitorArea>, Vec<Rect>) {
     let areas = vec![
         super::super::MonitorArea {
