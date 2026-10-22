@@ -2416,3 +2416,150 @@ fn consumed_command_reconciles_without_replay() {
         other => panic!("expected consumed, got {other:?}"),
     }
 }
+
+// --- stage 3b shared frame-convergence through the real seam ---
+//
+// Consumes the SAME `test-fixtures/frame-convergence.json` as the core
+// runner, but every growth fact is produced by the real native seam: the
+// prior live frame grows while the requested target stays smaller, the
+// existing `FakeNative` clamp freezes the prewrite frame so the write
+// returns growth, and the test feeds the EMITTED raw `FrameAttempt` (never
+// a handbuilt echo) into the production `WorldSequencer`. The learn case
+// proves the target grows; the max-contradiction case proves the declared
+// cap wins and the stable pair still suppresses. Oracles match the core
+// runner on whole response frames, not width alone.
+
+#[test]
+fn shared_frame_convergence_learns_through_production_sequencing() {
+    use tiler_core::world_report::FrameSetter;
+    let raw = include_str!("../../../../test-fixtures/frame-convergence.json");
+    let fixture: serde_json::Value = serde_json::from_str(raw).expect("valid fixture");
+    assert_eq!(fixture["version"], serde_json::Value::from(1));
+    let cases = fixture["cases"].as_array().expect("cases array");
+    assert_eq!(cases.len(), 2);
+    for case in cases {
+        let name = case["name"].as_str().expect("name");
+        let window = case["window"].as_str().expect("window");
+        let extra_w = case["extra_w"].as_i64().expect("extra_w") as i32;
+        let extra_h = case["extra_h"].as_i64().expect("extra_h") as i32;
+        let mut rig = rig();
+        let mut seq = WorldSequencer::bootstrap(ADAPTER, GENERATION).expect("bootstrap");
+        let report = dispatch_obs(&mut seq, &rig, 1001, 1000);
+        let reply = seq_deliver(&mut seq, &report);
+        seq_ack(&mut seq, &reply);
+        let (baseline, _) = tiled_desire(&reply, window);
+        // The racing enlargement lands as the live native frame first: same
+        // origin, larger extent, against the smaller requested target.
+        let grown = Rect {
+            x: baseline.x,
+            y: baseline.y,
+            w: baseline.w + extra_w,
+            h: baseline.h + extra_h,
+        };
+        let slot = rig
+            .observed
+            .iter()
+            .position(|live| live.token == window)
+            .expect("window observed");
+        rig.observed[slot].visible = grown;
+        rig.observed[slot].outer = Rect {
+            x: grown.x - 8,
+            y: grown.y - 8,
+            w: grown.w + 16,
+            h: grown.h + 16,
+        };
+        rig.observed[slot].insets =
+            crate::tiling::FrameInsets::measure(rig.observed[slot].outer, grown);
+        if case["declared_max"].as_str() == Some("baseline-w") {
+            rig.state.hint_logged.insert(
+                window.to_owned(),
+                tiler_core::size_hints::WindowSizeHints {
+                    min_w: None,
+                    min_h: None,
+                    max_w: Some(baseline.w),
+                    max_h: None,
+                },
+            );
+        }
+        // Real actuation: the clamp freezes the grown prewrite frame, so the
+        // accepted write returns growth as its readback.
+        let captured = capture_world(
+            &rig.state.inputs(),
+            Some(&rig.observed),
+            &rig.retained,
+            &rig.areas,
+            1001,
+        );
+        let fresh =
+            FreshHost::from_sources(&rig.state.inputs(), &rig.observed, &rig.retained, &captured);
+        let mut native = FakeNative::seeded(&fresh);
+        native.clamp_frame.insert(window.to_owned());
+        let mut diff = HostDiff::new(ADAPTER, GENERATION);
+        diff.gate.current_obs = seq.current_obs();
+        let mut attempts = Vec::new();
+        apply_world_reply(&mut diff, &reply, &fresh, &mut native, &mut attempts, 1000);
+        let emitted = attempts
+            .iter()
+            .find(|attempt| attempt.window.0 == window)
+            .expect("seam emits the raw growth attempt");
+        assert_eq!(
+            emitted.target, baseline,
+            "{name}: attempt targets the desire"
+        );
+        assert_eq!(
+            emitted.setter,
+            FrameSetter::Accepted,
+            "{name}: clamp accepts"
+        );
+        assert_eq!(
+            emitted.readback,
+            Some(grown),
+            "{name}: readback is the growth"
+        );
+        for attempt in &attempts {
+            seq.note_frame_attempt(attempt.clone());
+        }
+        diff.gate.note_applied(&reply);
+        sync_observed_from_native(&mut rig, &native);
+        seq.invalidate();
+        let report2 = dispatch_obs(&mut seq, &rig, 1001, 2000);
+        assert!(
+            report2
+                .frames
+                .iter()
+                .any(|attempt| attempt.window.0 == window),
+            "{name}: raw facts ride, got {:?}",
+            report2.frames
+        );
+        let reply2 = seq_deliver(&mut seq, &report2);
+        let row = reply2
+            .windows
+            .iter()
+            .find(|row| row.lifetime.0 == window)
+            .expect("second row");
+        if case["expect_grows"].as_bool().expect("expect_grows") {
+            let next = row.effective_frame.expect("tiled next");
+            assert!(
+                next.w >= grown.w && next.h == grown.h,
+                "{name}: production target {next:?} covers {grown:?}"
+            );
+            assert_eq!(
+                row.frame_authority,
+                Auth::Controlled,
+                "{name}: learned target actionable"
+            );
+        } else {
+            assert_eq!(
+                row.effective_frame.expect("tiled"),
+                baseline,
+                "{name}: contradictory max keeps target"
+            );
+            assert_eq!(
+                row.frame_authority,
+                Auth::Hold(CoreHold::ConstraintClamp),
+                "{name}: stable pair still suppresses"
+            );
+        }
+        seq_ack(&mut seq, &reply2);
+    }
+}

@@ -327,6 +327,12 @@ pub struct WorldEngine {
     /// [`Self::frames`]; cleared on incarnation reset, fresh on a new
     /// core generation with the engine itself.
     pub(crate) consumed_frames: BTreeMap<WindowId, crate::world_report::FrameAttempt>,
+    /// Conservative learned minimum sizes per exact lifetime (stage 3b):
+    /// proven app-held growth merged into the normalized hint path before
+    /// layout projection. Separate from transient pair suppression: exact
+    /// clears never erase these, and unrelated changes never shrink them.
+    /// Pruned with the frame maps.
+    pub(crate) learned_mins: BTreeMap<WindowId, crate::world_frames::LearnedMin>,
     pub(crate) creation_counter: u64,
     pub(crate) last_views: BTreeMap<OutputId, String>,
     /// Core-owned logical workspace rings (D2): per-screen ordered lists of
@@ -504,6 +510,7 @@ impl WorldEngine {
             retained_floats: Vec::new(),
             frames: BTreeMap::new(),
             consumed_frames: BTreeMap::new(),
+            learned_mins: BTreeMap::new(),
             creation_counter: 0,
             last_views: BTreeMap::new(),
             mapping: BTreeMap::new(),
@@ -573,6 +580,7 @@ impl WorldEngine {
         self.retained_floats.clear();
         self.frames.clear();
         self.consumed_frames.clear();
+        self.learned_mins.clear();
         self.tiling.clear();
         self.members.clear();
         self.floating_scopes.clear();

@@ -2671,6 +2671,22 @@ platform API behavior.
   Same-output sequencing is unchanged. Learned constraints, remaining operation
   completion and frameless migration placement remain separate stage 3 work.
   [Acceptance and limits](changes/core-world-model-rearchitecture.md#stage-3a-accepted-outcome-2026-10-22).
+- Learned-constraint extraction, 2026-10-22: core retains minimum-size evidence
+  per exact lifetime and merges it into the existing normalized size-hint path
+  for every world projection. Declared maxima are not widened; infeasible
+  minima retain the existing proportional/overconstrained behavior. Closing,
+  complete-inventory departure and incarnation reset retire learned evidence.
+  No new adapter contract or native policy owner is introduced.
+  **Tentative heuristic, pending dogfooding:** accepted, time-stamped growth at
+  the requested origin can establish an axis minimum only when neither axis
+  shrinks, current readable facts corroborate immediate readback, the tiled
+  scope is controlled and no DPI transition is known. Unknown DPI is not proof
+  of a transition; absent timing never learns. A racing external enlargement
+  is not distinguishable from an application clamp at this seam: later eligible
+  smaller observations disprove that axis, while fresh failed/ambiguous or
+  undercutting writes cannot supply that counter-proof. Consumed attempts do
+  not block fresh counter-evidence. Pair suppression remains independent.
+  [Acceptance and live limits](changes/core-world-model-rearchitecture.md#stage-3b1-accepted-outcome-2026-10-22).
 - User approved 2026-10-20: platforms detect and report host gesture start
   (window, move or resize), cursor updates, release and cancel, and render/apply.
   Core owns the drag session, target, overlay shape, release outcome

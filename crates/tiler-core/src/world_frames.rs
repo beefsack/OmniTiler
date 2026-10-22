@@ -1,37 +1,44 @@
-//! Core-owned frame anti-fighting policy (stage 3a).
+//! Core-owned frame anti-fighting policy (stages 3a-3b).
 //!
 //! The core compares its desired frame against the observed frame and owns
-//! suppression, transient retry backoff, and completion. Adapters report
-//! only mechanical write/readback facts ([`FrameAttempt`](crate::world_report::FrameAttempt));
-//! they never send a clamp/suppress verdict, and a setter success alone
-//! never proves geometry completion: only an exact desired/observed match
-//! clears.
+//! suppression, transient retry backoff, completion, and conservative
+//! learned minima. Adapters report only mechanical write/readback facts
+//! ([`FrameAttempt`](crate::world_report::FrameAttempt)); they never send a
+//! clamp/suppress verdict, and a setter success alone never proves geometry
+//! completion: only an exact desired/observed match clears.
 //!
-//! Two narrow lanes, keyed by exact window lifetime:
+//! Two suppression lanes plus one persistent floor, all keyed by exact
+//! window lifetime:
 //!
-//! - `clamp`: an accepted setter whose stable readback still mismatches
-//!   (the app holds its own size). The identical `(desired, observed)` pair
-//!   suppresses until the desired rectangle or the native observation
+//! - `clamp`: an accepted setter whose stable readback still mismatches.
+//!   The identical `(desired, observed)` pair suppresses until either side
 //!   genuinely changes.
 //! - `transient`: a refused/throwing setter (or an unreadable proof).
 //!   Retried with bounded backoff (500ms doubling, capped at 5s) against
-//!   the neutral adapter [`WorldReport::monotonic_ms`](crate::world_report::WorldReport::monotonic_ms)
-//!   clock; any desired/observation change re-arms immediately, and an
-//!   unreported clock (`0`) never suppresses.
+//!   the neutral adapter clock; any change re-arms, and an unreported
+//!   clock (`0`) never suppresses.
+//! - `learned`: proven app-held growth merges into the normalized hint
+//!   path, so the next layout actually grows (applied in
+//!   [`crate::world_model`]). A later stable eligible smaller observation
+//!   disproves the floor and clears that axis; unrelated higher changes
+//!   and exact arrivals never erase it.
 //!
-//! A changed DPI basis across the write is invalidated placement, never a
-//! stable clamp: the adapter already reasserts once mechanically, and the
-//! core records nothing for that attempt so the next tick retries under
-//! fresh state. Unreadable evidence (no readback and no observed frame),
-//! minimized lifetimes, unknown lifetimes, and explicit closes record and
-//! publish nothing. This module never adopts host geometry and never
-//! changes desired frames: suppression only downgrades authority (tiled
-//! rows publish [`HoldReason::ConstraintClamp`](crate::world_report::HoldReason::ConstraintClamp),
-//! explicit float rows withhold their one-shot token), decided in
-//! [`crate::world_publish`].
+//! Evidence rules: unreadable evidence, minimized lifetimes, unknown
+//! lifetimes, and explicit closes record nothing. Unknown DPI on either
+//! side means no known transition (learning proceeds); a changed DPI basis
+//! is invalidated placement and records nothing. Attempts without a
+//! freshness stamp (`attempt_ms == 0`) never learn: with no ordering claim
+//! the replay contract cannot tell fresh growth from redelivery.
+//! Learning and counter-evidence both need a genuinely controlled tiled
+//! row. Vetoed: minimized, floating, fullscreen, maximized, fit-excluded,
+//! sticky, fixed-auto/suppress flags, missing or unreadable facts, unknown
+//! homing, unreadable domains, floating tiling modes, incomplete
+//! inventory, and gesture barriers.
 
+use crate::bounds::GEOMETRY_BOUND;
 use crate::directional::WindowId;
 use crate::geometry::Rect;
+use crate::size_hints::WindowSizeHints;
 use crate::world_engine::WorldEngine;
 use crate::world_report::{FrameAttempt, FrameSetter, WorldReport};
 
@@ -212,20 +219,287 @@ pub(crate) fn is_stale_replay(prior: &FrameAttempt, attempt: &FrameAttempt) -> b
     attempt.attempt_ms < prior.attempt_ms || attempt == prior
 }
 
+/// Retained conservative learned minimum per exact window lifetime:
+/// proven app-held growth sizes feeding the size-hint/layout path.
+/// Separate from pair suppression: exact matches clear suppression memory
+/// but never a learned bound. Only exact-lifetime end (explicit close,
+/// complete-inventory departure, incarnation reset, new generation) or
+/// later stable eligible smaller evidence prunes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct LearnedMin {
+    pub(crate) min_w: Option<i32>,
+    pub(crate) min_h: Option<i32>,
+}
+
+/// Per-axis proven growth from one stable accepted mismatch: `Some` on an
+/// axis only when the observed frame keeps the requested origin, never
+/// shrinks on either axis, and strictly grows on that axis. Position drift
+/// never learns; any shrink on either axis vetoes the whole attempt.
+#[must_use]
+pub(crate) fn learnable_growth(target: &Rect, observed: &Rect) -> (Option<i32>, Option<i32>) {
+    if observed.x != target.x || observed.y != target.y {
+        return (None, None);
+    }
+    if observed.w < target.w || observed.h < target.h {
+        return (None, None);
+    }
+    if observed.w == target.w && observed.h == target.h {
+        return (None, None);
+    }
+    let w = (observed.w > target.w).then_some(observed.w);
+    let h = (observed.h > target.h).then_some(observed.h);
+    (w, h)
+}
+
+/// Meaningful learned bound guard: positive and inside the shared
+/// carried-geometry bound, exactly like declared hint sanitizing.
+fn meaningful_learned(value: i32) -> bool {
+    (1..=GEOMETRY_BOUND).contains(&value)
+}
+
 impl WorldEngine {
-    /// Settle mechanical frame attempts against the staged observation, then
-    /// prune memory to live lifetimes. Runs after staging (needs staged
-    /// facts for lifetime scoping and observed frames) and before the
-    /// sweep/publish below, so suppression applies to this same reply.
+    /// Merge retained learned minima into one declared hint vector: a
+    /// learned axis applies only when meaningful, above any meaningful
+    /// declared minimum, and within any meaningful declared maximum
+    /// (contradictions keep the declared pair). Infeasible minima keep the
+    /// proportional allocation and flag overconstrained downstream, never
+    /// refuse.
+    #[must_use]
+    pub(crate) fn effective_hints(
+        &self,
+        window: &WindowId,
+        declared: WindowSizeHints,
+    ) -> WindowSizeHints {
+        let Some(learned) = self.learned_mins.get(window) else {
+            return declared;
+        };
+        let mut out = declared;
+        if let Some(lw) = learned.min_w
+            && meaningful_learned(lw)
+            && declared.meaningful_max_w().is_none_or(|mx| lw <= mx)
+            && declared.meaningful_min_w().is_none_or(|mn| lw > mn)
+        {
+            out.min_w = Some(lw);
+        }
+        if let Some(lh) = learned.min_h
+            && meaningful_learned(lh)
+            && declared.meaningful_max_h().is_none_or(|mx| lh <= mx)
+            && declared.meaningful_min_h().is_none_or(|mn| lh > mn)
+        {
+            out.min_h = Some(lh);
+        }
+        out
+    }
+
+    /// Shared row eligibility for learning and counter-evidence: a readable
+    /// fact on a genuinely controlled tiled row under complete inventory
+    /// without a gesture barrier. Vetoes minimized, floating, fullscreen,
+    /// maximized, fit-excluded, sticky and fixed-auto/suppress flags, plus
+    /// missing/unreadable facts, unknown homing, unreadable domains and
+    /// floating tiling modes. Neither growth nor DPI is judged here.
+    fn eligible_fact(&self, report: &WorldReport, window: &WindowId) -> Option<Rect> {
+        if !report.inventory_complete || self.staged.gesture_barrier {
+            return None;
+        }
+        let fact = self.staged.facts.get(window)?;
+        if fact.minimized || fact.floating || fact.fullscreen || fact.maximized {
+            return None;
+        }
+        if fact.fit_excluded || fact.sticky || fact.fixed_auto || fact.fixed_suppress {
+            return None;
+        }
+        let rect = fact.rect?;
+        let key = self.staged.homing.get(window)?;
+        let domain = self
+            .staged
+            .domains
+            .iter()
+            .find(|staged| &staged.key == key)?;
+        if !domain.readable {
+            return None;
+        }
+        if self
+            .tiling
+            .get(key)
+            .is_some_and(|mode| *mode != crate::world_report::TilingMode::Tiled)
+        {
+            return None;
+        }
+        Some(rect)
+    }
+
+    /// True when one frame attempt proves a learned minimum: fresh accepted
+    /// write with a freshness stamp, stable DPI, staged fact corroborating
+    /// the readback, same origin, no shrinking axis, at least one growing
+    /// axis, eligible row, and no declared-maximum contradiction. Stale
+    /// redeliveries never reach here (skipped first, like suppression).
+    /// No just-learned protection needed: counter-evidence runs first
+    /// against the prior floor, and learning then takes the per-axis
+    /// maximum over it.
+    fn learnable_attempt(
+        &self,
+        report: &WorldReport,
+        attempt: &FrameAttempt,
+        readback: &Rect,
+    ) -> Option<(Option<i32>, Option<i32>)> {
+        if attempt.setter != FrameSetter::Accepted || attempt.attempt_ms == 0 {
+            return None;
+        }
+        if dpi_basis_changed(attempt.dpi_before, attempt.dpi_after) {
+            return None;
+        }
+        let rect = self.eligible_fact(report, &attempt.window)?;
+        if rect != *readback {
+            return None;
+        }
+        let fact = self.staged.facts.get(&attempt.window)?;
+        let (mut grow_w, mut grow_h) = learnable_growth(&attempt.target, readback);
+        if grow_w.is_none() && grow_h.is_none() {
+            return None;
+        }
+        // Declared-maximum contradiction per axis: past a meaningful cap a
+        // size proves nothing portable.
+        if let Some(w) = grow_w
+            && (!meaningful_learned(w) || fact.hints.meaningful_max_w().is_some_and(|mx| w > mx))
+        {
+            grow_w = None;
+        }
+        if let Some(h) = grow_h
+            && (!meaningful_learned(h) || fact.hints.meaningful_max_h().is_some_and(|mx| h > mx))
+        {
+            grow_h = None;
+        }
+        if grow_w.is_none() && grow_h.is_none() {
+            return None;
+        }
+        Some((grow_w, grow_h))
+    }
+
+    /// Fold one proven growth pair into the retained bound: per-axis maximum.
+    fn retain_learned(&mut self, window: &WindowId, growth: (Option<i32>, Option<i32>)) {
+        let entry = self.learned_mins.entry(window.clone()).or_default();
+        if let Some(w) = growth.0 {
+            entry.min_w = Some(entry.min_w.map_or(w, |cur| cur.max(w)));
+        }
+        if let Some(h) = growth.1 {
+            entry.min_h = Some(entry.min_h.map_or(h, |cur| cur.max(h)));
+        }
+    }
+
+    /// Drop disproven floors: a stable eligible observation smaller than a
+    /// learned minimum on one axis clears that axis. Same row eligibility
+    /// as learning. Runs BEFORE attempt consumption/learning against the
+    /// prior watermark, so an existing smaller current disproves a prior
+    /// higher floor before fresh growth in the same report establishes a
+    /// new one. Attempts already consumed (exact redeliveries or older
+    /// stamps) and clockless attempts (`ms == 0`, no ordering claim) never
+    /// veto: they are skipped, not treated as fresh counter-proof.
+    /// Otherwise skipped per window on any fresh refused/thrown or
+    /// DPI-flipped current attempt (transient preimage, not external
+    /// proof); per axis when the current accepted target already undercuts
+    /// it (impossible-fit request) or a declared maximum contradicts it
+    /// (the max explains smallness). Suppression memory never vetoes: an
+    /// old clamp cannot defeat fresh smaller evidence.
+    fn invalidate_learned(&mut self, report: &WorldReport) {
+        let snapshot: Vec<(WindowId, LearnedMin)> = self
+            .learned_mins
+            .iter()
+            .map(|(window, learned)| (window.clone(), *learned))
+            .collect();
+        for (window, learned) in snapshot {
+            if learned.min_w.is_none() && learned.min_h.is_none() {
+                continue;
+            }
+            let mut undercut_w = false;
+            let mut undercut_h = false;
+            let mut tainted = false;
+            for attempt in report
+                .frames
+                .iter()
+                .filter(|attempt| attempt.window == window)
+            {
+                // No ordering claim: clockless attempts never veto fresh
+                // observation-only counter-evidence (nor prove anything).
+                if attempt.attempt_ms == 0 {
+                    continue;
+                }
+                // Redelivery of already-consumed evidence: not fresh proof.
+                // Reads the prior watermark only; this runs before the loop
+                // below consumes the current report.
+                if self
+                    .consumed_frames
+                    .get(&window)
+                    .is_some_and(|prior| is_stale_replay(prior, attempt))
+                {
+                    continue;
+                }
+                if attempt.setter != FrameSetter::Accepted
+                    || dpi_basis_changed(attempt.dpi_before, attempt.dpi_after)
+                {
+                    tainted = true;
+                    break;
+                }
+                undercut_w |= learned.min_w.is_some_and(|floor| attempt.target.w < floor);
+                undercut_h |= learned.min_h.is_some_and(|floor| attempt.target.h < floor);
+            }
+            if tainted {
+                continue;
+            }
+            let Some(rect) = self.eligible_fact(report, &window) else {
+                continue;
+            };
+            let hints = self
+                .staged
+                .facts
+                .get(&window)
+                .map(|fact| fact.hints)
+                .unwrap_or_else(WindowSizeHints::none);
+            let conflict_w = learned
+                .min_w
+                .is_some_and(|floor| hints.meaningful_max_w().is_some_and(|cap| cap < floor));
+            let conflict_h = learned
+                .min_h
+                .is_some_and(|floor| hints.meaningful_max_h().is_some_and(|cap| cap < floor));
+            let clear_w =
+                !undercut_w && !conflict_w && learned.min_w.is_some_and(|floor| rect.w < floor);
+            let clear_h =
+                !undercut_h && !conflict_h && learned.min_h.is_some_and(|floor| rect.h < floor);
+            if !clear_w && !clear_h {
+                continue;
+            }
+            if let Some(entry) = self.learned_mins.get_mut(&window) {
+                if clear_w {
+                    entry.min_w = None;
+                }
+                if clear_h {
+                    entry.min_h = None;
+                }
+                if entry.min_w.is_none() && entry.min_h.is_none() {
+                    self.learned_mins.remove(&window);
+                }
+            }
+        }
+    }
+    /// Settle mechanical frame attempts against the staged observation:
+    /// first drop floors disproven by fresh smaller evidence (prior
+    /// watermark only), then consume attempts, learn new floors, and prune
+    /// memory to live lifetimes. Runs after staging (needs staged facts for
+    /// lifetime scoping and observed frames) and before the sweep/publish
+    /// below, so suppression and learned floors apply to this same reply.
     /// Attempts for unknown or minimized lifetimes record nothing;
     /// unreadable evidence records nothing. Lost-ack redeliveries (older
     /// stamp, or exact duplicate) are ignored via the retained consumed
     /// watermark, which survives exact-match clears: a replay never
-    /// resurrects stale suppression nor clobbers newer authority. Both
-    /// maps prune under one predicate (staged fact or retained member),
-    /// so a watermark-only entry prunes exactly when suppression memory
-    /// would.
+    /// resurrects stale suppression nor clobbers newer authority. All three
+    /// maps prune under one predicate (staged fact or retained member).
     pub(crate) fn settle_frames(&mut self, report: &WorldReport) {
+        // Counter-evidence first, against the prior watermark only: still
+        // narrower than the post-loop maps, so newly consumed current
+        // attempts can never masquerade as redeliveries here. Fresh growth
+        // in the loop below may then establish a new floor in the same
+        // reply. Filtering here must stay a subset decision (stale or
+        // clockless); never consult post-loop state.
+        self.invalidate_learned(report);
         for attempt in &report.frames {
             let (fact_rect, minimized) = match self.staged.facts.get(&attempt.window) {
                 Some(fact) => (fact.rect, fact.minimized),
@@ -240,6 +514,16 @@ impl WorldEngine {
                 .is_some_and(|prior| is_stale_replay(prior, attempt))
             {
                 continue;
+            }
+            // Learned minima ride the same fresh-evidence gate but persist:
+            // only stable readable accepted growth at the requested origin
+            // learns. Counter-evidence already ran above, against the prior
+            // floor and watermark.
+            if let Some(readback) = attempt.readback
+                && fact_rect == Some(readback)
+                && let Some(growth) = self.learnable_attempt(report, attempt, &readback)
+            {
+                self.retain_learned(&attempt.window, growth);
             }
             let existing = self.frames.get(&attempt.window).cloned();
             match consume_attempt(existing, attempt, fact_rect) {
@@ -258,11 +542,13 @@ impl WorldEngine {
         for id in &report.closed {
             self.frames.remove(id);
             self.consumed_frames.remove(id);
+            self.learned_mins.remove(id);
         }
         let doomed: Vec<WindowId> = self
             .frames
             .keys()
             .chain(self.consumed_frames.keys())
+            .chain(self.learned_mins.keys())
             .filter(|window| {
                 !self.staged.facts.contains_key(window) && !self.members.contains_key(window)
             })
@@ -271,6 +557,7 @@ impl WorldEngine {
         for window in doomed {
             self.frames.remove(&window);
             self.consumed_frames.remove(&window);
+            self.learned_mins.remove(&window);
         }
     }
 

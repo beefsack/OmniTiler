@@ -1342,6 +1342,15 @@ impl WorldEngine {
                 }
             }
         }
+        // Stage 3b: merge retained learned minima into the normalized hint
+        // vector before Engine projection, so proven app-held growth feeds
+        // the actual desired layout (not only pair suppression). Declared
+        // maxima contradictions keep the declared pair; infeasible minima
+        // still project proportionally and flag overconstrained downstream.
+        for entry in &mut out {
+            let declared = entry.hints;
+            entry.hints = self.effective_hints(&entry.window, declared);
+        }
         out
     }
 }

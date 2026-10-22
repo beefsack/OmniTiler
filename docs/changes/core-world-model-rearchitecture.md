@@ -1082,3 +1082,103 @@ of cursor-first fresh placement or the entire rearchitecture.
   refill, shared/global modes, tile-override restart and physical acceptance
   gaps remain. All four parked focus/send questions and tentative placement
   subsuming launch targeting remain unchanged.
+
+## Stage 3b implementation plan
+
+- First bounded slice: adopt conservative learned minimum sizes from raw frame
+  attempts in core and feed them into the existing size-hint/layout path. Keep
+  exact-lifetime pruning, replay fencing and current clamp/backoff suppression.
+  Only stable readable accepted growth at the requested origin, without a DPI
+  transition or a shrinking axis, can establish a learned minimum. Ordinary
+  floats and protected/held evidence must not acquire tile policy.
+- Acceptance: core-only learning/replay/lifetime/gap/constraint cases and shared
+  convergence data exercised through the Windows native seam; unchanged setter,
+  freshness and conversion mechanics; full core/protocol/Windows local gates,
+  independent boundary review and fixture-only both-output reconvergence smoke.
+  The live fixture's track hints do not establish programmatic clamp learning;
+  keep that predicate explicitly offline rather than weaken its assertion.
+- Later slices retain transfer/view/float completion and anti-fighting
+  extraction, frameless/floating-source migration placement and connector
+  breadth. Do not broaden cross-output-only pre-arrival tile publication or
+  change the parked focus/send policies.
+
+## Stage 3b1 accepted outcome (2026-10-22)
+
+- Core adopts conservative learned minimum sizes from raw accepted frame
+  attempts into the existing hint/layout path. Every world projection uses
+  the merged hints; actual desired geometry changes, not only suppression.
+  Evidence is exact-lifetime scoped, immediately readable and corroborated by
+  current facts, time-stamped, same-origin and nonshrinking on both axes.
+  Incomplete/unreadable/gesture scopes, floats, minimized/overlay/sticky/fixed
+  rows, known DPI changes and clockless attempts cannot establish a minimum.
+- Learned bounds are independent of pair suppression. Exact arrival clears
+  suppression, not a bound; later eligible smaller observations disprove the
+  corresponding axis. Invalidation uses the prior consumed-attempt watermark
+  before learning, so replayed or clockless failures/undercutting targets cannot
+  block fresh smaller evidence. Fresh refused/ambiguous/DPI-invalidated attempts
+  and undercutting requests do not establish that counter-proof. Declared caps
+  suppress conflicting learned axes without silently widening the cap, while
+  stronger declared minima and existing infeasible-layout behavior are retained.
+- Closing, complete-inventory departure and incarnation reset prune all three
+  frame-policy maps together. A float excursion preserves the lifetime's bound
+  but grants no automatic float geometry authority. The acquisition heuristic is
+  [tentative pending dogfooding](../decisions.md#core-platform-boundary): an
+  external enlargement racing a setter cannot be causally distinguished from
+  an application clamp. Smaller stable evidence prevents permanent fighting.
+- Shared `test-fixtures/frame-convergence.json` supplies acquisition and
+  declared-maximum-conflict cases to core and the Windows production seam.
+  Windows generates the growth attempt through real diff actuation/readback,
+  then feeds its emitted raw attempt through the production sequencer. No
+  setter-success echo or hand-built attempt substitutes for that connector.
+  This begins the shared convergence connector, not its full acceptance table.
+- Review corrected an initial synthetic-attempt connector, missing counter-
+  evidence invalidation, zero-clock acquisition and stale replay vetoes.
+  Regressions pin those boundaries, both axes, all veto flags, declared-hint
+  dynamics, float excursions, infeasible minima and lifetime retirement.
+  Independent final review accepted the corrected ordering and native seam.
+
+### Verification and native limits
+
+- Locked core/protocol/Windows build, all-target tests and strict all-target
+  clippy pass: **2,337 passed, zero failed, one ignored across 48 suites**.
+  Workspace formatting and whitespace checks pass. The core frame-policy suite
+  now has 42 cases. No dependency, unsafe code, input hook or polling loop was
+  added. Eligible reports add bounded constraint bookkeeping; its cost is not
+  benchmarked and no zero-cost claim is made.
+- Final-artifact fixture-only native smoke passed both outputs: four joined
+  lifetimes tiled, one size/position perturbation per tile reconverged with one
+  geometry-write trace row each, unchanged peers and stable later native PMv2
+  frames. Sub-sample transient frames were not captured; no visible-duration
+  claim is made. Both outputs passed close/reflow and fresh replacement/token
+  joins; selection hide/reveal, float/unfloat and both-direction cross-DPI sends
+  passed. A fresh nongeometric focus reply showed no retained transfers.
+- A declared minimum hint was accepted and read back only as a hint. The
+  fixture does not enforce programmatic clamps: learned-minimum acquisition,
+  ambiguous writes and replay predicates remain offline evidence. Ordinary
+  reconvergence smoke is not live proof of constraint acquisition.
+- Exact-owner stop, independent restore and fixture shutdown left no owned
+  processes/windows, ledger or controls. Settings bytes, relevant SPI/taskbar
+  state and protected-window geometry matched baseline. Raw scripts, provenance,
+  hashes and native observations remain outside the repository. No live product
+  defect or unresolved restoration issue was encountered.
+
+### Remaining boundary and next action
+
+- Windows remains a working dogfood slice, not completion of stage 3 or the
+  rearchitecture. Next: extract transfer/view/float completion and anti-fighting
+  verdicts from `tiling_sys/world_diff.rs` into retained core settlement, keeping
+  mechanical lifetime/freshness checks and truthful native observations local.
+  Inspect `settle_view_attempt`, `settle_transfer_applied`, float outcomes and
+  `EffectTracker` against `world_settle.rs`; preserve ambiguous-effect and
+  hidden/incomplete/partial-transfer fences rather than merely moving helpers.
+- Frameless/floating-source migration still uses native origin-delta remapping
+  and needs a separate core placement contract/regression. Cross-output tiled
+  pre-arrival slots remain unchanged; same-output broadening remains rejected.
+- Stage 4 gesture/focus-warp/presentation/pager extraction and stage 5 ownership,
+  dead-API/common-connector audit remain. KDE/macOS ports are intentionally
+  untouched; they need the already-documented raw-attempt/timing contract, not
+  a new learned-minimum field. Shared convergence case breadth, MRU occupied
+  refill, shared/global modes, tile-override restart and user-owned physical
+  acceptance remain gaps. The disabled synthetic drag driver stays disabled.
+  The four parked focus/send questions and tentative placement/control choices
+  are unchanged; no new product question blocks the next slice.

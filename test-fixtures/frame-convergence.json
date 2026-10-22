@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "description": "Stage 3b minimal shared frame-convergence: stable accepted growth at the requested origin learns a conservative minimum and changes the next tiled target; a contradictory declared maximum never learns. Core (world_frame_policy_tests) and Windows production sequencing (world_diff_tests) consume the SAME cases through the raw FrameAttempt/report path with separate runners. Fixture track hints are not programmatic clamps; the live clamp predicate stays offline.",
+  "scene": {
+    "output": "out-a",
+    "full": [0, 0, 800, 600],
+    "work": [0, 0, 800, 560]
+  },
+  "cases": [
+    {
+      "name": "learn-width-grows-target",
+      "window": "w1",
+      "extra_w": 120,
+      "extra_h": 0,
+      "declared_max": null,
+      "expect_learned": ["min_w"],
+      "expect_grows": true
+    },
+    {
+      "name": "max-contradiction-no-learn",
+      "window": "w1",
+      "extra_w": 120,
+      "extra_h": 0,
+      "declared_max": "baseline-w",
+      "expect_learned": [],
+      "expect_grows": false
+    }
+  ]
+}

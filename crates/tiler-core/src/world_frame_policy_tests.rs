@@ -1227,3 +1227,1380 @@ fn stale_pair_redelivery_does_not_clobber_newer_authority() {
         ScopeAuthority::Hold(HoldReason::ConstraintClamp)
     );
 }
+
+// --- stage 3b learned minima ---
+
+fn two_facts() -> Vec<WindowFact> {
+    vec![
+        fact("w1", Some(rect(0, 0, 40, 90))),
+        fact("w2", Some(rect(0, 0, 40, 90))),
+    ]
+}
+
+fn learned_of(engine: &WorldEngine, window: &str) -> (Option<i32>, Option<i32>) {
+    engine
+        .learned_mins
+        .get(&WindowId(window.to_owned()))
+        .map(|learned| (learned.min_w, learned.min_h))
+        .unwrap_or((None, None))
+}
+
+#[test]
+fn learned_growth_changes_target_layout_and_converges() {
+    use super::world_frames::learnable_growth;
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(1, two_facts(), vec![], vec![], 0, true),
+    );
+    let baseline = frame_row(&first, "w1").effective_frame.expect("tiled");
+    let baseline_w2 = frame_row(&first, "w2").effective_frame.expect("tiled");
+    assert_eq!(baseline.w, baseline_w2.w);
+    // Stable accepted width growth at the same origin. Height is already
+    // full-bleed (560), so only the width axis can change this layout; the
+    // both-axes shape is pinned by the pure `learnable_growth` unit and the
+    // overflow test below.
+    let grown = Rect {
+        x: baseline.x,
+        y: baseline.y,
+        w: baseline.w + 120,
+        h: baseline.h,
+    };
+    assert_eq!(learnable_growth(&baseline, &grown), (Some(grown.w), None));
+    let second = accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![fact("w1", Some(grown)), fact("w2", Some(baseline_w2))],
+            vec![],
+            vec![attempt(
+                "w1",
+                baseline,
+                FrameSetter::Accepted,
+                Some(grown),
+                1000,
+            )],
+            1000,
+            true,
+        ),
+    );
+    // Persistent constraint learned, feeding the real layout path.
+    assert_eq!(learned_of(&engine, "w1"), (Some(grown.w), None));
+    let next = frame_row(&second, "w1").effective_frame.expect("tiled");
+    assert!(
+        next.w >= grown.w && next.h == grown.h,
+        "learned bound grows target {baseline:?} -> {next:?} covering {grown:?}"
+    );
+    assert!(
+        next.w > baseline.w,
+        "target layout actually changes, not only suppression"
+    );
+    // Converge: observe the new target exactly; suppression clears but the
+    // learned bound persists for the next layout.
+    let converged_w2 = frame_row(&second, "w2").effective_frame.expect("tiled");
+    let third = accepted(
+        &mut engine,
+        &report(
+            3,
+            vec![fact("w1", Some(next)), fact("w2", Some(converged_w2))],
+            vec![],
+            vec![],
+            2000,
+            true,
+        ),
+    );
+    assert_eq!(
+        frame_row(&third, "w1").frame_authority,
+        ScopeAuthority::Controlled
+    );
+    assert!(engine.frames.is_empty());
+    assert_eq!(learned_of(&engine, "w1"), (Some(grown.w), None));
+}
+
+#[test]
+fn learned_single_axis_only_pins_grown_axis() {
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(1, two_facts(), vec![], vec![], 0, true),
+    );
+    let baseline = frame_row(&first, "w1").effective_frame.expect("tiled");
+    let baseline_w2 = frame_row(&first, "w2").effective_frame.expect("tiled");
+    let grown = Rect {
+        x: baseline.x,
+        y: baseline.y,
+        w: baseline.w + 80,
+        h: baseline.h,
+    };
+    accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![fact("w1", Some(grown)), fact("w2", Some(baseline_w2))],
+            vec![],
+            vec![attempt(
+                "w1",
+                baseline,
+                FrameSetter::Accepted,
+                Some(grown),
+                1000,
+            )],
+            1000,
+            true,
+        ),
+    );
+    assert_eq!(learned_of(&engine, "w1").0, Some(grown.w));
+    assert_eq!(learned_of(&engine, "w1").1, None);
+}
+
+#[test]
+fn learned_both_axes_record_even_when_height_overflows_work_area() {
+    use super::world_frames::learnable_growth;
+    let target = rect(400, 0, 400, 560);
+    let grown = rect(400, 0, 520, 620);
+    assert_eq!(learnable_growth(&target, &grown), (Some(520), Some(620)));
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(1, two_facts(), vec![], vec![], 0, true),
+    );
+    let baseline = frame_row(&first, "w1").effective_frame.expect("tiled");
+    let baseline_w2 = frame_row(&first, "w2").effective_frame.expect("tiled");
+    let grown = Rect {
+        x: baseline.x,
+        y: baseline.y,
+        w: baseline.w + 120,
+        h: baseline.h + 60,
+    };
+    let second = accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![fact("w1", Some(grown)), fact("w2", Some(baseline_w2))],
+            vec![],
+            vec![attempt(
+                "w1",
+                baseline,
+                FrameSetter::Accepted,
+                Some(grown),
+                1000,
+            )],
+            1000,
+            true,
+        ),
+    );
+    // Both axes prove minima even though the height overflows the work
+    // area (downstream flags overconstrained and keeps the proportional
+    // height; the width axis still grows the target layout). The new pair
+    // is actionable, never a hold: the projector only flags overconstrained.
+    assert_eq!(learned_of(&engine, "w1"), (Some(grown.w), Some(grown.h)));
+    assert_eq!(
+        frame_row(&second, "w1").frame_authority,
+        ScopeAuthority::Controlled
+    );
+}
+
+#[test]
+fn learned_rejects_origin_mismatch_shrink_and_equal() {
+    use super::world_frames::learnable_growth;
+    let target = rect(0, 0, 400, 300);
+    assert_eq!(
+        learnable_growth(&target, &rect(5, 0, 500, 300)),
+        (None, None)
+    );
+    assert_eq!(
+        learnable_growth(&target, &rect(0, 5, 500, 300)),
+        (None, None)
+    );
+    assert_eq!(
+        learnable_growth(&target, &rect(0, 0, 500, 200)),
+        (None, None)
+    );
+    assert_eq!(learnable_growth(&target, &target), (None, None));
+    // Engine never learns position drift even with a readable clamp pair.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(1, two_facts(), vec![], vec![], 0, true),
+    );
+    let baseline = frame_row(&first, "w1").effective_frame.expect("tiled");
+    let baseline_w2 = frame_row(&first, "w2").effective_frame.expect("tiled");
+    let moved = Rect {
+        x: baseline.x + 5,
+        y: baseline.y,
+        w: baseline.w + 100,
+        h: baseline.h,
+    };
+    accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![fact("w1", Some(moved)), fact("w2", Some(baseline_w2))],
+            vec![],
+            vec![attempt(
+                "w1",
+                baseline,
+                FrameSetter::Accepted,
+                Some(moved),
+                1000,
+            )],
+            1000,
+            true,
+        ),
+    );
+    assert!(engine.learned_mins.is_empty());
+    assert_eq!(engine.frames.len(), 1);
+}
+
+#[test]
+fn learned_ignores_dpi_refused_threw() {
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(1, two_facts(), vec![], vec![], 0, true),
+    );
+    let baseline = frame_row(&first, "w1").effective_frame.expect("tiled");
+    let baseline_w2 = frame_row(&first, "w2").effective_frame.expect("tiled");
+    let grown = Rect {
+        x: baseline.x,
+        y: baseline.y,
+        w: baseline.w + 100,
+        h: baseline.h,
+    };
+    for (seq_no, (setter, readback, dpi)) in (2u64..).zip([
+        (FrameSetter::Refused, Some(grown), (None, None)),
+        (FrameSetter::Threw, Some(grown), (None, None)),
+        (FrameSetter::Accepted, Some(grown), (Some(96), Some(120))),
+    ]) {
+        let (before, after) = dpi;
+        accepted(
+            &mut engine,
+            &report(
+                seq_no,
+                vec![fact("w1", Some(grown)), fact("w2", Some(baseline_w2))],
+                vec![],
+                vec![FrameAttempt {
+                    window: WindowId("w1".to_owned()),
+                    target: baseline,
+                    setter,
+                    readback,
+                    dpi_before: before,
+                    dpi_after: after,
+                    attempt_ms: 1000,
+                }],
+                1000,
+                true,
+            ),
+        );
+    }
+    assert!(engine.learned_mins.is_empty());
+}
+
+#[test]
+fn learned_ignores_unreadable_float_overlay_and_gap() {
+    // Unreadable post-write proof never learns.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(1, two_facts(), vec![], vec![], 0, true),
+    );
+    let baseline = frame_row(&first, "w1").effective_frame.expect("tiled");
+    let baseline_w2 = frame_row(&first, "w2").effective_frame.expect("tiled");
+    let grown = Rect {
+        x: baseline.x,
+        y: baseline.y,
+        w: baseline.w + 100,
+        h: baseline.h,
+    };
+    accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![fact("w1", Some(grown)), fact("w2", Some(baseline_w2))],
+            vec![],
+            vec![attempt("w1", baseline, FrameSetter::Accepted, None, 1000)],
+            1000,
+            true,
+        ),
+    );
+    assert!(engine.learned_mins.is_empty());
+    // Float lifetimes never take tile policy.
+    let mut floating = fact("w1", Some(grown));
+    floating.floating = true;
+    accepted(
+        &mut engine,
+        &report(
+            3,
+            vec![floating, fact("w2", Some(baseline_w2))],
+            vec![],
+            vec![attempt(
+                "w1",
+                baseline,
+                FrameSetter::Accepted,
+                Some(grown),
+                2000,
+            )],
+            2000,
+            true,
+        ),
+    );
+    assert!(engine.learned_mins.is_empty());
+    // Fullscreen overlays never take tile policy.
+    let mut overlay = fact("w1", Some(grown));
+    overlay.fullscreen = true;
+    accepted(
+        &mut engine,
+        &report(
+            4,
+            vec![overlay, fact("w2", Some(baseline_w2))],
+            vec![],
+            vec![attempt(
+                "w1",
+                baseline,
+                FrameSetter::Accepted,
+                Some(grown),
+                3000,
+            )],
+            3000,
+            true,
+        ),
+    );
+    assert!(engine.learned_mins.is_empty());
+    // Incomplete inventory gaps never learn even with corroboration.
+    accepted(
+        &mut engine,
+        &report(
+            5,
+            vec![fact("w1", Some(grown)), fact("w2", Some(baseline_w2))],
+            vec![],
+            vec![attempt(
+                "w1",
+                baseline,
+                FrameSetter::Accepted,
+                Some(grown),
+                4000,
+            )],
+            4000,
+            false,
+        ),
+    );
+    assert!(engine.learned_mins.is_empty());
+    // Minimized lifetimes record nothing at all.
+    accepted(
+        &mut engine,
+        &report(
+            6,
+            vec![minimized_fact("w1"), fact("w2", Some(baseline_w2))],
+            vec![],
+            vec![attempt(
+                "w1",
+                baseline,
+                FrameSetter::Accepted,
+                Some(grown),
+                5000,
+            )],
+            5000,
+            true,
+        ),
+    );
+    assert!(engine.learned_mins.is_empty());
+}
+
+#[test]
+fn learned_replay_after_clear_does_not_relearn() {
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(1, two_facts(), vec![], vec![], 0, true),
+    );
+    let baseline = frame_row(&first, "w1").effective_frame.expect("tiled");
+    let baseline_w2 = frame_row(&first, "w2").effective_frame.expect("tiled");
+    let grown = Rect {
+        x: baseline.x,
+        y: baseline.y,
+        w: baseline.w + 100,
+        h: baseline.h,
+    };
+    let old = attempt("w1", baseline, FrameSetter::Accepted, Some(grown), 1000);
+    let second = accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![fact("w1", Some(grown)), fact("w2", Some(baseline_w2))],
+            vec![],
+            vec![old.clone()],
+            1000,
+            true,
+        ),
+    );
+    assert_eq!(learned_of(&engine, "w1").0, Some(grown.w));
+    let next = frame_row(&second, "w1").effective_frame.expect("tiled");
+    let next_w2 = frame_row(&second, "w2").effective_frame.expect("tiled");
+    // Exact arrival clears suppression but keeps the persistent bound.
+    accepted(
+        &mut engine,
+        &report(
+            3,
+            vec![fact("w1", Some(next)), fact("w2", Some(next_w2))],
+            vec![],
+            vec![],
+            2000,
+            true,
+        ),
+    );
+    assert!(engine.frames.is_empty());
+    assert_eq!(learned_of(&engine, "w1").0, Some(grown.w));
+    // Lost-ack redelivery of the old growth attempt cannot relearn or
+    // resurrect suppression.
+    let replayed = accepted(
+        &mut engine,
+        &report(
+            4,
+            vec![fact("w1", Some(next)), fact("w2", Some(next_w2))],
+            vec![],
+            vec![old],
+            3000,
+            true,
+        ),
+    );
+    assert_eq!(
+        frame_row(&replayed, "w1").frame_authority,
+        ScopeAuthority::Controlled
+    );
+    assert!(engine.frames.is_empty());
+    assert_eq!(learned_of(&engine, "w1").0, Some(grown.w));
+}
+
+#[test]
+fn learned_survives_pair_change_but_prunes_on_close_departure_incarnation() {
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(1, two_facts(), vec![], vec![], 0, true),
+    );
+    let baseline = frame_row(&first, "w1").effective_frame.expect("tiled");
+    let baseline_w2 = frame_row(&first, "w2").effective_frame.expect("tiled");
+    let grown = Rect {
+        x: baseline.x,
+        y: baseline.y,
+        w: baseline.w + 100,
+        h: baseline.h,
+    };
+    accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![fact("w1", Some(grown)), fact("w2", Some(baseline_w2))],
+            vec![],
+            vec![attempt(
+                "w1",
+                baseline,
+                FrameSetter::Accepted,
+                Some(grown),
+                1000,
+            )],
+            1000,
+            true,
+        ),
+    );
+    assert_eq!(learned_of(&engine, "w1").0, Some(grown.w));
+    // An unrelated higher observation clears the pair hold but keeps the
+    // persistent bound. (A smaller stable eligible observation would
+    // disprove the floor instead; see the counter-evidence test below.)
+    let drifted = Rect {
+        x: grown.x,
+        y: grown.y,
+        w: grown.w,
+        h: grown.h + 10,
+    };
+    accepted(
+        &mut engine,
+        &report(
+            3,
+            vec![fact("w1", Some(drifted)), fact("w2", Some(baseline_w2))],
+            vec![],
+            vec![],
+            2000,
+            true,
+        ),
+    );
+    assert_eq!(learned_of(&engine, "w1").0, Some(grown.w));
+    // Complete-inventory departure without an explicit close prunes.
+    accepted(
+        &mut engine,
+        &report(
+            4,
+            vec![fact("w2", Some(baseline_w2))],
+            vec![],
+            vec![],
+            3000,
+            true,
+        ),
+    );
+    accepted(
+        &mut engine,
+        &report(
+            5,
+            vec![fact("w2", Some(baseline_w2))],
+            vec![],
+            vec![],
+            4000,
+            true,
+        ),
+    );
+    assert!(engine.learned_mins.is_empty());
+    // Explicit close prunes on a fresh engine.
+    let mut engine2 = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine2,
+        &report(1, two_facts(), vec![], vec![], 0, true),
+    );
+    let baseline = frame_row(&first, "w1").effective_frame.expect("tiled");
+    let baseline_w2 = frame_row(&first, "w2").effective_frame.expect("tiled");
+    let grown = Rect {
+        x: baseline.x,
+        y: baseline.y,
+        w: baseline.w + 100,
+        h: baseline.h,
+    };
+    accepted(
+        &mut engine2,
+        &report(
+            2,
+            vec![fact("w1", Some(grown)), fact("w2", Some(baseline_w2))],
+            vec![],
+            vec![attempt(
+                "w1",
+                baseline,
+                FrameSetter::Accepted,
+                Some(grown),
+                1000,
+            )],
+            1000,
+            true,
+        ),
+    );
+    assert_eq!(learned_of(&engine2, "w1").0, Some(grown.w));
+    accepted(
+        &mut engine2,
+        &report(
+            3,
+            vec![fact("w2", Some(baseline_w2))],
+            vec!["w1"],
+            vec![],
+            2000,
+            true,
+        ),
+    );
+    assert!(engine2.learned_mins.is_empty());
+    // Incarnation reset prunes on a fresh engine.
+    let mut engine3 = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine3,
+        &report(1, two_facts(), vec![], vec![], 0, true),
+    );
+    let baseline = frame_row(&first, "w1").effective_frame.expect("tiled");
+    let baseline_w2 = frame_row(&first, "w2").effective_frame.expect("tiled");
+    let grown = Rect {
+        x: baseline.x,
+        y: baseline.y,
+        w: baseline.w + 100,
+        h: baseline.h,
+    };
+    accepted(
+        &mut engine3,
+        &report(
+            2,
+            vec![fact("w1", Some(grown)), fact("w2", Some(baseline_w2))],
+            vec![],
+            vec![attempt(
+                "w1",
+                baseline,
+                FrameSetter::Accepted,
+                Some(grown),
+                1000,
+            )],
+            1000,
+            true,
+        ),
+    );
+    assert!(!engine3.learned_mins.is_empty());
+    let mut reboot = report(3, two_facts(), vec![], vec![], 2000, true);
+    reboot.adapter_incarnation = "adapter-2".to_owned();
+    accepted(&mut engine3, &reboot);
+    assert!(engine3.learned_mins.is_empty());
+}
+
+#[test]
+fn learned_max_contradiction_keeps_declared_pair() {
+    use crate::size_hints::WindowSizeHints;
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(1, two_facts(), vec![], vec![], 0, true),
+    );
+    let baseline = frame_row(&first, "w1").effective_frame.expect("tiled");
+    let baseline_w2 = frame_row(&first, "w2").effective_frame.expect("tiled");
+    // Declared max exactly at the old desire: growth past it contradicts.
+    let grown = Rect {
+        x: baseline.x,
+        y: baseline.y,
+        w: baseline.w + 100,
+        h: baseline.h,
+    };
+    let mut capped_w1 = fact("w1", Some(grown));
+    capped_w1.hints = WindowSizeHints {
+        min_w: None,
+        min_h: None,
+        max_w: Some(baseline.w),
+        max_h: None,
+    };
+    let held = accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![capped_w1, fact("w2", Some(baseline_w2))],
+            vec![],
+            vec![attempt(
+                "w1",
+                baseline,
+                FrameSetter::Accepted,
+                Some(grown),
+                1000,
+            )],
+            1000,
+            true,
+        ),
+    );
+    // No learning past a contradictory declared maximum; the stable pair
+    // still suppresses without moving the target.
+    assert!(engine.learned_mins.is_empty());
+    assert_eq!(
+        frame_row(&held, "w1").frame_authority,
+        ScopeAuthority::Hold(HoldReason::ConstraintClamp)
+    );
+    assert_eq!(
+        frame_row(&held, "w1").effective_frame.expect("tiled"),
+        baseline
+    );
+}
+
+#[test]
+fn learned_smaller_stable_observation_clears_floor_without_fight() {
+    // A racing enlargement must not become a lifelong constraint: a later
+    // stable eligible observation smaller than the floor disproves that
+    // axis. The next layout drops the floor with no suppression fight.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(1, two_facts(), vec![], vec![], 0, true),
+    );
+    let baseline = frame_row(&first, "w1").effective_frame.expect("tiled");
+    let baseline_w2 = frame_row(&first, "w2").effective_frame.expect("tiled");
+    let grown = Rect {
+        x: baseline.x,
+        y: baseline.y,
+        w: baseline.w + 100,
+        h: baseline.h,
+    };
+    let second = accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![fact("w1", Some(grown)), fact("w2", Some(baseline_w2))],
+            vec![],
+            vec![attempt(
+                "w1",
+                baseline,
+                FrameSetter::Accepted,
+                Some(grown),
+                1000,
+            )],
+            1000,
+            true,
+        ),
+    );
+    assert_eq!(learned_of(&engine, "w1").0, Some(grown.w));
+    let next = frame_row(&second, "w1").effective_frame.expect("tiled");
+    let next_w2 = frame_row(&second, "w2").effective_frame.expect("tiled");
+    // Converge on the learned floor first: exact arrival keeps the bound.
+    let third = accepted(
+        &mut engine,
+        &report(
+            3,
+            vec![fact("w1", Some(next)), fact("w2", Some(next_w2))],
+            vec![],
+            vec![],
+            2000,
+            true,
+        ),
+    );
+    assert_eq!(
+        frame_row(&third, "w1").frame_authority,
+        ScopeAuthority::Controlled
+    );
+    assert_eq!(learned_of(&engine, "w1").0, Some(grown.w));
+    // Independently observed shrink below the floor, no attempt behind it:
+    // the floor claim is disproven, so the next layout drops it with no
+    // suppression memory and no fight.
+    let fourth = accepted(
+        &mut engine,
+        &report(
+            4,
+            vec![fact("w1", Some(baseline)), fact("w2", Some(baseline_w2))],
+            vec![],
+            vec![],
+            3000,
+            true,
+        ),
+    );
+    assert!(engine.learned_mins.is_empty());
+    assert!(engine.frames.is_empty());
+    let settled = frame_row(&fourth, "w1");
+    assert_eq!(settled.frame_authority, ScopeAuthority::Controlled);
+    assert_eq!(settled.effective_frame.expect("tiled"), baseline);
+}
+
+#[test]
+fn learned_stale_replay_cannot_block_fresh_smaller_counterevidence() {
+    // A stale redelivery (exact duplicate or older stamp) is not fresh
+    // proof: it must not veto an observation-only smaller fact that
+    // disproves the floor. Undercutting targets and refused setters only
+    // block when the attempt itself is fresh.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(1, two_facts(), vec![], vec![], 0, true),
+    );
+    let baseline = frame_row(&first, "w1").effective_frame.expect("tiled");
+    let baseline_w2 = frame_row(&first, "w2").effective_frame.expect("tiled");
+    let grown = Rect {
+        x: baseline.x,
+        y: baseline.y,
+        w: baseline.w + 100,
+        h: baseline.h,
+    };
+    let learned = attempt("w1", baseline, FrameSetter::Accepted, Some(grown), 1000);
+    let second = accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![fact("w1", Some(grown)), fact("w2", Some(baseline_w2))],
+            vec![],
+            vec![learned.clone()],
+            1000,
+            true,
+        ),
+    );
+    let next = frame_row(&second, "w1").effective_frame.expect("tiled");
+    let next_w2 = frame_row(&second, "w2").effective_frame.expect("tiled");
+    accepted(
+        &mut engine,
+        &report(
+            3,
+            vec![fact("w1", Some(next)), fact("w2", Some(next_w2))],
+            vec![],
+            vec![],
+            2000,
+            true,
+        ),
+    );
+    assert_eq!(learned_of(&engine, "w1").0, Some(grown.w));
+    // Fresh observation-only shrink plus the stale undercutting redelivery:
+    // the floor still clears with no fight.
+    let fourth = accepted(
+        &mut engine,
+        &report(
+            4,
+            vec![fact("w1", Some(baseline)), fact("w2", Some(baseline_w2))],
+            vec![],
+            vec![learned],
+            3000,
+            true,
+        ),
+    );
+    assert!(engine.learned_mins.is_empty());
+    assert!(engine.frames.is_empty());
+    let settled = frame_row(&fourth, "w1");
+    assert_eq!(settled.frame_authority, ScopeAuthority::Controlled);
+    assert_eq!(settled.effective_frame.expect("tiled"), baseline);
+}
+
+#[test]
+fn learned_stale_refused_and_clockless_replays_cannot_block_clearing() {
+    // Same veto-proofing for refused setters and clockless attempts: a
+    // redelivered refusal is a transient preimage replay, and a zero-clock
+    // attempt carries no ordering claim, so neither blocks fresh smaller
+    // counter-evidence. A fresh refusal still retains (pinned elsewhere).
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(1, two_facts(), vec![], vec![], 0, true),
+    );
+    let baseline = frame_row(&first, "w1").effective_frame.expect("tiled");
+    let baseline_w2 = frame_row(&first, "w2").effective_frame.expect("tiled");
+    let grown = Rect {
+        x: baseline.x,
+        y: baseline.y,
+        w: baseline.w + 100,
+        h: baseline.h,
+    };
+    let small = Rect {
+        x: grown.x,
+        y: grown.y,
+        w: baseline.w,
+        h: grown.h,
+    };
+    accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![fact("w1", Some(grown)), fact("w2", Some(baseline_w2))],
+            vec![],
+            vec![attempt(
+                "w1",
+                baseline,
+                FrameSetter::Accepted,
+                Some(grown),
+                1000,
+            )],
+            1000,
+            true,
+        ),
+    );
+    assert_eq!(learned_of(&engine, "w1").0, Some(grown.w));
+    let refused = attempt("w1", grown, FrameSetter::Refused, Some(small), 2000);
+    accepted(
+        &mut engine,
+        &report(
+            3,
+            vec![fact("w1", Some(small)), fact("w2", Some(baseline_w2))],
+            vec![],
+            vec![refused.clone()],
+            2000,
+            true,
+        ),
+    );
+    assert_eq!(learned_of(&engine, "w1").0, Some(grown.w));
+    // Redelivered refusal: stale, so the smaller fact still disproves.
+    let cleared = accepted(
+        &mut engine,
+        &report(
+            4,
+            vec![fact("w1", Some(small)), fact("w2", Some(baseline_w2))],
+            vec![],
+            vec![refused],
+            3000,
+            true,
+        ),
+    );
+    assert!(engine.learned_mins.is_empty());
+    assert_eq!(
+        frame_row(&cleared, "w1").frame_authority,
+        ScopeAuthority::Controlled
+    );
+    // Clockless refusal: no ordering claim, so it never vetoes either.
+    let mut engine2 = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine2,
+        &report(1, two_facts(), vec![], vec![], 0, true),
+    );
+    let baseline = frame_row(&first, "w1").effective_frame.expect("tiled");
+    let baseline_w2 = frame_row(&first, "w2").effective_frame.expect("tiled");
+    let grown = Rect {
+        x: baseline.x,
+        y: baseline.y,
+        w: baseline.w + 100,
+        h: baseline.h,
+    };
+    let small = Rect {
+        x: grown.x,
+        y: grown.y,
+        w: baseline.w,
+        h: grown.h,
+    };
+    accepted(
+        &mut engine2,
+        &report(
+            2,
+            vec![fact("w1", Some(grown)), fact("w2", Some(baseline_w2))],
+            vec![],
+            vec![attempt(
+                "w1",
+                baseline,
+                FrameSetter::Accepted,
+                Some(grown),
+                1000,
+            )],
+            1000,
+            true,
+        ),
+    );
+    assert_eq!(learned_of(&engine2, "w1").0, Some(grown.w));
+    let cleared = accepted(
+        &mut engine2,
+        &report(
+            3,
+            vec![fact("w1", Some(small)), fact("w2", Some(baseline_w2))],
+            vec![],
+            vec![attempt("w1", grown, FrameSetter::Refused, Some(small), 0)],
+            2000,
+            true,
+        ),
+    );
+    assert!(engine2.learned_mins.is_empty());
+    assert_eq!(
+        frame_row(&cleared, "w1").frame_authority,
+        ScopeAuthority::Controlled
+    );
+}
+
+#[test]
+fn learned_ignores_veto_table_flags() {
+    // Compact veto table: maximized, sticky, fit-excluded, fixed-auto and
+    // fixed-suppress facts never learn, even with corroborated growth.
+    // (Minimized, floating and fullscreen ride the gap test above.)
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(1, two_facts(), vec![], vec![], 0, true),
+    );
+    let baseline = frame_row(&first, "w1").effective_frame.expect("tiled");
+    let baseline_w2 = frame_row(&first, "w2").effective_frame.expect("tiled");
+    let grown = Rect {
+        x: baseline.x,
+        y: baseline.y,
+        w: baseline.w + 100,
+        h: baseline.h,
+    };
+    for (seq_no, flag) in (2u64..).zip(["maximized", "sticky", "excluded", "auto", "suppress"]) {
+        let mut flagged = fact("w1", Some(grown));
+        match flag {
+            "maximized" => flagged.maximized = true,
+            "sticky" => flagged.sticky = true,
+            "excluded" => flagged.fit_excluded = true,
+            "auto" => flagged.fixed_auto = true,
+            "suppress" => flagged.fixed_suppress = true,
+            _ => unreachable!("flag table"),
+        }
+        accepted(
+            &mut engine,
+            &report(
+                seq_no,
+                vec![flagged, fact("w2", Some(baseline_w2))],
+                vec![],
+                vec![attempt(
+                    "w1",
+                    baseline,
+                    FrameSetter::Accepted,
+                    Some(grown),
+                    1000,
+                )],
+                1000,
+                true,
+            ),
+        );
+        assert!(engine.learned_mins.is_empty(), "{flag} vetoes learning");
+    }
+}
+
+#[test]
+fn learned_refused_attempt_does_not_invalidate() {
+    // A refused write leaves a transient staged preimage, not external
+    // counter-evidence: the floor survives while the transient lane holds.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(1, two_facts(), vec![], vec![], 0, true),
+    );
+    let baseline = frame_row(&first, "w1").effective_frame.expect("tiled");
+    let baseline_w2 = frame_row(&first, "w2").effective_frame.expect("tiled");
+    let grown = Rect {
+        x: baseline.x,
+        y: baseline.y,
+        w: baseline.w + 100,
+        h: baseline.h,
+    };
+    accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![fact("w1", Some(grown)), fact("w2", Some(baseline_w2))],
+            vec![],
+            vec![attempt(
+                "w1",
+                baseline,
+                FrameSetter::Accepted,
+                Some(grown),
+                1000,
+            )],
+            1000,
+            true,
+        ),
+    );
+    assert_eq!(learned_of(&engine, "w1").0, Some(grown.w));
+    let small = Rect {
+        x: grown.x,
+        y: grown.y,
+        w: baseline.w,
+        h: grown.h,
+    };
+    let held = accepted(
+        &mut engine,
+        &report(
+            3,
+            vec![fact("w1", Some(small)), fact("w2", Some(baseline_w2))],
+            vec![],
+            vec![attempt(
+                "w1",
+                grown,
+                FrameSetter::Refused,
+                Some(small),
+                2000,
+            )],
+            2000,
+            true,
+        ),
+    );
+    assert_eq!(learned_of(&engine, "w1").0, Some(grown.w));
+    // The write itself rides the transient lane; the floor is untouched.
+    // (Authority follows the reshaped pair, so only retention is pinned.)
+    assert!(
+        frame_row(&held, "w1").effective_frame.is_some(),
+        "still publishes a tiled row"
+    );
+}
+
+#[test]
+fn learned_max_change_suppresses_without_clearing_and_restores_without_relearn() {
+    // A changed declared maximum contradicting the floor suppresses that
+    // axis instead of clearing it: the bound stays retained while the
+    // target follows the declared pair, and lifting the max restores the
+    // floor with no new growth proof. No clear/relearn loop either way.
+    use crate::size_hints::WindowSizeHints;
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(1, two_facts(), vec![], vec![], 0, true),
+    );
+    let baseline = frame_row(&first, "w1").effective_frame.expect("tiled");
+    let baseline_w2 = frame_row(&first, "w2").effective_frame.expect("tiled");
+    let grown = Rect {
+        x: baseline.x,
+        y: baseline.y,
+        w: baseline.w + 100,
+        h: baseline.h,
+    };
+    let second = accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![fact("w1", Some(grown)), fact("w2", Some(baseline_w2))],
+            vec![],
+            vec![attempt(
+                "w1",
+                baseline,
+                FrameSetter::Accepted,
+                Some(grown),
+                1000,
+            )],
+            1000,
+            true,
+        ),
+    );
+    let next = frame_row(&second, "w1").effective_frame.expect("tiled");
+    assert_eq!(next.w, grown.w);
+    // Tighten the declared max below the floor while the app still shows
+    // the floor: the floor is suppressed, not disproven, so it stays
+    // retained while the target follows the declared pair.
+    let mut capped_w1 = fact("w1", Some(grown));
+    capped_w1.hints = WindowSizeHints {
+        min_w: None,
+        min_h: None,
+        max_w: Some(baseline.w),
+        max_h: None,
+    };
+    let suppressed = accepted(
+        &mut engine,
+        &report(
+            3,
+            vec![capped_w1, fact("w2", Some(baseline_w2))],
+            vec![],
+            vec![],
+            2000,
+            true,
+        ),
+    );
+    assert_eq!(learned_of(&engine, "w1").0, Some(grown.w));
+    assert_eq!(
+        frame_row(&suppressed, "w1").effective_frame.expect("tiled"),
+        baseline
+    );
+    // Lift the max with no new growth: the retained floor applies again
+    // immediately, so no relearn loop is needed.
+    let restored = accepted(
+        &mut engine,
+        &report(
+            4,
+            vec![fact("w1", Some(grown)), fact("w2", Some(baseline_w2))],
+            vec![],
+            vec![],
+            3000,
+            true,
+        ),
+    );
+    assert_eq!(learned_of(&engine, "w1").0, Some(grown.w));
+    assert_eq!(
+        frame_row(&restored, "w1").effective_frame.expect("tiled"),
+        next
+    );
+}
+
+#[test]
+fn learned_zero_clock_attempt_never_learns() {
+    // No freshness stamp means no ordering claim: even corroborated growth
+    // never learns, while the clamp lane still suppresses the stable pair.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(1, two_facts(), vec![], vec![], 0, true),
+    );
+    let baseline = frame_row(&first, "w1").effective_frame.expect("tiled");
+    let baseline_w2 = frame_row(&first, "w2").effective_frame.expect("tiled");
+    let grown = Rect {
+        x: baseline.x,
+        y: baseline.y,
+        w: baseline.w + 100,
+        h: baseline.h,
+    };
+    let held = accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![fact("w1", Some(grown)), fact("w2", Some(baseline_w2))],
+            vec![],
+            vec![attempt(
+                "w1",
+                baseline,
+                FrameSetter::Accepted,
+                Some(grown),
+                0,
+            )],
+            1000,
+            true,
+        ),
+    );
+    assert!(engine.learned_mins.is_empty());
+    assert_eq!(
+        frame_row(&held, "w1").frame_authority,
+        ScopeAuthority::Hold(HoldReason::ConstraintClamp)
+    );
+}
+
+#[test]
+fn learned_declared_stronger_min_wins() {
+    // A declared minimum stronger than the floor wins the merge: the
+    // learned bound stays retained, but the target follows the declared min.
+    use crate::size_hints::WindowSizeHints;
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(1, two_facts(), vec![], vec![], 0, true),
+    );
+    let baseline = frame_row(&first, "w1").effective_frame.expect("tiled");
+    let baseline_w2 = frame_row(&first, "w2").effective_frame.expect("tiled");
+    let grown = Rect {
+        x: baseline.x,
+        y: baseline.y,
+        w: baseline.w + 100,
+        h: baseline.h,
+    };
+    accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![fact("w1", Some(grown)), fact("w2", Some(baseline_w2))],
+            vec![],
+            vec![attempt(
+                "w1",
+                baseline,
+                FrameSetter::Accepted,
+                Some(grown),
+                1000,
+            )],
+            1000,
+            true,
+        ),
+    );
+    assert_eq!(learned_of(&engine, "w1").0, Some(grown.w));
+    let mut declared_w1 = fact("w1", Some(grown));
+    declared_w1.hints = WindowSizeHints {
+        min_w: Some(grown.w + 80),
+        min_h: None,
+        max_w: None,
+        max_h: None,
+    };
+    let declared = accepted(
+        &mut engine,
+        &report(
+            3,
+            vec![declared_w1, fact("w2", Some(baseline_w2))],
+            vec![],
+            vec![],
+            2000,
+            true,
+        ),
+    );
+    assert_eq!(learned_of(&engine, "w1").0, Some(grown.w));
+    assert_eq!(
+        frame_row(&declared, "w1").effective_frame.expect("tiled").w,
+        grown.w + 80
+    );
+}
+
+#[test]
+fn learned_float_excursion_preserves_and_reapplies() {
+    // A float excursion never erases the floor: the bound survives the
+    // exception rows and applies again once the lifetime re-tiles.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(1, two_facts(), vec![], vec![], 0, true),
+    );
+    let baseline = frame_row(&first, "w1").effective_frame.expect("tiled");
+    let baseline_w2 = frame_row(&first, "w2").effective_frame.expect("tiled");
+    let grown = Rect {
+        x: baseline.x,
+        y: baseline.y,
+        w: baseline.w + 100,
+        h: baseline.h,
+    };
+    accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![fact("w1", Some(grown)), fact("w2", Some(baseline_w2))],
+            vec![],
+            vec![attempt(
+                "w1",
+                baseline,
+                FrameSetter::Accepted,
+                Some(grown),
+                1000,
+            )],
+            1000,
+            true,
+        ),
+    );
+    assert_eq!(learned_of(&engine, "w1").0, Some(grown.w));
+    let mut floating = fact("w1", Some(grown));
+    floating.floating = true;
+    accepted(
+        &mut engine,
+        &report(
+            3,
+            vec![floating, fact("w2", Some(baseline_w2))],
+            vec![],
+            vec![],
+            2000,
+            true,
+        ),
+    );
+    assert_eq!(learned_of(&engine, "w1").0, Some(grown.w));
+    let retiled = accepted(
+        &mut engine,
+        &report(
+            4,
+            vec![fact("w1", Some(grown)), fact("w2", Some(baseline_w2))],
+            vec![],
+            vec![],
+            3000,
+            true,
+        ),
+    );
+    assert_eq!(learned_of(&engine, "w1").0, Some(grown.w));
+    assert!(
+        frame_row(&retiled, "w1").effective_frame.expect("tiled").w >= grown.w,
+        "floor reapplies after the excursion"
+    );
+}
+
+#[test]
+fn learned_shared_fixture_converges_through_raw_reports() {
+    let raw = include_str!("../../../test-fixtures/frame-convergence.json");
+    let fixture: serde_json::Value = serde_json::from_str(raw).expect("valid fixture");
+    assert_eq!(fixture["version"], serde_json::Value::from(1));
+    let cases = fixture["cases"].as_array().expect("cases array");
+    assert_eq!(cases.len(), 2);
+    for case in cases {
+        let name = case["name"].as_str().expect("name");
+        let window = case["window"].as_str().expect("window");
+        let extra_w = case["extra_w"].as_i64().expect("extra_w") as i32;
+        let extra_h = case["extra_h"].as_i64().expect("extra_h") as i32;
+        let mut engine = WorldEngine::new("gen-1").expect("generation");
+        let first = accepted(
+            &mut engine,
+            &report(1, two_facts(), vec![], vec![], 0, true),
+        );
+        let baseline = frame_row(&first, window).effective_frame.expect("tiled");
+        let other = if window == "w1" { "w2" } else { "w1" };
+        let other_base = frame_row(&first, other).effective_frame.expect("tiled");
+        let grown = Rect {
+            x: baseline.x,
+            y: baseline.y,
+            w: baseline.w + extra_w,
+            h: baseline.h + extra_h,
+        };
+        let mut wfact = fact(window, Some(grown));
+        if case["declared_max"].as_str() == Some("baseline-w") {
+            wfact.hints = crate::size_hints::WindowSizeHints {
+                min_w: None,
+                min_h: None,
+                max_w: Some(baseline.w),
+                max_h: None,
+            };
+        }
+        let second = accepted(
+            &mut engine,
+            &report(
+                2,
+                vec![wfact, fact(other, Some(other_base))],
+                vec![],
+                vec![attempt(
+                    window,
+                    baseline,
+                    FrameSetter::Accepted,
+                    Some(grown),
+                    1000,
+                )],
+                1000,
+                true,
+            ),
+        );
+        let expect_grows = case["expect_grows"].as_bool().expect("expect_grows");
+        let next = frame_row(&second, window).effective_frame.expect("tiled");
+        if expect_grows {
+            assert!(
+                next.w >= grown.w && next.h == grown.h,
+                "{name}: learned target {next:?} covers {grown:?}"
+            );
+            assert!(!engine.learned_mins.is_empty(), "{name}: learns");
+            assert_eq!(
+                frame_row(&second, window).frame_authority,
+                ScopeAuthority::Controlled,
+                "{name}: learned target is actionable, not a hold"
+            );
+        } else {
+            assert!(
+                engine.learned_mins.is_empty(),
+                "{name}: contradiction learns nothing"
+            );
+            assert_eq!(next, baseline, "{name}: target unchanged");
+            assert_eq!(
+                frame_row(&second, window).frame_authority,
+                ScopeAuthority::Hold(HoldReason::ConstraintClamp),
+                "{name}: stable pair still suppresses"
+            );
+        }
+    }
+}
