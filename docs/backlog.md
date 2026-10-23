@@ -137,8 +137,14 @@ decisions of 2026-09-24 are under
   authority, sole Windows world owner, cursor-first switch and fresh placement),
   3a (frame clamp/backoff) and 3b1 (learned minimum sizes) delivered with
   both-output fixture checks; remaining 3b completion/anti-fighting and
-  frameless migration, stages 4-5 pending. KDE/macOS ports follow once the
-  core interface settles
+  frameless migration, stages 4-5 pending. 2026-10-23: stages 3 and 4
+  (gestures, focus-follows-cursor/warp default off, border/underlay/pager
+  presentation) delivered with both-output fixture checks; stage 5 audit in
+  progress: directional/float policy moved to core but maximized-tiled clear
+  continuation fails natively (`685dc0b9` checkpoint, not dogfood-ready);
+  remaining migration/control context, dead APIs, common acceptance
+  connector, uniform wire presentation, port notes, regression matrix and
+  dogfood summary. KDE/macOS ports follow once the core interface settles
   ([record](changes/core-world-model-rearchitecture.md)). Goal: a consistent test
   process over agreed cases, consistent with Tier 1 input tilers, for high
   quality and cross-platform consistency. A maximal, high-quality core also
