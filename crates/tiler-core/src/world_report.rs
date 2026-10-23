@@ -936,6 +936,71 @@ pub struct WorldReport {
     pub clear_attempts: Vec<ClearAttempt>,
 }
 
+/// Terminal retained-operation lifecycle outcome for one core-owned
+/// operation: a directional maximize-clear binding or an explicit
+/// float-placement target. Emitted once when the retained item retires
+/// (refusal, abandonment, supersession, continuation, continuation refusal,
+/// or frame-proven float completion), never retained across reports.
+/// Pending desire rides the `clear_operation`/`frame_operation` row, actual
+/// raw attempts ride the `world-apply` diag (`clears`/`frames`),
+/// ambiguous/gap holds emit nothing (the binding persists with its desire
+/// withheld). A `ClearContinuedTiled`/`ClearContinuedFloat` event means the
+/// original clear intent resumed under the original op, never that the
+/// final frame arrived; only `FloatFrameProven` means native observation
+/// confirmed the retained float target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperationOutcome {
+    ClearContinuedTiled,
+    ClearContinuedFloat,
+    ClearRefusedProven,
+    ClearAbandonedExternalClear,
+    ClearAbandonedFocusChanged,
+    ClearAbandonedViewChanged,
+    ClearAbandonedHomingChanged,
+    ClearAbandonedClosed,
+    ClearAbandonedFullscreen,
+    ClearSuperseded,
+    ClearContinuationRefused,
+    FloatFrameProven,
+    FloatRefusedProven,
+    FloatAbandoned,
+}
+
+impl OperationOutcome {
+    /// Wire token for this value, matching the protocol codec vocabulary.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ClearContinuedTiled => "continued-tiled",
+            Self::ClearContinuedFloat => "continued-float",
+            Self::ClearRefusedProven => "refused-proven",
+            Self::ClearAbandonedExternalClear => "abandoned-external-clear",
+            Self::ClearAbandonedFocusChanged => "abandoned-focus-changed",
+            Self::ClearAbandonedViewChanged => "abandoned-view-changed",
+            Self::ClearAbandonedHomingChanged => "abandoned-homing-changed",
+            Self::ClearAbandonedClosed => "abandoned-closed",
+            Self::ClearAbandonedFullscreen => "abandoned-fullscreen",
+            Self::ClearSuperseded => "superseded",
+            Self::ClearContinuationRefused => "continuation-refused",
+            Self::FloatFrameProven => "float-frame-proven",
+            Self::FloatRefusedProven => "float-refused-proven",
+            Self::FloatAbandoned => "float-abandoned",
+        }
+    }
+}
+
+/// One terminal retained-operation lifecycle event: the original operation
+/// id plus window plus outcome (and a narrow cause for refusals and
+/// abandonments). At most one per retired item per report, bounded by the
+/// window inventory itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OperationEvent {
+    pub operation_id: String,
+    pub window: WindowId,
+    pub outcome: OperationOutcome,
+    pub cause: Option<String>,
+}
+
 /// World reply: single globally ordered full desired snapshot. No
 /// tree/shares/focus-history/serialized Engine.
 ///
@@ -981,6 +1046,12 @@ pub struct WorldReply {
     /// deliveries repeat the cached reply (and its terminal); the id plus
     /// the consumed watermark keep replays safe.
     pub gesture_settled: Option<GestureSettled>,
+    /// Terminal retained-operation lifecycle events incorporated by
+    /// this report (see [`OperationEvent`]): one per retired clear binding
+    /// or float placement, never retained across reports. Empty on
+    /// observation-only holds and on replies with no operation settlement.
+    /// Duplicate deliveries repeat the cached reply (and its events).
+    pub operation_settled: Vec<OperationEvent>,
     /// Desired cursor-warp point in adapter units (same space as screen
     /// FULL rectangles), `None` when no warp is desired on this report.
     /// Set only when `cursor_warp` is on, the inventory is complete, the

@@ -110,8 +110,14 @@
 //! resize, tiled-admit, focus, and send results ride the snapshot,
 //! transfers, and effects with `result: null` - plus `gestureSettled`:
 //! null or the `{"id":"N","committed":B}` terminal incorporated by this
-//! report (never retained across reports), plus `warpCursor`: null or the
-//! desired `[x,y]` cursor-warp point (cross-output focus only).
+//! report (never retained across reports), plus `operationSettled`: [] or one
+//! `{"op","win","outcome","cause"}` object per retired retained operation
+//! (directional maximize-clear verdict or explicit float-placement verdict:
+//! original op/window/outcome; a clear continuation means the intent
+//! resumed, never that the final frame arrived; only `float-frame-proven`
+//! means native observation confirmed the float target), plus
+//! `warpCursor`: null or the desired `[x,y]` cursor-warp point
+//! (cross-output focus only).
 //! Bootstrap/discovery replies reuse the same shape with `ready:false` and
 //! empty sections. Bounded errors reuse
 //! `{v:2,outcome:"rejected",kind,message,gen}`.
@@ -1768,6 +1774,8 @@ pub fn encode_reply(reply: &WorldReply) -> String {
     tiler_core::world_sizing::encode_command_result(&mut out, &reply.command_result);
     out.push_str(",\"gestureSettled\":");
     tiler_core::world_sizing::encode_gesture_settled(&mut out, &reply.gesture_settled);
+    out.push_str(",\"operationSettled\":");
+    tiler_core::world_sizing::encode_operation_settled(&mut out, &reply.operation_settled);
     out.push_str(",\"warpCursor\":");
     match reply.cursor_warp {
         Some((x, y)) => {

@@ -27,7 +27,6 @@ use crate::world_engine::{
     MSG_MIGRATION_TARGET_INCOMPLETE, MSG_SCOPE_HELD, MSG_SELECT_UNKNOWN, MSG_SEND_TARGET,
     MSG_SEND_WINDOW, MSG_SNAPSHOT, RetainedTransfer, WorldEngine,
 };
-use crate::world_operations::command_window;
 use crate::world_report::{
     CommandResult, OneShotEffect, TransferKind, TransferTarget, WorldCommand, WorldReport,
 };
@@ -45,15 +44,6 @@ impl WorldEngine {
         command: &WorldCommand,
         held_scopes: &BTreeSet<DomainKey>,
     ) -> CommandApplied {
-        // Retained maximize-clear supersession: no later user command ever
-        // consumes a pending binding. Any same-window new intent drops the
-        // old binding first and re-evaluates fresh below (the directional
-        // paths repeat this for their own sequencing; the choke point here
-        // covers every other window-carrying command).
-        match command_window(command) {
-            Some(window) => self.supersede_directional_clear(&window),
-            None => self.prune_directional_clears(),
-        }
         // Staged carrier index for command planning: homed Engine
         // carriers keyed by lifetime. Owned locally so planning borrows
         // nothing from `self`.

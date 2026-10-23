@@ -95,6 +95,18 @@ use tiler_core::world_report::{
 /// Each flag has a distinct native source, never a guessed duplicate:
 /// - `key`/`token`: stable member identity and Engine token.
 /// - `frame`: last proven frame (`None` = unreadable, never fabricated).
+///   Retained maximized/fullscreen overlay rows ride their tile slot here
+///   (allocation reasoning and home affinity), not the live maximized frame.
+/// - `observed_frame`: observation-time live frame before that slot
+///   substitution (the retained row's fresh frame for overlay rows with
+///   observed evidence, the observed visible frame for live-lane rows).
+///   `None` means no observed live frame this tick and never falls back to
+///   the slot: a coincidental slot/live equality must not fabricate proof.
+///   The maximize-clear race guard compares the diff-time live re-read
+///   against this, never the slot: the production live lane re-observes
+///   the maximized DWM frame through `observe_window`, so comparing
+///   against the slot would hold every maximized clear forever with no
+///   user race present.
 /// - `facts`: the raw native read (`None` = unproven; holds). Distinct from
 ///   `iconic`/`hidden`: `facts.minimized` is the native minimized bit while
 ///   `iconic` is the adapter minimized-omission classification; `facts.visible`
@@ -112,6 +124,7 @@ pub(super) struct FreshWindow {
     pub(super) key: WindowKey,
     pub(super) token: String,
     pub(super) frame: Option<Rect>,
+    pub(super) observed_frame: Option<Rect>,
     pub(super) facts: Option<WindowFacts>,
     pub(super) output: String,
     pub(super) workspace: String,
@@ -166,6 +179,14 @@ impl FreshHost {
             }
         }
         let mut baseline: HashMap<String, FreshWindow> = HashMap::new();
+        // Which capture lane each fact rode: the live lane over the current
+        // enumeration, or the retained lane for members with no live row.
+        // The retained overlay lane substitutes the tile slot for `rect`;
+        // the race baseline below keeps the pre-substitution live frame.
+        let observed_tokens: HashSet<&str> = observed
+            .iter()
+            .map(|window| window.token.as_str())
+            .collect();
         // Logical homing is reply-side: the capture carries screen
         // affinity plus truthful observed receipts. Baselines home to
         // the last proven receipt where capture freshly proved it
@@ -187,6 +208,21 @@ impl FreshHost {
             };
             let hidden = state.hidden_claims.contains_key(key);
             let iconic = fact.minimized || state.minimized_omitted.contains(key);
+            // Observation-time live frame before retained-slot substitution:
+            // retained overlay rows carry their fresh live frame in the
+            // retained row while `rect` rides the tile slot. Live-lane rows
+            // observe no substitution, so the fact rect is already the live
+            // frame. A retained row with no observed frame yields `None`:
+            // unavailable evidence is never backfilled from the slot, so a
+            // coincidental slot/live equality cannot fabricate proof.
+            let observed_frame = if observed_tokens.contains(token) {
+                fact.rect
+            } else {
+                retained
+                    .iter()
+                    .find(|row| row.token == token)
+                    .and_then(|row| row.rect)
+            };
             // Observation-time homing: the retained proven receipt where
             // capture freshly revalidated it this tick, else the live
             // screen affinity with no workspace claim.
@@ -205,6 +241,7 @@ impl FreshHost {
                     key: key.clone(),
                     token: token.to_owned(),
                     frame: fact.rect,
+                    observed_frame,
                     facts: facts_of.get(token).copied(),
                     output,
                     workspace,
@@ -786,10 +823,29 @@ pub(super) struct FocusDispatchDiag {
     pub(super) hold: Option<&'static str>,
 }
 
+/// Trace-only per-clear hold record for the common maximize-clear lane
+/// (stage 5 directional): one row per published `clear_operation` desire
+/// that dispatched no setter this pass, naming the exact pre-dispatch gate
+/// that held it. Pure trace state, never a policy input: the core consumes
+/// no hold reasons. Veto gates (`scope-not-controlled`, `identity-drift`,
+/// `policy-veto`) additionally emit their correlated refused attempt; every
+/// other reason is a silent hold with no attempt and no spent mark, so a
+/// later readable report retries the still-undispatched desire.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(super) struct ClearHoldDiag {
+    pub(super) op: String,
+    pub(super) window: String,
+    pub(super) hold: &'static str,
+}
+
 /// Bound for [`FocusDispatchDiag`] rows per apply pass. Effects themselves
 /// are already bounded by the reply byte budget; this caps only the retained
 /// trace rows with an honest omitted count in the tick diag.
 pub(super) const MAX_FOCUS_DIAG: usize = 8;
+
+/// Bound for [`ClearHoldDiag`] rows per apply pass, with an honest omitted
+/// count in the tick diag.
+pub(super) const MAX_CLEAR_HOLD_DIAG: usize = 8;
 
 /// Honest outcome of one diff pass. `partial` is true when at least one
 /// write landed while at least one row held: never atomic.
@@ -821,6 +877,35 @@ pub(super) struct ApplyStats {
     /// Trace-only per-effect focus dispatch rows (see [`FocusDispatchDiag`]).
     /// Bounded to [`MAX_FOCUS_DIAG`] entries in reply order.
     pub(super) focus_dispatch: Vec<FocusDispatchDiag>,
+    /// Trace-only per-clear hold rows (see [`ClearHoldDiag`]): one entry
+    /// per published clear desire that dispatched no setter this pass.
+    /// Bounded to [`MAX_CLEAR_HOLD_DIAG`] entries in reply order; the
+    /// unbounded total rides `clear_holds_total` below so the tick diag
+    /// reports an honest omitted count past the cap.
+    pub(super) clear_holds: Vec<ClearHoldDiag>,
+    /// Trace-only count of every clear-hold attribution this pass,
+    /// including rows past the [`MAX_CLEAR_HOLD_DIAG`] storage cap.
+    /// The tick diag derives `clear_holds_omitted` from this total minus
+    /// the stored rows, so a pass with more held desires than storage
+    /// still reports the excess instead of a false zero.
+    pub(super) clear_holds_total: usize,
+}
+
+impl ApplyStats {
+    /// Trace-only hold attribution for one published clear desire that
+    /// dispatched no setter. Counts every attribution in
+    /// `clear_holds_total` and retains only the first
+    /// [`MAX_CLEAR_HOLD_DIAG`] rows. Never a policy input.
+    pub(super) fn note_clear_hold(&mut self, op: &str, window: &str, hold: &'static str) {
+        self.clear_holds_total = self.clear_holds_total.saturating_add(1);
+        if self.clear_holds.len() < MAX_CLEAR_HOLD_DIAG {
+            self.clear_holds.push(ClearHoldDiag {
+                op: op.to_owned(),
+                window: window.to_owned(),
+                hold,
+            });
+        }
+    }
 }
 
 /// Scope authority for one `(output, workspace)` domain, matching the core
@@ -1756,11 +1841,23 @@ pub(super) fn apply_world_reply(
         if op.is_empty() {
             continue;
         }
+        let token = row.lifetime.0.clone();
+        // A stale pass stops before dispatching any remaining desire: the
+        // first unprocessed desire still attributes the stop so the trace
+        // distinguishes it from a row-narrow hold (which skips one row and
+        // keeps converging the rest). Stops end the pass; holds do not.
         if gate.current_obs != entry_obs {
+            stats.note_clear_hold(op, &token, "stale-stopped");
             stats.stopped_mid_apply = true;
             break;
         }
-        let token = row.lifetime.0.clone();
+        // Bounded trace-only hold attribution for this desire: one row per
+        // pre-dispatch gate, in reply order. Never a policy input.
+        macro_rules! push_clear_hold {
+            ($reason:expr) => {{
+                stats.note_clear_hold(op, &token, $reason);
+            }};
+        }
         // Best-known maximized states for a veto refusal row: the live
         // re-read when it proves, else the observation baseline (possibly
         // unreadable, which the core reconciles as ambiguity, never proof).
@@ -1770,48 +1867,70 @@ pub(super) fn apply_world_reply(
             .and_then(|base| base.facts.map(|facts| facts.maximized));
         // A veto refusal spends the phase and reports exactly one refused
         // attempt with best-known pre/post states. Never silent, never
-        // re-actuated.
-        let mut veto_refused =
-            |clear_out: &mut Vec<ClearAttempt>, pre: Option<bool>, post: Option<bool>| {
-                if effects.mark_clear_spent(op) {
-                    clear_out.push(ClearAttempt {
-                        operation_id: op.to_owned(),
-                        window: row.lifetime.clone(),
-                        setter: FrameSetter::Refused,
-                        pre_maximized: pre,
-                        post_maximized: post,
-                        attempt_ms,
-                    });
-                }
-            };
+        // re-actuated. The hold reason rides the trace alongside the
+        // refused attempt.
+        let mut veto_refused = |clear_out: &mut Vec<ClearAttempt>,
+                                stats: &mut ApplyStats,
+                                hold: &'static str,
+                                pre: Option<bool>,
+                                post: Option<bool>| {
+            stats.note_clear_hold(op, &token, hold);
+            if effects.mark_clear_spent(op) {
+                clear_out.push(ClearAttempt {
+                    operation_id: op.to_owned(),
+                    window: row.lifetime.clone(),
+                    setter: FrameSetter::Refused,
+                    pre_maximized: pre,
+                    post_maximized: post,
+                    attempt_ms,
+                });
+            }
+        };
         if !scope_controlled(reply, &row.output.0, &row.workspace) {
-            veto_refused(clear_out, baseline_maximized, baseline_maximized);
+            veto_refused(
+                clear_out,
+                &mut stats,
+                "scope-not-controlled",
+                baseline_maximized,
+                baseline_maximized,
+            );
             stats.held += 1;
             continue;
         }
         let Some(base) = fresh.baseline.get(&token) else {
+            push_clear_hold!("unknown-baseline");
             stats.held += 1;
             continue;
         };
-        if base.hidden || base.iconic || base.frame.is_none() {
+        if base.hidden || base.iconic || base.frame.is_none() || base.observed_frame.is_none() {
+            push_clear_hold!("hidden-or-unreadable");
             stats.held += 1;
             continue;
         }
         if ops.gesture_barrier() {
+            push_clear_hold!("gesture-barrier");
             stats.held += 1;
             continue;
         }
         let Some(live) = ops.read_window(&token) else {
+            push_clear_hold!("unknown-live");
             stats.held += 1;
             continue;
         };
         if live.key != base.key {
-            veto_refused(clear_out, baseline_maximized, None);
+            veto_refused(
+                clear_out,
+                &mut stats,
+                "identity-drift",
+                baseline_maximized,
+                None,
+            );
             stats.held += 1;
             continue;
         }
         let live_maximized = live.facts.map(|facts| facts.maximized);
         let Some(live_facts) = live.facts else {
+            push_clear_hold!("unreadable-facts");
             stats.held += 1;
             continue;
         };
@@ -1829,6 +1948,8 @@ pub(super) fn apply_world_reply(
             ) => {
                 veto_refused(
                     clear_out,
+                    &mut stats,
+                    "policy-veto",
                     live_maximized.or(baseline_maximized),
                     live_maximized.or(baseline_maximized),
                 );
@@ -1836,26 +1957,33 @@ pub(super) fn apply_world_reply(
                 continue;
             }
             Err(_) => {
+                push_clear_hold!("classify-hold");
                 stats.held += 1;
                 continue;
             }
         }
         if !live_maximized.unwrap_or(true) {
-            // Already unmaximized: no write, no attempt. The core settles
-            // from the staged observation itself (an external clear without
-            // a correlated attempt abandons; it never continues).
+            // Already unmaximized: no write, no attempt, no hold row. The
+            // core settles from the staged observation itself (an external
+            // clear without a correlated attempt abandons; it never
+            // continues).
             continue;
         }
-        // Manual-change race: the live frame left the observation baseline.
-        // Never fight the user; hold for the next stable observation.
-        if base
-            .frame
-            .is_some_and(|baseline| Some(baseline) != live.frame)
-        {
+        // Manual-change race: the live frame left the observation-time live
+        // frame. Never fight the user; hold for the next stable observation.
+        // The baseline is the pre-substitution live frame
+        // (`observed_frame`), never the retained tile slot: retained
+        // maximized/fullscreen rows ride their slot in `frame` while the
+        // native window shows the maximized frame, and the production live
+        // lane re-observes that maximized frame through `observe_window`.
+        // Any disagreement between the two live reads still holds.
+        if base.observed_frame != live.frame {
+            push_clear_hold!("frame-race");
             stats.held += 1;
             continue;
         }
         if !ensure_fresh(reply, gate, entry_obs, ops) {
+            push_clear_hold!("stale-stopped");
             stats.stopped_mid_apply = true;
             break;
         }
@@ -1863,6 +1991,7 @@ pub(super) fn apply_world_reply(
         // safety/authority gate passed, so holds never consume the desire.
         // Strictly at-most-once dispatch, never a policy verdict.
         if !effects.mark_clear_spent(op) {
+            push_clear_hold!("already-spent");
             stats.held += 1;
             continue;
         }

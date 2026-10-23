@@ -12,7 +12,8 @@
 use super::rmax03_adapter_tests::test_state;
 use super::world_capture::{capture_world, resolve_cursor_hit};
 use super::world_diff::{
-    ApplyStats, FakeNative, FreshHost, FreshWindow, HostDiff, NativeOps, apply_world_reply,
+    ApplyStats, FakeNative, FreshHost, FreshWindow, HostDiff, MAX_CLEAR_HOLD_DIAG, NativeOps,
+    apply_world_reply,
 };
 use super::world_sequencer::{AckOutcome, DispatchError, WorldSequencer};
 use super::{HiddenRecord, MonitorArea, ObservedWindow, PendingClosed, RetainedRow, TileLoop};
@@ -216,6 +217,7 @@ fn reply_shell(obs: u64, rev: u64, scopes: &[(&str, &str)]) -> WorldReply {
         effects: Vec::new(),
         command_result: None,
         gesture_settled: None,
+        operation_settled: Vec::new(),
         cursor_warp: None,
         presentation_bytes: 0,
     }
@@ -3221,6 +3223,71 @@ fn maximized_rig() -> (Rig, FreshHost) {
 }
 
 #[test]
+fn clear_lane_tiled_row_dispatches_once_from_published_desire() {
+    // Tiled production seam: a tiled row carrying the published
+    // `clear_operation` token (allocation + effective frame + token, as the
+    // core now publishes for eligible tiled rows) dispatches the native
+    // clear exactly once via the common lane and reports the correlated
+    // attempt. No fake proof: the attempt comes from the desire itself.
+    use tiler_core::geometry::Rect;
+    let (rig, fresh) = maximized_rig();
+    let mut native = FakeNative::seeded(&fresh);
+    let mut diff = diff_at(7);
+    let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
+    let slot = Rect {
+        x: 0,
+        y: 0,
+        w: 400,
+        h: 500,
+    };
+    reply.windows.push(WindowDesire {
+        lifetime: WindowId("w1".to_owned()),
+        output: OutputId(rig.out.clone()),
+        workspace: rig.ws.clone(),
+        allocation: Some(slot),
+        effective_frame: Some(slot),
+        frame_authority: Auth::Controlled,
+        membership_authority: Auth::Controlled,
+        floating: false,
+        float_origin: None,
+        frame_operation: None,
+        clear_operation: Some("op-clear-tiled-1".to_owned()),
+    });
+    let mut clear_out = Vec::new();
+    let stats = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut native,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut clear_out,
+        1000,
+    );
+    assert_eq!(stats.clear_writes, 1, "{stats:?}");
+    assert_eq!(clear_out.len(), 1);
+    assert_eq!(clear_out[0].operation_id, "op-clear-tiled-1");
+    assert_eq!(clear_out[0].setter, FrameSetter::Accepted);
+    assert_eq!(clear_out[0].pre_maximized, Some(true));
+    assert_eq!(clear_out[0].post_maximized, Some(false));
+    // Second apply never re-dispatches (spent phase).
+    let mut clear_again = Vec::new();
+    apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut native,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut clear_again,
+        1000,
+    );
+    assert!(clear_again.is_empty(), "{clear_again:?}");
+}
+
+#[test]
 fn clear_lane_dispatches_once_and_reports_accepted_attempt() {
     // The published `clear_operation` desire dispatches the native clear
     // exactly once and reports the mechanical attempt (setter plus
@@ -4091,4 +4158,32 @@ fn floating_refill_actuates_after_target_view_proof() {
         "refill waits for target proof: {views:?}"
     );
     assert!(stats.held >= 1);
+}
+
+/// Trace-only hold storage bound: attributions past
+/// [`MAX_CLEAR_HOLD_DIAG`] keep counting in `clear_holds_total` while
+/// storage holds only the first rows in order. This is the regression for
+/// the reviewed defect where the omitted count was derived from the
+/// already-truncated storage and always reported zero past the cap.
+#[test]
+fn clear_hold_attribution_bounds_storage_but_keeps_total() {
+    let mut stats = ApplyStats::default();
+    for n in 0..MAX_CLEAR_HOLD_DIAG + 2 {
+        stats.note_clear_hold(&format!("op-{n}"), "w1", "frame-race");
+    }
+    assert_eq!(stats.clear_holds.len(), MAX_CLEAR_HOLD_DIAG);
+    assert_eq!(stats.clear_holds_total, MAX_CLEAR_HOLD_DIAG + 2);
+    assert_eq!(stats.clear_holds[0].op, "op-0");
+    assert_eq!(
+        stats.clear_holds[MAX_CLEAR_HOLD_DIAG - 1].op,
+        format!("op-{}", MAX_CLEAR_HOLD_DIAG - 1)
+    );
+    assert!(
+        stats
+            .clear_holds
+            .iter()
+            .all(|row| row.window == "w1" && row.hold == "frame-race"),
+        "stored rows keep op/window/hold, got {:?}",
+        stats.clear_holds
+    );
 }

@@ -485,13 +485,17 @@ pub(super) fn dispatch_directional_intent(
                     return;
                 }
                 O::NeedClear => {
-                    // The world apply above dispatched the one-shot native
-                    // clear (at most once under the originating op) and the
+                    // The world apply above may dispatch the one-shot native
+                    // clear (at most once under the originating op); the
                     // commandless core settlement resumes the original
-                    // intent on proof. Requested/desired/dispatched is not
-                    // applied: only observed frame arrival proves the move,
-                    // so this seam logs the pending desire honestly and
-                    // never advances its snap chain on it.
+                    // intent on proof. This seam never claims dispatch: the
+                    // reply carries the pending `clear_operation` desire, the
+                    // actual raw attempt (accepted/refused/threw) rides the
+                    // `world-apply` diag `clears` row, and terminal
+                    // refusal/abandonment rides `operationSettled`. Requested /
+                    // desired / attempted is not applied: only observed frame
+                    // arrival proves the move, so this seam logs the pending
+                    // desire honestly and never advances its snap chain on it.
                     state.snap_advance = None;
                     log_json_at(
                         log_path,
@@ -504,7 +508,7 @@ pub(super) fn dispatch_directional_intent(
                             "edge": intent.edge.as_str(),
                             "disposition": "consumed",
                             "outcome": "move-maximize-clear",
-                            "result": "dispatched",
+                            "result": "pending",
                             "origin": origin.token,
                             "window": from,
                             "continued": continued,

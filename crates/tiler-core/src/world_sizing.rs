@@ -108,6 +108,28 @@ pub fn gesture_settled_estimate(settled: &Option<GestureSettled>) -> usize {
     }
 }
 
+/// Structural size estimate for the operation-settled section:
+/// `,"operationSettled":[]` (21) when empty; each event
+/// `{"op":,"win":,"outcome":,"cause":}` counts its fixed punctuation plus
+/// the operation id, window, outcome token and cause widths.
+#[must_use]
+pub fn operation_settled_estimate(settled: &[crate::world_report::OperationEvent]) -> usize {
+    // `,"operationSettled":[` (20) plus `]` (1) when empty = 21.
+    let mut bytes = 21usize;
+    for (i, event) in settled.iter().enumerate() {
+        if i > 0 {
+            bytes += 1;
+        }
+        // {"op":,"win":,"outcome":,"cause":} = 34 punctuation.
+        bytes += 34
+            + json_string_len(&event.operation_id)
+            + json_string_len(&event.window.0)
+            + json_string_len(event.outcome.as_str())
+            + json_string_len(event.cause.as_deref().unwrap_or_default());
+    }
+    bytes
+}
+
 /// Structural size estimate for the optional cursor-warp section:
 /// `,"warpCursor":null` (18) when absent; the present point `[x,y]` counts
 /// its key plus brackets, comma, and decimal digits.
@@ -135,7 +157,9 @@ pub fn reply_estimate(reply: &WorldReply) -> usize {
     // correlated `command_result` section is counted separately in
     // [`command_result_estimate`] (`,\"result\":null` = 14 when absent),
     // the gesture-settled section in [`gesture_settled_estimate`]
-    // (`,\"gestureSettled\":null` = 22 when absent), and the warp section
+    // (`,\"gestureSettled\":null` = 22 when absent), the operation-settled
+    // section in [`operation_settled_estimate`]
+    // (`,\"operationSettled\":[]` = 21 when empty), and the warp section
     // in [`warp_cursor_estimate`] (`,\"warpCursor\":null` = 18 when absent).
     let mut bytes = 166
         + usize_len(reply.contract_version as usize)
@@ -243,6 +267,7 @@ pub fn reply_estimate(reply: &WorldReply) -> usize {
     bytes += reply.effects.len().saturating_sub(1);
     bytes += command_result_estimate(&reply.command_result);
     bytes += gesture_settled_estimate(&reply.gesture_settled);
+    bytes += operation_settled_estimate(&reply.operation_settled);
     bytes += warp_cursor_estimate(&reply.cursor_warp);
     bytes.saturating_add(reply.presentation_bytes)
 }
@@ -1150,6 +1175,8 @@ pub fn encode_reply_canonical(reply: &WorldReply) -> String {
     encode_command_result(&mut out, &reply.command_result);
     out.push_str(",\"gestureSettled\":");
     encode_gesture_settled(&mut out, &reply.gesture_settled);
+    out.push_str(",\"operationSettled\":");
+    encode_operation_settled(&mut out, &reply.operation_settled);
     out.push_str(",\"warpCursor\":");
     match reply.cursor_warp {
         Some((x, y)) => {
@@ -1175,6 +1202,30 @@ pub fn encode_gesture_settled(out: &mut String, settled: &Option<GestureSettled>
     out.push_str("\",\"committed\":");
     out.push_str(if terminal.committed { "true" } else { "false" });
     out.push('}');
+}
+
+/// Exact canonical encoding for the operation-settled section: `[]` when no
+/// retained clear binding or float placement retired on this report, else
+/// one object per retired item with frozen key order (mirrored by
+/// [`operation_settled_estimate`] and the protocol codec). Public so the
+/// protocol transport gate reuses the identical bytes.
+pub fn encode_operation_settled(out: &mut String, settled: &[crate::world_report::OperationEvent]) {
+    out.push('[');
+    for (i, event) in settled.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str("{\"op\":");
+        push_json_string(out, &event.operation_id);
+        out.push_str(",\"win\":");
+        push_json_string(out, &event.window.0);
+        out.push_str(",\"outcome\":");
+        push_json_string(out, event.outcome.as_str());
+        out.push_str(",\"cause\":");
+        push_json_string(out, event.cause.as_deref().unwrap_or_default());
+        out.push('}');
+    }
+    out.push(']');
 }
 
 /// Exact canonical encoding for the correlated `command_result` section:
@@ -1409,6 +1460,10 @@ pub fn reply_exact_bytes(reply: &WorldReply) -> usize {
 ///   per window, 131 each) plus 512 base.
 /// - gesture-settled terminal (at most one per report): 40 fixed plus a
 ///   20-digit id plus a 5-byte bool = 65 worst case, rounded to 96.
+/// - operation-settled events (at most two per window per report: one
+///   clear verdict plus one float verdict): 34 punctuation +
+///   `op-<u64>` (25) + window (130) + outcome (27) + cause (130) = 346,
+///   rounded to 384 each, doubled to 768 per window.
 ///   The 4096 base covers envelope slack and array commas.
 #[must_use]
 pub fn reply_upper_bound(
@@ -1428,4 +1483,5 @@ pub fn reply_upper_bound(
         .saturating_add(512)
         .saturating_add(96)
         .saturating_add(report_windows.saturating_mul(131))
+        .saturating_add(report_windows.saturating_mul(768))
 }

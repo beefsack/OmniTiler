@@ -787,6 +787,7 @@ fn arrival_reply(
         effects: Vec::new(),
         command_result: None,
         gesture_settled: None,
+        operation_settled: Vec::new(),
         cursor_warp: None,
         presentation_bytes: 0,
     }

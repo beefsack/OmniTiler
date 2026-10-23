@@ -27,23 +27,6 @@ use crate::world_report::{
 use crate::world_commands::CommandApplied;
 
 impl WorldEngine {
-    /// Drop any pending directional maximize-clear binding for `window`,
-    /// pruning bindings whose window left homing. Any same-window new
-    /// intent supersedes the old binding and re-evaluates fresh; no later
-    /// user command ever consumes a pending binding.
-    pub(crate) fn supersede_directional_clear(&mut self, window: &WindowId) {
-        self.retained_clears.retain(|retained| {
-            retained.window != *window && self.staged.homing.contains_key(&retained.window)
-        });
-    }
-
-    /// Prune pending directional maximize-clear bindings whose window left
-    /// homing. Runs for windowless commands; window-carrying commands use
-    /// [`WorldEngine::supersede_directional_clear`].
-    pub(crate) fn prune_directional_clears(&mut self) {
-        self.retained_clears
-            .retain(|retained| self.staged.homing.contains_key(&retained.window));
-    }
     /// Existing operation route through the full [`CoreEvent`] (D2/D3
     /// migration path for KDE): the homing (or first readable) domain
     /// supplies the observation envelope. Send operations retain a window
@@ -426,11 +409,6 @@ impl WorldEngine {
         let view = self.effective_view(&home.output);
         let effective = effective_domain(&home, source_row.sticky, view.as_deref());
         let tiling = self.logical_tiling(&effective.output.0, &effective.workspace.0);
-        // Any same-window new intent supersedes a pending clear binding and
-        // re-evaluates fresh; no later user command consumes it.
-        self.retained_clears.retain(|retained| {
-            retained.window != *window && self.staged.homing.contains_key(&retained.window)
-        });
         if let Some(early) = early_verdict(source_row, tiling, false) {
             debug_assert!(!matches!(early, DirectionalVerdict::NeedClear { .. }));
             if let DirectionalVerdict::Refused { outcome, cause } = early {
@@ -588,15 +566,6 @@ impl WorldEngine {
         let view = self.effective_view(&home.output);
         let effective = effective_domain(&home, source_row.sticky, view.as_deref());
         let tiling = self.logical_tiling(&effective.output.0, &effective.workspace.0);
-        // Retained maximize-clear supersession: no later user command ever
-        // consumes a pending binding. Any same-window new intent drops the
-        // old binding first and re-evaluates fresh below (a fresh maximized
-        // subject re-binds; an unmaximized subject proceeds normally).
-        // Prune bindings whose window left homing; closes/departures prune
-        // in settlement.
-        self.retained_clears.retain(|retained| {
-            retained.window != *window && self.staged.homing.contains_key(&retained.window)
-        });
         match early_verdict(source_row, tiling, true) {
             Some(DirectionalVerdict::Refused { outcome, cause }) => {
                 self.command_result = Some(CommandResult::Directional {
@@ -618,8 +587,6 @@ impl WorldEngine {
                 // proof. Never a second command or child id.
                 let operation_id = format!("op-{command_seq}");
                 self.retained_clears
-                    .retain(|retained| retained.window != window);
-                self.retained_clears
                     .push(crate::world_engine::RetainedClear {
                         operation_id,
                         window: window.clone(),
@@ -627,7 +594,6 @@ impl WorldEngine {
                         home: home.clone(),
                         view: view.clone(),
                         focus: report.focused_global.clone(),
-                        observation_seq: report.observation_seq,
                         float_route: source_row.floating || source_row.sticky,
                         same_axis,
                         pending: None,

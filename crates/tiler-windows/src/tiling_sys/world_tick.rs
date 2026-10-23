@@ -205,26 +205,38 @@ fn command_result_kind(result: &Option<CommandResult>) -> &'static str {
 
 /// Event-driven throttle: commands always log (the owner trace only runs on
 /// dispatch), while observation ticks log only on change: staged raw
-/// attempts, landed writes, any minted focus effect (dispatched or held),
+/// attempts (membership/view/clear/frame), any minted focus effect
+/// (dispatched or held), a terminal retained-operation settlement event
+/// (completion/refusal/abandonment/continuation, observation-only or not),
 /// a changed hover triple (see `hover_changed`), or a stopped/partial pass.
-/// Pure-idle observation ticks (no attempt, no minted effect, unchanged
-/// hover) stay quiet; minting is transition/motion driven so idle rows never
-/// re-log. A command that holds with no attempt still logs on its own
-/// command row with `held > 0` and empty attempt rows, which is exactly the
-/// no-attempt Hold signature. A held minted effect logs with its individual
-/// hold reason, so dispatched-but-unproven and held-without-setter are both
-/// distinguishable from idle quiet.
+/// Pure-idle observation ticks (no attempt, no minted effect, no settlement
+/// event, unchanged hover) stay quiet; minting is transition/motion driven
+/// so idle rows never re-log. A command that holds with no attempt still logs
+/// on its own command row with `held > 0` and empty attempt rows, which is
+/// exactly the no-attempt Hold signature. A held minted effect logs with its
+/// individual hold reason, so dispatched-but-unproven and held-without-setter
+/// are both distinguishable from idle quiet.
 fn should_log_apply(
     command_kind: &str,
     stats: &super::world_diff::ApplyStats,
     member_attempts: &[tiler_core::world_report::MemberAttempt],
     view_attempts: &[tiler_core::world_report::ViewAttempt],
     clear_attempts: &[tiler_core::world_report::ClearAttempt],
+    frame_attempts: &[tiler_core::world_report::FrameAttempt],
+    reply: &WorldReply,
 ) -> bool {
     if command_kind != "observation" {
         return true;
     }
-    if !member_attempts.is_empty() || !view_attempts.is_empty() || !clear_attempts.is_empty() {
+    if !member_attempts.is_empty()
+        || !view_attempts.is_empty()
+        || !clear_attempts.is_empty()
+        || !frame_attempts.is_empty()
+        || !stats.clear_holds.is_empty()
+    {
+        return true;
+    }
+    if !reply.operation_settled.is_empty() {
         return true;
     }
     if !stats.focus_dispatch.is_empty() {
@@ -273,16 +285,37 @@ fn fresh_route_value(
     })
 }
 
+/// Trace-only rect rendering for the `world-apply` diag: `Rect` carries no
+/// `Serialize` impl, so rows render the fixed `{x,y,w,h}` shape by hand.
+fn rect_value(rect: tiler_core::geometry::Rect) -> serde_json::Value {
+    serde_json::json!({
+        "x": rect.x,
+        "y": rect.y,
+        "w": rect.w,
+        "h": rect.h,
+    })
+}
+
 /// Pure trace-row builder for one apply pass (TRACE-ONLY: no actuation
 /// input, no retry, no interpretation). Raw attempt rows appear only when
 /// the diff dispatched a setter this pass: setter-side write counts never
 /// fabricate a proof row. Desired homing/views ride labeled `desired_*`,
-/// never as observed proof. The only refusal detail available from existing
-/// values is the raw setter vocabulary: the [`NativeOps`] contract
-/// surfaces explicit refusal as `Ok(false)` and torn state as `Err`
-/// without a native errno, so deeper refusal detail would need a broader
-/// seam change (reported as a limitation, not papered over here).
-// Eleven inputs are the disjoint trace context plus the pass products;
+/// never as observed proof. Pending window-operation desire (published
+/// `frame_operation`/`clear_operation` tokens) rides labeled
+/// `desired_operations`, one row per actual token; actual raw frame writes
+/// ride `frames`; terminal core verdicts ride `operation_settled`. The three
+/// stay distinct: desire is pending intent, attempts are mechanical facts,
+/// events are terminal verdicts. An empty `desired_operations` on a fresh
+/// accepted reply is truthfully no PUBLISHED operation desire; it never
+/// claims an ambiguous internally-retained binding retired. Only terminal
+/// events prove a retained clear/float binding retired (refusal,
+/// abandonment, supersession, continuation, or frame-proven float
+/// completion). The only refusal detail available from existing values is
+/// the raw setter vocabulary: the [`NativeOps`] contract surfaces explicit
+/// refusal as `Ok(false)` and torn state as `Err` without a native errno,
+/// so deeper refusal detail would need a broader seam change (reported as a
+/// limitation, not papered over here).
+// Thirteen inputs are the disjoint trace context plus the pass products;
 // bundling would hide the call-site borrow split the tick relies on.
 #[allow(clippy::too_many_arguments)]
 fn apply_diag_value(
@@ -294,6 +327,7 @@ fn apply_diag_value(
     member_attempts: &[tiler_core::world_report::MemberAttempt],
     view_attempts: &[tiler_core::world_report::ViewAttempt],
     clear_attempts: &[tiler_core::world_report::ClearAttempt],
+    frame_attempts: &[tiler_core::world_report::FrameAttempt],
     fresh_route: serde_json::Value,
     cursor_hit: Option<String>,
     ffc_enabled: bool,
@@ -340,6 +374,116 @@ fn apply_diag_value(
                 "post": item.post_maximized,
             })
         })
+        .collect();
+    // Trace-only per-clear hold attribution for this pass: one row per
+    // published clear desire that dispatched no setter, naming the exact
+    // pre-dispatch gate. Bounded with an honest omitted count derived
+    // from the unbounded `clear_holds_total`, never the truncated stored
+    // rows. Veto holds ride alongside their correlated refused attempt in
+    // `clears` above; silent holds ride with no attempt and no spent mark.
+    let clear_hold_rows: Vec<serde_json::Value> = stats
+        .clear_holds
+        .iter()
+        .take(MAX_APPLY_DIAG_FEEDBACK)
+        .map(|item| {
+            serde_json::json!({
+                "op": item.op.clone(),
+                "window": item.window.clone(),
+                "hold": item.hold,
+            })
+        })
+        .collect();
+    // Terminal retained-operation lifecycle events for this reply (one per
+    // retired binding, with original op/window/outcome): pending desire
+    // rides `desired_operations` below, actual raw attempts ride `frames`
+    // (float placements) and `clears` (maximize clears) above, holds emit
+    // nothing, and frame-proven float completion rides the float settlement
+    // outcome. Covers both clear and float bindings (continuation,
+    // refusal, abandonment, supersession, float completion). Never a
+    // success claim: `continued-tiled`/`continued-float` mean the intent
+    // resumed, never that the final frame arrived.
+    let operation_settled_rows: Vec<serde_json::Value> = reply
+        .operation_settled
+        .iter()
+        .take(MAX_APPLY_DIAG_FEEDBACK)
+        .map(|event| {
+            serde_json::json!({
+                "op": event.operation_id.clone(),
+                "window": event.window.0.clone(),
+                "outcome": event.outcome.as_str(),
+                "cause": event.cause,
+            })
+        })
+        .collect();
+    // Actual raw frame writes this pass produced, bounded with an honest
+    // omitted count: operation id (null for ordinary writes with no
+    // placement authority) plus window/target/setter/prewrite/readback/DPI
+    // pair so a live leg can join the attempt to its published desire.
+    let frame_rows: Vec<serde_json::Value> = frame_attempts
+        .iter()
+        .take(MAX_APPLY_DIAG_FEEDBACK)
+        .map(|item| {
+            serde_json::json!({
+                "op": item.operation_id.clone(),
+                "window": item.window.0.clone(),
+                "target": rect_value(item.target),
+                "setter": item.setter.as_str(),
+                "prewrite": item.prewrite.map(rect_value),
+                "readback": item.readback.map(rect_value),
+                "dpi_before": item.dpi_before,
+                "dpi_after": item.dpi_after,
+                "attempt_ms": item.attempt_ms,
+            })
+        })
+        .collect();
+    // Published pending window-operation desire: one row per actual
+    // `frame_operation`/`clear_operation` token in window order (frame then
+    // clear per window), with the frame target when already available.
+    // Bounded with an honest omitted count. Empty on a fresh accepted reply
+    // is truthfully no published operation; it never claims an ambiguous
+    // internally-retained binding retired (only terminal events prove that).
+    let desired_operation_total: usize = reply
+        .windows
+        .iter()
+        .map(|row| {
+            usize::from(
+                row.frame_operation
+                    .as_deref()
+                    .is_some_and(|op| !op.is_empty()),
+            ) + usize::from(
+                row.clear_operation
+                    .as_deref()
+                    .is_some_and(|op| !op.is_empty()),
+            )
+        })
+        .sum();
+    let desired_operation_rows: Vec<serde_json::Value> = reply
+        .windows
+        .iter()
+        .flat_map(|row| {
+            let mut rows = Vec::with_capacity(2);
+            if let Some(op) = row.frame_operation.as_deref()
+                && !op.is_empty()
+            {
+                rows.push(serde_json::json!({
+                    "op": op,
+                    "window": row.lifetime.0.clone(),
+                    "kind": "frame",
+                    "target": row.effective_frame.map(rect_value),
+                }));
+            }
+            if let Some(op) = row.clear_operation.as_deref()
+                && !op.is_empty()
+            {
+                rows.push(serde_json::json!({
+                    "op": op,
+                    "window": row.lifetime.0.clone(),
+                    "kind": "clear",
+                }));
+            }
+            rows
+        })
+        .take(MAX_APPLY_DIAG_FEEDBACK)
         .collect();
     let held_scopes: Vec<serde_json::Value> = reply
         .scopes
@@ -442,6 +586,22 @@ fn apply_diag_value(
         "clears_omitted": clear_attempts
             .len()
             .saturating_sub(MAX_APPLY_DIAG_FEEDBACK.min(clear_attempts.len())),
+        "clear_holds": clear_hold_rows,
+        "clear_holds_omitted": stats
+            .clear_holds_total
+            .saturating_sub(stats.clear_holds.len().min(MAX_APPLY_DIAG_FEEDBACK)),
+        "frames": frame_rows,
+        "frames_omitted": frame_attempts
+            .len()
+            .saturating_sub(frame_rows.len()),
+        "desired_operations": desired_operation_rows,
+        "desired_operations_omitted": desired_operation_total
+            .saturating_sub(desired_operation_rows.len()),
+        "operation_settled": operation_settled_rows,
+        "operation_settled_omitted": reply
+            .operation_settled
+            .len()
+            .saturating_sub(operation_settled_rows.len()),
         "held_scopes": held_scopes,
         "held_scopes_omitted": reply
             .scopes
@@ -474,7 +634,7 @@ fn apply_diag_value(
 /// no input-hook cost, no native re-read, no per-window dump. Returns true
 /// when a row was emitted (the caller records the hover triple then, never
 /// on quiet ticks).
-// Twelve inputs are the disjoint trace context plus the pass products
+// Thirteen inputs are the disjoint trace context plus the pass products
 // (reply, delivery, command kind, stats, raw attempts, cursor-hit/FFC,
 // hover-change); bundling would hide the call-site borrow split the tick
 // relies on.
@@ -490,6 +650,7 @@ fn log_apply_diag(
     member_attempts: &[tiler_core::world_report::MemberAttempt],
     view_attempts: &[tiler_core::world_report::ViewAttempt],
     clear_attempts: &[tiler_core::world_report::ClearAttempt],
+    frame_attempts: &[tiler_core::world_report::FrameAttempt],
     fresh_route: serde_json::Value,
     cursor_hit: Option<String>,
     ffc_enabled: bool,
@@ -502,6 +663,8 @@ fn log_apply_diag(
             member_attempts,
             view_attempts,
             clear_attempts,
+            frame_attempts,
+            reply,
         ) || hover_changed)
     {
         return false;
@@ -517,6 +680,7 @@ fn log_apply_diag(
             member_attempts,
             view_attempts,
             clear_attempts,
+            frame_attempts,
             fresh_route,
             cursor_hit,
             ffc_enabled,
@@ -985,6 +1149,7 @@ pub(super) fn run_observation_tick(
         &member_attempts,
         &view_attempts,
         &clear_attempts,
+        &frame_attempts,
         fresh_route_value(
             &captured.focused_global,
             captured.cursor,
@@ -1372,6 +1537,7 @@ pub(super) fn run_world_command(
         &member_attempts,
         &view_attempts,
         &clear_attempts,
+        &frame_attempts,
         fresh_route_value(
             &captured.focused_global,
             captured.cursor,
@@ -1659,6 +1825,7 @@ mod apply_diag_tests {
             effects: Vec::new(),
             command_result: None,
             gesture_settled: None,
+            operation_settled: Vec::new(),
             cursor_warp: None,
             presentation_bytes: 0,
         }
@@ -1680,7 +1847,98 @@ mod apply_diag_tests {
             stopped_mid_apply: false,
             partial: false,
             focus_dispatch: Vec::new(),
+            clear_holds: Vec::new(),
+            clear_holds_total: 0,
         }
+    }
+
+    #[test]
+    fn diag_operation_settled_logs_original_op_window_outcome_cause() {
+        // Terminal operation verdicts ride the trace with their original
+        // op/window/outcome/cause: clear continuations (intent resumed,
+        // never frame proof), clear refusals, and float frame-proven
+        // completions share the one carrier. Bounds stay honest.
+        use tiler_core::world_report::{
+            ClearAttempt, FrameSetter, OperationEvent, OperationOutcome,
+        };
+        let mut reply = reply_shell();
+        reply.operation_settled = vec![
+            OperationEvent {
+                operation_id: "op-13".to_owned(),
+                window: WindowId("w1".to_owned()),
+                outcome: OperationOutcome::ClearContinuedTiled,
+                cause: None,
+            },
+            OperationEvent {
+                operation_id: "op-14".to_owned(),
+                window: WindowId("w2".to_owned()),
+                outcome: OperationOutcome::ClearContinuationRefused,
+                cause: Some("constraints".to_owned()),
+            },
+            OperationEvent {
+                operation_id: "op-15".to_owned(),
+                window: WindowId("w3".to_owned()),
+                outcome: OperationOutcome::FloatFrameProven,
+                cause: None,
+            },
+        ];
+        let clears = vec![ClearAttempt {
+            operation_id: "op-13".to_owned(),
+            window: WindowId("w1".to_owned()),
+            setter: FrameSetter::Accepted,
+            pre_maximized: Some(true),
+            post_maximized: Some(false),
+            attempt_ms: 9,
+        }];
+        let value = apply_diag_value(
+            12,
+            &reply,
+            "accepted",
+            "observation",
+            &stats_shell(),
+            &[],
+            &[],
+            &clears,
+            &[],
+            fresh_route_value(
+                "w1",
+                None,
+                "focused-output-last-focused",
+                "cursor-output",
+                (None, None, None, "retained"),
+            ),
+            None,
+            false,
+        );
+        // Raw attempts and terminal verdicts stay distinct rows: the
+        // attempt is mechanical proof, the event is the core verdict.
+        let attempt_rows = value["clears"].as_array().expect("clear rows");
+        assert_eq!(attempt_rows.len(), 1);
+        assert_eq!(attempt_rows[0]["op"], serde_json::json!("op-13"));
+        assert_eq!(attempt_rows[0]["setter"], serde_json::json!("accepted"));
+        assert_eq!(value["clears_omitted"], serde_json::json!(0));
+        let settled = value["operation_settled"].as_array().expect("settled rows");
+        assert_eq!(settled.len(), 3);
+        assert_eq!(settled[0]["op"], serde_json::json!("op-13"));
+        assert_eq!(settled[0]["window"], serde_json::json!("w1"));
+        assert_eq!(settled[0]["outcome"], serde_json::json!("continued-tiled"));
+        assert!(settled[0]["cause"].is_null());
+        assert_eq!(
+            settled[1]["outcome"],
+            serde_json::json!("continuation-refused")
+        );
+        assert_eq!(settled[1]["cause"], serde_json::json!("constraints"));
+        assert_eq!(
+            settled[2]["outcome"],
+            serde_json::json!("float-frame-proven")
+        );
+        assert_eq!(value["operation_settled_omitted"], serde_json::json!(0));
+        // No frame writes and no published window-operation desire on this
+        // reply: empty arrays with zero omission, never absent fields.
+        assert_eq!(value["frames"], serde_json::json!([]));
+        assert_eq!(value["frames_omitted"], serde_json::json!(0));
+        assert_eq!(value["desired_operations"], serde_json::json!([]));
+        assert_eq!(value["desired_operations_omitted"], serde_json::json!(0));
     }
 
     #[test]
@@ -1715,6 +1973,7 @@ mod apply_diag_tests {
             &stats,
             &members,
             &views,
+            &[],
             &[],
             fresh_route_value(
                 "w1",
@@ -1780,6 +2039,12 @@ mod apply_diag_tests {
         assert_eq!(value["focus_effects_omitted"], serde_json::json!(0));
         assert_eq!(value["focus_dispatch"], serde_json::json!([]));
         assert_eq!(value["focus_dispatch_omitted"], serde_json::json!(0));
+        // No frame writes and no published window-operation desire on this
+        // reply (no window rows carry tokens): empty with zero omission.
+        assert_eq!(value["frames"], serde_json::json!([]));
+        assert_eq!(value["frames_omitted"], serde_json::json!(0));
+        assert_eq!(value["desired_operations"], serde_json::json!([]));
+        assert_eq!(value["desired_operations_omitted"], serde_json::json!(0));
         assert_eq!(
             value["fresh_route"]["focused_token"],
             serde_json::json!("w1")
@@ -1825,16 +2090,20 @@ mod apply_diag_tests {
 
     #[test]
     fn diag_throttles_quiet_observation_ticks_only() {
-        use tiler_core::world_report::{FrameSetter, MemberAttempt};
+        use tiler_core::world_report::{FrameAttempt, FrameSetter, MemberAttempt};
         let quiet = super::super::world_diff::ApplyStats::default();
         let empty_members: Vec<MemberAttempt> = Vec::new();
         let empty_views: Vec<tiler_core::world_report::ViewAttempt> = Vec::new();
+        let empty_frames: Vec<FrameAttempt> = Vec::new();
+        let idle_reply = reply_shell();
         assert!(!should_log_apply(
             "observation",
             &quiet,
             &empty_members,
             &empty_views,
             &[],
+            &empty_frames,
+            &idle_reply,
         ));
         // Pure-held observation ticks stay quiet: steady-state holds with no
         // attempt carry no new evidence.
@@ -1848,6 +2117,8 @@ mod apply_diag_tests {
             &empty_members,
             &empty_views,
             &[],
+            &empty_frames,
+            &idle_reply,
         ));
         // Commands always log, so a no-attempt Hold on a command still shows
         // as `held > 0` with empty attempt rows.
@@ -1857,6 +2128,8 @@ mod apply_diag_tests {
             &empty_members,
             &empty_views,
             &[],
+            &empty_frames,
+            &idle_reply,
         ));
         assert!(should_log_apply(
             "observation",
@@ -1873,6 +2146,8 @@ mod apply_diag_tests {
             }],
             &empty_views,
             &[],
+            &empty_frames,
+            &idle_reply,
         ));
         let writes = super::super::world_diff::ApplyStats {
             geometry_writes: 1,
@@ -1884,6 +2159,8 @@ mod apply_diag_tests {
             &empty_members,
             &empty_views,
             &[],
+            &empty_frames,
+            &idle_reply,
         ));
         let stopped = super::super::world_diff::ApplyStats {
             stopped_mid_apply: true,
@@ -1896,6 +2173,8 @@ mod apply_diag_tests {
             &empty_members,
             &empty_views,
             &[],
+            &empty_frames,
+            &idle_reply,
         ));
         // Any minted focus effect logs on observation ticks, dispatched or
         // held: the individual hold reason must reach the trace in the
@@ -1920,6 +2199,8 @@ mod apply_diag_tests {
             &empty_members,
             &empty_views,
             &[],
+            &empty_frames,
+            &idle_reply,
         ));
         let held_no_setter = super::super::world_diff::ApplyStats {
             held: 1,
@@ -1941,6 +2222,57 @@ mod apply_diag_tests {
             &empty_members,
             &empty_views,
             &[],
+            &empty_frames,
+            &idle_reply,
+        ));
+        // Settlement-only observation ticks log: an observation-only
+        // completion/refusal/abandonment carries no attempt and no write,
+        // but the terminal verdict is new evidence and must reach the trace.
+        let mut settled_reply = reply_shell();
+        settled_reply
+            .operation_settled
+            .push(tiler_core::world_report::OperationEvent {
+                operation_id: "op-14".to_owned(),
+                window: WindowId("w2".to_owned()),
+                outcome: tiler_core::world_report::OperationOutcome::ClearContinuationRefused,
+                cause: Some("constraints".to_owned()),
+            });
+        assert!(should_log_apply(
+            "observation",
+            &quiet,
+            &empty_members,
+            &empty_views,
+            &[],
+            &empty_frames,
+            &settled_reply,
+        ));
+        // Frame-only observation ticks log: a fresh raw frame write with no
+        // other evidence (e.g. the float half-snap native arrival) must
+        // emit, so the attempt joins its desire on the trace.
+        let frame_only = vec![FrameAttempt {
+            window: WindowId("w9".to_owned()),
+            target: tiler_core::geometry::Rect {
+                x: 0,
+                y: 0,
+                w: 960,
+                h: 1040,
+            },
+            setter: FrameSetter::Accepted,
+            readback: None,
+            dpi_before: None,
+            dpi_after: None,
+            attempt_ms: 5,
+            operation_id: Some("op-20".to_owned()),
+            prewrite: None,
+        }];
+        assert!(should_log_apply(
+            "observation",
+            &quiet,
+            &empty_members,
+            &empty_views,
+            &[],
+            &frame_only,
+            &idle_reply,
         ));
     }
 
@@ -1978,6 +2310,7 @@ mod apply_diag_tests {
             &[],
             &[],
             &[],
+            &[],
             serde_json::json!({}),
             Some("w1".to_owned()),
             true,
@@ -1992,6 +2325,100 @@ mod apply_diag_tests {
         assert_eq!(dispatch[0]["setter"], serde_json::json!("skipped"));
         assert_eq!(dispatch[0]["foreground"], serde_json::json!(false));
         assert_eq!(dispatch[0]["hold"], serde_json::json!("view-not-shown"));
+    }
+
+    #[test]
+    fn diag_clear_hold_oracle_logs_gate_on_quiet_observation() {
+        // The clear-lane attribution oracle: a published clear desire held
+        // with no setter rides the trace with its exact gate, and the
+        // observation tick carrying it logs instead of staying quiet.
+        let reply = reply_shell();
+        let empty_members: Vec<tiler_core::world_report::MemberAttempt> = Vec::new();
+        let empty_views: Vec<tiler_core::world_report::ViewAttempt> = Vec::new();
+        let empty_frames: Vec<tiler_core::world_report::FrameAttempt> = Vec::new();
+        let idle_reply = reply_shell();
+        let held_clear = super::super::world_diff::ApplyStats {
+            held: 1,
+            clear_holds_total: 1,
+            clear_holds: vec![super::super::world_diff::ClearHoldDiag {
+                op: "op-15".to_owned(),
+                window: "w3".to_owned(),
+                hold: "frame-race",
+            }],
+            ..Default::default()
+        };
+        assert!(should_log_apply(
+            "observation",
+            &held_clear,
+            &empty_members,
+            &empty_views,
+            &[],
+            &empty_frames,
+            &idle_reply,
+        ));
+        let value = apply_diag_value(
+            16,
+            &reply,
+            "accepted",
+            "observation",
+            &held_clear,
+            &empty_members,
+            &empty_views,
+            &[],
+            &empty_frames,
+            serde_json::json!({}),
+            None,
+            false,
+        );
+        let holds = value["clear_holds"].as_array().expect("clear holds");
+        assert_eq!(holds.len(), 1);
+        assert_eq!(holds[0]["op"], serde_json::json!("op-15"));
+        assert_eq!(holds[0]["window"], serde_json::json!("w3"));
+        assert_eq!(holds[0]["hold"], serde_json::json!("frame-race"));
+        assert_eq!(value["clear_holds_omitted"], serde_json::json!(0));
+        assert_eq!(value["clears"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn diag_clear_holds_bound_rows_and_omit_honestly_past_cap() {
+        // Past-cap regression for the reviewed defect: the omitted count
+        // derives from the unbounded total, never the truncated storage,
+        // so a pass with more held desires than stored rows still reports
+        // the excess instead of a false zero.
+        let reply = reply_shell();
+        let mut stats = super::super::world_diff::ApplyStats {
+            held: 20,
+            ..Default::default()
+        };
+        for n in 0..20 {
+            stats.note_clear_hold(&format!("op-{n}"), "w3", "frame-race");
+        }
+        assert_eq!(
+            stats.clear_holds.len(),
+            super::super::world_diff::MAX_CLEAR_HOLD_DIAG
+        );
+        assert_eq!(stats.clear_holds_total, 20);
+        let value = apply_diag_value(
+            17,
+            &reply,
+            "accepted",
+            "observation",
+            &stats,
+            &[],
+            &[],
+            &[],
+            &[],
+            serde_json::json!({}),
+            None,
+            false,
+        );
+        let holds = value["clear_holds"].as_array().expect("clear holds");
+        assert_eq!(holds.len(), super::super::world_diff::MAX_CLEAR_HOLD_DIAG);
+        assert_eq!(holds[0]["op"], serde_json::json!("op-0"));
+        assert_eq!(
+            value["clear_holds_omitted"],
+            serde_json::json!(20 - super::super::world_diff::MAX_CLEAR_HOLD_DIAG)
+        );
     }
 
     #[test]
@@ -2031,6 +2458,7 @@ mod apply_diag_tests {
             "accepted",
             "observation",
             &stats,
+            &[],
             &[],
             &[],
             &[],
@@ -2081,6 +2509,7 @@ mod apply_diag_tests {
             &empty_members,
             &empty_views,
             &[],
+            &[],
             serde_json::json!({}),
             None,
             false,
@@ -2111,6 +2540,7 @@ mod apply_diag_tests {
             &[],
             &[],
             &[],
+            &[],
             serde_json::json!({}),
             None,
             false,
@@ -2118,5 +2548,232 @@ mod apply_diag_tests {
         assert_eq!(value["command"], serde_json::json!("send"));
         let rendered = value.to_string();
         assert!(!rendered.contains(".exe"));
+    }
+
+    #[test]
+    fn diag_frames_and_desired_operations_stay_separate_and_bounded() {
+        // Truthful pending desire vs actual attempts vs terminal verdict:
+        // published `frame_operation`/`clear_operation` tokens ride
+        // `desired_operations`, actual apply-produced writes ride `frames`,
+        // and the core verdict rides `operation_settled`. Desire never
+        // claims arrival; only the event proves the retained binding
+        // retired. Rows stay bounded with honest omitted counts.
+        use tiler_core::world_report::{
+            FrameAttempt, FrameSetter, OperationEvent, OperationOutcome, WindowDesire,
+        };
+        let target = tiler_core::geometry::Rect {
+            x: 10,
+            y: 20,
+            w: 960,
+            h: 1040,
+        };
+        let mut reply = reply_shell();
+        reply.windows.push(WindowDesire {
+            lifetime: WindowId("w-float".to_owned()),
+            output: OutputId("o1".to_owned()),
+            workspace: "w2".to_owned(),
+            allocation: None,
+            effective_frame: Some(target),
+            frame_authority: tiler_core::world_report::ScopeAuthority::Untouched,
+            membership_authority: tiler_core::world_report::ScopeAuthority::Untouched,
+            floating: true,
+            float_origin: None,
+            frame_operation: Some("op-20".to_owned()),
+            clear_operation: None,
+        });
+        reply.windows.push(WindowDesire {
+            lifetime: WindowId("w-max".to_owned()),
+            output: OutputId("o1".to_owned()),
+            workspace: "w2".to_owned(),
+            allocation: None,
+            effective_frame: None,
+            frame_authority: tiler_core::world_report::ScopeAuthority::Untouched,
+            membership_authority: tiler_core::world_report::ScopeAuthority::Untouched,
+            floating: true,
+            float_origin: None,
+            frame_operation: None,
+            clear_operation: Some("op-21".to_owned()),
+        });
+        reply.operation_settled.push(OperationEvent {
+            operation_id: "op-21".to_owned(),
+            window: WindowId("w-max".to_owned()),
+            outcome: OperationOutcome::ClearRefusedProven,
+            cause: Some("settler".to_owned()),
+        });
+        let frames = vec![FrameAttempt {
+            window: WindowId("w-float".to_owned()),
+            target,
+            setter: FrameSetter::Accepted,
+            readback: Some(target),
+            dpi_before: Some(96),
+            dpi_after: Some(96),
+            attempt_ms: 7,
+            operation_id: Some("op-20".to_owned()),
+            prewrite: Some(tiler_core::geometry::Rect {
+                x: 0,
+                y: 0,
+                w: 800,
+                h: 600,
+            }),
+        }];
+        let quiet = super::super::world_diff::ApplyStats::default();
+        let empty_members: Vec<tiler_core::world_report::MemberAttempt> = Vec::new();
+        let empty_views: Vec<tiler_core::world_report::ViewAttempt> = Vec::new();
+        // Both triggers fire through the REAL throttle: frame-only and
+        // settled-only observation ticks each log.
+        assert!(should_log_apply(
+            "observation",
+            &quiet,
+            &empty_members,
+            &empty_views,
+            &[],
+            &frames,
+            &reply_shell(),
+        ));
+        assert!(should_log_apply(
+            "observation",
+            &quiet,
+            &empty_members,
+            &empty_views,
+            &[],
+            &[],
+            &reply,
+        ));
+        let value = apply_diag_value(
+            21,
+            &reply,
+            "accepted",
+            "observation",
+            &quiet,
+            &empty_members,
+            &empty_views,
+            &[],
+            &frames,
+            serde_json::json!({}),
+            None,
+            false,
+        );
+        let desired = value["desired_operations"]
+            .as_array()
+            .expect("desired operations");
+        assert_eq!(desired.len(), 2);
+        assert_eq!(desired[0]["op"], serde_json::json!("op-20"));
+        assert_eq!(desired[0]["window"], serde_json::json!("w-float"));
+        assert_eq!(desired[0]["kind"], serde_json::json!("frame"));
+        assert_eq!(desired[0]["target"]["w"], serde_json::json!(960));
+        assert_eq!(desired[1]["op"], serde_json::json!("op-21"));
+        assert_eq!(desired[1]["kind"], serde_json::json!("clear"));
+        assert_eq!(value["desired_operations_omitted"], serde_json::json!(0));
+        let frame_rows = value["frames"].as_array().expect("frame rows");
+        assert_eq!(frame_rows.len(), 1);
+        assert_eq!(frame_rows[0]["op"], serde_json::json!("op-20"));
+        assert_eq!(frame_rows[0]["window"], serde_json::json!("w-float"));
+        assert_eq!(frame_rows[0]["setter"], serde_json::json!("accepted"));
+        assert_eq!(frame_rows[0]["target"]["x"], serde_json::json!(10));
+        assert_eq!(frame_rows[0]["prewrite"]["w"], serde_json::json!(800));
+        assert_eq!(frame_rows[0]["readback"]["w"], serde_json::json!(960));
+        assert_eq!(frame_rows[0]["dpi_before"], serde_json::json!(96));
+        assert_eq!(frame_rows[0]["attempt_ms"], serde_json::json!(7));
+        assert_eq!(value["frames_omitted"], serde_json::json!(0));
+        let settled = value["operation_settled"].as_array().expect("settled");
+        assert_eq!(settled.len(), 1);
+        assert_eq!(settled[0]["op"], serde_json::json!("op-21"));
+        assert_eq!(settled[0]["outcome"], serde_json::json!("refused-proven"));
+        // Desire and verdict share the op but stay separate rows: the
+        // desired row is pending intent, the event is the terminal verdict.
+        assert_ne!(desired[1]["kind"], settled[0]["outcome"]);
+    }
+
+    #[test]
+    fn diag_frames_and_desired_operations_omit_honestly() {
+        // Over-cap attempts and desires bound at the shared feedback cap
+        // with honest omitted counts, and a quiet idle tick stays silent
+        // through the REAL throttle (no extra rows while idle).
+        use tiler_core::world_report::{FrameAttempt, FrameSetter, WindowDesire};
+        let quiet = super::super::world_diff::ApplyStats::default();
+        let empty_members: Vec<tiler_core::world_report::MemberAttempt> = Vec::new();
+        let empty_views: Vec<tiler_core::world_report::ViewAttempt> = Vec::new();
+        let idle_reply = reply_shell();
+        assert!(!should_log_apply(
+            "observation",
+            &quiet,
+            &empty_members,
+            &empty_views,
+            &[],
+            &[],
+            &idle_reply,
+        ));
+        let mut reply = reply_shell();
+        for n in 0..20 {
+            reply.windows.push(WindowDesire {
+                lifetime: WindowId(format!("w{n}")),
+                output: OutputId("o1".to_owned()),
+                workspace: "w2".to_owned(),
+                allocation: None,
+                effective_frame: Some(tiler_core::geometry::Rect {
+                    x: n,
+                    y: 0,
+                    w: 100,
+                    h: 100,
+                }),
+                frame_authority: tiler_core::world_report::ScopeAuthority::Untouched,
+                membership_authority: tiler_core::world_report::ScopeAuthority::Untouched,
+                floating: true,
+                float_origin: None,
+                frame_operation: Some(format!("op-{n}")),
+                clear_operation: None,
+            });
+        }
+        let frames: Vec<FrameAttempt> = (0..20)
+            .map(|n| FrameAttempt {
+                window: WindowId(format!("w{n}")),
+                target: tiler_core::geometry::Rect {
+                    x: n,
+                    y: 0,
+                    w: 100,
+                    h: 100,
+                },
+                setter: FrameSetter::Accepted,
+                readback: None,
+                dpi_before: None,
+                dpi_after: None,
+                attempt_ms: n as u64,
+                operation_id: Some(format!("op-{n}")),
+                prewrite: None,
+            })
+            .collect();
+        let value = apply_diag_value(
+            22,
+            &reply,
+            "accepted",
+            "observation",
+            &quiet,
+            &empty_members,
+            &empty_views,
+            &[],
+            &frames,
+            serde_json::json!({}),
+            None,
+            false,
+        );
+        assert_eq!(
+            value["frames"].as_array().expect("frames").len(),
+            MAX_APPLY_DIAG_FEEDBACK
+        );
+        assert_eq!(
+            value["frames_omitted"],
+            serde_json::json!(20 - MAX_APPLY_DIAG_FEEDBACK)
+        );
+        assert_eq!(
+            value["desired_operations"]
+                .as_array()
+                .expect("desired")
+                .len(),
+            MAX_APPLY_DIAG_FEEDBACK
+        );
+        assert_eq!(
+            value["desired_operations_omitted"],
+            serde_json::json!(20 - MAX_APPLY_DIAG_FEEDBACK)
+        );
     }
 }

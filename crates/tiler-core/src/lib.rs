@@ -28,6 +28,7 @@ pub mod visual;
 pub mod window_policy;
 pub mod workspace;
 pub mod workspace_scope;
+pub mod world_clear;
 pub mod world_commands;
 pub mod world_cursor;
 pub mod world_directional;
@@ -80,6 +81,8 @@ mod size_hints_tests;
 mod world_admission_close_stay_tests;
 #[cfg(test)]
 mod world_capacity_diagnostic_tests;
+#[cfg(test)]
+mod world_clear_tests;
 #[cfg(test)]
 mod world_coverage_gaps_tests;
 #[cfg(test)]

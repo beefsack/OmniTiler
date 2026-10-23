@@ -529,6 +529,19 @@ native outcomes remain pending
 | Unconfirmed maximize clear (G-06, R-MAX-08) | Maximize B; move right while native clear refuses or remains unobserved; later press after restore | One attempt per invocation; log refusal, keep structural state, no delayed move. Later press can move. KDE refusal fixtures and Windows pre/post-clear policy tests delivered offline | Exact reference and native failure-timing outcomes TBD |
 | Surviving-empty MRU (G-37, R-WS-23) | Visit empty WS1 then occupied WS2 on L; keep WS1 live, migrate WS2 right with MRU | WS1 qualifies while still in the remaining source ring, even empty. If lifecycle removes it, fall back to last remaining; never recreate. Shared/KDE and Windows (2026-10-14) selector fixtures delivered offline | Exact reference outcomes and native lifecycle timing TBD |
 
+### Core-owned directional continuation discriminators (2026-10-23)
+
+The stage-5 draft replaces invocation-local sequencing above with one retained
+original intent and commandless observation settlement. It is not natively
+accepted; [checkpoint and blocker](../changes/core-world-model-rearchitecture.md#stage-5-common-clear-repair-checkpoint---native-hold-unresolved-2026-10-23).
+
+| Variant | Minimal action sequence | Offline draft outcome | Unsupported / native outcome |
+| --- | --- | --- | --- |
+| Published tiled clear versus actual attempt | Tile A/B; maximize retained A; move A once; observe without another command | Original clear token must be published before a common-lane attempt; accepted correlated attempt plus readable cleared facts permits original-op continuation | Windows identified substituted tile-slot versus live-maximized-frame mismatch at `frame-race`. Native-frame normalization preserves the veto; focused and final-artifact partial legs prove one accepted clear and commandless tiled continuation on one output. Full both-output/sticky acceptance TBD |
+| Ambiguous once-only clear | Maximize A; move once; report a thrown clear; later observe A unmaximized without another attempt; then issue a fresh intent | Ambiguous old binding holds without retry or continuation; fresh same-window intent supersedes independently, never consumes old proof | Native thrown-clear timing and reference outcomes TBD; no second accepted attempt fabricated |
+| Same-report proof and newer intent | Bind A's clear; deliver its accepted proof and a newer same-window intent in one report | Old binding supersedes before continuation, even if the new intent refuses; consumed command replay does not supersede | Native same-report ordering and reference outcomes TBD |
+| Unknown versus contradictory focus | Bind with unknown focus; stage accepted clear proof; report unknown, then exact A focus; repeat with known B focus | Unknown current holds; exact A may continue on staged accepted proof without guessing baseline; known B abandons. Known changed/non-subject originating focus abandons | Native maximized fixture managed-focus capture and exact hold cause TBD; no focus/native gate bypass selected |
+
 ### Windows floating candidate discriminator (2026-10-12)
 
 | Variant | Minimal action sequence | Windows offline outcome / decision | Reference / native |

@@ -545,6 +545,27 @@ impl WorldEngine {
                 let member_hold = window_holds.get(&geometry.window.0).copied();
                 let fullscreen = fullscreen_windows.contains(geometry.window.0.as_str());
                 emitted.insert(geometry.window.0.clone());
+                // Retained directional clear desire: same one-shot
+                // `clear_operation` token as the exception route below.
+                // Withheld on gesture barriers, membership holds, and
+                // minimized/unreadable facts, and after the attempt is
+                // spent (never re-actuated).
+                let fact_unreadable = self
+                    .staged
+                    .facts
+                    .get(&geometry.window)
+                    .is_none_or(|fact| fact.minimized || fact.rect.is_none());
+                let clear_operation =
+                    if report.gesture_barrier || member_hold.is_some() || fact_unreadable {
+                        None
+                    } else {
+                        self.retained_clears
+                            .iter()
+                            .find(|retained| {
+                                retained.window == geometry.window && retained.pending.is_none()
+                            })
+                            .map(|retained| retained.operation_id.clone())
+                    };
                 // Core-owned frame policy (stage 3a): an exact desired match
                 // clears retained memory (completion is desired == observed,
                 // never setter success); a suppressed pair publishes a
@@ -590,7 +611,7 @@ impl WorldEngine {
                     },
                     // Tiled rows never carry a float-placement token.
                     frame_operation: None,
-                    clear_operation: None,
+                    clear_operation,
                     floating: false,
                     float_origin: None,
                 });
@@ -876,6 +897,10 @@ impl WorldEngine {
         // Per-report gesture terminal: taken here so the next unrelated
         // report publishes `None`. Duplicates repeat the cached reply.
         let gesture_settled = self.gesture_terminal.take();
+        // Per-report operation lifecycle terminals: taken here so the next
+        // unrelated report publishes empty. Duplicates repeat the cached
+        // reply.
+        let operation_settled = std::mem::take(&mut self.operation_settled);
         WorldReply {
             contract_version: WORLD_CONTRACT_VERSION,
             adapter_incarnation: report.adapter_incarnation.clone(),
@@ -893,6 +918,7 @@ impl WorldEngine {
             effects,
             command_result,
             gesture_settled,
+            operation_settled,
             cursor_warp,
             presentation_bytes: 0,
         }

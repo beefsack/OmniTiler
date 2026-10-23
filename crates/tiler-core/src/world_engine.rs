@@ -279,7 +279,6 @@ pub(crate) struct RetainedClear {
     pub(crate) home: DomainKey,
     pub(crate) view: Option<String>,
     pub(crate) focus: String,
-    pub(crate) observation_seq: u64,
     /// True when the original subject routes float (floating or sticky);
     /// false for the tiled route.
     pub(crate) float_route: bool,
@@ -510,6 +509,13 @@ pub struct WorldEngine {
     /// Cleared at the start of every staged run so a previous command's
     /// result never leaks into an unrelated reply.
     pub(crate) command_result: Option<CommandResult>,
+    /// Terminal retained-operation lifecycle events staged by settlement
+    /// ([`WorldEngine::settle_clears`], [`WorldEngine::settle_floats`]) and
+    /// consumed once by [`WorldEngine::publish`] for the reply being built.
+    /// Empty on holds and on replies with no operation settlement. Cleared
+    /// at the start of every staged run so a previous report's events never
+    /// leak.
+    pub(crate) operation_settled: Vec<crate::world_report::OperationEvent>,
     /// Fresh-admission focus intents already emitted, by window id (D4):
     /// at-most-once per lifetime, pruned on close so a reused id focuses
     /// again as a fresh newcomer. Survives incarnation resets within the
@@ -659,6 +665,7 @@ impl WorldEngine {
             hold_reasons: BTreeMap::new(),
             pending_forget: Vec::new(),
             command_result: None,
+            operation_settled: Vec::new(),
             placement_bootstrapped: false,
             admission_focus_spent: BTreeSet::new(),
             switch_target: crate::cursor_targeting::SwitchTarget::default(),
@@ -701,6 +708,7 @@ impl WorldEngine {
             effects: Vec::new(),
             command_result: None,
             gesture_settled: None,
+            operation_settled: Vec::new(),
             cursor_warp: None,
             presentation_bytes: 0,
         }
@@ -739,6 +747,7 @@ impl WorldEngine {
         self.output_facts.clear();
         self.live_topology.clear();
         self.command_result = None;
+        self.operation_settled.clear();
         self.prev_cursor = self.last_cursor;
         self.ffc_last_hover = None;
         self.staged = StagedReport::default();
@@ -1263,7 +1272,7 @@ impl WorldEngine {
         // roll back mapping/members/views/session ownership, so restage
         // afterwards: the sweep and publish below must use post-rollback
         // domains, never the pre-rollback ones.
-        self.settle_rest(report);
+        self.settle_rest(report, consumed);
         self.build_staged_domains(report);
         // Core-owned frame policy: fold mechanical write/readback facts into
         // retained clamp/transient memory (scoped by exact staged lifetime)

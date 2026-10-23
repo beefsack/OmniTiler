@@ -1918,6 +1918,7 @@ fn unknown_baseline_holds_transfer_without_supersession() {
                 key: key.clone(),
                 token: "w1".to_owned(),
                 frame: Some(frame),
+                observed_frame: Some(frame),
                 facts: Some(plain_facts()),
                 output: out.to_owned(),
                 workspace: workspace.to_owned(),

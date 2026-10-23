@@ -2314,3 +2314,201 @@ of cursor-first fresh placement or the entire rearchitecture.
   behavior; do not resolve them as side effects of this repair. Existing
   tentative placement/control choices and physical/native acceptance gaps also
   remain unchanged.
+
+## Stage 5 common-clear repair checkpoint - native hold unresolved (2026-10-23)
+
+### Reviewed lifecycle correction
+
+- The publication-first tiled regression reproduced the missing token before
+  the repair. Eligible tiled geometry rows now publish the retained original
+  `clear_operation`, using the exception lane's existing gesture, membership,
+  readability and scope gates. Windows still has one common clear actuator;
+  no keyboard clear or second-command continuation was added.
+- The reviewed lifecycle remains desire -> correlated raw attempt -> readable
+  normalized observation -> original-intent continuation -> retirement. A
+  setter acknowledgement alone proves neither clear nor final frame arrival.
+  Thrown/ambiguous attempts retain no-retry ambiguity even if later facts are
+  unmaximized; no fabricated second attempt or external-cause attribution is
+  used. A fresh same-window intent supersedes before any old continuation,
+  including when the newer intent later refuses. Consumed commands do not
+  supersede; rejected reports remain transactional.
+- Unknown current focus holds. An unknown originating focus is not guessed or
+  latched: only exact current subject focus plus accepted correlated evidence
+  can continue. Known different/non-subject focus abandons. Unchanged lifetime,
+  home and view remain required; held home/effective/target authority defers
+  continuation rather than silently losing it. Fullscreen and native
+  exact-subject/input/freshness vetoes remain intact.
+- Clear settlement is isolated in `world_clear.rs`; superseded silent
+  command-path pruning and unused clear observation-sequence data are removed.
+  Tiled, float and sticky production-seam regressions drive real core replies
+  through capture and the common diff, assert the published token before any
+  attempt, and return the diff-generated attempt for commandless continuation.
+  Additional regressions cover same-report supersession, consumed commands,
+  held domains, focus distinctions, abandonment and later independent intent.
+
+### Truthful operation evidence
+
+- Ordinary replies carry one-shot correlated `operation_settled` events for
+  clear continuation/refusal/abandonment and existing float-placement verdicts.
+  Continuation is not completion: only `float-frame-proven` reports observed
+  arrival at the retained float target. Canonical encoding, budget calculations,
+  duplicate replay and next-report clearing are covered. No compatibility alias
+  or second result query was retained.
+- The first native leg reached a float half-snap but could not observe its
+  terminal event: the trace filter ignored settlement-only observation ticks.
+  The narrow causal repair logs actual frame attempts and operation terminals
+  through that filter, while quiet idle ticks remain silent. Bounded
+  `desired_operations`, `frames` and `operation_settled` rows have explicit
+  omission counts. Empty published desires alone never prove an ambiguous
+  internal binding retired; correlated terminal events supply that proof.
+- Independent source review accepted the corrected lifecycle and common-lane
+  tests. Final locked core/protocol/Windows/fixture build, all-target tests and
+  strict all-target clippy pass: **2,685 passed, zero failed, one ignored across
+  49 suites**. Workspace formatting and whitespace pass. No dependency, hook,
+  timer or unsafe block was added. These are offline/checkpoint results, not
+  acceptance of the complete directional boundary.
+
+### Fresh native result and blocker
+
+- The final-artifact fixture-only leg passed both-output admission/coverage and
+  tiled directional focus/move on both outputs. Float focus and half-snap passed
+  on one output, including an actual accepted frame attempt joined to an
+  original-operation `float-frame-proven` terminal, stable peers and fresh
+  accepted snapshots with no published operations or transfers and zero omitted
+  rows. The trace repair therefore has native evidence, not only builder tests.
+- Tiled maximize-clear still fails. A previously slotted subject was maximized
+  without an admission clear, then received one directional move. Unlike the
+  earlier failure, the accepted reply **does publish its original clear token**.
+  The common native pass nevertheless reports zero clear writes/attempts and a
+  hold; the subject stays maximized and no continuation/terminal follows. No
+  second command was sent. This is an unresolved pre-dispatch hold, not evidence
+  that the publication fix failed or that clear arrival was refused.
+- The adapter's managed-focus sample was empty after maximize and at the
+  command, despite independent foreground checks. The exact native hold reason
+  is not exposed; baseline/readability/gesture/classification/frame-race gates
+  must be distinguished before assigning causation. Unknown focus alone is not
+  established as the cause. Do not weaken these gates or guess focus.
+- Testing stopped at that failure. Native float maximize-clear and explicit
+  sticky half-snaps/clear remain unrun; float directional coverage is not yet
+  both-output. Exact-owner stop, independent restore and fixture shutdown left
+  no owned processes, recovery ledger or pending controls. Settings bytes,
+  cursor, relevant SPI/taskbar state and protected-window geometry matched
+  preimages. FFC/warp stayed off; no synthetic keys/clicks/drag, physical input,
+  game, native hover-follow or measured-cost acceptance is claimed. Raw drivers,
+  identities, hashes and observations remain outside the repository.
+
+### Exact next action and scope boundary
+
+- Attribute the existing common clear lane's pre-dispatch hold with bounded
+  trace-only gate reasons and a production-capture regression shaped by the
+  maximized fixture observation. Then use one focused fixture-only leg to
+  identify the actual failing gate before choosing a semantic correction. Do
+  not repeat the unchanged broad matrix, bypass a native veto, add a second
+  actuator, or treat a published token as an actual attempt.
+- This repair is an unaccepted directional checkpoint. Stage 5 and Windows
+  dogfood readiness remain incomplete. After the native blocker: finish the
+  both-output directional matrix, migration/control action-context ownership
+  (foreground, pointer, cache, output order), consumer-checked dead API removal,
+  uniform wire border/underlay/drop/pager presentation consumed by Windows,
+  the full both-output fixture regression matrix, and the readiness summary.
+- The shared core/Windows acceptance-case connector and case-authoring docs,
+  plus finalized KDE/macOS port notes, are deferred to the post-dogfood
+  separation review and platform-implementation documentation. Earlier lists
+  including those items before dogfooding are superseded by this scope boundary.
+  No parked product question or tentative product choice is resolved here.
+
+## Stage 5 native clear hold attribution (2026-10-23)
+
+- Bounded trace-only `clear_holds` rows now join the original clear operation,
+  subject lifetime and exact pre-dispatch gate. Storage stays bounded and a
+  separate total preserves honest omission counts. A stale stop is distinct
+  from a row-narrow hold; no gate, write authority or spent-token behavior
+  changed. The attribution remains useful normal trace evidence.
+- One focused fixture-only native leg identified `frame-race`: seven consecutive
+  passes published the same clear token but held at baseline/live frame equality,
+  with zero attempts or writes and the subject still maximized. The peer stayed
+  unchanged. This identifies the gate, not yet the cause of the frame mismatch.
+  Production-capture regressions show unknown focus alone does not block dispatch;
+  no focus guess or weakened native guard was introduced.
+- Windows library tests pass (948 tests), strict scoped all-target clippy,
+  formatting and whitespace pass. Past-cap attribution and stale-stop tests pin
+  the diagnostic oracle. Exact-owner stop, independent restore and fixture
+  shutdown left no owned residue; settings, cursor, relevant SPI/taskbar state
+  and protected geometry matched preimages. No synthetic input was used.
+- Next: compare the production baseline and live maximized-frame read paths,
+  reproduce their discrepancy offline, then repair the common representation
+  without relaxing the manual-change-race veto. Full native directional
+  acceptance and all remaining pre-dogfood scope above are still incomplete.
+
+## Stage 5 observed-frame normalization - partial native acceptance (2026-10-23)
+
+### Root cause and accepted correction
+
+- The identified `frame-race` was a representation defect, not evidence of a
+  user move or a focus failure. Maximized members leave the eligible live lane
+  and enter retained observation with their native frame. Capture substitutes
+  the member's tile slot for the core allocation/affinity fact. The common
+  clear lane then compared that slot against the live maximized native frame,
+  holding indefinitely even when both native observations were stable.
+- `FreshWindow.observed_frame` preserves the native observation before slot
+  substitution. Only the clear race check consumes it; existing slot consumers
+  retain their semantics. Missing retained native evidence stays `None`, never
+  falls back to the slot, and holds as `hidden-or-unreadable`. Genuine changed
+  native frames still hold as `frame-race`. Exact lifetime, scope, input,
+  freshness, fullscreen and at-most-once fences remain unchanged. There is no
+  second clear actuator, focus guess or second-command continuation.
+- The production-capture regression first reproduced the original zero-attempt
+  `frame-race`, then passed with one correlated accepted clear and commandless
+  original-intent continuation. Independent review caught an unreadable-frame
+  fallback that could fabricate proof from coincidental slot equality; that
+  fallback was removed before final gates. Additional regressions pin missing
+  native evidence and genuine observed/live mismatch. Independent closure
+  review accepted the corrected source and all three seam cases.
+- Final locked scoped build, all-target tests and strict all-target clippy for
+  core/protocol/Windows/fixture pass: **2,694 passed, zero failed, one ignored
+  across 49 suites**. Formatting and whitespace pass. No dependency or core
+  policy change was needed for this correction.
+
+### Native evidence and its limits
+
+- A focused fixture-only leg proved one original clear token, one accepted
+  true-to-false attempt, observed unmaximize, `continued-tiled`, independent
+  swapped-half geometry/foreground and an accepted empty-operation reply.
+  This preceded only the final missing-evidence tightening above.
+- On the final corrected artifact, the broader leg passed admission/coverage
+  on both outputs; tiled focus/move and maximize-clear on one output; float
+  focus/half-snap and maximize-clear on the other; and sticky retention plus
+  one half-snap on that other output. Float half-snap and float clear each
+  reached correlated `float-frame-proven` terminals. Tiled clear reached
+  `continued-tiled`; fresh accepted empty operation/transfer snapshots followed
+  the completed clear/float legs. Peers and native identities were checked.
+- The broader leg stopped before the second sticky half-snap and sticky clear:
+  overlapping fixture windows defeated its cursor-point target guard. This is
+  a harness stop, not a product refusal. The driver also used raw native pointer
+  positioning; its cursor preimage did not match at teardown and no further
+  pointer write was made. This leg is partial evidence, not acceptance of the
+  requested matrix. Do not reuse that driver's pointer path.
+- Exact-owner stop, independent restore and fixture shutdown left no owned
+  process, recovery ledger or pending-control residue. Settings bytes, relevant
+  SPI/taskbar state and protected-window geometry matched; cursor restoration
+  is explicitly not claimed for the broader leg. FFC/warp remained off. No
+  physical shortcut, drag, game or native hover-follow acceptance is claimed.
+
+### Handover and remaining scope
+
+- Windows is **not dogfood-ready**. Next, replace the external matrix driver's
+  pointer-dependent focus/probe helpers with fixture socket focus and read-only
+  foreground proof, with no raw pointer writes. Stage fixture subjects without
+  occlusion and explicitly enumerate each case on each output. Then finish
+  fresh tiled/float focus/move, tiled/float maximize-clear, sticky half-snaps
+  and sticky clear on both outputs, including original-operation retirement
+  and independent frame/foreground proof. No additional semantic repair is
+  currently indicated by the executed native cases.
+- After that: migration/control output-context ownership (foreground, pointer,
+  cache, output order); consumer-checked dead API disposition; uniform wire
+  border/underlay/drop/pager presentation consumed by Windows; the full
+  both-output regression matrix; and the dogfood-readiness summary. Shared
+  acceptance-case connector/case-authoring docs and finalized KDE/macOS port
+  notes remain deferred to the post-dogfood separation review.
+- No tentative product decision was added and no parked product question was
+  resolved. Existing focus/send/drag questions and defaults are preserved.

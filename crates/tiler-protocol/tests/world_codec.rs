@@ -908,8 +908,67 @@ fn golden_bootstrap_reply_bytes_lock_wire_shape() {
         "{\"v\":2,\"adapter\":\"adapter-1\",\"gen\":\"gen-1\",\"req\":\"req-1\",\
          \"obs\":\"0\",\"rev\":\"0\",\"ready\":false,\"consumed\":false,\
          \"scopes\":[],\"workspaces\":[],\"outputs\":[],\"windows\":[],\
-         \"transfers\":[],\"effects\":[],\"result\":null,\"gestureSettled\":null,\"warpCursor\":null}"
+         \"transfers\":[],\"effects\":[],\"result\":null,\"gestureSettled\":null,\"operationSettled\":[],\"warpCursor\":null}"
     );
+}
+
+#[test]
+fn reply_operation_settled_matches_core_sizing() {
+    // A reply carrying terminal retained-operation events encodes
+    // identically on both writers, and the structural estimate bounds the
+    // exact bytes. Pending desire rides the window row, actual attempts
+    // ride the world-apply diag, holds emit nothing, a clear continuation
+    // means the intent resumed (never that the final frame arrived), and
+    // only a float frame-proven event means observation confirmed the
+    // float target.
+    use tiler_core::directional::WindowId;
+    use tiler_core::world_report::{OperationEvent, OperationOutcome};
+    let mut reply = WorldEngine::new("gen-1")
+        .expect("generation")
+        .bootstrap_reply("adapter-1", "req-1");
+    reply.operation_settled = vec![
+        OperationEvent {
+            operation_id: "op-13".to_owned(),
+            window: WindowId("win-max".to_owned()),
+            outcome: OperationOutcome::ClearContinuedTiled,
+            cause: None,
+        },
+        OperationEvent {
+            operation_id: "op-14".to_owned(),
+            window: WindowId("win-other".to_owned()),
+            outcome: OperationOutcome::ClearContinuationRefused,
+            cause: Some("constraints".to_owned()),
+        },
+        OperationEvent {
+            operation_id: "op-15".to_owned(),
+            window: WindowId("win-float".to_owned()),
+            outcome: OperationOutcome::FloatFrameProven,
+            cause: None,
+        },
+        OperationEvent {
+            operation_id: "op-16".to_owned(),
+            window: WindowId("win-gone".to_owned()),
+            outcome: OperationOutcome::FloatAbandoned,
+            cause: Some("closed".to_owned()),
+        },
+    ];
+    let wire = encode_reply(&reply);
+    let canonical = tiler_core::world_report::encode_reply_canonical(&reply);
+    assert_eq!(wire, canonical);
+    assert!(wire.contains("\"operationSettled\":["));
+    assert!(wire.contains("\"outcome\":\"continued-tiled\""));
+    assert!(wire.contains("\"outcome\":\"continuation-refused\""));
+    assert!(wire.contains("\"outcome\":\"float-frame-proven\""));
+    assert!(wire.contains("\"outcome\":\"float-abandoned\""));
+    assert!(wire.contains("\"cause\":\"constraints\""));
+    assert!(wire.contains("\"cause\":\"closed\""));
+    let estimate = tiler_core::world_report::reply_estimate(&reply);
+    assert!(
+        estimate >= wire.len(),
+        "estimate {estimate} bounds wire {}",
+        wire.len()
+    );
+    assert!(wire.len() <= WORLD_MAX_REPLY_BYTES);
 }
 
 #[test]

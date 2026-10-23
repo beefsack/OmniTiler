@@ -427,6 +427,7 @@ fn reply_shell(obs: u64, rev: u64, scopes: &[(&str, &str)]) -> WorldReply {
         effects: Vec::new(),
         command_result: None,
         gesture_settled: None,
+        operation_settled: Vec::new(),
         cursor_warp: None,
         presentation_bytes: 0,
     }
