@@ -2788,3 +2788,45 @@ of cursor-first fresh placement or the entire rearchitecture.
   by omission. Broader unsupported predicates remain explicit platform gaps.
   Final port notes, final-artifact native regression and readiness summary are
   still pending. Windows remains not dogfood-ready.
+
+## Stage 5 narrow core-alone action baseline (2026-10-24)
+
+- Added `test-fixtures/world-actions.json` and its point-of-use authoring
+  guide, executed by the development-only protocol example `world_acceptance`.
+  Six ordered checkpoints cover two-window startup, third-window admission,
+  select-away, explicit logical view receipt, select-previous and return receipt.
+  Host facts and expected tile geometry are authored independently of replies;
+  symbolic workspace aliases bind from the initial ring and never rebind.
+- The runner executes a real retained `WorldEngine`, accepts only fresh
+  `Accepted` outcomes, and pairs each reply to its actual report and ordered
+  case step. Checks cover exact desired roster/homing/authority, allocation
+  coverage and independent tile literals, separate effective frames, logical
+  views/ring/orders/scopes, retained view flights and one-shot effects.
+  Command-pending checkpoints are explicitly distinct from settled checkpoints;
+  an outstanding transfer can never satisfy the latter. Unknown settlement
+  markers and contradictory expected transfers refuse rather than pass.
+- A proposed native transcript verifier was withdrawn during source review:
+  fixed example identities/counters and required scope/effect fields did not
+  match real Windows trace evidence. The accepted deliverable deliberately has
+  no native parser, fabricated native observations or public runtime API.
+  Its away interval proves logical view receipts only, not native hide/reveal.
+  It is a core-alone baseline, **not** the requested shared executable baseline.
+- Independent review accepted the narrowed core-only contract. Adversarial
+  regressions cover missing receipts and pending settlement, wrong pairing and
+  command, stale/reordered/truncated steps, missing allocations/effective frames,
+  held/unreadable/incomplete scopes, incorrect views/rosters/geometry, gaps and
+  overlaps, invalid authoring and unsupported cases. The example has 24 passing
+  tests and the authored case passes all six checkpoints. Final locked build,
+  all-target tests and strict all-target clippy for core/protocol/Windows/fixture,
+  workspace formatting and whitespace pass: **2,717 passed, zero failed, one
+  ignored across 50 suites**. No live actions were run for these two units.
+- Remaining shared acceptance gap: a narrow Windows leg must bind fresh fixture
+  caller identities to native lifetimes and actual accepted output/workspace/
+  operation provenance, consume the producer's real trace vocabulary, and
+  require independently observed frame/visibility settlement at every checkpoint.
+  Missing native frames/entries, omitted or fenced evidence, pending operations,
+  coverage defects and skipped intermediate hide/reveal must reject before any
+  driver is accepted. Unsupported live predicates remain explicit platform gaps.
+  Final KDE/macOS port notes, final-artifact both-output matrix (including the
+  migration log-count flake retry) and readiness summary are still pending.
+  No new product decision was made; Windows remains not dogfood-ready.

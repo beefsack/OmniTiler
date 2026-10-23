@@ -1,0 +1,169 @@
+{
+  "name": "tiled-home-away-return",
+  "description": "Narrow tiled-only zero-gap per-output-local core acceptance: one output, two known windows, one ordered admission, select-away, select-previous return. All three windows stay homed to the initial (home) workspace; the away workspace is selected empty. Host visibility is not observed by the core and no live claim is made. All geometry literals below are hand-authored from the deterministic split rule (equal halves; a third window splits the right half horizontally) applied to the 800x560 work area, never copied from engine output. Host fact rects are authored inputs (the admission newcomer arrives at an arbitrary rect; settled reports carry converged tiles); expected allocations are the independent oracle. Coverage is re-proven from actual reply allocations against the work-area geometry, so any engine layout change fails loudly.",
+  "owner": "owner-a",
+  "adapter": "adapter-1",
+  "generation": "gen-1",
+  "mode": "per-output-local",
+  "screens": [
+    {
+      "out": "out-a",
+      "full": [0, 0, 800, 600],
+      "work": [0, 0, 800, 560],
+      "gap": 0,
+      "outer_gap": 0,
+      "complete": true,
+      "primary": true
+    }
+  ],
+  "settings": { "default_tiled": true },
+  "windows": ["win-a", "win-b", "win-c"],
+  "steps": [
+    {
+      "name": "bootstrap",
+      "request": 1,
+      "observation": 1,
+      "facts": {
+        "win-a": [400, 0, 400, 560],
+        "win-b": [0, 0, 400, 560]
+      },
+      "views": {},
+      "command": null,
+      "expect": {
+        "view": "home",
+        "members": ["win-a", "win-b"],
+        "tiles": {
+          "win-a": [400, 0, 400, 560],
+          "win-b": [0, 0, 400, 560]
+        },
+        "transfers": [],
+        "effects": [],
+        "settlement": "settled"
+      }
+    },
+    {
+      "name": "admit-c",
+      "request": 2,
+      "observation": 2,
+      "facts": {
+        "win-a": [400, 0, 400, 560],
+        "win-b": [0, 0, 400, 560],
+        "win-c": [100, 100, 200, 150]
+      },
+      "views": {},
+      "command": null,
+      "expect": {
+        "view": "home",
+        "members": ["win-a", "win-b", "win-c"],
+        "tiles": {
+          "win-a": [400, 0, 400, 280],
+          "win-b": [0, 0, 400, 560],
+          "win-c": [400, 280, 400, 280]
+        },
+        "transfers": [],
+        "effects": [{ "id": "af-win-c", "kind": "focus", "target": "win-c" }],
+        "settlement": "settled"
+      }
+    },
+    {
+      "name": "select-away",
+      "request": 3,
+      "observation": 3,
+      "facts": {
+        "win-a": [400, 0, 400, 280],
+        "win-b": [0, 0, 400, 560],
+        "win-c": [400, 280, 400, 280]
+      },
+      "views": {},
+      "command": { "seq": 11, "op": "select-workspace", "output": "out-a", "workspace": "away" },
+      "expect": {
+        "view": "away",
+        "members": ["win-a", "win-b", "win-c"],
+        "tiles": {
+          "win-a": [400, 0, 400, 280],
+          "win-b": [0, 0, 400, 560],
+          "win-c": [400, 280, 400, 280]
+        },
+        "transfers": [
+          { "op": "op-11", "kind": "view", "window": null, "output": "out-a", "workspace": "away", "follow": false, "held": false }
+        ],
+        "effects": [],
+        "settlement": "command-pending"
+      }
+    },
+    {
+      "name": "away-settled",
+      "request": 4,
+      "observation": 4,
+      "facts": {
+        "win-a": [400, 0, 400, 280],
+        "win-b": [0, 0, 400, 560],
+        "win-c": [400, 280, 400, 280]
+      },
+      "views": { "out-a": "away" },
+      "command": null,
+      "expect": {
+        "view": "away",
+        "members": ["win-a", "win-b", "win-c"],
+        "tiles": {
+          "win-a": [400, 0, 400, 280],
+          "win-b": [0, 0, 400, 560],
+          "win-c": [400, 280, 400, 280]
+        },
+        "transfers": [],
+        "effects": [],
+        "settlement": "settled"
+      }
+    },
+    {
+      "name": "select-previous",
+      "request": 5,
+      "observation": 5,
+      "facts": {
+        "win-a": [400, 0, 400, 280],
+        "win-b": [0, 0, 400, 560],
+        "win-c": [400, 280, 400, 280]
+      },
+      "views": { "out-a": "away" },
+      "command": { "seq": 12, "op": "select-previous", "output": "out-a", "workspace": null },
+      "expect": {
+        "view": "home",
+        "members": ["win-a", "win-b", "win-c"],
+        "tiles": {
+          "win-a": [400, 0, 400, 280],
+          "win-b": [0, 0, 400, 560],
+          "win-c": [400, 280, 400, 280]
+        },
+        "transfers": [
+          { "op": "op-12", "kind": "view", "window": null, "output": "out-a", "workspace": "home", "follow": false, "held": false }
+        ],
+        "effects": [],
+        "settlement": "command-pending"
+      }
+    },
+    {
+      "name": "home-settled",
+      "request": 6,
+      "observation": 6,
+      "facts": {
+        "win-a": [400, 0, 400, 280],
+        "win-b": [0, 0, 400, 560],
+        "win-c": [400, 280, 400, 280]
+      },
+      "views": { "out-a": "home" },
+      "command": null,
+      "expect": {
+        "view": "home",
+        "members": ["win-a", "win-b", "win-c"],
+        "tiles": {
+          "win-a": [400, 0, 400, 280],
+          "win-b": [0, 0, 400, 560],
+          "win-c": [400, 280, 400, 280]
+        },
+        "transfers": [],
+        "effects": [],
+        "settlement": "settled"
+      }
+    }
+  ]
+}
