@@ -110,8 +110,7 @@
 //! - a setter moving a real frame to the WRONG rect (only live windows
 //!   distinguish a wrong frame from an unmoved one).
 //! - real renderer `Hidden` acks driving the `applied_visible` /
-//!   `applied_known` mirror (`product_hide::batch` tests cover the batch
-//!   fake composition only, never production ack-driven visibility).
+//!   `applied_known` mirror (offline legs never observe production acks).
 //! - real foreground focus admitting cross-`Send` follow and the single
 //!   spent directional follow-focus effect.
 //! - tests_window_diag emission suite (15 tests): the batching machinery is
@@ -1221,7 +1220,7 @@ fn hide_reason_transition_posts_once() {
         Some("cancel"),
         "ack logs the true transition reason"
     );
-    // Repeating the new reason stays idempotent: no per-tick feedback.
+    // Repeating the new reason stays idempotent: no per-tick repeat.
     hide_render_carrier(&mut state, RenderCarrier::Preview, "cancel");
     let bridge = state.render_bridge.as_ref().expect("bridge");
     assert_eq!(bridge.channels.safety(), safety_first + 1);
@@ -1350,7 +1349,6 @@ fn arrival_reply(
         gesture_settled: None,
         operation_settled: Vec::new(),
         cursor_warp: None,
-        presentation_bytes: 0,
     }
 }
 

@@ -416,15 +416,24 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
     );
     assert!(stats.stopped_mid_apply, "stats: {stats:?}");
     assert_eq!(stats.geometry_writes, 0, "stats: {stats:?}");
-    // Feedback stages for the next report; a lost flight stays dirty.
-    seq.note_feedback(tiler_core::world_report::AttemptFeedback {
-        operation_id: "op-9".to_owned(),
-        kind: tiler_core::world_report::AttemptKind::Effect,
-        outcome: tiler_core::world_report::AttemptOutcome::Applied,
-        hold: None,
+    // Raw attempts stage for the next report; a lost flight stays dirty.
+    seq.note_frame_attempt(tiler_core::world_report::FrameAttempt {
+        window: tiler_core::directional::WindowId("w1".to_owned()),
+        target: Rect {
+            x: 0,
+            y: 0,
+            w: 100,
+            h: 100,
+        },
+        setter: tiler_core::world_report::FrameSetter::Accepted,
+        readback: None,
+        dpi_before: None,
+        dpi_after: None,
+        attempt_ms: 7,
+        operation_id: None,
+        prewrite: None,
     });
-    assert_eq!(seq.pending_feedback_len(), 1);
-    assert!(seq.has_pending_feedback());
+    assert_eq!(seq.pending_frames_len(), 1);
     seq.invalidate();
     let third = seq
         .try_dispatch(
@@ -454,7 +463,6 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
         core_generation: "gen-1".to_owned(),
         request_id: "req-x".to_owned(),
         closed_acked: vec![("w9".to_owned(), homing)],
-        feedback_acked: Vec::new(),
         frames_acked: Vec::new(),
         members_acked: Vec::new(),
         views_acked: Vec::new(),
@@ -789,7 +797,6 @@ fn arrival_reply(
         gesture_settled: None,
         operation_settled: Vec::new(),
         cursor_warp: None,
-        presentation_bytes: 0,
     }
 }
 

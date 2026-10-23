@@ -2638,3 +2638,46 @@ of cursor-first fresh placement or the entire rearchitecture.
   finalized KDE/macOS port notes, full both-output regression and the
   readiness summary. No tentative decision was added or parked question
   resolved by this unit.
+
+## Stage 5 dead API disposition (2026-10-24)
+
+- Removed `WorldReply::presentation_bytes`: every constructor supplied zero,
+  the only read added zero to a size estimate, and no wire section existed.
+  This does not deliver uniform presentation; that remains the next unit.
+- Deleted `product_hide::batch` and its ten test-only state-machine cases.
+  Its alleged production driver no longer exists; native single-window
+  prepare/post/confirm helpers and their identity/ledger/restore gates remain.
+- Consumer review also found the superseded operation-verdict ingress:
+  `WorldReport.feedback`, `AttemptFeedback`, `AttemptKind`, its codec and
+  sizing/digest fields, plus the unused Windows pending/delivered queue.
+  Windows had no production producer. The only core policy read propagated
+  a hold from this obsolete ingress into published membership authority;
+  that dead overlay is removed, not kept as a second settlement route.
+- Raw frame, clear, membership and view attempts, scope holds, receipts,
+  at-most-once state and native safety gates are unchanged. `AttemptOutcome`
+  remains because active core settlement uses it internally. The old
+  `feedback` wire key now refuses as an unknown field; there is no decoder
+  backfill or retired-kind compatibility path. KDE/macOS consumers of the
+  obsolete contract remain intentionally unported.
+- Remaining world/action command decoders have current consumers and stay.
+  In-process presentation/group/pager consumers are not dead yet: replace
+  them atomically with uniform wire presentation in the next unit, then
+  delete the superseded queries. Useful raw-attempt/receipt regressions
+  remain; removed tests proved only deleted queues, ignored verdict ingress
+  or the orphaned batch state machine.
+- Independent source review accepted producer reachability, protocol
+  rejection, deleted-test disposition and unchanged active authority gates.
+  Final locked core/protocol/Windows/fixture build, all-target tests and
+  strict all-target clippy pass: **2,690 passed, zero failed, one ignored
+  across 49 suites**. Formatting and whitespace pass. The lower count
+  reflects removal of obsolete-only tests, not ignored current behavior.
+- No native calls, input, renderer behavior or live configuration changed.
+  This unit used offline production-seam coverage, not a live leg, and does
+  not refresh the preceding native evidence to a newly built artifact.
+  Final-artifact native regression is still required after presentation and
+  shared-connector work. No dependency or tentative product decision added.
+- Windows remains not dogfood-ready. Next: uniform wire border, underlay,
+  drop and pager presentation consumed by Windows, without `ActiveGroup`
+  compatibility queries; then shared acceptance connector/case-authoring
+  docs, finalized KDE/macOS port notes, full both-output regression and the
+  readiness summary. All parked product questions remain unchanged.

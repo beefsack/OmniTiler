@@ -1308,7 +1308,6 @@ mod tests {
             command_result: None,
             gesture_settled: None,
             cursor_warp: None,
-            presentation_bytes: 0,
         }
     }
 

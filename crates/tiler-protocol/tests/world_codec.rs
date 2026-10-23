@@ -34,7 +34,7 @@ fn request_json(
          \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
          \"actionOutputs\":[\"out\"],\"focusFollowsCursor\":false,\"cursorWarp\":false,\
          \"defaultTiled\":true,\"focused\":\"\",\
-         \"complete\":true,\"gesture\":false,\"feedback\":[]}}"
+         \"complete\":true,\"gesture\":false}}"
     )
 }
 
@@ -831,15 +831,14 @@ fn member_and_view_attempts_decode_tolerantly_and_stay_bounded() {
     }]);
     let error = decode_request(&value.to_string()).expect_err("unknown field refuses");
     assert_eq!(error.kind, "unknown-field");
-    // Transfer/view verdict ingress stays retired: the core derives every
-    // verdict from raw attempts, never from feedback rows.
+    // Retired external verdict ingress refuses as an unknown field: the core
+    // derives every verdict from raw attempts, so no feedback key exists.
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["feedback"] = serde_json::json!([{
         "op": "op-9", "kind": "transfer", "outcome": "applied", "hold": "",
     }]);
-    let error = decode_request(&value.to_string()).expect_err("verdict ingress refuses");
-    assert_eq!(error.kind, "snapshot-invalid");
-    assert_eq!(error.message, "feedback-kind-retired");
+    let error = decode_request(&value.to_string()).expect_err("feedback key refuses");
+    assert_eq!(error.kind, "unknown-field");
     // Estimates bound the wider wire shape.
     let estimate = tiler_core::world_report::report_estimate(&report);
     assert!(

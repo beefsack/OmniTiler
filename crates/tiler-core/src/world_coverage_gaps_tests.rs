@@ -114,7 +114,6 @@ fn report(
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
-        feedback: Vec::new(),
         monotonic_ms: 0,
         frames: Vec::new(),
         member_attempts: Vec::new(),
@@ -1590,7 +1589,7 @@ fn floating_source_migration_refusal_after_ack_rolls_back() {
     );
     // SAME-reply coherence: the rollback reply itself must publish the
     // restored source scope as Untouched with members homed there, and
-    // no stale target scope/member rows. No feedback replay, no effects.
+    // no stale target scope/member rows. No verdict replay, no effects.
     assert!(
         settled.windows.iter().all(|w| w.frame_operation.is_none()),
         "no replayed operations on floating rollback: {:?}",

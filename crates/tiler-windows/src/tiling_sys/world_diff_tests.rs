@@ -4,9 +4,8 @@
 //! Every rig builds the real owner tables plus real per-tick products and
 //! runs them through [`capture_world`](super::world_capture::capture_world)
 //! and [`FreshHost::from_sources`](super::world_diff::FreshHost::from_sources).
-//! Fixtures diverge only the live [`FakeNative`] facts per fence; feedback
-//! uses only core-consumed operation ids. Native workspace
-//! creation/removal/binding shapes are intentionally absent: the logical
+//! Fixtures diverge only the live [`FakeNative`] facts per fence. Native
+//! workspace creation/removal/binding shapes are intentionally absent: the logical
 //! core owns workspaces outright, so there is nothing to actuate there.
 
 use super::rmax03_adapter_tests::test_state;
@@ -25,9 +24,9 @@ use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::geometry::Rect;
 use tiler_core::world_engine::WorldOutcome;
 use tiler_core::world_report::{
-    AttemptFeedback, AttemptKind, AttemptOutcome, EffectKind, FrameSetter, HoldReason as CoreHold,
-    OneShotEffect, ScopeAuthority as Auth, ScopeStatus, TransferKind, TransferTarget,
-    WORLD_CONTRACT_VERSION, WindowDesire, WorldCommand, WorldReply, WorldReport,
+    EffectKind, FrameSetter, HoldReason as CoreHold, OneShotEffect, ScopeAuthority as Auth,
+    ScopeStatus, TransferKind, TransferTarget, WORLD_CONTRACT_VERSION, WindowDesire, WorldCommand,
+    WorldReply, WorldReport,
 };
 
 pub(super) const ADAPTER: &str = "adapter-1";
@@ -219,7 +218,6 @@ fn reply_shell(obs: u64, rev: u64, scopes: &[(&str, &str)]) -> WorldReply {
         gesture_settled: None,
         operation_settled: Vec::new(),
         cursor_warp: None,
-        presentation_bytes: 0,
     }
 }
 
@@ -748,10 +746,10 @@ fn clamped_write_reports_raw_attempt_and_obeys_core_hold() {
 }
 
 #[test]
-fn explicit_refusal_reports_transient_facts_without_feedback() {
-    // A refused setter reports transient facts (never a verdict) with no
-    // operation feedback: ordinary geometry proves by read-back. The core
-    // times the retry; the seam retries on the next controlled desire.
+fn explicit_refusal_reports_transient_facts_without_verdict() {
+    // A refused setter reports transient facts (never a verdict): ordinary
+    // geometry proves by read-back. The core times the retry; the seam
+    // retries on the next controlled desire.
     let rig = rig();
     let (mut diff, fresh, mut native) = converted(&rig);
     native.fail_frame.insert("w1".to_owned());
@@ -1819,8 +1817,8 @@ fn float_token_places_once_fences_and_reports_raw_attempt() {
     // Baseline live frame for the prewrite/readback oracles below.
     let baseline = rect(0, 0, 800, 600);
     // A successful placement writes once and reports the mechanical facts
-    // with exact operation correlation: no outcome verdict rides the
-    // feedback lane, and the token plus core observation decide.
+    // with exact operation correlation: no outcome verdict is emitted, and
+    // the token plus core observation decide.
     let (mut diff, fresh, mut native) = converted(&rig);
     native.windows.get_mut("w1").unwrap().floating = true;
     let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
@@ -2590,14 +2588,14 @@ fn frame_loop_dpi_change_never_clamps() {
     assert_eq!(tiled_desire(&reply2, "w1"), (desired, Auth::Controlled));
 }
 
-// --- sequencer ordering, feedback, closes ---
+// --- sequencer ordering, attempts, closes ---
 
 fn send_rig() -> Rig {
     rig()
 }
 
 #[test]
-fn send_roundtrip_actuates_feedback_and_converges_without_remove() {
+fn send_roundtrip_actuates_attempts_and_converges_without_remove() {
     let mut rig = send_rig();
     let mut seq = WorldSequencer::bootstrap(ADAPTER, GENERATION).expect("bootstrap");
     let report = seq
@@ -2720,7 +2718,7 @@ fn send_roundtrip_actuates_feedback_and_converges_without_remove() {
             0,
             None,
         )
-        .expect("feedback dispatch");
+        .expect("attempt dispatch");
     assert!(report.member_attempts.iter().any(|f| f.operation_id == op));
     let reply2 = match seq.deliver(&report) {
         WorldOutcome::Accepted(reply) => reply,
@@ -2741,7 +2739,7 @@ fn send_roundtrip_actuates_feedback_and_converges_without_remove() {
     // The arrival receipt settled the transfer: w1 rides homed at the
     // target with no retained transfer, while w2 converges to its grown
     // post-departure slot with one frame write. Nothing outstanding means
-    // no re-proof and no fabricated feedback.
+    // no re-proof and no fabricated verdict.
     assert!(reply2.transfers.iter().all(|t| t.operation_id != op));
     assert_eq!(stats.membership_writes, 0);
     assert_eq!(stats.view_writes, 0);
@@ -2756,71 +2754,9 @@ fn send_roundtrip_actuates_feedback_and_converges_without_remove() {
 }
 
 #[test]
-fn feedback_exact_equality_and_catchup_fencing() {
+fn rejection_correlates_to_exact_flight_and_fences_catchup() {
     let rig = rig();
     let mut seq = WorldSequencer::bootstrap(ADAPTER, GENERATION).expect("bootstrap");
-    let v1 = AttemptFeedback {
-        operation_id: "op-a".to_owned(),
-        kind: AttemptKind::Effect,
-        outcome: AttemptOutcome::Applied,
-        hold: None,
-    };
-    seq.note_feedback(v1.clone());
-    let report = seq
-        .try_dispatch(
-            &rig.state.inputs(),
-            Some(&rig.observed),
-            &rig.retained,
-            &rig.areas,
-            1001,
-            0,
-            None,
-        )
-        .expect("dispatch");
-    assert!(report.feedback.iter().any(|f| f.operation_id == "op-a"));
-    // A newer update for the same operation replaces the flight value: the
-    // predecessor ack must not consume it.
-    let v2 = AttemptFeedback {
-        operation_id: "op-a".to_owned(),
-        kind: AttemptKind::Effect,
-        outcome: AttemptOutcome::PossiblyExecuted,
-        hold: None,
-    };
-    seq.note_feedback(v2.clone());
-    let reply = match seq.deliver(&report) {
-        WorldOutcome::Accepted(reply) => reply,
-        other => panic!("expected accepted, got {other:?}"),
-    };
-    match seq.ack(&reply) {
-        AckOutcome::Applied(receipt) => {
-            assert!(receipt.feedback_acked.is_empty());
-        }
-        other => panic!("expected applied, got {other:?}"),
-    }
-    assert!(seq.has_pending_feedback());
-    let report = seq
-        .try_dispatch(
-            &rig.state.inputs(),
-            Some(&rig.observed),
-            &rig.retained,
-            &rig.areas,
-            1001,
-            0,
-            None,
-        )
-        .expect("feedback redispatch");
-    let reply = match seq.deliver(&report) {
-        WorldOutcome::Accepted(reply) => reply,
-        other => panic!("expected accepted, got {other:?}"),
-    };
-    match seq.ack(&reply) {
-        AckOutcome::Applied(receipt) => {
-            assert!(receipt.feedback_acked.contains(&"op-a".to_owned()));
-        }
-        other => panic!("expected applied, got {other:?}"),
-    }
-    assert!(!seq.has_pending_feedback());
-
     // Rejection correlates to the exact flight: a stale id is a no-op.
     seq.invalidate();
     let report = seq
@@ -3033,8 +2969,8 @@ fn consumed_command_reconciles_without_replay() {
 // retained placement token; the real diff writes through the native seam
 // and reports the mechanical attempt with exact operation correlation plus
 // the immediate pre-write frame; the sequencer carries it into the core,
-// which holds the token on clamp ambiguity. No float outcome verdict ever
-// rides the feedback lane, and the held placement never re-actuates.
+// which holds the token on clamp ambiguity. No float outcome verdict is
+// ever emitted, and the held placement never re-actuates.
 
 #[test]
 fn float_production_seam_reports_raw_attempt_and_core_holds_token() {
@@ -3124,11 +3060,6 @@ fn float_production_seam_reports_raw_attempt_and_core_holds_token() {
     // with no verdict and stages no replay.
     seq.invalidate();
     let report2 = dispatch_obs(&mut seq, &rig, 1001, 4000);
-    assert!(
-        report2.feedback.iter().all(|f| f.operation_id != token),
-        "no float verdict rides: {:?}",
-        report2.feedback
-    );
     let carried = report2
         .frames
         .iter()

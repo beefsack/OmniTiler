@@ -71,8 +71,7 @@ impl WorldEngine {
     /// membership-only row at the target homing. No floating row ever
     /// carries allocation or frame authority (no frame writes on floats).
     /// A held scope with no retained session carries its staged lifetimes
-    /// as complete held rows, so no inventory ever vanishes. Feedback
-    /// holds apply narrowly to the reported window's membership only.
+    /// as complete held rows, so no inventory ever vanishes.
     pub(crate) fn publish(
         &mut self,
         report: &WorldReport,
@@ -169,19 +168,6 @@ impl WorldEngine {
             .filter(|fact| fact.fullscreen)
             .map(|fact| fact.window.0.as_str())
             .collect();
-        // Narrow feedback holds by window lifetime: a refused/held attempt
-        // holds that window's membership, never the whole system.
-        let mut window_holds: BTreeMap<String, HoldReason> = BTreeMap::new();
-        for retained in &self.retained {
-            let hold = report
-                .feedback
-                .iter()
-                .find(|f| f.operation_id == retained.target.operation_id)
-                .and_then(|f| f.hold);
-            if let (Some(hold), TransferKind::Window(window)) = (hold, &retained.target.kind) {
-                window_holds.entry(window.0.clone()).or_insert(hold);
-            }
-        }
         for domain in &staged.domains {
             let key = domain.key.clone();
             // Floating workspaces are adapter-owned: the scope is
@@ -388,7 +374,6 @@ impl WorldEngine {
                         if live.contains(&window.0) || !emitted.insert(window.0.clone()) {
                             continue;
                         }
-                        let member_hold = window_holds.get(&window.0).copied();
                         windows.push(WindowDesire {
                             lifetime: window,
                             output: output.clone(),
@@ -396,10 +381,7 @@ impl WorldEngine {
                             allocation: None,
                             effective_frame: None,
                             frame_authority: ScopeAuthority::Hold(HoldReason::Minimized),
-                            membership_authority: match member_hold {
-                                Some(reason) => ScopeAuthority::Hold(reason),
-                                None => ScopeAuthority::Controlled,
-                            },
+                            membership_authority: ScopeAuthority::Controlled,
                             frame_operation: None,
                             clear_operation: None,
                             floating: false,
@@ -542,7 +524,6 @@ impl WorldEngine {
                 if flight_elsewhere {
                     continue;
                 }
-                let member_hold = window_holds.get(&geometry.window.0).copied();
                 let fullscreen = fullscreen_windows.contains(geometry.window.0.as_str());
                 emitted.insert(geometry.window.0.clone());
                 // Retained directional clear desire: same one-shot
@@ -555,17 +536,16 @@ impl WorldEngine {
                     .facts
                     .get(&geometry.window)
                     .is_none_or(|fact| fact.minimized || fact.rect.is_none());
-                let clear_operation =
-                    if report.gesture_barrier || member_hold.is_some() || fact_unreadable {
-                        None
-                    } else {
-                        self.retained_clears
-                            .iter()
-                            .find(|retained| {
-                                retained.window == geometry.window && retained.pending.is_none()
-                            })
-                            .map(|retained| retained.operation_id.clone())
-                    };
+                let clear_operation = if report.gesture_barrier || fact_unreadable {
+                    None
+                } else {
+                    self.retained_clears
+                        .iter()
+                        .find(|retained| {
+                            retained.window == geometry.window && retained.pending.is_none()
+                        })
+                        .map(|retained| retained.operation_id.clone())
+                };
                 // Core-owned frame policy (stage 3a): an exact desired match
                 // clears retained memory (completion is desired == observed,
                 // never setter success); a suppressed pair publishes a
@@ -605,10 +585,7 @@ impl WorldEngine {
                     } else {
                         ScopeAuthority::Controlled
                     },
-                    membership_authority: match member_hold {
-                        Some(reason) => ScopeAuthority::Hold(reason),
-                        None => ScopeAuthority::Controlled,
-                    },
+                    membership_authority: ScopeAuthority::Controlled,
                     // Tiled rows never carry a float-placement token.
                     frame_operation: None,
                     clear_operation,
@@ -632,7 +609,6 @@ impl WorldEngine {
                 let in_flight = self.retained.iter().any(
                     |r| matches!(&r.target.kind, TransferKind::Window(w) if w == &observed.window),
                 );
-                let member_hold = window_holds.get(&observed.window.0).copied();
                 emitted.insert(observed.window.0.clone());
                 // Explicit retained float target, if outstanding: the row
                 // carries the stable property operation id so the adapter
@@ -696,17 +672,16 @@ impl WorldEngine {
                     .facts
                     .get(&observed.window)
                     .is_none_or(|fact| fact.minimized || fact.rect.is_none());
-                let clear_operation =
-                    if report.gesture_barrier || member_hold.is_some() || fact_unreadable {
-                        None
-                    } else {
-                        self.retained_clears
-                            .iter()
-                            .find(|retained| {
-                                retained.window == observed.window && retained.pending.is_none()
-                            })
-                            .map(|retained| retained.operation_id.clone())
-                    };
+                let clear_operation = if report.gesture_barrier || fact_unreadable {
+                    None
+                } else {
+                    self.retained_clears
+                        .iter()
+                        .find(|retained| {
+                            retained.window == observed.window && retained.pending.is_none()
+                        })
+                        .map(|retained| retained.operation_id.clone())
+                };
                 windows.push(WindowDesire {
                     lifetime: observed.window.clone(),
                     output: observed.output.clone(),
@@ -715,10 +690,10 @@ impl WorldEngine {
                     effective_frame: retained_target
                         .or_else(|| session.floating_geometry(&observed.window)),
                     frame_authority: ScopeAuthority::Untouched,
-                    membership_authority: match member_hold {
-                        Some(reason) => ScopeAuthority::Hold(reason),
-                        None if in_flight => ScopeAuthority::Controlled,
-                        None => ScopeAuthority::Untouched,
+                    membership_authority: if in_flight {
+                        ScopeAuthority::Controlled
+                    } else {
+                        ScopeAuthority::Untouched
                     },
                     frame_operation,
                     clear_operation,
@@ -737,7 +712,6 @@ impl WorldEngine {
                 if live.contains(&window.0) || !emitted.insert(window.0.clone()) {
                     continue;
                 }
-                let member_hold = window_holds.get(&window.0).copied();
                 // A minimized lifetime under an outstanding membership
                 // transfer rides the target homing (one homing), keeping
                 // minimized frame authority: the adapter actuates only the
@@ -753,10 +727,7 @@ impl WorldEngine {
                     allocation: None,
                     effective_frame: None,
                     frame_authority: ScopeAuthority::Hold(HoldReason::Minimized),
-                    membership_authority: match member_hold {
-                        Some(reason) => ScopeAuthority::Hold(reason),
-                        None => ScopeAuthority::Controlled,
-                    },
+                    membership_authority: ScopeAuthority::Controlled,
                     frame_operation: None,
                     clear_operation: None,
                     floating: false,
@@ -807,7 +778,6 @@ impl WorldEngine {
             if !emitted.insert(window_id.clone()) {
                 continue;
             }
-            let member_hold = window_holds.get(window_id).copied();
             let window = WindowId(window_id.clone());
             let placement = if migration_redirect.contains(window_id) {
                 migration_cross_output_placement(&staged, &window, key)
@@ -821,10 +791,7 @@ impl WorldEngine {
                 allocation: None,
                 effective_frame: placement,
                 frame_authority: ScopeAuthority::Untouched,
-                membership_authority: match member_hold {
-                    Some(reason) => ScopeAuthority::Hold(reason),
-                    None => ScopeAuthority::Controlled,
-                },
+                membership_authority: ScopeAuthority::Controlled,
                 frame_operation: None,
                 clear_operation: None,
                 floating: false,
@@ -839,7 +806,6 @@ impl WorldEngine {
             if live.contains(&fact.window.0) || !emitted.insert(fact.window.0.clone()) {
                 continue;
             }
-            let member_hold = window_holds.get(&fact.window.0).copied();
             // A minimized lifetime under an outstanding membership
             // transfer rides the target homing (one homing), keeping
             // minimized frame authority. The scope-hold lookup follows
@@ -875,7 +841,7 @@ impl WorldEngine {
                 allocation: None,
                 effective_frame: None,
                 frame_authority: ScopeAuthority::Hold(HoldReason::Minimized),
-                membership_authority: match member_hold.or(scope_hold) {
+                membership_authority: match scope_hold {
                     Some(reason) => ScopeAuthority::Hold(reason),
                     None => ScopeAuthority::Controlled,
                 },
@@ -920,7 +886,6 @@ impl WorldEngine {
             gesture_settled,
             operation_settled,
             cursor_warp,
-            presentation_bytes: 0,
         }
     }
 

@@ -2687,6 +2687,14 @@ platform API behavior.
   Windows captures those facts and emits intents; superseded platform
   selectors and old directional-migration payloads are removed.
   [Acceptance and limits](changes/core-world-model-rearchitecture.md#stage-5-action-context-ownership-2026-10-24).
+- World-contract cleanup, 2026-10-24: obsolete external operation-verdict
+  feedback is removed, not decoded into a retired route. Current adapters
+  report raw frame, clear, membership and view attempts; core derives
+  settlement. Native observations, scope holds and ambiguous once-only
+  latches remain intact. The zero-valued presentation byte reserve is also
+  removed; it was not a serialized presentation contract. Uniform wire
+  presentation remains a separate required completion unit.
+  [Consumer audit and verification](changes/core-world-model-rearchitecture.md#stage-5-dead-api-disposition-2026-10-24).
 - User approved 2026-10-20: platforms report normalized classification facts:
   window type/role, owner/parent, modal, resizable and minimum/maximum size,
   fullscreen, cannot-be-controlled (for example elevated/protected), and app

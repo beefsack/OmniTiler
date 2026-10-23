@@ -317,7 +317,6 @@ fn report(
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
-        feedback: Vec::new(),
         monotonic_ms: 0,
         frames: Vec::new(),
         member_attempts,
@@ -629,7 +628,7 @@ fn partial_refusal_holds_persistently_without_retry() {
         .find(|t| matches!(t.kind, TransferKind::Migration))
         .expect("partial holds");
     assert!(flight.held, "partial refusal marks held: {flight:?}");
-    // The feedback disappears on the next report: the flight must stay held
+    // The raw attempt row is acknowledged on the next report: the flight must stay held
     // (no retry, identities preserved).
     let still = accepted(
         &mut engine,
@@ -840,7 +839,6 @@ fn report_with_screens(
         inventory_complete,
         gesture_barrier: false,
         gesture: None,
-        feedback: Vec::new(),
         monotonic_ms: 0,
         frames: Vec::new(),
         member_attempts,
@@ -1251,7 +1249,7 @@ fn refusal_without_hostable_source_holds_without_destruction() {
 }
 
 #[test]
-fn acknowledged_refusal_recovers_without_feedback_replay() {
+fn acknowledged_refusal_recovers_without_attempt_replay() {
     let mut engine = WorldEngine::new("gen-1").expect("generation");
     let first = accepted(
         &mut engine,
@@ -1359,7 +1357,7 @@ fn acknowledged_refusal_recovers_without_feedback_replay() {
         .find(|t| matches!(t.kind, TransferKind::Migration))
         .expect("gap+refusal holds");
     assert!(flight.held, "gap hold persistent: {flight:?}");
-    // Acknowledgement: feedback disappears. Complete readable evidence
+    // Acknowledgement: the attempt row drains. Complete readable evidence
     // proves every member still at the original source. The retained
     // terminal outcome must reconcile to a wholly-source rollback with no
     // replay and no fabricated arrival.
@@ -1462,7 +1460,7 @@ fn acknowledged_refusal_recovers_without_feedback_replay() {
 }
 
 #[test]
-fn acknowledged_supersession_recovers_without_feedback_replay() {
+fn acknowledged_supersession_recovers_without_attempt_replay() {
     let mut engine = WorldEngine::new("gen-1").expect("generation");
     let first = accepted(
         &mut engine,
@@ -1664,7 +1662,7 @@ fn partial_supersession_holds_across_ack_without_replay() {
         .find(|t| matches!(t.kind, TransferKind::Migration))
         .expect("partial holds");
     assert!(flight.held, "partial supersession holds: {flight:?}");
-    // The feedback disappears: the flight stays held with identities
+    // The attempt row drains: the flight stays held with identities
     // preserved and no retry.
     let still = accepted(
         &mut engine,
@@ -1693,7 +1691,7 @@ fn partial_supersession_holds_across_ack_without_replay() {
 }
 
 #[test]
-fn terminal_then_close_settles_without_feedback_replay() {
+fn terminal_then_close_settles_without_attempt_replay() {
     let mut engine = WorldEngine::new("gen-1").expect("generation");
     let first = accepted(
         &mut engine,
@@ -1758,8 +1756,8 @@ fn terminal_then_close_settles_without_feedback_replay() {
         "gap holds: {:?}",
         gap.transfers
     );
-    // Explicit closes arrive after the feedback row is acknowledged: the
-    // fully-closed migration settles without any feedback replay.
+    // Explicit closes arrive after the attempt row is acknowledged: the
+    // fully-closed migration settles without any attempt replay.
     let settled = accepted(
         &mut engine,
         &report_with_screens(

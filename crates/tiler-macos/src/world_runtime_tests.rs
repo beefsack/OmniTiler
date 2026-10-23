@@ -580,7 +580,6 @@ fn trailing_session_carries_exact_proof_until_core_ack() {
         command_result: None,
         gesture_settled: None,
         cursor_warp: None,
-        presentation_bytes: 0,
     };
     reply.workspaces.push(WorkspaceDesire {
         id: "wl-1".to_owned(),

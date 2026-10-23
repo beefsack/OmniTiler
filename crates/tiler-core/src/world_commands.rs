@@ -1072,7 +1072,7 @@ impl WorldEngine {
                 // window identities, plus non-sticky minimized lifetimes
                 // homed at the source: the adapter actuates each member
                 // exactly once under the stable transfer identity below,
-                // with truthful partial feedback.
+                // with truthful partial attempt reporting.
                 let mut members: Vec<WindowId> = self
                     .engine
                     .session(&target_key)

@@ -51,14 +51,13 @@ pub const MAX_WORLD_FACTS: usize = 10_000;
 pub const MAX_WORLD_CLOSED: usize = 10_000;
 pub const MAX_WORLD_VIEWS: usize = 16;
 /// Bound on mechanical frame attempts per report (same lifetime alphabet as
-/// windows). Matches the feedback cap: one latest-wins attempt per window at
-/// most, so the worst case is bounded by the window inventory itself.
+/// windows): one latest-wins attempt per window at most, so the worst case
+/// is bounded by the window inventory itself.
 pub const MAX_WORLD_FRAMES: usize = 1024;
 /// Bound on host-owned native observations per report (only carried when the
 /// `host_owned_workspace_domains` capability is set).
 pub const MAX_WORLD_NATIVE: usize = 4096;
 pub const MAX_NATIVE_PER_OUTPUT: usize = 256;
-pub const MAX_WORLD_FEEDBACK: usize = 1024;
 /// Bound on mechanical membership attempts per report (one latest-wins row
 /// per operation window at most).
 pub const MAX_WORLD_MEMBER_ATTEMPTS: usize = 1024;
@@ -260,7 +259,7 @@ pub struct TransferTarget {
     /// Stable core logical workspace id.
     pub target_workspace: String,
     pub follow: bool,
-    /// Set when the last feedback was possibly-executed: the target stays
+    /// Set when the last evidence was possibly-executed: the target stays
     /// desired but must not be re-actuated.
     pub held: bool,
 }
@@ -347,34 +346,12 @@ pub struct ScopeStatus {
     pub authority: ScopeAuthority,
 }
 
-/// What an [`AttemptFeedback`] row reports on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum AttemptKind {
-    Transfer,
-    View,
-    Creation,
-    Effect,
-    Property,
-}
-
-impl AttemptKind {
-    /// Wire token for this value, matching the protocol codec vocabulary.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Transfer => "transfer",
-            Self::View => "view",
-            Self::Creation => "creation",
-            Self::Effect => "effect",
-            Self::Property => "property",
-        }
-    }
-}
-
 /// Actuation attempt outcome with stable identity. Four states separate what
 /// a boolean cannot: never tried, maybe ran (hold, never blindly repeat),
 /// proven refusal (settle to observed/held), and external supersession
-/// (newer user input wins).
+/// (newer user input wins). The core owns this latch vocabulary for
+/// retained transfer/migration settlement (see [`crate::world_settle`]);
+/// adapters never send verdicts, only raw mechanical attempts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AttemptOutcome {
     Unattempted,
@@ -396,15 +373,6 @@ impl AttemptOutcome {
             Self::Applied => "applied",
         }
     }
-}
-
-/// Per-operation actuation feedback reported on the next report.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AttemptFeedback {
-    pub operation_id: String,
-    pub kind: AttemptKind,
-    pub outcome: AttemptOutcome,
-    pub hold: Option<HoldReason>,
 }
 
 /// Mechanical outcome of one native frame setter call. Pure actuator
@@ -944,7 +912,6 @@ pub struct WorldReport {
     /// explicit close or a cancel phase clears it (a hidden, incomplete,
     /// or minimized departure holds, never a false close).
     pub gesture: Option<GestureIngress>,
-    pub feedback: Vec<AttemptFeedback>,
     /// Neutral adapter monotonic clock in milliseconds (arbitrary process
     /// epoch, never wall-clock): the observation time of this report. Times
     /// frame retry backoff together with the per-attempt stamps in
@@ -1104,9 +1071,6 @@ pub struct WorldReply {
     /// applies it mechanically with fresh game/lifetime/focus proof, at
     /// most once per observation, and never under its own game lane.
     pub cursor_warp: Option<(i32, i32)>,
-    /// Reserved envelope only: negotiated full sections are not implemented
-    /// in this migration.
-    pub presentation_bytes: usize,
 }
 
 /// Correlated per-command outcome that the snapshot alone cannot express.
@@ -1246,8 +1210,7 @@ pub fn classify_request(
 /// the migration source-refill mode, the D2/D3 capacity settings, the
 /// switch-target and fresh-placement modes, the focus-follows-cursor and
 /// cursor-warp settings, the cursor position and cursor hit, the gesture
-/// ingress, the global focus, the gesture barrier, feedback (identity, kind, outcome, hold),
-/// the monotonic clock, frame attempts (window, target, setter, readback, DPI
+/// ingress, the global focus, the gesture barrier, the monotonic clock, frame attempts (window, target, setter, readback, DPI
 /// pair, attempt stamp, placement operation id, pre-write frame), member
 /// attempts (operation, window, target, setter, pre/post homing, stamp),
 /// view attempts (owning operation, target, setter, pre/post/baseline
@@ -1466,16 +1429,6 @@ pub fn report_digest(report: &WorldReport) -> u64 {
             sep(&mut hash);
         }
     }
-    for feedback in &report.feedback {
-        feed(&mut hash, &feedback.operation_id);
-        sep(&mut hash);
-        feed(&mut hash, &format!("{:?}", feedback.kind));
-        sep(&mut hash);
-        feed(&mut hash, &format!("{:?}", feedback.outcome));
-        sep(&mut hash);
-        feed(&mut hash, &format!("{:?}", feedback.hold));
-        sep(&mut hash);
-    }
     feed(&mut hash, &report.monotonic_ms.to_string());
     sep(&mut hash);
     for attempt in &report.frames {
@@ -1645,7 +1598,6 @@ pub fn validate_report_reason(report: &WorldReport) -> Option<&'static str> {
         || report.closed.len() > MAX_WORLD_CLOSED
         || report.views.len() > MAX_WORLD_VIEWS
         || report.native.len() > MAX_WORLD_SCREENS
-        || report.feedback.len() > MAX_WORLD_FEEDBACK
         || report.frames.len() > MAX_WORLD_FRAMES
         || report.member_attempts.len() > MAX_WORLD_MEMBER_ATTEMPTS
         || report.view_attempts.len() > MAX_WORLD_VIEW_ATTEMPTS
@@ -1855,18 +1807,6 @@ pub fn validate_report_reason(report: &WorldReport) -> Option<&'static str> {
     }
     if total_native > MAX_WORLD_NATIVE {
         return Some("native-over-cap");
-    }
-    for feedback in &report.feedback {
-        if !is_opaque_id(&feedback.operation_id) {
-            return Some("feedback-invalid");
-        }
-        // Transfer/view completion is core-owned over raw member/view
-        // attempts below: external verdict ingress for those kinds is
-        // retired. Other feedback kinds (creation/effect/property) remain
-        // shape-valid but do not settle transfers or views.
-        if matches!(feedback.kind, AttemptKind::Transfer | AttemptKind::View) {
-            return Some("feedback-kind-retired");
-        }
     }
     {
         let mut seen_frames = BTreeSet::new();

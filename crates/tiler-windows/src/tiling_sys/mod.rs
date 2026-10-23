@@ -943,7 +943,7 @@ mod world_capture;
 // Windows-profile WorldEngine owned by TileLoop.
 mod world_sequencer;
 
-// W2 host-diff/feedback actuator (runtime): the host diff over typed
+// W2 host-diff actuator (runtime): the host diff over typed
 // replies. Offline facade plus production NativeOps share the same
 // authority/freshness/proof rules.
 mod world_diff;

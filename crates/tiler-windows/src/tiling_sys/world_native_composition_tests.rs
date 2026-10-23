@@ -739,7 +739,7 @@ fn same_output_follow_partial_sibling_hide_holds_view_unproven() {
 }
 
 /// Gap refusal: a busy native hook stops the pass before any setter runs.
-/// No attempt is made, so no phase is spent and the feedback is empty; the
+/// No attempt is made, so no phase is spent and no attempt rows ride; the
 /// commit still stands. Clearing the gap lets the next tick run the full
 /// attempt cleanly, prove both flights, and settle with no replay.
 #[test]

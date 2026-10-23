@@ -134,11 +134,3 @@ pub fn project_topmost_hide_allowed(prior_topmost: Option<bool>, live_topmost: b
 #[cfg(windows)]
 #[path = "product_hide/sys/mod.rs"]
 pub mod sys;
-
-// Joint visibility batch: post all effects, confirm together under one
-// shared deadline (used by the tiling workspace select/send/rollback
-// phases). Windows-only in normal builds (sole consumer is the
-// cfg(windows) tiling_sys driver); included under cfg(test) so the pure
-// fake state-machine tests stay portable off-Windows.
-#[cfg(any(windows, test))]
-pub(crate) mod batch;

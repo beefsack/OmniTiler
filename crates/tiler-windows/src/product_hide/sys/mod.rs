@@ -657,18 +657,14 @@ fn post_visibility(hwnd_u64: u64, cmd: i32, expect_visible: bool, timeout_ms: u6
     }
 }
 
-/// ---- Joint batch primitives (select/send/rollback hide+reveal) ---- ///
-/// Shared prepare/post/finish behind both the single-window
-/// [`hide_managed_claim`] / [`reveal_product_claim_to`] below and the owner
-/// joint batch driver (`tiling_sys::visibility_batch`), so batch and
-/// remaining single-window paths cannot diverge in safety: identical
-/// commit-before-hide, identical identity/nonce/ledger ownership, identical
-/// failure recovery. Only the wait differs: single paths keep the legacy
-/// per-window pumped bound; batch phases post every eligible effect first
-/// and confirm them together under one shared deadline (see
-/// [`super::batch`]).
+/// ---- Joint hide/reveal primitives (select/send/rollback) ---- ///
+/// Shared prepare/post/finish behind the single-window
+/// [`hide_managed_claim`] / [`reveal_product_claim_to`] below, so paths
+/// cannot diverge in safety: identical commit-before-hide, identical
+/// identity/nonce/ledger ownership, identical failure recovery. Single
+/// paths keep the per-window pumped bound.
 ///
-/// A prepared hide owns its target across the batch through the returned
+/// A prepared hide owns its target through the returned
 /// [`HeldProcess`] guard: the caller keeps every guard alive until its
 /// finish ran, exactly like the single path keeps `held` across its post.
 ///
@@ -741,9 +737,9 @@ pub(crate) fn commit_hide_claim(
 
 /// Post one async visibility effect without blocking or waiting:
 /// `ShowWindowAsync` queues behind earlier posts so per-window ordering is
-/// preserved and a hung target cannot wedge the caller. Shared by the
-/// legacy per-window poll and the joint batch posts, so both report the
-/// identical post verdict. Returns `false` when the post itself refused.
+/// preserved and a hung target cannot wedge the caller. The per-window
+/// poll posts share this helper, reporting the identical post verdict.
+/// Returns `false` when the post itself refused.
 fn post_async(hwnd_u64: u64, cmd: i32) -> bool {
     #[cfg(test)]
     {
@@ -766,7 +762,7 @@ fn post_async(hwnd_u64: u64, cmd: i32) -> bool {
     crate::ffi::show_window_async(hwnd_u64, cmd)
 }
 
-/// Fake-aware HWND liveness for the batch prepare path: the scripted `alive`
+/// Fake-aware HWND liveness for the prepare path: the scripted `alive`
 /// flag offline, `IsWindow` in production. Production never inspects
 /// fabricated HWNDs.
 fn live_hwnd(hwnd_u64: u64) -> bool {
@@ -793,7 +789,7 @@ pub(crate) fn reveal_show_cmd(claim: &WindowIdentity, minimized: bool) -> i32 {
     }
 }
 
-/// Fresh visibility readback for one batch member: `Some(visible)` on a
+/// Fresh visibility readback for one window: `Some(visible)` on a
 /// live window, `None` when verifiably destroyed (`IsWindow` false).
 /// Production never inspects fabricated HWNDs.
 pub(crate) fn batch_is_visible(hwnd_u64: u64) -> Option<bool> {
@@ -810,7 +806,7 @@ pub(crate) fn batch_is_visible(hwnd_u64: u64) -> Option<bool> {
     Some(crate::ffi::is_visible(hwnd_u64))
 }
 
-/// Post-hide finish for one batch member: the post-pid fence plus the
+/// Post-hide finish for one window: the post-pid fence plus the
 /// identity/nonce/hidden readback. The ledger entry (committed before the
 /// post) is kept on mismatch, exactly like the single path.
 pub(crate) fn finish_hide_confirm(

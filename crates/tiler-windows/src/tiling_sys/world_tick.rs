@@ -155,8 +155,8 @@ fn tiled_frame_matches(
 /// Trace-only apply diagnostic caps: rows stay bounded by the reply vec
 /// lengths (already under `WORLD_MAX_REPLY_BYTES`) plus these fixed
 /// per-event caps with honest `omitted` counts. Never a per-window dump:
-/// only feedback rows, held scopes, and retained transfer desires ride.
-const MAX_APPLY_DIAG_FEEDBACK: usize = 16;
+/// only raw attempt rows, held scopes, and retained transfer desires ride.
+const MAX_APPLY_DIAG_ATTEMPTS: usize = 16;
 const MAX_APPLY_DIAG_SCOPES: usize = 16;
 const MAX_APPLY_DIAG_TRANSFERS: usize = 16;
 /// Trace-only focus oracle cap: minted effects plus per-effect dispatch
@@ -334,7 +334,7 @@ fn apply_diag_value(
 ) -> serde_json::Value {
     let member_rows: Vec<serde_json::Value> = member_attempts
         .iter()
-        .take(MAX_APPLY_DIAG_FEEDBACK)
+        .take(MAX_APPLY_DIAG_ATTEMPTS)
         .map(|item| {
             serde_json::json!({
                 "op": item.operation_id.clone(),
@@ -349,7 +349,7 @@ fn apply_diag_value(
         .collect();
     let view_rows: Vec<serde_json::Value> = view_attempts
         .iter()
-        .take(MAX_APPLY_DIAG_FEEDBACK)
+        .take(MAX_APPLY_DIAG_ATTEMPTS)
         .map(|item| {
             serde_json::json!({
                 "op": item.operation_id.clone(),
@@ -364,7 +364,7 @@ fn apply_diag_value(
         .collect();
     let clear_rows: Vec<serde_json::Value> = clear_attempts
         .iter()
-        .take(MAX_APPLY_DIAG_FEEDBACK)
+        .take(MAX_APPLY_DIAG_ATTEMPTS)
         .map(|item| {
             serde_json::json!({
                 "op": item.operation_id.clone(),
@@ -384,7 +384,7 @@ fn apply_diag_value(
     let clear_hold_rows: Vec<serde_json::Value> = stats
         .clear_holds
         .iter()
-        .take(MAX_APPLY_DIAG_FEEDBACK)
+        .take(MAX_APPLY_DIAG_ATTEMPTS)
         .map(|item| {
             serde_json::json!({
                 "op": item.op.clone(),
@@ -405,7 +405,7 @@ fn apply_diag_value(
     let operation_settled_rows: Vec<serde_json::Value> = reply
         .operation_settled
         .iter()
-        .take(MAX_APPLY_DIAG_FEEDBACK)
+        .take(MAX_APPLY_DIAG_ATTEMPTS)
         .map(|event| {
             serde_json::json!({
                 "op": event.operation_id.clone(),
@@ -421,7 +421,7 @@ fn apply_diag_value(
     // pair so a live leg can join the attempt to its published desire.
     let frame_rows: Vec<serde_json::Value> = frame_attempts
         .iter()
-        .take(MAX_APPLY_DIAG_FEEDBACK)
+        .take(MAX_APPLY_DIAG_ATTEMPTS)
         .map(|item| {
             serde_json::json!({
                 "op": item.operation_id.clone(),
@@ -483,7 +483,7 @@ fn apply_diag_value(
             }
             rows
         })
-        .take(MAX_APPLY_DIAG_FEEDBACK)
+        .take(MAX_APPLY_DIAG_ATTEMPTS)
         .collect();
     let held_scopes: Vec<serde_json::Value> = reply
         .scopes
@@ -577,19 +577,19 @@ fn apply_diag_value(
         "members": member_rows,
         "members_omitted": member_attempts
             .len()
-            .saturating_sub(MAX_APPLY_DIAG_FEEDBACK.min(member_attempts.len())),
+            .saturating_sub(MAX_APPLY_DIAG_ATTEMPTS.min(member_attempts.len())),
         "views": view_rows,
         "views_omitted": view_attempts
             .len()
-            .saturating_sub(MAX_APPLY_DIAG_FEEDBACK.min(view_attempts.len())),
+            .saturating_sub(MAX_APPLY_DIAG_ATTEMPTS.min(view_attempts.len())),
         "clears": clear_rows,
         "clears_omitted": clear_attempts
             .len()
-            .saturating_sub(MAX_APPLY_DIAG_FEEDBACK.min(clear_attempts.len())),
+            .saturating_sub(MAX_APPLY_DIAG_ATTEMPTS.min(clear_attempts.len())),
         "clear_holds": clear_hold_rows,
         "clear_holds_omitted": stats
             .clear_holds_total
-            .saturating_sub(stats.clear_holds.len().min(MAX_APPLY_DIAG_FEEDBACK)),
+            .saturating_sub(stats.clear_holds.len().min(MAX_APPLY_DIAG_ATTEMPTS)),
         "frames": frame_rows,
         "frames_omitted": frame_attempts
             .len()
@@ -1857,7 +1857,6 @@ mod apply_diag_tests {
             gesture_settled: None,
             operation_settled: Vec::new(),
             cursor_warp: None,
-            presentation_bytes: 0,
         }
     }
 
@@ -2033,10 +2032,10 @@ mod apply_diag_tests {
         assert_eq!(value["stats"]["migration_total"], serde_json::json!(0));
         assert_eq!(value["stats"]["migration_proven"], serde_json::json!(0));
         let rows = value["members"].as_array().expect("member rows");
-        assert_eq!(rows.len(), MAX_APPLY_DIAG_FEEDBACK);
+        assert_eq!(rows.len(), MAX_APPLY_DIAG_ATTEMPTS);
         assert_eq!(
             value["members_omitted"],
-            serde_json::json!(20 - MAX_APPLY_DIAG_FEEDBACK)
+            serde_json::json!(20 - MAX_APPLY_DIAG_ATTEMPTS)
         );
         assert_eq!(rows[0]["setter"], serde_json::json!("accepted"));
         assert_eq!(rows[1]["setter"], serde_json::json!("refused"));
@@ -2716,7 +2715,7 @@ mod apply_diag_tests {
 
     #[test]
     fn diag_frames_and_desired_operations_omit_honestly() {
-        // Over-cap attempts and desires bound at the shared feedback cap
+        // Over-cap attempts and desires bound at the shared attempt cap
         // with honest omitted counts, and a quiet idle tick stays silent
         // through the REAL throttle (no extra rows while idle).
         use tiler_core::world_report::{FrameAttempt, FrameSetter, WindowDesire};
@@ -2788,22 +2787,22 @@ mod apply_diag_tests {
         );
         assert_eq!(
             value["frames"].as_array().expect("frames").len(),
-            MAX_APPLY_DIAG_FEEDBACK
+            MAX_APPLY_DIAG_ATTEMPTS
         );
         assert_eq!(
             value["frames_omitted"],
-            serde_json::json!(20 - MAX_APPLY_DIAG_FEEDBACK)
+            serde_json::json!(20 - MAX_APPLY_DIAG_ATTEMPTS)
         );
         assert_eq!(
             value["desired_operations"]
                 .as_array()
                 .expect("desired")
                 .len(),
-            MAX_APPLY_DIAG_FEEDBACK
+            MAX_APPLY_DIAG_ATTEMPTS
         );
         assert_eq!(
             value["desired_operations_omitted"],
-            serde_json::json!(20 - MAX_APPLY_DIAG_FEEDBACK)
+            serde_json::json!(20 - MAX_APPLY_DIAG_ATTEMPTS)
         );
     }
 }

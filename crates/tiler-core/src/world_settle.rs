@@ -793,7 +793,7 @@ impl WorldEngine {
                 // Partial ambiguity: hold narrowly with identities
                 // preserved, never fabricated rollback or proof. Marked
                 // held persistently so the adapter never retries after the
-                // refusal feedback disappears.
+                // refusal attempt row is acknowledged.
                 let mut held = retained;
                 held.members = pruned;
                 held.target.held = true;

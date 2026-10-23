@@ -282,7 +282,7 @@ pub fn reply_estimate(reply: &WorldReply) -> usize {
     bytes += gesture_settled_estimate(&reply.gesture_settled);
     bytes += operation_settled_estimate(&reply.operation_settled);
     bytes += warp_cursor_estimate(&reply.cursor_warp);
-    bytes.saturating_add(reply.presentation_bytes)
+    bytes
 }
 
 /// Structural size estimate for the correlated `command_result` section,
@@ -443,7 +443,7 @@ pub fn command_result_estimate(result: &Option<CommandResult>) -> usize {
 /// flags, `native`, `predicate`, `refill`, `anchorFallback`,
 /// `noSpaceResult`, `switchTarget`, `freshPlacement`, nullable `cursor`,
 /// nullable `cursorHit`, nullable action-context outputs, `defaultTiled`/`focused`/`complete`/`gesture`/
-/// `focusFollowsCursor`/`cursorWarp` values, `feedback`, `monotonicMs` decimal string,
+/// `focusFollowsCursor`/`cursorWarp` values, `monotonicMs` decimal string,
 /// `frameAttempts`, `memberAttempts`, `viewAttempts`).
 /// Conservative: any compact encoding of the report fits within this
 /// bound (locked by `request_estimate_bounds_actual_wire_bytes`). The
@@ -454,22 +454,22 @@ pub fn report_estimate(report: &WorldReport) -> usize {
     // Envelope fixed bytes: {"v":2,"owner":,"adapter":,"gen":,"obs":"","reqSeq":"",
     // "req":,"cmdSeq":,"command":,"screens":[],"windows":[],"views":[],"closed":[],
     // "hostOwned":,"equalCount":,"native":[],"predicate":,"refill":,"defaultTiled":,
-    // "complete":,"gesture":,"feedback":[]} = 233, plus the cursor-first
+    // "complete":,"gesture":} = 219, plus the cursor-first
     // targeting keys (10 + 16 + 18 + 22 + 13 = 79):
     // ,"cursor":,"switchTarget":,"freshPlacement":,"focusFollowsCursor":,
-    // "cursorWarp": = 322
-    // plus ,"cursorHit": (13) = 335, plus ,"actionForeground": (20) and
-    // ,"actionCached": (16) = 371, plus ,"actionOutputs":[] (20) = 391,
-    // plus ,"monotonicMs":"" (19) and ,"frameAttempts":[] (19) = 429,
-    // plus ,"memberAttempts":[] (20) and ,"viewAttempts":[] (18) = 467,
-    // plus ,\"clearAttempts\":[] (18) = 485, plus ,\"gesture\":null (12) =
-    // 497, plus the version digits. Values counted
+    // "cursorWarp": = 308
+    // plus ,"cursorHit": (13) = 321, plus ,"actionForeground": (20) and
+    // ,"actionCached": (16) = 357, plus ,"actionOutputs":[] (20) = 377,
+    // plus ,"monotonicMs":"" (19) and ,"frameAttempts":[] (19) = 415,
+    // plus ,"memberAttempts":[] (20) and ,"viewAttempts":[] (18) = 453,
+    // plus ,\"clearAttempts\":[] (18) = 471, plus ,\"gesture\":null (12) =
+    // 483, plus the version digits. Values counted
     // separately below; nullable command, cursor, cursor-hit, and
     // action-context slots count `null` (4), while the action-output
     // registry counts its brackets plus one comma per entry. The workspace
     // mode token rides as `"mode":S` (9 fixed plus the token); membership
     // evidence rides per fact below (absent counts `null`).
-    let mut bytes = 429
+    let mut bytes = 415
         + 36
         + 20
         + gesture_estimate(report)
@@ -572,15 +572,6 @@ pub fn report_estimate(report: &WorldReport) -> usize {
         for id in &native.native_order {
             bytes += json_string_len(id) + 1;
         }
-    }
-    for feedback in &report.feedback {
-        // {"op":S,"kind":S,"outcome":S,"hold":S} = 34 fixed plus one comma
-        // plus exact kind/outcome/hold tokens.
-        bytes += 35
-            + json_string_len(&feedback.operation_id)
-            + json_string_len(feedback.kind.as_str())
-            + json_string_len(feedback.outcome.as_str())
-            + json_string_len(feedback.hold.map_or("", HoldReason::as_str));
     }
     for attempt in &report.frames {
         // {"win":S,"target":[x,y,w,h],"setter":S,"readback":R|null,

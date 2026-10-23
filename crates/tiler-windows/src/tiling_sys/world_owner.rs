@@ -40,7 +40,7 @@ use super::world_sequencer::{AckOutcome, AckReceipt, DispatchError, WorldSequenc
 use super::{MonitorArea, ObservedWindow, RetainedRow};
 use std::collections::{BTreeMap, HashMap};
 use tiler_core::world_engine::{WorldEngine, WorldOutcome};
-use tiler_core::world_report::{AttemptFeedback, WorldCommand, WorldReply, WorldReport};
+use tiler_core::world_report::{WorldCommand, WorldReply, WorldReport};
 
 /// Single runtime world policy owner: bootstraps and sequences online.
 /// All production lifecycle/history/tiling/scope/select/send/migration
@@ -183,14 +183,6 @@ impl WorldOwner {
     /// Synchronous invalidation before dispatch (dirty-until-ack).
     pub(super) fn invalidate(&mut self) {
         self.seq.invalidate();
-    }
-
-    /// Stage per-operation actuation feedback for the next report.
-    /// (Retained for test scaffolding; production transfer/view verdicts
-    /// are retired in favor of raw attempts.)
-    #[allow(dead_code)]
-    pub(super) fn note_feedback(&mut self, feedback: AttemptFeedback) {
-        self.seq.note_feedback(feedback);
     }
 
     /// Stage one mechanical frame attempt for the next report.

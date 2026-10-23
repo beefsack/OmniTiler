@@ -92,7 +92,6 @@ fn report_screens(
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
-        feedback: vec![],
         monotonic_ms: 0,
         frames: Vec::new(),
         member_attempts: Vec::new(),

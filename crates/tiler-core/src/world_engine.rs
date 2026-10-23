@@ -26,7 +26,7 @@
 //! outstanding, an in-flight window homes to its retained target logical
 //! workspace (stripped from the source observation, presented at the target)
 //! so the committed retained topology does not flap back during actuation
-//! lag. Possibly-executed feedback holds the target without re-actuation.
+//! lag. Possibly-executed raw evidence holds the target without re-actuation.
 //! Views use the same retention without any window. Focus/raise/stacking are
 //! one-shot effects.
 //!
@@ -188,13 +188,13 @@ pub(crate) struct RetainedTransfer {
     pub(crate) migration_source_view: Option<String>,
     pub(crate) migration_target_view: Option<String>,
     /// Latched terminal migration outcome (proven refusal or external
-    /// supersession) retained under the operation identity after its
-    /// feedback row is acknowledged. Separate from the no-retry
+    /// supersession) retained under the operation identity after its raw
+    /// attempt row is acknowledged. Separate from the no-retry
     /// `TransferTarget.held` authority: `held` alone cannot distinguish a
     /// possibly-executed attempt from a proven terminal one. Only
     /// `RefusedProven`/`SupersededExternal` latch here; later readable
     /// evidence reconciles against the latched outcome. `None` until a
-    /// terminal feedback row arrives.
+    /// terminal raw attempt arrives.
     pub(crate) migration_terminal: Option<crate::world_report::AttemptOutcome>,
     /// Latest exact-correlated raw membership evidence staged BEFORE any
     /// readability hold (window transfer) or per-member map (migration
@@ -710,7 +710,6 @@ impl WorldEngine {
             gesture_settled: None,
             operation_settled: Vec::new(),
             cursor_warp: None,
-            presentation_bytes: 0,
         }
     }
 

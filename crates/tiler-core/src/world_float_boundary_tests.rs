@@ -106,7 +106,6 @@ fn report(
         inventory_complete,
         gesture_barrier: false,
         gesture: None,
-        feedback: vec![],
         monotonic_ms: 0,
         frames: Vec::new(),
         member_attempts: Vec::new(),

@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Native host-diff/feedback facade for the single world owner.
+//! Native host-diff facade for the single world owner.
 //!
 //! Actuator over typed [`WorldReply`](tiler_core::world_report::WorldReply)
 //! facts against fresh native observations. All setters and proof re-reads
@@ -32,22 +32,21 @@
 //!   rows for the next report. The core compares desired and observed and
 //!   publishes suppression (tiled constraint-clamp holds, withheld float
 //!   tokens), which the next pass obeys without re-writing. Ordinary
-//!   geometry emits no operation feedback at all: attempt rows plus
+//!   geometry emits no operation verdict at all: attempt rows plus
 //!   observations are the whole contract. Explicit float placements ride
 //!   the same raw-attempt lane with their stable operation id plus the
 //!   immediate pre-write frame; the core derives confirmation, proven
 //!   refusal, and ambiguity from that evidence plus the staged observation.
 //!   This module emits no float outcome verdict: a setter boolean or a
 //!   readback alone never settles a placement.
-//! - Feedback is emitted ONLY with operation ids the core actually consumes:
-//!   retained window/migration transfer ids are retired: the transport now
-//!   reports raw membership/view attempt facts (setter disposition plus
-//!   immediate pre/post proof) and the core derives every verdict.
-//!   Creation, removal, and effect outcomes are proven by read-back and
-//!   counted in stats; inventing `prop-*`/`remove-*`/`create-*` feedback
-//!   would ride reports pointlessly since the core matches feedback by
-//!   operation id only and ignores the rest. Float placements specifically
-//!   never emit feedback rows.
+//! - No external verdicts are emitted: retained window/migration transfer
+//!   completion derives core-side from raw membership/view attempt facts
+//!   (setter disposition plus immediate pre/post proof). Creation, removal,
+//!   and effect outcomes are proven by read-back and counted in stats;
+//!   float placements ride the raw-attempt lane with their stable operation
+//!   id plus the immediate pre-write frame, and the core derives
+//!   confirmation, proven refusal, and ambiguity from that evidence plus
+//!   the staged observation.
 //!
 //! Freshness and proof rules (shared core contract):
 //! - The reply must be ready, bound to the current adapter/core generation,
@@ -272,9 +271,9 @@ impl FreshHost {
 
 /// Freshness gate for one diff pass. Desired acceptance ([`Self::note_applied`])
 /// is the core revision the sequencer applied; host results (per-property
-/// read-back proof) are owned by the facade stats and feedback. The two are
-/// never conflated: a duplicate revision (same number, already applied)
-/// authorizes no setter.
+/// read-back proof) are owned by the facade stats and raw attempt rows. The
+/// two are never conflated: a duplicate revision (same number, already
+/// applied) authorizes no setter.
 #[derive(Debug, Clone)]
 pub(super) struct DiffGate {
     pub(super) adapter: String,
@@ -1501,7 +1500,7 @@ pub(super) fn apply_world_reply(
                                             // Explicit refusal, throw, or
                                             // unreadable proof: bounded
                                             // transient lane upstream. No
-                                            // feedback: ordinary geometry
+                                            // verdict: ordinary geometry
                                             // results are proven by
                                             // read-back, not by invented
                                             // operation ids.
@@ -1516,7 +1515,7 @@ pub(super) fn apply_world_reply(
             }
         }
         // Core-owned frame suppression (stage 3a): the identical pair
-        // holds upstream. No write, no re-proof, no feedback; the held
+        // holds upstream. No write, no re-proof, no verdict; the held
         // count preserves the historical suppressed-tick witness.
         if row.effective_frame.is_some()
             && matches!(
@@ -2416,7 +2415,7 @@ pub(super) fn apply_world_reply(
 
     // 4. One-shot effects: spent BEFORE dispatch, proven by read-back, gated
     // on the exact live view (switch-before-focus). Stale effects drop
-    // (at-most-once), never steal focus later. Effects produce no feedback:
+    // (at-most-once), never steal focus later. Effects emit no verdict:
     // the core consumes no effect outcomes; the spent proof plus the
     // foreground read-back is the whole contract. Trace-only per-effect
     // rows land in `stats.focus_dispatch` (bounded, see MAX_FOCUS_DIAG):

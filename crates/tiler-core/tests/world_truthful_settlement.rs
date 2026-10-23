@@ -104,7 +104,6 @@ fn report(
         cursor_warp: false,
         cursor: None,
         cursor_hit: None,
-        feedback: Vec::new(),
         monotonic_ms: 0,
         frames: Vec::new(),
         member_attempts,
@@ -594,7 +593,7 @@ fn possibly_executed_persists_held_across_disappearance() {
     );
     assert_eq!(held.transfers.len(), 1);
     assert!(held.transfers[0].held, "possibly-executed holds");
-    // Ack disappearance (no feedback row next report) must not unhold or
+    // Ack disappearance (no attempt row next report) must not unhold or
     // re-actuate: the flight stays held.
     let still = accepted(
         &mut engine,

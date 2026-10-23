@@ -748,7 +748,6 @@ pub(crate) mod tests {
             inventory_complete: true,
             gesture_barrier: false,
             gesture: None,
-            feedback: Vec::new(),
             monotonic_ms: 0,
             frames: Vec::new(),
             member_attempts: Vec::new(),

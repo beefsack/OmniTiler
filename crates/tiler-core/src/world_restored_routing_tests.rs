@@ -84,7 +84,6 @@ fn fact_rect(window: &str, output: &str, r: Rect) -> WindowFact {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn report(
     request_seq: u64,
     observation_seq: u64,
@@ -104,7 +103,6 @@ fn report(
         command,
         crate::size_hints::FixedSizePredicate::BothAxes,
         true,
-        Vec::new(),
     )
 }
 
@@ -119,7 +117,6 @@ fn report_full(
     command: Option<WorldCommand>,
     predicate: crate::size_hints::FixedSizePredicate,
     default_tiled: bool,
-    feedback: Vec<crate::world_report::AttemptFeedback>,
 ) -> WorldReport {
     WorldReport {
         contract_version: WORLD_CONTRACT_VERSION,
@@ -157,7 +154,6 @@ fn report_full(
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
-        feedback,
         monotonic_ms: 0,
         frames: Vec::new(),
         member_attempts: Vec::new(),
@@ -1460,7 +1456,6 @@ fn predicate_ingress_selects_admission_without_reclassification() {
             None,
             predicate,
             true,
-            Vec::new(),
         )
     }
     // Either-axis ingress floats a width-only fixed window (membership

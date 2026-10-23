@@ -69,7 +69,6 @@ fn report(
     command: Option<WorldCommand>,
     inventory_complete: bool,
     gesture_barrier: bool,
-    feedback: Vec<crate::world_report::AttemptFeedback>,
 ) -> WorldReport {
     report_mode(
         request_seq,
@@ -83,7 +82,6 @@ fn report(
         command,
         inventory_complete,
         gesture_barrier,
-        feedback,
         crate::workspace_scope::WorkspaceMode::PerOutputLocal,
     )
 }
@@ -101,7 +99,6 @@ fn report_mode(
     command: Option<WorldCommand>,
     inventory_complete: bool,
     gesture_barrier: bool,
-    feedback: Vec<crate::world_report::AttemptFeedback>,
     workspace_mode: crate::workspace_scope::WorkspaceMode,
 ) -> WorldReport {
     report_attempts(
@@ -116,7 +113,6 @@ fn report_mode(
         command,
         inventory_complete,
         gesture_barrier,
-        feedback,
         workspace_mode,
         Vec::new(),
         Vec::new(),
@@ -136,7 +132,6 @@ fn report_attempts(
     command: Option<WorldCommand>,
     inventory_complete: bool,
     gesture_barrier: bool,
-    feedback: Vec<crate::world_report::AttemptFeedback>,
     workspace_mode: crate::workspace_scope::WorkspaceMode,
     member_attempts: Vec<crate::world_report::MemberAttempt>,
     view_attempts: Vec<crate::world_report::ViewAttempt>,
@@ -186,7 +181,6 @@ fn report_attempts(
         inventory_complete,
         gesture_barrier,
         gesture: None,
-        feedback,
         monotonic_ms: 0,
         frames: Vec::new(),
         member_attempts,
@@ -266,7 +260,6 @@ fn native_free_bootstrap_creates_per_screen_rings_views_and_trailing() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     assert!(reply.ready);
@@ -312,7 +305,6 @@ fn admission_homes_facts_to_views_and_lifecycle_grows_trailing() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     let view_a = output_view(&first, "out-a").expect("view a");
@@ -331,7 +323,6 @@ fn admission_homes_facts_to_views_and_lifecycle_grows_trailing() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     for win in ["win-a", "win-b"] {
@@ -360,7 +351,6 @@ fn admission_homes_facts_to_views_and_lifecycle_grows_trailing() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     assert!(third.windows.iter().all(|row| row.lifetime.0 != "win-a"));
@@ -385,7 +375,6 @@ fn fresh_admission_focus_is_at_most_once() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     // A genuinely new lifetime mints one admission intent.
@@ -403,7 +392,6 @@ fn fresh_admission_focus_is_at_most_once() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     assert_eq!(second.effects.len(), 1);
@@ -423,7 +411,6 @@ fn fresh_admission_focus_is_at_most_once() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     assert!(third.effects.is_empty());
@@ -446,7 +433,6 @@ fn send_follow_and_stay_commit_window_transfers() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     let view_b = output_view(&first, "out-b").expect("view b");
@@ -467,7 +453,6 @@ fn send_follow_and_stay_commit_window_transfers() {
         }),
         true,
         false,
-        vec![],
     );
     let reply = accepted(&mut engine, &follow);
     assert_eq!(reply.effects.len(), 1);
@@ -522,7 +507,6 @@ fn send_follow_and_stay_commit_window_transfers() {
         }),
         true,
         false,
-        vec![],
     );
     // Echo current views so homing stays truthful.
     let _ = &mut stay;
@@ -556,7 +540,6 @@ fn stay_send_with_survivor_names_exact_source_focus() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     let _view_b = {
@@ -578,7 +561,6 @@ fn stay_send_with_survivor_names_exact_source_focus() {
                 None,
                 true,
                 false,
-                vec![],
             ),
         );
         output_view(&reply, "out-b").expect("view b")
@@ -605,7 +587,6 @@ fn stay_send_with_survivor_names_exact_source_focus() {
             }),
             true,
             false,
-            vec![],
         ),
     );
     assert_eq!(
@@ -633,7 +614,6 @@ fn explicit_send_is_same_output_only_and_directional_send_crosses() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     let ring_a = workspace_ids(&first, "out-a");
@@ -658,7 +638,6 @@ fn explicit_send_is_same_output_only_and_directional_send_crosses() {
             }),
             true,
             false,
-            vec![],
         ),
     );
     assert_eq!(reply.transfers.len(), 2);
@@ -693,7 +672,6 @@ fn explicit_send_is_same_output_only_and_directional_send_crosses() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     assert!(
@@ -718,7 +696,6 @@ fn explicit_send_is_same_output_only_and_directional_send_crosses() {
         }),
         true,
         false,
-        vec![],
     )) {
         WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "cross-domain-mismatch"),
         other => panic!("expected cross-domain-mismatch, got {other:?}"),
@@ -742,7 +719,6 @@ fn explicit_send_is_same_output_only_and_directional_send_crosses() {
             }),
             true,
             false,
-            vec![],
         ),
     );
     assert!(
@@ -770,7 +746,6 @@ fn directional_focus_crosses_outputs_with_explicit_effect() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     // Left/right cross-output focus runs the strict pair; the explicit
@@ -791,7 +766,6 @@ fn directional_focus_crosses_outputs_with_explicit_effect() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     let reply = accepted(
@@ -811,7 +785,6 @@ fn directional_focus_crosses_outputs_with_explicit_effect() {
             }),
             true,
             false,
-            vec![],
         ),
     );
     assert_eq!(reply.effects.len(), 1);
@@ -840,7 +813,6 @@ fn directional_focus_up_never_crosses_outputs() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     // Up never crosses: the outcome stays local (an effect on the home
@@ -864,7 +836,6 @@ fn directional_focus_up_never_crosses_outputs() {
         }),
         true,
         false,
-        vec![],
     )) {
         WorldOutcome::Accepted(reply) | WorldOutcome::CommandConsumed(reply) => {
             assert!(
@@ -896,7 +867,6 @@ fn selection_commands_resolve_over_logical_rings() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     let view_a = output_view(&first, "out-a").expect("view a");
@@ -935,7 +905,6 @@ fn selection_commands_resolve_over_logical_rings() {
             }),
             true,
             false,
-            vec![],
         ),
     );
     assert_eq!(
@@ -961,7 +930,6 @@ fn selection_commands_resolve_over_logical_rings() {
             }),
             true,
             false,
-            vec![],
         ),
     );
     assert_eq!(
@@ -985,7 +953,6 @@ fn selection_commands_resolve_over_logical_rings() {
         }),
         true,
         false,
-        vec![],
     )) {
         WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "view-target-unknown"),
         other => panic!("expected view-target-unknown, got {other:?}"),
@@ -1008,7 +975,6 @@ fn selection_commands_resolve_over_logical_rings() {
             }),
             true,
             false,
-            vec![],
         ),
     );
     assert_eq!(
@@ -1034,7 +1000,6 @@ fn numbered_send_trailing_path_creates_and_commits_immediately() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     // Index 0 reuses the live trailing empty with an ordinary transfer.
@@ -1057,7 +1022,6 @@ fn numbered_send_trailing_path_creates_and_commits_immediately() {
             }),
             true,
             false,
-            vec![],
         ),
     );
     assert_eq!(reply.effects.len(), 1);
@@ -1091,7 +1055,6 @@ fn numbered_send_trailing_path_creates_and_commits_immediately() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     assert!(workspace_ids(&ringed, "out-a").len() >= 2);
@@ -1117,7 +1080,6 @@ fn numbered_send_mismatched_output_refuses_without_mutation() {
             None,
             false,
             false,
-            vec![],
         ),
     );
     assert_eq!(workspace_ids(&first, "out-a").len(), 1);
@@ -1150,7 +1112,6 @@ fn numbered_send_mismatched_output_refuses_without_mutation() {
             }),
             false,
             false,
-            vec![],
         )) {
             WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "cross-domain-mismatch"),
             other => panic!("expected cross-domain-mismatch, got {other:?}"),
@@ -1172,7 +1133,6 @@ fn numbered_send_mismatched_output_refuses_without_mutation() {
             None,
             false,
             false,
-            vec![],
         ),
     );
     assert_eq!(workspace_ids(&calm, "out-a"), ring_a);
@@ -1227,7 +1187,6 @@ fn implicit_send_source_freezes_pre_observation_home() {
                 Some(command),
                 true,
                 false,
-                vec![],
             )
         }
     }
@@ -1254,7 +1213,6 @@ fn implicit_send_source_freezes_pre_observation_home() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     let reply = accepted(
@@ -1292,7 +1250,6 @@ fn implicit_send_source_freezes_pre_observation_home() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     match engine.handle_report(&staged(
@@ -1329,7 +1286,6 @@ fn implicit_send_source_freezes_pre_observation_home() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     match engine.handle_report(&staged(
@@ -1367,7 +1323,6 @@ fn implicit_send_source_freezes_pre_observation_home() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     match live_cached.handle_report(&staged(
@@ -1406,7 +1361,6 @@ fn implicit_send_source_freezes_pre_observation_home() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     match cli.handle_report(&staged(
@@ -1441,7 +1395,6 @@ fn implicit_send_source_freezes_pre_observation_home() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     let reply = accepted(
@@ -1481,7 +1434,6 @@ fn numbered_send_trailing_create_stages_fresh_target_and_commits() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     let second = accepted(
@@ -1498,7 +1450,6 @@ fn numbered_send_trailing_create_stages_fresh_target_and_commits() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     let view_a = output_view(&second, "out-a").expect("view a");
@@ -1520,7 +1471,6 @@ fn numbered_send_trailing_create_stages_fresh_target_and_commits() {
             }),
             true,
             false,
-            vec![],
         ),
     );
     let view_b = output_view(&third, "out-a").expect("trailing view");
@@ -1543,7 +1493,6 @@ fn numbered_send_trailing_create_stages_fresh_target_and_commits() {
             None,
             false,
             false,
-            vec![],
         ),
     );
     let reply = accepted(
@@ -1565,7 +1514,6 @@ fn numbered_send_trailing_create_stages_fresh_target_and_commits() {
             }),
             false,
             false,
-            vec![],
         ),
     );
     assert_eq!(reply.effects.len(), 1);
@@ -1612,7 +1560,6 @@ fn numbered_follow_selects_target_view_and_stay_keeps_source() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     let second = accepted(
@@ -1633,7 +1580,6 @@ fn numbered_follow_selects_target_view_and_stay_keeps_source() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     let view_a = output_view(&second, "out-a").expect("view a");
@@ -1674,7 +1620,6 @@ fn numbered_follow_selects_target_view_and_stay_keeps_source() {
             }),
             true,
             false,
-            vec![],
         ),
     );
     assert_eq!(
@@ -1714,7 +1659,6 @@ fn numbered_follow_selects_target_view_and_stay_keeps_source() {
             }),
             true,
             false,
-            vec![],
         ),
     );
     assert_eq!(
@@ -1754,7 +1698,6 @@ fn numbered_follow_selects_target_view_and_stay_keeps_source() {
             }),
             true,
             false,
-            vec![],
         ),
     );
     assert_eq!(
@@ -1781,7 +1724,6 @@ fn numbered_follow_fans_out_views_in_shared_mode() {
             None,
             true,
             false,
-            vec![],
             mode,
         ),
     );
@@ -1799,7 +1741,6 @@ fn numbered_follow_fans_out_views_in_shared_mode() {
             None,
             true,
             false,
-            vec![],
             mode,
         ),
     );
@@ -1840,7 +1781,6 @@ fn numbered_follow_fans_out_views_in_shared_mode() {
             }),
             true,
             false,
-            vec![],
             mode,
         ),
     );
@@ -1874,7 +1814,6 @@ fn numbered_follow_moves_only_its_output_in_global_mode() {
             None,
             true,
             false,
-            vec![],
             mode,
         ),
     );
@@ -1892,7 +1831,6 @@ fn numbered_follow_moves_only_its_output_in_global_mode() {
             None,
             true,
             false,
-            vec![],
             mode,
         ),
     );
@@ -1932,7 +1870,6 @@ fn numbered_follow_moves_only_its_output_in_global_mode() {
             }),
             true,
             false,
-            vec![],
             mode,
         ),
     );
@@ -1963,7 +1900,6 @@ fn valid_migration_proves_controlled_target_before_arrival_then_settles_in_phase
             None,
             true,
             false,
-            vec![],
         ),
     );
     let view_a = output_view(&first, "out-a").expect("view a");
@@ -1988,7 +1924,6 @@ fn valid_migration_proves_controlled_target_before_arrival_then_settles_in_phase
             }),
             true,
             false,
-            vec![],
         ),
     );
     // BEFORE any arrival: the logical target scope is Controlled with
@@ -2056,7 +1991,6 @@ fn valid_migration_proves_controlled_target_before_arrival_then_settles_in_phase
             None,
             true,
             false,
-            vec![],
         ),
     );
     assert_eq!(
@@ -2097,7 +2031,6 @@ fn valid_migration_proves_controlled_target_before_arrival_then_settles_in_phase
             None,
             true,
             false,
-            vec![],
         ),
     );
     assert!(
@@ -2128,7 +2061,6 @@ fn valid_migration_proves_controlled_target_before_arrival_then_settles_in_phase
             None,
             true,
             false,
-            vec![],
         ),
     );
     assert!(
@@ -2155,7 +2087,6 @@ fn valid_migration_proves_controlled_target_before_arrival_then_settles_in_phase
             None,
             true,
             false,
-            vec![],
         ),
     );
     assert!(
@@ -2189,7 +2120,6 @@ fn valid_migration_proves_controlled_target_before_arrival_then_settles_in_phase
             None,
             true,
             false,
-            vec![],
         ),
     );
     assert!(calm.transfers.is_empty());
@@ -2224,7 +2154,6 @@ fn migration_holds_narrowly_on_incomplete_unreadable_and_gesture_evidence() {
                 None,
                 true,
                 false,
-                vec![],
             ),
         );
         let view_a = output_view(&first, "out-a").expect("view a");
@@ -2246,7 +2175,6 @@ fn migration_holds_narrowly_on_incomplete_unreadable_and_gesture_evidence() {
                 }),
                 true,
                 false,
-                vec![],
             ),
         );
         assert!(
@@ -2277,7 +2205,6 @@ fn migration_holds_narrowly_on_incomplete_unreadable_and_gesture_evidence() {
                 None,
                 !mutate,
                 name == "gesture",
-                vec![],
             ),
         );
         assert!(
@@ -2315,7 +2242,6 @@ fn migration_refused_or_superseded_settles_without_fighting() {
                 None,
                 true,
                 false,
-                vec![],
             ),
         );
         let view_a = output_view(&first, "out-a").expect("view a");
@@ -2337,7 +2263,6 @@ fn migration_refused_or_superseded_settles_without_fighting() {
                 }),
                 true,
                 false,
-                vec![],
             ),
         );
         // Terminal raw evidence on a wholly-unarrived migration reconciles
@@ -2392,7 +2317,6 @@ fn migration_refused_or_superseded_settles_without_fighting() {
                 None,
                 true,
                 false,
-                Vec::new(),
                 crate::workspace_scope::WorkspaceMode::PerOutputLocal,
                 member_attempts,
                 view_attempts,
@@ -2430,7 +2354,6 @@ fn migration_refused_or_superseded_settles_without_fighting() {
                 None,
                 true,
                 false,
-                vec![],
             ),
         );
         let view_a = output_view(&first, "out-a").expect("view a");
@@ -2452,7 +2375,6 @@ fn migration_refused_or_superseded_settles_without_fighting() {
                 }),
                 true,
                 false,
-                vec![],
             ),
         );
         let moved = accepted(
@@ -2469,7 +2391,6 @@ fn migration_refused_or_superseded_settles_without_fighting() {
                 None,
                 true,
                 false,
-                vec![],
             ),
         );
         // Arrival on the target screen is progress, not settlement.
@@ -2500,7 +2421,6 @@ fn migration_explicit_close_drops_members_without_a_fight() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     let view_a = output_view(&first, "out-a").expect("view a");
@@ -2522,7 +2442,6 @@ fn migration_explicit_close_drops_members_without_a_fight() {
             }),
             true,
             false,
-            vec![],
         ),
     );
     // Closing one member mid-flight keeps the other outstanding.
@@ -2540,7 +2459,6 @@ fn migration_explicit_close_drops_members_without_a_fight() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     assert!(
@@ -2566,7 +2484,6 @@ fn migration_explicit_close_drops_members_without_a_fight() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     assert!(
@@ -2596,7 +2513,6 @@ fn multi_member_migration_preserves_tree_and_focus() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     let view_a = output_view(&first, "out-a").expect("view a");
@@ -2618,7 +2534,6 @@ fn multi_member_migration_preserves_tree_and_focus() {
             }),
             true,
             false,
-            vec![],
         ),
     );
     // Both members ride the target homing as one unit.
@@ -2667,7 +2582,6 @@ fn multi_member_migration_preserves_tree_and_focus() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     let refill = output_view(&settled, "out-a").expect("refill");
@@ -2685,7 +2599,6 @@ fn multi_member_migration_preserves_tree_and_focus() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     assert!(
@@ -2716,7 +2629,6 @@ fn empty_migration_still_verifies_both_views() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     let ring_a: Vec<String> = first
@@ -2745,7 +2657,6 @@ fn empty_migration_still_verifies_both_views() {
             }),
             true,
             false,
-            vec![],
         ),
     );
     assert!(
@@ -2781,7 +2692,6 @@ fn empty_migration_still_verifies_both_views() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     assert!(
@@ -2809,7 +2719,6 @@ fn migration_refill_prefers_mru_history() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     let ring_a = workspace_ids(&first, "out-a");
@@ -2831,7 +2740,6 @@ fn migration_refill_prefers_mru_history() {
         }),
         true,
         false,
-        vec![],
     );
     accepted(&mut engine, &r);
     r = report(
@@ -2849,7 +2757,6 @@ fn migration_refill_prefers_mru_history() {
         }),
         true,
         false,
-        vec![],
     );
     accepted(&mut engine, &r);
     // Migrate the head with MRU refill: the source refill is the spare.
@@ -2869,7 +2776,6 @@ fn migration_refill_prefers_mru_history() {
         }),
         true,
         false,
-        vec![],
     );
     migrate.migration_source_refill = MigrationSourceRefill::MostRecentlyUsed;
     let reply = accepted(&mut engine, &migrate);
@@ -2899,7 +2805,6 @@ fn tiled_to_float_output_crossing_leaves_source_state_unchanged() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     let ring_b = workspace_ids(&first, "out-b");
@@ -2922,7 +2827,6 @@ fn tiled_to_float_output_crossing_leaves_source_state_unchanged() {
             }),
             true,
             false,
-            vec![],
         ),
     );
     assert!(
@@ -2949,7 +2853,6 @@ fn tiled_to_float_output_crossing_leaves_source_state_unchanged() {
             }),
             true,
             false,
-            vec![],
         ),
     );
     // Membership-only boundary transfer: no two-domain Engine plan ran,
@@ -2995,7 +2898,6 @@ fn minimized_fullscreen_and_hidden_facts_stay_truthful() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     let mut hidden = fact("win-full", "out-a", 100);
@@ -3018,7 +2920,6 @@ fn minimized_fullscreen_and_hidden_facts_stay_truthful() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     // Minimized: explicit minimized-hold frame row with live membership.
@@ -3056,7 +2957,6 @@ fn unexplained_fit_excluded_newcomers_hold_their_scope() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     let view_a = output_view(&first, "out-a").expect("view a");
@@ -3081,7 +2981,6 @@ fn unexplained_fit_excluded_newcomers_hold_their_scope() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     assert!(
@@ -3116,7 +3015,6 @@ fn gesture_barrier_holds_frames_without_repair() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     let reply = accepted(
@@ -3133,7 +3031,6 @@ fn gesture_barrier_holds_frames_without_repair() {
             None,
             true,
             true,
-            vec![],
         ),
     );
     let row = window_row(&reply, "win-a");
@@ -3157,7 +3054,6 @@ fn gesture_barrier_holds_frames_without_repair() {
             None,
             true,
             true,
-            vec![],
         ),
     );
     assert!(reply.effects.is_empty());
@@ -3175,7 +3071,6 @@ fn gesture_barrier_holds_frames_without_repair() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     assert!(replay.effects.is_empty(), "spent intent never replays");
@@ -3198,7 +3093,6 @@ fn generations_watermarks_and_command_consumption_hold() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     // Duplicate latest report returns the cached reply with no revision.
@@ -3216,7 +3110,6 @@ fn generations_watermarks_and_command_consumption_hold() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     match engine.handle_report(&report(
@@ -3231,7 +3124,6 @@ fn generations_watermarks_and_command_consumption_hold() {
         None,
         true,
         false,
-        vec![],
     )) {
         WorldOutcome::Duplicate(cached) => assert_eq!(cached.state_revision, first.state_revision),
         other => panic!("expected duplicate, got {other:?}"),
@@ -3249,7 +3141,6 @@ fn generations_watermarks_and_command_consumption_hold() {
         None,
         true,
         false,
-        vec![],
     )) {
         WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "request-reused"),
         other => panic!("expected request-reused, got {other:?}"),
@@ -3267,7 +3158,6 @@ fn generations_watermarks_and_command_consumption_hold() {
         None,
         true,
         false,
-        vec![],
     )) {
         WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "request-superseded"),
         other => panic!("expected request-superseded, got {other:?}"),
@@ -3285,7 +3175,6 @@ fn generations_watermarks_and_command_consumption_hold() {
         None,
         true,
         false,
-        vec![],
     )) {
         WorldOutcome::Accepted(_) => {}
         other => panic!("expected accepted, got {other:?}"),
@@ -3307,7 +3196,6 @@ fn generations_watermarks_and_command_consumption_hold() {
             }),
             true,
             false,
-            vec![],
         ),
     );
     let transfers = view_reply.transfers.len();
@@ -3326,7 +3214,6 @@ fn generations_watermarks_and_command_consumption_hold() {
         }),
         true,
         false,
-        vec![],
     )) {
         WorldOutcome::CommandConsumed(reply) => assert_eq!(reply.transfers.len(), transfers),
         other => panic!("expected command-consumed, got {other:?}"),
@@ -3344,7 +3231,6 @@ fn generations_watermarks_and_command_consumption_hold() {
         None,
         true,
         false,
-        vec![],
     );
     bad.core_generation = "gen-2".to_owned();
     match engine.handle_report(&bad) {
@@ -3370,7 +3256,6 @@ fn unknown_outputs_and_views_hold_fail_closed() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     // Unknown view echoes never authorize: the output holds instead of
@@ -3389,7 +3274,6 @@ fn unknown_outputs_and_views_hold_fail_closed() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     let output = reply
@@ -3411,7 +3295,6 @@ fn unknown_outputs_and_views_hold_fail_closed() {
         None,
         true,
         false,
-        vec![],
     );
     bad.screens.push(screen("out-z", 1600, false));
     let ok = accepted(&mut engine, &bad);
@@ -3438,7 +3321,6 @@ fn host_owned_capability_gates_native_observations() {
         None,
         true,
         false,
-        vec![],
     );
     bad.native.push(crate::world_report::NativeObservation {
         output: OutputId("out-a".to_owned()),
@@ -3463,7 +3345,6 @@ fn host_owned_capability_gates_native_observations() {
         None,
         true,
         false,
-        vec![],
     );
     good.host_owned_workspace_domains = true;
     good.native.push(crate::world_report::NativeObservation {
@@ -3498,7 +3379,6 @@ fn hotplug_displacement_preserves_logical_units_on_the_survivor() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     // out-b disconnects: its logical units displace onto the survivor.
@@ -3516,7 +3396,6 @@ fn hotplug_displacement_preserves_logical_units_on_the_survivor() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     let ids = workspace_ids(&reply, "out-a");
@@ -3545,7 +3424,6 @@ fn hotplug_displacement_preserves_logical_units_on_the_survivor() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     assert!(!workspace_ids(&back, "out-b").is_empty());
@@ -3573,7 +3451,6 @@ fn cross_output_follow_holds_across_ack_gap_until_exact_view() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     let view_b = output_view(&first, "out-b").expect("view b");
@@ -3595,7 +3472,6 @@ fn cross_output_follow_holds_across_ack_gap_until_exact_view() {
             }),
             true,
             false,
-            vec![],
         ),
     );
     // Membership arrives but the follow view misses (failed setter): hold.
@@ -3613,7 +3489,6 @@ fn cross_output_follow_holds_across_ack_gap_until_exact_view() {
             None,
             true,
             false,
-            vec![],
             crate::workspace_scope::WorkspaceMode::PerOutputLocal,
             Vec::new(),
             vec![crate::world_report::ViewAttempt {
@@ -3653,7 +3528,6 @@ fn cross_output_follow_holds_across_ack_gap_until_exact_view() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     assert!(
@@ -3679,7 +3553,6 @@ fn cross_output_follow_holds_across_ack_gap_until_exact_view() {
             None,
             false,
             false,
-            vec![],
         ),
     );
     assert!(
@@ -3702,7 +3575,6 @@ fn cross_output_follow_holds_across_ack_gap_until_exact_view() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     assert!(
@@ -3733,7 +3605,6 @@ fn window_refusal_needs_readable_source_proof_and_holds_across_gap() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     let view_a = output_view(&first, "out-a").expect("view a");
@@ -3756,7 +3627,6 @@ fn window_refusal_needs_readable_source_proof_and_holds_across_gap() {
             }),
             true,
             false,
-            vec![],
         ),
     );
     // Refusal with incomplete inventory: hold, never settle from absence.
@@ -3774,7 +3644,6 @@ fn window_refusal_needs_readable_source_proof_and_holds_across_gap() {
             None,
             false,
             false,
-            vec![],
             crate::workspace_scope::WorkspaceMode::PerOutputLocal,
             vec![crate::world_report::MemberAttempt {
                 operation_id: "op-11".to_owned(),
@@ -3819,7 +3688,6 @@ fn standalone_view_refusal_holds_on_gap_then_reconciles_to_pre() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     let ring_a = workspace_ids(&first, "out-a");
@@ -3843,7 +3711,6 @@ fn standalone_view_refusal_holds_on_gap_then_reconciles_to_pre() {
             }),
             true,
             false,
-            vec![],
         ),
     );
     // Gapped echo (missing) with refusal proof: hold.
@@ -3861,7 +3728,6 @@ fn standalone_view_refusal_holds_on_gap_then_reconciles_to_pre() {
             None,
             true,
             false,
-            vec![],
             crate::workspace_scope::WorkspaceMode::PerOutputLocal,
             Vec::new(),
             vec![crate::world_report::ViewAttempt {
@@ -3896,7 +3762,6 @@ fn standalone_view_refusal_holds_on_gap_then_reconciles_to_pre() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     assert!(
@@ -3927,7 +3792,6 @@ fn standalone_view_refusal_holds_on_current_incomplete_screen() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     let ring_a = workspace_ids(&first, "out-a");
@@ -3951,7 +3815,6 @@ fn standalone_view_refusal_holds_on_current_incomplete_screen() {
             }),
             true,
             false,
-            vec![],
         ),
     );
     // Prior screens were complete; the current report marks out-a
@@ -3973,7 +3836,6 @@ fn standalone_view_refusal_holds_on_current_incomplete_screen() {
             None,
             true,
             false,
-            vec![],
             crate::workspace_scope::WorkspaceMode::PerOutputLocal,
             Vec::new(),
             vec![crate::world_report::ViewAttempt {
@@ -4008,7 +3870,6 @@ fn standalone_view_refusal_holds_on_current_incomplete_screen() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     assert!(
@@ -4040,7 +3901,6 @@ fn floating_select_workspace_retains_flight_and_settles_on_echo() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     let ring_a = workspace_ids(&first, "out-a");
@@ -4064,7 +3924,6 @@ fn floating_select_workspace_retains_flight_and_settles_on_echo() {
             }),
             true,
             false,
-            vec![],
         ),
     );
     // Select away into the floating workspace.
@@ -4085,7 +3944,6 @@ fn floating_select_workspace_retains_flight_and_settles_on_echo() {
             }),
             true,
             false,
-            vec![],
         ),
     );
     assert_eq!(
@@ -4115,7 +3973,6 @@ fn floating_select_workspace_retains_flight_and_settles_on_echo() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     assert_eq!(stale.transfers.len(), 1);
@@ -4138,7 +3995,6 @@ fn floating_select_workspace_retains_flight_and_settles_on_echo() {
             None,
             false,
             false,
-            vec![],
         ),
     );
     assert_eq!(gapped.transfers.len(), 1);
@@ -4158,7 +4014,6 @@ fn floating_select_workspace_retains_flight_and_settles_on_echo() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     assert!(
@@ -4193,7 +4048,6 @@ fn floating_select_previous_returns_to_floating_target() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     let ring_a = workspace_ids(&first, "out-a");
@@ -4217,7 +4071,6 @@ fn floating_select_previous_returns_to_floating_target() {
             }),
             true,
             false,
-            vec![],
         ),
     );
     accepted(
@@ -4237,7 +4090,6 @@ fn floating_select_previous_returns_to_floating_target() {
             }),
             true,
             false,
-            vec![],
         ),
     );
     accepted(
@@ -4254,7 +4106,6 @@ fn floating_select_previous_returns_to_floating_target() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     accepted(
@@ -4274,7 +4125,6 @@ fn floating_select_previous_returns_to_floating_target() {
             }),
             true,
             false,
-            vec![],
         ),
     );
     accepted(
@@ -4291,7 +4141,6 @@ fn floating_select_previous_returns_to_floating_target() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     // Previous toggles back to the floating workspace.
@@ -4311,7 +4160,6 @@ fn floating_select_previous_returns_to_floating_target() {
             }),
             true,
             false,
-            vec![],
         ),
     );
     assert_eq!(output_view(&back, "out-a").as_deref(), Some(other.as_str()));
@@ -4333,7 +4181,6 @@ fn floating_select_previous_returns_to_floating_target() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     assert!(
@@ -4367,7 +4214,6 @@ fn floating_select_trailing_reuses_floating_empty() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     let ring_a = workspace_ids(&first, "out-a");
@@ -4395,7 +4241,6 @@ fn floating_select_trailing_reuses_floating_empty() {
             }),
             true,
             false,
-            vec![],
         ),
     );
     accepted(
@@ -4412,7 +4257,6 @@ fn floating_select_trailing_reuses_floating_empty() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     accepted(
@@ -4433,7 +4277,6 @@ fn floating_select_trailing_reuses_floating_empty() {
             }),
             true,
             false,
-            vec![],
         ),
     );
     // Select away to the tiled head, then trailing reuses the floating
@@ -4455,7 +4298,6 @@ fn floating_select_trailing_reuses_floating_empty() {
             }),
             true,
             false,
-            vec![],
         ),
     );
     accepted(
@@ -4472,7 +4314,6 @@ fn floating_select_trailing_reuses_floating_empty() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     let reused = accepted(
@@ -4491,7 +4332,6 @@ fn floating_select_trailing_reuses_floating_empty() {
             }),
             true,
             false,
-            vec![],
         ),
     );
     assert_eq!(
@@ -4518,7 +4358,6 @@ fn floating_select_trailing_reuses_floating_empty() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     assert!(
@@ -4554,7 +4393,6 @@ fn floating_select_refusal_settles_to_observed_preserving_logical() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     let ring_a = workspace_ids(&first, "out-a");
@@ -4583,7 +4421,6 @@ fn floating_select_refusal_settles_to_observed_preserving_logical() {
             }),
             true,
             false,
-            vec![],
         ),
     );
     let selected = accepted(
@@ -4603,7 +4440,6 @@ fn floating_select_refusal_settles_to_observed_preserving_logical() {
             }),
             true,
             false,
-            vec![],
         ),
     );
     let op = selected.transfers[0].operation_id.clone();
@@ -4622,7 +4458,6 @@ fn floating_select_refusal_settles_to_observed_preserving_logical() {
             None,
             true,
             false,
-            vec![],
             crate::workspace_scope::WorkspaceMode::PerOutputLocal,
             Vec::new(),
             vec![crate::world_report::ViewAttempt {
@@ -4658,7 +4493,6 @@ fn floating_select_refusal_settles_to_observed_preserving_logical() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     assert!(
@@ -4698,7 +4532,6 @@ fn floating_migration_rekeys_floating_scope_and_migrates_back_sessionless() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     let view_a = output_view(&first, "out-a").expect("view a");
@@ -4724,7 +4557,6 @@ fn floating_migration_rekeys_floating_scope_and_migrates_back_sessionless() {
             }),
             true,
             false,
-            vec![],
         ),
     );
     let moved = accepted(
@@ -4745,7 +4577,6 @@ fn floating_migration_rekeys_floating_scope_and_migrates_back_sessionless() {
             }),
             true,
             false,
-            vec![],
         ),
     );
     // The commit reply already publishes the floating target Untouched:
@@ -4799,7 +4630,6 @@ fn floating_migration_rekeys_floating_scope_and_migrates_back_sessionless() {
             None,
             true,
             false,
-            vec![],
         ),
     );
     assert!(
@@ -4827,7 +4657,6 @@ fn floating_migration_rekeys_floating_scope_and_migrates_back_sessionless() {
             }),
             true,
             false,
-            vec![],
         ),
     );
     assert_eq!(scope_of(&back, "out-a", &view_a), ScopeAuthority::Untouched);

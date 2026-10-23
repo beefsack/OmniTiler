@@ -385,7 +385,7 @@ impl TileLoop {
 /// Captured world: the typed core observation pieces the sequencer unit
 /// will envelope into a `WorldReport`. Sequencing fields (contract version,
 /// owner/incarnation/generation, observation/request/command counters,
-/// commands, feedback) and view echoes are deliberately absent here:
+/// commands, raw attempts) and view echoes are deliberately absent here:
 /// screens plus window facts are the only topology prerequisites, with the
 /// sampled cursor and the retained targeting settings riding as core
 /// ingress (never an adapter placement or output policy). Views echo the

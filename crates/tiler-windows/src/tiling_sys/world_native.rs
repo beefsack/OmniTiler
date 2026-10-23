@@ -1474,7 +1474,7 @@ impl<'a> LiveNative<'a> {
             // output, else the proven view). Visibility alone never
             // names a changed workspace, so a bare visible match without
             // frame/view proof still holds. The caller merges changed
-            // homing from applied transfer feedback with independent
+            // homing from applied-transfer evidence with independent
             // revalidation; this snapshot additionally records arrivals
             // the effect already landed so the next capture echoes them.
             let prior_matches = self

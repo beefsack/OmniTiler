@@ -73,12 +73,6 @@ fn test_report() -> WorldReport {
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
-        feedback: vec![AttemptFeedback {
-            operation_id: "op-1".to_owned(),
-            kind: AttemptKind::Effect,
-            outcome: AttemptOutcome::Unattempted,
-            hold: None,
-        }],
         monotonic_ms: 0,
         frames: Vec::new(),
         member_attempts: Vec::new(),
@@ -178,7 +172,7 @@ fn digest_covers_every_section() {
     changed.default_tiled = false;
     assert_ne!(report_digest(&changed), digest);
     let mut changed = base.clone();
-    changed.feedback[0].outcome = AttemptOutcome::Applied;
+    changed.monotonic_ms = 1;
     assert_ne!(report_digest(&changed), digest);
     let mut changed = base.clone();
     changed.member_attempts.push(MemberAttempt {
@@ -366,13 +360,6 @@ fn validation_gates_shapes() {
         start_frame: rect(0, 0, 40, 90),
     });
     assert_eq!(validate_report_reason(&bad), Some("gesture-cursor-invalid"));
-    // Retired external verdict ingress refuses: transfer/view completion
-    // rides raw member/view attempts, never feedback rows.
-    for kind in [AttemptKind::Transfer, AttemptKind::View] {
-        let mut bad = base.clone();
-        bad.feedback[0].kind = kind;
-        assert_eq!(validate_report_reason(&bad), Some("feedback-kind-retired"));
-    }
     // Member attempt shapes: bad operation, target, and homing ids refuse;
     // unknown pre/post homings ride None; duplicate operation windows
     // refuse.

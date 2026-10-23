@@ -23,10 +23,11 @@
 //!   an accepted current acknowledgement arrives, so `is_dirty` sees the
 //!   outstanding flight observation until the actual ack. No retries, no
 //!   polling; dirtiness is only readiness for event-driven catch-up.
-//! - Dirty means an outstanding OBSERVATION, CLOSE, or FEEDBACK obligation,
-//!   never the watermark alone: an accepted report whose watermark is current
-//!   still stays dirty while newer feedback or an absent-domain close remains
-//!   queued, with no extra native invalidation required to notice.
+//! - Dirty means an outstanding OBSERVATION, CLOSE, FRAME, MEMBER, VIEW,
+//!   or CLEAR obligation, never the watermark alone: an accepted report
+//!   whose watermark is current still stays dirty while newer raw attempts
+//!   or an absent-domain close remains queued, with no extra native
+//!   invalidation required to notice.
 //! - Closes stay native-owned: the native `PendingClosed` map is the SOLE
 //!   close authority and there is no sequencer-side ack shadow history.
 //!   Dispatch snapshots the exact captured `(token, homing)` pairs it
@@ -38,12 +39,6 @@
 //!   obligation stays dirty and redelivers.
 //!   `is_dirty` correctly stays true until the native queue applies the
 //!   receipt; nothing here hides native obligations.
-//! - Feedback is a sequencer-owned pending map keyed by operation id (no
-//!   append-only retry ledger). Acknowledgement removes only entries exactly
-//!   equal to what the flight delivered, so a newer update for the same
-//!   operation survives its predecessor's ack. Generation reset clears the
-//!   map: command sequences restart under the fresh generation, so stale
-//!   feedback would collide with reused operation identities.
 //! - A reply whose observation echo differs from the dispatched flight's is
 //!   ignored with the flight kept, before any obligation is acknowledged.
 //!   A stale ready reply with matching flight correlation acknowledges
@@ -64,7 +59,7 @@
 //!   newer flight after catch-up or a generation reset.
 //! - Generation reset requires an explicit NEW identity (same or malformed
 //!   resets are side-effect-free no-ops) and clears sequencer
-//!   flight/ordering/desired/command/feedback state, rebuilding the engine
+//!   flight/ordering/desired/command/raw-attempt state, rebuilding the engine
 //!   under the Windows profile. Counters restart because the core namespaces
 //!   ordering per generation; they still never wrap within one. Native
 //!   lifetime/close facts are untouched: the owner is not mutably reachable
@@ -79,8 +74,8 @@ use std::collections::BTreeSet;
 use tiler_core::ids::{GenerationId, OwnerId};
 use tiler_core::world_engine::{WorldEngine, WorldEngineConfig, WorldOutcome};
 use tiler_core::world_report::{
-    AttemptFeedback, ClearAttempt, FrameAttempt, MemberAttempt, ScreenView, ViewAttempt,
-    WORLD_CONTRACT_VERSION, WorldCommand, WorldReply, WorldReport,
+    ClearAttempt, FrameAttempt, MemberAttempt, ScreenView, ViewAttempt, WORLD_CONTRACT_VERSION,
+    WorldCommand, WorldReply, WorldReport,
 };
 
 /// Windows carrier profile for the future world engine: automatic
@@ -97,7 +92,7 @@ const fn windows_engine_config() -> WorldEngineConfig {
 const WINDOWS_OWNER: &str = "tiler-windows";
 
 /// One outstanding sequenced report: the exact facts the core incorporation
-/// acknowledgement must settle. Closes and feedback are snapshots of what the
+/// acknowledgement must settle. Closes are snapshots of what the
 /// dispatched report carried, never a re-read of newer state. Close entries
 /// pair each carried token with its native homing read at dispatch time, so
 /// the caller can prune if and only if its source entry still matches.
@@ -110,7 +105,6 @@ struct SequencerFlight {
     command_seq: Option<u64>,
     request_id: String,
     delivered_closed: Vec<(String, PendingClosed)>,
-    delivered_feedback: Vec<AttemptFeedback>,
     delivered_frames: Vec<FrameAttempt>,
     delivered_members: Vec<MemberAttempt>,
     delivered_views: Vec<ViewAttempt>,
@@ -131,7 +125,6 @@ pub(super) struct AckReceipt {
     pub(super) core_generation: String,
     pub(super) request_id: String,
     pub(super) closed_acked: Vec<(String, PendingClosed)>,
-    pub(super) feedback_acked: Vec<String>,
     pub(super) frames_acked: Vec<String>,
     pub(super) members_acked: Vec<(String, String)>,
     pub(super) views_acked: Vec<String>,
@@ -183,7 +176,6 @@ pub(super) struct WorldSequencer {
     next_request_seq: u64,
     next_command_seq: u64,
     flight: Option<SequencerFlight>,
-    pending_feedback: BTreeMap<String, AttemptFeedback>,
     /// Latest-wins mechanical frame attempts per window lifetime, drained
     /// into the next report. Stamped at the write with the tick's monotonic
     /// clock; the core consumes each stamp idempotently, so redelivery
@@ -228,7 +220,6 @@ impl WorldSequencer {
             next_request_seq: 1,
             next_command_seq: 1,
             flight: None,
-            pending_feedback: BTreeMap::new(),
             pending_frames: BTreeMap::new(),
             pending_members: BTreeMap::new(),
             pending_views: BTreeMap::new(),
@@ -259,17 +250,6 @@ impl WorldSequencer {
             self.current_obs = next;
         }
         self.obs_dirty = true;
-    }
-
-    /// Stage per-operation actuation feedback for the next report, replacing
-    /// any entry for the same operation id. Marks feedback-dirty; the
-    /// acknowledgement path decides exact removal. (No production transfer
-    /// or view verdicts ride this path anymore; retained for effect-kind
-    /// test scaffolding and forward compatibility.)
-    #[allow(dead_code)]
-    pub(super) fn note_feedback(&mut self, feedback: AttemptFeedback) {
-        self.pending_feedback
-            .insert(feedback.operation_id.clone(), feedback);
     }
 
     /// Stage one mechanical frame attempt for the next report, replacing any
@@ -324,14 +304,13 @@ impl WorldSequencer {
         out.into_iter().collect()
     }
 
-    /// Dirty means an outstanding OBSERVATION, CLOSE, FEEDBACK, FRAME,
-    /// MEMBER, or VIEW obligation. Event-driven catch-up wants the next
+    /// Dirty means an outstanding OBSERVATION, CLOSE, FRAME,
+    /// MEMBER, VIEW, or CLEAR obligation. Event-driven catch-up wants the next
     /// trigger while any holds; nothing here polls or spins.
     #[must_use]
     #[cfg(test)]
     pub(super) fn is_dirty(&self, captured: &CapturedWorld) -> bool {
         self.obs_dirty
-            || !self.pending_feedback.is_empty()
             || !self.pending_frames.is_empty()
             || !self.pending_members.is_empty()
             || !self.pending_views.is_empty()
@@ -357,8 +336,6 @@ impl WorldSequencer {
         command: Option<WorldCommand>,
         monotonic_ms: u64,
     ) -> WorldReport {
-        let mut feedback: Vec<AttemptFeedback> = self.pending_feedback.values().cloned().collect();
-        feedback.sort_by(|a, b| a.operation_id.cmp(&b.operation_id));
         let frames: Vec<FrameAttempt> = self.pending_frames.values().cloned().collect();
         let mut member_attempts: Vec<MemberAttempt> =
             self.pending_members.values().cloned().collect();
@@ -412,7 +389,6 @@ impl WorldSequencer {
             inventory_complete: captured.inventory_complete,
             gesture_barrier: captured.gesture_barrier,
             gesture: captured.gesture.clone(),
-            feedback,
             monotonic_ms,
             frames,
             member_attempts,
@@ -488,7 +464,6 @@ impl WorldSequencer {
             command_seq,
             request_id: report.request_id.clone(),
             delivered_closed,
-            delivered_feedback: report.feedback.clone(),
             delivered_frames: report.frames.clone(),
             delivered_members: report.member_attempts.clone(),
             delivered_views: report.view_attempts.clone(),
@@ -536,7 +511,7 @@ impl WorldSequencer {
         }
         // The echo must name the dispatched flight's own observation before
         // anything is acknowledged: a reply for another watermark keeps the
-        // flight with closes and feedback retained, even when the local
+        // flight with closes and raw attempts retained, even when the local
         // watermark has since advanced past both.
         if reply.based_on_observation_seq != flight.observation_seq {
             return AckOutcome::Ignored {
@@ -554,7 +529,6 @@ impl WorldSequencer {
                 core_generation: self.core_generation.clone(),
                 request_id: flight.request_id,
                 closed_acked: Vec::new(),
-                feedback_acked: Vec::new(),
                 frames_acked: Vec::new(),
                 members_acked: Vec::new(),
                 views_acked: Vec::new(),
@@ -589,7 +563,7 @@ impl WorldSequencer {
 
     /// Rejection, busy, timeout, or transport loss correlated to the exact
     /// outstanding flight: the matching generation plus request id releases
-    /// the flight, retains dirty work (observation, closes, feedback), and
+    /// the flight, retains dirty work (observation, closes, raw attempts), and
     /// schedules observation-only catch-up. A delayed old rejection (another
     /// request, or another generation reusing the same request id) is a
     /// side-effect-free no-op and can never clear a newer flight. Never an
@@ -614,8 +588,8 @@ impl WorldSequencer {
     }
 
     /// Generation reset under an explicit NEW identity: clears sequencer
-    /// flight/ordering/desired/command state plus pending feedback, and
-    /// rebuilds the engine under the Windows profile. Feedback must clear
+    /// flight/ordering/desired/command state plus pending raw attempts, and
+    /// rebuilds the engine under the Windows profile. Attempt maps clear
     /// because command sequences restart: a stale entry would collide with a
     /// reused operation identity under the fresh generation. Counters
     /// restart because the core namespaces ordering per generation; they
@@ -637,7 +611,6 @@ impl WorldSequencer {
         self.engine = engine;
         self.core_generation = core_generation.to_owned();
         self.flight = None;
-        self.pending_feedback.clear();
         self.pending_frames.clear();
         self.pending_members.clear();
         self.pending_views.clear();
@@ -657,7 +630,7 @@ impl WorldSequencer {
 
     /// Acknowledge exactly the flight's delivered facts: every carried
     /// `(token, homing)` close pair (read from the flight snapshot, never
-    /// re-read from a newer report) plus pending feedback, frame-attempt,
+    /// re-read from a newer report) plus pending frame-attempt,
     /// member-attempt, and view-attempt entries exactly equal to the
     /// delivered value. A newer update for the same operation, window, or
     /// view phase survives and stays dirty.
@@ -665,17 +638,6 @@ impl WorldSequencer {
         let mut closed_acked = Vec::new();
         for (token, homing) in &flight.delivered_closed {
             closed_acked.push((token.clone(), homing.clone()));
-        }
-        let mut feedback_acked = Vec::new();
-        for delivered in &flight.delivered_feedback {
-            if self
-                .pending_feedback
-                .get(&delivered.operation_id)
-                .is_some_and(|pending| pending == delivered)
-            {
-                self.pending_feedback.remove(&delivered.operation_id);
-                feedback_acked.push(delivered.operation_id.clone());
-            }
         }
         let mut frames_acked = Vec::new();
         for delivered in &flight.delivered_frames {
@@ -728,7 +690,6 @@ impl WorldSequencer {
             core_generation: self.core_generation.clone(),
             request_id: flight.request_id.clone(),
             closed_acked,
-            feedback_acked,
             frames_acked,
             members_acked,
             views_acked,
@@ -975,12 +936,6 @@ impl WorldSequencer {
 
     #[must_use]
     #[cfg(test)]
-    pub(super) fn pending_feedback_len(&self) -> usize {
-        self.pending_feedback.len()
-    }
-
-    #[must_use]
-    #[cfg(test)]
     pub(super) fn pending_frames_len(&self) -> usize {
         self.pending_frames.len()
     }
@@ -1007,12 +962,6 @@ impl WorldSequencer {
     #[cfg(test)]
     pub(super) fn last_accepted_req(&self) -> &str {
         &self.last_accepted_req
-    }
-
-    #[must_use]
-    #[cfg(test)]
-    pub(super) fn has_pending_feedback(&self) -> bool {
-        !self.pending_feedback.is_empty()
     }
 }
 

@@ -507,7 +507,6 @@ pub(crate) fn report_with_screens(
         inventory_complete,
         gesture_barrier: false,
         gesture: None,
-        feedback: Vec::new(),
         monotonic_ms,
         frames,
         member_attempts: Vec::new(),

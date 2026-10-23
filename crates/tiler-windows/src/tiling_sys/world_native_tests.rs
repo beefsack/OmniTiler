@@ -429,7 +429,6 @@ fn reply_shell(obs: u64, rev: u64, scopes: &[(&str, &str)]) -> WorldReply {
         gesture_settled: None,
         operation_settled: Vec::new(),
         cursor_warp: None,
-        presentation_bytes: 0,
     }
 }
 
@@ -1557,7 +1556,7 @@ struct LiveTick {
 
 /// One production tick through the real owner with scripted natives:
 /// dispatch, deliver, diff-apply, receipt, merge with independent fresh
-/// revalidation, feedback staging, and acknowledgement. Mirrors
+/// revalidation, raw attempt staging, and acknowledgement. Mirrors
 /// `run_observation_tick`/`run_world_command` with injectable prims.
 /// Cursor-absent: every pre-existing caller keeps this shape.
 #[allow(clippy::too_many_arguments)]

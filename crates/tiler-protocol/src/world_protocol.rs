@@ -32,7 +32,7 @@
 //!  defaultTiled:bool, focused:""|id, complete:bool, gesture:bool,
 //!  switchTarget, freshPlacement, cursor:[x,y]|null,
 //!  actionForeground:id|null, actionCached:id|null, actionOutputs:[id...],
-//!  focusFollowsCursor:bool, cursorWarp:bool, feedback}
+//!  focusFollowsCursor:bool, cursorWarp:bool}
 //! (plus optional tolerant D2/D3 settings: anchorFallback, noSpaceResult;
 //!  missing or invalid values backfill the defaults)
 //! screens[]: {out, full:[x,y,w,h]|null, work:[x,y,w,h]|null, gap, outer,
@@ -68,11 +68,6 @@
 //!   ordered known-output registry in adapter registry order. Every
 //!   action-context leg filters through it with first-entry fallback.
 //! focusFollowsCursor/cursorWarp: bool (stage-4b core-actuated settings)
-//! feedback[]: {op, kind:transfer|view|creation|effect|property,
-//!              outcome:unattempted|possibly-executed|refused-proven|
-//!                      superseded-external|applied, hold:""|token}
-//!   Transfer/view verdict rows are retired and reject the report; use
-//!   memberAttempts/viewAttempts for their raw mechanical facts instead.
 //! monotonicMs: "u64" adapter monotonic milliseconds, arbitrary process
 //!   epoch, never wall-clock (optional, tolerant: missing backfills 0 =
 //!   unreported, which never suppresses the transient lane)
@@ -137,9 +132,8 @@ use tiler_core::directional::{NodeId, OutputId, WindowId, WorkspaceId};
 use tiler_core::geometry::Rect;
 use tiler_core::ids::{MAX_CORRELATION_LEN, MAX_GENERATION_LEN, MAX_OWNER_LEN};
 use tiler_core::world_report::{
-    AttemptFeedback, AttemptKind, AttemptOutcome, HoldReason, NativeObservation, ScreenReport,
-    ScreenView, TransferKind, WORLD_CONTRACT_VERSION, WindowFact, WorldCommand, WorldReply,
-    WorldReport, validate_report_reason,
+    HoldReason, NativeObservation, ScreenReport, ScreenView, TransferKind, WORLD_CONTRACT_VERSION,
+    WindowFact, WorldCommand, WorldReply, WorldReport, validate_report_reason,
 };
 
 /// World protocol contract version (equals the core world contract version).
@@ -396,43 +390,6 @@ fn is_generation_text(text: &str) -> bool {
         && text
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-}
-
-fn parse_hold_token(text: &str) -> Result<Option<HoldReason>> {
-    match text {
-        "" => Ok(None),
-        "unreadable" => Ok(Some(HoldReason::Unreadable)),
-        "incomplete-inventory" => Ok(Some(HoldReason::IncompleteInventory)),
-        "gesture-barrier" => Ok(Some(HoldReason::GestureBarrier)),
-        "refused-target" => Ok(Some(HoldReason::RefusedTarget)),
-        "ambiguous-creation" => Ok(Some(HoldReason::AmbiguousCreation)),
-        "occupied-removal" => Ok(Some(HoldReason::OccupiedRemoval)),
-        "constraint-clamp" => Ok(Some(HoldReason::ConstraintClamp)),
-        "minimized" => Ok(Some(HoldReason::Minimized)),
-        _ => Err(unknown_value()),
-    }
-}
-
-fn parse_attempt_kind(text: &str) -> Result<AttemptKind> {
-    match text {
-        "transfer" => Ok(AttemptKind::Transfer),
-        "view" => Ok(AttemptKind::View),
-        "creation" => Ok(AttemptKind::Creation),
-        "effect" => Ok(AttemptKind::Effect),
-        "property" => Ok(AttemptKind::Property),
-        _ => Err(unknown_value()),
-    }
-}
-
-fn parse_attempt_outcome(text: &str) -> Result<AttemptOutcome> {
-    match text {
-        "unattempted" => Ok(AttemptOutcome::Unattempted),
-        "possibly-executed" => Ok(AttemptOutcome::PossiblyExecuted),
-        "refused-proven" => Ok(AttemptOutcome::RefusedProven),
-        "superseded-external" => Ok(AttemptOutcome::SupersededExternal),
-        "applied" => Ok(AttemptOutcome::Applied),
-        _ => Err(unknown_value()),
-    }
 }
 
 fn parse_frame_setter(text: &str) -> Result<tiler_core::world_report::FrameSetter> {
@@ -771,17 +728,6 @@ fn decode_view_attempt(value: &serde_json::Value) -> Result<tiler_core::world_re
         post: opt_view_or_null(map, "post")?,
         baseline: opt_view_or_null(map, "base")?,
         attempt_ms: req_u64_str(map, "attemptMs")?,
-    })
-}
-
-fn decode_feedback(value: &serde_json::Value) -> Result<AttemptFeedback> {
-    let map = as_object(value)?;
-    check_keys(map, &["op", "kind", "outcome", "hold"])?;
-    Ok(AttemptFeedback {
-        operation_id: req_id(map, "op")?,
-        kind: parse_attempt_kind(req_str(map, "kind")?)?,
-        outcome: parse_attempt_outcome(req_str(map, "outcome")?)?,
-        hold: parse_hold_token(req_str(map, "hold")?)?,
     })
 }
 
@@ -1381,7 +1327,6 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
             "focused",
             "complete",
             "gesture",
-            "feedback",
             "switchTarget",
             "freshPlacement",
             "cursor",
@@ -1446,11 +1391,6 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
     let mut native = Vec::new();
     for item in native_value.as_array().ok_or_else(malformed)? {
         native.push(decode_native(item)?);
-    }
-    let feedback_value = map.get("feedback").ok_or_else(malformed)?;
-    let mut feedback = Vec::new();
-    for item in feedback_value.as_array().ok_or_else(malformed)? {
-        feedback.push(decode_feedback(item)?);
     }
     // Tolerant monotonic clock: missing backfills 0 (unreported, never
     // suppresses the transient lane). A present value must be a canonical
@@ -1628,7 +1568,6 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
         inventory_complete: req_bool(map, "complete")?,
         gesture_barrier: req_bool(map, "gesture")?,
         gesture,
-        feedback,
         monotonic_ms,
         frames,
         member_attempts,

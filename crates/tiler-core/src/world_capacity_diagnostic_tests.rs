@@ -55,7 +55,6 @@ fn report(
     focused: &str,
     command_seq: Option<u64>,
     command: Option<WorldCommand>,
-    feedback: Vec<crate::world_report::AttemptFeedback>,
 ) -> WorldReport {
     WorldReport {
         contract_version: WORLD_CONTRACT_VERSION,
@@ -93,7 +92,6 @@ fn report(
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
-        feedback,
         monotonic_ms: 0,
         frames: Vec::new(),
         member_attempts: Vec::new(),
@@ -109,7 +107,6 @@ fn accepted(engine: &mut WorldEngine, report: &WorldReport) -> crate::world_repo
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn report_with_frames(
     request_seq: u64,
     screens: Vec<ScreenReport>,
@@ -117,18 +114,9 @@ fn report_with_frames(
     focused: &str,
     command_seq: Option<u64>,
     command: Option<WorldCommand>,
-    feedback: Vec<crate::world_report::AttemptFeedback>,
     frames: Vec<crate::world_report::FrameAttempt>,
 ) -> WorldReport {
-    let mut out = report(
-        request_seq,
-        screens,
-        windows,
-        focused,
-        command_seq,
-        command,
-        feedback,
-    );
+    let mut out = report(request_seq, screens, windows, focused, command_seq, command);
     out.monotonic_ms = 1000 + request_seq * 1000;
     out.frames = frames;
     out
@@ -197,7 +185,7 @@ fn exhaustion_marks_capacity_floats_with_diagnostic_origin_only() {
         .collect();
     let reply = accepted(
         &mut engine,
-        &report(1, tiny_screens(), windows, "", None, None, vec![]),
+        &report(1, tiny_screens(), windows, "", None, None),
     );
     let floats: Vec<&str> = reply
         .windows
@@ -243,7 +231,6 @@ fn ordinary_float_matches_capacity_float_except_origin() {
             "",
             None,
             None,
-            vec![],
         ),
     );
     let row = row_of(&reply, "win-float");
@@ -260,7 +247,7 @@ fn ordinary_float_matches_capacity_float_except_origin() {
         .collect();
     let reply = accepted(
         &mut engine,
-        &report(1, tiny_screens(), windows, "", None, None, vec![]),
+        &report(1, tiny_screens(), windows, "", None, None),
     );
     let capacity = reply
         .windows
@@ -281,7 +268,7 @@ fn normalized_float_echo_persists_without_retile() {
         .collect();
     let first = accepted(
         &mut engine,
-        &report(1, tiny_screens(), windows.clone(), "", None, None, vec![]),
+        &report(1, tiny_screens(), windows.clone(), "", None, None),
     );
     let floats: Vec<String> = first
         .windows
@@ -307,7 +294,7 @@ fn normalized_float_echo_persists_without_retile() {
         .expect("tiled survivor");
     let second = accepted(
         &mut engine,
-        &report(2, tiny_screens(), echo, &tiled_focus, None, None, vec![]),
+        &report(2, tiny_screens(), echo, &tiled_focus, None, None),
     );
     let again: Vec<String> = second
         .windows
@@ -337,7 +324,6 @@ fn place_float(
                 window: window.to_owned(),
                 float_rect: target,
             })),
-            vec![],
         ),
     )
 }
@@ -352,7 +338,7 @@ fn float_placement_carries_operation_until_observed() {
     let roomy = vec![screen_sized("out-a", 0, 800, 560, true)];
     accepted(
         &mut engine,
-        &report(1, roomy.clone(), two_tiled(), "", None, None, vec![]),
+        &report(1, roomy.clone(), two_tiled(), "", None, None),
     );
     let target = rect(10, 10, 200, 150);
     // A tiled sibling stays behind and keeps its allocation while the
@@ -382,7 +368,6 @@ fn float_placement_carries_operation_until_observed() {
             "",
             None,
             None,
-            vec![],
         ),
     );
     let row = row_of(&settled, "win-a");
@@ -396,7 +381,7 @@ fn float_toggle_unfloat_withdraws_and_replace_reissues() {
     let roomy = vec![screen_sized("out-a", 0, 800, 560, true)];
     accepted(
         &mut engine,
-        &report(1, roomy.clone(), two_tiled(), "", None, None, vec![]),
+        &report(1, roomy.clone(), two_tiled(), "", None, None),
     );
     let first_target = rect(10, 10, 200, 150);
     let placed = place_float(&mut engine, 2, two_tiled(), "win-a", Some(first_target));
@@ -426,7 +411,7 @@ fn float_placement_drops_on_newer_native_input_and_proven_refusal() {
     let roomy = vec![screen_sized("out-a", 0, 800, 560, true)];
     accepted(
         &mut engine,
-        &report(1, roomy.clone(), two_tiled(), "", None, None, vec![]),
+        &report(1, roomy.clone(), two_tiled(), "", None, None),
     );
     let source = rect(0, 0, 40, 90);
     let target = rect(10, 10, 200, 150);
@@ -445,7 +430,6 @@ fn float_placement_drops_on_newer_native_input_and_proven_refusal() {
             "",
             None,
             None,
-            vec![],
         ),
     );
     let row = row_of(&dropped, "win-a");
@@ -467,7 +451,6 @@ fn float_placement_drops_on_newer_native_input_and_proven_refusal() {
             "",
             None,
             None,
-            vec![],
             vec![float_attempt(
                 "op-14",
                 "win-a",
@@ -515,7 +498,6 @@ fn sole_toggle_float_publishes_controlled_exception_row() {
             "",
             None,
             None,
-            vec![],
         ),
     );
     // Floating the sole tiled window leaves an exception-only session: no
@@ -576,7 +558,6 @@ fn sole_float_confirms_and_clears_once() {
             "",
             None,
             None,
-            vec![],
         ),
     );
     let target = rect(10, 10, 200, 150);
@@ -594,7 +575,7 @@ fn sole_float_confirms_and_clears_once() {
     confirmed.floating = true;
     let settled = accepted(
         &mut engine,
-        &report(3, roomy, vec![confirmed], "", None, None, vec![]),
+        &report(3, roomy, vec![confirmed], "", None, None),
     );
     let view = sole_view(&settled);
     let scope = settled
@@ -628,7 +609,7 @@ fn all_float_scope_stays_controlled() {
     };
     let reply = accepted(
         &mut engine,
-        &report(1, roomy, vec![ordinary, fixed], "", None, None, vec![]),
+        &report(1, roomy, vec![ordinary, fixed], "", None, None),
     );
     let view = sole_view(&reply);
     let scope = reply
@@ -661,7 +642,7 @@ fn all_minimized_scope_stays_controlled() {
     };
     let reply = accepted(
         &mut engine,
-        &report(1, roomy, vec![minimized], "", None, None, vec![]),
+        &report(1, roomy, vec![minimized], "", None, None),
     );
     let view = sole_view(&reply);
     let scope = reply
@@ -690,7 +671,7 @@ fn float_ambiguous_third_frame_holds_across_ack() {
     let roomy = vec![screen_sized("out-a", 0, 800, 560, true)];
     accepted(
         &mut engine,
-        &report(1, roomy.clone(), two_tiled(), "", None, None, vec![]),
+        &report(1, roomy.clone(), two_tiled(), "", None, None),
     );
     let source = rect(0, 0, 40, 90);
     let target = rect(10, 10, 200, 150);
@@ -713,7 +694,6 @@ fn float_ambiguous_third_frame_holds_across_ack() {
             "",
             None,
             None,
-            vec![],
             vec![float_attempt(
                 "op-12",
                 "win-a",
@@ -743,7 +723,6 @@ fn float_ambiguous_third_frame_holds_across_ack() {
             "",
             None,
             None,
-            vec![],
         ),
     );
     let row = row_of(&held, "win-a");
@@ -758,111 +737,13 @@ fn float_ambiguous_third_frame_holds_across_ack() {
 }
 
 #[test]
-fn float_property_feedback_is_ignored_for_settlement() {
-    use crate::world_report::{AttemptFeedback, AttemptKind, AttemptOutcome, FrameSetter};
-    let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let roomy = vec![screen_sized("out-a", 0, 800, 560, true)];
-    accepted(
-        &mut engine,
-        &report(1, roomy.clone(), two_tiled(), "", None, None, vec![]),
-    );
-    let source = rect(0, 0, 40, 90);
-    let target = rect(10, 10, 200, 150);
-    place_float(&mut engine, 2, two_tiled(), "win-a", Some(target));
-    // Latch ambiguity with a genuine clamping attempt first. The attempt
-    // also feeds suppression, so the stranded token is withheld, never
-    // re-actuated.
-    let third = rect(400, 300, 210, 160);
-    accepted(
-        &mut engine,
-        &report_with_frames(
-            3,
-            roomy.clone(),
-            vec![
-                float_fact("win-a", "out-a", Some(third)),
-                fact("win-b", "out-a", 100),
-            ],
-            "",
-            None,
-            None,
-            vec![],
-            vec![float_attempt(
-                "op-12",
-                "win-a",
-                target,
-                FrameSetter::Accepted,
-                Some(source),
-                Some(third),
-                4000,
-            )],
-        ),
-    );
-    assert_eq!(engine.retained_floats.len(), 1);
-    // A forged supersession verdict for the operation settles nothing: the
-    // adapter never emits float verdicts, and the core ignores them.
-    let held = accepted(
-        &mut engine,
-        &report(
-            4,
-            roomy.clone(),
-            vec![
-                float_fact("win-a", "out-a", Some(third)),
-                fact("win-b", "out-a", 100),
-            ],
-            "",
-            None,
-            None,
-            vec![AttemptFeedback {
-                operation_id: "op-12".to_owned(),
-                kind: AttemptKind::Property,
-                outcome: AttemptOutcome::SupersededExternal,
-                hold: None,
-            }],
-        ),
-    );
-    assert_eq!(
-        engine.retained_floats.len(),
-        1,
-        "forged supersession ignored while ambiguous"
-    );
-    assert_eq!(row_of(&held, "win-a").effective_frame, Some(target));
-    // A forged refusal verdict settles nothing either.
-    let still_held = accepted(
-        &mut engine,
-        &report(
-            5,
-            roomy,
-            vec![
-                float_fact("win-a", "out-a", Some(third)),
-                fact("win-b", "out-a", 100),
-            ],
-            "",
-            None,
-            None,
-            vec![AttemptFeedback {
-                operation_id: "op-12".to_owned(),
-                kind: AttemptKind::Property,
-                outcome: AttemptOutcome::RefusedProven,
-                hold: None,
-            }],
-        ),
-    );
-    assert_eq!(
-        engine.retained_floats.len(),
-        1,
-        "forged refusal ignored while ambiguous"
-    );
-    assert_eq!(row_of(&still_held, "win-a").effective_frame, Some(target));
-}
-
-#[test]
 fn float_raw_accepted_attempt_confirms_at_target() {
     use crate::world_report::FrameSetter;
     let mut engine = WorldEngine::new("gen-1").expect("generation");
     let roomy = vec![screen_sized("out-a", 0, 800, 560, true)];
     accepted(
         &mut engine,
-        &report(1, roomy.clone(), two_tiled(), "", None, None, vec![]),
+        &report(1, roomy.clone(), two_tiled(), "", None, None),
     );
     let source = rect(0, 0, 40, 90);
     let target = rect(10, 10, 200, 150);
@@ -881,7 +762,6 @@ fn float_raw_accepted_attempt_confirms_at_target() {
             "",
             None,
             None,
-            vec![],
             vec![float_attempt(
                 "op-12",
                 "win-a",
@@ -905,7 +785,7 @@ fn float_dpi_change_blocks_confirmation_until_fresh_evidence() {
     let roomy = vec![screen_sized("out-a", 0, 800, 560, true)];
     accepted(
         &mut engine,
-        &report(1, roomy.clone(), two_tiled(), "", None, None, vec![]),
+        &report(1, roomy.clone(), two_tiled(), "", None, None),
     );
     let source = rect(0, 0, 40, 90);
     let target = rect(10, 10, 200, 150);
@@ -925,7 +805,6 @@ fn float_dpi_change_blocks_confirmation_until_fresh_evidence() {
             "",
             None,
             None,
-            vec![],
             vec![FrameAttempt {
                 window: WindowId("win-a".to_owned()),
                 target,
@@ -957,7 +836,6 @@ fn float_dpi_change_blocks_confirmation_until_fresh_evidence() {
             "",
             None,
             None,
-            vec![],
         ),
     );
     assert_eq!(
@@ -974,7 +852,7 @@ fn float_changed_preimage_and_throw_latch_ambiguity() {
     let roomy = vec![screen_sized("out-a", 0, 800, 560, true)];
     accepted(
         &mut engine,
-        &report(1, roomy.clone(), two_tiled(), "", None, None, vec![]),
+        &report(1, roomy.clone(), two_tiled(), "", None, None),
     );
     let source = rect(0, 0, 40, 90);
     let target = rect(10, 10, 200, 150);
@@ -996,7 +874,6 @@ fn float_changed_preimage_and_throw_latch_ambiguity() {
             "",
             None,
             None,
-            vec![],
             vec![float_attempt(
                 "op-12",
                 "win-a",
@@ -1019,7 +896,7 @@ fn float_changed_preimage_and_throw_latch_ambiguity() {
     let mut engine = WorldEngine::new("gen-1").expect("generation");
     accepted(
         &mut engine,
-        &report(1, roomy.clone(), two_tiled(), "", None, None, vec![]),
+        &report(1, roomy.clone(), two_tiled(), "", None, None),
     );
     place_float(&mut engine, 2, two_tiled(), "win-a", Some(target));
     let thrown = accepted(
@@ -1034,7 +911,6 @@ fn float_changed_preimage_and_throw_latch_ambiguity() {
             "",
             None,
             None,
-            vec![],
             vec![float_attempt(
                 "op-12",
                 "win-a",
@@ -1107,7 +983,7 @@ fn float_forged_correlation_never_settles() {
         let mut engine = WorldEngine::new("gen-1").expect("generation");
         accepted(
             &mut engine,
-            &report(1, roomy.clone(), two_tiled(), "", None, None, vec![]),
+            &report(1, roomy.clone(), two_tiled(), "", None, None),
         );
         place_float(&mut engine, 2, two_tiled(), "win-a", Some(target));
         let reply = accepted(
@@ -1122,7 +998,6 @@ fn float_forged_correlation_never_settles() {
                 "",
                 None,
                 None,
-                vec![],
                 vec![attempt],
             ),
         );
@@ -1145,7 +1020,7 @@ fn float_replay_of_consumed_attempt_never_resurrects() {
     let roomy = vec![screen_sized("out-a", 0, 800, 560, true)];
     accepted(
         &mut engine,
-        &report(1, roomy.clone(), two_tiled(), "", None, None, vec![]),
+        &report(1, roomy.clone(), two_tiled(), "", None, None),
     );
     let source = rect(0, 0, 40, 90);
     let target = rect(10, 10, 200, 150);
@@ -1173,7 +1048,6 @@ fn float_replay_of_consumed_attempt_never_resurrects() {
             "",
             None,
             None,
-            vec![],
             vec![clamp.clone()],
         ),
     );
@@ -1191,7 +1065,6 @@ fn float_replay_of_consumed_attempt_never_resurrects() {
             "",
             None,
             None,
-            vec![],
             vec![clamp],
         ),
     );
@@ -1205,7 +1078,7 @@ fn float_replay_of_consumed_attempt_never_resurrects() {
     let mut engine = WorldEngine::new("gen-1").expect("generation");
     accepted(
         &mut engine,
-        &report(1, roomy.clone(), two_tiled(), "", None, None, vec![]),
+        &report(1, roomy.clone(), two_tiled(), "", None, None),
     );
     place_float(&mut engine, 2, two_tiled(), "win-a", Some(target));
     let confirm = float_attempt(
@@ -1229,7 +1102,6 @@ fn float_replay_of_consumed_attempt_never_resurrects() {
             "",
             None,
             None,
-            vec![],
             vec![confirm.clone()],
         ),
     );
@@ -1246,7 +1118,6 @@ fn float_replay_of_consumed_attempt_never_resurrects() {
             "",
             None,
             None,
-            vec![],
             vec![confirm],
         ),
     );
@@ -1262,7 +1133,7 @@ fn float_incomplete_gesture_minimized_and_unreadable_hold() {
     let mut engine = WorldEngine::new("gen-1").expect("generation");
     accepted(
         &mut engine,
-        &report(1, roomy.clone(), two_tiled(), "", None, None, vec![]),
+        &report(1, roomy.clone(), two_tiled(), "", None, None),
     );
     place_float(&mut engine, 2, two_tiled(), "win-a", Some(target));
     let mut gap = report_with_frames(
@@ -1276,7 +1147,6 @@ fn float_incomplete_gesture_minimized_and_unreadable_hold() {
         None,
         None,
         vec![],
-        vec![],
     );
     gap.inventory_complete = false;
     let held = accepted(&mut engine, &gap);
@@ -1289,7 +1159,7 @@ fn float_incomplete_gesture_minimized_and_unreadable_hold() {
     let mut engine = WorldEngine::new("gen-1").expect("generation");
     accepted(
         &mut engine,
-        &report(1, roomy.clone(), two_tiled(), "", None, None, vec![]),
+        &report(1, roomy.clone(), two_tiled(), "", None, None),
     );
     place_float(&mut engine, 2, two_tiled(), "win-a", Some(target));
     let mut gesture = report(
@@ -1302,7 +1172,6 @@ fn float_incomplete_gesture_minimized_and_unreadable_hold() {
         "",
         None,
         None,
-        vec![],
     );
     gesture.gesture_barrier = true;
     let held = accepted(&mut engine, &gesture);
@@ -1338,7 +1207,7 @@ fn float_incomplete_gesture_minimized_and_unreadable_hold() {
         let mut engine = WorldEngine::new("gen-1").expect("generation");
         accepted(
             &mut engine,
-            &report(1, roomy.clone(), two_tiled(), "", None, None, vec![]),
+            &report(1, roomy.clone(), two_tiled(), "", None, None),
         );
         place_float(&mut engine, 2, two_tiled(), "win-a", Some(target));
         let mut stale = report_with_frames(
@@ -1348,7 +1217,6 @@ fn float_incomplete_gesture_minimized_and_unreadable_hold() {
             "",
             None,
             None,
-            vec![],
             vec![float_attempt(
                 "op-12",
                 "win-a",
@@ -1427,7 +1295,7 @@ fn float_gap_clamp_recovers_without_repeated_row() {
         let mut engine = WorldEngine::new("gen-1").expect("generation");
         accepted(
             &mut engine,
-            &report(1, roomy.clone(), two_tiled(), "", None, None, vec![]),
+            &report(1, roomy.clone(), two_tiled(), "", None, None),
         );
         place_float(&mut engine, 2, two_tiled(), "win-a", Some(target));
         let mut gapped = report_with_frames(
@@ -1437,7 +1305,6 @@ fn float_gap_clamp_recovers_without_repeated_row() {
             "",
             None,
             None,
-            vec![],
             vec![float_attempt(
                 "op-12",
                 "win-a",
@@ -1475,7 +1342,6 @@ fn float_gap_clamp_recovers_without_repeated_row() {
                 None,
                 None,
                 vec![],
-                vec![],
             ),
         );
         assert_eq!(
@@ -1497,7 +1363,7 @@ fn float_gap_refusal_recovers_to_settle_after_ack() {
     let roomy = vec![screen_sized("out-a", 0, 800, 560, true)];
     accepted(
         &mut engine,
-        &report(1, roomy.clone(), two_tiled(), "", None, None, vec![]),
+        &report(1, roomy.clone(), two_tiled(), "", None, None),
     );
     let source = rect(0, 0, 40, 90);
     let target = rect(10, 10, 200, 150);
@@ -1515,7 +1381,6 @@ fn float_gap_refusal_recovers_to_settle_after_ack() {
         "",
         None,
         None,
-        vec![],
         vec![float_attempt(
             "op-12",
             "win-a",
@@ -1548,7 +1413,6 @@ fn float_gap_refusal_recovers_to_settle_after_ack() {
             None,
             None,
             vec![],
-            vec![],
         ),
     );
     assert_eq!(
@@ -1568,7 +1432,7 @@ fn float_dpi_flip_holds_recovery_then_target_settles() {
     let roomy = vec![screen_sized("out-a", 0, 800, 560, true)];
     accepted(
         &mut engine,
-        &report(1, roomy.clone(), two_tiled(), "", None, None, vec![]),
+        &report(1, roomy.clone(), two_tiled(), "", None, None),
     );
     let source = rect(0, 0, 40, 90);
     let target = rect(10, 10, 200, 150);
@@ -1588,7 +1452,6 @@ fn float_dpi_flip_holds_recovery_then_target_settles() {
             "",
             None,
             None,
-            vec![],
             vec![crate::world_report::FrameAttempt {
                 window: WindowId("win-a".to_owned()),
                 target,
@@ -1621,7 +1484,6 @@ fn float_dpi_flip_holds_recovery_then_target_settles() {
             "",
             None,
             None,
-            vec![],
         ),
     );
     assert_eq!(
@@ -1643,7 +1505,6 @@ fn float_dpi_flip_holds_recovery_then_target_settles() {
             "",
             None,
             None,
-            vec![],
         ),
     );
     assert_eq!(
@@ -1661,7 +1522,7 @@ fn float_gap_close_still_settles() {
     let roomy = vec![screen_sized("out-a", 0, 800, 560, true)];
     accepted(
         &mut engine,
-        &report(1, roomy.clone(), two_tiled(), "", None, None, vec![]),
+        &report(1, roomy.clone(), two_tiled(), "", None, None),
     );
     let source = rect(0, 0, 40, 90);
     let target = rect(10, 10, 200, 150);
@@ -1675,7 +1536,6 @@ fn float_gap_close_still_settles() {
         "",
         None,
         None,
-        vec![],
         vec![float_attempt(
             "op-12",
             "win-a",
@@ -1703,7 +1563,7 @@ fn float_lost_result_recovers_stale_never_replays() {
     let roomy = vec![screen_sized("out-a", 0, 800, 560, true)];
     accepted(
         &mut engine,
-        &report(1, roomy.clone(), two_tiled(), "", None, None, vec![]),
+        &report(1, roomy.clone(), two_tiled(), "", None, None),
     );
     let target = rect(10, 10, 200, 150);
     let first = place_float(&mut engine, 2, two_tiled(), "win-a", Some(target));
@@ -1711,7 +1571,7 @@ fn float_lost_result_recovers_stale_never_replays() {
     // Lost reply: unrelated snapshot still carries the exact token.
     let next = accepted(
         &mut engine,
-        &report(3, roomy.clone(), two_tiled(), "", None, None, vec![]),
+        &report(3, roomy.clone(), two_tiled(), "", None, None),
     );
     assert_eq!(next.command_result, None);
     assert_eq!(
@@ -1726,7 +1586,7 @@ fn float_lost_result_recovers_stale_never_replays() {
             window: "win-a".to_owned(),
             float_rect: Some(target),
         })),
-        ..report(4, roomy, two_tiled(), "", None, None, vec![])
+        ..report(4, roomy, two_tiled(), "", None, None)
     };
     match engine.handle_report(&replay) {
         WorldOutcome::CommandConsumed(reply) => {
@@ -1746,7 +1606,7 @@ fn float_close_and_reset_clear_token() {
     let roomy = vec![screen_sized("out-a", 0, 800, 560, true)];
     accepted(
         &mut engine,
-        &report(1, roomy.clone(), two_tiled(), "", None, None, vec![]),
+        &report(1, roomy.clone(), two_tiled(), "", None, None),
     );
     let target = rect(10, 10, 200, 150);
     place_float(&mut engine, 2, two_tiled(), "win-a", Some(target));
@@ -1758,7 +1618,6 @@ fn float_close_and_reset_clear_token() {
         "",
         None,
         None,
-        vec![],
     );
     closed.closed = vec![crate::directional::WindowId("win-a".to_owned())];
     let reply = accepted(&mut engine, &closed);
@@ -1769,7 +1628,7 @@ fn float_close_and_reset_clear_token() {
     );
     // Fresh placement then incarnation reset clears without touching windows.
     place_float(&mut engine, 4, two_tiled(), "win-a", Some(target));
-    let mut reset = report(5, roomy, two_tiled(), "", None, None, vec![]);
+    let mut reset = report(5, roomy, two_tiled(), "", None, None);
     reset.adapter_incarnation = "adapter-2".to_owned();
     let reply = accepted(&mut engine, &reset);
     assert!(
