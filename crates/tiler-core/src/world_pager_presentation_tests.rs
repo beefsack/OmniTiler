@@ -1,23 +1,22 @@
-//! Stage-4c pager presentation coverage: normalized frame retention,
-//! native order policy, and the read-only content query.
+//! Stage-5 uniform pager presentation coverage: report-driven frame
+//! retention, native order policy, and the per-reply pager content.
 //!
-//! The adapter forwards verified live frames, saved float/tile snapshots,
-//! and the single-enumeration native order over opaque lifetimes; the core
-//! retains presentation facts, resolves the live > float > tile fallback,
-//! and publishes per-screen rings, labels, current/occupied/focused flags,
-//! and bottom-first paint lists. Unknown lifetimes never admit members and
-//! never appear publicly before admission.
+//! The adapter carries the single native stacking snapshot (`pager_order`)
+//! plus live frames on the report; the core retains the last live frame per
+//! roster lifetime plus the stacking order, and publishes per-screen rings,
+//! labels, current/occupied/focused flags, and bottom-first paint lists in
+//! the reply. Unknown lifetimes never admit members and never appear
+//! publicly before admission.
 
 use crate::directional::{OutputId, WindowId, WorkspaceId};
 use crate::geometry::Rect;
 use crate::session::DomainKey;
 use crate::size_hints::WindowSizeHints;
 use crate::world_engine::{WorldEngine, WorldOutcome};
-use crate::world_presentation::{
-    PagerPresentationObservation, PagerWindow, PagerWorkspace, pager_workspace_label,
-};
+use crate::world_presentation::{PagerWindow, PagerWorkspace, pager_workspace_label};
 use crate::world_report::{
-    ScreenReport, WORLD_CONTRACT_VERSION, WindowFact, WorldReply, WorldReport,
+    PresentationIngress, PresentationPagerFrame, ScreenReport, WORLD_CONTRACT_VERSION, WindowFact,
+    WorldReply, WorldReport,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -61,6 +60,39 @@ fn pager_report(
     focused: &str,
     complete: bool,
 ) -> WorldReport {
+    pager_report_ordered(
+        request_seq,
+        observation_seq,
+        windows,
+        focused,
+        complete,
+        &[],
+    )
+}
+
+fn pager_report_ordered(
+    request_seq: u64,
+    observation_seq: u64,
+    windows: Vec<WindowFact>,
+    focused: &str,
+    complete: bool,
+    order: &[&str],
+) -> WorldReport {
+    // Live rows mirror the capture mapping for ordinary members (live fact
+    // per observed frame); overlay tests override the rows explicitly
+    // because the fact frame carries the tile slot while the fresh frame
+    // rides the live source.
+    let frames: Vec<PresentationPagerFrame> = windows
+        .iter()
+        .filter_map(|fact| {
+            fact.rect.map(|rect| PresentationPagerFrame {
+                window: fact.window.clone(),
+                live: Some(rect),
+                float_frame: None,
+                tile_frame: None,
+            })
+        })
+        .collect();
     WorldReport {
         contract_version: WORLD_CONTRACT_VERSION,
         owner: "owner-a".to_owned(),
@@ -102,6 +134,14 @@ fn pager_report(
         member_attempts: Vec::new(),
         view_attempts: Vec::new(),
         clear_attempts: Vec::new(),
+        presentation: PresentationIngress {
+            pager_order: order
+                .iter()
+                .map(|window| WindowId((*window).to_owned()))
+                .collect(),
+            pager_frames: frames,
+            ..PresentationIngress::disabled()
+        },
     }
 }
 
@@ -123,7 +163,14 @@ fn admitted_pair() -> (WorldEngine, DomainKey) {
     ];
     let first = accepted(
         &mut engine,
-        &pager_report(1, 1, members.clone(), "win-a", true),
+        &pager_report_ordered(
+            1,
+            1,
+            members.clone(),
+            "win-a",
+            true,
+            &["win-a", "win-b", "win-c"],
+        ),
     );
     let view_a = first
         .outputs
@@ -132,8 +179,11 @@ fn admitted_pair() -> (WorldEngine, DomainKey) {
         .and_then(|row| row.logical_view.clone())
         .expect("view a");
     // A second identical report lets managed focus latch behind the
-    // newcomer before any query reads retained focus.
-    accepted(&mut engine, &pager_report(2, 2, members, "win-a", true));
+    // newcomer before any content reads retained focus.
+    accepted(
+        &mut engine,
+        &pager_report_ordered(2, 2, members, "win-a", true, &["win-a", "win-b", "win-c"]),
+    );
     let home = DomainKey {
         output: OutputId("out-a".to_owned()),
         workspace: WorkspaceId(view_a),
@@ -141,30 +191,8 @@ fn admitted_pair() -> (WorldEngine, DomainKey) {
     (engine, home)
 }
 
-fn pager_obs(
-    live: &[(&str, Rect)],
-    floats: &[(&str, Rect)],
-    tiles: &[(&str, Rect)],
-    native: &[&str],
-) -> PagerPresentationObservation {
-    PagerPresentationObservation {
-        live: live
-            .iter()
-            .map(|(window, frame)| (WindowId((*window).to_owned()), *frame))
-            .collect(),
-        float_frames: floats
-            .iter()
-            .map(|(window, frame)| (WindowId((*window).to_owned()), *frame))
-            .collect(),
-        tile_frames: tiles
-            .iter()
-            .map(|(window, frame)| (WindowId((*window).to_owned()), *frame))
-            .collect(),
-        native_order_top_to_bottom: native
-            .iter()
-            .map(|window| WindowId((*window).to_owned()))
-            .collect(),
-    }
+fn pager_of(reply: &WorldReply) -> &[crate::world_presentation::PagerScreen] {
+    &reply.presentation.pager
 }
 
 #[test]
@@ -174,13 +202,22 @@ fn pager_labels_rings_current_occupied_and_focus() {
     assert_eq!(pager_workspace_label(12), "Workspace 12");
     let live_a = rect(0, 0, 40, 90);
     let live_b = rect(100, 0, 40, 90);
-    engine.observe_pager_presentation(pager_obs(
-        &[("win-a", live_a), ("win-b", live_b)],
-        &[],
-        &[],
-        &["win-a", "win-b"],
-    ));
-    let screens = engine.pager_screens();
+    let reply = accepted(
+        &mut engine,
+        &pager_report_ordered(
+            3,
+            3,
+            vec![
+                fact("win-a", "out-a", 0),
+                fact("win-b", "out-a", 100),
+                fact("win-c", "out-b", 800),
+            ],
+            "win-a",
+            true,
+            &["win-a", "win-b"],
+        ),
+    );
+    let screens = pager_of(&reply);
     assert_eq!(screens.len(), 2);
     assert_eq!(screens[0].output, "out-a");
     assert_eq!(screens[1].output, "out-b");
@@ -227,115 +264,165 @@ fn pager_labels_rings_current_occupied_and_focus() {
 }
 
 #[test]
-fn pager_frame_fallback_prefers_live_then_float_then_tile() {
+fn pager_retains_last_live_frame_across_reports() {
     let (mut engine, _) = admitted_pair();
     let live = rect(0, 0, 40, 90);
-    let float = rect(100, 0, 40, 90);
-    let tile = rect(200, 0, 40, 90);
-    // Slot alone resolves.
-    engine.observe_pager_presentation(pager_obs(&[], &[], &[("win-a", tile)], &[]));
-    assert_eq!(
-        engine.pager_frame(&WindowId("win-a".to_owned())),
-        Some(tile)
+    // Report 3 refreshes the live frame for win-a.
+    let reply = accepted(
+        &mut engine,
+        &pager_report_ordered(
+            3,
+            3,
+            vec![
+                fact("win-a", "out-a", 0),
+                fact("win-b", "out-a", 100),
+                fact("win-c", "out-b", 800),
+            ],
+            "win-a",
+            true,
+            &["win-a"],
+        ),
     );
-    // Float beats the slot.
-    engine.observe_pager_presentation(pager_obs(&[], &[("win-a", float)], &[("win-a", tile)], &[]));
-    assert_eq!(
-        engine.pager_frame(&WindowId("win-a".to_owned())),
-        Some(float)
-    );
-    // Live identity-verified frame beats both.
-    engine.observe_pager_presentation(pager_obs(
-        &[("win-a", live)],
-        &[("win-a", float)],
-        &[("win-a", tile)],
+    let painted = pager_of(&reply)
+        .iter()
+        .flat_map(|screen| screen.workspaces.iter())
+        .flat_map(|workspace| workspace.windows.iter())
+        .find(|window| window.window.0 == "win-a")
+        .expect("win-a paints")
+        .frame;
+    assert_eq!(painted, live);
+    // Report 4 drops the live fact under incomplete inventory but keeps the
+    // native order and forwards the retained slot snapshot (mirroring the
+    // adapter's member-rects table): the snapshot still resolves and the
+    // order slot survives.
+    let mut fourth = pager_report_ordered(
+        4,
+        4,
+        vec![fact("win-b", "out-a", 100), fact("win-c", "out-b", 800)],
+        "win-a",
+        false,
         &["win-a"],
-    ));
+    );
+    fourth.presentation.pager_frames = vec![crate::world_report::PresentationPagerFrame {
+        window: WindowId("win-a".to_owned()),
+        live: None,
+        float_frame: Some(live),
+        tile_frame: None,
+    }];
+    let reply = accepted(&mut engine, &fourth);
+    // win-a stays homed while incomplete hides nothing by absence.
+    assert!(
+        engine
+            .adapter_homing(&WindowId("win-a".to_owned()))
+            .is_some()
+    );
+    let painted = pager_of(&reply)
+        .iter()
+        .flat_map(|screen| screen.workspaces.iter())
+        .flat_map(|workspace| workspace.windows.iter())
+        .find(|window| window.window.0 == "win-a")
+        .expect("win-a still paints from its retained frame")
+        .frame;
+    assert_eq!(painted, live);
     assert_eq!(
-        engine.pager_frame(&WindowId("win-a".to_owned())),
-        Some(live)
+        engine.presentation_order,
+        vec![
+            WindowId("win-a".to_owned()),
+            WindowId("win-b".to_owned()),
+            WindowId("win-c".to_owned())
+        ]
     );
     // Unknown lifetimes resolve to nothing, never a guess.
-    assert_eq!(engine.pager_frame(&WindowId("ghost".to_owned())), None);
+    assert!(
+        pager_of(&reply)
+            .iter()
+            .flat_map(|screen| screen.workspaces.iter())
+            .flat_map(|workspace| workspace.windows.iter())
+            .all(|window| window.window.0 != "ghost")
+    );
 }
 
 #[test]
-fn pager_hidden_and_minimized_resolve_through_snapshots() {
+fn pager_hidden_and_minimized_keep_retained_frame() {
     let mut engine = WorldEngine::new("gen-1").expect("generation");
     accepted(
         &mut engine,
-        &pager_report(
+        &pager_report_ordered(
             1,
             1,
             vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
             "win-a",
             true,
+            &["win-a", "win-b"],
         ),
     );
     accepted(
         &mut engine,
-        &pager_report(
+        &pager_report_ordered(
             2,
             2,
             vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
             "win-a",
             true,
+            &["win-a", "win-b"],
         ),
     );
-    let hidden_tile = rect(100, 0, 40, 90);
-    // Tick 1: both verified live, native top-to-bottom [win-a, win-b].
-    engine.observe_pager_presentation(pager_obs(
-        &[("win-a", rect(0, 0, 40, 90)), ("win-b", hidden_tile)],
-        &[],
-        &[("win-b", hidden_tile)],
-        &["win-a", "win-b"],
-    ));
-    // Tick 2: win-b hidden (absent under incomplete inventory, so never
-    // inferred closed) and absent from live: the tile snapshot resolves.
-    accepted(
+    let hidden_frame = rect(100, 0, 40, 90);
+    // Report 3: win-b hidden. Production capture forwards the hidden
+    // snapshot as the live fact (hidden lane), so the member resolves
+    // through the live tier; absence alone never infers a close under
+    // incomplete inventory.
+    let reply = accepted(
         &mut engine,
-        &pager_report(3, 3, vec![fact("win-a", "out-a", 0)], "win-a", false),
+        &pager_report(
+            3,
+            3,
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            "win-a",
+            false,
+        ),
     );
     assert!(
         engine
             .adapter_homing(&WindowId("win-b".to_owned()))
             .is_some()
     );
-    engine.observe_pager_presentation(pager_obs(
-        &[("win-a", rect(0, 0, 40, 90))],
-        &[],
-        &[("win-b", hidden_tile)],
-        &["win-a"],
-    ));
-    assert_eq!(
-        engine.pager_frame(&WindowId("win-b".to_owned())),
-        Some(hidden_tile)
-    );
-    // Tick 3: win-b minimized (explicit minimized row, no live frame):
-    // the snapshot still resolves and the order slot survives.
+    let painted = pager_of(&reply)
+        .iter()
+        .flat_map(|screen| screen.workspaces.iter())
+        .flat_map(|workspace| workspace.windows.iter())
+        .find(|window| window.window.0 == "win-b")
+        .expect("hidden win-b still paints")
+        .frame;
+    assert_eq!(painted, hidden_frame);
+    // Report 4: win-b minimized (explicit minimized row, no live frame)
+    // with the adapter's retained slot snapshot forwarded: the snapshot
+    // resolves and the order slot survives.
     let mut minimized = fact("win-b", "out-a", 100);
     minimized.minimized = true;
     minimized.rect = None;
-    accepted(
-        &mut engine,
-        &pager_report(
-            4,
-            4,
-            vec![fact("win-a", "out-a", 0), minimized],
-            "win-a",
-            true,
-        ),
+    let mut fourth = pager_report(
+        4,
+        4,
+        vec![fact("win-a", "out-a", 0), minimized],
+        "win-a",
+        true,
     );
-    engine.observe_pager_presentation(pager_obs(
-        &[("win-a", rect(0, 0, 40, 90))],
-        &[],
-        &[("win-b", hidden_tile)],
-        &["win-a"],
-    ));
-    assert_eq!(
-        engine.pager_frame(&WindowId("win-b".to_owned())),
-        Some(hidden_tile)
-    );
+    fourth.presentation.pager_frames = vec![crate::world_report::PresentationPagerFrame {
+        window: WindowId("win-b".to_owned()),
+        live: None,
+        float_frame: None,
+        tile_frame: Some(hidden_frame),
+    }];
+    let reply = accepted(&mut engine, &fourth);
+    let painted = pager_of(&reply)
+        .iter()
+        .flat_map(|screen| screen.workspaces.iter())
+        .flat_map(|workspace| workspace.windows.iter())
+        .find(|window| window.window.0 == "win-b")
+        .expect("minimized win-b still paints")
+        .frame;
+    assert_eq!(painted, hidden_frame);
     assert_eq!(
         engine.presentation_order,
         vec![WindowId("win-a".to_owned()), WindowId("win-b".to_owned())]
@@ -345,18 +432,18 @@ fn pager_hidden_and_minimized_resolve_through_snapshots() {
 #[test]
 fn pager_native_order_retention_reordering_duplicates_pruning() {
     let (mut engine, _) = admitted_pair();
-    let frame = |x: i32| rect(x, 0, 40, 90);
-    // Tick 1: fresh native order [win-a, win-b, win-c].
-    engine.observe_pager_presentation(pager_obs(
-        &[
-            ("win-a", frame(0)),
-            ("win-b", frame(100)),
-            ("win-c", frame(800)),
-        ],
-        &[],
-        &[],
-        &["win-a", "win-b", "win-c"],
-    ));
+    let members = || {
+        vec![
+            fact("win-a", "out-a", 0),
+            fact("win-b", "out-a", 100),
+            fact("win-c", "out-b", 800),
+        ]
+    };
+    // Report 3: fresh native order [win-a, win-b, win-c].
+    accepted(
+        &mut engine,
+        &pager_report_ordered(3, 3, members(), "win-a", true, &["win-a", "win-b", "win-c"]),
+    );
     assert_eq!(
         engine.presentation_order,
         vec![
@@ -365,17 +452,18 @@ fn pager_native_order_retention_reordering_duplicates_pruning() {
             WindowId("win-c".to_owned())
         ]
     );
-    // Duplicate native entries keep their first occurrence.
-    engine.observe_pager_presentation(pager_obs(
-        &[
-            ("win-a", frame(0)),
-            ("win-b", frame(100)),
-            ("win-c", frame(800)),
-        ],
-        &[],
-        &[],
-        &["win-a", "win-a", "win-b", "win-c"],
-    ));
+    // Duplicate ingress entries keep their first occurrence.
+    accepted(
+        &mut engine,
+        &pager_report_ordered(
+            4,
+            4,
+            members(),
+            "win-a",
+            true,
+            &["win-a", "win-a", "win-b", "win-c"],
+        ),
+    );
     assert_eq!(
         engine.presentation_order,
         vec![
@@ -384,17 +472,11 @@ fn pager_native_order_retention_reordering_duplicates_pruning() {
             WindowId("win-c".to_owned())
         ]
     );
-    // Reordering follows the fresh native sequence exactly.
-    engine.observe_pager_presentation(pager_obs(
-        &[
-            ("win-a", frame(0)),
-            ("win-b", frame(100)),
-            ("win-c", frame(800)),
-        ],
-        &[],
-        &[],
-        &["win-c", "win-b", "win-a"],
-    ));
+    // Reordering follows the fresh ingress sequence exactly.
+    accepted(
+        &mut engine,
+        &pager_report_ordered(5, 5, members(), "win-a", true, &["win-c", "win-b", "win-a"]),
+    );
     assert_eq!(
         engine.presentation_order,
         vec![
@@ -403,18 +485,12 @@ fn pager_native_order_retention_reordering_duplicates_pruning() {
             WindowId("win-a".to_owned())
         ]
     );
-    // Unknown native identities never admit members, but hold an order
-    // slot until the next observation prunes them once absent.
-    engine.observe_pager_presentation(pager_obs(
-        &[
-            ("win-a", frame(0)),
-            ("win-b", frame(100)),
-            ("win-c", frame(800)),
-        ],
-        &[],
-        &[],
-        &["ghost", "win-c", "win-a"],
-    ));
+    // Unknown ingress identities never admit members, but hold an order
+    // slot until the next report prunes them once absent.
+    let reply = accepted(
+        &mut engine,
+        &pager_report_ordered(6, 6, members(), "win-a", true, &["ghost", "win-c", "win-a"]),
+    );
     assert!(
         engine
             .presentation_order
@@ -425,49 +501,36 @@ fn pager_native_order_retention_reordering_duplicates_pruning() {
             .adapter_homing(&WindowId("ghost".to_owned()))
             .is_none()
     );
-    let screens = engine.pager_screens();
     assert!(
-        screens
+        pager_of(&reply)
             .iter()
             .flat_map(|screen| screen.workspaces.iter())
             .flat_map(|workspace| workspace.windows.iter())
             .all(|window| window.window.0 != "ghost"),
         "unadmitted candidates never render"
     );
-    // Candidate frames are retained but never public before admission.
-    assert_eq!(engine.pager_frame(&WindowId("ghost".to_owned())), None);
-    engine.observe_pager_presentation(pager_obs(
-        &[
-            ("win-a", frame(0)),
-            ("win-b", frame(100)),
-            ("win-c", frame(800)),
-        ],
-        &[],
-        &[],
-        &["win-c", "win-a"],
-    ));
+    // The next report drops the ghost from the order.
+    accepted(
+        &mut engine,
+        &pager_report_ordered(7, 7, members(), "win-a", true, &["win-c", "win-a"]),
+    );
     assert!(
         !engine
             .presentation_order
             .contains(&WindowId("ghost".to_owned()))
     );
-    // Closing win-c prunes its slot on the next observation.
+    // Closing win-c prunes its slot on the next report.
     accepted(
         &mut engine,
-        &pager_report(
-            3,
-            3,
+        &pager_report_ordered(
+            8,
+            8,
             vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
             "win-a",
             true,
+            &["win-b", "win-a"],
         ),
     );
-    engine.observe_pager_presentation(pager_obs(
-        &[("win-a", frame(0)), ("win-b", frame(100))],
-        &[],
-        &[],
-        &["win-b", "win-a"],
-    ));
     assert_eq!(
         engine.presentation_order,
         vec![WindowId("win-b".to_owned()), WindowId("win-a".to_owned())]
@@ -482,37 +545,12 @@ fn pager_native_order_retention_reordering_duplicates_pruning() {
 #[test]
 fn pager_candidate_frame_survives_same_report_admission() {
     let (mut engine, _) = admitted_pair();
-    let live = rect(400, 0, 40, 90);
-    let float = rect(401, 0, 40, 90);
-    let tile = rect(402, 0, 40, 90);
-    // Pre-observation verifies a not-yet-admitted candidate with all three
-    // frame lanes populated: the slot is retained but stays non-public.
-    engine.observe_pager_presentation(pager_obs(
-        &[("win-new", live)],
-        &[("win-new", float)],
-        &[("win-new", tile)],
-        &["win-new", "win-a"],
-    ));
-    assert!(
-        engine
-            .adapter_homing(&WindowId("win-new".to_owned()))
-            .is_none()
-    );
-    assert_eq!(engine.pager_frame(&WindowId("win-new".to_owned())), None);
-    assert!(
-        engine
-            .pager_screens()
-            .iter()
-            .flat_map(|screen| screen.workspaces.iter())
-            .flat_map(|workspace| workspace.windows.iter())
-            .all(|window| window.window.0 != "win-new"),
-        "unadmitted candidates never render"
-    );
-    // Same-report admission with no second presentation observation: the
-    // first query resolves the retained candidate frame, live first.
-    accepted(
+    let live = rect(200, 0, 40, 90);
+    // Same-report admission with no second observation: the first publish
+    // resolves the report's own live frame.
+    let reply = accepted(
         &mut engine,
-        &pager_report(
+        &pager_report_ordered(
             3,
             3,
             vec![
@@ -522,6 +560,7 @@ fn pager_candidate_frame_survives_same_report_admission() {
             ],
             "win-a",
             true,
+            &["win-new", "win-a"],
         ),
     );
     assert!(
@@ -529,93 +568,274 @@ fn pager_candidate_frame_survives_same_report_admission() {
             .adapter_homing(&WindowId("win-new".to_owned()))
             .is_some()
     );
-    assert_eq!(
-        engine.pager_frame(&WindowId("win-new".to_owned())),
-        Some(live)
-    );
-    let painted = engine
-        .pager_screens()
+    let painted = pager_of(&reply)
         .iter()
         .flat_map(|screen| screen.workspaces.iter())
         .flat_map(|workspace| workspace.windows.iter())
         .find(|window| window.window.0 == "win-new")
-        .expect("admitted candidate paints on the first query")
+        .expect("admitted candidate paints on the first publish")
         .frame;
     assert_eq!(painted, live);
-    // Pruning: once closed and absent from the next observation, the frame
-    // and the order slot both drop.
+    // Pruning: once closed and absent from the next report, the frame and
+    // the order slot both drop.
     accepted(
         &mut engine,
-        &pager_report(
+        &pager_report_ordered(
             4,
             4,
             vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
             "win-a",
             true,
+            &["win-a"],
         ),
     );
-    engine.observe_pager_presentation(pager_obs(
-        &[("win-a", rect(0, 0, 40, 90))],
-        &[],
-        &[],
-        &["win-a"],
-    ));
-    assert_eq!(engine.pager_frame(&WindowId("win-new".to_owned())), None);
     assert!(
         !engine
             .presentation_order
             .contains(&WindowId("win-new".to_owned()))
     );
-    // Reuse: the same token re-verified before re-admission is retained
-    // again but still renders nothing until admitted.
-    engine.observe_pager_presentation(pager_obs(
-        &[("win-new", live)],
-        &[],
-        &[],
-        &["win-new", "win-a"],
-    ));
+    let reply = accepted(
+        &mut engine,
+        &pager_report_ordered(
+            5,
+            5,
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            "win-a",
+            true,
+            &["win-a"],
+        ),
+    );
+    assert!(
+        pager_of(&reply)
+            .iter()
+            .flat_map(|screen| screen.workspaces.iter())
+            .flat_map(|workspace| workspace.windows.iter())
+            .all(|window| window.window.0 != "win-new")
+    );
+    // Reuse: the same token re-verified in the order before re-admission is
+    // retained again but still renders nothing until admitted.
+    accepted(
+        &mut engine,
+        &pager_report_ordered(
+            6,
+            6,
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            "win-a",
+            true,
+            &["win-new", "win-a"],
+        ),
+    );
     assert!(
         engine
             .presentation_order
             .contains(&WindowId("win-new".to_owned()))
     );
-    assert_eq!(engine.pager_frame(&WindowId("win-new".to_owned())), None);
+    let reply = accepted(
+        &mut engine,
+        &pager_report_ordered(
+            7,
+            7,
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            "win-a",
+            true,
+            &["win-new", "win-a"],
+        ),
+    );
+    assert!(
+        pager_of(&reply)
+            .iter()
+            .flat_map(|screen| screen.workspaces.iter())
+            .flat_map(|workspace| workspace.windows.iter())
+            .all(|window| window.window.0 != "win-new"),
+        "unadmitted candidates never render"
+    );
 }
 
 #[test]
-fn pager_observation_never_mutates_mapping_or_membership() {
+fn pager_frame_sources_resolve_live_then_float_then_tile() {
+    use crate::world_report::PresentationPagerFrame;
     let (mut engine, _) = admitted_pair();
-    let revision = engine.state_revision();
-    let outputs = engine.logical_outputs();
-    let rings: Vec<(String, Vec<String>)> = outputs
-        .iter()
-        .map(|output| (output.clone(), engine.logical_ring(output)))
-        .collect();
-    let views: Vec<(String, Option<String>)> = outputs
-        .iter()
-        .map(|output| (output.clone(), engine.logical_view(output)))
-        .collect();
-    let members = engine.logical_members_all();
-    // Foreign frames, unknown order, and unadmitted candidates: the
-    // observation retains presentation facts only.
-    engine.observe_pager_presentation(pager_obs(
-        &[("ghost", rect(0, 0, 10, 10))],
-        &[("ghost", rect(1, 1, 10, 10))],
-        &[("ghost", rect(2, 2, 10, 10))],
-        &["ghost", "win-a"],
-    ));
-    assert_eq!(engine.state_revision(), revision);
-    assert_eq!(engine.logical_outputs(), outputs);
-    for (output, ring) in &rings {
-        assert_eq!(engine.logical_ring(output), *ring);
-    }
-    for (output, view) in &views {
-        assert_eq!(engine.logical_view(output), *view);
-    }
-    assert_eq!(engine.logical_members_all(), members);
-    assert!(
-        engine
-            .adapter_homing(&WindowId("ghost".to_owned()))
-            .is_none()
+    let live = rect(0, 0, 40, 90);
+    let float = rect(1, 1, 42, 92);
+    let tile = rect(2, 2, 44, 94);
+    let row = |live: Option<Rect>, float_frame: Option<Rect>, tile_frame: Option<Rect>| {
+        PresentationPagerFrame {
+            window: WindowId("win-a".to_owned()),
+            live,
+            float_frame,
+            tile_frame,
+        }
+    };
+    let members = || {
+        vec![
+            fact("win-a", "out-a", 0),
+            fact("win-b", "out-a", 100),
+            fact("win-c", "out-b", 800),
+        ]
+    };
+    // A retained overlay row carries its tile slot as the fact frame
+    // (model grounding), while the fresh native frame rides the live
+    // source: the content must paint the live frame, never the slot.
+    // Here the report fact is unreadable and only the float/tile slots
+    // ride, so the float slot resolves.
+    let mut stalled = fact("win-a", "out-a", 0);
+    stalled.rect = None;
+    let mut third = pager_report_ordered(
+        3,
+        3,
+        {
+            let mut members = members();
+            members[0] = stalled.clone();
+            members
+        },
+        "win-a",
+        true,
+        &["win-a", "win-b", "win-c"],
     );
+    third.presentation.pager_frames = vec![row(None, Some(float), Some(tile))];
+    let reply = accepted(&mut engine, &third);
+    let painted = pager_of(&reply)
+        .iter()
+        .flat_map(|screen| screen.workspaces.iter())
+        .flat_map(|workspace| workspace.windows.iter())
+        .find(|window| window.window.0 == "win-a")
+        .expect("float slot resolves the held member")
+        .frame;
+    assert_eq!(painted, float);
+    // A live source beats both retained slots.
+    let mut fourth =
+        pager_report_ordered(4, 4, members(), "win-a", true, &["win-a", "win-b", "win-c"]);
+    fourth.presentation.pager_frames = vec![row(Some(live), Some(float), Some(tile))];
+    let reply = accepted(&mut engine, &fourth);
+    let painted = pager_of(&reply)
+        .iter()
+        .flat_map(|screen| screen.workspaces.iter())
+        .flat_map(|workspace| workspace.windows.iter())
+        .find(|window| window.window.0 == "win-a")
+        .expect("win-a paints")
+        .frame;
+    assert_eq!(painted, live);
+    // Tile alone resolves when live and float are absent.
+    let mut fifth = pager_report_ordered(
+        5,
+        5,
+        {
+            let mut members = members();
+            members[0] = stalled.clone();
+            members
+        },
+        "win-a",
+        true,
+        &["win-a", "win-b", "win-c"],
+    );
+    fifth.presentation.pager_frames = vec![row(None, None, Some(tile))];
+    let reply = accepted(&mut engine, &fifth);
+    let painted = pager_of(&reply)
+        .iter()
+        .flat_map(|screen| screen.workspaces.iter())
+        .flat_map(|workspace| workspace.windows.iter())
+        .find(|window| window.window.0 == "win-a")
+        .expect("tile slot resolves the held member")
+        .frame;
+    assert_eq!(painted, tile);
+    // Dropped rows resolve nothing again, exactly like the retired
+    // wholesale per-pass maps (no accumulation across reports).
+    let reply = accepted(
+        &mut engine,
+        &pager_report_ordered(
+            6,
+            6,
+            {
+                let mut members = members();
+                members[0] = stalled;
+                members
+            },
+            "win-a",
+            true,
+            &["win-a", "win-b", "win-c"],
+        ),
+    );
+    assert!(
+        pager_of(&reply)
+            .iter()
+            .flat_map(|screen| screen.workspaces.iter())
+            .flat_map(|workspace| workspace.windows.iter())
+            .all(|window| window.window.0 != "win-a"),
+        "dropped rows resolve nothing"
+    );
+}
+
+#[test]
+fn pager_overlay_fresh_frame_beats_tile_slot() {
+    use crate::world_report::PresentationPagerFrame;
+    let (mut engine, _) = admitted_pair();
+    // A retained overlay row carries its tile slot as the fact frame for
+    // model grounding, while the fresh native frame rides the live slot:
+    // the content paints the fresh frame, never the slot.
+    let slot = rect(100, 0, 40, 90);
+    let fresh = rect(101, 1, 42, 92);
+    let mut overlay_fact = fact("win-a", "out-a", 0);
+    overlay_fact.rect = Some(slot);
+    let mut report = pager_report_ordered(
+        3,
+        3,
+        vec![
+            overlay_fact,
+            fact("win-b", "out-a", 100),
+            fact("win-c", "out-b", 800),
+        ],
+        "win-a",
+        true,
+        &["win-a", "win-b", "win-c"],
+    );
+    report.presentation.pager_frames = vec![PresentationPagerFrame {
+        window: WindowId("win-a".to_owned()),
+        live: Some(fresh),
+        float_frame: None,
+        tile_frame: Some(slot),
+    }];
+    let reply = accepted(&mut engine, &report);
+    let painted = pager_of(&reply)
+        .iter()
+        .flat_map(|screen| screen.workspaces.iter())
+        .flat_map(|workspace| workspace.windows.iter())
+        .find(|window| window.window.0 == "win-a")
+        .expect("win-a paints")
+        .frame;
+    assert_eq!(painted, fresh);
+}
+
+#[test]
+fn pager_paused_report_publishes_empty_content() {
+    let (mut engine, _) = admitted_pair();
+    let mut stalled = pager_report_ordered(
+        3,
+        3,
+        vec![
+            fact("win-a", "out-a", 0),
+            fact("win-b", "out-a", 100),
+            fact("win-c", "out-b", 800),
+        ],
+        "win-a",
+        true,
+        &["win-a", "win-b", "win-c"],
+    );
+    stalled.presentation.paused = true;
+    let reply = accepted(&mut engine, &stalled);
+    assert!(
+        reply.presentation.pager.is_empty(),
+        "the game lane skips pager work"
+    );
+    assert!(matches!(
+        reply.presentation.border,
+        crate::visual::BorderPresentation {
+            visible: false,
+            reason: Some(crate::visual::BorderHideReason::Suspended),
+            ..
+        }
+    ));
+    assert!(matches!(
+        reply.presentation.underlay,
+        crate::world_presentation::PresentationUnderlay::Hidden { .. }
+    ));
 }

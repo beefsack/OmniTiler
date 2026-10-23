@@ -548,6 +548,7 @@ fn production_observation_tick_proves_nothing_on_unreadable_natives() {
         0,
         &fulls,
         None,
+        false,
     )
     .expect("tick converges");
     assert!(reply.ready);
@@ -610,6 +611,7 @@ fn production_select_route_reports_honest_outcome_without_proof() {
         0,
         &fulls,
         None,
+        false,
     )
     .expect("seed tick converges");
     assert!(first.ready);
@@ -710,6 +712,7 @@ fn production_send_route_reports_honest_outcome_without_proof() {
         0,
         &fulls,
         None,
+        false,
     )
     .expect("seed tick converges");
     assert!(first.ready);
@@ -797,6 +800,7 @@ fn arrival_reply(
         gesture_settled: None,
         operation_settled: Vec::new(),
         cursor_warp: None,
+        presentation: tiler_core::world_presentation::WorldPresentation::default(),
     }
 }
 
@@ -997,6 +1001,7 @@ fn busy_command_reports_unverified_not_cached_reply() {
         0,
         &fulls,
         None,
+        false,
     )
     .expect("seed converges");
     assert!(
@@ -1067,6 +1072,14 @@ fn busy_command_reports_unverified_not_cached_reply() {
             None,
             None,
             None,
+            None,
+            false,
+            String::new(),
+            false,
+            false,
+            (0, 0, 0),
+            false,
+            Vec::new(),
         );
         world
             .try_dispatch_observation(&inputs, Some(&observed), &[], &areas, 0, 0)

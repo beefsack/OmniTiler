@@ -551,10 +551,11 @@ pub(super) fn run_active_tick(
     }
     // Border follows the live foreground on every active wake,
     // including managed gestures that pause tiling below: the refresh
-    // reads one fresh frame and never waits for reconciliation.
+    // revalidates fresh identity/facts against the last applied reply and
+    // only hides on staleness, never waiting for reconciliation.
     refresh_border_timed(state, me, &fulls, owner_work);
-    // The group fill follows on the same wake: chord/move trigger over
-    // the Engine-projected source union, same freshness contract.
+    // The group fill follows on the same wake: fresh chord/move trigger
+    // over the reply-projected source union, same freshness contract.
     refresh_group_underlay(state, me, store, dir, &fulls, areas);
     // Only gestures on managed windows pause tiling; unrelated
     // windows never stall the loop.
@@ -929,12 +930,12 @@ pub(super) fn run_active_tick(
         poll_migrate_workspace_cli_request(state, me, store, dir, &fulls, areas);
     }
     // Post-mutation border refresh: reconciliation may have moved the
-    // target this tick, so re-read the fresh frame instead of leaving
-    // the pre-reconcile geometry stale until the next wake. Own
+    // target this tick, so revalidate against the fresh reply instead of
+    // leaving the pre-reconcile shapes stale until the next wake. Own
     // overlay events are filtered above, so no feedback loop.
     refresh_border_timed(state, me, &fulls, owner_work);
     // Same for the group fill: a moved target may have joined another
-    // group, so the projected union re-resolves instead of lingering.
+    // group, so the reply-projected union re-resolves instead of lingering.
     refresh_group_underlay(state, me, store, dir, &fulls, areas);
     // End-of-turn health commit: records the armed owner sample
     // (pre-log exclusive span, including this turn's refreshes)

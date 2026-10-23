@@ -186,6 +186,7 @@ fn report_attempts(
         member_attempts,
         view_attempts,
         clear_attempts: Vec::new(),
+        presentation: crate::world_report::PresentationIngress::disabled(),
     }
 }
 

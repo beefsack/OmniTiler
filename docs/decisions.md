@@ -2661,8 +2661,9 @@ platform API behavior.
   rings, labels, current/occupied/focused flags, miniature source frames and
   retained paint order, including hidden members and first-admission candidates.
   Windows keeps native lifetime/scope/freshness vetoes, DPI conversion,
-  anchoring, artwork, host styling and click-to-command. In-process presentation
-  queries/observations do not add a second workspace owner or a wire section.
+  anchoring, artwork, host styling and click-to-command. The initial in-process
+  presentation queries/observations are superseded by uniform wire presentation
+  below.
   [Acceptance and port boundary](changes/core-world-model-rearchitecture.md#stage-4c-accepted-outcome-2026-10-23).
 - Observed output grounding, 2026-10-23: shared core selects a rectangle's
   observed output from FULL rectangles using integer-rounded centre/half-open
@@ -2692,9 +2693,21 @@ platform API behavior.
   report raw frame, clear, membership and view attempts; core derives
   settlement. Native observations, scope holds and ambiguous once-only
   latches remain intact. The zero-valued presentation byte reserve is also
-  removed; it was not a serialized presentation contract. Uniform wire
-  presentation remains a separate required completion unit.
+  removed; it was not a serialized presentation contract. The uniform wire
+  contract is delivered separately below.
   [Consumer audit and verification](changes/core-world-model-rearchitecture.md#stage-5-dead-api-disposition-2026-10-24).
+- Uniform world presentation, 2026-10-24: every report carries normalized
+  foreground, host-scaled style, movement/chord, pause, stacking and distinct
+  live/float/tile frame-source facts. Core publishes border and group shapes
+  plus ordered pager content in the reply; drop shapes retain the same reply's
+  gesture result. Core alone resolves miniature source precedence, live then
+  float then tile. Windows consumes applied replies, retaining only native
+  freshness/scope/lifetime vetoes and rendering mechanics. Shapes are tick-derived;
+  a fast wake can hide an obsolete subject, not recompute its geometry.
+  Focused-fullscreen-game pause publishes hidden shapes and no pager projection.
+  The old presentation queries and `ActiveGroup` command/reply path are deleted,
+  not retained as alternate or compatibility routes.
+  [Contract and native acceptance](changes/core-world-model-rearchitecture.md#stage-5-uniform-wire-presentation-2026-10-24).
 - User approved 2026-10-20: platforms report normalized classification facts:
   window type/role, owner/parent, modal, resizable and minimum/maximum size,
   fullscreen, cannot-be-controlled (for example elevated/protected), and app

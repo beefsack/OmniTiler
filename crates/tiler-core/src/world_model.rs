@@ -1077,10 +1077,7 @@ impl WorldEngine {
             command,
         };
         match self.engine.handle(&event) {
-            CoreReply::Projection(_)
-            | CoreReply::Tiled(_)
-            | CoreReply::Released
-            | CoreReply::NoGroup { .. } => {}
+            CoreReply::Projection(_) | CoreReply::Tiled(_) | CoreReply::Released => {}
             refused => {
                 // Single-policy classification (capacity B): the staged
                 // reason publishes with the held scope and its rows.
@@ -1163,10 +1160,7 @@ impl WorldEngine {
             command: CoreCommand::Reconcile,
         };
         match self.engine.handle(&event) {
-            CoreReply::Projection(_)
-            | CoreReply::Tiled(_)
-            | CoreReply::Released
-            | CoreReply::NoGroup { .. } => {}
+            CoreReply::Projection(_) | CoreReply::Tiled(_) | CoreReply::Released => {}
             refused => {
                 // Single-policy classification (capacity B): the staged
                 // reason publishes with the held scope and its rows.

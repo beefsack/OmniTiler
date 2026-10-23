@@ -394,6 +394,7 @@ impl WorldSequencer {
             member_attempts,
             view_attempts,
             clear_attempts,
+            presentation: captured.presentation.clone(),
         }
     }
 
@@ -780,17 +781,6 @@ impl WorldSequencer {
     #[must_use]
     pub(super) fn engine_ref(&self) -> &WorldEngine {
         &self.engine
-    }
-
-    /// Retain one tick of pager presentation facts on the sequenced engine
-    /// (stage 4c): verified live frames, saved float/tile snapshots, and the
-    /// native stacking order. Presentation-only; never mapping, membership,
-    /// or geometry authority.
-    pub(super) fn observe_pager_presentation(
-        &mut self,
-        obs: tiler_core::world_presentation::PagerPresentationObservation,
-    ) {
-        self.engine.observe_pager_presentation(obs);
     }
 
     /// Capture plus one explicit command (single-flight). Thin wrapper over

@@ -136,11 +136,40 @@ fn observation_dispatch_applies_and_projects_presentation() {
     let (ack, _) = world.ack(&reply, &mut pending);
     assert!(matches!(ack, AckOutcome::Applied(_)));
     assert!(world.is_ready());
-    let presentation = world.presentation().expect("presentation");
-    assert_eq!(presentation.revision, reply.state_revision);
+    // Applied reply fields read directly: logical views per output plus
+    // the uniform presentation section.
+    let views: std::collections::BTreeMap<String, String> = reply
+        .outputs
+        .iter()
+        .filter_map(|output| {
+            output
+                .logical_view
+                .clone()
+                .map(|view| (output.output.0.clone(), view))
+        })
+        .collect();
+    assert!(!views.is_empty(), "applied reply projects a view");
+    // Uniform presentation rides the same applied reply: the disabled test
+    // ingress hides both overlays, and the observed member paints with its
+    // live frame.
+    assert_eq!(reply.presentation.foreground, "");
+    assert_eq!(
+        reply.presentation.border.reason,
+        Some(tiler_core::visual::BorderHideReason::Disabled)
+    );
+    assert!(matches!(
+        reply.presentation.underlay,
+        tiler_core::world_presentation::PresentationUnderlay::Hidden { .. }
+    ));
     assert!(
-        !presentation.views.is_empty(),
-        "applied reply projects a view"
+        reply
+            .presentation
+            .pager
+            .iter()
+            .flat_map(|screen| screen.workspaces.iter())
+            .flat_map(|workspace| workspace.windows.iter())
+            .any(|window| window.window.0 == "w1"),
+        "observed member paints from the applied reply"
     );
 }
 
@@ -331,6 +360,7 @@ fn t2_staged_decline_leaves_committed_world_unchanged() {
                 member_attempts: Vec::new(),
                 view_attempts: Vec::new(),
                 clear_attempts: Vec::new(),
+                presentation: tiler_core::world_report::PresentationIngress::disabled(),
             }
         };
     let first = report_with(windows.clone(), None, None);
@@ -480,6 +510,7 @@ fn t2_supported_and_floating_movers_adopt_once() {
                     member_attempts: Vec::new(),
                     view_attempts: Vec::new(),
                     clear_attempts: Vec::new(),
+                    presentation: tiler_core::world_report::PresentationIngress::disabled(),
                 }
             };
         let base = match world.deliver_production(&report_with(windows.clone(), None, None)) {

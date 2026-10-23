@@ -159,6 +159,7 @@ fn report_full(
         member_attempts: Vec::new(),
         view_attempts: Vec::new(),
         clear_attempts: Vec::new(),
+        presentation: crate::world_report::PresentationIngress::disabled(),
     }
 }
 
@@ -895,39 +896,46 @@ fn drag_preview_same_domain_routes_and_carries_core_rect_and_hover() {
 }
 
 #[test]
-fn active_group_found_and_no_group() {
+fn uniform_presentation_resolves_found_and_root_leaf() {
+    use crate::world_presentation::PresentationUnderlay;
     let (mut engine, screens, _, _) = two_output_world();
-    let query = report(
-        2,
-        2,
-        screens,
-        vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
-        "win-a",
-        Some(83),
-        Some(WorldCommand::Operation(CoreCommand::ActiveGroup)),
+    let members = vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)];
+    // A second identical report latches managed focus behind the newcomer
+    // before the presentation reads retained focus.
+    accepted(
+        &mut engine,
+        &report(2, 2, screens.clone(), members.clone(), "win-a", None, None),
     );
+    let mut query = report(3, 3, screens, members, "win-a", None, None);
+    query.presentation = crate::world_report::PresentationIngress {
+        foreground: "win-a".to_owned(),
+        foreground_frame: Some(rect(0, 0, 40, 90)),
+        border_enabled: true,
+        underlay_enabled: true,
+        border_gap_px: 0,
+        border_width_px: 4,
+        underlay_extension_px: 3,
+        chord_held: true,
+        ..crate::world_report::PresentationIngress::disabled()
+    };
     let reply = accepted(&mut engine, &query);
-    let Some(CommandResult::ActiveGroup {
-        group,
-        focused_window,
-        members,
-        bounds,
-        ..
-    }) = reply.command_result.clone()
-    else {
+    let PresentationUnderlay::Found(found) = reply.presentation.underlay.clone() else {
         panic!(
-            "expected active-group result, got {:?}",
-            reply.command_result
+            "expected found underlay, got {:?}",
+            reply.presentation.underlay
         );
     };
-    assert_eq!(focused_window.0, "win-a");
-    assert_eq!(members.len(), 2);
-    assert!(bounds.w > 0 && bounds.h > 0);
-    assert!(!group.0.is_empty());
+    assert_eq!(found.focused_window.0, "win-a");
+    assert_eq!(found.members.len(), 2);
+    assert!(found.union_rect.w > 0 && found.union_rect.h > 0);
+    assert!(found.outer_rect.w >= found.union_rect.w);
+    assert_eq!(reply.presentation.foreground, "win-a");
+    assert!(reply.presentation.border.visible);
     let encoded = crate::world_report::encode_reply_canonical(&reply);
-    assert!(encoded.contains("\"op\":\"active-group\""));
-    // A lone root leaf has no parent group: explicit no-group with a
-    // reason (the renderer clears), never an empty silent result.
+    assert!(encoded.contains("\"presentation\":"));
+    assert!(encoded.contains("\"status\":\"found\""));
+    // A lone root leaf has no parent group: hidden with a reason (the
+    // renderer clears), never an empty silent result.
     let mut solo = WorldEngine::new("gen-1").expect("valid generation");
     let solo_screens = vec![screen_full("out", rect(0, 0, 800, 600), true)];
     accepted(
@@ -942,20 +950,46 @@ fn active_group_found_and_no_group() {
             None,
         ),
     );
-    let query = report(
-        2,
-        2,
+    accepted(
+        &mut solo,
+        &report(
+            2,
+            2,
+            solo_screens.clone(),
+            vec![fact("win-a", "out", 0)],
+            "win-a",
+            None,
+            None,
+        ),
+    );
+    let mut query = report(
+        3,
+        3,
         solo_screens,
         vec![fact("win-a", "out", 0)],
         "win-a",
-        Some(84),
-        Some(WorldCommand::Operation(CoreCommand::ActiveGroup)),
+        None,
+        None,
     );
+    query.presentation = crate::world_report::PresentationIngress {
+        foreground: "win-a".to_owned(),
+        foreground_frame: Some(rect(0, 0, 40, 90)),
+        border_enabled: true,
+        underlay_enabled: true,
+        border_gap_px: 0,
+        border_width_px: 4,
+        underlay_extension_px: 3,
+        chord_held: true,
+        ..crate::world_report::PresentationIngress::disabled()
+    };
     let reply = accepted(&mut solo, &query);
     assert!(
-        matches!(reply.command_result, Some(CommandResult::NoGroup { .. })),
-        "lone leaf reports no-group, got {:?}",
-        reply.command_result
+        matches!(
+            reply.presentation.underlay,
+            PresentationUnderlay::Hidden { .. }
+        ),
+        "lone leaf hides, got {:?}",
+        reply.presentation.underlay
     );
 }
 

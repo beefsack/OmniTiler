@@ -536,6 +536,7 @@ pub(super) fn workspace_maintenance(
         foreground,
         fulls,
         super::observation::sample_cursor(),
+        false,
     );
     // Foreground-driven select only on an actual foreground change to an
     // exactly verified hidden member; event-only wakes never switch.

@@ -24,11 +24,9 @@ pub use crate::world_sizing::{
 
 use std::collections::BTreeSet;
 
-use crate::active_group::ActiveGroupMember;
 use crate::boundary::CoreCommand;
-use crate::boundary::NoGroupReason;
 use crate::bounds::{GEOMETRY_BOUND, is_gap, is_opaque_id, valid_carried_rect};
-use crate::directional::{Direction, NodeId, OutputId, WindowId};
+use crate::directional::{Direction, OutputId, WindowId};
 use crate::geometry::Rect;
 use crate::gesture::{GestureIngress, GestureSettled};
 use crate::session::{DomainKey, DragHoverPrior};
@@ -67,6 +65,13 @@ pub const MAX_WORLD_VIEW_ATTEMPTS: usize = 1024;
 /// Bound on mechanical maximize-clear attempts per report (one latest-wins
 /// row per retained clear operation at most).
 pub const MAX_WORLD_CLEAR_ATTEMPTS: usize = 1024;
+/// Bound on the presentation native order per report (same lifetime
+/// alphabet as windows): the adapter's top-to-bottom stacking snapshot.
+pub const MAX_PRESENTATION_ORDER: usize = 1024;
+
+/// Bound on host-scaled presentation style numbers per report: adapter DPI
+/// scaling already applied, so values stay in ordinary pixel range.
+pub const MAX_PRESENTATION_STYLE_PX: i32 = 1024;
 
 /// Tiling policy for one desired workspace row. The core retains one mode
 /// per workspace (Planner-owned, toggled only through
@@ -526,6 +531,86 @@ pub struct ClearAttempt {
     pub attempt_ms: u64,
 }
 
+/// One normalized pager frame source row (stage 5): an opaque member
+/// lifetime plus its distinct frame sources in adapter units. `live` is the
+/// fresh native frame from this tick's enumeration (observed visible frame
+/// or retained overlay row frame); `float_frame`/`tile_frame` are the
+/// adapter's retained slot snapshots. Every slot is optional; the core
+/// resolves live first, then float, then tile. Sources are normalized
+/// observations only: they never admit members or authorize writes, and
+/// the core never reads `WindowFact.rect` for pager content (fact frames
+/// are normalized for homing/overlay policy, e.g. a retained overlay row
+/// carries its tile slot while the fresh native frame rides `live`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PresentationPagerFrame {
+    pub window: WindowId,
+    pub live: Option<Rect>,
+    pub float_frame: Option<Rect>,
+    pub tile_frame: Option<Rect>,
+}
+
+/// Normalized per-report presentation ingress (stage 5): the genuinely
+/// observed foreground lifetime plus the host-scaled style and movement
+/// facts the core needs to publish uniform border/underlay/pager
+/// presentation in the reply. Every report carries exactly one; the core
+/// owns every verdict, the adapter only captures, observes and renders.
+///
+/// - `foreground` is the genuinely observed foreground lifetime
+///   (proof-verified adapter-side, `""` when none). It may name an unmanaged
+///   lifetime: ordinary floats and scoped unmanaged foregrounds stay
+///   presentation-eligible without acquiring membership.
+/// - `foreground_frame` is its live frame in adapter units (`None` when
+///   unreadable; the border hides instead of guessing).
+/// - `border_gap_px`/`border_width_px`/`underlay_extension_px` are the
+///   already host-scaled physical style numbers (DPI conversion stays
+///   adapter-side and runs before this report; the extension sentinel is
+///   already resolved, so the outset here is literal).
+/// - `chord_held` is the movement-only Win+Shift level; `move_window` names
+///   the classified focused Move subject (`""` when none). The core derives
+///   the underlay trigger as chord OR a matching focused move.
+/// - `paused` is the focused-fullscreen-game lane: the adapter sets it while
+///   a fullscreen game holds the session and the core skips presentation
+///   work (hidden presentation, empty pager) instead of projecting.
+/// - `pager_order` is the single native stacking snapshot, top-to-bottom,
+///   over opaque member lifetimes. It may name first-paint candidates not
+///   yet admitted; unknown lifetimes never admit members.
+/// - `pager_frames` carries one bounded source row per window with optional
+///   live, float, and tile rectangles (fresh enumeration frame, then
+///   retained slot snapshots). The core resolves live first, then float,
+///   then tile, and never reads `WindowFact.rect` for pager content:
+///   members with no resolved source render nothing, never a guess.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PresentationIngress {
+    pub foreground: String,
+    pub foreground_minimized: bool,
+    pub foreground_maximized: bool,
+    pub foreground_fullscreen: bool,
+    pub foreground_cloaked: bool,
+    pub foreground_hidden_workspace: bool,
+    pub foreground_shell: bool,
+    pub foreground_frame: Option<Rect>,
+    pub border_enabled: bool,
+    pub underlay_enabled: bool,
+    pub border_gap_px: i32,
+    pub border_width_px: i32,
+    pub underlay_extension_px: i32,
+    pub chord_held: bool,
+    pub move_window: String,
+    pub paused: bool,
+    pub pager_order: Vec<WindowId>,
+    pub pager_frames: Vec<PresentationPagerFrame>,
+}
+
+impl PresentationIngress {
+    /// Presentation-silent ingress for reports that carry no presentation
+    /// facts: both overlays disabled, no foreground, no order. The reply
+    /// carries hidden border/underlay and an empty pager.
+    #[must_use]
+    pub fn disabled() -> Self {
+        Self::default()
+    }
+}
+
 /// One screen observation: the stable output id, the FULL native output
 /// rectangle in one coherent adapter coordinate space, and the distinct
 /// work area the core tiles into. `gap`/`outer_gap` are settings carried
@@ -942,6 +1027,11 @@ pub struct WorldReport {
     /// only; the core owns directional clear completion over them plus the
     /// staged observation (see [`crate::world_settle`]).
     pub clear_attempts: Vec<ClearAttempt>,
+    /// Normalized presentation ingress (stage 5): the genuinely observed
+    /// foreground lifetime plus host-scaled style and movement facts. The
+    /// core publishes uniform border/underlay/pager presentation in the
+    /// reply; the adapter only captures, observes and renders.
+    pub presentation: PresentationIngress,
 }
 
 /// Terminal retained-operation lifecycle outcome for one core-owned
@@ -1018,7 +1108,6 @@ pub struct OperationEvent {
 /// - `DragPreview`: read-only proposed rect plus the carried hover state
 ///   (`None` means no result for this reply, e.g. observation-only).
 /// - `Float`: intentional-float placement (rect `None` for unfloat-to-tile).
-/// - `ActiveGroup`/`NoGroup`: read-only highlight resolution.
 /// - `Migration`: whole-workspace move provenance (members/floats).
 /// - `None` for move/resize/tiled-admit/focus/send operations: their
 ///   geometry, membership, and focus ride the snapshot, transfers, and
@@ -1071,6 +1160,12 @@ pub struct WorldReply {
     /// applies it mechanically with fresh game/lifetime/focus proof, at
     /// most once per observation, and never under its own game lane.
     pub cursor_warp: Option<(i32, i32)>,
+    /// Uniform presentation (stage 5): the tick-time foreground token the
+    /// shapes were computed for, the border shape, the underlay shape, and
+    /// the pager content. The renderer revalidates the live foreground
+    /// against the token and never paints stale shapes. A paused (game-lane)
+    /// report carries hidden border/underlay and an empty pager.
+    pub presentation: crate::world_presentation::WorldPresentation,
 }
 
 /// Correlated per-command outcome that the snapshot alone cannot express.
@@ -1106,22 +1201,6 @@ pub enum CommandResult {
         window: WindowId,
         rect: Option<Rect>,
         no_space: bool,
-    },
-    /// Read-only active-group highlight resolution with everything the
-    /// renderer needs. Coexists with the snapshot; never a border policy.
-    ActiveGroup {
-        base_revision: u64,
-        group: NodeId,
-        focused_leaf: NodeId,
-        focused_window: WindowId,
-        members: Vec<ActiveGroupMember>,
-        bounds: Rect,
-    },
-    /// Read-only active-group refusal with the retained base revision when
-    /// known. The renderer clears on this result.
-    NoGroup {
-        base_revision: Option<u64>,
-        reason: NoGroupReason,
     },
     /// Whole-workspace migration provenance: `members` is the full relocated
     /// member set (tiled links plus carried float exceptions, excluding
@@ -1560,6 +1639,58 @@ pub fn report_digest(report: &WorldReport) -> u64 {
         feed(&mut hash, &attempt.attempt_ms.to_string());
         sep(&mut hash);
     }
+    // Stage-5 presentation ingress: every normalized fact separates the
+    // digest (duplicate detection still compares full typed input).
+    let ingress = &report.presentation;
+    feed(&mut hash, &ingress.foreground);
+    sep(&mut hash);
+    flag(&mut hash, ingress.foreground_minimized);
+    flag(&mut hash, ingress.foreground_maximized);
+    flag(&mut hash, ingress.foreground_fullscreen);
+    flag(&mut hash, ingress.foreground_cloaked);
+    flag(&mut hash, ingress.foreground_hidden_workspace);
+    flag(&mut hash, ingress.foreground_shell);
+    feed(
+        &mut hash,
+        &ingress
+            .foreground_frame
+            .map(|rect| format!("{},{},{},{}", rect.x, rect.y, rect.w, rect.h))
+            .unwrap_or_default(),
+    );
+    sep(&mut hash);
+    flag(&mut hash, ingress.border_enabled);
+    flag(&mut hash, ingress.underlay_enabled);
+    feed(&mut hash, &ingress.border_gap_px.to_string());
+    sep(&mut hash);
+    feed(&mut hash, &ingress.border_width_px.to_string());
+    sep(&mut hash);
+    feed(&mut hash, &ingress.underlay_extension_px.to_string());
+    sep(&mut hash);
+    flag(&mut hash, ingress.chord_held);
+    feed(&mut hash, &ingress.move_window);
+    sep(&mut hash);
+    flag(&mut hash, ingress.paused);
+    for window in &ingress.pager_order {
+        feed(&mut hash, &window.0);
+        sep(&mut hash);
+    }
+    for row in &ingress.pager_frames {
+        feed(&mut hash, &row.window.0);
+        sep(&mut hash);
+        for slot in [&row.live, &row.float_frame, &row.tile_frame] {
+            match slot {
+                Some(rect) => {
+                    flag(&mut hash, true);
+                    feed(
+                        &mut hash,
+                        &format!("{},{},{},{}", rect.x, rect.y, rect.w, rect.h),
+                    );
+                    sep(&mut hash);
+                }
+                None => flag(&mut hash, false),
+            }
+        }
+    }
     hash
 }
 
@@ -1901,6 +2032,55 @@ pub fn validate_report_reason(report: &WorldReport) -> Option<&'static str> {
             }
         }
     }
+    // Stage-5 presentation ingress: strict shape, never payload bytes.
+    // Empty foreground/move tokens mean none; non-empty tokens must be
+    // opaque. Frames must be valid carried rects. Style numbers are
+    // host-scaled pixels and stay within ordinary range. The pager order is
+    // bounded like the window inventory.
+    let ingress = &report.presentation;
+    if !ingress.foreground.is_empty() && !is_opaque_id(&ingress.foreground) {
+        return Some("presentation-foreground-invalid");
+    }
+    if !ingress.move_window.is_empty() && !is_opaque_id(&ingress.move_window) {
+        return Some("presentation-move-invalid");
+    }
+    if let Some(frame) = ingress.foreground_frame
+        && !valid_carried_rect(frame.x, frame.y, frame.w, frame.h)
+    {
+        return Some("presentation-frame-invalid");
+    }
+    for px in [
+        ingress.border_gap_px,
+        ingress.border_width_px,
+        ingress.underlay_extension_px,
+    ] {
+        if !(0..=MAX_PRESENTATION_STYLE_PX).contains(&px) {
+            return Some("presentation-style-invalid");
+        }
+    }
+    if ingress.pager_order.len() > MAX_PRESENTATION_ORDER {
+        return Some("presentation-order-over-cap");
+    }
+    for window in &ingress.pager_order {
+        if !is_opaque_id(&window.0) {
+            return Some("presentation-order-invalid");
+        }
+    }
+    if ingress.pager_frames.len() > MAX_WORLD_FACTS {
+        return Some("presentation-frames-over-cap");
+    }
+    for row in &ingress.pager_frames {
+        if !is_opaque_id(&row.window.0) {
+            return Some("presentation-frame-invalid");
+        }
+        for slot in [&row.live, &row.float_frame, &row.tile_frame] {
+            if let Some(rect) = slot
+                && !valid_carried_rect(rect.x, rect.y, rect.w, rect.h)
+            {
+                return Some("presentation-frame-invalid");
+            }
+        }
+    }
     None
 }
 
@@ -1993,10 +2173,7 @@ pub fn valid_operation(command: &CoreCommand) -> bool {
     const DIRECTIONS: [&str; 4] = ["left", "right", "up", "down"];
     const RESIZE_MODES: [&str; 4] = ["inwards", "outwards", "horizontal", "vertical"];
     match command {
-        CoreCommand::Reconcile
-        | CoreCommand::UpdateGaps
-        | CoreCommand::ActiveGroup
-        | CoreCommand::ReleaseDomain => true,
+        CoreCommand::Reconcile | CoreCommand::UpdateGaps | CoreCommand::ReleaseDomain => true,
         CoreCommand::Move {
             window, direction, ..
         }

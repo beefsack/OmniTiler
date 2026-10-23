@@ -13,9 +13,6 @@
 //! This module owns no retained state.
 //! All synchronous command orchestration runs through [`crate::engine::Engine::handle`].
 
-use std::collections::{BTreeMap, BTreeSet};
-
-use crate::active_group::{ActiveGroupMember, describe_active_group_with_hints};
 use crate::contract::{
     DivergenceKind, FocusOperation, LIFECYCLE_POLICY_VERSION, LifecycleOperation,
     LifecyclePrecondition, ResizeMode, ResizeOperation,
@@ -31,8 +28,9 @@ use crate::session::{
     DesiredGeometry, DomainKey, DragHoverPrior, DragPreview, OutputDomain, Session,
     SessionDragPlan, SessionFocusPlan, SessionMovePlan, SessionPlan, SessionResizePlan,
 };
+use std::collections::{BTreeMap, BTreeSet};
 
-/// Typed command for all 15 wire ops: reconcile, update-gaps, active-group,
+/// Typed command for all 14 wire ops: reconcile, update-gaps,
 /// release-domain, move, focus, resize, pointer-resize, toggle-float,
 /// toggle-orientation, `send-to-workspace`, `send-to-output`,
 /// `migrate-workspace`, `drag-drop`, and read-only `drag-preview`.
@@ -43,7 +41,6 @@ use crate::session::{
 pub enum CoreCommand {
     Reconcile,
     UpdateGaps,
-    ActiveGroup,
     ReleaseDomain,
     Move {
         window: String,
@@ -158,7 +155,6 @@ impl CoreCommand {
         match self {
             Self::Reconcile => "reconcile",
             Self::UpdateGaps => "update-gaps",
-            Self::ActiveGroup => "active-group",
             Self::ReleaseDomain => "release-domain",
             Self::Move { .. } => "move",
             Self::Focus { .. } => "focus",
@@ -658,60 +654,6 @@ impl ResizePlanReply {
     }
 }
 
-/// Successful active-group resolution with everything the wire reply echoes.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ActiveGroupFound {
-    pub base_revision: u64,
-    pub group: NodeId,
-    pub focused_leaf: NodeId,
-    pub focused_window: WindowId,
-    pub members: Vec<ActiveGroupMember>,
-    pub bounds: Rect,
-}
-
-/// Closed read-only `no-group` reason registry (wire tokens).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NoGroupReason {
-    NoSession,
-    Diverged,
-    Pending,
-    DomainMismatch,
-    StaleRevision,
-    FocusMismatch,
-    FocusUnmapped,
-    NoTree,
-    NoParentGroup,
-}
-
-impl NoGroupReason {
-    /// Wire `reason` token.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::NoSession => "no-session",
-            Self::Diverged => "diverged",
-            Self::Pending => "pending",
-            Self::DomainMismatch => "domain-mismatch",
-            Self::StaleRevision => "stale-revision",
-            Self::FocusMismatch => "focus-mismatch",
-            Self::FocusUnmapped => "focus-unmapped",
-            Self::NoTree => "no-tree",
-            Self::NoParentGroup => "no-parent-group",
-        }
-    }
-}
-
-/// Typed active-group resolution: either the found group or a classified
-/// `no-group` with the retained base revision when known.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ActiveGroupResolution {
-    Found(ActiveGroupFound),
-    NoGroup {
-        base_revision: Option<u64>,
-        reason: NoGroupReason,
-    },
-}
-
 /// Read-only drag-preview success plan: the retained base revision plus the
 /// authoritative [`DragPreview`] from a discarded working clone. Carries the
 /// proposed rect and the carried hover state (`preview.hover_prior()`); never
@@ -742,11 +684,6 @@ pub(crate) enum CoreReply {
     MoveDirectional(MovePlanReply),
     FocusDirectional(FocusPlanReply),
     Resize(ResizePlanReply),
-    ActiveGroup(ActiveGroupFound),
-    NoGroup {
-        base_revision: Option<u64>,
-        reason: NoGroupReason,
-    },
     DragPreview(DragPreviewPlan),
     /// Explicit domain release: the exact domain slot is gone, so there is
     /// no geometry, focus, or revision to report. The adapter must perform
@@ -977,118 +914,6 @@ pub(crate) fn project_retained_tiled_geometry(
     })
 }
 
-/// Resolve the read-only active-group query against one authoritative session.
-///
-/// Pure over retained state plus the carried advisory size hints: validates
-/// domain binding, focus mapping, and tree presence, then derives the focused
-/// leaf's immediate parent group through
-/// [`describe_active_group_with_hints`] with the retained bounds/gap and the
-/// hint-aware engine projection ordinary plans use. Never mutates; carried
-/// windows supply advisory size hints only (leaf -> retained window ->
-/// carried hints, unknown resolving to none, exactly like ordinary plans;
-/// overlay entries ride the same map and simply never match a retained tiled
-/// leaf). Carried rectangles and membership are never consulted for topology
-/// or geometry. A `None` session reports `NoSession` with no base revision.
-/// The carried revision is intentionally not gated: this is a current-state
-/// snapshot.
-pub(crate) fn resolve_active_group(
-    session: Option<&Session>,
-    event: &CoreEvent,
-) -> ActiveGroupResolution {
-    let Some(session) = session else {
-        return ActiveGroupResolution::NoGroup {
-            base_revision: None,
-            reason: NoGroupReason::NoSession,
-        };
-    };
-    let base = session.accepted_revision();
-    let no_group = |reason| ActiveGroupResolution::NoGroup {
-        base_revision: Some(base),
-        reason,
-    };
-    if session.divergence().is_some() {
-        return no_group(NoGroupReason::Diverged);
-    }
-    if session.has_pending() || session.has_pending_desired() || session.has_drag() {
-        return no_group(NoGroupReason::Pending);
-    }
-    let Some(retained_domain) = session
-        .domains()
-        .iter()
-        .find(|domain| domain.key() == event.domain_key)
-        .cloned()
-    else {
-        return no_group(NoGroupReason::DomainMismatch);
-    };
-    if retained_domain.bounds != event.domain.bounds || retained_domain.gap != event.domain.gap {
-        return no_group(NoGroupReason::DomainMismatch);
-    }
-    let (focus_domain, focus_leaf) = session.focus();
-    let (Some(focus_domain), Some(focus_leaf)) = (focus_domain, focus_leaf) else {
-        return no_group(NoGroupReason::FocusMismatch);
-    };
-    if focus_domain != event.domain_key {
-        return no_group(NoGroupReason::FocusMismatch);
-    }
-    let snapshot = session.snapshot();
-    let Some(tree) = snapshot
-        .domains
-        .into_iter()
-        .find(|domain| {
-            domain.output == event.domain_key.output
-                && domain.workspace == event.domain_key.workspace
-        })
-        .and_then(|domain| domain.tree)
-    else {
-        return no_group(NoGroupReason::NoTree);
-    };
-    let leaf_to_window: BTreeMap<NodeId, WindowId> = snapshot
-        .windows
-        .into_iter()
-        .filter(|link| {
-            link.output == event.domain_key.output && link.workspace == event.domain_key.workspace
-        })
-        .map(|link| (link.leaf, link.window))
-        .collect();
-    match leaf_to_window.get(&focus_leaf) {
-        Some(window) if *window == event.focused_window => {}
-        _ => return no_group(NoGroupReason::FocusUnmapped),
-    }
-    // Advisory hints resolve leaf -> retained window -> carried hints with no
-    // flag filtering, exactly like ordinary plans: overlays and floats ride
-    // the same map and never match a retained tiled leaf.
-    let carried_hints: BTreeMap<&WindowId, crate::size_hints::WindowSizeHints> = event
-        .windows
-        .iter()
-        .map(|entry| (&entry.window, entry.hints))
-        .collect();
-    let resolve = |leaf: &NodeId| {
-        leaf_to_window
-            .get(leaf)
-            .and_then(|window| carried_hints.get(window))
-            .copied()
-            .unwrap_or_else(crate::size_hints::WindowSizeHints::none)
-    };
-    let Some(group) = describe_active_group_with_hints(
-        &tree,
-        retained_domain.bounds,
-        retained_domain.gap,
-        &focus_leaf,
-        &leaf_to_window,
-        &resolve,
-    ) else {
-        return no_group(NoGroupReason::NoParentGroup);
-    };
-    ActiveGroupResolution::Found(ActiveGroupFound {
-        base_revision: base,
-        group: group.group,
-        focused_leaf: focus_leaf,
-        focused_window: event.focused_window.clone(),
-        members: group.members,
-        bounds: group.bounds,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1122,36 +947,12 @@ mod tests {
         (domain, key)
     }
 
-    fn event_fixture(command: CoreCommand) -> CoreEvent {
-        let (owner, generation, correlation) = ids();
-        let (domain, domain_key) = domain_fixture();
-        CoreEvent {
-            owner,
-            generation,
-            correlation,
-            revision: 0,
-            fingerprint: 0,
-            outer_gap: 0,
-            focused_window: WindowId(String::new()),
-            windows: Vec::new(),
-            closed_windows: Vec::new(),
-            directional: None,
-            directional_target_outer_gap: None,
-            target_domain: None,
-            target_windows: Vec::new(),
-            domain,
-            domain_key,
-            command,
-        }
-    }
-
     #[test]
-    fn all_fifteen_ops_have_distinct_wire_tokens() {
+    fn all_fourteen_ops_have_distinct_wire_tokens() {
         use std::collections::HashSet;
         let commands = vec![
             CoreCommand::Reconcile,
             CoreCommand::UpdateGaps,
-            CoreCommand::ActiveGroup,
             CoreCommand::ReleaseDomain,
             CoreCommand::Move {
                 window: "w".to_owned(),
@@ -1215,9 +1016,9 @@ mod tests {
                 source: None,
             },
         ];
-        assert_eq!(commands.len(), 15);
+        assert_eq!(commands.len(), 14);
         let tokens: HashSet<&'static str> = commands.iter().map(|c| c.op()).collect();
-        assert_eq!(tokens.len(), 15);
+        assert_eq!(tokens.len(), 14);
         assert!(tokens.contains("reconcile"));
         assert!(tokens.contains("release-domain"));
         assert!(tokens.contains("send-to-workspace"));
@@ -1227,39 +1028,6 @@ mod tests {
         assert!(tokens.contains("drag-preview"));
         assert_eq!(TiledKind::DragDrop.kind_str(), "drag-drop");
         assert_eq!(TiledKind::DragDrop.capability_str(), Some("place-tiled"));
-    }
-
-    #[test]
-    fn missing_session_reports_no_session_without_base() {
-        let event = event_fixture(CoreCommand::ActiveGroup);
-        assert_eq!(
-            resolve_active_group(None, &event),
-            ActiveGroupResolution::NoGroup {
-                base_revision: None,
-                reason: NoGroupReason::NoSession,
-            }
-        );
-        assert_eq!(NoGroupReason::NoSession.as_str(), "no-session");
-        assert_eq!(TiledKind::Admit.kind_str(), "admit");
-    }
-
-    #[test]
-    fn empty_session_without_tree_reports_no_tree() {
-        let (owner, generation, _) = ids();
-        let (domain, _) = domain_fixture();
-        let session = Session::new(owner, generation, 0, 0, vec![domain]).expect("session");
-        let mut event = event_fixture(CoreCommand::ActiveGroup);
-        event.domain_key = session.domains().first().expect("domain").key();
-        event.domain = session.domains().first().expect("domain").clone();
-        match resolve_active_group(Some(&session), &event) {
-            ActiveGroupResolution::NoGroup { reason, .. } => {
-                assert!(matches!(
-                    reason,
-                    NoGroupReason::FocusMismatch | NoGroupReason::NoTree
-                ));
-            }
-            ActiveGroupResolution::Found(_) => panic!("empty session must not resolve"),
-        }
     }
 
     #[test]
@@ -1397,419 +1165,6 @@ mod tests {
         assert_eq!(focus_domain, Some(key.clone()));
         (session, key, focus_leaf.expect("focus"), plan)
     }
-
-    #[test]
-    fn grouped_session_resolves_typed_found() {
-        let (session, key, focus_leaf, _) = committed_pair_session();
-        let mut event = event_fixture(CoreCommand::ActiveGroup);
-        event.domain_key = key;
-        event.domain = session.domains().first().expect("domain").clone();
-        event.focused_window = session
-            .snapshot()
-            .windows
-            .iter()
-            .find(|l| l.leaf == focus_leaf)
-            .expect("mapped")
-            .window
-            .clone();
-        match resolve_active_group(Some(&session), &event) {
-            ActiveGroupResolution::Found(found) => {
-                assert_eq!(found.members.len(), 2);
-                assert_eq!(found.focused_leaf, focus_leaf);
-            }
-            ActiveGroupResolution::NoGroup { reason, .. } => {
-                panic!("expected found, got {}", reason.as_str())
-            }
-        }
-    }
-
-    /// Commit a three-window nested session with explicit shares and hinted
-    /// admission, returning the session, domain key, focus leaf, and the
-    /// ordinary-plan hints map. The observation carries the minimums, so the
-    /// committed plan is hint-enforced like any live layout.
-    fn committed_hinted_session(
-        tree: Node,
-        triples: &[(&str, &str, i32, i32)],
-        focus_leaf: NodeId,
-    ) -> (
-        Session,
-        DomainKey,
-        NodeId,
-        BTreeMap<WindowId, crate::size_hints::WindowSizeHints>,
-    ) {
-        let (owner, generation, _) = ids();
-        let domain = OutputDomain {
-            id: OutputId("o1".to_owned()),
-            workspace: WorkspaceId("ws1".to_owned()),
-            bounds: Rect {
-                x: 8,
-                y: 8,
-                w: 2544,
-                h: 1364,
-            },
-            gap: 8,
-            adjacent: BTreeMap::new(),
-        };
-        let mut session = Session::new(owner, generation, 0, 0, vec![domain]).expect("session");
-        let key = session.domains().first().expect("domain").key();
-        let links: Vec<crate::directional::WindowLink> = triples
-            .iter()
-            .map(|(leaf, window, _, _)| crate::directional::WindowLink {
-                window: WindowId((*window).to_owned()),
-                leaf: NodeId::from(*leaf),
-                output: key.output.clone(),
-                workspace: key.workspace.clone(),
-            })
-            .collect();
-        let hints_map: BTreeMap<WindowId, crate::size_hints::WindowSizeHints> = triples
-            .iter()
-            .map(|(_, window, min_w, min_h)| {
-                (
-                    WindowId((*window).to_owned()),
-                    crate::size_hints::WindowSizeHints {
-                        min_w: Some(*min_w),
-                        min_h: Some(*min_h),
-                        max_w: None,
-                        max_h: None,
-                    },
-                )
-            })
-            .collect();
-        let observation = crate::session::SessionObservation {
-            observation: crate::contract::Observation::new(
-                session.owner().clone(),
-                session.generation().clone(),
-                0,
-                0,
-            ),
-            windows: triples
-                .iter()
-                .map(|(_, window, _, _)| crate::session::ObservedWindow {
-                    window: WindowId((*window).to_owned()),
-                    output: key.output.clone(),
-                    workspace: key.workspace.clone(),
-                    floating: false,
-                    fullscreen: false,
-                    maximized: false,
-                    sticky: false,
-                    fixed_auto: false,
-                    fixed_suppress: false,
-                    hints: hints_map[&WindowId((*window).to_owned())],
-                })
-                .collect(),
-        };
-        let admit_window = triples
-            .iter()
-            .find(|(leaf, _, _, _)| NodeId::from(*leaf) == focus_leaf)
-            .map(|(_, window, _, _)| WindowId((*window).to_owned()))
-            .expect("focus leaf mapped");
-        let correlation = CorrelationId::parse("corr-hints").expect("valid");
-        let plan = session
-            .propose_fitted_admit(
-                tree,
-                links,
-                focus_leaf.clone(),
-                &admit_window,
-                &key.output,
-                &key.workspace,
-                &observation,
-                &correlation,
-                &crate::contract::LifecycleCapabilities::full(),
-            )
-            .expect("fit");
-        let base = plan.dispatch.base_revision;
-        let ack = crate::contract::AdapterAck::new(
-            correlation.clone(),
-            session.owner().clone(),
-            session.generation().clone(),
-            base,
-            crate::contract::AckOutcome::Accepted,
-        );
-        session.acknowledge(&ack).expect("ack");
-        let post = crate::contract::LifecyclePostObservation::new(
-            crate::contract::Observation::new(
-                session.owner().clone(),
-                session.generation().clone(),
-                base,
-                0,
-            ),
-            correlation,
-            true,
-            plan.dispatch.preconditions.clone(),
-            plan.dispatch.operation.clone(),
-        );
-        session.verify_lifecycle(&post).expect("commit");
-        let (focus_domain, focus) = session.focus();
-        assert_eq!(focus_domain, Some(key.clone()));
-        assert_eq!(focus, Some(focus_leaf.clone()));
-        (session, key, focus_leaf, hints_map)
-    }
-
-    /// Hints-only ActiveGroup query entries: opaque window identity plus the
-    /// retained advisory hints with an empty rectangle. The resolver reads
-    /// window and hints alone; carried geometry never exists here.
-    fn hint_carriers(
-        key: &DomainKey,
-        hints_map: &BTreeMap<WindowId, crate::size_hints::WindowSizeHints>,
-    ) -> Vec<EngineWindow> {
-        hints_map
-            .iter()
-            .map(|(window, hints)| EngineWindow {
-                window: window.clone(),
-                output: key.output.clone(),
-                workspace: key.workspace.clone(),
-                rect: Rect {
-                    x: 0,
-                    y: 0,
-                    w: 0,
-                    h: 0,
-                },
-                floating: false,
-                fit_excluded: false,
-                fullscreen: false,
-                maximized: false,
-                sticky: false,
-                fixed_auto: false,
-                fixed_suppress: false,
-                hints: *hints,
-            })
-            .collect()
-    }
-
-    #[test]
-    fn active_group_matches_hinted_plan_union_tick136() {
-        use crate::directional::Axis;
-        // Live tick-136 shape: nested vertical stack whose retained shares
-        // under-allocate the focused pair until minimums enforce.
-        let tree = Node::Group {
-            id: NodeId::from("root"),
-            axis: Axis::Vertical,
-            children: vec![
-                Node::Leaf {
-                    id: NodeId::from("w25-leaf"),
-                },
-                Node::Group {
-                    id: NodeId::from("inner"),
-                    axis: Axis::Vertical,
-                    children: vec![
-                        Node::Leaf {
-                            id: NodeId::from("w24-leaf"),
-                        },
-                        Node::Leaf {
-                            id: NodeId::from("w23-leaf"),
-                        },
-                    ],
-                    shares: vec![461, 117],
-                },
-            ],
-            shares: vec![765, 583],
-        };
-        let (session, key, focus_leaf, hints_map) = committed_hinted_session(
-            tree,
-            &[
-                ("w25-leaf", "w25", 401, 246),
-                ("w24-leaf", "w24", 1263, 750),
-                ("w23-leaf", "w23", 582, 118),
-            ],
-            NodeId::from("w24-leaf"),
-        );
-        let retained = session.domains().first().expect("domain").clone();
-        // Ordinary-plan oracle: the Reconcile projection over the same hints.
-        let plan = project_retained_tiled_geometry(
-            &session,
-            &key,
-            retained.bounds,
-            retained.gap,
-            Some((key.clone(), focus_leaf.clone())),
-            ProjectionKind::Reconcile,
-            &hints_map,
-            &[],
-        )
-        .expect("projects");
-        let rect_of = |window: &str| {
-            plan.geometry
-                .iter()
-                .find(|geometry| geometry.window == WindowId(window.to_owned()))
-                .expect("planned")
-                .rect
-        };
-        assert_eq!(
-            rect_of("w25"),
-            Rect {
-                x: 8,
-                y: 8,
-                w: 2544,
-                h: 480
-            }
-        );
-        assert_eq!(
-            rect_of("w24"),
-            Rect {
-                x: 8,
-                y: 496,
-                w: 2544,
-                h: 750
-            }
-        );
-        assert_eq!(
-            rect_of("w23"),
-            Rect {
-                x: 8,
-                y: 1254,
-                w: 2544,
-                h: 118
-            }
-        );
-        // ActiveGroup with the same carried hints resolves the hint-correct
-        // pair union, equal to the ordinary plan's pair union.
-        let mut event = event_fixture(CoreCommand::ActiveGroup);
-        event.domain_key = key.clone();
-        event.domain = retained;
-        event.focused_window = WindowId("w24".to_owned());
-        event.windows = hint_carriers(&key, &hints_map);
-        match resolve_active_group(Some(&session), &event) {
-            ActiveGroupResolution::Found(found) => {
-                assert_eq!(found.members.len(), 2);
-                assert_eq!(
-                    found.bounds,
-                    Rect {
-                        x: 8,
-                        y: 496,
-                        w: 2544,
-                        h: 876
-                    },
-                    "hint-correct pair union matches the displayed layout"
-                );
-            }
-            ActiveGroupResolution::NoGroup { reason, .. } => {
-                panic!("expected found, got {}", reason.as_str())
-            }
-        }
-        // Without carried hints the legacy hint-free union is preserved.
-        let mut bare = event_fixture(CoreCommand::ActiveGroup);
-        bare.domain_key = key.clone();
-        bare.domain = session.domains().first().expect("domain").clone();
-        bare.focused_window = WindowId("w24".to_owned());
-        match resolve_active_group(Some(&session), &bare) {
-            ActiveGroupResolution::Found(found) => {
-                assert_eq!(found.members.len(), 2);
-                assert_eq!(
-                    found.bounds,
-                    Rect {
-                        x: 8,
-                        y: 785,
-                        w: 2544,
-                        h: 587
-                    },
-                    "hintless query keeps the legacy union"
-                );
-            }
-            ActiveGroupResolution::NoGroup { reason, .. } => {
-                panic!("expected found, got {}", reason.as_str())
-            }
-        }
-    }
-
-    #[test]
-    fn active_group_matches_hinted_plan_union_nested_subgroup() {
-        use crate::directional::Axis;
-        // Reported nested shape V[W1 H[W2 W3]]: the H rectangle itself sits
-        // lower without hints because the outer split ignores its minimum.
-        let tree = Node::Group {
-            id: NodeId::from("root"),
-            axis: Axis::Vertical,
-            children: vec![
-                Node::Leaf {
-                    id: NodeId::from("w1-leaf"),
-                },
-                Node::Group {
-                    id: NodeId::from("inner"),
-                    axis: Axis::Horizontal,
-                    children: vec![
-                        Node::Leaf {
-                            id: NodeId::from("w2-leaf"),
-                        },
-                        Node::Leaf {
-                            id: NodeId::from("w3-leaf"),
-                        },
-                    ],
-                    shares: vec![1268, 1268],
-                },
-            ],
-            shares: vec![800, 548],
-        };
-        let (session, key, focus_leaf, hints_map) = committed_hinted_session(
-            tree,
-            &[
-                ("w1-leaf", "w1", 401, 246),
-                ("w2-leaf", "w2", 1263, 750),
-                ("w3-leaf", "w3", 582, 118),
-            ],
-            NodeId::from("w2-leaf"),
-        );
-        let retained = session.domains().first().expect("domain").clone();
-        let plan = project_retained_tiled_geometry(
-            &session,
-            &key,
-            retained.bounds,
-            retained.gap,
-            Some((key.clone(), focus_leaf.clone())),
-            ProjectionKind::Reconcile,
-            &hints_map,
-            &[],
-        )
-        .expect("projects");
-        let rect_of = |window: &str| {
-            plan.geometry
-                .iter()
-                .find(|geometry| geometry.window == WindowId(window.to_owned()))
-                .expect("planned")
-                .rect
-        };
-        assert_eq!(
-            rect_of("w2"),
-            Rect {
-                x: 8,
-                y: 622,
-                w: 1268,
-                h: 750
-            }
-        );
-        assert_eq!(
-            rect_of("w3"),
-            Rect {
-                x: 1284,
-                y: 622,
-                w: 1268,
-                h: 750
-            }
-        );
-        let mut event = event_fixture(CoreCommand::ActiveGroup);
-        event.domain_key = key.clone();
-        event.domain = retained;
-        event.focused_window = WindowId("w2".to_owned());
-        event.windows = hint_carriers(&key, &hints_map);
-        match resolve_active_group(Some(&session), &event) {
-            ActiveGroupResolution::Found(found) => {
-                assert_eq!(found.group, NodeId::from("inner"));
-                assert_eq!(found.members.len(), 2);
-                assert_eq!(
-                    found.bounds,
-                    Rect {
-                        x: 8,
-                        y: 622,
-                        w: 2544,
-                        h: 750
-                    },
-                    "hint-correct H union matches the displayed subgroup"
-                );
-            }
-            ActiveGroupResolution::NoGroup { reason, .. } => {
-                panic!("expected found, got {}", reason.as_str())
-            }
-        }
-    }
-
     #[test]
     fn projection_helper_projects_committed_pair_in_wire_order() {
         let (session, key, focus_leaf, _) = committed_pair_session();

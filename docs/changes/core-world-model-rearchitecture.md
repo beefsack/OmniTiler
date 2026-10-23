@@ -2681,3 +2681,52 @@ of cursor-first fresh placement or the entire rearchitecture.
   compatibility queries; then shared acceptance connector/case-authoring
   docs, finalized KDE/macOS port notes, full both-output regression and the
   readiness summary. All parked product questions remain unchanged.
+
+## Stage 5 uniform wire presentation (2026-10-24)
+
+- Required presentation ingress now carries genuine foreground identity and
+  flags/frame, host-scaled style dimensions, chord/move facts, game pause,
+  native stacking order and separate live/float/tile miniature frame sources.
+  Core owns source precedence and all content/shape decisions. Overlay facts
+  used for model grounding do not substitute tile slots for fresh pager frames.
+- The applied world reply carries border and underlay shapes and complete
+  per-output pager content. Existing reply gesture results carry drop shapes;
+  no parallel preview resolver is added. This strict serialized contract serves
+  remote consumers as well as Windows. Unknown/missing fields refuse; digest,
+  structural estimates and exact reply budget gates cover the new sections.
+- Windows atomically consumes reply presentation. Removed the old retained-world
+  group/pager observation and query entry points, obsolete test projection and
+  `ActiveGroup` command/reply/codec path. Native scope, lifetime, foreground,
+  fullscreen and trigger revalidation remain hide-only backstops. Shapes follow
+  accepted ticks rather than being recomputed per native wake. Unusable border
+  width hides in core too, so a remote renderer receives no degenerate ring.
+- Paused game-lane reports publish hidden border/underlay and an empty pager,
+  skipping projection; full suspension avoids the tick entirely. No game-cost
+  or physical-game acceptance claim is made. No dependency or new setting added.
+- Independent source review accepted the final boundary and repaired pager
+  fallback fidelity. Regressions pin fresh overlay frames over tile slots,
+  live/float/tile precedence and wholesale replacement, presentation-only
+  updates with unchanged observation sequence, duplicate replay, strict decode,
+  sizing, zero-width hiding and paused presentation. Final locked build and
+  all-target tests, strict all-target clippy, formatting and whitespace pass for
+  core/protocol/Windows/fixture: **2,688 passed, zero failed, one ignored across
+  49 suites**. A development-only migration CLI log-count failure did not recur
+  in three isolated and subsequent full runs; its cause remains unidentified.
+- Fresh fixture-only native acceptance passed both-output admission/coverage,
+  exact border bounds from physical visible frames and scaled style,
+  focus-retarget/fresh-tick following, float retention, maximize/fullscreen
+  hiding and return, guarded chord underlay bounds and release hiding, and
+  both pager strips with select-away/previous and unchanged peer output.
+  Independent review checked raw evidence and native owner-overlay readbacks.
+  Debug, staged and launched owner SHA-256 matched
+  `f56a78f6d0843b5e13b66cd46c50b51f3709685ff163b222ab4c3283b5235aef`.
+- Exact-owner stop, independent restore and fixture shutdown left no owned
+  process, ledger or control residue. Settings bytes, cursor, relevant SPI and
+  taskbar state and protected-window geometry matched preimages. FFC/warp stayed
+  off. No synthetic drag or Esc was used. Drop-preview shown/gesture acceptance
+  remains unrun with the disabled drag driver; pager screenshots establish
+  rendering, not machine-decoded per-cell miniature/ordinal correctness.
+- Windows remains not dogfood-ready. Next: shared core/Windows action cases,
+  connector and authoring documentation; finalized KDE/macOS port notes; the
+  complete final-artifact both-output regression and readiness summary. The
+  parked product questions and existing tentative decisions are unchanged.

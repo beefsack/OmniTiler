@@ -434,6 +434,7 @@ fn migrate_workspace_applied_path_through_production_route() {
         0,
         &fulls,
         None,
+        false,
     )
     .expect("seed tick converges");
     assert!(seed.ready, "seed converges");
@@ -580,6 +581,7 @@ fn migrate_workspace_refusal_logs_bounded_core_reason() {
         0,
         &fulls,
         None,
+        false,
     )
     .expect("seed converges");
     inject_pending_observe(observed.clone(), Vec::new(), false);
@@ -858,6 +860,7 @@ fn migrate_workspace_dispatch_prefers_pointer_over_stale_cache() {
             0,
             &fulls,
             None,
+            false,
         )
         .expect("seed converges");
         assert!(seed.ready, "seed converges");
@@ -1070,6 +1073,7 @@ fn migrate_workspace_tick_and_cli_share_core_resolution() {
         0,
         &fulls,
         None,
+        false,
     )
     .expect("seed converges");
     // Production route: one consumed/announced hook intent.

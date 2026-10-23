@@ -387,6 +387,11 @@ struct TileLoop {
     /// Raw `EnumWindows` count from the latest observation (targets seen
     /// before any eligibility filtering, including zero).
     last_enumerated: usize,
+    /// Native top-to-bottom stacking snapshot from the latest observation,
+    /// in the single enumeration sequence (first is topmost). The uniform
+    /// presentation ingress maps it to opaque lifetimes for the pager
+    /// order; frameless members keep their retained slot core-side.
+    last_native_order: Vec<crate::native_guards::WindowKey>,
     /// Mechanical device-to-wire-output map (native device keys to opaque
     /// `oN` ids). Synced from live monitor areas; native-wire ids only,
     /// never rings/views/tiling/history policy.

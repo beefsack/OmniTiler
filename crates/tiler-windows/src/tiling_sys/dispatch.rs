@@ -1115,6 +1115,7 @@ fn sticky_off_to_current(
                     foreground,
                     fulls,
                     super::observation::sample_cursor(),
+                    false,
                 );
                 let focus = match observed.iter().find(|w| w.hwnd == member_key.hwnd) {
                     Some(expected) => {

@@ -12,8 +12,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::boundary::{
-    ActiveGroupResolution, CoreCommand, CoreEvent, CoreReply, NoGroupReason, ProjectionKind,
-    ProjectionPlan, project_retained_tiled_geometry, resolve_active_group,
+    CoreCommand, CoreEvent, CoreReply, ProjectionKind, ProjectionPlan,
+    project_retained_tiled_geometry,
 };
 use crate::bounds::{is_gap, is_opaque_id};
 use crate::contract::{
@@ -1324,7 +1324,7 @@ impl Engine {
     }
 
     /// Typed world-level entry point for the workspace-send, reconcile,
-    /// update-gaps, and active-group request phases. Direct send/R4 request
+    /// and update-gaps request phases. Direct send/R4 request
     /// commits immediately with native assignment plus geometry.
     pub(crate) fn handle(&mut self, event: &CoreEvent) -> CoreReply {
         // Single-domain observation convergence before the ordinary operation:
@@ -1380,7 +1380,6 @@ impl Engine {
             CoreCommand::SendToWorkspace { .. } => self.transfer_request(event, false),
             CoreCommand::SendToOutput { .. } => self.transfer_request(event, true),
             CoreCommand::MigrateWorkspace { .. } => self.migrate_workspace_request(event),
-            CoreCommand::ActiveGroup => self.active_group_request(event),
             CoreCommand::ReleaseDomain => self.release_request(event),
             CoreCommand::ToggleFloat { .. } => {
                 match self.converge_for_single_domain(event, "toggle-float") {
@@ -2890,54 +2889,6 @@ impl Engine {
         plan.base_revision = session.accepted_revision();
         self.store_committed(event.domain_key.clone(), session, event.outer_gap);
         CoreReply::Projection(plan)
-    }
-
-    /// Active-group request phase: focus-only retained sync plus read-only
-    /// resolution.
-    ///
-    /// Aligns retained focus from the valid observed snapshot before resolving
-    /// the immediate parent group. Focus-only sync: no topology or geometry
-    /// mutation. Fails closed on divergence, pending/drag residue,
-    /// unknown/exception/cross-domain windows, or domain bounds/gap mismatch
-    /// (then the resolver still replies fail-closed `no-group` without
-    /// persisting). The carried revision is never a staleness gate: this is a
-    /// current-state snapshot whose authoritative `base_revision` is returned
-    /// for downstream ordering. Protocol keeps envelope validation, tagged
-    /// command decoding, and wire serialization; by the time an event reaches
-    /// here the command decoded and the observation validated.
-    fn active_group_request(&mut self, event: &CoreEvent) -> CoreReply {
-        let Some(mut session) = self.session(&event.domain_key).cloned() else {
-            return CoreReply::NoGroup {
-                base_revision: None,
-                reason: NoGroupReason::NoSession,
-            };
-        };
-        if !event.focused_window.0.is_empty()
-            && let Some(retained_domain) = session
-                .domains()
-                .iter()
-                .find(|domain| domain.key() == event.domain_key)
-            && retained_domain.bounds == event.domain.bounds
-            && retained_domain.gap == event.domain.gap
-        {
-            let before = session.focus();
-            if session.sync_focus_from_window(&event.domain_key, &event.focused_window)
-                && session.focus() != before
-                && let Some(stored) = self.session_mut(&event.domain_key)
-            {
-                *stored = session.clone();
-            }
-        }
-        match resolve_active_group(Some(&session), event) {
-            ActiveGroupResolution::Found(found) => CoreReply::ActiveGroup(found),
-            ActiveGroupResolution::NoGroup {
-                base_revision,
-                reason,
-            } => CoreReply::NoGroup {
-                base_revision,
-                reason,
-            },
-        }
     }
 
     /// Workspace-send request phase: canonical-pair immediate commit.

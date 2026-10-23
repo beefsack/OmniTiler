@@ -507,6 +507,7 @@ pub(super) fn service_pending_drop(
         foreground,
         fulls,
         super::observation::sample_cursor(),
+        false,
     );
     // The tick clears the stashed override only on genuine incorporation
     // (freshly accepted reply carrying this id); otherwise it stays for

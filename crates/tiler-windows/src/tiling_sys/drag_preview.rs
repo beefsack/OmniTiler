@@ -175,7 +175,7 @@ pub(super) fn refresh_drag_preview(
     // the core target.
     let cursor = super::observation::sample_cursor();
     let reply = super::world_tick::run_observation_tick(
-        state, me, store, dir, &observed, &retained, areas, foreground, fulls, cursor,
+        state, me, store, dir, &observed, &retained, areas, foreground, fulls, cursor, false,
     );
     // Source fence on the correlated result (START bound): a stale result
     // after Finish, drift, or a mover swap never renders.

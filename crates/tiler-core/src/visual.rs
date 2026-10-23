@@ -147,6 +147,7 @@ pub enum BorderHideReason {
     Cloaked,
     HiddenWorkspace,
     Shell,
+    Suspended,
 }
 
 impl BorderHideReason {
@@ -162,6 +163,7 @@ impl BorderHideReason {
             Self::Cloaked => "cloaked",
             Self::HiddenWorkspace => "hidden-workspace",
             Self::Shell => "shell",
+            Self::Suspended => "suspended",
         }
     }
 }
@@ -314,78 +316,6 @@ pub fn border_presentation(facts: &BorderFacts) -> BorderPresentation {
             },
         },
     }
-}
-
-/// Closed hide-reason vocabulary for the group-underlay presentation.
-/// Core owns eligibility reasons; the adapter keeps native identity, scope,
-/// proof, liveness, and freshness vetoes (no-target, allowlist-changed,
-/// identity-changed, scope-excluded, observe-failed, dpi-scale,
-/// anchor-missing, present-failed) plus z-anchor/topmost and drawing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UnderlayHideReason {
-    Disabled,
-    NoSubject,
-    Maximized,
-    Fullscreen,
-    Floating,
-    RootLeaf,
-    NoGroup,
-}
-
-impl UnderlayHideReason {
-    /// Closed log vocabulary for the hide reason.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Disabled => "disabled",
-            Self::NoSubject => "no-subject",
-            Self::Maximized => "maximized",
-            Self::Fullscreen => "fullscreen",
-            Self::Floating => "floating",
-            Self::RootLeaf => "root-leaf",
-            Self::NoGroup => "no-group",
-        }
-    }
-}
-
-/// Underlay eligibility for one focused subject. `has_group` is the resolved
-/// immediate-parent verdict (false covers root-leaf focus); `floating` is a
-/// focused window with no tiled membership. Maximized/fullscreen come from
-/// the fresh foreground facts. Reasons derive after the verdict, mirroring
-/// the border pattern.
-pub fn underlay_eligible(
-    enabled: bool,
-    has_subject: bool,
-    has_group: bool,
-    maximized: bool,
-    fullscreen: bool,
-    floating: bool,
-) -> Result<(), UnderlayHideReason> {
-    if !enabled {
-        return Err(UnderlayHideReason::Disabled);
-    }
-    if !has_subject {
-        return Err(UnderlayHideReason::NoSubject);
-    }
-    if maximized {
-        return Err(UnderlayHideReason::Maximized);
-    }
-    if fullscreen {
-        return Err(UnderlayHideReason::Fullscreen);
-    }
-    if floating {
-        return Err(UnderlayHideReason::Floating);
-    }
-    if !has_group {
-        return Err(UnderlayHideReason::RootLeaf);
-    }
-    // The shared core focus gate agrees on the overlapping flags: a visible
-    // non-deleted foreground subject is eligible exactly when neither
-    // fullscreen nor maximized suppresses it.
-    if !group_focus_eligible(true, false, false, fullscreen, false, maximized) {
-        return Err(UnderlayHideReason::NoGroup);
-    }
-    Ok(())
 }
 
 /// Complete group-underlay outer bounds in adapter units: the projected group
@@ -940,48 +870,6 @@ mod tests {
         assert_eq!(overflow.reason, None);
         assert_eq!(overflow.inner, None);
         assert_eq!(overflow.outer, None);
-    }
-
-    #[test]
-    fn underlay_eligibility_suppression_matrix() {
-        assert!(underlay_eligible(true, true, true, false, false, false).is_ok());
-        assert_eq!(
-            underlay_eligible(false, true, true, false, false, false),
-            Err(UnderlayHideReason::Disabled)
-        );
-        assert_eq!(
-            underlay_eligible(true, false, true, false, false, false),
-            Err(UnderlayHideReason::NoSubject)
-        );
-        assert_eq!(
-            underlay_eligible(true, true, true, true, false, false),
-            Err(UnderlayHideReason::Maximized)
-        );
-        assert_eq!(
-            underlay_eligible(true, true, true, false, true, false),
-            Err(UnderlayHideReason::Fullscreen)
-        );
-        assert_eq!(
-            underlay_eligible(true, true, true, false, false, true),
-            Err(UnderlayHideReason::Floating)
-        );
-        assert_eq!(
-            underlay_eligible(true, true, false, false, false, false),
-            Err(UnderlayHideReason::RootLeaf)
-        );
-    }
-
-    #[test]
-    fn underlay_eligibility_agrees_with_core_focus_gate() {
-        // Whenever the underlay verdict is Ok, the shared core focus gate on
-        // the overlapping flags agrees; whenever core suppresses, so do we.
-        for bits in 0..4u32 {
-            let maximized = bits & 1 != 0;
-            let fullscreen = bits & 2 != 0;
-            let core = group_focus_eligible(true, false, false, fullscreen, false, maximized);
-            let verdict = underlay_eligible(true, true, true, maximized, fullscreen, false).is_ok();
-            assert_eq!(verdict, core, "bits={bits:02b}");
-        }
     }
 
     #[test]

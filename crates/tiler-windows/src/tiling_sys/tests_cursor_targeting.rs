@@ -202,6 +202,7 @@ fn seeded_disagreement(
         101,
         &fulls(),
         cursor,
+        false,
     )
     .expect("seed converges");
     assert!(reply.ready);
@@ -524,7 +525,7 @@ fn gaming_lane_reports_no_cursor() {
     );
     assert_eq!(state.world.engine().last_cursor(), Some((1000, 300)));
     let me = route_me();
-    super::world_tick::run_observation_tick(
+    let reply = super::world_tick::run_observation_tick(
         &mut state,
         &me,
         &store,
@@ -535,8 +536,20 @@ fn gaming_lane_reports_no_cursor() {
         101,
         &fulls(),
         None,
+        true,
     )
     .expect("limited tick converges");
     assert_eq!(state.world.engine().last_cursor(), None);
+    // The paused game lane skips presentation work: hidden shapes and an
+    // empty pager, never a projection under the game.
+    assert!(reply.presentation.pager.is_empty());
+    assert_eq!(
+        reply.presentation.border.reason,
+        Some(tiler_core::visual::BorderHideReason::Suspended)
+    );
+    assert!(matches!(
+        reply.presentation.underlay,
+        tiler_core::world_presentation::PresentationUnderlay::Hidden { .. }
+    ));
     let _ = std::fs::remove_dir_all(&dir);
 }

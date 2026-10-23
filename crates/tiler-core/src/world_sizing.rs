@@ -282,6 +282,91 @@ pub fn reply_estimate(reply: &WorldReply) -> usize {
     bytes += gesture_settled_estimate(&reply.gesture_settled);
     bytes += operation_settled_estimate(&reply.operation_settled);
     bytes += warp_cursor_estimate(&reply.cursor_warp);
+    bytes += presentation_estimate(&reply.presentation);
+    bytes
+}
+
+/// Structural reply size estimate for the uniform presentation section,
+/// field-by-field from [`encode_presentation`] below. `,"presentation":`
+/// (16) plus the object: foreground id, border shape, underlay shape, and
+/// pager content.
+#[must_use]
+pub fn presentation_estimate(presentation: &crate::world_presentation::WorldPresentation) -> usize {
+    use crate::world_presentation::PresentationUnderlay;
+    // `,"presentation":{"foreground":,"border":,"underlay":,"pager":[]}`
+    // = 67 punctuation plus the foreground id.
+    let mut bytes = 67 + json_string_len(&presentation.foreground);
+    // Border `{"visible":,"reason":,"inner":,"outer":}` = 40 punctuation
+    // plus the bool, the reason token, and the two rects.
+    bytes += 40
+        + bool_len(presentation.border.visible)
+        + json_string_len(
+            presentation
+                .border
+                .reason
+                .map_or("", crate::visual::BorderHideReason::as_str),
+        )
+        + rect_len(presentation.border.inner)
+        + rect_len(presentation.border.outer);
+    match &presentation.underlay {
+        PresentationUnderlay::Found(found) => {
+            // `{"status":"found","reason":"","baseRev":"","homeOut":"",
+            // "homeWs":"","group":"","leaf":"","win":"","union":[],
+            // "outer":[],"members":[]}` = 129 punctuation plus ids, digits,
+            // rects, and members.
+            bytes += 129
+                + u64_len(found.base_revision)
+                + json_string_len(&found.home.output.0)
+                + json_string_len(&found.home.workspace.0)
+                + json_string_len(&found.group.0)
+                + json_string_len(&found.focused_leaf.0)
+                + json_string_len(&found.focused_window.0)
+                + rect_len(Some(found.union_rect))
+                + rect_len(Some(found.outer_rect));
+            for member in &found.members {
+                // `{"leaf":"","win":"","rect":[]}` = 28 punctuation.
+                bytes += 28
+                    + json_string_len(&member.leaf.0)
+                    + json_string_len(&member.window.0)
+                    + rect_len(Some(member.rect));
+            }
+            bytes += found.members.len().saturating_sub(1);
+        }
+        PresentationUnderlay::Hidden {
+            base_revision,
+            reason,
+        } => {
+            // `{"status":"hidden","reason":"","baseRev":}` = 42 punctuation;
+            // the revision is `null` (4) or `"digits"` (2 + width).
+            bytes += 42
+                + json_string_len(reason.as_str())
+                + base_revision.map_or(4, |rev| 2 + u64_len(rev));
+        }
+    }
+    for screen in &presentation.pager {
+        // `{"out":"","workspaces":[]}` = 26 punctuation plus the output id.
+        bytes += 26 + json_string_len(&screen.output);
+        for workspace in &screen.workspaces {
+            // `{"id":"","ordinal":,"label":"","current":,"occupied":,
+            // "containsFocused":,"windows":[]}` = 88 punctuation plus the
+            // id, ordinal digits, label, and three bools.
+            bytes += 88
+                + json_string_len(&workspace.id)
+                + usize_len(workspace.ordinal as usize)
+                + json_string_len(&workspace.label)
+                + bool_len(workspace.current)
+                + bool_len(workspace.occupied)
+                + bool_len(workspace.contains_focused);
+            for window in &workspace.windows {
+                // `{"win":"","frame":[]}` = 19 punctuation plus the id and
+                // the frame.
+                bytes += 19 + json_string_len(&window.window.0) + rect_len(Some(window.frame));
+            }
+            bytes += workspace.windows.len().saturating_sub(1);
+        }
+        bytes += screen.workspaces.len().saturating_sub(1);
+    }
+    bytes += presentation.pager.len().saturating_sub(1);
     bytes
 }
 
@@ -354,41 +439,6 @@ pub fn command_result_estimate(result: &Option<CommandResult>) -> usize {
             36 + json_string_len(&window.0)
                 + rect.map_or(4, rect_len)
                 + if *no_space { 15 } else { 0 }
-        }
-        CommandResult::ActiveGroup {
-            base_revision,
-            group,
-            focused_leaf,
-            focused_window,
-            members,
-            bounds,
-        } => {
-            // {"op":"active-group","rev":"","group":"","leaf":"","win":"",
-            // "bounds":[],"members":[]} = 83 punctuation (two string quotes
-            // around the u64 revision).
-            let mut bytes = 83
-                + u64_len(*base_revision)
-                + json_string_len(&group.0)
-                + json_string_len(&focused_leaf.0)
-                + json_string_len(&focused_window.0)
-                + rect_len(*bounds);
-            for member in members {
-                // {"leaf":"","win":"","rect":[]} = 27 punctuation.
-                bytes += 27
-                    + json_string_len(&member.leaf.0)
-                    + json_string_len(&member.window.0)
-                    + rect_len(member.rect);
-            }
-            bytes += members.len().saturating_sub(1);
-            bytes
-        }
-        CommandResult::NoGroup {
-            base_revision,
-            reason,
-        } => {
-            // {"op":"no-group","reason":"","rev":} = 33 punctuation;
-            // rev is null (4) or "digits" (2 + width).
-            33 + json_string_len(reason.as_str()) + base_revision.map_or(4, |rev| 2 + u64_len(rev))
         }
         CommandResult::Migration {
             direction,
@@ -463,7 +513,8 @@ pub fn report_estimate(report: &WorldReport) -> usize {
     // plus ,"monotonicMs":"" (19) and ,"frameAttempts":[] (19) = 415,
     // plus ,"memberAttempts":[] (20) and ,"viewAttempts":[] (18) = 453,
     // plus ,\"clearAttempts\":[] (18) = 471, plus ,\"gesture\":null (12) =
-    // 483, plus the version digits. Values counted
+    // 483, plus the version digits, plus ,"presentation":{} below. Values
+    // counted
     // separately below; nullable command, cursor, cursor-hit, and
     // action-context slots count `null` (4), while the action-output
     // registry counts its brackets plus one comma per entry. The workspace
@@ -517,7 +568,8 @@ pub fn report_estimate(report: &WorldReport) -> usize {
         + bool_len(report.inventory_complete)
         + bool_len(report.gesture_barrier)
         + bool_len(report.focus_follows_cursor)
-        + bool_len(report.cursor_warp);
+        + bool_len(report.cursor_warp)
+        + presentation_ingress_estimate(&report.presentation);
     for screen in &report.screens {
         // {"out":S,"full":R|null,"work":R|null,"gap":N,"outer":N,
         // "complete":B,"primary":B} = 72 fixed plus rect digits, gap
@@ -644,6 +696,52 @@ pub fn report_estimate(report: &WorldReport) -> usize {
     }
     // No restoration ingress exists on the wire: every report is a
     // fresh-observation report and the adapter sends no restoration key.
+    bytes
+}
+
+/// Structural request size estimate for the stage-5 presentation ingress:
+/// `,"presentation":{...}` with the normalized foreground token, fresh
+/// flags, host-scaled style numbers, movement facts, pause flag, pager
+/// order, and per-window pager frame sources. Field-by-field from the
+/// protocol wire layout below.
+#[must_use]
+pub fn presentation_ingress_estimate(ingress: &crate::world_report::PresentationIngress) -> usize {
+    // `,"presentation":{` (18) plus the 17 fixed ingress keys with their
+    // commas and the order bracket (239), the `,"pagerFrames":[` key (16)
+    // and its closing bracket (1): 274 exact, rounded to 276 with the same
+    // one-count conservatism as the order list. Value widths counted below;
+    // frame rows mirror the reply pager-window shape with two extra
+    // nullable rects.
+    let mut bytes = 276
+        + json_string_len(&ingress.foreground)
+        + bool_len(ingress.foreground_minimized)
+        + bool_len(ingress.foreground_maximized)
+        + bool_len(ingress.foreground_fullscreen)
+        + bool_len(ingress.foreground_cloaked)
+        + bool_len(ingress.foreground_hidden_workspace)
+        + bool_len(ingress.foreground_shell)
+        + rect_len(ingress.foreground_frame)
+        + bool_len(ingress.border_enabled)
+        + bool_len(ingress.underlay_enabled)
+        + int_len(ingress.border_gap_px)
+        + int_len(ingress.border_width_px)
+        + int_len(ingress.underlay_extension_px)
+        + bool_len(ingress.chord_held)
+        + json_string_len(&ingress.move_window)
+        + bool_len(ingress.paused);
+    for window in &ingress.pager_order {
+        bytes += json_string_len(&window.0) + 1;
+    }
+    for row in &ingress.pager_frames {
+        // `{"win":,"live":,"float":,"tile":}` = 37 punctuation plus the id
+        // and the three rects (`null` counts 4 each).
+        bytes += 37
+            + json_string_len(&row.window.0)
+            + rect_len(row.live)
+            + rect_len(row.float_frame)
+            + rect_len(row.tile_frame);
+    }
+    bytes += ingress.pager_frames.len().saturating_sub(1);
     bytes
 }
 
@@ -810,7 +908,6 @@ fn operation_estimate(command: &CoreCommand) -> usize {
     match command {
         CoreCommand::Reconcile => 7 + json_string_len("reconcile"),
         CoreCommand::UpdateGaps => 7 + json_string_len("update-gaps"),
-        CoreCommand::ActiveGroup => 7 + json_string_len("active-group"),
         CoreCommand::ReleaseDomain => 7 + json_string_len("release-domain"),
         CoreCommand::Move {
             window,
@@ -1201,6 +1298,8 @@ pub fn encode_reply_canonical(reply: &WorldReply) -> String {
         }
         None => out.push_str("null"),
     }
+    out.push_str(",\"presentation\":");
+    encode_presentation(&mut out, &reply.presentation);
     out.push('}');
     out
 }
@@ -1243,6 +1342,157 @@ pub fn encode_operation_settled(out: &mut String, settled: &[crate::world_report
         out.push('}');
     }
     out.push(']');
+}
+
+/// Exact canonical encoding for the uniform presentation section: the
+/// tick-time foreground token plus the border shape, the underlay shape,
+/// and the pager content, with frozen key order (mirrored by
+/// [`presentation_estimate`] and the protocol codec). Public so the
+/// protocol transport gate reuses the identical bytes.
+pub fn encode_presentation(
+    out: &mut String,
+    presentation: &crate::world_presentation::WorldPresentation,
+) {
+    use crate::world_presentation::PresentationUnderlay;
+    out.push_str("{\"foreground\":");
+    push_json_string(out, &presentation.foreground);
+    out.push_str(",\"border\":{");
+    out.push_str("\"visible\":");
+    out.push_str(if presentation.border.visible {
+        "true"
+    } else {
+        "false"
+    });
+    out.push_str(",\"reason\":");
+    push_json_string(
+        out,
+        presentation
+            .border
+            .reason
+            .map_or("", crate::visual::BorderHideReason::as_str),
+    );
+    out.push_str(",\"inner\":");
+    match presentation.border.inner {
+        Some(rect) => {
+            out.push_str(&format!("[{},{},{},{}]", rect.x, rect.y, rect.w, rect.h));
+        }
+        None => out.push_str("null"),
+    }
+    out.push_str(",\"outer\":");
+    match presentation.border.outer {
+        Some(rect) => {
+            out.push_str(&format!("[{},{},{},{}]", rect.x, rect.y, rect.w, rect.h));
+        }
+        None => out.push_str("null"),
+    }
+    out.push_str("},\"underlay\":");
+    match &presentation.underlay {
+        PresentationUnderlay::Found(found) => {
+            out.push_str("{\"status\":\"found\",\"reason\":\"\",\"baseRev\":\"");
+            out.push_str(&found.base_revision.to_string());
+            out.push_str("\",\"homeOut\":");
+            push_json_string(out, &found.home.output.0);
+            out.push_str(",\"homeWs\":");
+            push_json_string(out, &found.home.workspace.0);
+            out.push_str(",\"group\":");
+            push_json_string(out, &found.group.0);
+            out.push_str(",\"leaf\":");
+            push_json_string(out, &found.focused_leaf.0);
+            out.push_str(",\"win\":");
+            push_json_string(out, &found.focused_window.0);
+            out.push_str(",\"union\":");
+            out.push_str(&format!(
+                "[{},{},{},{}]",
+                found.union_rect.x, found.union_rect.y, found.union_rect.w, found.union_rect.h
+            ));
+            out.push_str(",\"outer\":");
+            out.push_str(&format!(
+                "[{},{},{},{}]",
+                found.outer_rect.x, found.outer_rect.y, found.outer_rect.w, found.outer_rect.h
+            ));
+            out.push_str(",\"members\":[");
+            for (i, member) in found.members.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                out.push_str("{\"leaf\":");
+                push_json_string(out, &member.leaf.0);
+                out.push_str(",\"win\":");
+                push_json_string(out, &member.window.0);
+                out.push_str(",\"rect\":");
+                out.push_str(&format!(
+                    "[{},{},{},{}]",
+                    member.rect.x, member.rect.y, member.rect.w, member.rect.h
+                ));
+                out.push('}');
+            }
+            out.push_str("]}");
+        }
+        PresentationUnderlay::Hidden {
+            base_revision,
+            reason,
+        } => {
+            out.push_str("{\"status\":\"hidden\",\"reason\":");
+            push_json_string(out, reason.as_str());
+            out.push_str(",\"baseRev\":");
+            match base_revision {
+                Some(rev) => {
+                    out.push('"');
+                    out.push_str(&rev.to_string());
+                    out.push('"');
+                }
+                None => out.push_str("null"),
+            }
+            out.push('}');
+        }
+    }
+    out.push_str(",\"pager\":[");
+    for (i, screen) in presentation.pager.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str("{\"out\":");
+        push_json_string(out, &screen.output);
+        out.push_str(",\"workspaces\":[");
+        for (j, workspace) in screen.workspaces.iter().enumerate() {
+            if j > 0 {
+                out.push(',');
+            }
+            out.push_str("{\"id\":");
+            push_json_string(out, &workspace.id);
+            out.push_str(",\"ordinal\":");
+            out.push_str(&workspace.ordinal.to_string());
+            out.push_str(",\"label\":");
+            push_json_string(out, &workspace.label);
+            out.push_str(",\"current\":");
+            out.push_str(if workspace.current { "true" } else { "false" });
+            out.push_str(",\"occupied\":");
+            out.push_str(if workspace.occupied { "true" } else { "false" });
+            out.push_str(",\"containsFocused\":");
+            out.push_str(if workspace.contains_focused {
+                "true"
+            } else {
+                "false"
+            });
+            out.push_str(",\"windows\":[");
+            for (k, window) in workspace.windows.iter().enumerate() {
+                if k > 0 {
+                    out.push(',');
+                }
+                out.push_str("{\"win\":");
+                push_json_string(out, &window.window.0);
+                out.push_str(",\"frame\":");
+                out.push_str(&format!(
+                    "[{},{},{},{}]",
+                    window.frame.x, window.frame.y, window.frame.w, window.frame.h
+                ));
+                out.push('}');
+            }
+            out.push_str("]}");
+        }
+        out.push_str("]}");
+    }
+    out.push_str("]}");
 }
 
 /// Exact canonical encoding for the correlated `command_result` section:
@@ -1335,56 +1585,6 @@ pub fn encode_command_result(out: &mut String, result: &Option<CommandResult>) {
             }
             out.push('}');
         }
-        Result::ActiveGroup {
-            base_revision,
-            group,
-            focused_leaf,
-            focused_window,
-            members,
-            bounds,
-        } => {
-            out.push_str("{\"op\":\"active-group\",\"rev\":\"");
-            out.push_str(&base_revision.to_string());
-            out.push_str("\",\"group\":");
-            push_json_string(out, &group.0);
-            out.push_str(",\"leaf\":");
-            push_json_string(out, &focused_leaf.0);
-            out.push_str(",\"win\":");
-            push_json_string(out, &focused_window.0);
-            out.push_str(",\"bounds\":");
-            push_rect(out, *bounds);
-            out.push_str(",\"members\":[");
-            for (i, member) in members.iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
-                out.push_str("{\"leaf\":");
-                push_json_string(out, &member.leaf.0);
-                out.push_str(",\"win\":");
-                push_json_string(out, &member.window.0);
-                out.push_str(",\"rect\":");
-                push_rect(out, member.rect);
-                out.push('}');
-            }
-            out.push_str("]}");
-        }
-        Result::NoGroup {
-            base_revision,
-            reason,
-        } => {
-            out.push_str("{\"op\":\"no-group\",\"reason\":");
-            push_json_string(out, reason.as_str());
-            out.push_str(",\"rev\":");
-            match base_revision {
-                Some(rev) => {
-                    out.push('"');
-                    out.push_str(&rev.to_string());
-                    out.push('"');
-                }
-                None => out.push_str("null"),
-            }
-            out.push('}');
-        }
         Result::Migration {
             direction,
             source,
@@ -1472,9 +1672,16 @@ pub fn reply_exact_bytes(reply: &WorldReply) -> usize {
 /// - one emitted effect row (at most one per command): 32 + id (25) +
 ///   kind (9) + target (130) + revision (20) = 216, rounded to 256.
 /// - correlated command result (at most one per command): the drag-preview
-///   / float / active-group shapes fit in 2048; a migration member list
-///   scales with the report's live window count (one max-length id + comma
-///   per window, 131 each) plus 512 base.
+///   / float shapes fit in 2048; a migration member list scales with the
+///   report's live window count (one max-length id + comma per window, 131
+///   each) plus 512 base.
+/// - uniform presentation: the border shape fits in 256; the underlay
+///   members scale with the report's live window count (one max-length
+///   leaf/window pair plus rect and comma per window, 300 each) plus 1024
+///   base; pager workspaces scale with the logical workspace count (one
+///   max-length id/label plus ordinal/flags per workspace, 320 each, plus
+///   16 outputs of slack) and pager windows scale with the live window
+///   count (one max-length id plus frame and comma per window, 160 each).
 /// - gesture-settled terminal (at most one per report): 40 fixed plus a
 ///   20-digit id plus a 5-byte bool = 65 worst case, rounded to 96.
 /// - operation-settled events (at most two per window per report: one
@@ -1498,6 +1705,11 @@ pub fn reply_upper_bound(
         .saturating_add(256)
         .saturating_add(2048)
         .saturating_add(512)
+        .saturating_add(256)
+        .saturating_add(report_windows.saturating_mul(300))
+        .saturating_add(1024)
+        .saturating_add(logical_workspaces.saturating_mul(320))
+        .saturating_add(report_windows.saturating_mul(160))
         .saturating_add(96)
         .saturating_add(report_windows.saturating_mul(131))
         .saturating_add(report_windows.saturating_mul(768))

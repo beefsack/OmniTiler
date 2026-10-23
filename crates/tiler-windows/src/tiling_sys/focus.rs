@@ -179,8 +179,10 @@ pub(super) fn hide_border(state: &mut TileLoop, reason: &str) {
 }
 
 /// Fast active-border refresh for one loop wake: reads only the foreground
-/// window (fresh identity plus one fresh frame), without full window observation,
-/// so gesture following does not wait for reconciliation or the 100ms poll.
+/// window (fresh identity plus fresh visibility facts), without full window
+/// observation, so gesture following never waits on reconciliation. Shapes
+/// are tick-derived: the outer ring rides the last applied reply, and the
+/// fresh facts only hide (never paint) when the live foreground moved on.
 /// Scope fences match tiling exactly: normal `--scope-exe`/`--scope-host-child`
 /// or the frozen allowlist (plus owned-helper verification) in proof mode.
 /// The overlay HWND itself is same-process and never resolves an identity, so
@@ -263,9 +265,10 @@ pub(super) fn refresh_active_border(state: &mut TileLoop, me: &ProcessIdentity, 
     // tool windows, and owned windows stay eligible here.
     let exe_file = exe_file_name(&window.identity.exe_path).to_ascii_lowercase();
     let border_shell = window.facts.shell || is_border_shell_popup(&class_of(hwnd), &exe_file);
-    // Core-owned eligibility from normalized facts first (same position as
-    // the retired adapter gate): ordinary floats and scoped unmanaged
-    // foregrounds carry no tiled token and stay eligible here.
+    // Core-owned eligibility from normalized fresh facts (the same pure
+    // policy the core evaluates tick-side for the reply ingress):
+    // ordinary floats and scoped unmanaged foregrounds carry no tiled
+    // token and stay eligible here.
     if let Err(reason) =
         tiler_core::visual::border_eligibility(&tiler_core::visual::BorderEligibilityFacts {
             enabled: true,
@@ -294,10 +297,21 @@ pub(super) fn refresh_active_border(state: &mut TileLoop, me: &ProcessIdentity, 
         hide_border(state, "zero-width");
         return;
     }
-    // Core-owned complete bounds from the already host-scaled style: the
-    // ring runs in adapter units throughout.
-    let Some((_, outer)) = tiler_core::visual::border_geometry(window.visible, gap_px, width_px)
-    else {
+    // Uniform presentation: the outer ring rides the last applied reply
+    // (computed tick-side from the same normalized facts and host-scaled
+    // style); the adapter never recomputes border shapes here. The reply
+    // token must name this live foreground or the shapes stay hidden with
+    // the geometry veto, never a stale paint.
+    let outer = match state.world.last_reply() {
+        Some(reply)
+            if reply.presentation.foreground == window.token
+                && reply.presentation.border.visible =>
+        {
+            reply.presentation.border.outer
+        }
+        _ => None,
+    };
+    let Some(outer) = outer else {
         hide_border(state, "geometry");
         return;
     };

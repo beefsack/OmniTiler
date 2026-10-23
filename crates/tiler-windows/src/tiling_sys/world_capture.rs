@@ -123,6 +123,25 @@ use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::size_hints::WindowSizeHints;
 use tiler_core::world_report::{ScreenReport, ScreenView, WindowFact};
 
+/// Normalized foreground facts for one tick's uniform presentation ingress
+/// (stage 5): the genuinely observed foreground lifetime (proof-verified
+/// adapter-side, including unmanaged lifetimes) plus its fresh visibility
+/// facts and live frame. The tick observes the foreground once per report
+/// (the same `observe_window` product the fast overlay path reads per wake)
+/// and the core publishes the border/underlay shapes from here. `None` when
+/// there is no foreground window or it cannot be observed.
+#[derive(Debug, Clone, Default)]
+pub(super) struct PresentationForeground {
+    pub token: String,
+    pub minimized: bool,
+    pub maximized: bool,
+    pub fullscreen: bool,
+    pub cloaked: bool,
+    pub shell: bool,
+    pub hidden_workspace: bool,
+    pub frame: Option<Rect>,
+}
+
 /// Field-input seam for the single runtime WorldEngine owner.
 ///
 /// The owner (`WorldOwner` inside `TileLoop`) borrows mutably while capture,
@@ -191,6 +210,32 @@ pub(super) struct OwnerInputs<'a> {
     pub inner_gap: i32,
     pub outer_gap: i32,
     pub active: &'a HashSet<u64>,
+    /// Normalized foreground facts for the uniform presentation ingress
+    /// (stage 5): `None` when there is no foreground window. The tick
+    /// observes the foreground once per report; capture copies the facts
+    /// into the report ingress verbatim.
+    pub presentation_foreground: Option<PresentationForeground>,
+    /// Movement-only Win+Shift chord level for the underlay trigger.
+    pub presentation_chord: bool,
+    /// Classified focused Move subject token (`""` when none): the move arm
+    /// of the underlay trigger.
+    pub presentation_move: String,
+    /// Overlay enable flags for the presentation ingress.
+    pub presentation_border_enabled: bool,
+    pub presentation_underlay_enabled: bool,
+    /// Host-scaled presentation style (gap, border width, resolved underlay
+    /// extension) in physical pixels. DPI conversion runs tick-side before
+    /// this seam; zeros on unreadable DPI (the adapter keeps its own
+    /// scale veto render-side).
+    pub presentation_style: (i32, i32, i32),
+    /// Focused-fullscreen-game lane: the core skips presentation work
+    /// (hidden shapes, empty pager) instead of projecting under the game.
+    pub presentation_paused: bool,
+    /// Native top-to-bottom stacking snapshot from the latest observation
+    /// (first is topmost). Capture maps it to opaque lifetimes for the
+    /// pager order; unknown keys drop, and an empty snapshot falls back to
+    /// observed-then-retained order.
+    pub presentation_native_order: Vec<crate::native_guards::WindowKey>,
 }
 
 impl TileLoop {
@@ -229,6 +274,14 @@ impl TileLoop {
         cursor: Option<(i32, i32)>,
         hit_hwnd: Option<u64>,
         gesture: Option<tiler_core::gesture::GestureIngress>,
+        presentation_foreground: Option<PresentationForeground>,
+        presentation_chord: bool,
+        presentation_move: String,
+        presentation_border_enabled: bool,
+        presentation_underlay_enabled: bool,
+        presentation_style: (i32, i32, i32),
+        presentation_paused: bool,
+        presentation_native_order: Vec<crate::native_guards::WindowKey>,
     ) -> OwnerInputs<'a> {
         OwnerInputs {
             member_tokens,
@@ -260,6 +313,14 @@ impl TileLoop {
             cursor,
             hit_hwnd,
             gesture,
+            presentation_foreground,
+            presentation_chord,
+            presentation_move,
+            presentation_border_enabled,
+            presentation_underlay_enabled,
+            presentation_style,
+            presentation_paused,
+            presentation_native_order,
         }
     }
 
@@ -299,6 +360,14 @@ impl TileLoop {
             cursor: None,
             hit_hwnd: None,
             gesture: None,
+            presentation_foreground: None,
+            presentation_chord: false,
+            presentation_move: String::new(),
+            presentation_border_enabled: false,
+            presentation_underlay_enabled: false,
+            presentation_style: (0, 0, 0),
+            presentation_paused: false,
+            presentation_native_order: Vec::new(),
         }
     }
 
@@ -379,6 +448,115 @@ impl TileLoop {
                 start_frame: before,
             })
         }
+    }
+
+    /// Normalized presentation facts for one tick's uniform presentation
+    /// ingress (stage 5): the foreground observation (proof-verified token,
+    /// fresh flags, live frame), the movement-only chord level, the
+    /// classified focused Move subject token, and the host-scaled style.
+    /// Fact collection only: the core owns every verdict from here. The
+    /// shell/hidden flags mirror the fast overlay path exactly (targeted
+    /// popup gate plus hide-claim membership). A known-but-frameless
+    /// foreground (minimized, maximized, fullscreen, cloaked) still carries
+    /// its token and accurate flags with no frame; anything else unreadable
+    /// carries nothing.
+    #[allow(clippy::too_many_lines)]
+    pub(super) fn presentation_tick_inputs(
+        &mut self,
+        me: &ProcessIdentity,
+        fulls: &[Rect],
+        foreground_hwnd: u64,
+    ) -> (
+        Option<PresentationForeground>,
+        bool,
+        String,
+        (i32, i32, i32),
+    ) {
+        use crate::group_underlay::MoveSizeKind;
+        let foreground = if foreground_hwnd == 0 {
+            None
+        } else {
+            let hwnd = foreground_hwnd as isize as HWND;
+            match super::observe::observe_window(hwnd, me, fulls, &mut self.tokens) {
+                Ok(window) => {
+                    let exe_file =
+                        super::shell::exe_file_name(&window.identity.exe_path).to_ascii_lowercase();
+                    let border_shell = window.facts.shell
+                        || super::shell::is_border_shell_popup(
+                            &super::observe::class_of(hwnd),
+                            &exe_file,
+                        );
+                    let key = crate::native_guards::WindowKey {
+                        hwnd: window.hwnd,
+                        pid: window.identity.pid,
+                        creation: window.identity.process_creation.clone(),
+                    };
+                    let hidden_workspace =
+                        self.hidden_claims.keys().any(|k| k.hwnd == foreground_hwnd)
+                            && self.member_home(&key).is_some_and(|loc| loc.hidden);
+                    Some(PresentationForeground {
+                        token: window.token.clone(),
+                        minimized: window.facts.minimized,
+                        maximized: window.facts.maximized,
+                        fullscreen: window.facts.captionless_fullscreen,
+                        cloaked: window.facts.cloaked,
+                        shell: border_shell,
+                        hidden_workspace,
+                        frame: Some(window.visible),
+                    })
+                }
+                Err(super::observe::ObserveFailure::Known(known, reason)) => {
+                    let key = crate::native_guards::WindowKey {
+                        hwnd: known.identity.hwnd,
+                        pid: known.identity.pid,
+                        creation: known.identity.process_creation.clone(),
+                    };
+                    let hidden_workspace =
+                        self.hidden_claims.keys().any(|k| k.hwnd == foreground_hwnd)
+                            && self.member_home(&key).is_some_and(|loc| loc.hidden);
+                    Some(PresentationForeground {
+                        token: known.token.clone(),
+                        minimized: reason == SkipReason::Minimized,
+                        maximized: reason == SkipReason::Maximized,
+                        fullscreen: reason == SkipReason::Fullscreen,
+                        cloaked: reason == SkipReason::Cloaked,
+                        shell: false,
+                        hidden_workspace,
+                        frame: None,
+                    })
+                }
+                Err(_) => None,
+            }
+        };
+        let (win_held, shift_held) = super::group_underlay::chord_held_now();
+        let chord = tiler_core::visual::group_underlay_chord_held(win_held, shift_held);
+        let move_token = if self
+            .move_kind
+            .get(&foreground_hwnd)
+            .is_some_and(|kind| *kind == MoveSizeKind::Move)
+        {
+            foreground
+                .as_ref()
+                .map(|facts| facts.token.clone())
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+        let dpi = crate::ffi::dpi_for_window(foreground_hwnd);
+        let (width_px, gap_px, _) =
+            crate::active_border::scale_style(&self.border.style, dpi).unwrap_or((0, 0, 0));
+        let extension_logical = tiler_core::visual::group_underlay_effective_extension(
+            self.underlay.style.extension,
+            self.border.style.width,
+        );
+        let extension_px =
+            crate::active_border::scale_to_physical(extension_logical, dpi).unwrap_or(0);
+        (
+            foreground,
+            chord,
+            move_token,
+            (gap_px, width_px, extension_px),
+        )
     }
 }
 
@@ -461,6 +639,11 @@ pub(super) struct CapturedWorld {
     pub(super) default_tiled: bool,
     pub(super) fixed_size_predicate: tiler_core::size_hints::FixedSizePredicate,
     pub(super) migration_source_refill: tiler_core::output_selection::MigrationSourceRefill,
+    /// Uniform presentation ingress (stage 5): normalized foreground, style,
+    /// and movement facts plus the native stacking snapshot. The sequencer
+    /// envelopes it into the report; the core publishes the reply
+    /// presentation from it.
+    pub(super) presentation: tiler_core::world_report::PresentationIngress,
     /// Closes observed live again: stale, dropped, never carried.
     /// (Read by the 2b owner cutover; capture retains the evidence meanwhile.)
     #[allow(dead_code)]
@@ -531,6 +714,147 @@ pub(super) fn capture_facts_rideable(facts: &WindowFacts) -> bool {
         Ok(()) => true,
         Err(SkipReason::Fullscreen | SkipReason::Maximized) => true,
         Err(_) => false,
+    }
+}
+
+/// Uniform presentation ingress (stage 5): normalized foreground facts
+/// plus host-scaled style and movement facts from the seam, with the
+/// native top-to-bottom stacking snapshot derived from the same
+/// observed/retained products as the old pager order (observed eligible
+/// members in enumeration order, then retained rows with fresh frames).
+/// Hidden members absent from both keep their retained stacking slot
+/// core-side. Unknown lifetimes never admit members.
+fn presentation_ingress(
+    state: &OwnerInputs<'_>,
+    observed: Option<&[ObservedWindow]>,
+    retained: &[RetainedRow],
+) -> tiler_core::world_report::PresentationIngress {
+    // Stable token per enumerated key: observed and retained rows carry
+    // theirs; hidden members absent from the enumeration keep theirs in
+    // `member_tokens`.
+    let mut tokens: HashMap<crate::native_guards::WindowKey, &str> = HashMap::new();
+    if let Some(observed) = observed {
+        for window in observed {
+            tokens.insert(
+                crate::native_guards::WindowKey {
+                    hwnd: window.hwnd,
+                    pid: window.identity.pid,
+                    creation: window.identity.process_creation.clone(),
+                },
+                window.token.as_str(),
+            );
+        }
+    }
+    for row in retained {
+        tokens.entry(row.key.clone()).or_insert(row.token.as_str());
+    }
+    for (key, token) in state.member_tokens.iter() {
+        tokens.entry(key.clone()).or_insert(token.as_str());
+    }
+    // Native top-to-bottom order mapped to opaque lifetimes; unknown keys
+    // drop. An empty snapshot (test seeding without an observation) falls
+    // back to observed-then-retained order. Duplicates keep their first
+    // occurrence.
+    let mut order: Vec<String> = Vec::new();
+    let mut seen: HashSet<&str> = HashSet::new();
+    for key in &state.presentation_native_order {
+        if let Some(token) = tokens.get(key)
+            && seen.insert(token)
+        {
+            order.push((*token).to_owned());
+        }
+    }
+    if order.is_empty() {
+        if let Some(observed) = observed {
+            for window in observed {
+                if seen.insert(window.token.as_str()) {
+                    order.push(window.token.clone());
+                }
+            }
+        }
+        for row in retained {
+            if row.rect.is_some() && seen.insert(row.token.as_str()) {
+                order.push(row.token.clone());
+            }
+        }
+    }
+    // Pager frame rows, one per token with any source: fresh native frames
+    // (observed visible, then retained overlay rows) fill the live slot;
+    // the adapter's float slots fill the float slot; tile slots fill the
+    // tile slot. First source wins per slot; the core applies the live >
+    // float > tile precedence. Never a fresh observation beyond the
+    // enumeration tables, never an adapter precedence decision.
+    let mut rows: BTreeMap<String, tiler_core::world_report::PresentationPagerFrame> =
+        BTreeMap::new();
+    if let Some(observed) = observed {
+        for window in observed {
+            rows.entry(window.token.clone()).or_insert(
+                tiler_core::world_report::PresentationPagerFrame {
+                    window: tiler_core::directional::WindowId(window.token.clone()),
+                    live: Some(window.visible),
+                    float_frame: None,
+                    tile_frame: None,
+                },
+            );
+        }
+    }
+    for row in retained {
+        if let Some(rect) = row.rect {
+            rows.entry(row.token.clone()).or_insert(
+                tiler_core::world_report::PresentationPagerFrame {
+                    window: tiler_core::directional::WindowId(row.token.clone()),
+                    live: Some(rect),
+                    float_frame: None,
+                    tile_frame: None,
+                },
+            );
+        }
+    }
+    for (token, frame) in state.float_rects.iter() {
+        rows.entry(token.clone())
+            .or_insert_with(|| tiler_core::world_report::PresentationPagerFrame {
+                window: tiler_core::directional::WindowId(token.clone()),
+                live: None,
+                float_frame: None,
+                tile_frame: None,
+            })
+            .float_frame = Some(*frame);
+    }
+    for (token, frame) in state.member_rects.iter() {
+        rows.entry(token.clone())
+            .or_insert_with(|| tiler_core::world_report::PresentationPagerFrame {
+                window: tiler_core::directional::WindowId(token.clone()),
+                live: None,
+                float_frame: None,
+                tile_frame: None,
+            })
+            .tile_frame = Some(*frame);
+    }
+    let foreground = state.presentation_foreground.as_ref();
+    tiler_core::world_report::PresentationIngress {
+        foreground: foreground
+            .map(|facts| facts.token.clone())
+            .unwrap_or_default(),
+        foreground_minimized: foreground.is_some_and(|facts| facts.minimized),
+        foreground_maximized: foreground.is_some_and(|facts| facts.maximized),
+        foreground_fullscreen: foreground.is_some_and(|facts| facts.fullscreen),
+        foreground_cloaked: foreground.is_some_and(|facts| facts.cloaked),
+        foreground_hidden_workspace: foreground.is_some_and(|facts| facts.hidden_workspace),
+        foreground_shell: foreground.is_some_and(|facts| facts.shell),
+        foreground_frame: foreground.and_then(|facts| facts.frame),
+        border_enabled: state.presentation_border_enabled,
+        underlay_enabled: state.presentation_underlay_enabled,
+        border_gap_px: state.presentation_style.0,
+        border_width_px: state.presentation_style.1,
+        underlay_extension_px: state.presentation_style.2,
+        chord_held: state.presentation_chord,
+        move_window: state.presentation_move.clone(),
+        paused: state.presentation_paused,
+        pager_order: order
+            .into_iter()
+            .map(tiler_core::directional::WindowId)
+            .collect(),
+        pager_frames: rows.into_values().collect(),
     }
 }
 
@@ -1410,5 +1734,6 @@ pub(super) fn capture_world(
         #[cfg(test)]
         unhomed_closed,
         held_members,
+        presentation: presentation_ingress(state, Some(observed), retained),
     }
 }

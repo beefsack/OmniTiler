@@ -194,6 +194,7 @@ pub(super) fn run_tile_loop(
         snap_advance: None,
         resize_repeat: None,
         last_enumerated: 0,
+        last_native_order: Vec::new(),
         applied_homing: HashMap::new(),
         applied_views: HashMap::new(),
         output_tokens: HashMap::new(),

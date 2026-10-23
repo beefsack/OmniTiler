@@ -528,12 +528,17 @@ pub(super) fn sync_taskbar_pager(
     // worker lookups first, then frame from cache hits. Paint never touches
     // foreign windows or waits.
     let icons = drain_icon_cache(state, now, log_path);
-    // Core-ordered pager content (stage 4c): the sole content authority for
+    // Uniform pager content (stage 5): the sole content authority for
     // rings, ordinals, currency, ordered paint lists, and resolved source
-    // rectangles. The adapter only maps opaque lifetimes back to member keys
-    // (a mechanical race may lag membership) and lays out; it never sorts,
-    // renumbers, or filters content.
-    let screens = state.world.engine().pager_screens();
+    // rectangles rides the last applied reply. The adapter only maps opaque
+    // lifetimes back to member keys (a mechanical race may lag membership)
+    // and lays out; it never sorts, renumbers, or filters content. No reply
+    // yet (startup) renders no workspaces.
+    let screens: Vec<tiler_core::world_presentation::PagerScreen> = state
+        .world
+        .last_reply()
+        .map(|reply| reply.presentation.pager.clone())
+        .unwrap_or_default();
     let key_of: HashMap<String, crate::native_guards::WindowKey> = state
         .member_tokens
         .iter()
@@ -1546,8 +1551,8 @@ mod pager_host_tests {
             },
             member_tag: None,
         };
-        // A foreign window observes fine but is never a member: excluded.
-        let foreign = mk_observed(703, "tok-foreign", 9, "creation-foreign");
+        // A foreign window observes fine but is never a member: excluded
+        // (it never rides a report, so the reply content omits it).
         // Genuine world seeding for the member roster below: dispatch the
         // member rows through the loop's own owner so the pager snapshot
         // gates on real engine homing (the foreign window stays unbound).
@@ -1559,62 +1564,40 @@ mod pager_host_tests {
         super::super::world_tick::dispatch_test_observation(
             &mut state,
             &[mk_observed(701, "tok-live", 7, "creation-live")],
-            &[RetainedRow {
-                key: overlay_key.clone(),
-                token: "tok-overlay".to_owned(),
-                rect: Some(overlay_frame),
-                maximized: false,
-                fullscreen: true,
-                facts: None,
-            }],
+            &[overlay_retained_row(
+                overlay_key.clone(),
+                "tok-overlay",
+                overlay_frame,
+            )],
             &seed_areas,
             0,
             None,
             0,
+        )
+        .expect("seed converges");
+        // Visible member and retained overlay frames resolve through the
+        // retained last-live frame in the reply content; the foreign window
+        // never enters pager content.
+        let reply = state.world.last_reply().expect("applied reply");
+        let painted: Vec<(&str, tiler_core::geometry::Rect)> = reply
+            .presentation
+            .pager
+            .iter()
+            .flat_map(|screen| screen.workspaces.iter())
+            .flat_map(|workspace| workspace.windows.iter())
+            .map(|window| (window.window.0.as_str(), window.frame))
+            .collect();
+        assert!(
+            painted.contains(&("tok-live", live_frame)),
+            "live member paints: {painted:?}"
         );
-        inject_pending_observe(
-            vec![mk_observed(701, "tok-live", 7, "creation-live"), foreign],
-            vec![RetainedRow {
-                key: overlay_key.clone(),
-                token: "tok-overlay".to_owned(),
-                rect: Some(overlay_frame),
-                maximized: false,
-                fullscreen: true,
-                facts: None,
-            }],
-            false,
+        assert!(
+            painted.contains(&("tok-overlay", overlay_frame)),
+            "retained overlay paints: {painted:?}"
         );
-        let me = pager_me();
-        let fulls = vec![live_frame];
-        let mut skipped = Vec::new();
-        let mut retained = Vec::new();
-        let observed = state
-            .observe(&me, &fulls, &mut skipped, &mut retained)
-            .expect("injected observation");
-        assert_eq!(observed.len(), 2);
-        // Visible member and retained overlay frames resolve through the core
-        // fallback; the foreign window never enters pager content.
-        use tiler_core::directional::WindowId;
-        assert_eq!(
-            state
-                .world
-                .engine()
-                .pager_frame(&WindowId("tok-live".to_owned())),
-            Some(live_frame)
-        );
-        assert_eq!(
-            state
-                .world
-                .engine()
-                .pager_frame(&WindowId("tok-overlay".to_owned())),
-            Some(overlay_frame)
-        );
-        assert_eq!(
-            state
-                .world
-                .engine()
-                .pager_frame(&WindowId("tok-foreign".to_owned())),
-            None
+        assert!(
+            painted.iter().all(|(token, _)| *token != "tok-foreign"),
+            "foreign window never enters pager content: {painted:?}"
         );
         clear_pending_seams();
     }
@@ -1662,6 +1645,37 @@ mod pager_host_tests {
         }
     }
 
+    /// Retained overlay row with rideable native facts (mirrors the
+    /// production observe path: kept maximized/fullscreen overlays carry
+    /// their fresh native facts, so the report fact stays readable and the
+    /// reply content resolves the retained frame).
+    fn overlay_retained_row(
+        key: crate::native_guards::WindowKey,
+        token: &str,
+        frame: tiler_core::geometry::Rect,
+    ) -> RetainedRow {
+        RetainedRow {
+            key,
+            token: token.to_owned(),
+            rect: Some(frame),
+            maximized: false,
+            fullscreen: true,
+            facts: Some(crate::tiling::WindowFacts {
+                visible: true,
+                minimized: false,
+                maximized: false,
+                cloaked: false,
+                elevated: false,
+                shell: false,
+                tool_window: false,
+                owned: false,
+                captionless_fullscreen: true,
+                no_activate: false,
+                dialog: false,
+            }),
+        }
+    }
+
     fn pager_bar() -> crate::pager::TaskbarFacts {
         crate::pager::TaskbarFacts {
             rect: tiler_core::geometry::Rect {
@@ -1689,9 +1703,13 @@ mod pager_host_tests {
 
     fn pager_frame_for(state: &super::TileLoop, output: &str) -> crate::pager::OutputPager {
         use std::collections::HashMap;
-        // Core-ordered content (stage 4c): the adapter only maps opaque
+        // Uniform reply content (stage 5): the adapter only maps opaque
         // lifetimes back to member keys and lays out, never sorts or filters.
-        let screens = state.world.engine().pager_screens();
+        let screens: Vec<tiler_core::world_presentation::PagerScreen> = state
+            .world
+            .last_reply()
+            .map(|reply| reply.presentation.pager.clone())
+            .unwrap_or_default();
         let wire = state.wire_of(output).expect("device mapped");
         let screen = screens
             .iter()
@@ -1732,7 +1750,6 @@ mod pager_host_tests {
 
     #[test]
     fn pager_retains_native_order_with_overlay_topmost() {
-        use tiler_core::directional::WindowId;
         use tiler_core::geometry::Rect;
         clear_pending_seams();
         let mut state = test_state();
@@ -1768,46 +1785,36 @@ mod pager_host_tests {
         ] {
             state.member_tokens.insert(key.clone(), token.to_owned());
         }
+        // Stale tile slot for the overlay: capture forwards the report fact
+        // from this slot (model grounding) while the fresh native frame
+        // rides the live source. The reply must paint the fresh frame.
+        let stale_slot = Rect {
+            x: 100,
+            y: 100,
+            w: 200,
+            h: 200,
+        };
+        state
+            .member_rects
+            .insert("tok-creation-overlay".to_owned(), stale_slot);
         // Genuine world seeding: the pager snapshot gates on real engine
-        // homing, so dispatch the member rows through the loop's own owner
-        // before the injected observation below.
+        // homing, so observe first (stashing the scripted native order)
+        // then dispatch the member rows through the loop's own owner.
         let seed_areas = vec![super::MonitorArea {
             device: output.clone(),
             work: pager_full(),
             full: pager_full(),
         }];
-        super::super::world_tick::dispatch_test_observation(
-            &mut state,
-            &[
-                live_observed_hwnd(801, 7, "creation-plain", plain_frame),
-                live_observed_hwnd(802, 7, "creation-tiled", tiled_frame),
-            ],
-            &[RetainedRow {
-                key: overlay.clone(),
-                token: "tok-creation-overlay".to_owned(),
-                rect: Some(overlay_frame),
-                maximized: false,
-                fullscreen: true,
-                facts: None,
-            }],
-            &seed_areas,
-            0,
-            None,
-            0,
-        );
         inject_pending_observe(
             vec![
                 live_observed_hwnd(801, 7, "creation-plain", plain_frame),
                 live_observed_hwnd(802, 7, "creation-tiled", tiled_frame),
             ],
-            vec![RetainedRow {
-                key: overlay.clone(),
-                token: "tok-creation-overlay".to_owned(),
-                rect: Some(overlay_frame),
-                maximized: false,
-                fullscreen: true,
-                facts: None,
-            }],
+            vec![overlay_retained_row(
+                overlay.clone(),
+                "tok-creation-overlay",
+                overlay_frame,
+            )],
             false,
         );
         // Scripted native order, top-to-bottom: the retained overlay covers
@@ -1820,15 +1827,29 @@ mod pager_host_tests {
         let observed = state
             .observe(&me, &fulls, &mut skipped, &mut retained)
             .expect("injected observation");
-        assert_eq!(observed.len(), 2);
-        // The kept overlay resolves through the live fallback like an
-        // ordinary member.
-        assert_eq!(
-            state
-                .world
-                .engine()
-                .pager_frame(&WindowId("tok-creation-overlay".to_owned())),
-            Some(overlay_frame)
+        super::super::world_tick::dispatch_test_observation(
+            &mut state,
+            &observed,
+            &retained,
+            &seed_areas,
+            0,
+            None,
+            0,
+        )
+        .expect("seed converges");
+        // The kept overlay resolves through the retained last-live frame.
+        let reply = state.world.last_reply().expect("applied reply");
+        let painted: Vec<(&str, tiler_core::geometry::Rect)> = reply
+            .presentation
+            .pager
+            .iter()
+            .flat_map(|screen| screen.workspaces.iter())
+            .flat_map(|workspace| workspace.windows.iter())
+            .map(|window| (window.window.0.as_str(), window.frame))
+            .collect();
+        assert!(
+            painted.contains(&("tok-creation-overlay", overlay_frame)),
+            "overlay paints: {painted:?}"
         );
         let pager = pager_frame_for(&state, &output);
         let cell = pager
@@ -1852,7 +1873,6 @@ mod pager_host_tests {
 
     #[test]
     fn pager_retains_hidden_order_prunes_and_reuses() {
-        use tiler_core::directional::WindowId;
         use tiler_core::geometry::Rect;
         clear_pending_seams();
         let mut state = test_state();
@@ -1930,9 +1950,9 @@ mod pager_host_tests {
             .expect("tick 1");
         // Native top-to-bottom [x, y] paints bottom first.
         assert_eq!(paint_keys(&state, &output), vec![y.clone(), x.clone()]);
-        // Tick 2: x hidden (still assigned, absent from the enumeration);
-        // the unset zorder falls back to observed order and x keeps its
-        // retained stacking slot, painting bottom first again.
+        // Tick 2: x hidden (still assigned, absent from the enumeration).
+        // No re-dispatch here: the seed reply already retains the slot and
+        // the snapshot, painting bottom first again.
         inject_pending_observe(
             vec![live_observed_hwnd(902, 7, "creation-y", frame_y)],
             Vec::new(),
@@ -1941,31 +1961,41 @@ mod pager_host_tests {
         state
             .observe(&me, &fulls, &mut skipped, &mut retained)
             .expect("tick 2");
-        assert_eq!(
-            state
-                .world
-                .engine()
-                .pager_frame(&WindowId("tok-creation-y".to_owned())),
-            Some(frame_y)
-        );
-        assert_eq!(
-            state
-                .world
-                .engine()
-                .pager_frame(&WindowId("tok-creation-x".to_owned())),
-            Some(frame_x)
-        );
-        assert_eq!(paint_keys(&state, &output), vec![x.clone(), y.clone()]);
-        // Tick 3: x closed (membership gone) prunes the retained slot.
+        let reply = state.world.last_reply().expect("applied reply");
+        for (token, frame) in [("tok-creation-y", frame_y), ("tok-creation-x", frame_x)] {
+            assert!(
+                reply
+                    .presentation
+                    .pager
+                    .iter()
+                    .flat_map(|screen| screen.workspaces.iter())
+                    .flat_map(|workspace| workspace.windows.iter())
+                    .any(|window| window.window.0 == token && window.frame == frame),
+                "{token} keeps its retained frame"
+            );
+        }
+        assert_eq!(paint_keys(&state, &output), vec![y.clone(), x.clone()]);
+        // Tick 3: x closed (membership gone) prunes the retained slot on
+        // the next dispatch.
         assert!(state.forget_member(&x));
         inject_pending_observe(
             vec![live_observed_hwnd(902, 7, "creation-y", frame_y)],
             Vec::new(),
             false,
         );
-        state
+        let observed = state
             .observe(&me, &fulls, &mut skipped, &mut retained)
             .expect("tick 3");
+        super::super::world_tick::dispatch_test_observation(
+            &mut state,
+            &observed,
+            &retained,
+            &seed_areas,
+            0,
+            None,
+            0,
+        )
+        .expect("tick 3 converges");
         assert_eq!(paint_keys(&state, &output), vec![y.clone()]);
         // Tick 4: a recycled HWND with a new creation is a new identity in
         // the deterministic fallback, never the stale slot.
@@ -2000,12 +2030,16 @@ mod pager_host_tests {
             .expect("tick 4");
         // A recycled HWND with a new creation is a new identity with no
         // frame yet: only the live member paints, never the stale slot.
-        assert_eq!(
-            state
-                .world
-                .engine()
-                .pager_frame(&WindowId("tok-creation-x2".to_owned())),
-            None
+        let reply = state.world.last_reply().expect("applied reply");
+        assert!(
+            reply
+                .presentation
+                .pager
+                .iter()
+                .flat_map(|screen| screen.workspaces.iter())
+                .flat_map(|workspace| workspace.windows.iter())
+                .all(|window| window.window.0 != "tok-creation-x2"),
+            "recycled identity paints nothing until admitted"
         );
         assert_eq!(paint_keys(&state, &output), vec![y.clone()]);
         clear_pending_seams();
@@ -2065,17 +2099,10 @@ mod pager_host_tests {
             .observe(&me, &fulls, &mut skipped, &mut retained)
             .expect("tick 1");
         // Fresh verified candidates hold a core order slot even though
-        // admission has not assigned them yet; nothing renders.
+        // admission has not assigned them yet; nothing renders (no applied
+        // reply yet).
         assert!(
-            state
-                .world
-                .engine()
-                .pager_screens()
-                .iter()
-                .flat_map(|screen| screen.workspaces.iter())
-                .flat_map(|workspace| workspace.windows.iter())
-                .next()
-                .is_none(),
+            state.world.last_reply().is_none(),
             "unadmitted candidates never render"
         );
         // Admission binds the members and stages their slots, then the

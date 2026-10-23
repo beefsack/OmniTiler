@@ -52,6 +52,7 @@ pub(super) fn test_state() -> TileLoop {
         snap_advance: None,
         resize_repeat: None,
         last_enumerated: 0,
+        last_native_order: Vec::new(),
         applied_homing: std::collections::HashMap::new(),
         applied_views: std::collections::HashMap::new(),
         output_tokens: std::collections::HashMap::new(),

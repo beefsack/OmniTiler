@@ -558,27 +558,29 @@ pub struct WorldEngine {
     /// accepted run and read by settling, sweeping, commands, and
     /// publishing; never survives across runs.
     pub(crate) staged: StagedReport,
-    /// Pager presentation live frames (stage 4c): verified live frames per
-    /// admitted member lifetime, rebuilt by every
-    /// [`WorldEngine::observe_pager_presentation`] call. Presentation-only;
-    /// never mapping, membership, or geometry authority.
+    /// Retained pager presentation live frames (stage 5): fresh native
+    /// frames per roster lifetime, rebuilt wholesale by every
+    /// [`WorldEngine::retain_pager_presentation`] call from the normalized
+    /// ingress. First in the pager frame fallback after membership.
+    /// Presentation-only; never mapping, membership, or geometry authority.
+    /// Members with no resolved source render no miniature, never a guess.
     pub(crate) presentation_live: BTreeMap<WindowId, Rect>,
-    /// Pager presentation float snapshots (stage 4c): saved float frames per
-    /// admitted member, second in the pager frame fallback after live.
+    /// Retained pager presentation float snapshots (stage 5): saved float
+    /// frames per roster lifetime, second in the pager frame fallback.
+    /// Presentation-only like above.
     pub(crate) presentation_float: BTreeMap<WindowId, Rect>,
-    /// Pager presentation tile/hide-time snapshots (stage 4c): saved tile
-    /// slot and hide-time frames per admitted member, last in the pager
-    /// frame fallback. Members with no frame anywhere render no miniature,
-    /// never a guess.
+    /// Retained pager presentation tile/hide-time snapshots (stage 5):
+    /// saved tile slot and hide-time frames per roster lifetime, last in
+    /// the pager frame fallback. Presentation-only like above.
     pub(crate) presentation_tile: BTreeMap<WindowId, Rect>,
-    /// Retained pager presentation order (stage 4c): top-to-bottom native
+    /// Retained pager presentation order (stage 5): top-to-bottom native
     /// stacking over admitted member lifetimes plus first-paint candidates
-    /// (see [`WorldEngine::observe_pager_presentation`]). Sole retained
-    /// stacking authority; per-workspace query lists paint bottom first.
+    /// (see [`WorldEngine::retain_pager_presentation`]). Sole retained
+    /// stacking authority; per-workspace content lists paint bottom first.
     pub(crate) presentation_order: Vec<WindowId>,
-    /// Pager presentation focus (stage 4c): the adapter-observed focused
+    /// Pager presentation focus (stage 5): the adapter-observed focused
     /// lifetime from the latest accepted report (`None` when none or
-    /// unmanaged). Presentation-only; the query gates it on retained homing.
+    /// unmanaged). Presentation-only; the content gates it on retained homing.
     pub(crate) presentation_focused: Option<WindowId>,
 }
 
@@ -710,6 +712,7 @@ impl WorldEngine {
             gesture_settled: None,
             operation_settled: Vec::new(),
             cursor_warp: None,
+            presentation: crate::world_presentation::WorldPresentation::default(),
         }
     }
 
@@ -1335,15 +1338,6 @@ impl WorldEngine {
         self.cursor_warp = report.cursor_warp;
         self.prev_cursor = self.last_cursor;
         self.last_cursor = report.cursor;
-        // Pager presentation focus (stage 4c): the adapter-observed focused
-        // lifetime, retained per accepted report. The pager query gates it
-        // on retained homing, so unmanaged or departed lifetimes simply mark
-        // no workspace. Empty means no focus.
-        self.presentation_focused = if report.focused_global.is_empty() {
-            None
-        } else {
-            Some(WindowId(report.focused_global.clone()))
-        };
         self.engine.set_fresh_placement(report.fresh_placement);
         self.engine.set_fresh_cursor(report.cursor);
         // Floating workspaces skip convergence entirely: no session is
@@ -1585,6 +1579,12 @@ impl WorldEngine {
         self.members.retain(|_, state| {
             ringed.contains(&state.home) || self.displaced.contains_key(&state.home.output.0)
         });
+        // Uniform presentation retains last (stage 5): pager frames, order,
+        // and focus settle against converged membership, then the reply
+        // carries the computed border/underlay/pager presentation. The
+        // paused (game-lane) report skips projection work inside the compute.
+        self.retain_pager_presentation(report);
+        reply.presentation = self.presentation_for_publish(report);
         self.state_revision += 1;
         reply.state_revision = self.state_revision;
         if report.observation_seq > self.last_observation_seq || !self.has_last {

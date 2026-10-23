@@ -512,6 +512,7 @@ pub(crate) fn report_with_screens(
         member_attempts: Vec::new(),
         view_attempts: Vec::new(),
         clear_attempts: Vec::new(),
+        presentation: crate::world_report::PresentationIngress::disabled(),
     }
 }
 

@@ -134,11 +134,11 @@ impl TileLoop {
             // the fixture seam instead of native queries.
             self.refresh_hidden_iconic();
             retained.extend(retained_injected);
-            // The real path derives this sequence from its single
-            // `EnumWindows` enumeration; fixtures either script it
-            // explicitly (retained overlays interleaved in native position)
-            // or fall back to observed-then-retained exactly as before.
-            let visible: Vec<crate::native_guards::WindowKey> = INJECTED_ZORDER
+            // The native stacking snapshot for the uniform presentation
+            // ingress: fixtures either script it explicitly (retained
+            // overlays interleaved in native position) or fall back to
+            // observed-then-retained exactly as before.
+            self.last_native_order = INJECTED_ZORDER
                 .with(|slot| slot.borrow().clone())
                 .unwrap_or_else(|| {
                     let mut fallback = Vec::with_capacity(observed.len() + retained.len());
@@ -156,7 +156,6 @@ impl TileLoop {
                     }
                     fallback
                 });
-            self.record_pager_live(&observed, retained, &visible);
             let _ = (me, fulls);
             return Some(observed);
         }
@@ -176,11 +175,12 @@ impl TileLoop {
         // them below (eligible, skipped, and frame-failed) so known windows
         // keep stable tokens instead of churning one new token per tick.
         let mut enumerated: Vec<(u64, String)> = Vec::new();
-        // Verified live-frame member sequence in this same enumeration order
-        // (top-to-bottom): observed eligible members plus retained rows with
-        // fresh frames. Frameless rows (minimized, hosted-gate refusals) never
-        // enter: they keep their retained stacking slot instead. This is the
-        // only native order read; the pager never queries z-order itself.
+        // Native top-to-bottom stacking snapshot in this single enumeration
+        // sequence (first is topmost): observed eligible members plus
+        // retained rows with fresh frames. Frameless rows (minimized,
+        // hosted-gate refusals) never enter: they keep their retained
+        // stacking slot core-side. Stashed for the uniform presentation
+        // ingress; the pager never queries z-order itself.
         let mut zorder: Vec<crate::native_guards::WindowKey> = Vec::new();
         for raw in hwnds {
             // The process-owned border overlay is never a tile target, a
@@ -357,6 +357,9 @@ impl TileLoop {
             }
         }
         self.tokens.retain(&live_refs);
+        // Stash the native stacking snapshot for the uniform presentation
+        // ingress the tick builds next.
+        self.last_native_order = zorder;
         if unreadable > 0 {
             skipped.push((
                 format!("unreadable-{unreadable}"),
@@ -385,85 +388,6 @@ impl TileLoop {
             .collect();
         self.overlay_now
             .retain(|token, _| live_tokens.contains(token));
-        self.record_pager_live(&out, retained, &zorder);
         Some(out)
-    }
-
-    /// Forward the taskbar-pager presentation observation to the core
-    /// (stage 4c): verified live frames for observed eligible members plus
-    /// retained fresh frames for kept maximized/fullscreen overlays and born
-    /// holds, the adapter's saved float/tile snapshots, and the single
-    /// enumeration native order. Observe runs before workspace assignment,
-    /// so newly verified clients forward their tokens before admission:
-    /// first-paint candidates hold a core order slot without membership,
-    /// the frame builder still filters to actual membership, and the next
-    /// observation prunes candidates that never joined and are now absent.
-    /// Read-only over the tiling tables: never mutates
-    /// `member_rects`/`float_rects`, and unknown lifetimes never admit
-    /// members; lifetime reuse arrives as a new token and prunes with it.
-    fn record_pager_live(
-        &mut self,
-        observed: &[ObservedWindow],
-        retained: &[RetainedRow],
-        visible_top_to_bottom: &[crate::native_guards::WindowKey],
-    ) {
-        // Stable token per enumerated key: observed and retained rows carry
-        // theirs; hidden members absent from the enumeration keep theirs in
-        // `member_tokens`.
-        let mut tokens: HashMap<crate::native_guards::WindowKey, String> = HashMap::new();
-        for window in observed {
-            tokens.insert(
-                crate::native_guards::WindowKey {
-                    hwnd: window.hwnd,
-                    pid: window.identity.pid,
-                    creation: window.identity.process_creation.clone(),
-                },
-                window.token.clone(),
-            );
-        }
-        for row in retained {
-            tokens.entry(row.key.clone()).or_insert(row.token.clone());
-        }
-        for (key, token) in &self.member_tokens {
-            tokens.entry(key.clone()).or_insert(token.clone());
-        }
-        let mut live: std::collections::BTreeMap<tiler_core::directional::WindowId, Rect> =
-            std::collections::BTreeMap::new();
-        for window in observed {
-            live.insert(
-                tiler_core::directional::WindowId(window.token.clone()),
-                window.visible,
-            );
-        }
-        for row in retained {
-            if let Some(rect) = row.rect {
-                live.entry(tiler_core::directional::WindowId(row.token.clone()))
-                    .or_insert(rect);
-            }
-        }
-        self.world.observe_pager_presentation(
-            tiler_core::world_presentation::PagerPresentationObservation {
-                live,
-                float_frames: self
-                    .float_rects
-                    .iter()
-                    .map(|(token, frame)| {
-                        (tiler_core::directional::WindowId(token.clone()), *frame)
-                    })
-                    .collect(),
-                tile_frames: self
-                    .member_rects
-                    .iter()
-                    .map(|(token, frame)| {
-                        (tiler_core::directional::WindowId(token.clone()), *frame)
-                    })
-                    .collect(),
-                native_order_top_to_bottom: visible_top_to_bottom
-                    .iter()
-                    .filter_map(|key| tokens.get(key).cloned())
-                    .map(tiler_core::directional::WindowId)
-                    .collect(),
-            },
-        );
     }
 }

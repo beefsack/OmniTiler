@@ -119,8 +119,7 @@ impl WorldEngine {
             | CoreCommand::ToggleFloat { .. }
             | CoreCommand::ToggleOrientation { .. }
             | CoreCommand::DragDrop { .. }
-            | CoreCommand::DragPreview { .. }
-            | CoreCommand::ActiveGroup => {
+            | CoreCommand::DragPreview { .. } => {
                 self.run_local_operation(report, command_seq, command, by_id, held_scopes)
             }
         }
@@ -1122,7 +1121,7 @@ impl WorldEngine {
         held_scopes: &BTreeSet<DomainKey>,
     ) -> CommandApplied {
         let (domain_key, _) =
-            match self.operation_domain_staged(&CoreCommand::ActiveGroup, held_scopes) {
+            match self.operation_domain_staged(&CoreCommand::Reconcile, held_scopes) {
                 Some(found) => found,
                 None => {
                     return CommandApplied::Rejected {
@@ -1315,21 +1314,6 @@ impl WorldEngine {
                     }
                 }
             }
-            CoreReply::ActiveGroup(found) => Some(CommandResult::ActiveGroup {
-                base_revision: found.base_revision,
-                group: found.group.clone(),
-                focused_leaf: found.focused_leaf.clone(),
-                focused_window: found.focused_window.clone(),
-                members: found.members.clone(),
-                bounds: found.bounds,
-            }),
-            CoreReply::NoGroup {
-                base_revision,
-                reason,
-            } => Some(CommandResult::NoGroup {
-                base_revision: *base_revision,
-                reason: *reason,
-            }),
             CoreReply::MigrateWorkspace(plan) => Some(CommandResult::Migration {
                 direction: plan.direction,
                 source: plan.source.clone(),
@@ -1342,7 +1326,7 @@ impl WorldEngine {
     }
 
     /// Shared reply settlement for operation events: stages the correlated
-    /// command result (preview/float/group only; move/resize/tiled geometry
+    /// command result (preview/float only; move/resize/tiled geometry
     /// rides the snapshot), at-most-once focus effects, sequence
     /// consumption on success, verbatim refusal passthrough. Never mutates
     /// on refusal.
@@ -1413,8 +1397,6 @@ impl WorldEngine {
             CoreReply::Tiled(_)
             | CoreReply::Projection(_)
             | CoreReply::Resize(_)
-            | CoreReply::ActiveGroup(_)
-            | CoreReply::NoGroup { .. }
             | CoreReply::DragPreview(_) => {
                 self.note_command(command_seq);
                 CommandApplied::NoEffect
@@ -1614,7 +1596,6 @@ impl WorldEngine {
             | CoreCommand::DragPreview { window, .. } => Some(WindowId(window.clone())),
             CoreCommand::Reconcile
             | CoreCommand::UpdateGaps
-            | CoreCommand::ActiveGroup
             | CoreCommand::SendToWorkspace { .. }
             | CoreCommand::SendToOutput { .. }
             | CoreCommand::MigrateWorkspace { .. }
@@ -1678,7 +1659,6 @@ pub(crate) fn command_window(command: &WorldCommand) -> Option<WindowId> {
             | CoreCommand::SendToOutput { window, .. } => Some(WindowId(window.clone())),
             CoreCommand::Reconcile
             | CoreCommand::UpdateGaps
-            | CoreCommand::ActiveGroup
             | CoreCommand::ReleaseDomain
             | CoreCommand::MigrateWorkspace { .. } => None,
         },

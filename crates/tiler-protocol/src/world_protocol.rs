@@ -110,9 +110,9 @@
 //! `scopes`, `workspaces`, `outputs`, `windows`, `transfers`, `effects`,
 //! `result`: null or the correlated per-command outcome that the snapshot
 //! alone cannot express - drag-preview rect+hover, toggle-float placement,
-//! active-group/no-group highlight, migrate-workspace provenance; move,
-//! resize, tiled-admit, focus, and send results ride the snapshot,
-//! transfers, and effects with `result: null` - plus `gestureSettled`:
+//! migrate-workspace provenance; move, resize, tiled-admit, focus, and send
+//! results ride the snapshot, transfers, and effects with `result: null` -
+//! plus `gestureSettled`:
 //! null or the `{"id":"N","committed":B}` terminal incorporated by this
 //! report (never retained across reports), plus `operationSettled`: [] or one
 //! `{"op","win","outcome","cause"}` object per retired retained operation
@@ -121,7 +121,9 @@
 //! resumed, never that the final frame arrived; only `float-frame-proven`
 //! means native observation confirmed the float target), plus
 //! `warpCursor`: null or the desired `[x,y]` cursor-warp point
-//! (cross-output focus only).
+//! (cross-output focus only), plus `presentation`: the uniform
+//! border/underlay/pager presentation (`foreground` token, `border` shape,
+//! `underlay` found/hidden shape, `pager` content).
 //! Bootstrap/discovery replies reuse the same shape with `ready:false` and
 //! empty sections. Bounded errors reuse
 //! `{v:2,outcome:"rejected",kind,message,gen}`.
@@ -132,8 +134,9 @@ use tiler_core::directional::{NodeId, OutputId, WindowId, WorkspaceId};
 use tiler_core::geometry::Rect;
 use tiler_core::ids::{MAX_CORRELATION_LEN, MAX_GENERATION_LEN, MAX_OWNER_LEN};
 use tiler_core::world_report::{
-    HoldReason, NativeObservation, ScreenReport, ScreenView, TransferKind, WORLD_CONTRACT_VERSION,
-    WindowFact, WorldCommand, WorldReply, WorldReport, validate_report_reason,
+    HoldReason, NativeObservation, PresentationIngress, ScreenReport, ScreenView, TransferKind,
+    WORLD_CONTRACT_VERSION, WindowFact, WorldCommand, WorldReply, WorldReport,
+    validate_report_reason,
 };
 
 /// World protocol contract version (equals the core world contract version).
@@ -939,6 +942,103 @@ fn decode_gesture_ingress(
     })
 }
 
+/// Normalized stage-5 presentation ingress: `{"foreground":S,
+/// "minimized":B,"maximized":B,"fullscreen":B,"cloaked":B,
+/// "hiddenWorkspace":B,"shell":B,"frame":[x,y,w,h]|null,
+/// "borderEnabled":B,"underlayEnabled":B,"borderGap":N,"borderWidth":N,
+/// "underlayExtension":N,"chordHeld":B,"moveWindow":S,"paused":B,
+/// "pagerOrder":[S...],"pagerFrames":[{"win":S,"live":[x,y,w,h]|null,
+/// "float":[x,y,w,h]|null,"tile":[x,y,w,h]|null},...]}`. Empty
+/// `foreground`/`moveWindow` mean none; non-empty tokens must be opaque.
+/// The frame is the live foreground frame in adapter units (`null` when
+/// unreadable). Style numbers are host-scaled pixels. The pager order is
+/// the native top-to-bottom stacking snapshot over opaque lifetimes; frame
+/// rows carry the distinct live, float, and tile sources (any slot may be
+/// null; the core resolves live first, then float, then tile).
+fn decode_presentation(value: &serde_json::Value) -> Result<PresentationIngress> {
+    use tiler_core::world_report::{PresentationIngress, PresentationPagerFrame};
+    let map = as_object(value)?;
+    check_keys(
+        map,
+        &[
+            "foreground",
+            "minimized",
+            "maximized",
+            "fullscreen",
+            "cloaked",
+            "hiddenWorkspace",
+            "shell",
+            "frame",
+            "borderEnabled",
+            "underlayEnabled",
+            "borderGap",
+            "borderWidth",
+            "underlayExtension",
+            "chordHeld",
+            "moveWindow",
+            "paused",
+            "pagerOrder",
+            "pagerFrames",
+        ],
+    )?;
+    let foreground = req_str(map, "foreground")?;
+    if !foreground.is_empty() && !is_opaque_id(foreground) {
+        return Err(unknown_value());
+    }
+    let move_window = req_str(map, "moveWindow")?;
+    if !move_window.is_empty() && !is_opaque_id(move_window) {
+        return Err(unknown_value());
+    }
+    let frame = opt_rect_or_null(map, "frame")?;
+    let order_value = map.get("pagerOrder").ok_or_else(malformed)?;
+    let order_items = order_value.as_array().ok_or_else(malformed)?;
+    let mut pager_order = Vec::with_capacity(order_items.len());
+    for item in order_items {
+        let id = item.as_str().ok_or_else(malformed)?;
+        if !is_opaque_id(id) {
+            return Err(unknown_value());
+        }
+        pager_order.push(WindowId(id.to_owned()));
+    }
+    let snapshots_value = map.get("pagerFrames").ok_or_else(malformed)?;
+    let snapshot_items = snapshots_value.as_array().ok_or_else(malformed)?;
+    let mut pager_frames = Vec::with_capacity(snapshot_items.len());
+    for item in snapshot_items {
+        let row = as_object(item)?;
+        check_keys(row, &["win", "live", "float", "tile"])?;
+        let id = req_str(row, "win")?;
+        if !is_opaque_id(id) {
+            return Err(unknown_value());
+        }
+        pager_frames.push(PresentationPagerFrame {
+            window: WindowId(id.to_owned()),
+            live: opt_rect_or_null(row, "live")?,
+            float_frame: opt_rect_or_null(row, "float")?,
+            tile_frame: opt_rect_or_null(row, "tile")?,
+        });
+    }
+    Ok(PresentationIngress {
+        foreground: foreground.to_owned(),
+        foreground_minimized: req_bool(map, "minimized")?,
+        foreground_maximized: req_bool(map, "maximized")?,
+        foreground_fullscreen: req_bool(map, "fullscreen")?,
+        foreground_cloaked: req_bool(map, "cloaked")?,
+        foreground_hidden_workspace: req_bool(map, "hiddenWorkspace")?,
+        foreground_shell: req_bool(map, "shell")?,
+        foreground_frame: frame,
+        border_enabled: req_bool(map, "borderEnabled")?,
+        underlay_enabled: req_bool(map, "underlayEnabled")?,
+        border_gap_px: req_i32(map, "borderGap")?,
+        border_width_px: req_i32(map, "borderWidth")?,
+        underlay_extension_px: req_i32(map, "underlayExtension")?,
+        chord_held: req_bool(map, "chordHeld")?,
+        move_window: move_window.to_owned(),
+        paused: req_bool(map, "paused")?,
+        pager_order,
+        pager_frames,
+    })
+}
+
 fn decode_core_command(map: &serde_json::Map<String, serde_json::Value>) -> Result<CoreCommand> {
     let op = req_str(map, "op")?;
     match op {
@@ -949,10 +1049,6 @@ fn decode_core_command(map: &serde_json::Map<String, serde_json::Value>) -> Resu
         "update-gaps" => {
             check_keys(map, &["op"])?;
             Ok(CoreCommand::UpdateGaps)
-        }
-        "active-group" => {
-            check_keys(map, &["op"])?;
-            Ok(CoreCommand::ActiveGroup)
         }
         "release-domain" => {
             check_keys(map, &["op"])?;
@@ -1335,6 +1431,7 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
             "actionOutputs",
             "focusFollowsCursor",
             "cursorWarp",
+            "presentation",
         ],
         &[
             "anchorFallback",
@@ -1573,6 +1670,7 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
         member_attempts,
         view_attempts,
         clear_attempts,
+        presentation: decode_presentation(map.get("presentation").ok_or_else(malformed)?)?,
     };
     if let Some(reason) = validate_report_reason(&report) {
         return Err(WorldProtocolError {
@@ -1820,6 +1918,8 @@ pub fn encode_reply(reply: &WorldReply) -> String {
         }
         None => out.push_str("null"),
     }
+    out.push_str(",\"presentation\":");
+    tiler_core::world_sizing::encode_presentation(&mut out, &reply.presentation);
     out.push('}');
     out
 }

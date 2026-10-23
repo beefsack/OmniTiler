@@ -85,16 +85,6 @@ impl WorldOwner {
         self.seq.engine_ref()
     }
 
-    /// Retain one tick of pager presentation facts on the sequenced engine
-    /// (stage 4c). Presentation-only forward; content reads through
-    /// [`WorldOwner::engine`].
-    pub(super) fn observe_pager_presentation(
-        &mut self,
-        obs: tiler_core::world_presentation::PagerPresentationObservation,
-    ) {
-        self.seq.observe_pager_presentation(obs);
-    }
-
     /// Owned core projections for one diff pass (homing, rings, views).
     pub(super) fn core_projections(&self) -> CoreProjections {
         let engine = self.engine();
@@ -302,32 +292,8 @@ impl WorldOwner {
         let generation = self.seq.core_generation().to_owned();
         self.seq.note_rejected_or_lost(&generation, request_id)
     }
-    /// Read-only reply-derived presentation projection (pager/border only):
-    /// logical views per output. Never a second policy.
-    #[cfg(test)]
-    pub(super) fn presentation(&self) -> Option<WorldPresentation> {
-        let reply = self.last_reply.as_ref()?;
-        let mut views: BTreeMap<String, String> = BTreeMap::new();
-        for output in &reply.outputs {
-            if let Some(view) = output.logical_view.clone() {
-                views.insert(output.output.0.clone(), view);
-            }
-        }
-        Some(WorldPresentation {
-            views,
-            revision: reply.state_revision,
-        })
-    }
 }
 
 #[cfg(test)]
 #[path = "world_owner_tests.rs"]
 mod world_owner_tests;
-
-/// Read-only presentation snapshot derived from the last applied reply.
-#[derive(Debug, Clone, Default)]
-#[cfg(test)]
-pub(super) struct WorldPresentation {
-    pub(super) views: BTreeMap<String, String>,
-    pub(super) revision: u64,
-}

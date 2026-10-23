@@ -1,18 +1,11 @@
 #![forbid(unsafe_code)]
 use super::*;
 
-/// Read-only resolved active group for the underlay fill: the core
-/// read-only highlight query over retained state, plus the host-scaled
-/// style numbers. Field names mirror the retired world-command result so
-/// the render below is untouched.
-struct ResolvedGroup {
-    base_revision: u64,
-    home: tiler_core::session::DomainKey,
-    group: tiler_core::directional::NodeId,
-    focused_leaf: tiler_core::directional::NodeId,
-    members: Vec<tiler_core::active_group::ActiveGroupMember>,
-    bounds: Rect,
-}
+// Read-only resolved active group for the underlay fill: the uniform
+// reply presentation (core-owned members, union, and outer fill) plus the
+// tick-time foreground token. The fast path revalidates the live
+// foreground against the reply token and applies the fresh
+// movement-only trigger; shapes are never recomputed here.
 
 /// Hide the underlay fill with a change-only `group-underlay` log line.
 /// Bridged hides post through the handoff like the border; the ack logs.
@@ -172,16 +165,19 @@ fn underlay_home_bounds(
 /// independent during resize. Move-start evidence never depends on modifier
 /// observation.
 ///
-/// Geometry is the read-only core highlight query over retained state with
-/// the fresh actual focused token (never an unfocused dragged id, which would
-/// persist false retained focus). No world command runs here, no observation
-/// ticks, no actuation: fast per-wake event following reuses the last
-/// accepted world state. Held scopes, outstanding transfers, and session
-/// pending/drag residue fail closed in the query; an open native Move never
-/// blocks it. The union shown is always the hints-aware projected union,
-/// never live dragged bounds. The fill lands directly beneath the lowest
-/// renderable member in `EnumWindows` order (the border surface included
-/// when visible), i.e. below members and below the active border.
+/// Geometry is tick-derived: the members, union, and outer fill ride the
+/// last applied reply, computed tick-side from the normalized ingress
+/// with the fresh actual focused token (never an unfocused dragged id,
+/// which would persist false retained focus). No world command runs here,
+/// no observation ticks, no actuation: fast per-wake event following only
+/// hides on a stale token or a dropped trigger, never repaints fresh
+/// geometry without a new reply. Held scopes, outstanding transfers, and
+/// session pending/drag residue fail closed in the core query; an open
+/// native Move never blocks it. The union shown is always the hints-aware
+/// projected union, never live dragged bounds. The fill lands directly
+/// beneath the lowest renderable member in `EnumWindows` order (the border
+/// surface included when visible), i.e. below members and below the
+/// active border.
 pub(super) fn refresh_group_underlay(
     state: &mut TileLoop,
     me: &ProcessIdentity,
@@ -259,31 +255,41 @@ pub(super) fn refresh_group_underlay(
         hide_underlay(state, "scope-excluded");
         return;
     }
-    // Read-only core highlight query over retained state: the fresh,
-    // proof-verified foreground token plus its fresh facts. No world
-    // command, no observation tick, no actuation, no history/revision/
-    // mapping change: fast per-wake event following reuses the last accepted
-    // world state. The query never adopts the foreground, admits windows, or
-    // fabricates a group on retained focus mismatch.
-    let highlight = state.world.engine().group_highlight(
-        &tiler_core::world_presentation::GroupHighlightFacts {
-            enabled: true,
-            foreground_token: tiler_core::directional::WindowId(window.token.clone()),
-            minimized: window.facts.minimized,
-            maximized: window.facts.maximized,
-            fullscreen: window.facts.captionless_fullscreen,
-        },
-    );
-    let found = match highlight {
-        tiler_core::world_presentation::GroupHighlight::Found(found) => ResolvedGroup {
-            base_revision: found.base_revision,
-            home: found.home,
-            group: found.group,
-            focused_leaf: found.focused_leaf,
-            members: found.members,
-            bounds: found.union_rect,
-        },
-        tiler_core::world_presentation::GroupHighlight::Hidden { reason, .. } => {
+    // Uniform presentation from the last applied reply: the core-owned
+    // group members, union, and outer fill plus the tick-time foreground
+    // token the shapes were computed for. Fast per-wake event following
+    // revalidates the live foreground token against the reply token (never
+    // paints stale shapes) and applies the fresh movement-only trigger; no
+    // world command, no observation tick, no actuation, no history/revision/
+    // mapping change. A retained focus naming any other lifetime hides as
+    // focus-changed instead of fabricating a group.
+    let Some(reply) = state.world.last_reply() else {
+        hide_underlay(state, "no-target");
+        return;
+    };
+    // Fresh visibility vetoes ahead of the reply: a foreground that changed
+    // state since the tick hides immediately instead of painting a stale
+    // fill. Priority mirrors the core gate (minimized, maximized,
+    // fullscreen).
+    if window.facts.minimized {
+        hide_underlay(state, "minimized");
+        return;
+    }
+    if window.facts.maximized {
+        hide_underlay(state, "maximized");
+        return;
+    }
+    if window.facts.captionless_fullscreen {
+        hide_underlay(state, "fullscreen");
+        return;
+    }
+    if reply.presentation.foreground != window.token {
+        hide_underlay(state, "focus-changed");
+        return;
+    }
+    let found = match &reply.presentation.underlay {
+        tiler_core::world_presentation::PresentationUnderlay::Found(found) => found.clone(),
+        tiler_core::world_presentation::PresentationUnderlay::Hidden { reason, .. } => {
             hide_underlay(state, reason.as_str());
             return;
         }
@@ -312,15 +318,9 @@ pub(super) fn refresh_group_underlay(
         hide_underlay(state, "dpi-scale");
         return;
     };
-    let Some(outer) = tiler_core::visual::group_underlay_outer_rect_px(
-        found.bounds,
-        gap_px,
-        width_px,
-        extension_px,
-    ) else {
-        hide_underlay(state, "geometry");
-        return;
-    };
+    // The outer fill rides the reply (computed tick-side from the same
+    // host-scaled style); the adapter never recomputes shapes here.
+    let outer = found.outer_rect;
     // Anchor beneath the lowest renderable member; the renderer's own border
     // surface sorts into the same comparison renderer-side so the fill stays
     // below it too. Member candidates stay identity-valid (still managed)
@@ -389,7 +389,7 @@ pub(super) fn refresh_group_underlay(
         .collect();
     let member_rects: Vec<Rect> = found.members.iter().map(|member| member.rect).collect();
     let geometry_debug = underlay_geometry_debug(crate::group_underlay::UnderlayGeometryReport {
-        union_rect: found.bounds,
+        union_rect: found.union_rect,
         group: found.group.0.as_str(),
         focused_leaf: found.focused_leaf.0.as_str(),
         member_windows: &member_windows,

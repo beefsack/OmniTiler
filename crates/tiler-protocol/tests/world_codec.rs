@@ -34,7 +34,7 @@ fn request_json(
          \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
          \"actionOutputs\":[\"out\"],\"focusFollowsCursor\":false,\"cursorWarp\":false,\
          \"defaultTiled\":true,\"focused\":\"\",\
-         \"complete\":true,\"gesture\":false}}"
+         \"complete\":true,\"gesture\":false,\"presentation\":{{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\"fullscreen\":false,\"cloaked\":false,\"hiddenWorkspace\":false,\"shell\":false,\"frame\":null,\"borderEnabled\":false,\"underlayEnabled\":false,\"borderGap\":0,\"borderWidth\":0,\"underlayExtension\":0,\"chordHeld\":false,\"moveWindow\":\"\",\"paused\":false,\"pagerOrder\":[],\"pagerFrames\":[]}}}}"
     )
 }
 
@@ -627,6 +627,81 @@ fn request_estimate_bounds_actual_wire_bytes() {
         "estimate {estimate} bounds wire {}",
         wire.len()
     );
+    // A populated presentation ingress stays bounded too.
+    let mut full: serde_json::Value = serde_json::from_str(&compact).expect("valid");
+    full["presentation"] = serde_json::json!({
+        "foreground": "win-a", "minimized": false, "maximized": false,
+        "fullscreen": false, "cloaked": false, "hiddenWorkspace": false, "shell": false,
+        "frame": [0, 0, 200, 200], "borderEnabled": true, "underlayEnabled": true,
+        "borderGap": 2, "borderWidth": 4, "underlayExtension": 3,
+        "chordHeld": true, "moveWindow": "win-a", "paused": false,
+        "pagerOrder": ["win-a"],
+        "pagerFrames": [{"win": "win-a", "live": [0, 0, 200, 200], "float": null, "tile": [0, 0, 200, 200]}],
+    });
+    let wire = full.to_string();
+    let report = decode_request(&wire).expect("presentation decodes");
+    assert_eq!(report.presentation.foreground, "win-a");
+    assert_eq!(report.presentation.pager_order.len(), 1);
+    assert_eq!(report.presentation.pager_frames.len(), 1);
+    let estimate = tiler_core::world_report::report_estimate(&report);
+    assert!(
+        estimate >= wire.len(),
+        "estimate {estimate} bounds wire {}",
+        wire.len()
+    );
+}
+
+#[test]
+fn presentation_ingress_decodes_strictly() {
+    // The disabled fixture rides an empty presentation ingress.
+    let report = decode_request(&one_window_request()).expect("decodes");
+    assert!(report.presentation.foreground.is_empty());
+    assert!(!report.presentation.border_enabled);
+    assert!(!report.presentation.paused);
+    assert!(report.presentation.pager_order.is_empty());
+    // Missing presentation refuses: remote scripts must send it.
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value
+        .as_object_mut()
+        .expect("object")
+        .remove("presentation");
+    assert!(decode_request(&value.to_string()).is_err());
+    // Unknown fields refuse; unknown id tokens refuse.
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["presentation"]["extra"] = serde_json::Value::Bool(true);
+    let error = decode_request(&value.to_string()).expect_err("unknown presentation field refuses");
+    assert_eq!(error.kind, "unknown-field");
+    for (key, replacement) in [
+        ("foreground", serde_json::json!("not an id!!")),
+        ("moveWindow", serde_json::json!("not an id!!")),
+    ] {
+        let mut value: serde_json::Value =
+            serde_json::from_str(&one_window_request()).expect("valid");
+        value["presentation"][key] = replacement;
+        let error = decode_request(&value.to_string()).expect_err("bad presentation id refuses");
+        assert_eq!(error.kind, "unknown-value");
+    }
+    // Out-of-range style numbers and over-cap orders refuse at the core gate.
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["presentation"]["borderGap"] = serde_json::json!(-1);
+    let error = decode_request(&value.to_string()).expect_err("negative style refuses");
+    assert_eq!(error.kind, "snapshot-invalid");
+    // Snapshot rows refuse unknown ids and non-rect frames.
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["presentation"]["pagerFrames"] = serde_json::json!([{"win": "win-a", "live": [0, 0, 200, 200], "float": null, "tile": [0, 0, 200, 200]}]);
+    let report = decode_request(&value.to_string()).expect("frames decode");
+    assert_eq!(report.presentation.pager_frames.len(), 1);
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["presentation"]["pagerFrames"] =
+        serde_json::json!([{"win": "win-a", "live": [0, 0, 0, 0], "float": null, "tile": null}]);
+    assert!(decode_request(&value.to_string()).is_err());
+    // Empty tokens mean none and stay valid.
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["presentation"]["foreground"] = serde_json::Value::String(String::new());
+    value["presentation"]["moveWindow"] = serde_json::Value::String(String::new());
+    let report = decode_request(&value.to_string()).expect("empty tokens decode");
+    assert!(report.presentation.foreground.is_empty());
+    assert!(report.presentation.move_window.is_empty());
 }
 
 #[test]
@@ -1053,7 +1128,9 @@ fn golden_bootstrap_reply_bytes_lock_wire_shape() {
         "{\"v\":2,\"adapter\":\"adapter-1\",\"gen\":\"gen-1\",\"req\":\"req-1\",\
          \"obs\":\"0\",\"rev\":\"0\",\"ready\":false,\"consumed\":false,\
          \"scopes\":[],\"workspaces\":[],\"outputs\":[],\"windows\":[],\
-         \"transfers\":[],\"effects\":[],\"result\":null,\"gestureSettled\":null,\"operationSettled\":[],\"warpCursor\":null}"
+         \"transfers\":[],\"effects\":[],\"result\":null,\"gestureSettled\":null,\"operationSettled\":[],\"warpCursor\":null,\
+         \"presentation\":{\"foreground\":\"\",\"border\":{\"visible\":false,\"reason\":\"no-target\",\"inner\":null,\"outer\":null},\
+         \"underlay\":{\"status\":\"hidden\",\"reason\":\"no-group\",\"baseRev\":null},\"pager\":[]}}"
     );
 }
 

@@ -442,6 +442,7 @@ fn pd_fixture(with_occupant: bool) -> Fx {
         0,
         &fulls,
         None,
+        false,
     )
     .expect("seed converges");
     let home = state.member_home(&mover).expect("mover homed");
@@ -1349,6 +1350,7 @@ fn arrival_reply(
         gesture_settled: None,
         operation_settled: Vec::new(),
         cursor_warp: None,
+        presentation: tiler_core::world_presentation::WorldPresentation::default(),
     }
 }
 
@@ -2373,6 +2375,14 @@ fn stale_delivery_claims_nothing_but_clears_on_incorporation() {
         Some((150, 50)),
         None,
         gesture.clone(),
+        None,
+        false,
+        String::new(),
+        false,
+        false,
+        (0, 0, 0),
+        false,
+        Vec::new(),
     );
     let report = world
         .try_dispatch_observation(&inputs, Some(&restaged), &[], &fx.areas, MOVER_HWND, 2)

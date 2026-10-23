@@ -551,6 +551,7 @@ pub(super) fn gesture_tick(
             foreground,
             fulls,
             super::observation::sample_cursor(),
+            false,
         );
         // The tick clears the stashed override only on genuine
         // incorporation (freshly accepted reply carrying this id); a tick

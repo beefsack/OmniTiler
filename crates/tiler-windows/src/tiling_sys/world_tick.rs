@@ -197,8 +197,6 @@ fn command_result_kind(result: &Option<CommandResult>) -> &'static str {
         Some(CommandResult::DragPreview { .. }) => "drag-preview",
         Some(CommandResult::Float { .. }) => "float",
         Some(CommandResult::Directional { .. }) => "directional",
-        Some(CommandResult::ActiveGroup { .. }) => "active-group",
-        Some(CommandResult::NoGroup { .. }) => "no-group",
         Some(CommandResult::Migration { .. }) => "migration",
     }
 }
@@ -898,6 +896,7 @@ pub(super) fn run_observation_tick(
     foreground_hwnd: u64,
     fulls: &[tiler_core::geometry::Rect],
     cursor: Option<(i32, i32)>,
+    presentation_paused: bool,
 ) -> Option<tiler_core::world_report::WorldReply> {
     let trace = state.trace;
     let tick = state.tick;
@@ -906,7 +905,10 @@ pub(super) fn run_observation_tick(
     admit_retained_and_marks(state, me, observed, retained, areas);
     snapshot_frames(state, observed);
     super::rows::refresh_world_hints(state, observed, retained);
-    // Normalized gesture ingress rides this tick's capture (stage 4a):
+    // The native stacking snapshot stashed by the latest observation;
+    // capture maps it to opaque lifetimes for the pager order.
+    let presentation_native_order = state.last_native_order.clone();
+    // Normalized presentation ingress rides this tick's capture (stage 4a):
     // computed before the disjoint split borrows the loop.
     let gesture = state.gesture_ingress(cursor);
     // Raw cursor-hit HWND for the same tick as the cursor sample: the
@@ -914,6 +916,14 @@ pub(super) fn run_observation_tick(
     // `None` whenever the cursor itself is unsampled (game lane,
     // unreadable), so a hit never travels without its position.
     let hit_hwnd = super::observation::cursor_hit_hwnd(cursor);
+    // Normalized presentation ingress rides this tick's capture (stage 5):
+    // the foreground observation, chord/move facts, and host-scaled style,
+    // computed before the disjoint split borrows the loop. The game lane
+    // sets `presentation_paused` so the core skips presentation work.
+    let (presentation_foreground, presentation_chord, presentation_move, presentation_style) =
+        state.presentation_tick_inputs(me, fulls, foreground_hwnd);
+    let presentation_border_enabled = state.border.enabled;
+    let presentation_underlay_enabled = state.underlay.enabled;
     // Disjoint borrows: `world` mutably alongside every read-only input
     // field, never the whole loop (see `TileLoop::owner_inputs`).
     let TileLoop {
@@ -986,6 +996,14 @@ pub(super) fn run_observation_tick(
         cursor,
         hit_hwnd,
         gesture.clone(),
+        presentation_foreground.clone(),
+        presentation_chord,
+        presentation_move.clone(),
+        presentation_border_enabled,
+        presentation_underlay_enabled,
+        presentation_style,
+        presentation_paused,
+        presentation_native_order.clone(),
     );
     let report = match world.try_dispatch_observation(
         &inputs,
@@ -1046,6 +1064,14 @@ pub(super) fn run_observation_tick(
         cursor,
         hit_hwnd,
         gesture.clone(),
+        presentation_foreground.clone(),
+        presentation_chord,
+        presentation_move.clone(),
+        presentation_border_enabled,
+        presentation_underlay_enabled,
+        presentation_style,
+        presentation_paused,
+        presentation_native_order.clone(),
     );
     let captured = capture_world(&inputs, Some(observed), retained, areas, foreground_hwnd);
     let inputs = TileLoop::owner_inputs(
@@ -1078,6 +1104,14 @@ pub(super) fn run_observation_tick(
         cursor,
         hit_hwnd,
         gesture.clone(),
+        presentation_foreground.clone(),
+        presentation_chord,
+        presentation_move.clone(),
+        presentation_border_enabled,
+        presentation_underlay_enabled,
+        presentation_style,
+        presentation_paused,
+        presentation_native_order.clone(),
     );
     let fresh = FreshHost::from_sources(&inputs, observed, retained, &captured);
     let (homing, rings, views) = world.core_projections();
@@ -1264,7 +1298,10 @@ pub(super) fn run_world_command(
     admit_retained_and_marks(state, me, observed, retained, areas);
     snapshot_frames(state, observed);
     super::rows::refresh_world_hints(state, observed, retained);
-    // Normalized gesture ingress rides this tick's capture (stage 4a):
+    // The native stacking snapshot stashed by the latest observation;
+    // capture maps it to opaque lifetimes for the pager order.
+    let presentation_native_order = state.last_native_order.clone();
+    // Normalized presentation ingress rides this tick's capture (stage 4a):
     // computed before the disjoint split borrows the loop.
     let gesture = state.gesture_ingress(cursor);
     // Raw cursor-hit HWND for the same tick as the cursor sample: the
@@ -1272,6 +1309,14 @@ pub(super) fn run_world_command(
     // `None` whenever the cursor itself is unsampled (game lane,
     // unreadable), so a hit never travels without its position.
     let hit_hwnd = super::observation::cursor_hit_hwnd(cursor);
+    // Normalized presentation ingress rides this tick's capture (stage 5),
+    // like the observation path. Commands never run on the game lane, so
+    // the pause flag stays clear here.
+    let (presentation_foreground, presentation_chord, presentation_move, presentation_style) =
+        state.presentation_tick_inputs(me, fulls, foreground_hwnd);
+    let presentation_border_enabled = state.border.enabled;
+    let presentation_underlay_enabled = state.underlay.enabled;
+    let presentation_paused = false;
     // Disjoint borrows: `world` mutably alongside every read-only input
     // field, never the whole loop (see `TileLoop::owner_inputs`).
     let TileLoop {
@@ -1343,6 +1388,14 @@ pub(super) fn run_world_command(
             cursor,
             hit_hwnd,
             gesture.clone(),
+            presentation_foreground.clone(),
+            presentation_chord,
+            presentation_move.clone(),
+            presentation_border_enabled,
+            presentation_underlay_enabled,
+            presentation_style,
+            presentation_paused,
+            presentation_native_order.clone(),
         );
         match world.try_dispatch_command(
             &inputs,
@@ -1442,6 +1495,14 @@ pub(super) fn run_world_command(
         cursor,
         hit_hwnd,
         gesture.clone(),
+        presentation_foreground.clone(),
+        presentation_chord,
+        presentation_move.clone(),
+        presentation_border_enabled,
+        presentation_underlay_enabled,
+        presentation_style,
+        presentation_paused,
+        presentation_native_order.clone(),
     );
     let captured = capture_world(&inputs, Some(observed), retained, areas, foreground_hwnd);
     let inputs = TileLoop::owner_inputs(
@@ -1474,6 +1535,14 @@ pub(super) fn run_world_command(
         cursor,
         hit_hwnd,
         gesture.clone(),
+        presentation_foreground.clone(),
+        presentation_chord,
+        presentation_move.clone(),
+        presentation_border_enabled,
+        presentation_underlay_enabled,
+        presentation_style,
+        presentation_paused,
+        presentation_native_order.clone(),
     );
     let fresh = FreshHost::from_sources(&inputs, observed, retained, &captured);
     let (homing, rings, views) = world.core_projections();
@@ -1705,6 +1774,20 @@ pub(super) fn dispatch_test_observation(
     // production): tests needing terminal phases set the override slot
     // before dispatching.
     let gesture = state.gesture_ingress(cursor);
+    // Offline seeding carries no native hit read and no presentation
+    // facts: tests set `inputs.hit_hwnd` explicitly when they need a hit,
+    // and drive presentation through explicit reports.
+    let presentation_foreground: Option<super::world_capture::PresentationForeground> = None;
+    let presentation_chord = false;
+    let presentation_move = String::new();
+    let presentation_border_enabled = false;
+    let presentation_underlay_enabled = false;
+    let presentation_style = (0, 0, 0);
+    let presentation_paused = false;
+    // The stashed native order from the latest `observe` (empty when the
+    // test seeds without one): capture maps it to opaque lifetimes, else
+    // falls back to observed-then-retained order.
+    let presentation_native_order = state.last_native_order.clone();
     let TileLoop {
         ref mut world,
         ref member_tokens,
@@ -1768,6 +1851,14 @@ pub(super) fn dispatch_test_observation(
         cursor,
         None,
         gesture.clone(),
+        presentation_foreground.clone(),
+        presentation_chord,
+        presentation_move.clone(),
+        presentation_border_enabled,
+        presentation_underlay_enabled,
+        presentation_style,
+        presentation_paused,
+        presentation_native_order.clone(),
     );
     let report = match world.try_dispatch_observation(
         &inputs,
@@ -1857,6 +1948,7 @@ mod apply_diag_tests {
             gesture_settled: None,
             operation_settled: Vec::new(),
             cursor_warp: None,
+            presentation: tiler_core::world_presentation::WorldPresentation::default(),
         }
     }
 

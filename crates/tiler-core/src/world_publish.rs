@@ -886,6 +886,7 @@ impl WorldEngine {
             gesture_settled,
             operation_settled,
             cursor_warp,
+            presentation: crate::world_presentation::WorldPresentation::default(),
         }
     }
 

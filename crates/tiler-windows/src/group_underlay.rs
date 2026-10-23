@@ -4,12 +4,11 @@
 //! KDE parity source: `kwin/native-effect/activeborderconfig.kcfg`
 //! (underlay enabled, `#662a82da`, extension -1 resolves to border width).
 //! Eligibility, trigger, union, and outer bounds live in `tiler-core`
-//! (`visual::underlay_eligible`, `visual::group_underlay_trigger`,
-//! `visual::group_underlay_outer_rect_px`, `active_group`, and the
-//! read-only `world_presentation::WorldEngine::group_highlight` query).
-//! This module adds only the Windows-side composition: options/flags
-//! parsing, the native hit-test classification, modifier aggregation, and
-//! the premultiplied-alpha fill raster. Native creation/presentation/
+//! (`visual::group_underlay_trigger`, `visual::group_underlay_outer_rect_px`,
+//! `active_group`, and the uniform per-reply `world_presentation` content
+//! the loop consumes). This module adds only the Windows-side composition: options/flags parsing, the
+//! native hit-test classification, modifier aggregation, and the
+//! premultiplied-alpha fill raster. Native creation/presentation/
 //! placement reuse the owned carrier in [`crate::active_border_sys`].
 
 use tiler_core::geometry::Rect;

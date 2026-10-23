@@ -115,6 +115,7 @@ fn report_obs(
         member_attempts: Vec::new(),
         view_attempts: Vec::new(),
         clear_attempts: Vec::new(),
+        presentation: tiler_core::world_report::PresentationIngress::disabled(),
     }
 }
 

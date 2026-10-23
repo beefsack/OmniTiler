@@ -850,8 +850,6 @@ impl WorldEngine {
             CoreReply::Tiled(_)
             | CoreReply::Projection(_)
             | CoreReply::Resize(_)
-            | CoreReply::ActiveGroup(_)
-            | CoreReply::NoGroup { .. }
             | CoreReply::DragPreview(_) => GestureOutcome::Settled {
                 committed: true,
                 result: None,
