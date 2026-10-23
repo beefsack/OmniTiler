@@ -2730,3 +2730,24 @@ of cursor-first fresh placement or the entire rearchitecture.
   connector and authoring documentation; finalized KDE/macOS port notes; the
   complete final-artifact both-output regression and readiness summary. The
   parked product questions and existing tentative decisions are unchanged.
+
+## Stage 5 shared acceptance design rejection (2026-10-24)
+
+- Two shared-connector approaches failed acceptance and were withdrawn without
+  changing the delivered artifact. The first copied case inputs into placeholder
+  snapshots instead of executing/observing them. The second shared one assertion
+  path but still accepted pending frame operations as settled, overlapping tiny
+  native frames as coverage, and incorrect visibility as completion. Adversarial
+  reproductions confirmed these oracle holes. No live leg used either draft.
+- The file-fed contract also required complete desired allocation/logical-view
+  snapshots that existing `world-apply` diagnostics do not publish: its `views`
+  are raw native attempt rows, not the desired logical view map. Deriving these
+  missing fields from expected data or native observations would be circular.
+- Shared acceptance remains blocked on a truthful evidence contract: identify
+  how the connector obtains the actual accepted desired projection, separately
+  capture native membership/visibility/frame/focus settlement, and prove the
+  common assertions reject pending operations, coverage gaps and missing
+  intermediate hide/reveal effects before implementing another live driver.
+  Existing core-only, production-seam and private native evidence remain valid,
+  but are not the requested common executable baseline. The accepted uniform
+  presentation unit is unchanged; Windows remains not dogfood-ready.
