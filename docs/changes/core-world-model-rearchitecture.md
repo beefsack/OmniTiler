@@ -2220,3 +2220,97 @@ of cursor-first fresh placement or the entire rearchitecture.
   diagnostic findings before accepting this unit. Then finish the remaining
   stage-5 ownership, connector, presentation transport, port and readiness work
   listed above. The core interface is not frozen; dogfooding is not ready.
+
+## Stage 5 directional native failure and continuation handover (2026-10-23)
+
+### Verified boundary
+
+- The lifecycle checkpoint at `685dc0b9` passes the local gates above, but
+  fails native directional acceptance. The earlier two rejected lifecycle
+  designs and this failed native acceptance remain unresolved history, not
+  three accepted foundations. No further semantic repair is accepted here.
+- Fixture-only native admission and layout coverage passed on both outputs.
+  Tiled directional focus/move passed on one output; ordinary-float focus and
+  half-snap passed on the other, with exact foreground/frame readback, stable
+  peers and one exact-owner request per intent. These are complementary
+  per-output cases, not the full both-output directional matrix.
+- A previously slotted tiled subject was maximized, with no admission clear
+  for its lifetime. One directional move returned `move-maximize-clear` with
+  `result: dispatched`, but the common apply reported zero clear writes and
+  no clear attempts. The native window remained maximized through the bounded
+  observation deadline. Testing stopped at that failure; float maximize-clear
+  and sticky half-snaps were not exercised and remain unverified.
+- Exact-owner stop, independent restore and graceful fixture shutdown passed.
+  No owned processes, recovery ledger or pending controls remained; settings
+  bytes, cursor, relevant SPI/taskbar state and protected-window geometry
+  matched baseline. No physical shortcut, drag, game or native hover-follow
+  acceptance is claimed. Raw drivers, trace, provenance and native observations
+  remain outside the repository.
+
+### Proven contract defect, not a focus-policy question
+
+- `world_publish.rs` emits `clear_operation: None` on tiled geometry rows.
+  Its only active clear-token publication is inside the
+  `session.exception_observed()` loop. `session/world.rs` keeps maximized
+  nonfloating windows tiled; maximization alone does not make an exception.
+  Consequently, the core can retain `NeedClear` for a slotted tiled subject
+  while publishing no actionable clear desire. The native diff correctly
+  skips rows without a token. Fix publication, not the native authority gates.
+- `world_directional.rs::commandless_clear_continuation_tiled` masks this:
+  it asserts the retained tiled route, then injects an accepted clear attempt
+  without first asserting an actionable published desire. The production seam
+  cannot produce that attempt from the current tiled reply. Float-oriented
+  protocol/diff fixtures do not cover this discriminator.
+- The failing native command report also had unknown managed focus. The
+  binding stores that empty focus; a later subject-focus report differs and
+  `settle_clears` abandons it. This is a secondary lifecycle/diagnostic issue,
+  not proof that focus caused the missing token. Do not guess focus or weaken
+  exact-subject/native last-moment vetoes to make the test pass.
+- The handler's `move-maximize-clear/dispatched` message currently describes
+  command authorization even when no clear dispatched. It must distinguish
+  pending desire, actual attempt and terminal abandonment/refusal honestly.
+
+### Remaining lifecycle discriminators
+
+- Add a production-shaped tiled-maximize sequence: normal tile admission,
+  maximize while retaining its slot, one directional intent, actionable clear
+  token under the original operation id, real diff-generated attempt, then
+  commandless readable continuation and retirement. Assert publication before
+  staging any arrival. Run the same sequence for a float and sticky subject.
+- The throw-ambiguity test currently supplies a later new `Accepted` attempt
+  for the same spent operation. The once-only connector cannot generate that
+  sequence. Replace it with truthful later observations and no second attempt;
+  state the resulting no-retry/retirement behavior explicitly.
+- Settlement runs before command execution/supersession. Add a report carrying
+  old-clear proof and a new same-window intent, and prove that the old intent
+  cannot produce an unwanted extra move. Existing supersession tests use
+  separate reports and do not settle this ordering boundary.
+- Verify held-domain continuation, unknown versus changed focus, and terminal
+  refusal/abandonment observability. Retaining a silent ambiguous binding and
+  silently dropping a continuation after a proven clear are not evidence of
+  completed user intent.
+
+### Exact next action and remaining stage 5
+
+- Repair the existing common publication/settlement contract; do not add a
+  second keyboard clear path or restore second-command continuation. Recommended
+  direction: publish the same retained clear token on eligible tiled rows and
+  keep existing scope, lifetime, input and fullscreen gates. Refusing tiled
+  maximize-clear instead would regress required behavior and is not selected.
+- First make the missing-publication discriminator fail, then review the full
+  desire/attempt/observation/continuation/retirement sequence and the additional
+  discriminators above before changing production behavior again. After a
+  correction, rerun locked local gates and fresh fixture-only acceptance on both
+  outputs, including the previously unrun float-clear and sticky cases.
+- Stage 5 still includes migration/control context ownership, dead APIs,
+  shared core/Windows acceptance cases and connector documentation, uniform
+  wire presentation for border/group/drop/pager, finalized KDE/macOS port notes,
+  the full regression matrix and dogfood-readiness summary. The portable core
+  interface is not settled for those ports and Windows is not dogfood-ready.
+- No new product decision is required for the publication defect. Existing
+  parked empty-workspace focus, edge-nearest versus MRU, float physical-output
+  versus membership-home, explicit-output versus directional send, and
+  preview-versus-release placement questions remain unchanged. Preserve current
+  behavior; do not resolve them as side effects of this repair. Existing
+  tentative placement/control choices and physical/native acceptance gaps also
+  remain unchanged.
