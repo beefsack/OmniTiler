@@ -113,15 +113,18 @@ fn report(
         focus_follows_cursor: false,
         cursor_warp: false,
         cursor: None,
+        cursor_hit: None,
         default_tiled: true,
         focused_global: focused.to_owned(),
         inventory_complete: true,
         gesture_barrier: false,
+        gesture: None,
         feedback: vec![],
         monotonic_ms: 0,
         frames: Vec::new(),
         member_attempts: Vec::new(),
         view_attempts: Vec::new(),
+        clear_attempts: Vec::new(),
     }
 }
 
@@ -781,4 +784,361 @@ fn global_unique_swap_empty_side_keeps_sticky_row() {
     let rows = sticky_rows(&arrived, "win-as");
     assert_eq!(rows.len(), 1, "arrived sticky: {rows:?}");
     assert_eq!(rows[0].output.0, "out-a");
+}
+
+#[test]
+fn global_unique_swap_carries_floating_side_mode_and_flights() {
+    // Swapping with a floating side carries the floating mode to the new
+    // output on the commit reply itself: the moved floating scope
+    // publishes Untouched (never a tiled scope), the tiled side stays
+    // Controlled, and both sides retain their migration flights for
+    // actuation settlement. This locks the seam precondition for F2:
+    // floating-target migration members must actuate rather than stall.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(1, 1, two_screens(), vec![], vec![], "", None, None),
+    );
+    let view_a = view_of(&first, "out-a").expect("view a");
+    let view_b = view_of(&first, "out-b").expect("view b");
+    assert_ne!(view_a, view_b);
+    let windows = vec![fact("win-a1", "out-a", 0), fact("win-b1", "out-b", 800)];
+    accepted(
+        &mut engine,
+        &report(2, 2, two_screens(), windows.clone(), vec![], "", None, None),
+    );
+    accepted(
+        &mut engine,
+        &report(3, 3, two_screens(), windows.clone(), vec![], "", None, None),
+    );
+    // Float the out-a side, then swap by selecting out-b's workspace.
+    accepted(
+        &mut engine,
+        &report(
+            4,
+            4,
+            two_screens(),
+            windows.clone(),
+            vec![],
+            "",
+            Some(11),
+            Some(WorldCommand::SetWorkspaceTiling {
+                output: OutputId("out-a".to_owned()),
+                workspace: view_a.clone(),
+                tiled: false,
+            }),
+        ),
+    );
+    let swapped = accepted(
+        &mut engine,
+        &report(
+            5,
+            5,
+            two_screens(),
+            windows.clone(),
+            vec![],
+            "",
+            Some(12),
+            Some(WorldCommand::SelectWorkspace {
+                output: OutputId("out-a".to_owned()),
+                workspace: view_b.clone(),
+            }),
+        ),
+    );
+    assert_eq!(view_of(&swapped, "out-a").as_deref(), Some(view_b.as_str()));
+    assert_eq!(view_of(&swapped, "out-b").as_deref(), Some(view_a.as_str()));
+    // The floating mode followed its id across the swap.
+    let moved = swapped
+        .workspaces
+        .iter()
+        .find(|row| row.id == view_a)
+        .expect("moved floating row");
+    assert_eq!(moved.output.0, "out-b");
+    assert_eq!(
+        moved.tiling_mode,
+        crate::world_report::TilingMode::Floating,
+        "floating mode follows the id: {moved:?}"
+    );
+    let scope_status = |output: &str, workspace: &str| {
+        swapped
+            .scopes
+            .iter()
+            .find(|status| status.scope == format!("{output}/{workspace}"))
+            .unwrap_or_else(|| panic!("missing scope {output}/{workspace}"))
+            .authority
+    };
+    assert_eq!(scope_status("out-b", &view_a), ScopeAuthority::Untouched);
+    assert_eq!(scope_status("out-a", &view_b), ScopeAuthority::Controlled);
+    // Both sides retain migration flights for actuation settlement.
+    let mut ops: Vec<String> = swapped
+        .transfers
+        .iter()
+        .filter(|t| matches!(t.kind, TransferKind::Migration))
+        .map(|t| t.operation_id.clone())
+        .collect();
+    ops.sort();
+    assert_eq!(
+        ops,
+        vec!["op-12-swap-a".to_owned(), "op-12-swap-b".to_owned()]
+    );
+    for (window, output, workspace) in [
+        ("win-a1", "out-b", view_a.as_str()),
+        ("win-b1", "out-a", view_b.as_str()),
+    ] {
+        let row = window_row(&swapped, window);
+        assert_eq!(row.output.0, output, "{window}: {row:?}");
+        assert_eq!(row.workspace, workspace, "{window}: {row:?}");
+        assert_eq!(row.membership_authority, ScopeAuthority::Controlled);
+    }
+}
+
+#[test]
+fn global_unique_swap_failed_stay_keeps_world_unchanged() {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use crate::ids::{GenerationId, OwnerId};
+    use crate::session::{OutputDomain, Session};
+    use crate::world_commands::CommandApplied;
+    use crate::world_engine::{KIND_MIGRATION, MSG_MIGRATION};
+
+    // A carries tiled plus a sticky float; B is genuinely empty (no
+    // session), so the B-side sticky stay derives from the A source.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(1, 1, two_screens(), vec![], vec![], "", None, None),
+    );
+    let view_a = view_of(&first, "out-a").expect("view a");
+    let view_b = view_of(&first, "out-b").expect("view b");
+    let windows = vec![
+        fact("win-a1", "out-a", 0),
+        sticky_float("win-as", "out-a", 300),
+    ];
+    accepted(
+        &mut engine,
+        &report(2, 2, two_screens(), windows.clone(), vec![], "", None, None),
+    );
+    accepted(
+        &mut engine,
+        &report(3, 3, two_screens(), windows.clone(), vec![], "", None, None),
+    );
+    let src_a = crate::session::DomainKey {
+        output: OutputId("out-a".to_owned()),
+        workspace: crate::directional::WorkspaceId(view_a.clone()),
+    };
+    let src_b = crate::session::DomainKey {
+        output: OutputId("out-b".to_owned()),
+        workspace: crate::directional::WorkspaceId(view_b.clone()),
+    };
+    let tgt_a = crate::session::DomainKey {
+        output: OutputId("out-b".to_owned()),
+        workspace: crate::directional::WorkspaceId(view_a.clone()),
+    };
+    let tgt_b = crate::session::DomainKey {
+        output: OutputId("out-a".to_owned()),
+        workspace: crate::directional::WorkspaceId(view_b.clone()),
+    };
+    assert!(engine.engine().session(&src_b).is_none());
+    let live = engine
+        .engine()
+        .session(&src_a)
+        .expect("source session")
+        .clone();
+    let outer_a = engine.engine().outer_gap(&src_a).unwrap_or(0);
+
+    // Plant a two-domain session at the A source carrying the live sticky
+    // float: cross-output relocation ignores the extra domain, but the
+    // same-output stay derivation refuses it, exercising the fallible
+    // side-B preparation.
+    let domain_a = OutputDomain {
+        id: OutputId("out-a".to_owned()),
+        workspace: crate::directional::WorkspaceId(view_a.clone()),
+        bounds: rect(0, 0, 800, 560),
+        gap: 0,
+        adjacent: BTreeMap::new(),
+    };
+    let domain_ghost = OutputDomain {
+        id: OutputId("out-ghost".to_owned()),
+        workspace: crate::directional::WorkspaceId("ws-ghost".to_owned()),
+        bounds: rect(0, 0, 800, 560),
+        gap: 0,
+        adjacent: BTreeMap::new(),
+    };
+    let mut crafted = Session::new(
+        OwnerId::parse("owner-a").expect("owner"),
+        GenerationId::parse("gen-1").expect("generation"),
+        0,
+        0,
+        vec![domain_a, domain_ghost],
+    )
+    .expect("crafted session");
+    let mut probe = live.clone();
+    let sticky_ids: BTreeSet<WindowId> = probe
+        .exception_observed()
+        .iter()
+        .map(|observed| observed.window.clone())
+        .collect();
+    let carries = probe.extract_exception_floats(&sticky_ids);
+    assert!(!carries.is_empty(), "live session carries the sticky float");
+    crafted.insert_exception_floats(carries, &src_a);
+    engine.engine.insert_raw(src_a.clone(), crafted, outer_a);
+    let crafted_snapshot = engine
+        .engine()
+        .session(&src_a)
+        .expect("crafted session")
+        .snapshot();
+
+    // Precondition proof: the planted session passes cross-output
+    // relocation on a stripped clone (so side-A preparation succeeds)
+    // while its same-output stay derivation refuses (so side-B
+    // preparation fails). The swap refusal below must come from the
+    // stay step, not an earlier fence.
+    {
+        let planted = engine
+            .engine()
+            .session(&src_a)
+            .expect("planted session")
+            .clone();
+        let probe_ids: BTreeSet<WindowId> = planted
+            .exception_observed()
+            .iter()
+            .map(|observed| observed.window.clone())
+            .collect();
+        assert!(!probe_ids.is_empty(), "planted sticky ids");
+        let mut stripped = planted.clone();
+        let extracted = stripped.extract_exception_floats(&probe_ids);
+        assert!(!extracted.is_empty(), "planted sticky carries");
+        assert!(
+            stripped.relocate_domain(&src_a, &tgt_a, rect(800, 0, 800, 560), 0),
+            "planted side-A relocation validates"
+        );
+        assert!(
+            planted
+                .split_sticky_stay(&probe_ids, &tgt_b, rect(0, 0, 800, 560), 0)
+                .is_none(),
+            "planted side-B stay refuses"
+        );
+    }
+
+    // Snapshot world state before the refused swap.
+    let mapping = engine.mapping.clone();
+    let views = engine.views.clone();
+    let history = engine.history.clone();
+    let members = engine.members.clone();
+    let tiling = engine.tiling.clone();
+    let floating = engine.floating_scopes.clone();
+    let retained = engine.retained.clone();
+
+    // Drive the swap without the sweep so the planted session reaches the
+    // commit section exactly as stored.
+    let swap_report = report(
+        4,
+        4,
+        two_screens(),
+        windows.clone(),
+        vec![],
+        "",
+        Some(12),
+        Some(WorldCommand::SelectWorkspace {
+            output: OutputId("out-a".to_owned()),
+            workspace: view_b.clone(),
+        }),
+    );
+    let held = BTreeSet::new();
+    match engine.execute_command(
+        &swap_report,
+        12,
+        swap_report.command.as_ref().expect("command"),
+        &held,
+    ) {
+        CommandApplied::Rejected { kind, message } => {
+            assert_eq!(kind, KIND_MIGRATION);
+            assert_eq!(message, MSG_MIGRATION);
+        }
+        CommandApplied::Effect(_) | CommandApplied::NoEffect => {
+            panic!("failed stay preparation must refuse");
+        }
+    }
+    // The refusal leaves mapping/views/history, sessions, members, and
+    // retained flights exactly as before: no partial commit.
+    assert_eq!(engine.mapping, mapping);
+    assert_eq!(engine.views, views);
+    assert_eq!(engine.history, history);
+    assert_eq!(engine.members, members);
+    assert_eq!(engine.tiling, tiling);
+    assert_eq!(engine.floating_scopes, floating);
+    assert_eq!(engine.retained, retained);
+    assert!(engine.engine().session(&tgt_a).is_none());
+    assert!(engine.engine().session(&tgt_b).is_none());
+    assert!(engine.engine().session(&src_b).is_none());
+    assert_eq!(
+        engine
+            .engine()
+            .session(&src_a)
+            .expect("source kept")
+            .snapshot(),
+        crafted_snapshot
+    );
+
+    // Restore the live session: the successful sessionless-B stay path
+    // still works through the public boundary.
+    engine.engine.insert_raw(src_a.clone(), live, outer_a);
+    let swapped = accepted(
+        &mut engine,
+        &report(
+            4,
+            4,
+            two_screens(),
+            windows.clone(),
+            vec![],
+            "",
+            Some(12),
+            Some(WorldCommand::SelectWorkspace {
+                output: OutputId("out-a".to_owned()),
+                workspace: view_b.clone(),
+            }),
+        ),
+    );
+    assert_eq!(view_of(&swapped, "out-a").as_deref(), Some(view_b.as_str()));
+    assert_eq!(view_of(&swapped, "out-b").as_deref(), Some(view_a.as_str()));
+    let tiled: Vec<_> = swapped
+        .windows
+        .iter()
+        .filter(|row| row.lifetime.0 == "win-a1")
+        .collect();
+    assert_eq!(tiled.len(), 1, "tiled row: {tiled:?}");
+    assert_eq!(tiled[0].output.0, "out-b");
+    assert_eq!(tiled[0].workspace, view_a);
+    assert_eq!(tiled[0].membership_authority, ScopeAuthority::Controlled);
+    let sticky = sticky_rows(&swapped, "win-as");
+    assert_eq!(sticky.len(), 1, "swapped sticky: {sticky:?}");
+    assert_eq!(sticky[0].output.0, "out-a");
+    assert!(matches!(
+        sticky[0].frame_authority,
+        ScopeAuthority::Untouched
+    ));
+    let arrived = accepted(
+        &mut engine,
+        &report(
+            5,
+            5,
+            two_screens(),
+            vec![
+                fact("win-a1", "out-b", 800),
+                sticky_float("win-as", "out-a", 0),
+            ],
+            vec![("out-a", view_b.as_str()), ("out-b", view_a.as_str())],
+            "",
+            None,
+            None,
+        ),
+    );
+    assert!(
+        arrived.transfers.is_empty(),
+        "arrival settles: {:?}",
+        arrived.transfers
+    );
+    let sticky = sticky_rows(&arrived, "win-as");
+    assert_eq!(sticky.len(), 1, "arrived sticky: {sticky:?}");
+    assert_eq!(sticky[0].output.0, "out-a");
 }

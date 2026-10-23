@@ -433,6 +433,7 @@ mod tests {
             transfers: Vec::new(),
             effects: Vec::new(),
             command_result: None,
+            gesture_settled: None,
             presentation_bytes: 0,
         }
     }

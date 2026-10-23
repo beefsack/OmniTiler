@@ -21,9 +21,9 @@
 //!   callback contexts owned here.
 //! - [`hooks`]: WinEvent hook install/uninstall plus the single `extern`
 //!   trampoline forwarding to a safe caller-supplied sink.
-//! - [`llhook`]: low-level keyboard hook ownership: the two
-//!   `extern` trampolines copy OS payloads into safe event structs, then
-//!   invoke the installing thread's policy callback (consume or pass).
+//! - [`llhook`]: low-level hook ownership: hook trampolines copy OS
+//!   payloads into safe event structs, then invoke the installing thread's
+//!   policy callback (consume or pass).
 //! - [`sysparam`]: session-only system-parameter reads/writes.
 //! - [`pump`]: thread message drain, the alertable outer wait, and the
 //!   timer-driven message-loop step.
@@ -89,25 +89,26 @@ pub use hooks::{
 pub use icons::{AppIcon, IconPixels, class_icon, exe_icon, message_icon, render_icon};
 pub use input::{
     KeyPairSend, async_key_down, cursor_pos, pack_mouse_lparam, prime_foreground_key,
-    send_key_pair, tick_count,
+    send_key_pair, set_cursor_pos, tick_count,
 };
-#[cfg(test)]
-pub use llhook::drive_snapkey;
 pub use llhook::{
-    HookVerdict, KeyEvent, SnapKeyHook, WinArrowHook, clear_snapkey_sink, clear_winarrow_sink,
-    install_snapkey_hook, install_winarrow_hook, set_snapkey_sink, set_winarrow_sink,
+    HookVerdict, KeyEvent, MouseHook, SnapKeyHook, WinArrowHook, clear_snapkey_sink,
+    clear_winarrow_sink, install_mouse_hook, install_snapkey_hook, install_winarrow_hook,
+    mouse_move_seq, set_snapkey_sink, set_winarrow_sink, uninstall_mouse_hook,
     uninstall_snapkey_hook, uninstall_winarrow_hook,
 };
+#[cfg(test)]
+pub use llhook::{MOUSE_TEST_LOCK, drive_mouse_move, drive_snapkey, test_hook};
 pub use overlay::{
     OverlayClass, create_overlay_window, destroy_overlay, hide_overlay, overlay_alive, place_above,
     place_below, present_layered, present_preview,
 };
 pub use pager::{
-    IconBlit, MiniSlot, PAGER_WINDOW_CLASS, PagerCalibrationSink, PagerClick, PagerClickSink,
-    PagerFrame, PagerWindow, TaskbarProbe, autohide_from_state as pager_autohide_from_state,
-    discover_secondary_taskbars, ensure_pager_class,
-    note_taskbar_rediscover as note_pager_taskbar_rediscover, primary_taskbar_pid,
-    query_appbar_state, read_primary_taskbar as read_primary_taskbar_probe,
+    IconBlit, MiniSlot, PAGER_WINDOW_CLASS, PagerCalibrationSink, PagerCellFrame, PagerClick,
+    PagerClickSink, PagerFrame, PagerWindow, TaskbarProbe,
+    autohide_from_state as pager_autohide_from_state, discover_secondary_taskbars,
+    ensure_pager_class, note_taskbar_rediscover as note_pager_taskbar_rediscover,
+    primary_taskbar_pid, query_appbar_state, read_primary_taskbar as read_primary_taskbar_probe,
     register_taskbar_message, take_rediscover as take_pager_rediscover,
     take_stale_hide as take_pager_stale_hide,
 };
@@ -137,8 +138,8 @@ pub use window::{
     query_minmax, reapply_frame, remove_prop, seed_minmax_info, set_foreground_window, set_prop,
     set_topmost, set_window_placement, set_window_pos, set_window_pos_after,
     set_window_pos_detailed, set_window_style, set_window_text, shell_window, show_window,
-    show_window_async, show_window_prev_visible, take_prop, try_class_name, window_exstyle,
-    window_pid, window_placement, window_rect, window_style, window_style_checked,
+    show_window_async, show_window_prev_visible, take_prop, try_class_name, window_at_point,
+    window_exstyle, window_pid, window_placement, window_rect, window_style, window_style_checked,
     window_thread_id,
 };
 

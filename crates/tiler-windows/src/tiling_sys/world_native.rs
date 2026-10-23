@@ -120,6 +120,13 @@ pub(super) struct NativePrimitives {
     pub focus: fn(u64) -> bool,
     pub member_tag: fn(u64) -> Option<String>,
     pub hook_pending: fn() -> bool,
+    /// Live cursor read in adapter units (`None` when unreadable).
+    /// The warp path skips its write when already at the target.
+    pub read_cursor: fn() -> Option<(i32, i32)>,
+    /// Mechanical cursor warp: one position setter, no input synthesis,
+    /// no click, no wait. True is setter success (the caller re-reads;
+    /// success alone never proves arrival).
+    pub warp_cursor: fn(i32, i32) -> bool,
     /// Live window DPI in physical pixels per inch (`None` when unreadable,
     /// never guessed). Cross-monitor writes can change this under the call;
     /// the frame path re-bases once through it instead of pinning a clamp.
@@ -201,6 +208,14 @@ fn real_hook_pending() -> bool {
     super::hook_edges_pending()
 }
 
+fn real_read_cursor() -> Option<(i32, i32)> {
+    crate::ffi::cursor_pos()
+}
+
+fn real_warp_cursor(x: i32, y: i32) -> bool {
+    crate::ffi::set_cursor_pos(x, y)
+}
+
 fn real_dpi(hwnd: u64) -> Option<u32> {
     let dpi = crate::ffi::dpi_for_window(hwnd);
     (dpi != 0).then_some(dpi)
@@ -279,6 +294,8 @@ impl Default for NativePrimitives {
             focus: real_focus,
             member_tag: real_member_tag,
             hook_pending: real_hook_pending,
+            read_cursor: real_read_cursor,
+            warp_cursor: real_warp_cursor,
             dpi: real_dpi,
             process_identity: real_process_identity,
             read_topmost: real_read_topmost,
@@ -1012,6 +1029,21 @@ impl NativeOps for LiveNative<'_> {
         self.frame_write_inner(&key, &expected, rect)
     }
 
+    fn clear_maximized(&mut self, token: &str) -> Result<bool, ()> {
+        let key = self.key_of(token).ok_or(())?;
+        if (self.prims.hook_pending)() {
+            return Err(());
+        }
+        let expected = self.member_identity.get(&key).cloned().ok_or(())?;
+        if !self.identity_ok(&key, &expected) || !self.lifetime_ok(&key) {
+            return Err(());
+        }
+        match super::probes::restore_zoom_placement(key.hwnd) {
+            "restored" | "dispatched" => Ok(true),
+            _ => Err(()),
+        }
+    }
+
     fn move_membership(
         &mut self,
         token: &str,
@@ -1310,6 +1342,29 @@ impl NativeOps for LiveNative<'_> {
 
     fn poll_external_invalidation(&mut self) -> bool {
         (self.prims.hook_pending)()
+    }
+
+    fn read_cursor(&mut self) -> Option<(i32, i32)> {
+        (self.prims.read_cursor)()
+    }
+
+    /// Mechanical warp with mechanical-only vetoes: a racing external
+    /// invalidation or an out-of-bound core point fails closed (the core
+    /// never emits those, so this is backstop, never policy). Game,
+    /// lifetime, and focus vetoes are owned upstream: the core pauses
+    /// under a focused fullscreen game, and the owner game lane reports
+    /// no cursor, so no warp desire can exist there.
+    fn move_cursor(&mut self, x: i32, y: i32) -> Result<bool, ()> {
+        if (self.prims.hook_pending)() {
+            return Err(());
+        }
+        if !(-tiler_core::bounds::GEOMETRY_BOUND..=tiler_core::bounds::GEOMETRY_BOUND).contains(&x)
+            || !(-tiler_core::bounds::GEOMETRY_BOUND..=tiler_core::bounds::GEOMETRY_BOUND)
+                .contains(&y)
+        {
+            return Ok(false);
+        }
+        Ok((self.prims.warp_cursor)(x, y))
     }
 }
 

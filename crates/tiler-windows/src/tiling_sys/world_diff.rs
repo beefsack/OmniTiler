@@ -85,8 +85,8 @@ use std::collections::{HashMap, HashSet};
 use tiler_core::directional::OutputId;
 use tiler_core::geometry::Rect;
 use tiler_core::world_report::{
-    FrameAttempt, FrameSetter, HoldReason, MemberAttempt, ScopeAuthority, TransferKind,
-    TransferTarget, ViewAttempt, WorldReply,
+    ClearAttempt, EffectKind, FrameAttempt, FrameSetter, HoldReason, MemberAttempt, ScopeAuthority,
+    TransferKind, TransferTarget, ViewAttempt, WorldReply,
 };
 
 /// Fresh offline window facts for one managed lifetime: the observation-time
@@ -296,6 +296,17 @@ pub(super) trait NativeOps {
     /// app-held size.
     fn read_dpi(&mut self, token: &str) -> Option<u32>;
     fn write_frame(&mut self, token: &str, rect: Rect) -> Result<bool, ()>;
+    /// Mechanical nonactivating maximize-clear for one core-authorized
+    /// `clear_operation` desire: restores the window in place without
+    /// activating it. `Ok(true)` is setter success (the caller re-reads the
+    /// maximized state; success alone never proves the clear),
+    /// `Ok(false)` is an explicit native refusal, and `Err(())` is a
+    /// throwing/ambiguous call. The default throws (no actuation): the
+    /// production seam overrides; offline fakes script it explicitly.
+    fn clear_maximized(&mut self, token: &str) -> Result<bool, ()> {
+        let _ = token;
+        Err(())
+    }
     /// Membership actuation toward `(out, ws)` with the desired visible
     /// frame as an actuation TARGET only (`None` for membership-only
     /// rows such as floats/sticky/overlays, which carry no published
@@ -332,6 +343,17 @@ pub(super) trait NativeOps {
     }
     fn switch_view(&mut self, output: &str, logical: &str) -> Result<bool, ()>;
     fn focus_window(&mut self, token: &str) -> Result<bool, ()>;
+    /// Live cursor position in adapter units (same space as screen FULL
+    /// rects and fact frames), `None` when unreadable. Read-only; the
+    /// warp path below skips its write when already at the target.
+    fn read_cursor(&mut self) -> Option<(i32, i32)>;
+    /// Mechanical cursor warp toward `(x, y)`: one position setter with no
+    /// input synthesis, no click, and no wait. `Ok(true)` is setter
+    /// success (the caller re-reads; success alone never proves arrival),
+    /// `Ok(false)` is an explicit native refusal, and `Err(())` is a
+    /// throwing/ambiguous call. Game, lifetime, and focus vetoes live in
+    /// the core pause plus the owner game lane, never here.
+    fn move_cursor(&mut self, x: i32, y: i32) -> Result<bool, ()>;
     /// One external invalidation consumed per call: racing native input that
     /// arrived mid-apply. The facade polls this before every setter.
     fn poll_external_invalidation(&mut self) -> bool {
@@ -360,6 +382,23 @@ pub(super) struct FakeNative {
     pub(super) throw_view: HashSet<String>,
     pub(super) fail_focus: HashSet<String>,
     pub(super) throw_focus: HashSet<String>,
+    /// Scripted clear dispositions for the offline lane: explicit native
+    /// refusal vs throwing/ambiguous call. A successful offline clear
+    /// flips the live maximized bit so re-reads observe it.
+    pub(super) fail_clear: HashSet<String>,
+    pub(super) throw_clear: HashSet<String>,
+    /// Every clear setter attempted, in order (vetoes record nothing: no
+    /// setter ran).
+    pub(super) clear_calls: Vec<String>,
+    /// Scripted live cursor position (`None` = unreadable). Warp writes
+    /// update it so re-reads observe the move, like the real position.
+    pub(super) cursor: Option<(i32, i32)>,
+    /// Every warp write attempted, in order (already-there skips record
+    /// nothing).
+    pub(super) warp_calls: Vec<(i32, i32)>,
+    /// Warp setter dispositions for the offline lane.
+    pub(super) fail_warp: bool,
+    pub(super) throw_warp: bool,
     pub(super) pending_invalidation: bool,
     pub(super) frame_writes: usize,
     pub(super) membership_writes: usize,
@@ -484,6 +523,41 @@ impl NativeOps for FakeNative {
         self.note_write();
         Ok(true)
     }
+    fn clear_maximized(&mut self, token: &str) -> Result<bool, ()> {
+        // Every setter attempt records, including throws: the attempt row
+        // (not this count) is the at-most-once proof the core reconciles.
+        self.clear_calls.push(token.to_owned());
+        if self.throw_clear.contains(token) {
+            return Err(());
+        }
+        if self.fail_clear.contains(token) {
+            self.note_write();
+            return Ok(false);
+        }
+        if let Some(window) = self.windows.get_mut(token)
+            && let Some(facts) = window.facts.as_mut()
+        {
+            facts.maximized = false;
+        }
+        self.note_write();
+        Ok(true)
+    }
+    fn read_cursor(&mut self) -> Option<(i32, i32)> {
+        self.cursor
+    }
+    fn move_cursor(&mut self, x: i32, y: i32) -> Result<bool, ()> {
+        if self.throw_warp {
+            return Err(());
+        }
+        if self.fail_warp {
+            self.note_write();
+            return Ok(false);
+        }
+        self.cursor = Some((x, y));
+        self.warp_calls.push((x, y));
+        self.note_write();
+        Ok(true)
+    }
     fn poll_external_invalidation(&mut self) -> bool {
         std::mem::take(&mut self.pending_invalidation)
     }
@@ -505,6 +579,11 @@ pub(super) struct EffectTracker {
     pub(super) attempted_members: HashSet<(String, String)>,
     pub(super) spent_effects: HashSet<String>,
     pub(super) spent_floats: HashSet<String>,
+    /// Distinct maximize-clear phases per core operation id: armed (marked)
+    /// immediately before the clear setter (or before reporting a veto
+    /// refusal), so a spent clear never re-actuates. Only operation
+    /// retirement/reset retires a phase.
+    pub(super) spent_clears: HashSet<String>,
     /// Distinct local view-phase memory per owning core id: the retained
     /// view id itself for standalone views, the window parent for follow,
     /// the migration parent for the target view, and the actual refill id
@@ -513,6 +592,21 @@ pub(super) struct EffectTracker {
     /// immediately before its setter; exact target proof may settle without
     /// a dispatch.
     pub(super) spent_views: HashSet<String>,
+    /// Cursor-warp watermark (stage 4b): the observation sequence whose
+    /// warp already ran. One mechanical warp per observation at most, so a
+    /// duplicate delivery of the same accepted reply never moves the
+    /// cursor twice. Cleared only by generation reset, never by prune:
+    /// later warps ride newer observations with newer focus effects.
+    pub(super) last_warp_obs: Option<u64>,
+    /// Trace-only hover emission cursor (stage 4b FFC oracle): the
+    /// `(cursor-hit, focused, ffc-enabled)` triple of the last emitted
+    /// `world-apply` row. Lets a changed hover observation log even when
+    /// it minted no effect and dispatched nothing, so absent-hit versus
+    /// suppressed-effect stays distinguishable without a competing focus
+    /// command. `None` until the first emitted row. Never a policy input,
+    /// never pruned, and intentionally kept across generation reset (a
+    /// reset alone is not new hover evidence).
+    last_hover_trace: Option<(Option<String>, String, bool)>,
 }
 
 impl EffectTracker {
@@ -540,6 +634,14 @@ impl EffectTracker {
     pub(super) fn mark_float_spent(&mut self, op: &str) -> bool {
         self.spent_floats.insert(op.to_owned())
     }
+    /// Mark one maximize-clear spent BEFORE dispatch (or before reporting
+    /// a veto refusal). Returns false when already spent for this
+    /// operation: the transport never dispatches the same clear twice, and
+    /// a vetoed desire reports exactly one refused attempt. Strictly
+    /// at-most-once dispatch, never a policy verdict.
+    pub(super) fn mark_clear_spent(&mut self, op: &str) -> bool {
+        self.spent_clears.insert(op.to_owned())
+    }
     /// View-phase fence: true once the owning core id attempted its view
     /// setter (follow parent, migration parent, refill id, or retained view
     /// id). Late membership arrival never clears this.
@@ -551,13 +653,32 @@ impl EffectTracker {
     pub(super) fn mark_view_spent(&mut self, owning: &str) -> bool {
         self.spent_views.insert(owning.to_owned())
     }
+    /// Trace-only hover-change oracle: true when `(cursor-hit, focused,
+    /// ffc-enabled)` differs from the last emitted row (or no row has been
+    /// emitted yet). Pure comparison over already-captured values: no
+    /// native reads, no policy input.
+    pub(super) fn hover_trace_changed(&self, hit: Option<&str>, focused: &str, ffc: bool) -> bool {
+        self.last_hover_trace
+            .as_ref()
+            .is_none_or(|(prev_hit, prev_focused, prev_ffc)| {
+                prev_hit.as_deref() != hit || prev_focused != focused || *prev_ffc != ffc
+            })
+    }
+    /// Record the hover triple of an emitted row. Call only when a
+    /// `world-apply` row is actually emitted, never on quiet ticks, so a
+    /// changed hover keeps triggering until its row is on the trace.
+    pub(super) fn note_hover_traced(&mut self, hit: Option<String>, focused: String, ffc: bool) {
+        self.last_hover_trace = Some((hit, focused, ffc));
+    }
     // Reset the generation-scoped tables together.
     #[allow(dead_code)]
     fn clear_generation(&mut self) {
         self.attempted_members.clear();
         self.spent_effects.clear();
         self.spent_floats.clear();
+        self.spent_clears.clear();
         self.spent_views.clear();
+        self.last_warp_obs = None;
     }
 }
 
@@ -620,12 +741,20 @@ impl HostDiff {
             {
                 live_ops.insert(op);
             }
+            if let Some(op) = row.clear_operation.as_deref()
+                && !op.is_empty()
+            {
+                live_ops.insert(op);
+            }
         }
         self.effects
             .spent_effects
             .retain(|id| live_ops.contains(id.as_str()));
         self.effects
             .spent_floats
+            .retain(|op| live_ops.contains(op.as_str()));
+        self.effects
+            .spent_clears
             .retain(|op| live_ops.contains(op.as_str()));
         self.effects
             .spent_views
@@ -635,6 +764,32 @@ impl HostDiff {
             .retain(|key| live_ops.contains(key.0.as_str()));
     }
 }
+
+/// Trace-only per-effect focus dispatch record (stage 4b FFC oracle).
+/// One row per `reply.effects` entry in order, bounded by
+/// [`MAX_FOCUS_DIAG`]: `dispatched` tells whether the native focus setter
+/// ran; `setter` is the raw setter disposition (`accepted`/`refused`/
+/// `threw`, or `skipped` when no setter ran); `foreground` is the immediate
+/// foreground proof read right after dispatch (always present, even when
+/// false, so dispatched-but-unproven is distinguishable from no setter);
+/// `hold` names the individual hold when the effect did not prove
+/// (`None` only on proven foreground arrival). Pure trace state, never a
+/// policy input: the core consumes no effect outcomes.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(super) struct FocusDispatchDiag {
+    pub(super) id: String,
+    pub(super) target: String,
+    pub(super) kind: &'static str,
+    pub(super) dispatched: bool,
+    pub(super) setter: &'static str,
+    pub(super) foreground: bool,
+    pub(super) hold: Option<&'static str>,
+}
+
+/// Bound for [`FocusDispatchDiag`] rows per apply pass. Effects themselves
+/// are already bounded by the reply byte budget; this caps only the retained
+/// trace rows with an honest omitted count in the tick diag.
+pub(super) const MAX_FOCUS_DIAG: usize = 8;
 
 /// Honest outcome of one diff pass. `partial` is true when at least one
 /// write landed while at least one row held: never atomic.
@@ -648,14 +803,24 @@ pub(super) struct ApplyStats {
     pub(super) geometry_writes: usize,
     pub(super) membership_writes: usize,
     pub(super) view_writes: usize,
+    /// Mechanical maximize-clears actually dispatched this pass (setter ran;
+    /// success alone never proves the clear, the core settles from the
+    /// reported attempt plus the next observation).
+    pub(super) clear_writes: usize,
     pub(super) creations: usize,
     pub(super) removals: usize,
     pub(super) effects: usize,
+    /// Mechanical cursor warps actually dispatched this pass (no-op
+    /// already-there skips and duplicate-observation skips count nothing).
+    pub(super) cursor_warps: usize,
     pub(super) held: usize,
     pub(super) migration_total: usize,
     pub(super) migration_proven: usize,
     pub(super) stopped_mid_apply: bool,
     pub(super) partial: bool,
+    /// Trace-only per-effect focus dispatch rows (see [`FocusDispatchDiag`]).
+    /// Bounded to [`MAX_FOCUS_DIAG`] entries in reply order.
+    pub(super) focus_dispatch: Vec<FocusDispatchDiag>,
 }
 
 /// Scope authority for one `(output, workspace)` domain, matching the core
@@ -667,6 +832,49 @@ fn scope_controlled(reply: &WorldReply, output: &str, workspace: &str) -> bool {
         .scopes
         .iter()
         .any(|status| status.scope == scope && status.authority == ScopeAuthority::Controlled)
+}
+
+/// Mechanical actuation authority for one `(output, workspace)` domain:
+/// standalone view switches plus transfer-coupled membership moves and
+/// their views. Controlled scopes actuate exactly as before, and floating
+/// (Untouched) targets actuate too when their output row is unheld and no
+/// gesture barrier is up. A floating selection or migration still needs
+/// its native hide/reveal and membership effects with truthful read-back
+/// proof; without them the retained core flight could never complete.
+/// The switch and membership setters perform no sweep frame writes
+/// (hide/reveal effects and core-owned membership-coupled placements
+/// only): frame/membership row writes keep the stricter Controlled-only
+/// gate above, and the core still owns completion over the reported raw
+/// attempts plus the staged observation. Held/unknown scopes, held
+/// outputs, and mid-gesture Untouched targets hold with no attempt,
+/// exactly as before.
+fn scope_actuatable(
+    reply: &WorldReply,
+    ops: &mut dyn NativeOps,
+    output: &str,
+    workspace: &str,
+) -> bool {
+    let scope = format!("{output}/{workspace}");
+    let Some(authority) = reply
+        .scopes
+        .iter()
+        .find(|status| status.scope == scope)
+        .map(|status| status.authority)
+    else {
+        return false;
+    };
+    match authority {
+        ScopeAuthority::Controlled => true,
+        ScopeAuthority::Untouched => {
+            let output_held = reply
+                .outputs
+                .iter()
+                .find(|row| row.output.0 == output)
+                .is_none_or(|row| row.hold.is_some());
+            !output_held && !ops.gesture_barrier()
+        }
+        ScopeAuthority::Hold(_) => false,
+    }
 }
 
 /// Freshness plus racing-input poll before a setter. Consumes at most one
@@ -746,8 +954,10 @@ fn overlay_guarded(window: &FreshWindow) -> bool {
 ///   ride their reserved lane: row-local safety drift holds;
 /// - [`SetterKind::Frame`] additionally requires a non-guarded live window
 ///   (no overlay, sticky, float, or fit-excluded frame writes);
-///   [`SetterKind::Float`] requires strict eligibility (no overlay target);
-///   [`SetterKind::Membership`] allows overlays to move and focus.
+///   [`SetterKind::Float`] requires strict eligibility (no overlay target,
+///   no fit-excluded writes; sticky rides only under an explicit retained
+///   `frame_operation` token, which is the only write authority this lane
+///   checks); [`SetterKind::Membership`] allows overlays to move and focus.
 fn pre_setter_ok(
     gate: &DiffGate,
     entry_obs: u64,
@@ -791,11 +1001,15 @@ fn pre_setter_ok(
             // elevated, shell, tool, owned, dialog, no-activate, hidden,
             // minimized, plus fullscreen/maximized overlay protection) and
             // the live adapter lanes. Ordinary floating intent alone is
-            // allowed: only sticky and fit-excluded hold here.
+            // allowed, and sticky rides too: this lane only ever writes
+            // under an explicit retained `frame_operation` token (directional
+            // half-snaps), so ordinary unsolicited sticky frame writes stay
+            // prohibited by the token gate plus the tiled lane. Only
+            // fit-excluded holds here.
             if crate::tiling::classify(&facts).is_err() {
                 return Gate::Hold;
             }
-            if live.sticky || live.fit_excluded {
+            if live.fit_excluded {
                 return Gate::Hold;
             }
         }
@@ -978,7 +1192,8 @@ fn finalize(stats: &mut ApplyStats) {
         + stats.view_writes
         + stats.creations
         + stats.removals
-        + stats.effects;
+        + stats.effects
+        + stats.cursor_warps;
     stats.partial = writes > 0 && (stats.held > 0 || stats.stopped_mid_apply);
 }
 
@@ -1054,10 +1269,12 @@ fn frame_setter(wrote: Option<bool>) -> FrameSetter {
 /// consumes no verdicts from this pass (float placements never did: their
 /// verdicts live in the core). Every attempted frame write appends one
 /// mechanical [`FrameAttempt`] to `frame_out`, every membership write one
-/// [`MemberAttempt`] to `member_out`, and every view write one
-/// [`ViewAttempt`] to `view_out` for the next report (each stamped with
-/// `attempt_ms`, the tick's monotonic clock); the core owns all completion
-/// and the next desire is obeyed as-is.
+/// [`MemberAttempt`] to `member_out`, every view write one
+/// [`ViewAttempt`] to `view_out`, and every maximize-clear write one
+/// mechanical [`ClearAttempt`](tiler_core::world_report::ClearAttempt) to
+/// `clear_out` for the next report (each stamped with `attempt_ms`, the
+/// tick's monotonic clock); the core owns all completion and the next
+/// desire is obeyed as-is.
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 pub(super) fn apply_world_reply(
     state: &mut HostDiff,
@@ -1067,6 +1284,7 @@ pub(super) fn apply_world_reply(
     frame_out: &mut Vec<FrameAttempt>,
     member_out: &mut Vec<MemberAttempt>,
     view_out: &mut Vec<ViewAttempt>,
+    clear_out: &mut Vec<ClearAttempt>,
     attempt_ms: u64,
 ) -> ApplyStats {
     let mut stats = ApplyStats::default();
@@ -1512,6 +1730,177 @@ pub(super) fn apply_world_reply(
         return stats;
     }
 
+    // 1c. Explicit maximize-clears: the one-shot `clear_operation` token
+    // is necessary but never sufficient. The row carries no frame
+    // authority for the clear; the token plus the fresh gates below are
+    // the only write authority. Ordinary maximized windows (no token)
+    // never ride here.
+    //
+    // This lane reports mechanical write facts only (setter disposition
+    // plus immediate pre/post maximized states) with exact operation-id
+    // plus window correlation; the core derives confirmation, proven
+    // refusal, ambiguity, and external abandonment. No outcome verdict is
+    // emitted here: a setter boolean or a readback alone never settles a
+    // clear, and completion comes from native observation.
+    //
+    // Native vetoes (fullscreen, elevated/shell/tool/dialog policy
+    // failures, identity/lifetime races, uncontrolled scopes) MUST produce
+    // a correlated refused attempt rather than leave a silent unattempted
+    // active desire: the phase arms (spent) before reporting refusal, so a
+    // vetoed desire retires with no loop and no re-actuation. Gaps
+    // (unreadable, hidden, minimized, cloaked, gesture, manual frame race)
+    // hold with no attempt and no spent mark, so a later readable report
+    // retries the still-undispatched desire.
+    for row in &reply.windows {
+        let op = row.clear_operation.as_deref().unwrap_or("");
+        if op.is_empty() {
+            continue;
+        }
+        if gate.current_obs != entry_obs {
+            stats.stopped_mid_apply = true;
+            break;
+        }
+        let token = row.lifetime.0.clone();
+        // Best-known maximized states for a veto refusal row: the live
+        // re-read when it proves, else the observation baseline (possibly
+        // unreadable, which the core reconciles as ambiguity, never proof).
+        let baseline_maximized = fresh
+            .baseline
+            .get(&token)
+            .and_then(|base| base.facts.map(|facts| facts.maximized));
+        // A veto refusal spends the phase and reports exactly one refused
+        // attempt with best-known pre/post states. Never silent, never
+        // re-actuated.
+        let mut veto_refused =
+            |clear_out: &mut Vec<ClearAttempt>, pre: Option<bool>, post: Option<bool>| {
+                if effects.mark_clear_spent(op) {
+                    clear_out.push(ClearAttempt {
+                        operation_id: op.to_owned(),
+                        window: row.lifetime.clone(),
+                        setter: FrameSetter::Refused,
+                        pre_maximized: pre,
+                        post_maximized: post,
+                        attempt_ms,
+                    });
+                }
+            };
+        if !scope_controlled(reply, &row.output.0, &row.workspace) {
+            veto_refused(clear_out, baseline_maximized, baseline_maximized);
+            stats.held += 1;
+            continue;
+        }
+        let Some(base) = fresh.baseline.get(&token) else {
+            stats.held += 1;
+            continue;
+        };
+        if base.hidden || base.iconic || base.frame.is_none() {
+            stats.held += 1;
+            continue;
+        }
+        if ops.gesture_barrier() {
+            stats.held += 1;
+            continue;
+        }
+        let Some(live) = ops.read_window(&token) else {
+            stats.held += 1;
+            continue;
+        };
+        if live.key != base.key {
+            veto_refused(clear_out, baseline_maximized, None);
+            stats.held += 1;
+            continue;
+        }
+        let live_maximized = live.facts.map(|facts| facts.maximized);
+        let Some(live_facts) = live.facts else {
+            stats.held += 1;
+            continue;
+        };
+        match crate::tiling::classify(&live_facts) {
+            Ok(()) => {}
+            Err(crate::tiling::SkipReason::Maximized) => {}
+            Err(
+                crate::tiling::SkipReason::Fullscreen
+                | crate::tiling::SkipReason::Elevated
+                | crate::tiling::SkipReason::Shell
+                | crate::tiling::SkipReason::Tool
+                | crate::tiling::SkipReason::OwnedDialog
+                | crate::tiling::SkipReason::Dialog
+                | crate::tiling::SkipReason::NoActivate,
+            ) => {
+                veto_refused(
+                    clear_out,
+                    live_maximized.or(baseline_maximized),
+                    live_maximized.or(baseline_maximized),
+                );
+                stats.held += 1;
+                continue;
+            }
+            Err(_) => {
+                stats.held += 1;
+                continue;
+            }
+        }
+        if !live_maximized.unwrap_or(true) {
+            // Already unmaximized: no write, no attempt. The core settles
+            // from the staged observation itself (an external clear without
+            // a correlated attempt abandons; it never continues).
+            continue;
+        }
+        // Manual-change race: the live frame left the observation baseline.
+        // Never fight the user; hold for the next stable observation.
+        if base
+            .frame
+            .is_some_and(|baseline| Some(baseline) != live.frame)
+        {
+            stats.held += 1;
+            continue;
+        }
+        if !ensure_fresh(reply, gate, entry_obs, ops) {
+            stats.stopped_mid_apply = true;
+            break;
+        }
+        // Arm the clear phase immediately pre-dispatch, after every
+        // safety/authority gate passed, so holds never consume the desire.
+        // Strictly at-most-once dispatch, never a policy verdict.
+        if !effects.mark_clear_spent(op) {
+            stats.held += 1;
+            continue;
+        }
+        let pre = ops
+            .read_window(&token)
+            .and_then(|window| window.facts.map(|facts| facts.maximized));
+        let wrote = ops.clear_maximized(&token).ok();
+        let post = ops
+            .read_window(&token)
+            .and_then(|window| window.facts.map(|facts| facts.maximized));
+        // Mechanical facts only: the setter boolean is never proof, the
+        // pre/post maximized states are the refusal/confirmation preimage,
+        // and the core settles from this evidence plus the next staged
+        // observation.
+        clear_out.push(ClearAttempt {
+            operation_id: op.to_owned(),
+            window: row.lifetime.clone(),
+            setter: frame_setter(wrote),
+            pre_maximized: pre,
+            post_maximized: post,
+            attempt_ms,
+        });
+        if wrote == Some(true) {
+            stats.clear_writes += 1;
+        }
+        if post != Some(false) {
+            stats.held += 1;
+        }
+        if gate.current_obs != entry_obs {
+            stats.stopped_mid_apply = true;
+            break;
+        }
+    }
+    if stats.stopped_mid_apply {
+        finalize(&mut stats);
+        return stats;
+    }
+
     // Paired migration source-refill views (`{migration-op}-refill`) defer
     // to the migration path below: switching the source view before member
     // arrival proof would hide unmoved members.
@@ -1532,10 +1921,12 @@ pub(super) fn apply_world_reply(
 
     // 3. Output views: retained transfer targets only, proven on the exact
     // target output. Unresolvable targets hold with no attempt recorded, so
-    // the retained core target retries on a later report. Every dispatch
-    // reports its raw attempt; the core derives confirmation, proven
-    // refusal, ambiguity, and external supersession from the raw facts plus
-    // staged echoes. No verdict is emitted here.
+    // the retained core target retries on a later report. Floating
+    // (Untouched) targets actuate their hide/reveal under the
+    // view-actuatable gate below; every other authority rule is unchanged.
+    // Every dispatch reports its raw attempt; the core derives
+    // confirmation, proven refusal, ambiguity, and external supersession
+    // from the raw facts plus staged echoes. No verdict is emitted here.
     for t in &reply.transfers {
         if !matches!(t.kind, TransferKind::View) {
             continue;
@@ -1550,7 +1941,7 @@ pub(super) fn apply_world_reply(
         let out = t.target_output.0.clone();
         let ws = t.target_workspace.clone();
         let op = t.operation_id.clone();
-        if !scope_controlled(reply, &out, &ws) {
+        if !scope_actuatable(reply, ops, &out, &ws) {
             stats.held += 1;
             continue;
         }
@@ -1614,12 +2005,15 @@ pub(super) fn apply_world_reply(
     }
 
     // 3b. Whole-workspace migration: membership-only moves under one stable
-    // operation, then views. No view switches until ALL fresh member arrival
-    // proof is in: a partial failure holds truthfully under the same id, and
-    // the paired source refill actuates only after the target view proves.
-    // Every dispatch reports its raw attempt; the core derives every
-    // verdict from the raw facts plus staged observation. No verdict is
-    // emitted here.
+    // operation, then views. Floating (Untouched) targets actuate their
+    // membership-coupled moves and views under the same mechanical gate
+    // as standalone views: member frames ride only the core-owned
+    // placement (floats carry none and preserve their frame), every
+    // dispatch reports its raw attempt, and the core owns every verdict.
+    // No view switches until ALL fresh member arrival proof is in: a
+    // partial failure holds truthfully under the same id, and the paired
+    // source refill actuates only after the target view proves. No verdict
+    // is emitted here.
     for t in &reply.transfers {
         if !matches!(t.kind, TransferKind::Migration) {
             continue;
@@ -1631,7 +2025,7 @@ pub(super) fn apply_world_reply(
         let op = t.operation_id.clone();
         let out = t.target_output.0.clone();
         let ws = t.target_workspace.clone();
-        if !scope_controlled(reply, &out, &ws) {
+        if !scope_actuatable(reply, ops, &out, &ws) {
             stats.held += 1;
             continue;
         }
@@ -1821,7 +2215,9 @@ pub(super) fn apply_world_reply(
         }
         // Paired source refill only after the target view proves: never
         // ahead of arrival. The refill owns its own view phase under the
-        // actual refill id, with its own held/scope/spent gates.
+        // actual refill id, with its own held/actuation/spent gates: a
+        // floating (Untouched) refill actuates exactly like a standalone
+        // floating view once the target proof is in.
         let refill_op = format!("{op}-refill");
         if let Some(refill) = reply
             .transfers
@@ -1834,7 +2230,7 @@ pub(super) fn apply_world_reply(
                 // Already shown: nothing to report; the core settles from
                 // the staged echo itself.
             } else if refill.held
-                || !scope_controlled(reply, &refill_out, &refill_ws)
+                || !scope_actuatable(reply, ops, &refill_out, &refill_ws)
                 || effects.is_view_spent(&refill.operation_id)
             {
                 // Held, scope-held, or already attempted refill:
@@ -1893,21 +2289,47 @@ pub(super) fn apply_world_reply(
     // on the exact live view (switch-before-focus). Stale effects drop
     // (at-most-once), never steal focus later. Effects produce no feedback:
     // the core consumes no effect outcomes; the spent proof plus the
-    // foreground read-back is the whole contract.
+    // foreground read-back is the whole contract. Trace-only per-effect
+    // rows land in `stats.focus_dispatch` (bounded, see MAX_FOCUS_DIAG):
+    // `dispatched` plus the raw setter disposition and the immediate
+    // foreground proof even when false distinguish dispatched-but-unproven
+    // from no setter; `hold` names the individual hold. Static-hover retry
+    // behavior is unchanged: no extra dispatch, no re-actuation.
     for effect in &reply.effects {
+        // Bounded trace push helper: reply order, honest truncation (the
+        // tick reports the omitted count from the reply length).
+        macro_rules! push_focus {
+            ($dispatched:expr, $setter:expr, $foreground:expr, $hold:expr) => {{
+                if stats.focus_dispatch.len() < MAX_FOCUS_DIAG {
+                    stats.focus_dispatch.push(FocusDispatchDiag {
+                        id: effect.id.clone(),
+                        target: effect.target.0.clone(),
+                        kind: effect.kind.as_str(),
+                        dispatched: $dispatched,
+                        setter: $setter,
+                        foreground: $foreground,
+                        hold: $hold,
+                    });
+                }
+            }};
+        }
         if gate.current_obs != entry_obs {
+            push_focus!(false, "skipped", false, Some("stopped"));
             stats.stopped_mid_apply = true;
             break;
         }
         if !gate.fresh_reply(reply) {
+            push_focus!(false, "skipped", false, Some("stale"));
             stats.stopped_mid_apply = true;
             break;
         }
         let Some(base) = fresh.baseline.get(&effect.target.0) else {
+            push_focus!(false, "skipped", false, Some("unknown-baseline"));
             stats.held += 1;
             continue;
         };
         if base.hidden || base.iconic || base.frame.is_none() {
+            push_focus!(false, "skipped", false, Some("hidden-or-unreadable"));
             stats.held += 1;
             continue;
         }
@@ -1915,10 +2337,12 @@ pub(super) fn apply_world_reply(
             .facts
             .is_some_and(|facts| !capture_facts_rideable(&facts))
         {
+            push_focus!(false, "skipped", false, Some("ineligible-facts"));
             stats.held += 1;
             continue;
         }
         if !ensure_fresh(reply, gate, entry_obs, ops) {
+            push_focus!(false, "skipped", false, Some("stale"));
             stats.stopped_mid_apply = true;
             break;
         }
@@ -1931,10 +2355,12 @@ pub(super) fn apply_world_reply(
             SetterKind::Membership,
         ) {
             Gate::Hold => {
+                push_focus!(false, "skipped", false, Some("pre-setter-hold"));
                 stats.held += 1;
                 continue;
             }
             Gate::Stop => {
+                push_focus!(false, "skipped", false, Some("pre-setter-stop"));
                 stats.stopped_mid_apply = true;
                 break;
             }
@@ -1945,33 +2371,150 @@ pub(super) fn apply_world_reply(
         // exact-output view is shown. A moved lifetime focuses only where
         // it actually lives.
         let Some((live_out, live_ws)) = ops.read_homing(&effect.target.0) else {
+            push_focus!(false, "skipped", false, Some("unknown-homing"));
             stats.held += 1;
             continue;
         };
         if !scope_controlled(reply, &live_out, &live_ws) {
+            push_focus!(false, "skipped", false, Some("held-scope"));
             stats.held += 1;
             continue;
         }
         if ops.read_view(&live_out).as_deref() != Some(live_ws.as_str()) {
             // The live workspace is not shown on its output: focusing now
             // would steal focus from the wrong view. Hold for the view.
+            push_focus!(false, "skipped", false, Some("view-not-shown"));
             stats.held += 1;
             continue;
         }
         if !effects.mark_effect_spent(&effect.id) {
+            push_focus!(false, "skipped", false, Some("already-spent"));
             continue;
         }
         // Foreground read-back is authoritative even if the setter throws:
-        // a throwing call that still landed proves focus.
-        let _ = ops.focus_window(&effect.target.0);
-        if ops.is_foreground(&effect.target.0) {
+        // a throwing call that still landed proves focus. Both the raw
+        // setter disposition and the immediate foreground proof ride the
+        // trace row even when the proof is false, so a dispatched but
+        // unproven setter is distinguishable from no setter at all.
+        let setter_outcome = ops.focus_window(&effect.target.0);
+        let setter = match &setter_outcome {
+            Ok(true) => "accepted",
+            Ok(false) => "refused",
+            Err(()) => "threw",
+        };
+        let foreground = ops.is_foreground(&effect.target.0);
+        if foreground {
+            push_focus!(true, setter, true, None);
             stats.effects += 1;
         } else {
+            push_focus!(true, setter, false, Some("foreground-unproven"));
             stats.held += 1;
         }
         if gate.current_obs != entry_obs {
             stats.stopped_mid_apply = true;
             break;
+        }
+    }
+
+    // 5. Cursor warp (stage 4b): one mechanical position setter per
+    // observation at most, and only correlated with the focus that
+    // actually results. The core publishes the point only alongside its
+    // focus effects; the adapter warps only when the last focus effect in
+    // order still targets the window holding the observed foreground. A
+    // stale point with no focus effect, a held or failed focus, focus
+    // that drifted elsewhere, racing input, or a new fullscreen game all
+    // fail that proof and never move the cursor. An already-there read
+    // consumes the observation with no write; an explicit refusal holds
+    // without retry (the focus already happened, the next cross-output
+    // focus re-warms); a throw stops the pass like every other setter.
+    // Duplicate deliveries of the same observation never move the cursor
+    // twice.
+    if let Some((x, y)) = reply.cursor_warp {
+        if gate.current_obs != entry_obs || !gate.fresh_reply(reply) {
+            stats.stopped_mid_apply = true;
+        } else if effects.last_warp_obs == Some(reply.based_on_observation_seq) {
+            // Duplicate delivery of an already-warped observation.
+        } else if !ensure_fresh(reply, gate, entry_obs, ops) {
+            stats.stopped_mid_apply = true;
+        } else {
+            // The last focus effect in order dictates the resulting focus
+            // (section 4 applies effects in order): warp only for that
+            // exact target while it holds the observed foreground.
+            let target = reply
+                .effects
+                .iter()
+                .rfind(|effect| effect.kind == EffectKind::Focus)
+                .map(|effect| effect.target.clone());
+            let mut correlated = false;
+            match target {
+                None => {
+                    // Stale point with no focus effect: consume below
+                    // without motion.
+                }
+                Some(target) => match fresh.baseline.get(&target.0) {
+                    None => {
+                        stats.held += 1;
+                    }
+                    Some(base) => {
+                        match pre_setter_ok(
+                            gate,
+                            entry_obs,
+                            ops,
+                            base,
+                            &fresh.stored_tags,
+                            SetterKind::Membership,
+                        ) {
+                            Gate::Hold => {
+                                stats.held += 1;
+                            }
+                            Gate::Stop => {
+                                stats.stopped_mid_apply = true;
+                            }
+                            Gate::Pass => {
+                                // Switch-before-focus liveness on the live
+                                // homing (never the observation preimage),
+                                // plus the actual observed foreground: the
+                                // focus must have landed, not merely been
+                                // dispatched.
+                                let shown = ops.read_homing(&target.0).is_some_and(|(out, ws)| {
+                                    scope_controlled(reply, &out, &ws)
+                                        && ops.read_view(&out).as_deref() == Some(ws.as_str())
+                                });
+                                if shown && ops.is_foreground(&target.0) {
+                                    correlated = true;
+                                } else {
+                                    stats.held += 1;
+                                }
+                            }
+                        }
+                    }
+                },
+            }
+            effects.last_warp_obs = Some(reply.based_on_observation_seq);
+            if correlated {
+                if ops.read_cursor() == Some((x, y)) {
+                    // Already there: consume without a write.
+                } else {
+                    match ops.move_cursor(x, y) {
+                        Err(()) => {
+                            // Throwing call: the pass stops, and the
+                            // observation is still consumed so a duplicate
+                            // delivery never re-yanks a cursor the user may
+                            // have moved since.
+                            stats.stopped_mid_apply = true;
+                        }
+                        Ok(false) => {
+                            stats.held += 1;
+                        }
+                        Ok(true) => {
+                            stats.cursor_warps += 1;
+                        }
+                    }
+                }
+            }
+        }
+        if gate.current_obs != entry_obs {
+            stats.stopped_mid_apply = true;
         }
     }
 

@@ -160,6 +160,20 @@ pub(super) struct OwnerInputs<'a> {
     /// deliberately unsampled (focused fullscreen game). Never a placement
     /// or output policy here: only the carried observation the core resolves.
     pub cursor: Option<(i32, i32)>,
+    /// Raw native window under the sampled cursor (`0`/absent when none):
+    /// the `WindowFromPoint` read for the same tick as [`OwnerInputs::cursor`],
+    /// resolved to an exact managed lifetime below. `None` whenever the
+    /// cursor itself is unsampled (game lane, unreadable), so a hit never
+    /// travels without its position. Never focus or placement policy: only
+    /// the raw observation the binding resolves.
+    pub hit_hwnd: Option<u64>,
+    /// Normalized gesture ingress for one tick (stage 4a): the exact open
+    /// gesture lifetime, START-sampled kind, live cursor, and terminal
+    /// phase. Built by the tick from native START-drain tables (fact
+    /// collection only); the core owns every target/release decision.
+    /// `None` on observation-only ticks. Terminal phases ride an explicit
+    /// override stashed by the END path, never derived here.
+    pub gesture: Option<tiler_core::gesture::GestureIngress>,
     /// Mechanical device-to-wire-output map (native device keys to opaque
     /// `oN` ids). Native-wire ids only, never rings/views/tiling/history.
     pub output_tokens: &'a HashMap<String, String>,
@@ -208,6 +222,8 @@ impl TileLoop {
         outer_gap: i32,
         active: &'a HashSet<u64>,
         cursor: Option<(i32, i32)>,
+        hit_hwnd: Option<u64>,
+        gesture: Option<tiler_core::gesture::GestureIngress>,
     ) -> OwnerInputs<'a> {
         OwnerInputs {
             member_tokens,
@@ -236,6 +252,8 @@ impl TileLoop {
             outer_gap,
             active,
             cursor,
+            hit_hwnd,
+            gesture,
         }
     }
 
@@ -272,6 +290,87 @@ impl TileLoop {
             outer_gap: self.outer_gap,
             active: &self.active,
             cursor: None,
+            hit_hwnd: None,
+            gesture: None,
+        }
+    }
+
+    /// Normalized gesture ingress for one tick (stage 4a): the exact open
+    /// gesture lifetime, stable gesture id, START-sampled kind, live and
+    /// START cursors, and phase. Fact collection only: the single open
+    /// managed gesture maps to core facts from the START-drain tables
+    /// (token binding, PRE-gesture frame, id, modal kind, Esc latch); a
+    /// stashed terminal override (release/cancel with its END-captured
+    /// facts) takes precedence. The first tick carrying an open gesture
+    /// reports `Started` with the down-point cursor (the core binds its
+    /// immutable START truth from it); later ticks report `Updated` with
+    /// the live cursor. Every phase carries the stable id plus the START
+    /// down point, so a lost Started never loses the zero gate or the
+    /// at-most-once identity. Multi-gesture opens, unmanaged races,
+    /// unknown START kinds, missing PRE snapshots, and missing ids emit
+    /// nothing (fail closed; the barrier bool still holds scopes). The core
+    /// owns every target/release decision from here.
+    pub(super) fn gesture_ingress(
+        &mut self,
+        cursor: Option<(i32, i32)>,
+    ) -> Option<tiler_core::gesture::GestureIngress> {
+        use tiler_core::gesture::{GestureIngress, GestureKind, GesturePhase};
+        if let Some(stashed) = self.gesture_override.clone() {
+            return Some(stashed);
+        }
+        let mut movers: Vec<u64> = self
+            .active
+            .iter()
+            .copied()
+            .filter(|hwnd| self.managed.contains(hwnd) && self.gesture_before.contains_key(hwnd))
+            .collect();
+        movers.sort_unstable();
+        if movers.len() != 1 {
+            return None;
+        }
+        let hwnd = movers[0];
+        let start = self.gesture_preview_start.get(&hwnd)?.clone();
+        let before = self.gesture_before.get(&hwnd).copied()?;
+        // Stable gesture id, allocated once at native START drain and
+        // retained through settle. Absent only when the START tables were
+        // never captured: fail closed, never an anonymous ingress.
+        let id = self.gesture_seq.get(&hwnd).copied()?;
+        let kind = match self.move_kind.get(&hwnd) {
+            Some(crate::group_underlay::MoveSizeKind::Move) => GestureKind::Move,
+            Some(crate::group_underlay::MoveSizeKind::Resize) => GestureKind::Resize,
+            _ => return None,
+        };
+        // The START down point rides every ingress (never derived from the
+        // live sample), so a first Updated after a lost Started keeps the
+        // true zero gate. `None` only when the down point was unreadable.
+        let down = self.gesture_start_cursor.get(&hwnd).copied();
+        // First sighting reports the start: down-point cursor and modal
+        // truth frozen once, so the core zero-gates later samples against
+        // the true down point. Later sightings carry the live cursor.
+        if self.gesture_started_sent.insert(hwnd) {
+            Some(GestureIngress {
+                id,
+                window: tiler_core::directional::WindowId(start.token.clone()),
+                kind,
+                cursor: down.or(cursor),
+                start_cursor: down,
+                phase: GesturePhase::Started,
+                esc: self.esc_latched.contains(&hwnd),
+                modal_move: kind == GestureKind::Move,
+                start_frame: before,
+            })
+        } else {
+            Some(GestureIngress {
+                id,
+                window: tiler_core::directional::WindowId(start.token.clone()),
+                kind,
+                cursor,
+                start_cursor: down,
+                phase: GesturePhase::Updated,
+                esc: self.esc_latched.contains(&hwnd),
+                modal_move: kind == GestureKind::Move,
+                start_frame: before,
+            })
         }
     }
 }
@@ -308,16 +407,29 @@ pub(super) struct CapturedWorld {
     /// only; never an adapter placement policy). Marker-restored lifetimes
     /// are restored intent, not fresh placement (core-owned).
     pub(super) fresh_placement: tiler_core::cursor_targeting::FreshPlacement,
-    /// Retained focus-follows-cursor setting (stage 4 owns actuation).
+    /// Retained focus-follows-cursor setting (stage 4b actuates it in
+    /// [`crate::world_cursor`]).
     pub(super) focus_follows_cursor: bool,
-    /// Retained cursor-warp setting (stage 4 owns actuation).
+    /// Retained cursor-warp setting (stage 4b actuates it in
+    /// [`crate::world_cursor`]).
     pub(super) cursor_warp: bool,
     /// Normalized cursor position in adapter units (`None` when unreadable
     /// or deliberately unsampled). Never continuous polling: one sample per
     /// capture, none during focused fullscreen game.
     pub(super) cursor: Option<(i32, i32)>,
+    /// Normalized cursor-hit managed lifetime for the same tick as
+    /// [`CapturedWorld::cursor`]: the exact managed window under the cursor
+    /// (`None` when the cursor is unsampled, or the point lands on foreign,
+    /// hidden, or otherwise unmanaged pixels). Native hit test plus exact
+    /// managed binding, never a focus or placement input.
+    pub(super) cursor_hit: Option<WindowId>,
     pub(super) inventory_complete: bool,
     pub(super) gesture_barrier: bool,
+    /// Normalized gesture ingress for one tick (stage 4a): the exact open
+    /// gesture lifetime, START-sampled kind, live cursor, and phase. The
+    /// core retains the session and owns every target/release decision.
+    /// `None` on observation-only ticks.
+    pub(super) gesture: Option<tiler_core::gesture::GestureIngress>,
     pub(super) focused_global: String,
     pub(super) default_tiled: bool,
     pub(super) fixed_size_predicate: tiler_core::size_hints::FixedSizePredicate,
@@ -393,6 +505,61 @@ pub(super) fn capture_facts_rideable(facts: &WindowFacts) -> bool {
         Err(SkipReason::Fullscreen | SkipReason::Maximized) => true,
         Err(_) => false,
     }
+}
+
+/// Resolve one raw cursor-hit HWND to the exact managed lifetime under the
+/// cursor, if any. The map covers only exactly-bound members (the stored
+/// token matches the observed/retained token for the same full identity):
+/// foreign pixels, owned overlays, recycled HWNDs, and unbound newcomers
+/// resolve to nothing, never to a guess. A child window or owned dialog
+/// walks up through its parent/owner chain to the managed top-level frame
+/// (bounded steps); a chain that leaves managed membership reports
+/// nothing. Pure over the caller-supplied tables plus the native owner
+/// step, so offline fixtures script the step.
+pub(super) fn resolve_cursor_hit(
+    hit_hwnd: u64,
+    observed: &[ObservedWindow],
+    retained: &[RetainedRow],
+    member_tokens: &BTreeMap<WindowKey, String>,
+    owner_step: &dyn Fn(u64) -> u64,
+) -> Option<WindowId> {
+    if hit_hwnd == 0 {
+        return None;
+    }
+    let mut bound: HashMap<u64, String> = HashMap::new();
+    for window in observed {
+        let key = WindowKey {
+            hwnd: window.hwnd,
+            pid: window.identity.pid,
+            creation: window.identity.process_creation.clone(),
+        };
+        if member_tokens
+            .get(&key)
+            .is_some_and(|bound_token| bound_token == &window.token)
+        {
+            bound.insert(window.hwnd, window.token.clone());
+        }
+    }
+    for row in retained {
+        if member_tokens
+            .get(&row.key)
+            .is_some_and(|bound_token| bound_token == &row.token)
+        {
+            bound.entry(row.key.hwnd).or_insert(row.token.clone());
+        }
+    }
+    let mut hwnd = hit_hwnd;
+    for _ in 0..32 {
+        if let Some(token) = bound.get(&hwnd) {
+            return Some(WindowId(token.clone()));
+        }
+        let next = owner_step(hwnd);
+        if next == 0 || next == hwnd {
+            return None;
+        }
+        hwnd = next;
+    }
+    None
 }
 
 /// Capture one complete world observation from the real owner plus real
@@ -1123,6 +1290,7 @@ pub(super) fn capture_world(
         equal_workspace_count: false,
         inventory_complete,
         gesture_barrier: !state.active.is_empty(),
+        gesture: state.gesture.clone(),
         focused_global: observed
             .iter()
             .find(|w| w.hwnd == foreground_hwnd)
@@ -1158,6 +1326,21 @@ pub(super) fn capture_world(
             .as_ref()
             .is_some_and(|live| live.settings.core.cursor_warp),
         cursor: state.cursor,
+        // The hit resolves only when the cursor itself was sampled: the
+        // game lane and unreadable ticks carry no cursor and no hit.
+        cursor_hit: match (state.cursor, state.hit_hwnd) {
+            (Some(_), Some(hwnd)) => {
+                resolve_cursor_hit(hwnd, observed, retained, state.member_tokens, &|step| {
+                    let parent = crate::ffi::parent_of(step);
+                    if parent != 0 {
+                        parent
+                    } else {
+                        crate::ffi::owner_of(step)
+                    }
+                })
+            }
+            _ => None,
+        },
         dropped_stale_closed,
         #[cfg(test)]
         unhomed_closed,

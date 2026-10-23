@@ -1,39 +1,44 @@
 #![forbid(unsafe_code)]
+use super::gesture_tick::stash_gesture_cancel;
 use super::*;
 
-/// Bounded pending gesture drop for the bridged finish path. Owns every
-/// input the deferred settle needs (END-time intent, START snapshots,
-/// membership routing, carried hover prior, hide pair, deadline) so the
-/// service revalidates against fresh observations instead of trusting
-/// pre-wait facts. No callbacks, no Engine, no framework: one struct, one
-/// service function on the owner loop.
+/// Bounded pending gesture release for the bridged finish path. Owns the
+/// END-captured facts the commit needs (stable gesture id, release cursor,
+/// modal truth, PRE-gesture frame, START snapshots, membership routing,
+/// hide pair, deadline) so the service revalidates against fresh
+/// observations. The core owns the release commit from these facts; this
+/// only carries them. No callbacks, no Engine, no framework: one struct,
+/// one service function on the owner loop.
 pub(super) struct PendingDrop {
     pub(super) hwnd: u64,
+    /// Stable gesture id allocated at native START, carried so the core
+    /// orders the release by id and the terminal consumes exactly once.
+    pub(super) id: u64,
     pub(super) producer: String,
-    pub(super) intent: GestureIntent,
+    /// Operation name for logs (`drag-drop` or `pointer-resize`), derived
+    /// once at END from the START-sampled kind. Logging only: the core
+    /// owns the release intent.
+    pub(super) op: &'static str,
+    /// END-captured release cursor (never re-read): `None` routes as
+    /// no-change for moves.
+    pub(super) release_cursor: Option<(i32, i32)>,
+    /// START down point when readable (drives the core zero gate on an
+    /// implicit bind, exactly like the open-gesture path).
+    pub(super) start_cursor: Option<(i32, i32)>,
+    /// START-sampled modal truth for the release derivation.
+    pub(super) modal_move: bool,
+    /// PRE-gesture frame frozen at START: the core release ground truth.
+    pub(super) start_frame: Rect,
+    /// START-sampled gesture kind (advisory; the release intent derives
+    /// from frames).
+    pub(super) kind: tiler_core::gesture::GestureKind,
     pub(super) mover_token: String,
     pub(super) start_key: Option<crate::native_guards::WindowKey>,
     pub(super) start_tag: Option<Option<String>>,
     pub(super) member_key: crate::native_guards::WindowKey,
-    pub(super) output: String,
-    pub(super) workspace: String,
-    pub(super) drop_prior: Option<tiler_core::session::DragHoverPrior>,
-    /// Pointer-resolved cross-output destination plus its END-time fence
-    /// snapshot (`None` for same-output finishes, which keep the legacy
-    /// source-domain service path).
-    pub(super) dest: Option<PendingCrossDest>,
     pub(super) hide_gen: u64,
     pub(super) hide_safety: u64,
     pub(super) deadline: Instant,
-}
-
-/// Pointer-resolved cross-output finish: the destination output plus its
-/// current workspace at END and the fence snapshot tails re-verify before
-/// any Engine or project mutation.
-pub(super) struct PendingCrossDest {
-    pub(super) output: String,
-    pub(super) workspace: String,
-    pub(super) fence: crate::native_guards::DragDropFenceSnapshot,
 }
 
 /// Pending invalidation while a bridged finish waits (or after its hide
@@ -73,30 +78,30 @@ fn pending_invalidation(
 
 /// Queue one bridged finish as a bounded pending owner operation (END path).
 /// Hides the preview (the safety epoch bars any stale-show replay) and
-/// stashes the drop with its hide pair and deadline. Returns `true` when a
-/// previous finish still owns the slot (overlapping END race): the newcomer
-/// is refused narrowly with no drop and no reconcile, and the pending
-/// operation owns the settle. Single slot: one gesture settles at a time.
-/// Production END queueing funnels through here; tests exercise it directly
-/// with offline fixtures (channels only, no renderer thread).
+/// stashes the release facts with their hide pair and deadline. Returns
+/// `true` when a previous finish still owns the slot (overlapping END
+/// race): the newcomer is refused narrowly with no drop and no reconcile,
+/// and the pending operation owns the settle. Single slot: one gesture
+/// settles at a time. Production END queueing funnels through here; tests
+/// exercise it directly with offline fixtures (channels only, no renderer
+/// thread).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn queue_pending_drop(
     state: &mut TileLoop,
     hwnd: &u64,
+    id: u64,
     producer: &'static str,
-    intent: GestureIntent,
+    op: &'static str,
+    release_cursor: Option<(i32, i32)>,
+    start_cursor: Option<(i32, i32)>,
+    modal_move: bool,
+    start_frame: Rect,
+    kind: tiler_core::gesture::GestureKind,
     mover_token: &str,
     start_key: Option<crate::native_guards::WindowKey>,
     start_tag: Option<Option<String>>,
     member_key: crate::native_guards::WindowKey,
-    output: &str,
-    workspace: &str,
-    dest: Option<PendingCrossDest>,
 ) -> bool {
-    let drop_prior = state
-        .preview_bound
-        .get(hwnd)
-        .and_then(|bound| bound.hover_prior.clone());
     hide_render_carrier(state, RenderCarrier::Preview, "finish");
     state
         .render_bridge
@@ -112,16 +117,18 @@ pub(super) fn queue_pending_drop(
             } else {
                 bridge.pending = Some(PendingDrop {
                     hwnd: *hwnd,
+                    id,
                     producer: producer.to_owned(),
-                    intent,
+                    op,
+                    release_cursor,
+                    start_cursor,
+                    modal_move,
+                    start_frame,
+                    kind,
                     mover_token: mover_token.to_owned(),
                     start_key,
                     start_tag,
                     member_key,
-                    output: output.to_owned(),
-                    workspace: workspace.to_owned(),
-                    drop_prior,
-                    dest,
                     hide_gen: pair.0,
                     hide_safety: pair.1,
                     deadline: Instant::now() + FINISH_WAIT,
@@ -132,138 +139,20 @@ pub(super) fn queue_pending_drop(
         .unwrap_or(false)
 }
 
-/// Service one proven-hide cross-output pending drop: re-resolve the pointer
-/// destination, re-verify the END-time fences against fresh state, then run
-/// the shared Engine route. No pre-drop focus: the confirm tail
-/// follow-focuses on the destination after the transfer, so a cross drop
-/// never foregrounds the source first. Every refusal converges without
-/// Engine, focus, or geometry writes.
-#[allow(clippy::too_many_arguments)]
-fn service_cross_pending_drop(
-    state: &mut TileLoop,
-    me: &ProcessIdentity,
-    store: &LedgerStore,
-    dir: &Path,
-    fulls: &[Rect],
-    areas: &[MonitorArea],
-    observed: &[ObservedWindow],
-    retained: &[RetainedRow],
-    current: &ObservedWindow,
-    member_key: &crate::native_guards::WindowKey,
-    loc: &super::world_reads::Home,
-    pending: &PendingDrop,
-    dest: &PendingCrossDest,
-    x: i32,
-    y: i32,
-) {
-    let log_path = state.log_path.clone();
-    let from = current.token.clone();
-    let tick = state.tick;
-    let log_cross = |outcome: &'static str| {
-        log_json_at(
-            &log_path,
-            serde_json::json!({
-                "event": "gesture",
-                "tick": tick,
-                "op": "drag-drop",
-                "disposition": "refused",
-                "outcome": outcome,
-                "window": from,
-                "producer": pending.producer,
-                "cross_output": true,
-            }),
-        );
-    };
-    // The pointer output must still resolve to the queued destination:
-    // topology moved under the pending finish otherwise.
-    if output_for_point(areas, x, y).as_deref() != Some(dest.output.as_str()) {
-        log_cross("topology-changed");
-        let fulls_owned = fulls.to_vec();
-        reconcile_tick(state, me, store, dir, &fulls_owned, areas);
-        return;
-    }
-    let membership_ok = state
-        .member_home(member_key)
-        .is_some_and(|fresh| fresh.output == loc.output && fresh.workspace == loc.workspace);
-    let (live_max, live_full_opt) = live_overlay_flags(member_key.hwnd, fulls);
-    let retained_full = retained
-        .iter()
-        .find(|r| r.key == *member_key)
-        .map(|r| r.fullscreen)
-        .unwrap_or(false);
-    let live = drag_drop_live(
-        state,
-        areas,
-        &dest.fence,
-        member_key,
-        membership_ok,
-        live_max,
-        live_full_opt.unwrap_or(retained_full),
-    );
-    if let Some(outcome) = crate::native_guards::drag_drop_fences_hold(&dest.fence, &live) {
-        if outcome == "identity-changed" {
-            drop_member_state(state, member_key);
-        }
-        log_cross(outcome);
-        let fulls_owned = fulls.to_vec();
-        reconcile_tick(state, me, store, dir, &fulls_owned, areas);
-        return;
-    }
-    // Fresh suspension fence after the proven hide, before any Engine or
-    // project mutation: a fullscreen arrival (or elevated foreground)
-    // between END and the ack refuses with no plan and no writes.
-    if state.suspended || suspend_read(state, me, fulls).veto.block || foreground_elevated(me) {
-        log_cross(if state.suspended {
-            "suspended"
-        } else {
-            "elevated-foreground"
-        });
-        let fulls_owned = fulls.to_vec();
-        reconcile_tick(state, me, store, dir, &fulls_owned, areas);
-        return;
-    }
-    state.tick += 1;
-    let tick = state.tick;
-    let correlation = state.correlation();
-    let settle = CrossDragSettle {
-        mover_token: current.token.clone(),
-        member_key: member_key.clone(),
-        source_output: loc.output.clone(),
-        source_workspace: loc.workspace.clone(),
-        dest_output: dest.output.clone(),
-        dest_workspace: dest.workspace.clone(),
-        x,
-        y,
-        drop_prior: pending.drop_prior.clone(),
-        producer: pending.producer.clone(),
-    };
-    settle_cross_drag_drop(
-        state,
-        me,
-        store,
-        dir,
-        fulls,
-        areas,
-        observed,
-        retained,
-        &settle,
-        &dest.fence,
-        tick,
-        &correlation,
-        correlation.as_str(),
-    );
-}
-
 /// Service the bounded pending gesture drop from render-ack state at loop
 /// level (ack-only and full turns alike): no blocking wait, so the owner
 /// stays responsive to stop and new events. On a proven `Hidden`
-/// acknowledgement the settle re-enters below with fresh observations and
-/// gates before every focus/Engine/foreign write. On timeout the drop is
-/// refused narrowly with no drop and no reconcile: actuation runs only over
-/// a proven hide, while the posted safety epoch already bars any stale-show
-/// replay. Cancel/Esc/suspend/new-gesture/stop invalidate the pending slot
-/// with no Engine/focus/geometry, so a late ack can never actuate after the
-/// gesture was cancelled, suspended, superseded, or stopped.
+/// acknowledgement the settle re-enters with fresh observations: the
+/// core commits the release from the stashed END facts through the
+/// ordinary observation tick, and the host diff applies the accepted
+/// reply. The drained terminal record IS the outcome: a cached or stale
+/// reply is never equated with completion. On timeout the drop is
+/// refused narrowly with no drop and no reconcile, but its terminal is
+/// still stashed so the core cannot leak the session. Cancel/Esc/
+/// suspend/new-gesture/stop invalidate the pending slot the same way
+/// (terminal first), with no actuation of their own, so a late ack can
+/// never actuate after the gesture was cancelled, suspended, superseded,
+/// or stopped.
 pub(super) fn service_pending_drop(
     state: &mut TileLoop,
     me: &ProcessIdentity,
@@ -272,24 +161,52 @@ pub(super) fn service_pending_drop(
     fulls: &[Rect],
     areas: &[MonitorArea],
 ) {
-    let Some(bridge) = state.render_bridge.as_ref() else {
+    let Some(hide_pair) = state.render_bridge.as_ref().and_then(|bridge| {
+        bridge
+            .pending
+            .as_ref()
+            .map(|pending| (pending.hide_gen, pending.hide_safety, pending.deadline))
+    }) else {
         return;
     };
-    let pending = match bridge.pending.as_ref() {
-        Some(pending) => pending,
-        None => return,
-    };
-    let (hwnd, hide_gen, hide_safety, deadline) = (
-        pending.hwnd,
-        pending.hide_gen,
-        pending.hide_safety,
-        pending.deadline,
-    );
+    let (hide_gen, hide_safety, deadline) = hide_pair;
+    let hwnd = state
+        .render_bridge
+        .as_ref()
+        .and_then(|bridge| bridge.pending.as_ref())
+        .map(|pending| pending.hwnd)
+        .expect("pending peeked above");
     // Invalidation while waiting (unproven or proven): stop, Esc/cancel,
-    // suspend, or a new gesture for the same HWND drops the slot with no
-    // Engine/focus/geometry. Checked before the timeout so a cancelled
-    // pending never waits out the bound.
+    // suspend, or a new gesture for the same HWND. The terminal stashes
+    // first so the core session cannot leak; only the Esc path converges
+    // (one bounded reconcile to snap back), since stop/suspend/supersede
+    // own no settle. Checked before the timeout so a cancelled pending
+    // never waits out the bound.
     if let Some((outcome, kind)) = pending_invalidation(state, me, fulls, hwnd) {
+        let stashed = state
+            .render_bridge
+            .as_ref()
+            .and_then(|bridge| bridge.pending.as_ref())
+            .map(|pending| {
+                (
+                    pending.id,
+                    pending.mover_token.clone(),
+                    pending.kind,
+                    pending.modal_move,
+                    pending.start_frame,
+                )
+            });
+        if let Some((id, mover_token, pending_kind, modal_move, start_frame)) = stashed {
+            stash_gesture_cancel(
+                state,
+                hwnd,
+                id,
+                &mover_token,
+                pending_kind,
+                modal_move,
+                start_frame,
+            );
+        }
         let mover_token = state
             .render_bridge
             .as_ref()
@@ -301,10 +218,6 @@ pub(super) fn service_pending_drop(
         }
         state.gesture_start_key.remove(&hwnd);
         state.gesture_start_tag.remove(&hwnd);
-        // Esc invalidation converges like the inline Esc path (one bounded
-        // reconcile to snap back); stop/suspend/supersede drop without
-        // converging, since the loop is stopping/suspended or the new
-        // gesture owns the settle.
         let reconcile = outcome == "gesture-cancelled-esc";
         log_json_at(
             &state.log_path,
@@ -332,46 +245,52 @@ pub(super) fn service_pending_drop(
         .is_some_and(|(hgen, safe)| hgen >= hide_gen && safe >= hide_safety);
     if !proven {
         if Instant::now() >= deadline {
-            // Timeout: refuse narrowly. No drop, no reconcile: the drop and
-            // its convergence run only over a proven hide, and the safety
-            // epoch already bars replay. The renderer hides on its next
-            // quantum either way.
-            let mover_token = state
+            // Timeout: refuse narrowly with no drop and no reconcile, but
+            // stash the terminal first so the core session cannot leak:
+            // the next eligible observation incorporates it, while the
+            // posted safety epoch already bars any stale-show replay. The
+            // renderer hides on its next quantum either way.
+            let stash = state
                 .render_bridge
                 .as_ref()
                 .and_then(|bridge| bridge.pending.as_ref())
-                .map(|pending| pending.mover_token.clone())
-                .unwrap_or_default();
+                .map(|pending| {
+                    (
+                        pending.hwnd,
+                        pending.id,
+                        pending.mover_token.clone(),
+                        pending.kind,
+                        pending.modal_move,
+                        pending.start_frame,
+                    )
+                });
+            if let Some((phwnd, pid, ptoken, pkind, pmove, pframe)) = stash {
+                stash_gesture_cancel(state, phwnd, pid, &ptoken, pkind, pmove, pframe);
+                log_json_at(
+                    &state.log_path,
+                    serde_json::json!({
+                        "event": "gesture",
+                        "tick": state.tick,
+                        "op": "drag-drop",
+                        "disposition": "refused",
+                        "outcome": "drag-drop-refused",
+                        "kind": "preview-finish-unacked",
+                        "window": ptoken,
+                        "producer": "settle",
+                    }),
+                );
+            }
             if let Some(bridge) = state.render_bridge.as_mut() {
                 bridge.pending.take();
             }
             state.gesture_start_key.remove(&hwnd);
             state.gesture_start_tag.remove(&hwnd);
-            log_json_at(
-                &state.log_path,
-                serde_json::json!({
-                    "event": "gesture",
-                    "tick": state.tick,
-                    "op": "drag-drop",
-                    "disposition": "refused",
-                    "outcome": "drag-drop-refused",
-                    "kind": "preview-finish-unacked",
-                    "window": mover_token,
-                    "producer": "settle",
-                }),
-            );
         }
         return;
     }
-    let Some(pending) = state
-        .render_bridge
-        .as_mut()
-        .and_then(|bridge| bridge.pending.take())
-    else {
-        return;
-    };
-    state.gesture_start_key.remove(&pending.hwnd);
-    state.gesture_start_tag.remove(&pending.hwnd);
+    // Fresh observation first, slot held: a transient enumeration failure
+    // loses nothing (the slot and its deadline survive for the next
+    // service), and only a proven hide plus a fresh observation proceeds.
     let log_path = state.log_path.clone();
     let mut skipped: Vec<(String, String)> = Vec::new();
     let mut retained: Vec<RetainedRow> = Vec::new();
@@ -382,12 +301,30 @@ pub(super) fn service_pending_drop(
         );
         return;
     };
+    let Some(pending) = state
+        .render_bridge
+        .as_mut()
+        .and_then(|bridge| bridge.pending.take())
+    else {
+        return;
+    };
+    state.gesture_start_key.remove(&pending.hwnd);
+    state.gesture_start_tag.remove(&pending.hwnd);
     publish_managed(state, me, &observed, &retained);
     let by_hwnd: HashMap<u64, &ObservedWindow> = observed.iter().map(|w| (w.hwnd, w)).collect();
     // Fresh revalidation against the stashed START snapshots before any
-    // write: a reuse between END and the proven hide fails closed here
-    // exactly like the inline settle path.
+    // write: a reuse between END and the proven hide stashes a terminal
+    // and converges once instead of dropping under a recycled identity.
     let Some(current) = by_hwnd.get(&pending.hwnd) else {
+        stash_gesture_cancel(
+            state,
+            pending.hwnd,
+            pending.id,
+            &pending.mover_token,
+            pending.kind,
+            pending.modal_move,
+            pending.start_frame,
+        );
         let fulls_owned = fulls.to_vec();
         reconcile_tick(state, me, store, dir, &fulls_owned, areas);
         return;
@@ -415,6 +352,15 @@ pub(super) fn service_pending_drop(
                 "producer": pending.producer,
             }),
         );
+        stash_gesture_cancel(
+            state,
+            pending.hwnd,
+            pending.id,
+            &pending.mover_token,
+            pending.kind,
+            pending.modal_move,
+            pending.start_frame,
+        );
         let fulls_owned = fulls.to_vec();
         reconcile_tick(state, me, store, dir, &fulls_owned, areas);
         return;
@@ -425,11 +371,22 @@ pub(super) fn service_pending_drop(
         .find(|(_, token)| token.as_str() == current.token.as_str())
         .map(|(key, _)| key.clone());
     let Some(member_key) = member_key else {
+        stash_gesture_cancel(
+            state,
+            pending.hwnd,
+            pending.id,
+            &pending.mover_token,
+            pending.kind,
+            pending.modal_move,
+            pending.start_frame,
+        );
+        let fulls_owned = fulls.to_vec();
+        reconcile_tick(state, me, store, dir, &fulls_owned, areas);
         return;
     };
     // The stashed END-time membership must still name the same member:
-    // a token remap between END and the proven hide fails closed instead
-    // of dropping under a recycled identity.
+    // a token remap between END and the proven hide stashes a terminal
+    // instead of dropping under a recycled identity.
     if member_key != pending.member_key {
         log_json_at(
             &log_path,
@@ -443,6 +400,15 @@ pub(super) fn service_pending_drop(
                 "producer": pending.producer,
             }),
         );
+        stash_gesture_cancel(
+            state,
+            pending.hwnd,
+            pending.id,
+            &pending.mover_token,
+            pending.kind,
+            pending.modal_move,
+            pending.start_frame,
+        );
         let fulls_owned = fulls.to_vec();
         reconcile_tick(state, me, store, dir, &fulls_owned, areas);
         return;
@@ -453,160 +419,84 @@ pub(super) fn service_pending_drop(
         current.identity.pid,
         &current.identity.process_creation,
     ) {
-        return;
-    }
-    if state.sticky.contains_key(&member_key) {
-        log_json_at(
-            &log_path,
-            serde_json::json!({
-                "event": "gesture",
-                "tick": state.tick,
-                "op": "gesture",
-                "disposition": "observed",
-                "outcome": "gesture-refused-sticky",
-                "window": current.token,
-            }),
+        stash_gesture_cancel(
+            state,
+            pending.hwnd,
+            pending.id,
+            &pending.mover_token,
+            pending.kind,
+            pending.modal_move,
+            pending.start_frame,
         );
+        let fulls_owned = fulls.to_vec();
+        reconcile_tick(state, me, store, dir, &fulls_owned, areas);
         return;
     }
-    // Distinguish the Engine exception lane from a floating workspace mode,
-    // matching the inline settle path above.
-    if let Some(loc) = state.member_home(&member_key) {
-        let engine_float = engine_is_float(state, &loc.output, &loc.workspace, &current.token);
-        let tiled = workspace_mode_tiled(state, &loc.output, &loc.workspace);
-        if engine_float || !tiled {
-            let cause = gesture_float_cause(engine_float, tiled);
+    // Stored member-lifetime tag fence (same-process HWND reuse): the live
+    // tag must still match the stamped one, even when no START snapshot
+    // was captured. A reuse between END and the proven hide stashes a
+    // terminal exactly like the START-identity leg above.
+    let stored_tag = state
+        .member_tags
+        .get(&member_key)
+        .cloned()
+        .unwrap_or_default();
+    if !stored_tag.is_empty() {
+        let live = live_member_tag(current.hwnd);
+        if !crate::native_guards::visible_lifetime_ok(&stored_tag, live.as_deref()) {
             log_json_at(
                 &log_path,
                 serde_json::json!({
                     "event": "gesture",
                     "tick": state.tick,
                     "op": "gesture",
-                    "disposition": "observed",
-                    "outcome": "gesture-refused-floating",
-                    "cause": cause,
+                    "disposition": "refused",
+                    "outcome": "gesture-refused-identity",
                     "window": current.token,
+                    "producer": pending.producer,
                 }),
             );
+            stash_gesture_cancel(
+                state,
+                pending.hwnd,
+                pending.id,
+                &pending.mover_token,
+                pending.kind,
+                pending.modal_move,
+                pending.start_frame,
+            );
+            let fulls_owned = fulls.to_vec();
+            reconcile_tick(state, me, store, dir, &fulls_owned, areas);
             return;
-        }
-    }
-    let Some(loc) = state.member_home(&member_key) else {
-        return;
-    };
-    if loc.output != pending.output || loc.workspace != pending.workspace {
-        log_json_at(
-            &log_path,
-            serde_json::json!({
-                "event": "gesture",
-                "tick": state.tick,
-                "op": "gesture",
-                "disposition": "refused",
-                "outcome": "gesture-refused-domain",
-                "window": current.token,
-                "producer": pending.producer,
-            }),
-        );
-        let fulls_owned = fulls.to_vec();
-        reconcile_tick(state, me, store, dir, &fulls_owned, areas);
-        return;
-    }
-    let Some(source_bounds) = areas
-        .iter()
-        .find(|a| a.device == loc.output)
-        .and_then(|area| tiling_domain_bounds_with(area.work, state.outer_gap))
-    else {
-        return;
-    };
-    if let GestureIntent::MoveDrop { x, y } = pending.intent {
-        match &pending.dest {
-            None => {
-                if !drop_point_in_domain(
-                    source_bounds.x,
-                    source_bounds.y,
-                    source_bounds.w,
-                    source_bounds.h,
-                    x,
-                    y,
-                ) {
-                    log_json_at(
-                        &log_path,
-                        serde_json::json!({
-                            "event": "gesture",
-                            "tick": state.tick,
-                            "op": "drag-drop",
-                            "disposition": "refused",
-                            "outcome": "drag-drop-refused",
-                            "kind": "outside-work-area",
-                            "window": current.token,
-                            "producer": pending.producer,
-                        }),
-                    );
-                    let fulls_owned = fulls.to_vec();
-                    reconcile_tick(state, me, store, dir, &fulls_owned, areas);
-                    return;
-                }
-            }
-            Some(dest) => {
-                // Cross-output pending settle: the hide already proved, so
-                // revalidate everything fresh (destination resolution,
-                // fences, suspend/elevated) then run the shared Engine
-                // route. No pre-drop focus here: the confirm tail
-                // follow-focuses on the destination after the transfer.
-                service_cross_pending_drop(
-                    state,
-                    me,
-                    store,
-                    dir,
-                    fulls,
-                    areas,
-                    &observed,
-                    &retained,
-                    current,
-                    &member_key,
-                    &loc,
-                    &pending,
-                    dest,
-                    x,
-                    y,
-                );
-                return;
-            }
         }
     }
     state.tick += 1;
     let correlation = state.correlation();
-    let drop_prior_desc = preview_prior_desc(&pending.drop_prior);
-    // World-routed settle: the core owns drop/resize planning and the host
-    // diff applies the accepted reply with fresh proof. The applied reply
-    // IS the outcome: `Some` applied, `None` refused or lost.
-    let command = match pending.intent {
-        GestureIntent::MoveDrop { x, y } => CoreCommand::DragDrop {
-            window: current.token.clone(),
-            x,
-            y,
-            hover_prior: pending.drop_prior.clone(),
-            source: None,
-        },
-        GestureIntent::PointerResize {
-            direction,
-            boundary,
-            direction2,
-            boundary2,
-        } => CoreCommand::PointerResize {
-            window: current.token.clone(),
-            direction: direction.to_owned(),
-            boundary,
-            direction2: direction2.map(str::to_owned),
-            boundary2,
-        },
-    };
-    let op = match pending.intent {
-        GestureIntent::MoveDrop { .. } => "drag-drop",
-        GestureIntent::PointerResize { .. } => "pointer-resize",
-    };
+    // Normalized release (stage 4a): the core owns the commit from the
+    // stashed END facts. The reply-carried terminal IS the outcome: only
+    // a freshly accepted reply paired with a matching committed terminal
+    // logs completion, never a stale cached reply. No arrival proof, no
+    // follow focus here: the host diff inside the observation tick applies
+    // the accepted reply with fresh proof, and the core's retained
+    // transfers plus focus effects own completion.
+    let op = pending.op;
+    let release_id = pending.id;
+    state.gesture_override = Some(tiler_core::gesture::GestureIngress {
+        id: pending.id,
+        window: tiler_core::directional::WindowId(current.token.clone()),
+        kind: pending.kind,
+        cursor: pending.release_cursor,
+        start_cursor: pending.start_cursor,
+        phase: tiler_core::gesture::GesturePhase::Released,
+        esc: false,
+        modal_move: pending.modal_move,
+        start_frame: pending.start_frame,
+    });
+    let mover_token = pending.mover_token.clone();
+    let producer = pending.producer.clone();
+    drop(pending);
     let foreground = live_foreground_window();
-    let reply = super::world_tick::run_world_command(
+    let reply = super::world_tick::run_observation_tick(
         state,
         me,
         store,
@@ -616,44 +506,14 @@ pub(super) fn service_pending_drop(
         areas,
         foreground,
         fulls,
-        tiler_core::world_report::WorldCommand::Operation(command),
         super::observation::sample_cursor(),
     );
-    match reply {
-        Some(reply) => {
-            // Arrival proof before claiming success: the mover's desired
-            // effective frame (or the proven membership receipt for
-            // frameless lanes) must read back live.
-            let arrived = drop_arrival_verified(
-                state,
-                me,
-                fulls,
-                areas,
-                &reply,
-                &current.token,
-                current.hwnd,
-                Some(pending.output.as_str()),
-            );
-            if !arrived {
-                log_json_at(
-                    &log_path,
-                    serde_json::json!({
-                        "event": "gesture",
-                        "tick": state.tick,
-                        "correlation": correlation.as_str(),
-                        "op": op,
-                        "disposition": "refused",
-                        "outcome": "drag-drop-refused",
-                        "kind": "unverified",
-                        "window": current.token,
-                        "producer": pending.producer,
-                        "hover_prior": drop_prior_desc,
-                    }),
-                );
-                let fulls_owned = fulls.to_vec();
-                reconcile_tick(state, me, store, dir, &fulls_owned, areas);
-                return;
-            }
+    // The tick clears the stashed override only on genuine incorporation
+    // (freshly accepted reply carrying this id); otherwise it stays for
+    // the next eligible observation, so the terminal is never lost.
+    let settled = reply.as_ref().and_then(|held| held.gesture_settled);
+    match (&reply, settled) {
+        (Some(_), Some(terminal)) if terminal.id == release_id && terminal.committed => {
             log_json_at(
                 &log_path,
                 serde_json::json!({
@@ -662,14 +522,42 @@ pub(super) fn service_pending_drop(
                     "correlation": correlation.as_str(),
                     "op": op,
                     "disposition": "applied",
-                    "outcome": if op == "drag-drop" { "drag-drop-applied" } else { "pointer-resize-applied" },
-                    "window": current.token,
-                    "producer": pending.producer,
-                    "hover_prior": drop_prior_desc,
+                    "outcome": if op == "drag-drop" { "drag-drop-committed" } else { "pointer-resize-committed" },
+                    "window": mover_token,
+                    "producer": producer,
+                    // Core commit only, not native observed completion:
+                    // arrival proof stays a separate live concern.
+                    "committed": true,
                 }),
             );
         }
-        None => {
+        (Some(_), Some(terminal)) if terminal.id == release_id => {
+            // The tick applied, but the core settled without committing:
+            // honest refused row, then converge once like the unverified
+            // leg below.
+            log_json_at(
+                &log_path,
+                serde_json::json!({
+                    "event": "gesture",
+                    "tick": state.tick,
+                    "correlation": correlation.as_str(),
+                    "op": op,
+                    "disposition": "refused",
+                    "outcome": "drag-drop-refused",
+                    "kind": "settled-without-commit",
+                    "window": mover_token,
+                    "producer": producer,
+                    "committed": false,
+                }),
+            );
+            let fulls_owned = fulls.to_vec();
+            reconcile_tick(state, me, store, dir, &fulls_owned, areas);
+        }
+        _ => {
+            // No incorporated terminal for this id: the tick never ran the
+            // gesture (dispatch failure, stale/duplicate delivery, or
+            // rejection). Never claim completion; the override stays
+            // stashed for the next eligible observation.
             log_json_at(
                 &log_path,
                 serde_json::json!({
@@ -680,9 +568,9 @@ pub(super) fn service_pending_drop(
                     "disposition": "refused",
                     "outcome": "drag-drop-refused",
                     "kind": "unverified",
-                    "window": current.token,
-                    "producer": pending.producer,
-                    "hover_prior": drop_prior_desc,
+                    "window": mover_token,
+                    "producer": producer,
+                    "committed": false,
                 }),
             );
             let fulls_owned = fulls.to_vec();

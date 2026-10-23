@@ -1,8 +1,7 @@
 #![forbid(unsafe_code)]
 use super::*;
 use crate::settings::{
-    NATIVE_PANELS, STAGE4_DEFERRED_FIELDS, WINDOWS_FIELD_MAPPINGS, WINDOWS_ONLY_FIELDS,
-    WINDOWS_UNSUPPORTED_FIELDS,
+    NATIVE_PANELS, WINDOWS_FIELD_MAPPINGS, WINDOWS_ONLY_FIELDS, WINDOWS_UNSUPPORTED_FIELDS,
 };
 use std::collections::BTreeSet;
 use tiler_core::settings_catalog::{ALL_FIELDS, ALL_TABS, find_section, find_tab};
@@ -53,22 +52,11 @@ fn every_scalar_field_renders_exactly_once() {
         }
     }
     for entry in WINDOWS_FIELD_MAPPINGS {
-        // Stage 4 defers the focus/warp toggles: persisted and reported,
-        // but with no dialog control and no effect claim.
-        if STAGE4_DEFERRED_FIELDS.contains(&entry.field) {
-            assert!(
-                !seen.contains(entry.field),
-                "deferred {} must stay unrendered",
-                entry.field
-            );
-            continue;
-        }
+        // No deferred fields remain: stage 4b actuates both cursor
+        // coupling settings, so every mapped field renders exactly once.
         assert!(seen.contains(entry.field), "unrendered {}", entry.field);
     }
-    assert_eq!(
-        seen.len(),
-        WINDOWS_FIELD_MAPPINGS.len() - STAGE4_DEFERRED_FIELDS.len()
-    );
+    assert_eq!(seen.len(), WINDOWS_FIELD_MAPPINGS.len());
     for field in ["gaps.inner", "border.color", "keyboard.takeover"] {
         let count = ALL_CONTROL_IDS
             .iter()
@@ -149,12 +137,9 @@ fn control_text_comes_from_the_catalog() {
     for field in ALL_FIELDS.iter().chain(WINDOWS_ONLY_FIELDS.iter()) {
         // Portable fields without a Windows mapping stay off the dialog;
         // the unsupported partition is currently empty since the runtime
-        // adoption maps both admission settings. Stage 2c additionally
-        // defers the focus/warp toggles to stage 4 (persisted, reported,
-        // no control, no effect claim).
-        if WINDOWS_UNSUPPORTED_FIELDS.contains(&field.id)
-            || STAGE4_DEFERRED_FIELDS.contains(&field.id)
-        {
+        // adoption maps both admission settings. Stage 4b actuates both
+        // cursor coupling settings, so no field is deferred either.
+        if WINDOWS_UNSUPPORTED_FIELDS.contains(&field.id) {
             continue;
         }
         let rendered: Vec<u32> = ALL_CONTROL_IDS

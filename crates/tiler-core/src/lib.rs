@@ -15,6 +15,7 @@ pub mod directional;
 pub(crate) mod engine;
 pub mod fresh_focus;
 pub mod geometry;
+pub mod gesture;
 pub mod ids;
 pub mod output_selection;
 pub mod policy;
@@ -28,12 +29,16 @@ pub mod window_policy;
 pub mod workspace;
 pub mod workspace_scope;
 pub mod world_commands;
+pub mod world_cursor;
+pub mod world_directional;
 pub mod world_engine;
 mod world_frames;
+mod world_gesture;
 pub mod world_members;
 pub mod world_model;
 pub mod world_observe;
 pub mod world_operations;
+pub mod world_presentation;
 pub mod world_publish;
 pub mod world_report;
 pub mod world_sends;
@@ -78,6 +83,8 @@ mod world_capacity_diagnostic_tests;
 #[cfg(test)]
 mod world_coverage_gaps_tests;
 #[cfg(test)]
+mod world_cursor_tests;
+#[cfg(test)]
 mod world_float_boundary_tests;
 #[cfg(test)]
 mod world_float_membership_tests;
@@ -86,11 +93,15 @@ mod world_frame_fixture_tests;
 #[cfg(test)]
 mod world_frame_policy_tests;
 #[cfg(test)]
+mod world_gesture_tests;
+#[cfg(test)]
 mod world_global_swap_tests;
 #[cfg(test)]
 mod world_logical_contract_tests;
 #[cfg(test)]
 mod world_migration_refusal_tests;
+#[cfg(test)]
+mod world_pager_presentation_tests;
 #[cfg(test)]
 mod world_restored_routing_tests;
 #[cfg(test)]

@@ -1785,6 +1785,8 @@ fn cycle_prims() -> NativePrimitives {
         focus: |hwnd| S_FOCUS_OK.with(|m| m.borrow().get(&hwnd).copied().unwrap_or(true)),
         member_tag: crate::product_hide::sys::read_member_tag,
         hook_pending: || false,
+        read_cursor: || None,
+        warp_cursor: |_, _| true,
         dpi: s_dpi,
         process_identity: fake_backed_identity,
         read_topmost: |_| false,
@@ -1948,6 +1950,7 @@ fn unknown_baseline_holds_transfer_without_supersession() {
             floating: false,
             float_origin: None,
             frame_operation: None,
+            clear_operation: None,
         });
         reply.transfers.push(TransferTarget {
             operation_id: "op-9".to_owned(),
@@ -1983,6 +1986,7 @@ fn unknown_baseline_holds_transfer_without_supersession() {
         &mut Vec::new(),
         &mut members,
         &mut views,
+        &mut Vec::new(),
         0,
     );
     assert!(
@@ -2003,6 +2007,7 @@ fn unknown_baseline_holds_transfer_without_supersession() {
         &mut Vec::new(),
         &mut members,
         &mut views,
+        &mut Vec::new(),
         0,
     );
     assert_eq!(members.len(), 1);
@@ -2031,6 +2036,7 @@ fn unknown_baseline_holds_transfer_without_supersession() {
         &mut Vec::new(),
         &mut members,
         &mut views,
+        &mut Vec::new(),
         0,
     );
     assert!(members.is_empty() && views.is_empty());
@@ -2057,6 +2063,7 @@ fn unknown_baseline_holds_transfer_without_supersession() {
         &mut Vec::new(),
         &mut members,
         &mut views,
+        &mut Vec::new(),
         0,
     );
     assert!(members.is_empty() && views.is_empty());
@@ -2591,6 +2598,7 @@ fn switch_view_two_entering_two_leaving_proves_only_when_complete() {
         &mut Vec::new(),
         &mut members,
         &mut views,
+        &mut Vec::new(),
         0,
     );
     assert!(members.is_empty());
@@ -2690,6 +2698,7 @@ fn switch_view_two_entering_two_leaving_proves_only_when_complete() {
         &mut Vec::new(),
         &mut members,
         &mut views,
+        &mut Vec::new(),
         0,
     );
     assert!(members.is_empty());

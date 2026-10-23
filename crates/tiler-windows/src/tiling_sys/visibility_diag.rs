@@ -490,15 +490,9 @@ pub(super) fn omission_summary(
     }))
 }
 
-/// Distinguish one floating-gesture refusal's predicate origin.
-pub(super) fn gesture_float_cause(engine_float: bool, workspace_tiled: bool) -> &'static str {
-    match (engine_float, workspace_tiled) {
-        (true, false) => "engine-exception+workspace-floating",
-        (true, true) => "engine-exception",
-        (false, false) => "workspace-floating",
-        (false, true) => "none",
-    }
-}
+// Stage-4a note: the floating-gesture refusal cause helper is deleted
+// with the adapter settle route. The core owns float/sticky refusal from
+// the staged observation; the adapter logs only the correlated outcome.
 
 #[cfg(test)]
 thread_local! {

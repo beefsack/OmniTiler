@@ -1,11 +1,13 @@
 #![forbid(unsafe_code)]
 use super::*;
 
-/// Read-only resolved active group for the underlay fill: the correlated
-/// world result projected over a fresh observation. Field names mirror the
-/// retired Engine plan so the render below is untouched.
+/// Read-only resolved active group for the underlay fill: the core
+/// read-only highlight query over retained state, plus the host-scaled
+/// style numbers. Field names mirror the retired world-command result so
+/// the render below is untouched.
 struct ResolvedGroup {
     base_revision: u64,
+    home: tiler_core::session::DomainKey,
     group: tiler_core::directional::NodeId,
     focused_leaf: tiler_core::directional::NodeId,
     members: Vec<tiler_core::active_group::ActiveGroupMember>,
@@ -141,21 +143,23 @@ fn underlay_anchor_renderable(hwnd_u64: u64) -> bool {
     crate::ffi::cloaked(hwnd_u64).is_some_and(|cloaked| !cloaked)
 }
 
-/// Map one Engine `no-group` reason to the closed underlay hide vocabulary.
-/// `NoParentGroup` is the root-leaf focus the resolver reports; focus drift
-/// between the fresh foreground read and the retained focus reports
-/// `focus-changed` and may restore on the next valid refresh.
-fn underlay_no_group_reason(reason: NoGroupReason) -> &'static str {
-    match reason {
-        NoGroupReason::Pending => "pending",
-        NoGroupReason::Diverged => "diverged",
-        NoGroupReason::NoParentGroup => "root-leaf",
-        NoGroupReason::FocusMismatch | NoGroupReason::FocusUnmapped => "focus-changed",
-        NoGroupReason::NoSession
-        | NoGroupReason::DomainMismatch
-        | NoGroupReason::StaleRevision
-        | NoGroupReason::NoTree => "no-group",
-    }
+/// Mechanical native binding for the retained home output: the core home
+/// carries the wire id (`oN`); monitor areas are keyed by native device
+/// name (`\\.\DISPLAYN`) through `output_tokens`. This resolves
+/// wire-to-device through the canonical map first and only then matches
+/// the area — never wire-to-device directly, which only coincides in
+/// tests with simplistic ids and hides every production underlay as
+/// `no-group`.
+fn underlay_home_bounds(
+    areas: &[MonitorArea],
+    home: &tiler_core::session::DomainKey,
+    state: &TileLoop,
+) -> Option<Rect> {
+    let device = state.device_of(&home.output.0)?;
+    areas
+        .iter()
+        .find(|area| area.device == device)
+        .and_then(|area| tiling_domain_bounds_with(area.work, state.outer_gap))
 }
 
 /// Fast group-underlay refresh for one loop wake: the movement-only staged
@@ -168,19 +172,21 @@ fn underlay_no_group_reason(reason: NoGroupReason) -> &'static str {
 /// independent during resize. Move-start evidence never depends on modifier
 /// observation.
 ///
-/// Geometry is the authoritative Engine route only: `CoreCommand::ActiveGroup`
-/// through `resolve_active_group`/`describe_active_group` with the fresh
-/// actual focused token (never an unfocused dragged id, which would persist
-/// false retained focus). Pending/drag residue fails closed in the resolver;
-/// the union shown is always the projected source union, never live dragged
-/// bounds. The fill lands directly beneath the lowest renderable member in
-/// `EnumWindows` order (the border surface included when visible), i.e. below
-/// members and below the active border.
+/// Geometry is the read-only core highlight query over retained state with
+/// the fresh actual focused token (never an unfocused dragged id, which would
+/// persist false retained focus). No world command runs here, no observation
+/// ticks, no actuation: fast per-wake event following reuses the last
+/// accepted world state. Held scopes, outstanding transfers, and session
+/// pending/drag residue fail closed in the query; an open native Move never
+/// blocks it. The union shown is always the hints-aware projected union,
+/// never live dragged bounds. The fill lands directly beneath the lowest
+/// renderable member in `EnumWindows` order (the border surface included
+/// when visible), i.e. below members and below the active border.
 pub(super) fn refresh_group_underlay(
     state: &mut TileLoop,
     me: &ProcessIdentity,
-    store: &LedgerStore,
-    dir: &Path,
+    _store: &LedgerStore,
+    _dir: &Path,
     fulls: &[Rect],
     areas: &[MonitorArea],
 ) {
@@ -253,124 +259,46 @@ pub(super) fn refresh_group_underlay(
         hide_underlay(state, "scope-excluded");
         return;
     }
-    if window.facts.minimized {
-        hide_underlay(state, "minimized");
-        return;
-    }
-    if window.facts.maximized {
-        hide_underlay(state, "maximized");
-        return;
-    }
-    if window.facts.captionless_fullscreen {
-        hide_underlay(state, "fullscreen");
-        return;
-    }
-    // Tiled membership only: a focused window with no Engine membership has
-    // no group to highlight.
-    let member_key = state
-        .member_tokens
-        .iter()
-        .find(|(_, token)| token.as_str() == window.token.as_str())
-        .map(|(key, _)| key.clone());
-    let Some(member_key) = member_key else {
-        hide_underlay(state, "floating");
-        return;
+    // Read-only core highlight query over retained state: the fresh,
+    // proof-verified foreground token plus its fresh facts. No world
+    // command, no observation tick, no actuation, no history/revision/
+    // mapping change: fast per-wake event following reuses the last accepted
+    // world state. The query never adopts the foreground, admits windows, or
+    // fabricates a group on retained focus mismatch.
+    let highlight = state.world.engine().group_highlight(
+        &tiler_core::world_presentation::GroupHighlightFacts {
+            enabled: true,
+            foreground_token: tiler_core::directional::WindowId(window.token.clone()),
+            minimized: window.facts.minimized,
+            maximized: window.facts.maximized,
+            fullscreen: window.facts.captionless_fullscreen,
+        },
+    );
+    let found = match highlight {
+        tiler_core::world_presentation::GroupHighlight::Found(found) => ResolvedGroup {
+            base_revision: found.base_revision,
+            home: found.home,
+            group: found.group,
+            focused_leaf: found.focused_leaf,
+            members: found.members,
+            bounds: found.union_rect,
+        },
+        tiler_core::world_presentation::GroupHighlight::Hidden { reason, .. } => {
+            hide_underlay(state, reason.as_str());
+            return;
+        }
     };
-    let Some(loc) = state.member_home(&member_key) else {
-        hide_underlay(state, "no-group");
-        return;
-    };
-    // Floats hold no tile group: the fill stays hidden on a focused float
-    // while the active border still marks it. Floating workspaces hold no
-    // tiled group either: every member frame stays native.
-    if engine_is_float(state, &loc.output, &loc.workspace, &window.token)
-        || !workspace_mode_tiled(state, &loc.output, &loc.workspace)
-    {
-        hide_underlay(state, "floating");
-        return;
-    }
-    let Some(domain_bounds) = areas
-        .iter()
-        .find(|a| a.device == loc.output)
-        .and_then(|area| tiling_domain_bounds_with(area.work, state.outer_gap))
-    else {
+    let found = &found;
+    // Diagnostics domain for the geometry payload: the retained home output
+    // (core wire id) binds to the live monitor area by native device through
+    // the canonical `output_tokens` map — never wire-to-device directly.
+    let Some(domain_bounds) = underlay_home_bounds(areas, &found.home, state) else {
         hide_underlay(state, "no-group");
         return;
     };
     // Copies for the diagnostics payload: bounds plus gap ride the
     // geometry report below.
     let domain_gap = state.inner_gap;
-    // World-routed active-group resolution: the core owns the highlight
-    // projection outright over a fresh observation, and the correlated
-    // result carries everything the renderer needs. Read-only: never
-    // commits, never writes geometry.
-    let mut skipped: Vec<(String, String)> = Vec::new();
-    let mut retained: Vec<RetainedRow> = Vec::new();
-    let Some(observed) = state.observe(me, fulls, &mut skipped, &mut retained) else {
-        hide_underlay(state, "observe-failed");
-        return;
-    };
-    let foreground = crate::ffi::foreground_window();
-    let reply = super::world_tick::run_world_command(
-        state,
-        me,
-        store,
-        dir,
-        &observed,
-        &retained,
-        areas,
-        foreground,
-        fulls,
-        tiler_core::world_report::WorldCommand::Operation(CoreCommand::ActiveGroup),
-        super::observation::sample_cursor(),
-    );
-    let Some(result) = reply
-        .as_ref()
-        .and_then(|reply| reply.command_result.as_ref())
-    else {
-        hide_underlay(state, "no-group");
-        return;
-    };
-    let found = match result {
-        tiler_core::world_report::CommandResult::ActiveGroup {
-            base_revision,
-            group,
-            focused_leaf,
-            focused_window: _,
-            members,
-            bounds,
-        } => (base_revision, group, focused_leaf, members, bounds),
-        tiler_core::world_report::CommandResult::NoGroup { reason, .. } => {
-            hide_underlay(state, underlay_no_group_reason(*reason));
-            return;
-        }
-        _ => {
-            hide_underlay(state, "no-group");
-            return;
-        }
-    };
-    let (base_revision, group, focused_leaf, members, bounds) = found;
-    let found = ResolvedGroup {
-        base_revision: *base_revision,
-        group: group.clone(),
-        focused_leaf: focused_leaf.clone(),
-        members: members.clone(),
-        bounds: *bounds,
-    };
-    let found = &found;
-    if underlay_eligible(
-        true,
-        true,
-        true,
-        window.facts.maximized,
-        window.facts.captionless_fullscreen,
-        false,
-    )
-    .is_err()
-    {
-        hide_underlay(state, "no-group");
-        return;
-    }
     let dpi = crate::ffi::dpi_for_window(foreground);
     let Some((width_px, gap_px, _)) = scale_style(&state.border.style, dpi) else {
         hide_underlay(state, "dpi-scale");
@@ -384,7 +312,12 @@ pub(super) fn refresh_group_underlay(
         hide_underlay(state, "dpi-scale");
         return;
     };
-    let Some(outer) = underlay_outer_rect(found.bounds, gap_px, width_px, extension_px) else {
+    let Some(outer) = tiler_core::visual::group_underlay_outer_rect_px(
+        found.bounds,
+        gap_px,
+        width_px,
+        extension_px,
+    ) else {
         hide_underlay(state, "geometry");
         return;
     };
@@ -660,5 +593,82 @@ pub(super) fn refresh_group_underlay(
             }
             log_json_at(&state.log_path, event);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn area(device: &str) -> MonitorArea {
+        MonitorArea {
+            device: device.to_owned(),
+            work: Rect {
+                x: 0,
+                y: 0,
+                w: 800,
+                h: 560,
+            },
+            full: Rect {
+                x: 0,
+                y: 0,
+                w: 800,
+                h: 600,
+            },
+        }
+    }
+
+    fn home(wire: &str) -> tiler_core::session::DomainKey {
+        tiler_core::session::DomainKey {
+            output: tiler_core::directional::OutputId(wire.to_owned()),
+            workspace: tiler_core::directional::WorkspaceId("ws".to_owned()),
+        }
+    }
+
+    #[test]
+    fn home_bounds_resolves_wire_through_device_map() {
+        // Production binding: the raw native device (`\\.\DISPLAY1`) maps
+        // to a distinct core wire id (`o1`), and the highlight home carries
+        // the wire id. Comparing wire-to-device directly misses every
+        // production area and would hide the underlay as `no-group`.
+        let mut state = super::super::rmax03_adapter_tests::test_state();
+        state.ensure_device("\\\\.\\DISPLAY1");
+        let wire = state
+            .wire_of("\\\\.\\DISPLAY1")
+            .expect("device maps to a wire id");
+        assert_ne!(wire, "\\\\.\\DISPLAY1");
+        let areas = vec![area("\\\\.\\DISPLAY1")];
+        // The retired comparison shape misses: no area is keyed by wire id.
+        assert!(
+            areas
+                .iter()
+                .find(|candidate| candidate.device == wire)
+                .is_none()
+        );
+        // The canonical binding resolves through the map to the device,
+        // then insets the live work area by the outer gap.
+        assert_eq!(
+            underlay_home_bounds(&areas, &home(&wire), &state),
+            Some(Rect {
+                x: 8,
+                y: 8,
+                w: 784,
+                h: 544
+            })
+        );
+    }
+
+    #[test]
+    fn home_bounds_fails_closed_without_device_or_area() {
+        let mut state = super::super::rmax03_adapter_tests::test_state();
+        state.ensure_device("\\\\.\\DISPLAY1");
+        let areas = vec![area("\\\\.\\DISPLAY1")];
+        // Unknown wire id: no device, no bounds.
+        assert!(underlay_home_bounds(&areas, &home("o9"), &state).is_none());
+        // Known wire but no live area (hot-unplug): no bounds.
+        let wire = state
+            .wire_of("\\\\.\\DISPLAY1")
+            .expect("device maps to a wire id");
+        assert!(underlay_home_bounds(&[], &home(&wire), &state).is_none());
     }
 }

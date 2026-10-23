@@ -27,13 +27,13 @@ use super::{App, status};
 use super::{
     ID_ALLOW_WIN_L, ID_ANCHOR_CLOSEST, ID_ANCHOR_LARGEST, ID_ANCHOR_NO_SEARCH, ID_APPLY,
     ID_BIND_CHORD, ID_BORDER_COLOR, ID_BORDER_ENABLED, ID_BORDER_GAP, ID_BORDER_RADIUS,
-    ID_BORDER_THEME, ID_BORDER_WIDTH, ID_BORN_MAX_OVERLAY, ID_BORN_MAX_TILE, ID_DEFAULT_FLOATING,
-    ID_DEFAULT_TILED, ID_FIXED_SIZE_BOTH, ID_FIXED_SIZE_EITHER, ID_INNER_GAP, ID_KEYBOARD_TAKEOVER,
-    ID_MIGRATION_REFILL_LAST, ID_MIGRATION_REFILL_MRU, ID_MOUSE_SNAP, ID_NO_SPACE_FLOAT,
-    ID_NO_SPACE_OVERLAP, ID_OUTER_GAP, ID_PLACE_CURSOR_CLOSEST, ID_PLACE_CURSOR_MRU,
-    ID_PLACE_FOCUSED_MRU, ID_SAME_AXIS_GROUP, ID_SAME_AXIS_SWAP, ID_SWITCH_CURSOR,
-    ID_SWITCH_FOCUSED, ID_TASKBAR_PAGER, ID_UNDERLAY_COLOR, ID_UNDERLAY_ENABLED,
-    ID_UNDERLAY_EXTENSION, ID_WORKSPACE_MODE_GLOBAL, ID_WORKSPACE_MODE_LOCAL,
+    ID_BORDER_THEME, ID_BORDER_WIDTH, ID_BORN_MAX_OVERLAY, ID_BORN_MAX_TILE, ID_CURSOR_WARP,
+    ID_DEFAULT_FLOATING, ID_DEFAULT_TILED, ID_FIXED_SIZE_BOTH, ID_FIXED_SIZE_EITHER,
+    ID_FOCUS_FOLLOWS, ID_INNER_GAP, ID_KEYBOARD_TAKEOVER, ID_MIGRATION_REFILL_LAST,
+    ID_MIGRATION_REFILL_MRU, ID_MOUSE_SNAP, ID_NO_SPACE_FLOAT, ID_NO_SPACE_OVERLAP, ID_OUTER_GAP,
+    ID_PLACE_CURSOR_CLOSEST, ID_PLACE_CURSOR_MRU, ID_PLACE_FOCUSED_MRU, ID_SAME_AXIS_GROUP,
+    ID_SAME_AXIS_SWAP, ID_SWITCH_CURSOR, ID_SWITCH_FOCUSED, ID_TASKBAR_PAGER, ID_UNDERLAY_COLOR,
+    ID_UNDERLAY_ENABLED, ID_UNDERLAY_EXTENSION, ID_WORKSPACE_MODE_GLOBAL, ID_WORKSPACE_MODE_LOCAL,
     ID_WORKSPACE_MODE_SHARED,
 };
 
@@ -114,6 +114,13 @@ pub(super) fn refresh_all(app: &mut App) {
     set_checked(app.ctl(ID_PLACE_CURSOR_MRU), placement == 0);
     set_checked(app.ctl(ID_PLACE_CURSOR_CLOSEST), placement == 1);
     set_checked(app.ctl(ID_PLACE_FOCUSED_MRU), placement == 2);
+    // Stage 4b cursor coupling checkboxes: hover focus plus cross-output
+    // warp. Both stage directly; no preset touches them.
+    set_checked(
+        app.ctl(ID_FOCUS_FOLLOWS),
+        app.work.core.focus_follows_cursor,
+    );
+    set_checked(app.ctl(ID_CURSOR_WARP), app.work.core.cursor_warp);
     // Item 12 three-choice control: functional labels only; the group title
     // carries the honest restart-required note (stage A persists the choice,
     // the running owner keeps its startup scope until restart). Its own
@@ -254,6 +261,10 @@ pub(super) fn collect_draft(app: &mut App) -> Result<Settings, String> {
         0
     };
     apply_fresh_placement_selection(&mut draft, placement_index);
+    // Stage 4b: the hover-focus and cross-output-warp checkboxes stage
+    // their bools directly; validation is the shared boolean gate.
+    draft.core.focus_follows_cursor = checked(app.ctl(ID_FOCUS_FOLLOWS));
+    draft.core.cursor_warp = checked(app.ctl(ID_CURSOR_WARP));
     // Item 12: the global-unique radio stages the exact global-unique token,
     // the shared radio the exact shared token, otherwise the exact
     // per-output-local token; only these three values can reach validation.

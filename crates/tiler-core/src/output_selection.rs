@@ -209,6 +209,42 @@ fn window_edge_overlap(window: &Rect, candidate: &Candidate, horizontal: bool) -
     }
 }
 
+/// Portable observed-rectangle grounding over FULL rectangles.
+///
+/// The rectangle centre decides first (half-open `[start, end)`
+/// containment, first in slice order wins); otherwise the largest overlap
+/// area wins with first-wins ties (the all-zero case included, so the first
+/// entry wins there). `None` only when `all` is empty. This reports which
+/// screen an observed frame sits on; it authorizes no write, focus, or
+/// completion verdict. Native lifetime/freshness/scope vetoes stay with the
+/// adapter caller.
+#[must_use]
+pub fn output_for_rect(all: &[OutputEntry], rect: &Rect) -> Option<OutputId> {
+    let cx = i64::from(rect.x) + i64::from(rect.w) / 2;
+    let cy = i64::from(rect.y) + i64::from(rect.h) / 2;
+    for entry in all {
+        let r = &entry.rect;
+        let end_x = i64::from(r.x) + i64::from(r.w);
+        let end_y = i64::from(r.y) + i64::from(r.h);
+        if cx >= i64::from(r.x) && cx < end_x && cy >= i64::from(r.y) && cy < end_y {
+            return Some(entry.id.clone());
+        }
+    }
+    let mut best: Option<(&OutputId, i64)> = None;
+    for entry in all {
+        let r = &entry.rect;
+        let ox = (i64::from(rect.x) + i64::from(rect.w)).min(i64::from(r.x) + i64::from(r.w))
+            - i64::from(rect.x).max(i64::from(r.x));
+        let oy = (i64::from(rect.y) + i64::from(rect.h)).min(i64::from(r.y) + i64::from(r.h))
+            - i64::from(rect.y).max(i64::from(r.y));
+        let overlap = ox.max(0) * oy.max(0);
+        if best.as_ref().is_none_or(|(_, known)| overlap > *known) {
+            best = Some((&entry.id, overlap));
+        }
+    }
+    best.map(|(id, _)| id.clone())
+}
+
 /// Windowed selection for exhausted moves and explicit sends.
 ///
 /// `window` is the moving window frame rect (FULL-coordinate space).
@@ -461,6 +497,236 @@ mod tests {
         assert_eq!(
             candidates_in_direction(&source, Direction::Right, &all),
             Err(SelectionError::UnreadableTopology)
+        );
+    }
+
+    #[test]
+    fn rect_grounds_centre_then_largest_overlap() {
+        let all = vec![
+            entry("left", 0, 0, 800, 600),
+            entry("right", 800, 0, 800, 600),
+        ];
+        // Centre inside wins.
+        assert_eq!(
+            output_for_rect(
+                &all,
+                &Rect {
+                    x: 700,
+                    y: 100,
+                    w: 400,
+                    h: 200
+                }
+            )
+            .map(|id| id.0),
+            Some("right".to_owned())
+        );
+        // Centre outside every output but overlapping the right one: the
+        // sliver grounds right, not the primary-first fallback.
+        assert_eq!(
+            output_for_rect(
+                &all,
+                &Rect {
+                    x: 1500,
+                    y: 100,
+                    w: 400,
+                    h: 200
+                }
+            )
+            .map(|id| id.0),
+            Some("right".to_owned())
+        );
+        // Disjoint from every output: all-zero overlaps keep first entry.
+        assert_eq!(
+            output_for_rect(
+                &all,
+                &Rect {
+                    x: -500,
+                    y: 100,
+                    w: 100,
+                    h: 100
+                }
+            )
+            .map(|id| id.0),
+            Some("left".to_owned())
+        );
+        assert_eq!(
+            output_for_rect(
+                &all,
+                &Rect {
+                    x: 2000,
+                    y: 100,
+                    w: 100,
+                    h: 100
+                }
+            )
+            .map(|id| id.0),
+            Some("left".to_owned())
+        );
+        let empty: Vec<OutputEntry> = Vec::new();
+        assert_eq!(
+            output_for_rect(
+                &empty,
+                &Rect {
+                    x: 0,
+                    y: 0,
+                    w: 100,
+                    h: 100
+                }
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn rect_grounds_half_open_edge_with_odd_extent_rounding() {
+        let all = vec![
+            entry("left", 0, 0, 800, 600),
+            entry("right", 800, 0, 800, 600),
+        ];
+        // Integer-division centre (`x + w / 2`, matching the retired adapter
+        // formula): width 1 keeps the centre at 799 (left), width 2 moves it
+        // onto the shared edge at 800, which belongs to the right screen.
+        assert_eq!(
+            output_for_rect(
+                &all,
+                &Rect {
+                    x: 799,
+                    y: 100,
+                    w: 1,
+                    h: 100
+                }
+            )
+            .map(|id| id.0),
+            Some("left".to_owned())
+        );
+        assert_eq!(
+            output_for_rect(
+                &all,
+                &Rect {
+                    x: 799,
+                    y: 100,
+                    w: 2,
+                    h: 100
+                }
+            )
+            .map(|id| id.0),
+            Some("right".to_owned())
+        );
+    }
+
+    #[test]
+    fn rect_grounds_centre_ahead_of_larger_overlap() {
+        let all = vec![
+            entry("left", 600, 0, 200, 600),
+            entry("right", 800, 0, 800, 600),
+        ];
+        // Centre at 700 sits in left, whose overlap is 200 * 200 versus
+        // right's 600 * 200: containment takes precedence over larger area.
+        assert_eq!(
+            output_for_rect(
+                &all,
+                &Rect {
+                    x: 0,
+                    y: 0,
+                    w: 1400,
+                    h: 200
+                }
+            )
+            .map(|id| id.0),
+            Some("left".to_owned())
+        );
+    }
+
+    #[test]
+    fn rect_grounds_negative_origins() {
+        let all = vec![
+            entry("west", -1600, 0, 800, 600),
+            entry("east", -800, 0, 800, 600),
+        ];
+        // Centre inside east.
+        assert_eq!(
+            output_for_rect(
+                &all,
+                &Rect {
+                    x: -750,
+                    y: 100,
+                    w: 100,
+                    h: 100
+                }
+            )
+            .map(|id| id.0),
+            Some("east".to_owned())
+        );
+        // Centre at 50 is outside both, with a 100px sliver on the
+        // non-first east output: grounds east, not the first entry.
+        assert_eq!(
+            output_for_rect(
+                &all,
+                &Rect {
+                    x: -100,
+                    y: 100,
+                    w: 300,
+                    h: 100
+                }
+            )
+            .map(|id| id.0),
+            Some("east".to_owned())
+        );
+        // Fully disjoint on the far side: first entry wins the all-zero tie.
+        assert_eq!(
+            output_for_rect(
+                &all,
+                &Rect {
+                    x: -2000,
+                    y: 100,
+                    w: 100,
+                    h: 100
+                }
+            )
+            .map(|id| id.0),
+            Some("west".to_owned())
+        );
+    }
+
+    #[test]
+    fn rect_grounds_without_i32_overflow() {
+        let all = vec![
+            entry("left", 0, 0, 800, 600),
+            entry("right", 800, 0, 800, 600),
+        ];
+        // `x + w` overflows i32 here; i64 grounding stays exact and the
+        // disjoint frame keeps the first entry without panicking.
+        assert_eq!(
+            output_for_rect(
+                &all,
+                &Rect {
+                    x: i32::MAX - 100,
+                    y: 0,
+                    w: 200,
+                    h: 100
+                }
+            )
+            .map(|id| id.0),
+            Some("left".to_owned())
+        );
+        // Extreme topology edges overflow i32 as well: containment on the
+        // far output still resolves.
+        let far = vec![
+            entry("left", 0, 0, 800, 600),
+            entry("far", i32::MAX - 800, 0, 1600, 600),
+        ];
+        assert_eq!(
+            output_for_rect(
+                &far,
+                &Rect {
+                    x: i32::MAX - 700,
+                    y: 100,
+                    w: 100,
+                    h: 100
+                }
+            )
+            .map(|id| id.0),
+            Some("far".to_owned())
         );
     }
 

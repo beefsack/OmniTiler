@@ -54,7 +54,11 @@
 //! freshPlacement: "cursor-output-last-focused"|"cursor-output-cursor-closest"|"focused-output-last-focused"
 //!   (strict: unknown refuses)
 //! cursor: [x,y] in adapter units (FULL-rect space) or null when unreadable
-//! focusFollowsCursor/cursorWarp: bool (retained settings; stage-4 actuation)
+//! cursorHit: ""|id|null (optional, tolerant: missing backfills null) - the
+//!   normalized cursor-hit managed lifetime: the exact managed window under
+//!   the cursor at observation time, resolved natively. Absent, foreign, or
+//!   hidden hits report null; the core never focuses without one.
+//! focusFollowsCursor/cursorWarp: bool (stage-4b core-actuated settings)
 //! feedback[]: {op, kind:transfer|view|creation|effect|property,
 //!              outcome:unattempted|possibly-executed|refused-proven|
 //!                      superseded-external|applied, hold:""|token}
@@ -81,6 +85,12 @@
 //!    pre:""|id|null, post:""|id|null, base:""|id|null,
 //!    attemptMs:"u64"} - mechanical view write/proof facts only; at most
 //!   one entry per owning view phase. The core owns every view verdict.
+//! clearAttempts[] (optional, tolerant: missing backfills []):
+//!   {op, win, setter:accepted|refused|threw,
+//!    pre:bool|null, post:bool|null, attemptMs:"u64"} - mechanical
+//!   maximize-clear write/proof facts only (immediate pre/post maximized
+//!   states); at most one entry per retained clear operation. The core
+//!   owns directional clear completion.
 //! command.op: focus|send|switch-view|select-workspace|select-numbered|
 //!   select-relative|select-previous|select-trailing|send-relative|
 //!   send-numbered|set-workspace-tiling|
@@ -98,7 +108,10 @@
 //! alone cannot express - drag-preview rect+hover, toggle-float placement,
 //! active-group/no-group highlight, migrate-workspace provenance; move,
 //! resize, tiled-admit, focus, and send results ride the snapshot,
-//! transfers, and effects with `result: null`).
+//! transfers, and effects with `result: null` - plus `gestureSettled`:
+//! null or the `{"id":"N","committed":B}` terminal incorporated by this
+//! report (never retained across reports), plus `warpCursor`: null or the
+//! desired `[x,y]` cursor-warp point (cross-output focus only).
 //! Bootstrap/discovery replies reuse the same shape with `ready:false` and
 //! empty sections. Bounded errors reuse
 //! `{v:2,outcome:"rejected",kind,message,gen}`.
@@ -734,6 +747,33 @@ fn opt_u32_or_null(
     }
 }
 
+fn opt_bool_or_null(
+    map: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Result<Option<bool>> {
+    match map.get(key) {
+        None => Err(malformed()),
+        Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::Bool(value)) => Ok(Some(*value)),
+        Some(_) => Err(malformed()),
+    }
+}
+
+fn decode_clear_attempt(
+    value: &serde_json::Value,
+) -> Result<tiler_core::world_report::ClearAttempt> {
+    let map = as_object(value)?;
+    check_keys(map, &["op", "win", "setter", "pre", "post", "attemptMs"])?;
+    Ok(tiler_core::world_report::ClearAttempt {
+        operation_id: req_id(map, "op")?,
+        window: WindowId(req_id(map, "win")?),
+        setter: parse_frame_setter(req_str(map, "setter")?)?,
+        pre_maximized: opt_bool_or_null(map, "pre")?,
+        post_maximized: opt_bool_or_null(map, "post")?,
+        attempt_ms: req_u64_str(map, "attemptMs")?,
+    })
+}
+
 fn decode_frame_attempt(
     value: &serde_json::Value,
 ) -> Result<tiler_core::world_report::FrameAttempt> {
@@ -850,6 +890,54 @@ fn decode_drag_source(value: &serde_json::Value) -> Result<Option<tiler_core::se
         }
         _ => Err(malformed()),
     }
+}
+
+/// Normalized gesture ingress: `{"win":S,"kind":"move"|"resize",
+/// "phase":"started"|"updated"|"released"|"cancelled","id":"N",
+/// "cursor":[x,y]|null,"startCursor":[x,y]|null,"esc":B,"modal":B,
+/// "start":[x,y,w,h]}`. `id` is the stable nonzero adapter gesture
+/// sequence in decimal-u64 string form (zero refuses); `startCursor` is
+/// the START down point (`null` only when unreadable). Unknown
+/// kind/phase tokens refuse; cursor/rect bounds refuse like the top-level
+/// cursor and fact rects.
+fn decode_gesture_ingress(
+    value: &serde_json::Value,
+) -> Result<tiler_core::gesture::GestureIngress> {
+    let map = as_object(value)?;
+    check_keys(
+        map,
+        &[
+            "win",
+            "kind",
+            "phase",
+            "id",
+            "cursor",
+            "startCursor",
+            "esc",
+            "modal",
+            "start",
+        ],
+    )?;
+    let kind = tiler_core::gesture::GestureKind::parse_wire(req_str(map, "kind")?)
+        .ok_or_else(unknown_value)?;
+    let phase = tiler_core::gesture::GesturePhase::parse_wire(req_str(map, "phase")?)
+        .ok_or_else(unknown_value)?;
+    let id = req_u64_str(map, "id")?;
+    if id == 0 {
+        return Err(unknown_value());
+    }
+    let start = map.get("start").ok_or_else(malformed)?;
+    Ok(tiler_core::gesture::GestureIngress {
+        id,
+        window: WindowId(req_id(map, "win")?),
+        kind,
+        cursor: opt_point_or_null(map, "cursor")?,
+        start_cursor: opt_point_or_null(map, "startCursor")?,
+        phase,
+        esc: req_bool(map, "esc")?,
+        modal_move: req_bool(map, "modal")?,
+        start_frame: req_rect_value(start)?,
+    })
 }
 
 fn decode_core_command(map: &serde_json::Map<String, serde_json::Value>) -> Result<CoreCommand> {
@@ -1154,11 +1242,10 @@ fn decode_command(value: &serde_json::Value) -> Result<WorldCommand> {
             })
         }
         "focus-directional" => {
-            check_keys(map, &["op", "win", "direction", "floatSubject"])?;
+            check_keys(map, &["op", "win", "direction"])?;
             Ok(WorldCommand::FocusDirectional {
                 window: WindowId(req_id(map, "win")?),
                 direction: parse_direction_token(req_str(map, "direction")?)?,
-                float_subject: req_bool(map, "floatSubject")?,
             })
         }
         "move-directional" => {
@@ -1246,10 +1333,13 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
         &[
             "anchorFallback",
             "noSpaceResult",
+            "cursorHit",
             "monotonicMs",
             "frameAttempts",
             "memberAttempts",
             "viewAttempts",
+            "clearAttempts",
+            "gestureIngress",
         ],
     )?;
     let version = map
@@ -1332,6 +1422,21 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
             view_attempts.push(decode_view_attempt(item)?);
         }
     }
+    // Tolerant clear attempts: missing backfills empty.
+    let mut clear_attempts = Vec::new();
+    if let Some(value) = map.get("clearAttempts") {
+        for item in value.as_array().ok_or_else(malformed)? {
+            clear_attempts.push(decode_clear_attempt(item)?);
+        }
+    }
+    // Tolerant gesture ingress: missing backfills observation-only (`None`).
+    // A present value carries the exact normalized shape; unknown
+    // fields/values refuse.
+    let gesture = match map.get("gestureIngress") {
+        None => None,
+        Some(serde_json::Value::Null) => None,
+        Some(value) => Some(decode_gesture_ingress(value)?),
+    };
     let predicate =
         tiler_core::size_hints::FixedSizePredicate::parse_wire(req_str(map, "predicate")?)
             .ok_or_else(unknown_value)?;
@@ -1392,6 +1497,20 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
         switch_target,
         fresh_placement,
         cursor: opt_point_or_null(map, "cursor")?,
+        cursor_hit: match map.get("cursorHit") {
+            // Tolerant backfill: adapters predating the hit fact report
+            // nothing, which the core reads as no hover, never as policy.
+            None => None,
+            Some(serde_json::Value::Null) => None,
+            Some(serde_json::Value::String(text)) if text.is_empty() => None,
+            Some(serde_json::Value::String(text)) => {
+                if !is_opaque_id(text) {
+                    return Err(unknown_value());
+                }
+                Some(WindowId(text.clone()))
+            }
+            Some(_) => return Err(unknown_value()),
+        },
         focus_follows_cursor: req_bool(map, "focusFollowsCursor")?,
         cursor_warp: req_bool(map, "cursorWarp")?,
         default_tiled: req_bool(map, "defaultTiled")?,
@@ -1404,11 +1523,13 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
         },
         inventory_complete: req_bool(map, "complete")?,
         gesture_barrier: req_bool(map, "gesture")?,
+        gesture,
         feedback,
         monotonic_ms,
         frames,
         member_attempts,
         view_attempts,
+        clear_attempts,
     };
     if let Some(reason) = validate_report_reason(&report) {
         return Err(WorldProtocolError {
@@ -1590,6 +1711,11 @@ pub fn encode_reply(reply: &WorldReply) -> String {
                 .float_origin
                 .map_or("", tiler_core::world_report::FloatOrigin::as_str),
         );
+        out.push_str(",\"clear_op\":");
+        push_json_string(
+            &mut out,
+            window.clear_operation.as_deref().unwrap_or_default(),
+        );
         out.push('}');
     }
     out.push_str("],\"transfers\":[");
@@ -1640,6 +1766,15 @@ pub fn encode_reply(reply: &WorldReply) -> String {
     }
     out.push_str("],\"result\":");
     tiler_core::world_sizing::encode_command_result(&mut out, &reply.command_result);
+    out.push_str(",\"gestureSettled\":");
+    tiler_core::world_sizing::encode_gesture_settled(&mut out, &reply.gesture_settled);
+    out.push_str(",\"warpCursor\":");
+    match reply.cursor_warp {
+        Some((x, y)) => {
+            out.push_str(&format!("[{x},{y}]"));
+        }
+        None => out.push_str("null"),
+    }
     out.push('}');
     out
 }

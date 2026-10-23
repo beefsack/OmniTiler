@@ -136,6 +136,7 @@ fn shared_frame_convergence_learns_through_production_sequencing() {
             &mut attempts,
             &mut Vec::new(),
             &mut Vec::new(),
+            &mut Vec::new(),
             1000,
         );
         let emitted = attempts
@@ -350,6 +351,7 @@ fn shared_replacement_reuses_retired_token_fresh_through_sequencing() {
             &fresh,
             &mut native,
             &mut attempts,
+            &mut Vec::new(),
             &mut Vec::new(),
             &mut Vec::new(),
             1000,
@@ -581,6 +583,7 @@ fn shared_observations_record_no_bounds_without_proof_through_sequencing() {
             &mut attempts,
             &mut Vec::new(),
             &mut Vec::new(),
+            &mut Vec::new(),
             1000,
         );
         let emitted = attempts
@@ -680,6 +683,7 @@ fn shared_observations_record_no_bounds_without_proof_through_sequencing() {
                 &fresh2,
                 &mut native2,
                 &mut flagged_attempts,
+                &mut Vec::new(),
                 &mut Vec::new(),
                 &mut Vec::new(),
                 1500,
@@ -926,6 +930,7 @@ fn shared_settlement_partial_holds_then_completes_through_sequencing() {
             &mut Vec::new(),
             &mut members_out,
             &mut views_out,
+            &mut Vec::new(),
             2000,
         );
         let arrived = members_out

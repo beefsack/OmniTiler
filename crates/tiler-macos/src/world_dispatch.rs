@@ -1306,6 +1306,8 @@ mod tests {
             transfers: Vec::new(),
             effects: Vec::new(),
             command_result: None,
+            gesture_settled: None,
+            cursor_warp: None,
             presentation_bytes: 0,
         }
     }

@@ -332,18 +332,3 @@ fn dpi_transition_reouter_corrects_under_fresh_frame() {
         None
     );
 }
-
-#[test]
-fn drop_fence_is_source_bounds_only() {
-    // Inside (including origin edge, exclusive far edge).
-    assert!(drop_point_in_domain(0, 0, 100, 100, 0, 0));
-    assert!(drop_point_in_domain(0, 0, 100, 100, 99, 99));
-    // Outside: cross-output and off-work-area refuse alike.
-    assert!(!drop_point_in_domain(0, 0, 100, 100, 100, 50));
-    assert!(!drop_point_in_domain(0, 0, 100, 100, -1, 50));
-    assert!(!drop_point_in_domain(0, 0, 100, 100, 50, 100));
-    assert!(!drop_point_in_domain(2560, 0, 100, 100, 50, 50));
-    // Degenerate bounds never admit.
-    assert!(!drop_point_in_domain(0, 0, 0, 100, 0, 50));
-    assert!(!drop_point_in_domain(0, 0, 100, 0, 50, 0));
-}

@@ -528,21 +528,51 @@ pub(super) fn sync_taskbar_pager(
     // worker lookups first, then frame from cache hits. Paint never touches
     // foreign windows or waits.
     let icons = drain_icon_cache(state, now, log_path);
+    // Core-ordered pager content (stage 4c): the sole content authority for
+    // rings, ordinals, currency, ordered paint lists, and resolved source
+    // rectangles. The adapter only maps opaque lifetimes back to member keys
+    // (a mechanical race may lag membership) and lays out; it never sorts,
+    // renumbers, or filters content.
+    let screens = state.world.engine().pager_screens();
+    let key_of: HashMap<String, crate::native_guards::WindowKey> = state
+        .member_tokens
+        .iter()
+        .map(|(key, token)| (token.clone(), key.clone()))
+        .collect();
     for (geo_index, bar_index) in match_bars_to_outputs(&geos, &bars) {
         let area = &areas[geo_index];
         let bar: TaskbarFacts = bars[bar_index];
-        let ring = state.workspace_ids(&area.device);
-        let view = state.active_view(&area.device);
-        match crate::pager::build_output_pager_from_parts(
-            &ring,
-            view.as_deref(),
-            &|workspace| state.workspace_members(&area.device, workspace),
-            &state.pager_live,
-            &state.member_tokens,
-            &state.member_rects,
-            &state.float_rects,
+        let wire = state.wire_of(&area.device);
+        let screen = wire
+            .as_deref()
+            .and_then(|wire| screens.iter().find(|screen| screen.output == wire));
+        // Unknown wire or no core screen renders no workspaces (the zero-cell
+        // strip refuses exactly like the old empty ring).
+        let content: Vec<crate::pager::PagerContentWorkspace> = screen
+            .map(|screen| {
+                screen
+                    .workspaces
+                    .iter()
+                    .map(|workspace| crate::pager::PagerContentWorkspace {
+                        id: workspace.id.clone(),
+                        ordinal: workspace.ordinal,
+                        current: workspace.current,
+                        windows: workspace
+                            .windows
+                            .iter()
+                            .filter_map(|window| {
+                                key_of
+                                    .get(window.window.0.as_str())
+                                    .map(|key| (key.clone(), window.frame))
+                            })
+                            .collect(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        match crate::pager::build_output_pager_from_content(
+            &content,
             &icons,
-            &state.pager_z,
             &area.device,
             area.full,
             &bar,
@@ -968,15 +998,28 @@ mod pager_host_tests {
         String,
     ) {
         clear_pending_seams();
+        // Queue hygiene for thread reuse: drain this thread's isolated
+        // taskbar/hook queues (each test thread owns its storage, so this
+        // never touches another thread's edges).
+        let _ = crate::ffi::take_taskbar_events();
+        if let Ok(mut pending) = super::observe::hook_queue().lock() {
+            pending.clear();
+        }
         let mut state = test_state();
         let me = pager_me();
+        // Unique ledger dir per rig: pid plus wall time alone collides when
+        // parallel tests mint rigs within one clock tick (LockContended).
+        // The sequence follows the existing gate-log rig convention below.
+        static RIG_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = RIG_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let tmp = std::env::temp_dir().join(format!(
-            "tiler-pager-{}-{}",
+            "tiler-pager-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos())
-                .unwrap_or(0)
+                .unwrap_or(0),
+            seq
         ));
         let store = crate::storage::LedgerStore::open(&tmp).expect("ledger temp dir");
         let output = "mon-pager".to_owned();
@@ -1362,6 +1405,59 @@ mod pager_host_tests {
     }
 
     #[test]
+    fn hook_queue_storage_stays_isolated_across_threads() {
+        // Intended test contract: each test thread owns its hook queue
+        // storage, so a parallel drain test can neither steal this test's
+        // wakes nor pollute a negative assertion with foreign ones.
+        // Barrier-staged producers with distinct HWNDs make cross-thread
+        // leakage deterministic on shared storage.
+        use super::observe::{HookEvent, hook_queue};
+        use std::sync::{Arc, Barrier};
+        const THREADS: usize = 8;
+        if let Ok(mut pending) = hook_queue().lock() {
+            pending.clear();
+        }
+        let barrier = Arc::new(Barrier::new(THREADS));
+        let handles: Vec<_> = (0..THREADS)
+            .map(|t| {
+                let barrier = barrier.clone();
+                std::thread::spawn(move || -> Result<(), String> {
+                    let base = 60_000 + (t as isize) * 1_000;
+                    hook_queue()
+                        .lock()
+                        .map(|mut queue| {
+                            queue.push(HookEvent::Wake(base));
+                            queue.push(HookEvent::Wake(base + 1));
+                        })
+                        .map_err(|_| "queue lock".to_owned())?;
+                    barrier.wait();
+                    let batch = hook_queue()
+                        .lock()
+                        .map(|mut queue| std::mem::take(&mut *queue))
+                        .map_err(|_| "queue lock".to_owned())?;
+                    if batch.len() != 2 {
+                        return Err(format!("took {} of 2 staged edges", batch.len()));
+                    }
+                    for event in &batch {
+                        if !matches!(event, HookEvent::Wake(hwnd) if *hwnd == base || *hwnd == base + 1)
+                        {
+                            return Err(format!("foreign edge {event:?}"));
+                        }
+                    }
+                    Ok(())
+                })
+            })
+            .collect();
+        for (t, handle) in handles.into_iter().enumerate() {
+            let outcome = handle.join().expect("worker thread must join");
+            assert!(outcome.is_ok(), "worker {t}: {}", outcome.unwrap_err());
+        }
+        if let Ok(mut pending) = hook_queue().lock() {
+            pending.clear();
+        }
+    }
+
+    #[test]
     fn icon_spawn_retry_holds_fixed_delay() {
         clear_pending_seams();
         let mut state = test_state();
@@ -1496,11 +1592,30 @@ mod pager_host_tests {
             .observe(&me, &fulls, &mut skipped, &mut retained)
             .expect("injected observation");
         assert_eq!(observed.len(), 2);
-        // Visible member and retained overlay frames record; the foreign
-        // window never enters the pager snapshot.
-        assert_eq!(state.pager_live.get(&member), Some(&live_frame));
-        assert_eq!(state.pager_live.get(&overlay_key), Some(&overlay_frame));
-        assert_eq!(state.pager_live.len(), 2);
+        // Visible member and retained overlay frames resolve through the core
+        // fallback; the foreign window never enters pager content.
+        use tiler_core::directional::WindowId;
+        assert_eq!(
+            state
+                .world
+                .engine()
+                .pager_frame(&WindowId("tok-live".to_owned())),
+            Some(live_frame)
+        );
+        assert_eq!(
+            state
+                .world
+                .engine()
+                .pager_frame(&WindowId("tok-overlay".to_owned())),
+            Some(overlay_frame)
+        );
+        assert_eq!(
+            state
+                .world
+                .engine()
+                .pager_frame(&WindowId("tok-foreign".to_owned())),
+            None
+        );
         clear_pending_seams();
     }
 
@@ -1572,22 +1687,42 @@ mod pager_host_tests {
         }
     }
 
-    fn pager_frame_for(
-        state: &super::TileLoop,
-        output: &str,
-        workspace: &str,
-        members: &std::collections::BTreeSet<crate::native_guards::WindowKey>,
-    ) -> crate::pager::OutputPager {
-        crate::pager::build_output_pager_from_parts(
-            std::slice::from_ref(&workspace.to_owned()),
-            Some(workspace),
-            &|_| members.clone(),
-            &state.pager_live,
-            &state.member_tokens,
-            &state.member_rects,
-            &state.float_rects,
-            &std::collections::HashMap::new(),
-            &state.pager_z,
+    fn pager_frame_for(state: &super::TileLoop, output: &str) -> crate::pager::OutputPager {
+        use std::collections::HashMap;
+        // Core-ordered content (stage 4c): the adapter only maps opaque
+        // lifetimes back to member keys and lays out, never sorts or filters.
+        let screens = state.world.engine().pager_screens();
+        let wire = state.wire_of(output).expect("device mapped");
+        let screen = screens
+            .iter()
+            .find(|screen| screen.output == wire)
+            .expect("core screen");
+        let key_of: HashMap<&str, &crate::native_guards::WindowKey> = state
+            .member_tokens
+            .iter()
+            .map(|(key, token)| (token.as_str(), key))
+            .collect();
+        let content: Vec<crate::pager::PagerContentWorkspace> = screen
+            .workspaces
+            .iter()
+            .map(|workspace| crate::pager::PagerContentWorkspace {
+                id: workspace.id.clone(),
+                ordinal: workspace.ordinal,
+                current: workspace.current,
+                windows: workspace
+                    .windows
+                    .iter()
+                    .filter_map(|window| {
+                        key_of
+                            .get(window.window.0.as_str())
+                            .map(|key| ((*key).clone(), window.frame))
+                    })
+                    .collect(),
+            })
+            .collect();
+        crate::pager::build_output_pager_from_content(
+            &content,
+            &HashMap::new(),
             output,
             pager_full(),
             &pager_bar(),
@@ -1597,12 +1732,12 @@ mod pager_host_tests {
 
     #[test]
     fn pager_retains_native_order_with_overlay_topmost() {
+        use tiler_core::directional::WindowId;
         use tiler_core::geometry::Rect;
         clear_pending_seams();
         let mut state = test_state();
         let output = "mon-z".to_owned();
         state.ensure_device(&output);
-        let active = "ws-1".to_owned();
         // HWND order is the inverse of the native stacking: the topmost
         // (kept fullscreen overlay) carries the smallest HWND.
         let mk = |hwnd: u64, creation: &str| crate::native_guards::WindowKey {
@@ -1613,8 +1748,6 @@ mod pager_host_tests {
         let plain = mk(801, "creation-plain");
         let tiled = mk(802, "creation-tiled");
         let overlay = mk(800, "creation-overlay");
-        let members: std::collections::BTreeSet<crate::native_guards::WindowKey> =
-            [&plain, &tiled, &overlay].into_iter().cloned().collect();
         let plain_frame = Rect {
             x: 0,
             y: 0,
@@ -1688,12 +1821,16 @@ mod pager_host_tests {
             .observe(&me, &fulls, &mut skipped, &mut retained)
             .expect("injected observation");
         assert_eq!(observed.len(), 2);
+        // The kept overlay resolves through the live fallback like an
+        // ordinary member.
         assert_eq!(
-            state.pager_z,
-            vec![overlay.clone(), tiled.clone(), plain.clone()]
+            state
+                .world
+                .engine()
+                .pager_frame(&WindowId("tok-creation-overlay".to_owned())),
+            Some(overlay_frame)
         );
-        assert_eq!(state.pager_live.get(&overlay), Some(&overlay_frame));
-        let pager = pager_frame_for(&state, &output, &active, &members);
+        let pager = pager_frame_for(&state, &output);
         let cell = pager
             .cells
             .iter()
@@ -1704,14 +1841,23 @@ mod pager_host_tests {
         clear_pending_seams();
     }
 
+    fn paint_keys(state: &super::TileLoop, output: &str) -> Vec<crate::native_guards::WindowKey> {
+        pager_frame_for(state, output)
+            .cells
+            .into_iter()
+            .find(|cell| !cell.mini_keys.is_empty())
+            .map(|cell| cell.mini_keys)
+            .unwrap_or_default()
+    }
+
     #[test]
     fn pager_retains_hidden_order_prunes_and_reuses() {
+        use tiler_core::directional::WindowId;
         use tiler_core::geometry::Rect;
         clear_pending_seams();
         let mut state = test_state();
         let output = "mon-zhide".to_owned();
         state.ensure_device(&output);
-        let active = "ws-1".to_owned();
         let mk = |hwnd: u64, creation: &str| crate::native_guards::WindowKey {
             hwnd,
             pid: 7,
@@ -1719,8 +1865,6 @@ mod pager_host_tests {
         };
         let x = mk(901, "creation-x");
         let y = mk(902, "creation-y");
-        let members: std::collections::BTreeSet<crate::native_guards::WindowKey> =
-            [&x, &y].into_iter().cloned().collect();
         let me = pager_me();
         let fulls = vec![pager_full()];
         let frame_x = Rect {
@@ -1784,10 +1928,11 @@ mod pager_host_tests {
         state
             .observe(&me, &fulls, &mut skipped, &mut retained)
             .expect("tick 1");
-        assert_eq!(state.pager_z, vec![x.clone(), y.clone()]);
+        // Native top-to-bottom [x, y] paints bottom first.
+        assert_eq!(paint_keys(&state, &output), vec![y.clone(), x.clone()]);
         // Tick 2: x hidden (still assigned, absent from the enumeration);
         // the unset zorder falls back to observed order and x keeps its
-        // retained slot after the visible member.
+        // retained stacking slot, painting bottom first again.
         inject_pending_observe(
             vec![live_observed_hwnd(902, 7, "creation-y", frame_y)],
             Vec::new(),
@@ -1796,16 +1941,21 @@ mod pager_host_tests {
         state
             .observe(&me, &fulls, &mut skipped, &mut retained)
             .expect("tick 2");
-        assert_eq!(state.pager_z, vec![y.clone(), x.clone()]);
-        assert_eq!(state.pager_live.get(&y), Some(&frame_y));
-        assert!(!state.pager_live.contains_key(&x));
-        let pager = pager_frame_for(&state, &output, &active, &members);
-        let cell = pager
-            .cells
-            .iter()
-            .find(|cell| !cell.mini_keys.is_empty())
-            .expect("hidden workspace still paints its members");
-        assert_eq!(cell.mini_keys, vec![x.clone(), y.clone()]);
+        assert_eq!(
+            state
+                .world
+                .engine()
+                .pager_frame(&WindowId("tok-creation-y".to_owned())),
+            Some(frame_y)
+        );
+        assert_eq!(
+            state
+                .world
+                .engine()
+                .pager_frame(&WindowId("tok-creation-x".to_owned())),
+            Some(frame_x)
+        );
+        assert_eq!(paint_keys(&state, &output), vec![x.clone(), y.clone()]);
         // Tick 3: x closed (membership gone) prunes the retained slot.
         assert!(state.forget_member(&x));
         inject_pending_observe(
@@ -1816,7 +1966,7 @@ mod pager_host_tests {
         state
             .observe(&me, &fulls, &mut skipped, &mut retained)
             .expect("tick 3");
-        assert_eq!(state.pager_z, vec![y.clone()]);
+        assert_eq!(paint_keys(&state, &output), vec![y.clone()]);
         // Tick 4: a recycled HWND with a new creation is a new identity in
         // the deterministic fallback, never the stale slot.
         let x2 = mk(901, "creation-x2");
@@ -1848,19 +1998,26 @@ mod pager_host_tests {
         state
             .observe(&me, &fulls, &mut skipped, &mut retained)
             .expect("tick 4");
-        assert_eq!(state.pager_z, vec![y.clone(), x2.clone()]);
-        assert!(!state.pager_z.contains(&x));
+        // A recycled HWND with a new creation is a new identity with no
+        // frame yet: only the live member paints, never the stale slot.
+        assert_eq!(
+            state
+                .world
+                .engine()
+                .pager_frame(&WindowId("tok-creation-x2".to_owned())),
+            None
+        );
+        assert_eq!(paint_keys(&state, &output), vec![y.clone()]);
         clear_pending_seams();
     }
 
     #[test]
-    fn pager_orders_first_paint_without_second_observe() {
+    fn pager_orders_first_paint_from_retained_slot() {
         use tiler_core::geometry::Rect;
         clear_pending_seams();
         let mut state = test_state();
         let output = "mon-zfirst".to_owned();
         state.ensure_device(&output);
-        let active = "ws-1".to_owned();
         let mk = |hwnd: u64, creation: &str| crate::native_guards::WindowKey {
             hwnd,
             pid: 7,
@@ -1907,31 +2064,66 @@ mod pager_host_tests {
         state
             .observe(&me, &fulls, &mut skipped, &mut retained)
             .expect("tick 1");
-        // Fresh verified candidates persist until the next observation even
-        // though admission has not assigned them yet.
-        assert_eq!(
-            state.pager_z,
-            vec![top.clone(), bottom.clone(), alien.clone()]
+        // Fresh verified candidates hold a core order slot even though
+        // admission has not assigned them yet; nothing renders.
+        assert!(
+            state
+                .world
+                .engine()
+                .pager_screens()
+                .iter()
+                .flat_map(|screen| screen.workspaces.iter())
+                .flat_map(|workspace| workspace.windows.iter())
+                .next()
+                .is_none(),
+            "unadmitted candidates never render"
         );
-        // Admission stages the members' slots (the live frame map itself
-        // still lags until the next observation: preexisting first-admission
-        // behavior, unchanged here). No second observation runs before the
-        // first paint.
-        let members: std::collections::BTreeSet<crate::native_guards::WindowKey> =
-            [&top, &bottom].into_iter().cloned().collect();
+        // Admission binds the members and stages their slots, then the
+        // world dispatch homes them; the next observation forwards the
+        // slots, so the first paint arrives in retained native order.
         state
             .member_tokens
-            .insert(top.clone(), "tok-first-top".to_owned());
+            .insert(top.clone(), "tok-creation-first-top".to_owned());
         state
             .member_tokens
-            .insert(bottom.clone(), "tok-first-bottom".to_owned());
+            .insert(bottom.clone(), "tok-creation-first-bottom".to_owned());
         state
             .member_rects
-            .insert("tok-first-top".to_owned(), top_frame);
+            .insert("tok-creation-first-top".to_owned(), top_frame);
         state
             .member_rects
-            .insert("tok-first-bottom".to_owned(), bottom_frame);
-        let pager = pager_frame_for(&state, &output, &active, &members);
+            .insert("tok-creation-first-bottom".to_owned(), bottom_frame);
+        let seed_areas = vec![super::MonitorArea {
+            device: output.clone(),
+            work: pager_full(),
+            full: pager_full(),
+        }];
+        super::super::world_tick::dispatch_test_observation(
+            &mut state,
+            &[
+                live_observed_hwnd(810, 7, "creation-first-top", top_frame),
+                live_observed_hwnd(820, 7, "creation-first-bottom", bottom_frame),
+            ],
+            &[],
+            &seed_areas,
+            0,
+            None,
+            0,
+        );
+        // Tick 2: the bottom window hides right after admission (still
+        // assigned, absent from the enumeration) while the never-admitted
+        // alien is absent and prunes. The retained slot keeps the native
+        // order; the slot snapshot resolves the hidden miniature.
+        inject_pending_observe(
+            vec![live_observed_hwnd(810, 7, "creation-first-top", top_frame)],
+            Vec::new(),
+            false,
+        );
+        inject_pending_zorder(vec![top.clone()]);
+        state
+            .observe(&me, &fulls, &mut skipped, &mut retained)
+            .expect("tick 2");
+        let pager = pager_frame_for(&state, &output);
         let cell = pager
             .cells
             .iter()
@@ -1940,6 +2132,7 @@ mod pager_host_tests {
         // Native paint order despite the inverted HWNDs; the never-admitted
         // alien renders nothing.
         assert_eq!(cell.mini_keys, vec![bottom.clone(), top.clone()]);
+        assert!(!cell.mini_keys.contains(&alien));
         let cell_rect = cell.rect;
         assert_eq!(
             cell.minis,
@@ -1958,11 +2151,8 @@ mod pager_host_tests {
                 ),
             ]
         );
-        // Tick 2: the never-admitted alien is absent and pruned; fresh
-        // candidates persist only until the next observation. The scripted
-        // order is cleared so this tick falls back to observed order, like
-        // the production enumeration path.
-        clear_pending_seams();
+        // Tick 3: both visible again; the live frames take over in the same
+        // native order and the alien stays pruned.
         inject_pending_observe(
             vec![
                 live_observed_hwnd(810, 7, "creation-first-top", top_frame),
@@ -1971,11 +2161,11 @@ mod pager_host_tests {
             Vec::new(),
             false,
         );
+        inject_pending_zorder(vec![top.clone(), bottom.clone()]);
         state
             .observe(&me, &fulls, &mut skipped, &mut retained)
-            .expect("tick 2");
-        assert_eq!(state.pager_z, vec![top.clone(), bottom.clone()]);
-        assert!(!state.pager_z.contains(&alien));
+            .expect("tick 3");
+        assert_eq!(paint_keys(&state, &output), vec![bottom, top]);
         clear_pending_seams();
     }
 

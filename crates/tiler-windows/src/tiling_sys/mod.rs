@@ -18,9 +18,9 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use tiler_core::boundary::{CoreCommand, NoGroupReason};
+use tiler_core::boundary::CoreCommand;
 use tiler_core::geometry::Rect;
-use tiler_core::ids::{CorrelationId, GenerationId, OwnerId};
+use tiler_core::ids::CorrelationId;
 use tiler_core::size_hints::WindowSizeHints;
 use windows_sys::Win32::Foundation::{HWND, RECT};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -35,8 +35,8 @@ use self::action_context::{ActionCtx, ActionLine, ActionTimings, SelectEffect, S
 #[cfg(test)]
 use self::admission::admission_clear_planned;
 use self::admission::{
-    clear_maximize_at_admission, engine_is_automatic_fixed, engine_is_float,
-    fixed_origin_provenance, fixed_predicate_for, float_focus_candidates, overlay_refusal_for,
+    clear_maximize_at_admission, engine_is_float, fixed_origin_provenance, fixed_predicate_for,
+    overlay_refusal_for,
 };
 #[cfg(test)]
 use self::assignments::MAX_HIDE_DIAG_PER_SELECT;
@@ -54,14 +54,10 @@ pub use self::commands::{
     cmd_capture, cmd_directional, cmd_inventory, cmd_migrate_workspace, cmd_resize,
     cmd_send_output, cmd_tile, cmd_workspace, load_normal_tile_base,
 };
-use self::cross_drag::{
-    CrossDragSettle, DropDestination, resolve_drop_destination, settle_cross_drag_drop,
-    snapshot_cross_drag,
-};
 use self::diag::{WindowDiagSample, diag_identity_broke, diag_identity_rebound, drop_diag_sample};
 use self::dir_watch::DirWatch;
 use self::directional_resolution::{
-    chord_output, drag_drop_live, drop_arrival_verified, output_for_point, output_for_rect,
+    chord_output, drop_arrival_verified, output_for_point, output_for_rect,
 };
 pub use self::dispatch::{LaunchBackend, SystemLaunchBackend};
 use self::dispatch::{
@@ -78,7 +74,7 @@ use self::float_toggle::{
 use self::focus::{hide_border, note_focus_advance, publish_managed, refresh_active_border};
 pub(crate) use self::focus_actuation::owner_snap_dropped;
 use self::focus_actuation::{
-    actuate_focus, born_maximized_keep_overlay_for, overlay_expected, same_axis_move_for,
+    born_maximized_keep_overlay_for, overlay_expected, same_axis_move_for,
 };
 #[cfg(test)]
 use self::fullscreen::{
@@ -124,8 +120,7 @@ use self::observe::WaitWake;
 use self::observe::{
     HookEvent, InputWaitSplit, LoopEventSink, ObservedWindow, OwnerWaitCounts, RenderWaitSplit,
     class_of, drain_owner_messages, foreground_lifetime, hook_edges_pending, hook_queue,
-    observe_window, pump_wait, pump_wait_with_intent, pump_waits_line, verify_proof_owned,
-    window_identity,
+    observe_window, pump_wait_with_intent, pump_waits_line, verify_proof_owned, window_identity,
 };
 pub use self::observe::{KnownIdentity, ObserveFailure};
 use self::output_sync::{
@@ -135,23 +130,20 @@ use self::output_sync::{
 #[cfg(test)]
 use self::output_sync::{foreground_elevated_detailed, foreground_pager_elevated};
 use self::owner_work::OwnerWorkGuard;
-use self::pending_drop::{PendingCrossDest, PendingDrop, queue_pending_drop, service_pending_drop};
+use self::pending_drop::{PendingDrop, queue_pending_drop, service_pending_drop};
 #[cfg(test)]
 use self::pending_seams::{
-    INJECTED_AREAS, INJECTED_ELEV_PROBE, INJECTED_ELEVATED, INJECTED_OBSERVE, INJECTED_STOP,
-    INJECTED_SUSPEND, INJECTED_ZORDER, clear_pending_seams, inject_monitor_areas,
-    inject_pending_elev_probe, inject_pending_elevated, inject_pending_fg_class,
-    inject_pending_foreground, inject_pending_observe, inject_pending_parents, inject_pending_stop,
-    inject_pending_suspend, inject_pending_tag, inject_pending_zorder,
+    INJECTED_ELEV_PROBE, INJECTED_ELEVATED, INJECTED_OBSERVE, INJECTED_STOP, INJECTED_SUSPEND,
+    INJECTED_ZORDER, clear_pending_seams, inject_pending_elev_probe, inject_pending_elevated,
+    inject_pending_fg_class, inject_pending_foreground, inject_pending_observe,
+    inject_pending_parents, inject_pending_stop, inject_pending_suspend, inject_pending_tag,
+    inject_pending_zorder,
 };
 use self::pending_seams::{
     live_cloaked, live_fg_class, live_foreground_window, live_is_iconic, live_is_visible,
     live_is_window, live_member_tag, live_parent_of, live_window_pid,
 };
-use self::preview::{
-    PreviewBound, PreviewFresh, PreviewGate, PreviewStartBinding, preview_prior_desc,
-    preview_same_size, preview_sample_gate,
-};
+use self::preview::{PreviewBound, PreviewStartBinding};
 pub use self::probes::live_overlay_flags;
 use self::probes::{
     WriteTarget, is_zoomed_now, pid_current, restore_wake_probe, restore_zoom_placement,
@@ -203,8 +195,8 @@ use self::visibility_diag::{
 };
 use self::visibility_diag::{
     VisibilityDiagnostics, drop_visibility_sample, flush_exceptions, flush_rehide_diag,
-    flush_visibility, gesture_float_cause, note_rehide_diag, rehide_err_outcome,
-    rehide_retired_detail, reveal_err_outcome, reveal_outcome, stage_exceptions, stage_visibility,
+    flush_visibility, note_rehide_diag, rehide_err_outcome, rehide_retired_detail,
+    reveal_err_outcome, reveal_outcome, stage_exceptions, stage_visibility,
 };
 #[cfg(test)]
 use self::visibility_diag::{note_hide_diag, note_reveal_diag, omission_summary, reveal_log_line};
@@ -217,15 +209,12 @@ use self::workspace_navigation::workspace_tick;
 use self::workspace_send_tick::{
     workspace_output_send_one, workspace_output_send_tick, workspace_relative_send_tick,
 };
-use crate::active_border::{
-    ActiveBorderOptions, border_eligible, border_outer_rect, scale_style, scale_to_physical,
-};
+use crate::active_border::{ActiveBorderOptions, scale_style, scale_to_physical};
 use crate::active_border_sys::{
     BorderOverlay, OverlayOutcome, PreviewOverlay, UnderlayOverlay, lowest_in_z,
 };
 use crate::group_underlay::{
-    GroupUnderlayOptions, MoveSizeKind, aggregate_chord_keys, underlay_eligible,
-    underlay_geometry_debug, underlay_outer_rect,
+    GroupUnderlayOptions, MoveSizeKind, aggregate_chord_keys, underlay_geometry_debug,
 };
 use crate::input_handoff::InboxItem;
 use crate::input_handoff::SharedSnapshot;
@@ -253,23 +242,23 @@ use crate::snapkey::{
     KeyboardConfig, LaunchKind, MAX_DISPATCH_PER_TICK, OriginVerdict, QueuedFloatIntent,
     QueuedLaunchIntent, QueuedSnapEvent, QueuedStickyIntent, QueuedWorkspaceHistoryIntent,
     QueuedWorkspaceMigrateIntent, QueuedWorkspaceOutputIntent, QueuedWorkspaceSendIntent, SnapEdge,
-    SnapOp, SnapOrigin, VK_LSHIFT, VK_LWIN, VK_MASK, VK_RSHIFT, VK_RWIN, VK_SHIFT,
-    WorkspaceHistoryOp, WorkspaceOp, direction_name, resolve_origin,
+    SnapOp, SnapOrigin, VK_LSHIFT, VK_LWIN, VK_RSHIFT, VK_RWIN, VK_SHIFT, WorkspaceHistoryOp,
+    WorkspaceOp, direction_name, resolve_origin,
 };
 use crate::storage::LedgerStore;
 use crate::tiling::{
     AllowEntry, CaptureOptions, ChildrenOptions, DIRECTIONAL_REQUEST_FILE, DirectionalOptions,
-    FrameInsets, GestureIntent, HideProofOptions, INNER_GAP, InspectOptions,
-    MIGRATE_WORKSPACE_REQUEST_FILE, MigrateWorkspaceOptions, OUTER_GAP, OWNER_ID, ObservedTarget,
-    ObservedTargetRef, RESIZE_REQUEST_FILE, ResizeOptions, SEND_OUTPUT_REQUEST_FILE,
-    ScopeHostChild, SendOutputOptions, SkipReason, StatelessVerdict, TileOptions, TileProofOptions,
-    TokenMap, WindowFacts, WorkspaceAction, WorkspaceOptions, allow_match, allowlist_digest,
-    classify, classify_focus, classify_gesture, drop_point_in_domain, fullscreen_toggle_decision,
-    hosted_child_allows, inspect_stateless_verdict, is_borderless_fullscreen, parse_allowlist,
-    parse_directional_request, parse_migrate_workspace_request, parse_resize_request,
-    parse_send_output_request, parse_workspace_request, scope_allows, scope_exe_basename,
-    tiling_domain_bounds_with,
+    FrameInsets, HideProofOptions, INNER_GAP, InspectOptions, MIGRATE_WORKSPACE_REQUEST_FILE,
+    MigrateWorkspaceOptions, OUTER_GAP, OWNER_ID, ObservedTarget, ObservedTargetRef,
+    RESIZE_REQUEST_FILE, ResizeOptions, SEND_OUTPUT_REQUEST_FILE, ScopeHostChild,
+    SendOutputOptions, SkipReason, StatelessVerdict, TileOptions, TileProofOptions, TokenMap,
+    WindowFacts, WorkspaceAction, WorkspaceOptions, allow_match, allowlist_digest, classify,
+    classify_focus, fullscreen_toggle_decision, hosted_child_allows, inspect_stateless_verdict,
+    is_borderless_fullscreen, parse_allowlist, parse_directional_request,
+    parse_migrate_workspace_request, parse_resize_request, parse_send_output_request,
+    parse_workspace_request, scope_allows, scope_exe_basename, tiling_domain_bounds_with,
 };
+use tiler_core::gesture::preview_prior_desc;
 type DynError = Box<dyn std::error::Error>;
 type Result<T> = std::result::Result<T, DynError>;
 
@@ -278,19 +267,12 @@ fn err(msg: impl Into<String>) -> DynError {
 }
 
 const TICK_POLL_MS: u32 = 100;
-// Pumped focus-settle bound: re-reads of `GetForegroundWindow` after an
-// accepted setter, 50 ms pumped each so the LL-hook message pump stays live.
-// No foreign wait: `pump_wait` only services the owner's own queue.
-const FOCUS_SETTLE_ROUNDS: u32 = 10;
-const FOCUS_SETTLE_POLL_MS: u32 = 50;
 
 /// Unconfirmed workspace-mode toggle releases queue keyed by domain with
 /// latest-intent-wins so a stale float can never fire at a retiled layout,
 /// dropped on confirmed toggles, stale once tiled, and retried only on
 /// topology edges with current observed geometry (never polled).
 struct TileLoop {
-    owner: OwnerId,
-    generation: GenerationId,
     /// Single runtime WorldEngine owner (stage 2b, active): all
     /// lifecycle/history/tiling/scope/select/send/migration policy routes
     /// through `world`. The legacy `Engine`/`ManagedWorkspaces`/
@@ -315,6 +297,12 @@ struct TileLoop {
     /// captured cursor routes as no-change for moves. Cleared on
     /// END-settle/removal like `gesture_before`.
     gesture_end_cursor: HashMap<u64, (i32, i32)>,
+    /// Stashed terminal gesture ingress (stage 4a): a release/cancel with
+    /// its END-captured cursor, set by the END path before the committing
+    /// observation tick and cleared after it returns. The tick's capture
+    /// prefers this over deriving an update from the open tables. Never a
+    /// second route: the END path dispatches no drag command of its own.
+    gesture_override: Option<tiler_core::gesture::GestureIngress>,
     /// START-time identity snapshot per open gesture (pid/creation from a
     /// bounded owner-side probe plus the live visible-membership lifetime
     /// tag). Settle requires the fresh window to still match this snapshot in
@@ -489,22 +477,6 @@ struct TileLoop {
     /// rediscovery broadcast, never periodically; identity only, never
     /// geometry.
     pager_hook_pid: Option<u32>,
-    /// Live identity-verified pager frames per managed member key, refreshed
-    /// on every observation alongside `overlay_now` (visible members plus
-    /// retained fresh frames; hidden members fall back to their saved
-    /// tile-slot/float snapshots in the portable resolver). Rebuilt per pass,
-    /// so stale entries never survive their observation.
-    pager_live: HashMap<crate::native_guards::WindowKey, Rect>,
-    /// Retained native stacking order for pager miniatures, top-to-bottom in
-    /// the single `EnumWindows` sequence (first is topmost). Refreshed on
-    /// every observation from that same enumeration (observed eligible
-    /// members plus retained maximized/fullscreen rows with fresh frames);
-    /// still-assigned hidden or minimized members keep their previous
-    /// relative order and departed identities prune, so hidden workspaces
-    /// repaint their last observed stacking. Painters draw it reversed per
-    /// workspace (topmost last); see `crate::pager::retain_pager_order`.
-    /// Full identity keys only, never HWND alone.
-    pager_z: Vec<crate::native_guards::WindowKey>,
     /// Identity-keyed pager icon cache (worker-owned artwork bytes). Pruned
     /// to live membership every pump; never queried or waited on in the
     /// tile loop or the painter.
@@ -693,6 +665,25 @@ struct TileLoop {
     /// cursor against this point (no preview on a title click with no
     /// movement). Cleared on END-settle/removal like `gesture_before`.
     gesture_start_cursor: HashMap<u64, (i32, i32)>,
+    /// Gesture ingress phase already reported per open HWND: the first
+    /// observation tick carrying an open gesture reports `Started` (with
+    /// the down-point cursor above), later ticks report `Updated`. Gives
+    /// the core an explicit new-gesture signal (START truth plus
+    /// at-most-once supersession) without a second report. Cleared on
+    /// END-settle/removal like `gesture_before`.
+    gesture_started_sent: HashSet<u64>,
+    /// Stable adapter gesture id per open native gesture HWND: nonzero,
+    /// allocated once at native START drain, retained across coalesced
+    /// START/END through settle and the bridged-hide wait. Every ingress
+    /// for the gesture (Started, Updated, terminal, cancel) carries it,
+    /// so the core orders sessions and at-most-once terminals by id
+    /// alone. Cleared on END-settle/removal like `gesture_before`.
+    gesture_seq: HashMap<u64, u64>,
+    /// Next stable gesture id to allocate (monotonic within the process,
+    /// never zero, never reused). Reset is unnecessary: the core resets
+    /// its consumed watermark on adapter incarnation change, and every
+    /// id allocated after that still orders above it.
+    next_gesture_seq: u64,
     /// Process-owned drop-preview fill plus the last logged preview
     /// signature for change-only logging. Separate carrier above windows
     /// (KWin overlay-item analogue); never mixed with the border/underlay
@@ -835,6 +826,11 @@ struct TileLoop {
     /// bookkeeping; all owner overlay calls route through it so nothing
     /// touches renderer windows from this thread.
     render_bridge: Option<RenderBridge>,
+    /// Event-driven cursor-motion tap for focus-follows-cursor: armed only
+    /// from live settings on active (non-game) ticks, physically off under
+    /// fullscreen suspension and on proof paths. Never reads the cursor
+    /// itself; motion only wakes the loop, sampling stays per-turn.
+    cursor_wake: cursor_wake::CursorWake,
     /// Bounded per-carrier routine-frame aggregator for render diagnostics:
     /// routine successful repaints aggregate into ~1s per-carrier windows
     /// while transitions and failures log immediately. Runs in both trace and
@@ -990,6 +986,12 @@ mod world_diff_shared_convergence_tests;
 #[cfg(test)]
 mod world_route_tests;
 
+// Stage-5 directional seam: float origins dispatch world commands and the
+// core owns every logical decision (no adapter bypass); the adapter only
+// captures truth and mechanically actuates the reply.
+#[cfg(test)]
+mod tests_directional_world;
+
 // Stage 2c cursor-first boundary: capture/sequencer projection, production
 // selects and sends under cursor/focus disagreement, explicit outputs,
 // and the focused-fullscreen-game cursor guard.
@@ -1017,8 +1019,6 @@ mod float_toggle;
 mod dispatch;
 
 mod directional_resolution;
-
-mod cross_drag;
 
 mod diag;
 
@@ -1080,6 +1080,8 @@ mod run_loop_wait;
 
 mod commands;
 
+mod cursor_wake;
+
 mod first_run;
 
 mod proof_commands;
@@ -1095,10 +1097,6 @@ mod same_axis_move_tests;
 #[cfg(test)]
 #[path = "tests_owned_exit.rs"]
 mod owned_exit_tests;
-
-#[cfg(test)]
-#[path = "tests_send_preflight.rs"]
-mod send_preflight_tests;
 
 #[cfg(test)]
 #[path = "tests_float_send_gate.rs"]
@@ -1118,10 +1116,6 @@ mod owner_work_trace_tests;
 #[cfg(test)]
 #[path = "tests_render_frame.rs"]
 mod render_frame_tests;
-
-#[cfg(test)]
-#[path = "tests_preview.rs"]
-mod preview_tests;
 
 #[cfg(test)]
 #[path = "tests_rmax03.rs"]

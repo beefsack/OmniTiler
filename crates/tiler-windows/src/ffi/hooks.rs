@@ -123,9 +123,23 @@ fn install_win_event_hook_for(event_min: u32, event_max: u32, pid: u32) -> Optio
 /// Storage itself is bounded ([`TASKBAR_DRAIN_CAP`]): the push path drops
 /// excess and records coalesced overflow, so no backlog can accumulate
 /// between drains.
+#[cfg(not(test))]
 fn taskbar_queue() -> &'static Mutex<TaskbarQueue> {
     static QUEUE: OnceLock<Mutex<TaskbarQueue>> = OnceLock::new();
     QUEUE.get_or_init(|| Mutex::new(TaskbarQueue::new()))
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_TASKBAR_QUEUE: Arc<Mutex<TaskbarQueue>> = Arc::new(Mutex::new(TaskbarQueue::new()));
+}
+
+/// Test storage for [`taskbar_queue`]: each test thread owns its queue, so
+/// parallel drain tests never observe each other's edges. Push/take/drain
+/// code is unchanged and runs the production path.
+#[cfg(test)]
+fn taskbar_queue() -> Arc<Mutex<TaskbarQueue>> {
+    TEST_TASKBAR_QUEUE.with(Arc::clone)
 }
 
 /// Max retained taskbar events: overflow coalesces to the overflow flag
@@ -354,6 +368,93 @@ mod tests {
         assert_eq!(batch.len(), 2);
         assert!(!overflowed);
         let (again, overflowed) = queue.take();
+        assert!(again.is_empty());
+        assert!(!overflowed);
+    }
+
+    #[test]
+    fn taskbar_concurrent_producers_stay_isolated() {
+        // Intended test contract: each test thread's injected taskbar traffic
+        // is visible only to that thread's drain, so parallel pager tests
+        // never steal or pollute each other's edges. All producers stage
+        // before any consumer drains (barrier), which is deterministic: on a
+        // single shared queue exactly one consumer would take the whole
+        // burst and every assertion below would fail.
+        use std::sync::{Arc, Barrier};
+        const THREADS: usize = 8;
+        const PER_THREAD: u64 = 5;
+        let _ = super::take_taskbar_events();
+        let barrier = Arc::new(Barrier::new(THREADS));
+        let handles: Vec<_> = (0..THREADS)
+            .map(|t| {
+                let barrier = barrier.clone();
+                std::thread::spawn(move || -> Result<(), String> {
+                    let base = 50_000 + (t as u64) * 1_000;
+                    for i in 0..PER_THREAD {
+                        super::drive_taskbar_event(0x8000, base + i, 0, 11, 1);
+                    }
+                    barrier.wait();
+                    let (batch, overflowed) = super::take_taskbar_events();
+                    if overflowed {
+                        return Err(format!("thread {t}: unexpected overflow"));
+                    }
+                    if batch.len() as u64 != PER_THREAD {
+                        return Err(format!(
+                            "thread {t}: took {} of {PER_THREAD} staged events",
+                            batch.len()
+                        ));
+                    }
+                    for (i, event) in batch.iter().enumerate() {
+                        let want = super::WinEvent {
+                            event: 0x8000,
+                            hwnd: base + i as u64,
+                            id_object: 0,
+                            thread: 11,
+                            time: 1,
+                        };
+                        if event.event != want.event
+                            || event.hwnd != want.hwnd
+                            || event.id_object != want.id_object
+                            || event.thread != want.thread
+                            || event.time != want.time
+                        {
+                            return Err(format!("thread {t}: position {i} carries {event:?}"));
+                        }
+                    }
+                    Ok(())
+                })
+            })
+            .collect();
+        for (t, handle) in handles.into_iter().enumerate() {
+            let outcome = handle.join().expect("worker thread must join");
+            assert!(outcome.is_ok(), "worker {t}: {}", outcome.unwrap_err());
+        }
+    }
+
+    #[test]
+    fn taskbar_callback_route_preserves_fields_and_cap() {
+        // The isolated queue still runs the production callback route
+        // (trampoline push, bounded store, take oracle): every field
+        // survives, overflow coalesces at the cap, and the take stays clean.
+        let _ = super::take_taskbar_events();
+        for i in 0..(super::TASKBAR_DRAIN_CAP as u64 + 10) {
+            super::drive_taskbar_event(0x8005, 7000 + i, 0, 42, 7);
+        }
+        let (batch, overflowed) = super::take_taskbar_events();
+        assert_eq!(batch.len(), super::TASKBAR_DRAIN_CAP);
+        assert!(overflowed);
+        assert_eq!(batch[0].hwnd, 7000);
+        assert_eq!(
+            batch[super::TASKBAR_DRAIN_CAP - 1].hwnd,
+            7000 + super::TASKBAR_DRAIN_CAP as u64 - 1
+        );
+        for event in &batch {
+            assert_eq!(event.event, 0x8005);
+            assert_eq!(event.id_object, 0);
+            assert_eq!(event.thread, 42);
+            assert_eq!(event.time, 7);
+        }
+        let (again, overflowed) = super::take_taskbar_events();
         assert!(again.is_empty());
         assert!(!overflowed);
     }

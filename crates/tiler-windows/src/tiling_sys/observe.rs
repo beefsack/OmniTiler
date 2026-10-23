@@ -35,9 +35,23 @@ pub(super) enum HookEvent {
     MoveSizeEnd(isize, Option<(i32, i32)>, u64),
 }
 
+#[cfg(not(test))]
 pub(super) fn hook_queue() -> &'static Mutex<Vec<HookEvent>> {
     static QUEUE: OnceLock<Mutex<Vec<HookEvent>>> = OnceLock::new();
     QUEUE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_HOOK_QUEUE: std::sync::Arc<Mutex<Vec<HookEvent>>> =
+        std::sync::Arc::new(Mutex::new(Vec::new()));
+}
+
+/// Test storage for [`hook_queue`]: each test thread owns its queue, so
+/// parallel drain tests never observe each other's edges.
+#[cfg(test)]
+pub(super) fn hook_queue() -> std::sync::Arc<Mutex<Vec<HookEvent>>> {
+    TEST_HOOK_QUEUE.with(std::sync::Arc::clone)
 }
 
 /// Bounded window-visibility generation bumped once per window-scoped
@@ -396,18 +410,6 @@ pub(super) fn pump_waits_line(
         line["flushed"] = serde_json::Value::from(flushed);
     }
     line
-}
-
-/// Message-only wait for the focus-settle and proof paths: the same pump as
-/// [`pump_wait_with_intent`] with no intent or ack wake, so those paths never
-/// consume or spin on the owner wakes. The recursive focus-settle pump
-/// deliberately excludes the ack wake: ack accounting runs on the outer
-/// loop, never inside nested settlement. These nested waits never touch the
-/// outer `ow_*` wait counters below: only the product outer wait returns
-/// count, so the trace summary distinguishes outer returns from
-/// focus/proof waits by construction.
-pub(super) fn pump_wait(timeout_ms: u32) {
-    pump_wait_with_intent(timeout_ms, None, None, &[]);
 }
 
 #[derive(Debug, Clone)]

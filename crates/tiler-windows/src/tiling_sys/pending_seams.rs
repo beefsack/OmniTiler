@@ -63,23 +63,6 @@ thread_local! {
     > = const { std::cell::RefCell::new(None) };
 }
 
-#[cfg(test)]
-thread_local! {
-    pub(super) static INJECTED_AREAS: std::cell::RefCell<Option<Vec<MonitorArea>>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-/// Inject one controlled monitor topology for cross-operation tails
-/// (test-only). `Some` lists replace the native enumeration in
-/// [`super::fresh_cross_areas`]; `None` clears the injection. Cleared by
-/// [`clear_pending_seams`].
-#[cfg(test)]
-pub(super) fn inject_monitor_areas(areas: Option<Vec<MonitorArea>>) {
-    INJECTED_AREAS.with(|slot| {
-        *slot.borrow_mut() = areas;
-    });
-}
-
 /// Inject one observed/enumeration snapshot for offline ticks (test-only).
 #[cfg(test)]
 pub(super) fn inject_pending_observe(
@@ -187,9 +170,6 @@ pub(super) fn inject_pending_zorder(order: Vec<crate::native_guards::WindowKey>)
 #[cfg(test)]
 pub(super) fn clear_pending_seams() {
     INJECTED_OBSERVE.with(|slot| {
-        *slot.borrow_mut() = None;
-    });
-    INJECTED_AREAS.with(|slot| {
         *slot.borrow_mut() = None;
     });
     INJECTED_TAGS.with(|map| {

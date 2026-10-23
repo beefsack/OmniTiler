@@ -177,15 +177,18 @@ fn report_attempts(
         focus_follows_cursor: false,
         cursor_warp: false,
         cursor: None,
+        cursor_hit: None,
         default_tiled: true,
         focused_global: focused.to_owned(),
         inventory_complete,
         gesture_barrier,
+        gesture: None,
         feedback,
         monotonic_ms: 0,
         frames: Vec::new(),
         member_attempts,
         view_attempts,
+        clear_attempts: Vec::new(),
     }
 }
 
@@ -802,7 +805,6 @@ fn directional_focus_crosses_outputs_with_explicit_effect() {
             Some(WorldCommand::FocusDirectional {
                 window: WindowId("win-a".to_owned()),
                 direction: "right".to_owned(),
-                float_subject: false,
             }),
             true,
             false,
@@ -856,7 +858,6 @@ fn directional_focus_up_never_crosses_outputs() {
         Some(WorldCommand::FocusDirectional {
             window: WindowId("win-a".to_owned()),
             direction: "up".to_owned(),
-            float_subject: false,
         }),
         true,
         false,
@@ -3734,5 +3735,833 @@ fn standalone_view_refusal_holds_on_current_incomplete_screen() {
         settled.transfers.is_empty(),
         "complete screen with pre echo settles: {:?}",
         settled.transfers
+    );
+}
+
+#[test]
+fn floating_select_workspace_retains_flight_and_settles_on_echo() {
+    // Standalone selection into a floating workspace retains its view
+    // flight exactly like a tiled selection: the logical view moves
+    // immediately, the target scope publishes Untouched, and only the
+    // exact echo settles the flight. Missing echoes and incomplete
+    // inventories hold the flight; they never erase or complete it.
+    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            two_screens(),
+            vec![],
+            vec![],
+            vec![],
+            "",
+            None,
+            None,
+            true,
+            false,
+            vec![],
+        ),
+    );
+    let ring_a = workspace_ids(&first, "out-a");
+    assert_eq!(ring_a.len(), 2);
+    let other = ring_a[1].clone();
+    accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            two_screens(),
+            vec![],
+            vec![],
+            vec![],
+            "",
+            Some(11),
+            Some(WorldCommand::SetWorkspaceTiling {
+                output: OutputId("out-a".to_owned()),
+                workspace: other.clone(),
+                tiled: false,
+            }),
+            true,
+            false,
+            vec![],
+        ),
+    );
+    // Select away into the floating workspace.
+    let selected = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            two_screens(),
+            vec![],
+            vec![],
+            vec![],
+            "",
+            Some(12),
+            Some(WorldCommand::SelectWorkspace {
+                output: OutputId("out-a".to_owned()),
+                workspace: other.clone(),
+            }),
+            true,
+            false,
+            vec![],
+        ),
+    );
+    assert_eq!(
+        output_view(&selected, "out-a").as_deref(),
+        Some(other.as_str())
+    );
+    assert_eq!(
+        scope_of(&selected, "out-a", &other),
+        ScopeAuthority::Untouched
+    );
+    assert_eq!(selected.transfers.len(), 1);
+    assert!(matches!(&selected.transfers[0].kind, TransferKind::View));
+    assert_eq!(selected.transfers[0].target_workspace, other);
+    // A stale report with no echo holds the flight with the retained
+    // logical view intact.
+    let stale = accepted(
+        &mut engine,
+        &report(
+            4,
+            4,
+            two_screens(),
+            vec![],
+            vec![],
+            vec![],
+            "",
+            None,
+            None,
+            true,
+            false,
+            vec![],
+        ),
+    );
+    assert_eq!(stale.transfers.len(), 1);
+    assert_eq!(
+        output_view(&stale, "out-a").as_deref(),
+        Some(other.as_str())
+    );
+    // An incomplete inventory without the echo holds as well.
+    let gapped = accepted(
+        &mut engine,
+        &report(
+            5,
+            5,
+            two_screens(),
+            vec![],
+            vec![],
+            vec![],
+            "",
+            None,
+            None,
+            false,
+            false,
+            vec![],
+        ),
+    );
+    assert_eq!(gapped.transfers.len(), 1);
+    // The exact echo confirms: the flight drops and the logical view is
+    // preserved (never reverted, never re-emitted).
+    let settled = accepted(
+        &mut engine,
+        &report(
+            6,
+            6,
+            two_screens(),
+            vec![],
+            vec![("out-a", other.as_str())],
+            vec![],
+            "",
+            None,
+            None,
+            true,
+            false,
+            vec![],
+        ),
+    );
+    assert!(
+        settled.transfers.is_empty(),
+        "echo settles: {:?}",
+        settled.transfers
+    );
+    assert_eq!(
+        output_view(&settled, "out-a").as_deref(),
+        Some(other.as_str())
+    );
+}
+
+#[test]
+fn floating_select_previous_returns_to_floating_target() {
+    // Previous-toggle through recorded history resolves a floating
+    // workspace exactly like a tiled one: same retained flight, same
+    // Untouched scope, same echo completion with the logical view
+    // preserved.
+    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            two_screens(),
+            vec![],
+            vec![],
+            vec![],
+            "",
+            None,
+            None,
+            true,
+            false,
+            vec![],
+        ),
+    );
+    let ring_a = workspace_ids(&first, "out-a");
+    assert_eq!(ring_a.len(), 2);
+    let (head, other) = (ring_a[0].clone(), ring_a[1].clone());
+    accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            two_screens(),
+            vec![],
+            vec![],
+            vec![],
+            "",
+            Some(11),
+            Some(WorldCommand::SetWorkspaceTiling {
+                output: OutputId("out-a".to_owned()),
+                workspace: other.clone(),
+                tiled: false,
+            }),
+            true,
+            false,
+            vec![],
+        ),
+    );
+    accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            two_screens(),
+            vec![],
+            vec![],
+            vec![],
+            "",
+            Some(12),
+            Some(WorldCommand::SelectWorkspace {
+                output: OutputId("out-a".to_owned()),
+                workspace: other.clone(),
+            }),
+            true,
+            false,
+            vec![],
+        ),
+    );
+    accepted(
+        &mut engine,
+        &report(
+            4,
+            4,
+            two_screens(),
+            vec![],
+            vec![("out-a", other.as_str())],
+            vec![],
+            "",
+            None,
+            None,
+            true,
+            false,
+            vec![],
+        ),
+    );
+    accepted(
+        &mut engine,
+        &report(
+            5,
+            5,
+            two_screens(),
+            vec![],
+            vec![("out-a", other.as_str())],
+            vec![],
+            "",
+            Some(13),
+            Some(WorldCommand::SelectWorkspace {
+                output: OutputId("out-a".to_owned()),
+                workspace: head.clone(),
+            }),
+            true,
+            false,
+            vec![],
+        ),
+    );
+    accepted(
+        &mut engine,
+        &report(
+            6,
+            6,
+            two_screens(),
+            vec![],
+            vec![("out-a", head.as_str())],
+            vec![],
+            "",
+            None,
+            None,
+            true,
+            false,
+            vec![],
+        ),
+    );
+    // Previous toggles back to the floating workspace.
+    let back = accepted(
+        &mut engine,
+        &report(
+            7,
+            7,
+            two_screens(),
+            vec![],
+            vec![("out-a", head.as_str())],
+            vec![],
+            "",
+            Some(14),
+            Some(WorldCommand::SelectPrevious {
+                output: Some(OutputId("out-a".to_owned())),
+            }),
+            true,
+            false,
+            vec![],
+        ),
+    );
+    assert_eq!(output_view(&back, "out-a").as_deref(), Some(other.as_str()));
+    assert_eq!(scope_of(&back, "out-a", &other), ScopeAuthority::Untouched);
+    assert_eq!(back.transfers.len(), 1);
+    assert!(matches!(&back.transfers[0].kind, TransferKind::View));
+    assert_eq!(back.transfers[0].target_workspace, other);
+    let settled = accepted(
+        &mut engine,
+        &report(
+            8,
+            8,
+            two_screens(),
+            vec![],
+            vec![("out-a", other.as_str())],
+            vec![],
+            "",
+            None,
+            None,
+            true,
+            false,
+            vec![],
+        ),
+    );
+    assert!(
+        settled.transfers.is_empty(),
+        "echo settles: {:?}",
+        settled.transfers
+    );
+    assert_eq!(
+        output_view(&settled, "out-a").as_deref(),
+        Some(other.as_str())
+    );
+}
+
+#[test]
+fn floating_select_trailing_reuses_floating_empty() {
+    // Trailing selection reuses the live trailing empty when it is
+    // floating: same retained flight and echo completion, with the
+    // floating scope untouched throughout.
+    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            two_screens(),
+            vec![],
+            vec![],
+            vec![],
+            "",
+            None,
+            None,
+            true,
+            false,
+            vec![],
+        ),
+    );
+    let ring_a = workspace_ids(&first, "out-a");
+    assert_eq!(ring_a.len(), 2);
+    let head = output_view(&first, "out-a").expect("view a");
+    let trailing = ring_a
+        .iter()
+        .find(|id| *id != &head)
+        .expect("trailing empty")
+        .clone();
+    // Occupy the trailing empty through selection, then float it.
+    accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            two_screens(),
+            vec![],
+            vec![],
+            vec![],
+            "",
+            Some(11),
+            Some(WorldCommand::SelectTrailing {
+                output: Some(OutputId("out-a".to_owned())),
+            }),
+            true,
+            false,
+            vec![],
+        ),
+    );
+    accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            two_screens(),
+            vec![],
+            vec![("out-a", trailing.as_str())],
+            vec![],
+            "",
+            None,
+            None,
+            true,
+            false,
+            vec![],
+        ),
+    );
+    accepted(
+        &mut engine,
+        &report(
+            4,
+            4,
+            two_screens(),
+            vec![],
+            vec![("out-a", trailing.as_str())],
+            vec![],
+            "",
+            Some(12),
+            Some(WorldCommand::SetWorkspaceTiling {
+                output: OutputId("out-a".to_owned()),
+                workspace: trailing.clone(),
+                tiled: false,
+            }),
+            true,
+            false,
+            vec![],
+        ),
+    );
+    // Select away to the tiled head, then trailing reuses the floating
+    // empty.
+    accepted(
+        &mut engine,
+        &report(
+            5,
+            5,
+            two_screens(),
+            vec![],
+            vec![("out-a", trailing.as_str())],
+            vec![],
+            "",
+            Some(13),
+            Some(WorldCommand::SelectWorkspace {
+                output: OutputId("out-a".to_owned()),
+                workspace: head.clone(),
+            }),
+            true,
+            false,
+            vec![],
+        ),
+    );
+    accepted(
+        &mut engine,
+        &report(
+            6,
+            6,
+            two_screens(),
+            vec![],
+            vec![("out-a", head.as_str())],
+            vec![],
+            "",
+            None,
+            None,
+            true,
+            false,
+            vec![],
+        ),
+    );
+    let reused = accepted(
+        &mut engine,
+        &report(
+            7,
+            7,
+            two_screens(),
+            vec![],
+            vec![("out-a", head.as_str())],
+            vec![],
+            "",
+            Some(14),
+            Some(WorldCommand::SelectTrailing {
+                output: Some(OutputId("out-a".to_owned())),
+            }),
+            true,
+            false,
+            vec![],
+        ),
+    );
+    assert_eq!(
+        output_view(&reused, "out-a").as_deref(),
+        Some(trailing.as_str())
+    );
+    assert_eq!(
+        scope_of(&reused, "out-a", &trailing),
+        ScopeAuthority::Untouched
+    );
+    assert_eq!(reused.transfers.len(), 1);
+    assert!(matches!(&reused.transfers[0].kind, TransferKind::View));
+    let settled = accepted(
+        &mut engine,
+        &report(
+            8,
+            8,
+            two_screens(),
+            vec![],
+            vec![("out-a", trailing.as_str())],
+            vec![],
+            "",
+            None,
+            None,
+            true,
+            false,
+            vec![],
+        ),
+    );
+    assert!(
+        settled.transfers.is_empty(),
+        "echo settles: {:?}",
+        settled.transfers
+    );
+    assert_eq!(
+        output_view(&settled, "out-a").as_deref(),
+        Some(trailing.as_str())
+    );
+}
+
+#[test]
+fn floating_select_refusal_settles_to_observed_preserving_logical() {
+    // A proven refusal of a floating-target selection settles the flight
+    // to observed without reverting the logical selection: the retained
+    // view stays at the floating target while native keeps showing the
+    // refused preimage. Gapped echoes hold first, exactly like tiled
+    // targets.
+    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            two_screens(),
+            vec![],
+            vec![],
+            vec![],
+            "",
+            None,
+            None,
+            true,
+            false,
+            vec![],
+        ),
+    );
+    let ring_a = workspace_ids(&first, "out-a");
+    assert_eq!(ring_a.len(), 2);
+    let current = output_view(&first, "out-a").expect("current view");
+    let target = ring_a
+        .iter()
+        .find(|id| *id != &current)
+        .expect("second workspace")
+        .clone();
+    accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            two_screens(),
+            vec![],
+            vec![],
+            vec![],
+            "",
+            Some(11),
+            Some(WorldCommand::SetWorkspaceTiling {
+                output: OutputId("out-a".to_owned()),
+                workspace: target.clone(),
+                tiled: false,
+            }),
+            true,
+            false,
+            vec![],
+        ),
+    );
+    let selected = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            two_screens(),
+            vec![],
+            vec![],
+            vec![],
+            "",
+            Some(12),
+            Some(WorldCommand::SelectWorkspace {
+                output: OutputId("out-a".to_owned()),
+                workspace: target.clone(),
+            }),
+            true,
+            false,
+            vec![],
+        ),
+    );
+    let op = selected.transfers[0].operation_id.clone();
+    // Gapped echo with refusal proof: hold with the raw staged.
+    let gapped = accepted(
+        &mut engine,
+        &report_attempts(
+            4,
+            4,
+            two_screens(),
+            vec![],
+            vec![],
+            vec![],
+            "",
+            None,
+            None,
+            true,
+            false,
+            vec![],
+            crate::workspace_scope::WorkspaceMode::PerOutputLocal,
+            Vec::new(),
+            vec![crate::world_report::ViewAttempt {
+                operation_id: op.clone(),
+                target_output: OutputId("out-a".to_owned()),
+                target_workspace: target.clone(),
+                setter: crate::world_report::FrameSetter::Refused,
+                pre: Some(current.clone()),
+                post: Some(current.clone()),
+                baseline: Some(target.clone()),
+                attempt_ms: 4,
+            }],
+        ),
+    );
+    assert!(
+        !gapped.transfers.is_empty(),
+        "gapped refusal holds: {:?}",
+        gapped.transfers
+    );
+    // Readable echo naming the refused preimage settles to observed; the
+    // logical selection stays at the floating target (never reverted).
+    let settled = accepted(
+        &mut engine,
+        &report(
+            5,
+            5,
+            two_screens(),
+            vec![],
+            vec![("out-a", current.as_str())],
+            vec![],
+            "",
+            None,
+            None,
+            true,
+            false,
+            vec![],
+        ),
+    );
+    assert!(
+        settled.transfers.is_empty(),
+        "pre echo settles: {:?}",
+        settled.transfers
+    );
+    assert_eq!(
+        output_view(&settled, "out-a").as_deref(),
+        Some(target.as_str()),
+        "logical selection preserved: {:?}",
+        settled.outputs
+    );
+}
+
+#[test]
+fn floating_migration_rekeys_floating_scope_and_migrates_back_sessionless() {
+    // Migrating a floating workspace must carry its floating scope to the
+    // target output on the commit reply itself: the tiling mode follows
+    // the id through `carry_tiling`, and the scope authority must follow
+    // with it instead of publishing the floating target as a tiled scope
+    // until the next report recomputes it. The inverse migration takes
+    // the same sessionless path (no Engine session is ever built for the
+    // floating id), preserving floating support rather than refusing it.
+    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            two_screens(),
+            vec![fact("win-a", "out-a", 0)],
+            vec![],
+            vec![],
+            "",
+            None,
+            None,
+            true,
+            false,
+            vec![],
+        ),
+    );
+    let view_a = output_view(&first, "out-a").expect("view a");
+    let other = workspace_ids(&first, "out-a")
+        .into_iter()
+        .find(|id| id != &view_a)
+        .expect("second workspace");
+    accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            two_screens(),
+            vec![fact("win-a", "out-a", 0)],
+            vec![],
+            vec![],
+            "",
+            Some(11),
+            Some(WorldCommand::SetWorkspaceTiling {
+                output: OutputId("out-a".to_owned()),
+                workspace: view_a.clone(),
+                tiled: false,
+            }),
+            true,
+            false,
+            vec![],
+        ),
+    );
+    let moved = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            two_screens(),
+            vec![fact("win-a", "out-a", 0)],
+            vec![],
+            vec![],
+            "",
+            Some(12),
+            Some(WorldCommand::MigrateWorkspace {
+                source_output: OutputId("out-a".to_owned()),
+                target_output: OutputId("out-b".to_owned()),
+                workspace: view_a.clone(),
+            }),
+            true,
+            false,
+            vec![],
+        ),
+    );
+    // The commit reply already publishes the floating target Untouched:
+    // the tiling mode followed the id, so the scope authority follows it.
+    assert_eq!(
+        scope_of(&moved, "out-b", &view_a),
+        ScopeAuthority::Untouched
+    );
+    let row = moved
+        .workspaces
+        .iter()
+        .find(|row| row.id == view_a)
+        .expect("migrated row");
+    assert_eq!(row.output.0, "out-b");
+    assert_eq!(
+        row.tiling_mode,
+        crate::world_report::TilingMode::Floating,
+        "tiling mode follows the id: {row:?}"
+    );
+    assert!(
+        moved
+            .transfers
+            .iter()
+            .any(|t| matches!(t.kind, TransferKind::Migration) && t.operation_id == "op-12")
+    );
+    assert!(
+        moved
+            .transfers
+            .iter()
+            .any(|t| t.operation_id == "op-12-refill")
+    );
+    let member = window_row(&moved, "win-a");
+    assert_eq!(
+        (member.output.0.as_str(), member.workspace.as_str()),
+        ("out-b", view_a.as_str())
+    );
+    assert_eq!(member.membership_authority, ScopeAuthority::Controlled);
+    // Member arrival plus both view echoes settles the whole migration:
+    // the flight drops instead of stalling on the floating target.
+    let settled = accepted(
+        &mut engine,
+        &report(
+            4,
+            4,
+            two_screens(),
+            vec![fact("win-a", "out-b", 800)],
+            vec![("out-b", view_a.as_str()), ("out-a", other.as_str())],
+            vec![],
+            "",
+            None,
+            None,
+            true,
+            false,
+            vec![],
+        ),
+    );
+    assert!(
+        settled.transfers.is_empty(),
+        "arrival plus views settle: {:?}",
+        settled.transfers
+    );
+    // The inverse migration takes the sessionless floating path again:
+    // no Engine session is built for the floating id on either side.
+    let back = accepted(
+        &mut engine,
+        &report(
+            5,
+            5,
+            two_screens(),
+            vec![fact("win-a", "out-b", 800)],
+            vec![("out-b", view_a.as_str()), ("out-a", other.as_str())],
+            vec![],
+            "",
+            Some(13),
+            Some(WorldCommand::MigrateWorkspace {
+                source_output: OutputId("out-b".to_owned()),
+                target_output: OutputId("out-a".to_owned()),
+                workspace: view_a.clone(),
+            }),
+            true,
+            false,
+            vec![],
+        ),
+    );
+    assert_eq!(scope_of(&back, "out-a", &view_a), ScopeAuthority::Untouched);
+    assert!(
+        back.transfers
+            .iter()
+            .any(|t| matches!(t.kind, TransferKind::Migration) && t.operation_id == "op-13")
+    );
+    let home = crate::session::DomainKey {
+        output: OutputId("out-a".to_owned()),
+        workspace: crate::directional::WorkspaceId(view_a.clone()),
+    };
+    assert!(
+        engine.engine().session(&home).is_none(),
+        "floating inverse stays sessionless"
     );
 }

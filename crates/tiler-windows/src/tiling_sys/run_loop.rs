@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 use super::*;
+use tiler_core::ids::{GenerationId, OwnerId};
 
 pub(super) fn run_tile_loop(
     dir: &Path,
@@ -152,8 +153,6 @@ pub(super) fn run_tile_loop(
     // Computed before the owner moves the live settings in.
     let startup_scope = crate::settings::startup_mode(settings_live.as_ref());
     let mut state = TileLoop {
-        owner: owner.clone(),
-        generation: generation.clone(),
         world: world_owner::WorldOwner::bootstrap_ids(owner.as_str(), generation.as_str())
             .expect("world owner bootstrap"),
         tokens: TokenMap::default(),
@@ -162,8 +161,11 @@ pub(super) fn run_tile_loop(
         active: HashSet::new(),
         gesture_before: HashMap::new(),
         gesture_end_cursor: HashMap::new(),
+        gesture_override: None,
         gesture_start_key: HashMap::new(),
         gesture_start_tag: HashMap::new(),
+        gesture_seq: HashMap::new(),
+        next_gesture_seq: 0,
         tick: 0,
         allowlist,
         scope,
@@ -212,8 +214,6 @@ pub(super) fn run_tile_loop(
         pager_areas_fp: 0,
         pager_primary: None,
         pager_secondaries: Vec::new(),
-        pager_live: HashMap::new(),
-        pager_z: Vec::new(),
         pager_icon_cache: crate::pager_icons::PagerIconCache::new(),
         pager_icon_service: None,
         pager_icon_retry_at: None,
@@ -254,6 +254,7 @@ pub(super) fn run_tile_loop(
         underlay_last: None,
         move_kind: HashMap::new(),
         gesture_start_cursor: HashMap::new(),
+        gesture_started_sent: HashSet::new(),
         preview_overlay: PreviewOverlay::default(),
         preview_last: None,
         preview_bound: HashMap::new(),
@@ -282,6 +283,7 @@ pub(super) fn run_tile_loop(
         overlay_now: HashMap::new(),
         input_bridge: None,
         render_bridge: None,
+        cursor_wake: super::cursor_wake::CursorWake::new(),
         render_frames: RenderFrameHealth::default(),
     };
     state.workspace_proof = workspace_proof;
@@ -1366,6 +1368,16 @@ pub(super) fn run_tile_loop(
             release["note"] = serde_json::json!("release failed; process exit releases the hook");
         }
         log_json_at(&log_path, release);
+    }
+    // Cursor-motion tap teardown: physically off at graceful stop (process
+    // exit releases it in any case). `Drop` on the state is the backstop
+    // for every other exit path. Never armed on proof paths.
+    state.cursor_wake.shutdown(Instant::now());
+    if let Some(diag) = state.cursor_wake.take_diag() {
+        log_json_at(
+            &log_path,
+            serde_json::json!({"event":"cursor-tap","op":diag.op,"ok":diag.ok}),
+        );
     }
     // Owner tray teardown: graceful stop removes the icon (`NIM_DELETE`
     // through RAII `Drop`); a crash ghost is pruned by the next startup or

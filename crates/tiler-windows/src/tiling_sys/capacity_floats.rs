@@ -150,6 +150,7 @@ mod tests {
             floating: true,
             float_origin: origin,
             frame_operation: None,
+            clear_operation: None,
         }
     }
 

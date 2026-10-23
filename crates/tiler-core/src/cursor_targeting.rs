@@ -15,9 +15,9 @@
 //!   cursor-closest node per `DwindleAlgorithm::getClosestNode` at pin
 //!   `19fb395d`), or i3/sway (focused output, split its last-focused
 //!   window). Sends keep their explicit contracts and are unaffected.
-//! - Focus-follows-cursor and cursor-warp are retained behavior settings
-//!   only; no focus or warp actuation lives here (stage 4 owns that
-//!   policy, including any preset-specific warp default).
+//! - Focus-follows-cursor and cursor-warp are the retained behavior
+//!   settings behind the stage-4b coupling policy in
+//!   [`crate::world_cursor`]; the enums here carry targeting only.
 
 use crate::directional::{NodeId, OutputId};
 use crate::geometry::Rect;

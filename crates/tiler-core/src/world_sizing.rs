@@ -8,6 +8,7 @@
 
 use crate::boundary::CoreCommand;
 use crate::directional::Direction;
+use crate::gesture::GestureSettled;
 use crate::world_report::{
     CommandResult, FloatOrigin, HoldReason, TransferKind, WorldCommand, WorldReply, WorldReport,
 };
@@ -68,6 +69,56 @@ pub const fn usize_len(mut value: usize) -> usize {
     digits
 }
 
+/// Gesture ingress estimate: `,"gesture":null` (12) when absent; the
+/// present object `{"win":S,"kind":S,"phase":S,"id":"N","cursor":[x,y]|null,
+/// "startCursor":[x,y]|null,"esc":B,"modal":B,"start":[x,y,w,h]}` counts its
+/// fixed punctuation plus the window id, kind/phase tokens, decimal id,
+/// cursor digits (`null` counts 4), bools, and the start rect digits.
+#[must_use]
+pub fn gesture_estimate(report: &WorldReport) -> usize {
+    match report.gesture.as_ref() {
+        None => 12,
+        Some(gesture) => {
+            100 + json_string_len(&gesture.window.0)
+                + json_string_len(gesture.kind.as_str())
+                + json_string_len(gesture.phase.as_str())
+                + u64_len(gesture.id)
+                + gesture
+                    .cursor
+                    .map_or(4, |(x, y)| 3 + int_len(x) + int_len(y))
+                + gesture
+                    .start_cursor
+                    .map_or(4, |(x, y)| 3 + int_len(x) + int_len(y))
+                + bool_len(gesture.esc)
+                + bool_len(gesture.modal_move)
+                + rect_len(Some(gesture.start_frame))
+        }
+    }
+}
+
+/// Structural size estimate for the optional gesture-settled section:
+/// `,"gestureSettled":null` (22) when absent; the present object
+/// `{"id":"N","committed":B}` counts its fixed punctuation plus the
+/// decimal id and the bool.
+#[must_use]
+pub fn gesture_settled_estimate(settled: &Option<GestureSettled>) -> usize {
+    match settled {
+        None => 22,
+        Some(terminal) => 40 + u64_len(terminal.id) + bool_len(terminal.committed),
+    }
+}
+
+/// Structural size estimate for the optional cursor-warp section:
+/// `,"warpCursor":null` (18) when absent; the present point `[x,y]` counts
+/// its key plus brackets, comma, and decimal digits.
+#[must_use]
+pub fn warp_cursor_estimate(warp: &Option<(i32, i32)>) -> usize {
+    match warp {
+        None => 18,
+        Some((x, y)) => 17 + int_len(*x) + int_len(*y),
+    }
+}
+
 /// Structural reply size estimate: every value through its exact width
 /// ([`json_string_len`], [`u64_len`], [`usize_len`], decimal rects,
 /// `true`/`false`/`null` literals) plus per-row JSON object overhead
@@ -82,7 +133,10 @@ pub fn reply_estimate(reply: &WorldReply) -> usize {
     // "windows":[],"transfers":[],"effects":[]} = 151 plus bools. The three
     // u64 counters encode as decimal strings (two quotes each). The
     // correlated `command_result` section is counted separately in
-    // [`command_result_estimate`] (`,\"result\":null` = 14 when absent).
+    // [`command_result_estimate`] (`,\"result\":null` = 14 when absent),
+    // the gesture-settled section in [`gesture_settled_estimate`]
+    // (`,\"gestureSettled\":null` = 22 when absent), and the warp section
+    // in [`warp_cursor_estimate`] (`,\"warpCursor\":null` = 18 when absent).
     let mut bytes = 166
         + usize_len(reply.contract_version as usize)
         + json_string_len(&reply.request_id)
@@ -101,7 +155,7 @@ pub fn reply_estimate(reply: &WorldReply) -> usize {
     bytes += reply.scopes.len().saturating_sub(1);
     for workspace in &reply.workspaces {
         // {"id":,"out":,"bind":,"scope":,"order":,"mode":,
-        // "exist":,"hold":} = 60 punctuation plus up to 5 for exist.
+        // "exist":,"hold":} = 65 punctuation plus the exist bool.
         bytes += 65
             + json_string_len(&workspace.id)
             + json_string_len(&workspace.output.0)
@@ -109,6 +163,7 @@ pub fn reply_estimate(reply: &WorldReply) -> usize {
             + json_string_len(&workspace.scope)
             + usize_len(workspace.order)
             + json_string_len(workspace.tiling_mode.as_str())
+            + bool_len(workspace.existence)
             + json_string_len(workspace.hold.map_or("", HoldReason::as_str));
     }
     bytes += reply.workspaces.len().saturating_sub(1);
@@ -134,7 +189,7 @@ pub fn reply_estimate(reply: &WorldReply) -> usize {
                 int_len(r.x) + int_len(r.y) + int_len(r.w) + int_len(r.h) + 5
             })
         };
-        bytes += 137
+        bytes += 151
             + json_string_len(&window.lifetime.0)
             + json_string_len(&window.output.0)
             + json_string_len(&window.workspace)
@@ -156,7 +211,8 @@ pub fn reply_estimate(reply: &WorldReply) -> usize {
             )
             + json_string_len(window.frame_operation.as_deref().unwrap_or_default())
             + bool_len(window.floating)
-            + json_string_len(window.float_origin.map_or("", FloatOrigin::as_str));
+            + json_string_len(window.float_origin.map_or("", FloatOrigin::as_str))
+            + json_string_len(window.clear_operation.as_deref().unwrap_or_default());
     }
     bytes += reply.windows.len().saturating_sub(1);
     for transfer in &reply.transfers {
@@ -186,6 +242,8 @@ pub fn reply_estimate(reply: &WorldReply) -> usize {
     }
     bytes += reply.effects.len().saturating_sub(1);
     bytes += command_result_estimate(&reply.command_result);
+    bytes += gesture_settled_estimate(&reply.gesture_settled);
+    bytes += warp_cursor_estimate(&reply.cursor_warp);
     bytes.saturating_add(reply.presentation_bytes)
 }
 
@@ -321,6 +379,21 @@ pub fn command_result_estimate(result: &Option<CommandResult>) -> usize {
             bytes += members.len().saturating_sub(1);
             bytes
         }
+        CommandResult::Directional {
+            outcome,
+            target,
+            rect,
+            cause,
+        } => {
+            // {"op":"directional","outcome":"","win":,"rect":,"cause":}
+            // = 54 punctuation; win/rect/cause null (4 each) or values.
+            let mut bytes = 54
+                + json_string_len(outcome.as_str())
+                + target.as_ref().map_or(4, |t| json_string_len(&t.0));
+            bytes += rect.map_or(4, rect_len);
+            bytes += cause.as_ref().map_or(4, |c| json_string_len(c));
+            bytes
+        }
     }
 }
 
@@ -331,8 +404,8 @@ pub fn command_result_estimate(result: &Option<CommandResult>) -> usize {
 /// nullable command, `screens`, `windows`, `views`, `closed`, capability
 /// flags, `native`, `predicate`, `refill`, `anchorFallback`,
 /// `noSpaceResult`, `switchTarget`, `freshPlacement`, nullable `cursor`,
-/// `defaultTiled`/`focused`/`complete`/`gesture`/`focusFollowsCursor`/
-/// `cursorWarp` values, `feedback`, `monotonicMs` decimal string,
+/// nullable `cursorHit`, `defaultTiled`/`focused`/`complete`/`gesture`/
+/// `focusFollowsCursor`/`cursorWarp` values, `feedback`, `monotonicMs` decimal string,
 /// `frameAttempts`, `memberAttempts`, `viewAttempts`).
 /// Conservative: any compact encoding of the report fits within this
 /// bound (locked by `request_estimate_bounds_actual_wire_bytes`). The
@@ -347,13 +420,16 @@ pub fn report_estimate(report: &WorldReport) -> usize {
     // targeting keys (10 + 16 + 18 + 22 + 13 = 79):
     // ,"cursor":,"switchTarget":,"freshPlacement":,"focusFollowsCursor":,
     // "cursorWarp": = 322
-    // plus ,"monotonicMs":"" (19) and ,"frameAttempts":[] (19) = 360,
-    // plus ,"memberAttempts":[] (20) and ,"viewAttempts":[] (18) = 398,
-    // plus the version digits. Values counted separately below; nullable
-    // command and cursor slots count `null` (4) when absent. The workspace
+    // plus ,"cursorHit": (13) = 335, plus ,"monotonicMs":"" (19) and
+    // ,"frameAttempts":[] (19) = 373, plus ,"memberAttempts":[] (20) and
+    // ,"viewAttempts":[] (18) = 411, plus ,\"clearAttempts\":[] (18) = 429, plus ,\"gesture\":null (12) = 441, plus
+    // the version digits. Values counted
+    // separately below; nullable command, cursor, and cursor-hit slots
+    // count `null` (4). The workspace
     // mode token rides as `"mode":S` (9 fixed plus the token); membership
     // evidence rides per fact below (absent counts `null`).
-    let mut bytes = 398
+    let mut bytes = 429
+        + gesture_estimate(report)
         + usize_len(report.contract_version as usize)
         + json_string_len(&report.owner)
         + json_string_len(&report.adapter_incarnation)
@@ -369,6 +445,10 @@ pub fn report_estimate(report: &WorldReport) -> usize {
         + report
             .cursor
             .map_or(4, |(x, y)| 3 + int_len(x) + int_len(y))
+        + report
+            .cursor_hit
+            .as_ref()
+            .map_or(4, |hit| json_string_len(&hit.0))
         + u64_len(report.request_seq)
         + u64_len(report.observation_seq)
         + u64_len(report.monotonic_ms)
@@ -506,6 +586,15 @@ pub fn report_estimate(report: &WorldReport) -> usize {
             + attempt.baseline.as_deref().map_or(4, json_string_len)
             + u64_len(attempt.attempt_ms);
     }
+    for attempt in &report.clear_attempts {
+        bytes += 62
+            + json_string_len(&attempt.operation_id)
+            + json_string_len(&attempt.window.0)
+            + json_string_len(attempt.setter.as_str())
+            + 5
+            + 5
+            + u64_len(attempt.attempt_ms);
+    }
     // No restoration ingress exists on the wire: every report is a
     // fresh-observation report and the adapter sends no restoration key.
     bytes
@@ -630,14 +719,9 @@ fn command_estimate_owned(command: &WorldCommand) -> usize {
                 + json_string_len(&target_output.0)
                 + json_string_len(workspace)
         }
-        WorldCommand::FocusDirectional {
-            window,
-            direction,
-            float_subject,
-        } => {
-            // {"op":"focus-directional","win":S,"direction":S,"floatSubject":B}
-            // = 62 fixed.
-            62 + json_string_len(&window.0) + json_string_len(direction) + bool_len(*float_subject)
+        WorldCommand::FocusDirectional { window, direction } => {
+            // {"op":"focus-directional","win":S,"direction":S} = 44 fixed.
+            44 + json_string_len(&window.0) + json_string_len(direction)
         }
         WorldCommand::MoveDirectional {
             window,
@@ -1009,6 +1093,11 @@ pub fn encode_reply_canonical(reply: &WorldReply) -> String {
             &mut out,
             window.float_origin.map_or("", FloatOrigin::as_str),
         );
+        out.push_str(",\"clear_op\":");
+        push_json_string(
+            &mut out,
+            window.clear_operation.as_deref().unwrap_or_default(),
+        );
         out.push('}');
     }
     out.push_str("],\"transfers\":[");
@@ -1059,8 +1148,33 @@ pub fn encode_reply_canonical(reply: &WorldReply) -> String {
     }
     out.push_str("],\"result\":");
     encode_command_result(&mut out, &reply.command_result);
+    out.push_str(",\"gestureSettled\":");
+    encode_gesture_settled(&mut out, &reply.gesture_settled);
+    out.push_str(",\"warpCursor\":");
+    match reply.cursor_warp {
+        Some((x, y)) => {
+            out.push_str(&format!("[{x},{y}]"));
+        }
+        None => out.push_str("null"),
+    }
     out.push('}');
     out
+}
+
+/// Exact canonical encoding for the optional gesture-settled section:
+/// `null` when this report incorporated no terminal, else the stable id
+/// (decimal string) plus the commit flag, with frozen key order (mirrored
+/// by [`gesture_settled_estimate`] and the protocol codec).
+pub fn encode_gesture_settled(out: &mut String, settled: &Option<GestureSettled>) {
+    let Some(terminal) = settled else {
+        out.push_str("null");
+        return;
+    };
+    out.push_str("{\"id\":\"");
+    out.push_str(&terminal.id.to_string());
+    out.push_str("\",\"committed\":");
+    out.push_str(if terminal.committed { "true" } else { "false" });
+    out.push('}');
 }
 
 /// Exact canonical encoding for the correlated `command_result` section:
@@ -1239,6 +1353,31 @@ pub fn encode_command_result(out: &mut String, result: &Option<CommandResult>) {
             out.push_str(&floats.to_string());
             out.push('}');
         }
+        Result::Directional {
+            outcome,
+            target,
+            rect,
+            cause,
+        } => {
+            out.push_str("{\"op\":\"directional\",\"outcome\":");
+            push_json_string(out, outcome.as_str());
+            out.push_str(",\"win\":");
+            match target {
+                Some(t) => push_json_string(out, &t.0),
+                None => out.push_str("null"),
+            }
+            out.push_str(",\"rect\":");
+            match rect {
+                Some(r) => push_rect(out, *r),
+                None => out.push_str("null"),
+            }
+            out.push_str(",\"cause\":");
+            match cause {
+                Some(c) => push_json_string(out, c),
+                None => out.push_str("null"),
+            }
+            out.push('}');
+        }
     }
 }
 
@@ -1268,6 +1407,8 @@ pub fn reply_exact_bytes(reply: &WorldReply) -> usize {
 ///   / float / active-group shapes fit in 2048; a migration member list
 ///   scales with the report's live window count (one max-length id + comma
 ///   per window, 131 each) plus 512 base.
+/// - gesture-settled terminal (at most one per report): 40 fixed plus a
+///   20-digit id plus a 5-byte bool = 65 worst case, rounded to 96.
 ///   The 4096 base covers envelope slack and array commas.
 #[must_use]
 pub fn reply_upper_bound(
@@ -1285,5 +1426,6 @@ pub fn reply_upper_bound(
         .saturating_add(256)
         .saturating_add(2048)
         .saturating_add(512)
+        .saturating_add(96)
         .saturating_add(report_windows.saturating_mul(131))
 }

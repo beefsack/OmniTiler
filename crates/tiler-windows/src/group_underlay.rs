@@ -3,20 +3,16 @@
 //!
 //! KDE parity source: `kwin/native-effect/activeborderconfig.kcfg`
 //! (underlay enabled, `#662a82da`, extension -1 resolves to border width).
-//! Shared Engine geometry lives in `tiler-core::visual`
-//! (`group_underlay_effective_extension`, `group_underlay_outer_rect`) and
-//! `tiler-core::active_group` (immediate-parent projected union); the trigger
-//! OR lives in `tiler-core::visual::group_underlay_trigger`. This module adds
-//! only the Windows-side composition: options/flags parsing, hide reasons,
-//! the native hit-test classification, modifier aggregation, and the
-//! premultiplied-alpha fill raster. Native creation/presentation/placement
-//! reuse the owned carrier in [`crate::active_border_sys`].
+//! Eligibility, trigger, union, and outer bounds live in `tiler-core`
+//! (`visual::underlay_eligible`, `visual::group_underlay_trigger`,
+//! `visual::group_underlay_outer_rect_px`, `active_group`, and the
+//! read-only `world_presentation::WorldEngine::group_highlight` query).
+//! This module adds only the Windows-side composition: options/flags
+//! parsing, the native hit-test classification, modifier aggregation, and
+//! the premultiplied-alpha fill raster. Native creation/presentation/
+//! placement reuse the owned carrier in [`crate::active_border_sys`].
 
-use tiler_core::directional::{OutputId, WindowId, WorkspaceId};
 use tiler_core::geometry::Rect;
-use tiler_core::seed::EngineWindow;
-use tiler_core::size_hints::WindowSizeHints;
-use tiler_core::visual::{VisualRect, group_focus_eligible};
 
 /// Underlay default: on (mirrors the KDE highlight default).
 pub const DEFAULT_ENABLED: bool = true;
@@ -185,130 +181,6 @@ pub const fn aggregate_chord_keys(
     (win_l || win_r, shift || shift_l || shift_r)
 }
 
-/// Closed hide-reason vocabulary for the underlay.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UnderlayHideReason {
-    Disabled,
-    NoSubject,
-    Maximized,
-    Fullscreen,
-    Floating,
-    RootLeaf,
-    NoGroup,
-}
-
-impl UnderlayHideReason {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Disabled => "disabled",
-            Self::NoSubject => "no-subject",
-            Self::Maximized => "maximized",
-            Self::Fullscreen => "fullscreen",
-            Self::Floating => "floating",
-            Self::RootLeaf => "root-leaf",
-            Self::NoGroup => "no-group",
-        }
-    }
-}
-
-/// Underlay eligibility for one focused subject. `has_group` is the Engine
-/// `ActiveGroup` verdict (false covers root-leaf focus); `floating` is a
-/// focused window with no tiled membership. Maximized/fullscreen come from
-/// the fresh foreground facts. Reasons derive after the verdict, mirroring
-/// the border pattern.
-pub fn underlay_eligible(
-    enabled: bool,
-    has_subject: bool,
-    has_group: bool,
-    maximized: bool,
-    fullscreen: bool,
-    floating: bool,
-) -> Result<(), UnderlayHideReason> {
-    if !enabled {
-        return Err(UnderlayHideReason::Disabled);
-    }
-    if !has_subject {
-        return Err(UnderlayHideReason::NoSubject);
-    }
-    if maximized {
-        return Err(UnderlayHideReason::Maximized);
-    }
-    if fullscreen {
-        return Err(UnderlayHideReason::Fullscreen);
-    }
-    if floating {
-        return Err(UnderlayHideReason::Floating);
-    }
-    if !has_group {
-        return Err(UnderlayHideReason::RootLeaf);
-    }
-    // The shared core focus gate agrees on the overlapping flags: a visible
-    // non-deleted foreground subject is eligible exactly when neither
-    // fullscreen nor maximized suppresses it.
-    if !group_focus_eligible(true, false, false, fullscreen, false, maximized) {
-        return Err(UnderlayHideReason::NoGroup);
-    }
-    Ok(())
-}
-
-fn visual_of(rect: Rect) -> VisualRect {
-    VisualRect {
-        x: rect.x as f64,
-        y: rect.y as f64,
-        w: rect.w as f64,
-        h: rect.h as f64,
-    }
-}
-
-/// Outer rectangle: the Engine-projected group union expanded by the physical
-/// gap, border width, and resolved extension on every side, via the shared
-/// `tiler-core::visual` expansion. `None` on overflow or degenerate output.
-#[must_use]
-pub fn underlay_outer_rect(
-    union_rect: Rect,
-    gap_px: i32,
-    width_px: i32,
-    extension_px: i32,
-) -> Option<Rect> {
-    if gap_px < 0 || width_px < 0 || extension_px < 0 {
-        return None;
-    }
-    // Physical pixels throughout: the -1 extension sentinel is resolved
-    // against the border width in logical units and scaled before this call,
-    // so the resolved outset here is literal.
-    let outer = tiler_core::visual::group_underlay_outer_rect(
-        visual_of(union_rect),
-        f64::from(gap_px),
-        f64::from(width_px),
-        f64::from(extension_px),
-    );
-    let x = outer.x.round() as i64;
-    let y = outer.y.round() as i64;
-    let w = outer.w.round() as i64;
-    let h = outer.h.round() as i64;
-    if w <= 0
-        || h <= 0
-        || w > i64::from(i32::MAX)
-        || h > i64::from(i32::MAX)
-        || x < i64::from(i32::MIN)
-        || x > i64::from(i32::MAX)
-        || y < i64::from(i32::MIN)
-        || y > i64::from(i32::MAX)
-    {
-        return None;
-    }
-    if union_rect.w <= 0 || union_rect.h <= 0 {
-        return None;
-    }
-    Some(Rect {
-        x: x as i32,
-        y: y as i32,
-        w: w as i32,
-        h: h as i32,
-    })
-}
-
 /// Bounded geometry diagnostics for shown/redrew `group-underlay` log lines.
 ///
 /// Pure payload construction only: no behavior change, no new log lines, and
@@ -391,47 +263,6 @@ pub fn paint_fill_argb(pixels: &mut [u8], w: i32, h: i32, color: (u8, u8, u8), a
         }
     }
     hash
-}
-
-/// One member's hint contribution to an ActiveGroup query: opaque identities
-/// plus the retained advisory minimums. No geometry, no topology.
-pub struct UnderlayHintMember<'a> {
-    pub token: &'a str,
-    pub output: &'a str,
-    pub workspace: &'a str,
-    pub hints: WindowSizeHints,
-}
-
-/// Hints-only ActiveGroup query entries for one domain's members: the same
-/// retained per-window minimums the ordinary plan for this state used, so the
-/// Engine projects the group union through the identical hints-aware
-/// projector. Rectangles are empty on purpose: the resolver reads window and
-/// hints alone and never consults carried geometry or membership. No window,
-/// hook, or placement effect; pure data assembly.
-#[must_use]
-pub fn underlay_hint_windows(members: &[UnderlayHintMember<'_>]) -> Vec<EngineWindow> {
-    members
-        .iter()
-        .map(|member| EngineWindow {
-            window: WindowId(member.token.to_owned()),
-            output: OutputId(member.output.to_owned()),
-            workspace: WorkspaceId(member.workspace.to_owned()),
-            rect: Rect {
-                x: 0,
-                y: 0,
-                w: 0,
-                h: 0,
-            },
-            floating: false,
-            fit_excluded: false,
-            fullscreen: false,
-            maximized: false,
-            sticky: false,
-            fixed_auto: false,
-            fixed_suppress: false,
-            hints: member.hints,
-        })
-        .collect()
 }
 
 /// Echo of parsed underlay flags for argv-consistency verification.
@@ -599,63 +430,33 @@ mod tests {
     }
 
     #[test]
-    fn eligibility_suppression_matrix() {
-        let frame_ok = || underlay_eligible(true, true, true, false, false, false);
-        assert!(frame_ok().is_ok());
+    fn scaled_style_flows_into_core_outer() {
+        // Windows seam: the -1 extension sentinel resolves against the
+        // logical border width, scales to physical pixels, and the core
+        // outer owns the union expansion. Union 100x80 at (10,20), logical
+        // gap 2 / width 4 / extension -1 at 96 DPI scales to 2/4/4, and the
+        // core outer is (0,10,120,100) at pad 10.
+        use tiler_core::visual::{
+            group_underlay_effective_extension, group_underlay_outer_rect_px,
+        };
+        let extension_logical = group_underlay_effective_extension(super::DEFAULT_EXTENSION, 4.0);
+        assert_eq!(extension_logical, 4.0);
+        let extension_px = crate::active_border::scale_to_physical(extension_logical, 96)
+            .expect("extension scales");
+        assert_eq!(extension_px, 4);
         assert_eq!(
-            underlay_eligible(false, true, true, false, false, false),
-            Err(UnderlayHideReason::Disabled)
+            group_underlay_outer_rect_px(rect(10, 20, 100, 80), 2, 4, extension_px),
+            Some(rect(0, 10, 120, 100))
         );
+        // Zero pad is the identity; degenerate unions fail closed.
         assert_eq!(
-            underlay_eligible(true, false, true, false, false, false),
-            Err(UnderlayHideReason::NoSubject)
-        );
-        assert_eq!(
-            underlay_eligible(true, true, true, true, false, false),
-            Err(UnderlayHideReason::Maximized)
-        );
-        assert_eq!(
-            underlay_eligible(true, true, true, false, true, false),
-            Err(UnderlayHideReason::Fullscreen)
-        );
-        assert_eq!(
-            underlay_eligible(true, true, true, false, false, true),
-            Err(UnderlayHideReason::Floating)
-        );
-        assert_eq!(
-            underlay_eligible(true, true, false, false, false, false),
-            Err(UnderlayHideReason::RootLeaf)
-        );
-    }
-
-    #[test]
-    fn eligibility_agrees_with_core_focus_gate() {
-        // Whenever the underlay verdict is Ok, the shared core focus gate on
-        // the overlapping flags agrees; whenever core suppresses, so do we.
-        for bits in 0..4u32 {
-            let maximized = bits & 1 != 0;
-            let fullscreen = bits & 2 != 0;
-            let core = group_focus_eligible(true, false, false, fullscreen, false, maximized);
-            let verdict = underlay_eligible(true, true, true, maximized, fullscreen, false).is_ok();
-            assert_eq!(verdict, core, "bits={bits:02b}");
-        }
-    }
-
-    #[test]
-    fn outer_expands_union_by_gap_width_extension() {
-        // Union 100x80 at (10,20), gap 2, width 4, extension 3: pad 9.
-        assert_eq!(
-            underlay_outer_rect(rect(10, 20, 100, 80), 2, 4, 3),
-            Some(rect(1, 11, 118, 98))
-        );
-        // Zero pad is the identity.
-        assert_eq!(
-            underlay_outer_rect(rect(10, 20, 100, 80), 0, 0, 0),
+            group_underlay_outer_rect_px(rect(10, 20, 100, 80), 0, 0, 0),
             Some(rect(10, 20, 100, 80))
         );
-        // Degenerate or negative inputs fail closed.
-        assert_eq!(underlay_outer_rect(rect(10, 20, 0, 80), 2, 4, 3), None);
-        assert_eq!(underlay_outer_rect(rect(10, 20, 100, 80), -1, 4, 3), None);
+        assert_eq!(
+            group_underlay_outer_rect_px(rect(10, 20, 0, 80), 2, 4, 4),
+            None
+        );
     }
 
     #[test]
@@ -699,224 +500,6 @@ mod tests {
         );
         assert_eq!(debug["domain_gap"], serde_json::json!(8));
         assert_eq!(debug["base_revision"], serde_json::json!(42));
-    }
-
-    #[test]
-    fn active_group_union_without_hints_replays_tick136_short_outer() {
-        // Tick-136 replay from the short-underlay trace: one retained share
-        // state, two projections. The hinted Engine plan must equal the
-        // logged tick-136 plan exactly, while the hint-free ActiveGroup union
-        // of the focused bottom pair must equal the logged short outer's
-        // source union ([8,785,2544,587] -> [0,777,2560,603] at pad 8).
-        // Pure Engine replay, no windows, no writes.
-        use std::collections::BTreeMap;
-        use tiler_core::active_group::describe_active_group;
-        use tiler_core::directional::{Axis, Node, NodeId, WindowId};
-        use tiler_core::size_hints::{WindowSizeHints, project_with_hints};
-
-        fn leaf(id: &str) -> Node {
-            Node::Leaf {
-                id: NodeId::from(id),
-            }
-        }
-        fn hints(min_w: i32, min_h: i32) -> WindowSizeHints {
-            WindowSizeHints {
-                min_w: Some(min_w),
-                min_h: Some(min_h),
-                max_w: None,
-                max_h: None,
-            }
-        }
-
-        // Nested vertical stack with the retained shares that the hinted
-        // plan below implies (the logged members:2 already proves the
-        // focused pair sits in an inner group); domain bounds are the
-        // 8px-inset work area.
-        let tree = Node::Group {
-            id: NodeId::from("root"),
-            axis: Axis::Vertical,
-            children: vec![
-                leaf("w25-leaf"),
-                Node::Group {
-                    id: NodeId::from("inner"),
-                    axis: Axis::Vertical,
-                    children: vec![leaf("w24-leaf"), leaf("w23-leaf")],
-                    shares: vec![461, 117],
-                },
-            ],
-            shares: vec![765, 583],
-        };
-        let map: BTreeMap<NodeId, WindowId> = [
-            ("w25-leaf", "w25"),
-            ("w24-leaf", "w24"),
-            ("w23-leaf", "w23"),
-        ]
-        .into_iter()
-        .map(|(leaf, window)| (NodeId::from(leaf), WindowId::from(window)))
-        .collect();
-        let bounds = rect(8, 8, 2544, 1364);
-        let resolve = |leaf: &NodeId| match leaf.0.as_str() {
-            "w25-leaf" => hints(401, 246),
-            "w24-leaf" => hints(1263, 750),
-            "w23-leaf" => hints(582, 118),
-            _ => WindowSizeHints::none(),
-        };
-        // The regular Reconcile/move path honors minimums: byte-exact tick-136 plan.
-        let hinted = project_with_hints(&tree, bounds, 8, &resolve).expect("hinted projection");
-        assert!(hinted.overconstrained.is_empty());
-        let hinted_rects: Vec<Rect> = hinted.leaves.iter().map(|leaf| leaf.rect).collect();
-        assert_eq!(
-            hinted_rects,
-            vec![
-                rect(8, 8, 2544, 480),
-                rect(8, 496, 2544, 750),
-                rect(8, 1254, 2544, 118),
-            ],
-            "hinted plan must equal the logged tick-136 plan"
-        );
-        // The ActiveGroup path ignores minimums: the focused bottom pair
-        // unions to the short source behind the logged outer.
-        let group = describe_active_group(&tree, bounds, 8, &NodeId::from("w24-leaf"), &map)
-            .expect("immediate parent resolves");
-        assert_eq!(group.group, NodeId::from("inner"));
-        assert_eq!(group.members.len(), 2);
-        assert_eq!(group.bounds, rect(8, 785, 2544, 587));
-        assert_eq!(
-            underlay_outer_rect(group.bounds, 0, 4, 4),
-            Some(rect(0, 777, 2560, 603)),
-            "hint-free union must yield the logged tick-136 outer"
-        );
-        // The same members under hints cover the full pair: the 289px top
-        // delta is exactly w24's hint deficit (750 - 461).
-        assert_eq!(
-            hinted_rects[1].y.min(hinted_rects[2].y),
-            496,
-            "hinted pair top follows the enforced w24 minimum"
-        );
-        assert_eq!(group.bounds.y, 785);
-        assert_eq!(785 - 496, 289);
-    }
-
-    #[test]
-    fn active_group_union_without_hints_shorts_nested_parent_top() {
-        // Nested V[W1 H[W2 W3]] replay with the trace's min sizes: the H
-        // union is split-invariant, but the H rectangle itself sits lower
-        // without hints because the outer split ignores the H subtree
-        // minimum. Result is bottom-anchored and short at the top, the
-        // reported symptom shape. Pure Engine replay, no windows, no writes.
-        use std::collections::BTreeMap;
-        use tiler_core::active_group::describe_active_group;
-        use tiler_core::directional::{Axis, Node, NodeId, WindowId};
-        use tiler_core::size_hints::{WindowSizeHints, project_with_hints};
-
-        fn leaf(id: &str) -> Node {
-            Node::Leaf {
-                id: NodeId::from(id),
-            }
-        }
-        fn hints(min_w: i32, min_h: i32) -> WindowSizeHints {
-            WindowSizeHints {
-                min_w: Some(min_w),
-                min_h: Some(min_h),
-                max_w: None,
-                max_h: None,
-            }
-        }
-
-        let tree = Node::Group {
-            id: NodeId::from("root"),
-            axis: Axis::Vertical,
-            children: vec![
-                leaf("w1-leaf"),
-                Node::Group {
-                    id: NodeId::from("inner"),
-                    axis: Axis::Horizontal,
-                    children: vec![leaf("w2-leaf"), leaf("w3-leaf")],
-                    shares: vec![1268, 1268],
-                },
-            ],
-            shares: vec![800, 548],
-        };
-        let map: BTreeMap<NodeId, WindowId> =
-            [("w1-leaf", "w1"), ("w2-leaf", "w2"), ("w3-leaf", "w3")]
-                .into_iter()
-                .map(|(leaf, window)| (NodeId::from(leaf), WindowId::from(window)))
-                .collect();
-        let bounds = rect(8, 8, 2544, 1364);
-        let resolve = |leaf: &NodeId| match leaf.0.as_str() {
-            "w1-leaf" => hints(401, 246),
-            "w2-leaf" => hints(1263, 750),
-            "w3-leaf" => hints(582, 118),
-            _ => WindowSizeHints::none(),
-        };
-        let hinted = project_with_hints(&tree, bounds, 8, &resolve).expect("hinted projection");
-        assert!(hinted.overconstrained.is_empty());
-        // Child order: W1, then H's W2, W3. The bottom pair matches the live
-        // side-by-side layout shape (1268-wide cells, full H height).
-        assert_eq!(
-            hinted
-                .leaves
-                .iter()
-                .map(|leaf| leaf.rect)
-                .collect::<Vec<Rect>>(),
-            vec![
-                rect(8, 8, 2544, 606),
-                rect(8, 622, 1268, 750),
-                rect(1284, 622, 1268, 750),
-            ]
-        );
-        let group = describe_active_group(&tree, bounds, 8, &NodeId::from("w2-leaf"), &map)
-            .expect("immediate parent resolves");
-        assert_eq!(group.group, NodeId::from("inner"));
-        assert_eq!(group.members.len(), 2);
-        assert_eq!(group.bounds, rect(8, 820, 2544, 552));
-        assert_eq!(
-            underlay_outer_rect(group.bounds, 0, 4, 4),
-            Some(rect(0, 812, 2560, 568)),
-            "hint-free H union stays bottom-anchored but short at the top"
-        );
-    }
-
-    #[test]
-    fn hint_windows_carry_hints_without_geometry() {
-        // The ActiveGroup query attaches retained minimums only: opaque
-        // window identity plus hints, an empty rectangle, and no flags, so
-        // the resolver cannot read geometry or membership from the carrier.
-        let members = [
-            UnderlayHintMember {
-                token: "w24",
-                output: "o1",
-                workspace: "ws1",
-                hints: WindowSizeHints {
-                    min_w: Some(1263),
-                    min_h: Some(750),
-                    max_w: None,
-                    max_h: None,
-                },
-            },
-            UnderlayHintMember {
-                token: "w25",
-                output: "o1",
-                workspace: "ws1",
-                hints: WindowSizeHints::none(),
-            },
-        ];
-        let windows = underlay_hint_windows(&members);
-        assert_eq!(windows.len(), 2);
-        assert_eq!(windows[0].window.0, "w24");
-        assert_eq!(windows[0].hints.min_h, Some(750));
-        assert_eq!(
-            windows[0].rect,
-            Rect {
-                x: 0,
-                y: 0,
-                w: 0,
-                h: 0
-            }
-        );
-        assert!(!windows[0].floating);
-        assert_eq!(windows[1].hints, WindowSizeHints::none());
-        assert!(underlay_hint_windows(&[]).is_empty());
     }
 
     #[test]

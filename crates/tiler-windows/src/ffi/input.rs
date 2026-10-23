@@ -7,7 +7,7 @@ use windows_sys::Win32::System::SystemInformation::GetTickCount;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, INPUT, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput,
 };
-use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
+use windows_sys::Win32::UI::WindowsAndMessaging::{GetCursorPos, SetCursorPos};
 
 pub fn cursor_pos() -> Option<(i32, i32)> {
     let mut point = POINT { x: 0, y: 0 };
@@ -15,6 +15,15 @@ pub fn cursor_pos() -> Option<(i32, i32)> {
         return None;
     }
     Some((point.x, point.y))
+}
+
+/// Mechanical cursor warp: one `SetCursorPos` with no input synthesis,
+/// no click, and no wait. Returns true when the OS reports success; the
+/// caller re-reads the position, so success alone never proves arrival.
+/// Production gates (fresh reply, game lane, invalidation) live in the
+/// world diff, never here.
+pub fn set_cursor_pos(x: i32, y: i32) -> bool {
+    unsafe { SetCursorPos(x, y) != 0 }
 }
 
 pub fn async_key_down(vk: u32) -> bool {

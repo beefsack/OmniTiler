@@ -170,13 +170,11 @@ pub struct FieldStorageMap {
 /// future unmapped portable field cannot silently drift.
 pub const WINDOWS_UNSUPPORTED_FIELDS: &[&str] = &[];
 
-/// Portable fields persisted, validated, and reported on every capture but
-/// with no dialog control yet: focus-follows-cursor and cursor-warp actuate
-/// nothing until stage 4, so this unit defers their visible toggles rather
-/// than claiming an effect. The storage mapping above stays so files,
-/// staging, and validation cover them; the dialog tests exempt exactly
-/// these two ids with this reason.
-pub const STAGE4_DEFERRED_FIELDS: &[&str] = &["output.focus-follows-cursor", "output.cursor-warp"];
+/// Portable fields persisted, validated, reported, and actuated with a
+/// dialog control: none deferred. Focus-follows-cursor and cursor-warp
+/// gained their visible toggles with stage 4b actuation; the storage
+/// mapping above covers files, staging, and validation for all fields.
+pub const STAGE4_DEFERRED_FIELDS: &[&str] = &[];
 
 /// Every scalar Windows-exposed field mapped exactly once (23 portable plus
 /// 4 Windows-only). Storage keys are the existing schema-v1 nested

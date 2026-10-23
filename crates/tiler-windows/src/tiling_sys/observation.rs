@@ -38,6 +38,17 @@ pub(super) fn normalize_cursor(raw: Option<(i32, i32)>) -> Option<(i32, i32)> {
     })
 }
 
+/// Raw native window under one sampled cursor for the cursor-hit binding
+/// (`None` when the cursor itself is unsampled: game lane, unreadable).
+/// The exact managed-lifetime binding resolves in capture over the owner
+/// tables; this is only the native read for the same tick, never a focus
+/// or placement input.
+pub(super) fn cursor_hit_hwnd(cursor: Option<(i32, i32)>) -> Option<u64> {
+    let (x, y) = cursor?;
+    let hwnd = crate::ffi::window_at_point(x, y);
+    (hwnd != 0).then_some(hwnd)
+}
+
 impl TileLoop {
     pub(super) fn correlation(&self) -> CorrelationId {
         CorrelationId::parse(&format!("tick-{}", self.tick))
@@ -378,63 +389,81 @@ impl TileLoop {
         Some(out)
     }
 
-    /// Refresh the taskbar-pager live frames: fresh identity-verified frames
-    /// for live managed members (observed `visible` frames plus retained
-    /// fresh frames for kept maximized/fullscreen overlays and born holds).
-    /// Rebuilt per pass and gated on live membership, so recycled identities
-    /// and closed windows never linger; hidden members are absent here by
-    /// construction and resolve through their saved tile-slot/float
-    /// snapshots in the portable resolver. The retained stacking order
-    /// advances from the same single enumeration order: visible members take
-    /// the fresh native sequence while still-assigned hidden members keep
-    /// their previous relative order and departed identities prune (see
-    /// `crate::pager::retain_pager_order`). Observe runs before workspace
-    /// assignment, so newly verified clients are not members yet: the
-    /// retention roster unions current membership with the fresh visible
-    /// keys, making the native order available to the first paint after
-    /// admission with no second observation. The frame builder still filters
-    /// to actual membership, so unadmitted candidates never render, and the
-    /// next observation prunes candidates that never joined and are now
-    /// absent. Read-only: never touches windows
-    /// and never mutates the tiling `member_rects`/`float_rects` tables.
+    /// Forward the taskbar-pager presentation observation to the core
+    /// (stage 4c): verified live frames for observed eligible members plus
+    /// retained fresh frames for kept maximized/fullscreen overlays and born
+    /// holds, the adapter's saved float/tile snapshots, and the single
+    /// enumeration native order. Observe runs before workspace assignment,
+    /// so newly verified clients forward their tokens before admission:
+    /// first-paint candidates hold a core order slot without membership,
+    /// the frame builder still filters to actual membership, and the next
+    /// observation prunes candidates that never joined and are now absent.
+    /// Read-only over the tiling tables: never mutates
+    /// `member_rects`/`float_rects`, and unknown lifetimes never admit
+    /// members; lifetime reuse arrives as a new token and prunes with it.
     fn record_pager_live(
         &mut self,
         observed: &[ObservedWindow],
         retained: &[RetainedRow],
         visible_top_to_bottom: &[crate::native_guards::WindowKey],
     ) {
-        let mut live: HashMap<crate::native_guards::WindowKey, Rect> = HashMap::new();
+        // Stable token per enumerated key: observed and retained rows carry
+        // theirs; hidden members absent from the enumeration keep theirs in
+        // `member_tokens`.
+        let mut tokens: HashMap<crate::native_guards::WindowKey, String> = HashMap::new();
         for window in observed {
-            let key = crate::native_guards::WindowKey {
-                hwnd: window.hwnd,
-                pid: window.identity.pid,
-                creation: window.identity.process_creation.clone(),
-            };
-            if self.member_home(&key).is_some() {
-                live.insert(key, window.visible);
-            }
+            tokens.insert(
+                crate::native_guards::WindowKey {
+                    hwnd: window.hwnd,
+                    pid: window.identity.pid,
+                    creation: window.identity.process_creation.clone(),
+                },
+                window.token.clone(),
+            );
         }
         for row in retained {
-            if let Some(rect) = row.rect
-                && self.member_home(&row.key).is_some()
-            {
-                live.entry(row.key.clone()).or_insert(rect);
+            tokens.entry(row.key.clone()).or_insert(row.token.clone());
+        }
+        for (key, token) in &self.member_tokens {
+            tokens.entry(key.clone()).or_insert(token.clone());
+        }
+        let mut live: std::collections::BTreeMap<tiler_core::directional::WindowId, Rect> =
+            std::collections::BTreeMap::new();
+        for window in observed {
+            live.insert(
+                tiler_core::directional::WindowId(window.token.clone()),
+                window.visible,
+            );
+        }
+        for row in retained {
+            if let Some(rect) = row.rect {
+                live.entry(tiler_core::directional::WindowId(row.token.clone()))
+                    .or_insert(rect);
             }
         }
-        self.pager_live = live;
-        let mut members: BTreeSet<crate::native_guards::WindowKey> = BTreeSet::new();
-        for output in self.output_devices() {
-            for id in self.workspace_ids(&output) {
-                members.extend(self.workspace_members(&output, &id));
-            }
-        }
-        // Union the fresh visible keys: observe runs before assignment, so a
-        // newly verified client admitted right after still paints in native
-        // order on its first frame. Unadmitted candidates never render (the
-        // builder filters to membership) and prune on the next observation
-        // once absent.
-        members.extend(visible_top_to_bottom.iter().cloned());
-        self.pager_z =
-            crate::pager::retain_pager_order(&self.pager_z, &members, visible_top_to_bottom);
+        self.world.observe_pager_presentation(
+            tiler_core::world_presentation::PagerPresentationObservation {
+                live,
+                float_frames: self
+                    .float_rects
+                    .iter()
+                    .map(|(token, frame)| {
+                        (tiler_core::directional::WindowId(token.clone()), *frame)
+                    })
+                    .collect(),
+                tile_frames: self
+                    .member_rects
+                    .iter()
+                    .map(|(token, frame)| {
+                        (tiler_core::directional::WindowId(token.clone()), *frame)
+                    })
+                    .collect(),
+                native_order_top_to_bottom: visible_top_to_bottom
+                    .iter()
+                    .filter_map(|key| tokens.get(key).cloned())
+                    .map(tiler_core::directional::WindowId)
+                    .collect(),
+            },
+        );
     }
 }

@@ -44,11 +44,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::directional::{OutputId, WindowId, WorkspaceId};
 use crate::engine::Engine;
 use crate::geometry::Rect;
+use crate::gesture::GestureSettled;
 use crate::ids::{CorrelationId, GenerationId, OwnerId};
 use crate::seed::EngineWindow;
 use crate::session::{DomainKey, OutputDomain};
 use crate::workspace_scope::ScopeHistory;
 use crate::world_commands::CommandApplied;
+use crate::world_gesture::{GestureOutcome, RetainedGesture};
 use crate::world_report::{
     CommandResult, FrameAttempt, HoldReason, TilingMode, TransferKind, TransferTarget,
     WORLD_CONTRACT_VERSION, WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES, WorldReply,
@@ -253,6 +255,46 @@ pub(crate) struct RetainedFloat {
     pub(crate) pending: Option<FrameAttempt>,
 }
 
+/// Retained directional maximize-clear: one outstanding authorized clear
+/// per window, keyed by the stable originating command operation identity
+/// (`op-<cmdSeq>`). Binds the original intent (window, direction, home
+/// domain, displayed view, observed focus, original observation sequence)
+/// plus whether the original subject routes tiled or float. The core
+/// publishes `clear_operation` desire under that identity; the adapter
+/// dispatches the native clear at most once and reports a correlated
+/// [`ClearAttempt`](crate::world_report::ClearAttempt). A correlated
+/// accepted attempt plus complete readable unmaximized facts proves the
+/// clear; only then does the original intent resume (tiled-as-tiled or
+/// float-as-float) under the ORIGINAL operation id, in the same reply's
+/// settlement/sweep/publish ordering. No later user command consumes the
+/// binding: any same-window new intent supersedes it and re-evaluates
+/// fresh. Explicit close, complete departure, homing loss, or reset prunes
+/// it. The desire withholds on held/unreadable/gesture scopes; after an
+/// attempt the operation never re-actuates.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RetainedClear {
+    pub(crate) operation_id: String,
+    pub(crate) window: WindowId,
+    pub(crate) direction: String,
+    pub(crate) home: DomainKey,
+    pub(crate) view: Option<String>,
+    pub(crate) focus: String,
+    pub(crate) observation_seq: u64,
+    /// True when the original subject routes float (floating or sticky);
+    /// false for the tiled route.
+    pub(crate) float_route: bool,
+    /// Original same-axis mode for the tiled resume path.
+    pub(crate) same_axis: crate::directional::SameAxisMove,
+    /// Latest exact-correlated raw clear attempt staged BEFORE any
+    /// readability or authority hold, mirroring [`RetainedFloat::pending`].
+    pub(crate) pending: Option<crate::world_report::ClearAttempt>,
+    /// Latched ambiguity from a correlated attempt that neither confirms
+    /// nor proves refusal (accepted mismatch, throw, unreadable proof).
+    /// Survives acknowledgement; re-evaluated against later readable
+    /// evidence. Clears only on settlement or supersession.
+    pub(crate) ambiguous: bool,
+}
+
 /// Bounded outcome of one [`WorldEngine::handle_report`] call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorldOutcome {
@@ -344,6 +386,12 @@ pub struct WorldEngine {
     /// Outstanding explicit float-placement targets, at most one per window.
     /// Bounded by the window inventory itself.
     pub(crate) retained_floats: Vec<RetainedFloat>,
+    /// Outstanding directional maximize-clear authorizations, at most one
+    /// per window. Bounded by the window inventory itself; each entry is
+    /// commandless (no second command consumes it), superseded by any
+    /// same-window new intent, pruned when its window closes, departs, or
+    /// loses homing. See [`RetainedClear`].
+    pub(crate) retained_clears: Vec<RetainedClear>,
     /// Core-owned frame anti-fighting memory (stage 3a): per-lifetime clamp
     /// suppression plus transient retry backoff over mechanical
     /// [`FrameAttempt`](crate::world_report::FrameAttempt) facts. Bounded by
@@ -422,6 +470,26 @@ pub struct WorldEngine {
     /// run and published by [`WorldEngine::publish`]; never survives across
     /// reports, incarnations, or generations.
     pub(crate) hold_reasons: BTreeMap<DomainKey, HoldReason>,
+    /// Retained gesture session (stage 4a): one open native move/size
+    /// gesture bound to an exact window lifetime plus its stable adapter
+    /// gesture id. Updated per accepted gesture report; cleared on
+    /// release, cancel, Esc, close, or incarnation/generation reset.
+    /// Never a command and never consumed.
+    pub(crate) gesture: Option<RetainedGesture>,
+    /// Consumed gesture id high watermark (stage 4a at-most-once): every
+    /// incorporated terminal advances this to at least its id. Binds and
+    /// terminal replays order against this single scalar, never a map:
+    /// ids at or below it are consumed replays, ids above it are new.
+    /// Superseded only by incarnation reset, never cleared otherwise (not
+    /// on Updated/Started replays).
+    pub(crate) consumed_gesture_seq: u64,
+    /// Precise result of the latest incorporated gesture terminal, staged
+    /// for the reply being published ([`WorldEngine::publish`] takes it
+    /// into [`WorldReply::gesture_settled`]). Single slot: each terminal
+    /// overwrites; each publish takes. Never drained by the adapter; the
+    /// reply carries the per-report result and the next unrelated report
+    /// publishes `None`.
+    pub(crate) gesture_terminal: Option<GestureSettled>,
     /// Fresh-placement bootstrap phase: false until the first accepted
     /// complete inventory establishes the startup lifetime set (including
     /// an empty roster). Once true, genuinely new lifetimes observed
@@ -450,7 +518,7 @@ pub struct WorldEngine {
     pub(crate) admission_focus_spent: BTreeSet<String>,
     /// Cursor-first behavior settings retained from the latest accepted
     /// report (2026-10-20): switch target, fresh placement, and the
-    /// stage-4-owned focus-follows-cursor/cursor-warp flags. Refreshed per
+    /// stage-4b focus-follows-cursor/cursor-warp flags. Refreshed per
     /// accepted run alongside the ingress capacity settings below; never
     /// move existing members or reflow retained state on change.
     pub(crate) switch_target: crate::cursor_targeting::SwitchTarget,
@@ -463,6 +531,16 @@ pub struct WorldEngine {
     /// timer; an absent cursor falls back through focused output to the
     /// primary/first readable output.
     pub(crate) last_cursor: Option<(i32, i32)>,
+    /// Cursor of the previously accepted report (the movement baseline for
+    /// focus-follows-cursor: a static cursor never re-steals focus).
+    /// Updated alongside [`WorldEngine::last_cursor`], cleared on
+    /// adapter incarnation reset.
+    pub(crate) prev_cursor: Option<(i32, i32)>,
+    /// Last hover target the focus-follows-cursor lane observed, minted or
+    /// not: a static cursor over an unchanged hover never re-mints after a
+    /// keyboard command moves focus elsewhere. Cleared on adapter
+    /// incarnation reset.
+    pub(crate) ffc_last_hover: Option<WindowId>,
     /// Retained last-known focused output for fresh-window homing (i3/sway
     /// focused-output placement): genuine managed focus only, cleared on
     /// adapter incarnation reset, filtered against live topology at use.
@@ -474,6 +552,28 @@ pub struct WorldEngine {
     /// accepted run and read by settling, sweeping, commands, and
     /// publishing; never survives across runs.
     pub(crate) staged: StagedReport,
+    /// Pager presentation live frames (stage 4c): verified live frames per
+    /// admitted member lifetime, rebuilt by every
+    /// [`WorldEngine::observe_pager_presentation`] call. Presentation-only;
+    /// never mapping, membership, or geometry authority.
+    pub(crate) presentation_live: BTreeMap<WindowId, Rect>,
+    /// Pager presentation float snapshots (stage 4c): saved float frames per
+    /// admitted member, second in the pager frame fallback after live.
+    pub(crate) presentation_float: BTreeMap<WindowId, Rect>,
+    /// Pager presentation tile/hide-time snapshots (stage 4c): saved tile
+    /// slot and hide-time frames per admitted member, last in the pager
+    /// frame fallback. Members with no frame anywhere render no miniature,
+    /// never a guess.
+    pub(crate) presentation_tile: BTreeMap<WindowId, Rect>,
+    /// Retained pager presentation order (stage 4c): top-to-bottom native
+    /// stacking over admitted member lifetimes plus first-paint candidates
+    /// (see [`WorldEngine::observe_pager_presentation`]). Sole retained
+    /// stacking authority; per-workspace query lists paint bottom first.
+    pub(crate) presentation_order: Vec<WindowId>,
+    /// Pager presentation focus (stage 4c): the adapter-observed focused
+    /// lifetime from the latest accepted report (`None` when none or
+    /// unmanaged). Presentation-only; the query gates it on retained homing.
+    pub(crate) presentation_focused: Option<WindowId>,
 }
 
 /// Platform opt-ins for [`WorldEngine`] construction: the only Engine
@@ -538,10 +638,14 @@ impl WorldEngine {
             command_highwater: None,
             retained: Vec::new(),
             retained_floats: Vec::new(),
+            retained_clears: Vec::new(),
             frames: BTreeMap::new(),
             consumed_frames: BTreeMap::new(),
             learned_mins: BTreeMap::new(),
             creation_counter: 0,
+            gesture: None,
+            consumed_gesture_seq: 0,
+            gesture_terminal: None,
             last_views: BTreeMap::new(),
             mapping: BTreeMap::new(),
             views: BTreeMap::new(),
@@ -562,8 +666,15 @@ impl WorldEngine {
             focus_follows_cursor: false,
             cursor_warp: false,
             last_cursor: None,
+            prev_cursor: None,
+            ffc_last_hover: None,
             fresh_focus: crate::fresh_focus::FreshFocusMemory::default(),
             staged: StagedReport::default(),
+            presentation_live: BTreeMap::new(),
+            presentation_float: BTreeMap::new(),
+            presentation_tile: BTreeMap::new(),
+            presentation_order: Vec::new(),
+            presentation_focused: None,
         })
     }
 
@@ -589,6 +700,8 @@ impl WorldEngine {
             transfers: Vec::new(),
             effects: Vec::new(),
             command_result: None,
+            gesture_settled: None,
+            cursor_warp: None,
             presentation_bytes: 0,
         }
     }
@@ -608,9 +721,13 @@ impl WorldEngine {
         self.command_highwater = None;
         self.retained.clear();
         self.retained_floats.clear();
+        self.retained_clears.clear();
         self.frames.clear();
         self.consumed_frames.clear();
         self.learned_mins.clear();
+        self.gesture = None;
+        self.consumed_gesture_seq = 0;
+        self.gesture_terminal = None;
         self.tiling.clear();
         self.members.clear();
         self.floating_scopes.clear();
@@ -622,10 +739,40 @@ impl WorldEngine {
         self.output_facts.clear();
         self.live_topology.clear();
         self.command_result = None;
+        self.prev_cursor = self.last_cursor;
+        self.ffc_last_hover = None;
         self.staged = StagedReport::default();
         self.placement_bootstrapped = false;
         self.fresh_focus = crate::fresh_focus::FreshFocusMemory::default();
+        self.presentation_live.clear();
+        self.presentation_float.clear();
+        self.presentation_tile.clear();
+        self.presentation_order.clear();
+        self.presentation_focused = None;
         self.last_adapter_incarnation = Some(adapter_incarnation.to_owned());
+    }
+
+    /// Advance the consumed gesture id watermark to at least `id`.
+    /// Monotonic: replays can never move it backward.
+    pub(crate) fn consume_gesture_id(&mut self, id: u64) {
+        self.consumed_gesture_seq = self.consumed_gesture_seq.max(id);
+    }
+
+    /// Record one incorporated gesture terminal and advance the watermark.
+    /// Called exactly once per incorporated terminal ingress (release with
+    /// or without commit, cancel, Esc, explicit-close clear), including
+    /// terminals that refuse without binding: the identity is consumed so
+    /// a retry can never commit. Stages the result for the reply being
+    /// published; [`WorldEngine::publish`] takes it exactly once.
+    pub(crate) fn record_gesture_terminal(&mut self, id: u64, committed: bool) {
+        self.consume_gesture_id(id);
+        self.gesture_terminal = Some(GestureSettled { id, committed });
+    }
+
+    /// Whether one terminal ingress replays an already-settled gesture:
+    /// its stable id sits at or below the consumed watermark.
+    pub(crate) fn gesture_replayed(&self, id: u64) -> bool {
+        id <= self.consumed_gesture_seq
     }
 
     /// Borrow the retained engine (read-only inspection for in-crate callers).
@@ -662,15 +809,15 @@ impl WorldEngine {
         self.fresh_placement
     }
 
-    /// Retained focus-follows-cursor setting (default off). Stage-4-owned
-    /// actuation; core retains the setting only.
+    /// Retained focus-follows-cursor setting (default off); the stage-4b
+    /// core policy in [`crate::world_cursor`] actuates it.
     #[must_use]
     pub fn focus_follows_cursor(&self) -> bool {
         self.focus_follows_cursor
     }
 
-    /// Retained cursor-warp setting (default off). Stage-4-owned
-    /// actuation; core retains the setting only.
+    /// Retained cursor-warp setting (default off); the stage-4b core
+    /// policy in [`crate::world_cursor`] actuates it.
     #[must_use]
     pub fn cursor_warp(&self) -> bool {
         self.cursor_warp
@@ -1104,6 +1251,11 @@ impl WorldEngine {
         // Stage the observation: homing plus one domain per known logical
         // workspace.
         self.build_staged_domains(report);
+        // Stage-4a gesture bind (observation half): validate the ingress
+        // and retain the session before settlement and the sweep, so both
+        // converge with the shielded homing. Never commits; the act half
+        // runs after the sweep.
+        self.gesture_bind(report, &BTreeSet::new());
         // Remaining flights (window, migration, floats) settle against the
         // staged homing and echoes. Settlement classifies against the
         // pre-settlement staged homing (raw observation versus the
@@ -1128,14 +1280,24 @@ impl WorldEngine {
         self.engine.set_anchor_fallback(report.anchor_fallback);
         self.engine.set_no_space_result(report.no_space_result);
         // Cursor-first ingress: switch target, fresh placement, the
-        // stage-4-owned coupling flags, and the normalized cursor seat
+        // stage-4b coupling flags, and the normalized cursor seat
         // with this observation. All apply to subsequent selections and
         // admissions only, never to retained state.
         self.switch_target = report.switch_target;
         self.fresh_placement = report.fresh_placement;
         self.focus_follows_cursor = report.focus_follows_cursor;
         self.cursor_warp = report.cursor_warp;
+        self.prev_cursor = self.last_cursor;
         self.last_cursor = report.cursor;
+        // Pager presentation focus (stage 4c): the adapter-observed focused
+        // lifetime, retained per accepted report. The pager query gates it
+        // on retained homing, so unmanaged or departed lifetimes simply mark
+        // no workspace. Empty means no focus.
+        self.presentation_focused = if report.focused_global.is_empty() {
+            None
+        } else {
+            Some(WindowId(report.focused_global.clone()))
+        };
         self.engine.set_fresh_placement(report.fresh_placement);
         self.engine.set_fresh_cursor(report.cursor);
         // Floating workspaces skip convergence entirely: no session is
@@ -1240,16 +1402,43 @@ impl WorldEngine {
         for (key, window) in std::mem::take(&mut self.pending_forget) {
             self.engine.forget_minimized_slot(&key, &window);
         }
+        // Stage-4a gesture ingress before admission focus and commands:
+        // preview and release read the swept observation; a committed
+        // release resweeps and restages exactly like the command path so
+        // admission focus, commands, and publishing below see the
+        // committed ownership. Gesture ingress is observation, never a
+        // command: it runs even on consumed-command reports, and it never
+        // consumes a sequence.
+        self.command_result = None;
+        match self.gesture_act(report, &mut held_scopes) {
+            GestureOutcome::Absent | GestureOutcome::Held => {}
+            GestureOutcome::Settled { committed, result } => {
+                if committed {
+                    let was_floating = self.floating_scopes.clone();
+                    self.resweep_retiled(
+                        report,
+                        owner,
+                        correlation,
+                        &mut held_scopes,
+                        &was_floating,
+                    );
+                    self.build_staged_domains(report);
+                }
+                self.command_result = result.map(|boxed| *boxed);
+            }
+        }
         // Fresh-admission focus intent for this report's sweep, if any.
         // Command execution mints no newcomers, so every publish below
         // shares it.
         let mut effects = self.take_admission_focus(report, &known_before, &held_scopes);
         // Command path: consumed sequences reconcile only, never re-execute.
         // A consumed command never re-executes, so its result never
-        // re-emits either: consumed replies carry no result.
-        self.command_result = None;
+        // re-emits either; a gesture result is the gesture's own, never
+        // the command's, so consumed replies may still carry it.
         if consumed {
-            let reply = self.publish(report, true, effects, None, &held_scopes);
+            crate::world_cursor::maybe_push_focus_follows(self, report, &held_scopes, &mut effects);
+            let result = self.command_result.take();
+            let reply = self.publish(report, true, effects, result, &held_scopes);
             return self.finish(report, digest, reply);
         }
         if let Some(command) = report.command.as_ref() {
@@ -1274,6 +1463,12 @@ impl WorldEngine {
                     // focuses after it, so user intent wins when they
                     // coincide.
                     effects.push(effect);
+                    crate::world_cursor::maybe_push_focus_follows(
+                        self,
+                        report,
+                        &held_scopes,
+                        &mut effects,
+                    );
                     let reply = self.publish(report, false, effects, result, &held_scopes);
                     return self.finish(report, digest, reply);
                 }
@@ -1288,6 +1483,12 @@ impl WorldEngine {
                     // See above: restage against committed ownership.
                     self.build_staged_domains(report);
                     let result = self.command_result.take();
+                    crate::world_cursor::maybe_push_focus_follows(
+                        self,
+                        report,
+                        &held_scopes,
+                        &mut effects,
+                    );
                     let reply = self.publish(report, false, effects, result, &held_scopes);
                     return self.finish(report, digest, reply);
                 }
@@ -1296,7 +1497,9 @@ impl WorldEngine {
                 }
             }
         }
-        let reply = self.publish(report, false, effects, None, &held_scopes);
+        let result = self.command_result.take();
+        crate::world_cursor::maybe_push_focus_follows(self, report, &held_scopes, &mut effects);
+        let reply = self.publish(report, false, effects, result, &held_scopes);
         self.finish(report, digest, reply)
     }
 

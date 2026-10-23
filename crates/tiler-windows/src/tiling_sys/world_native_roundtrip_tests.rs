@@ -1442,3 +1442,192 @@ fn native_arrangement_close_focused_bottom_right_absorbs_right_column() {
         "closed member stays gone"
     );
 }
+
+/// Standalone selection into a nonempty floating workspace through the
+/// production seam: the switch hides/reveals natively, reports its raw
+/// view attempt, receipts the proven view, and the core settles the
+/// retained flight on the next echo with the logical view preserved.
+/// Before the view-actuatable gate the switch never dispatched, so no
+/// attempt rode and the flight persisted past every echo.
+#[test]
+fn floating_select_actuates_hide_reveal_and_settles() {
+    let mut env = env_with(208_601);
+    env.state.ensure_device(DEV2);
+    let o1 = env.state.output_token(DEV1);
+    let o2 = env.state.output_token(DEV2);
+    let (areas, fulls) = two_output_areas();
+    let a1 = win_key(208_601, 2511, "proc-251");
+    admit_bare(&mut env, &a1, "w1");
+    script_live(&a1, "w1", rect(0, 0, 800, 600), plain_facts());
+    S_ADMIT.with(|m| {
+        m.borrow_mut()
+            .insert(a1.hwnd, Ok(script_claim(a1.hwnd, &identity_of(&a1))))
+    });
+    S_HIDE.with(|m| {
+        m.borrow_mut()
+            .insert(a1.hwnd, Ok(valid_claim(a1.hwnd, &identity_of(&a1))))
+    });
+    S_REVEAL.with(|m| m.borrow_mut().insert(a1.hwnd, Ok(Revealed::Shown)));
+    let mut owner = WorldOwner::bootstrap_ids(ADAPTER, GENERATION).expect("owner");
+    let observed = live_visible_observed();
+    live_tick(
+        &mut env,
+        &mut owner,
+        &observed,
+        &[],
+        &areas,
+        &fulls,
+        moving_prims(),
+        0,
+        None,
+    );
+    let head = owner.engine().logical_view(&o1).expect("head view");
+    let other = second_workspace(&owner, &o1, &head);
+    // Float the occupied head: w1 stays homed there with no frame writes.
+    let observed = live_visible_observed();
+    live_tick(
+        &mut env,
+        &mut owner,
+        &observed,
+        &[],
+        &areas,
+        &fulls,
+        moving_prims(),
+        0,
+        Some(WorldCommand::SetWorkspaceTiling {
+            output: OutputId(o1.clone()),
+            workspace: head.clone(),
+            tiled: false,
+        }),
+    );
+    // Select away to the tiled trailing: w1 hides and the flight settles
+    // on the next echo.
+    let observed = live_visible_observed();
+    let away = live_tick(
+        &mut env,
+        &mut owner,
+        &observed,
+        &[],
+        &areas,
+        &fulls,
+        moving_prims(),
+        0,
+        Some(WorldCommand::SelectWorkspace {
+            output: OutputId(o1.clone()),
+            workspace: other.clone(),
+        }),
+    );
+    assert!(
+        away.reply
+            .transfers
+            .iter()
+            .any(|t| matches!(t.kind, TransferKind::View)),
+        "away selection retains its flight: {:?}",
+        away.reply.transfers
+    );
+    assert!(
+        live_visible_observed().iter().all(|w| w.token != "w1"),
+        "away switch hides w1"
+    );
+    let observed = live_visible_observed();
+    let calmed = live_tick(
+        &mut env,
+        &mut owner,
+        &observed,
+        &[],
+        &areas,
+        &fulls,
+        moving_prims(),
+        0,
+        None,
+    );
+    assert!(
+        calmed.reply.transfers.is_empty(),
+        "away flight settles on echo: {:?}",
+        calmed.reply.transfers
+    );
+    // Select back into the nonempty floating head: the switch reveals w1
+    // and reports its raw attempt under the retained operation.
+    let observed = live_visible_observed();
+    let back = live_tick(
+        &mut env,
+        &mut owner,
+        &observed,
+        &[],
+        &areas,
+        &fulls,
+        moving_prims(),
+        0,
+        Some(WorldCommand::SelectWorkspace {
+            output: OutputId(o1.clone()),
+            workspace: head.clone(),
+        }),
+    );
+    let flight = back
+        .reply
+        .transfers
+        .iter()
+        .find(|t| matches!(t.kind, TransferKind::View))
+        .expect("back selection retains its flight")
+        .operation_id
+        .clone();
+    // The floating target publishes Untouched on the commit reply itself,
+    // never tiled-scope frame authority.
+    let back_scope = back
+        .reply
+        .scopes
+        .iter()
+        .find(|status| status.scope == format!("{o1}/{head}"))
+        .expect("floating scope row");
+    assert_eq!(back_scope.authority, Auth::Untouched);
+    assert_eq!(
+        back.views.len(),
+        1,
+        "switch reports its attempt: {:?}",
+        back.views
+    );
+    let attempt = &back.views[0];
+    assert_eq!(attempt.operation_id, flight);
+    assert_eq!(attempt.target_workspace, head);
+    assert_eq!(
+        attempt.post.as_deref(),
+        Some(head.as_str()),
+        "read-back proves the floating view: {attempt:?}"
+    );
+    assert!(
+        live_visible_observed().iter().any(|w| w.token == "w1"),
+        "back switch reveals w1"
+    );
+    assert_eq!(
+        env.state.applied_views.get(&o1).map(String::as_str),
+        Some(head.as_str())
+    );
+    // The next echo settles the flight with the logical view preserved;
+    // the peer output never moves.
+    let peer = owner.engine().logical_view(&o2).expect("peer view");
+    let observed = live_visible_observed();
+    let settled = live_tick(
+        &mut env,
+        &mut owner,
+        &observed,
+        &[],
+        &areas,
+        &fulls,
+        moving_prims(),
+        0,
+        None,
+    );
+    assert!(
+        settled.reply.transfers.is_empty(),
+        "floating flight settles on echo: {:?}",
+        settled.reply.transfers
+    );
+    assert_eq!(
+        owner.engine().logical_view(&o1).as_deref(),
+        Some(head.as_str())
+    );
+    assert_eq!(
+        owner.engine().logical_view(&o2).as_deref(),
+        Some(peer.as_str())
+    );
+}

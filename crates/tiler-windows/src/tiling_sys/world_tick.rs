@@ -20,6 +20,29 @@ use super::{MonitorArea, ObservedWindow, RetainedRow, TileLoop};
 use std::collections::HashMap;
 use tiler_core::world_report::{CommandResult, TransferKind, WorldCommand, WorldReply};
 
+impl TileLoop {
+    /// Clear the stashed terminal override on genuine incorporation proof:
+    /// a freshly accepted reply carrying a gesture terminal whose id
+    /// matches the stashed override proves that terminal ran in core, so
+    /// the override clears and no later tick replays it. Any other reply
+    /// (none, no terminal, mismatched id) leaves the stash for the next
+    /// eligible observation. Call only with a freshly incorporated reply,
+    /// never a stale/duplicate cache. Takes the override slot directly so
+    /// the tick's disjoint borrow of the world owner stays intact.
+    pub(super) fn clear_gesture_override_on_incorporation(
+        override_slot: &mut Option<tiler_core::gesture::GestureIngress>,
+        reply: &WorldReply,
+    ) {
+        if let Some(terminal) = reply.gesture_settled
+            && override_slot
+                .as_ref()
+                .is_some_and(|stashed| stashed.id == terminal.id)
+        {
+            *override_slot = None;
+        }
+    }
+}
+
 /// Merge applied transfer effects into the proven receipt maps. Each
 /// staged raw attempt with post proof at the target revalidates against
 /// independent fresh native proof (never the native cache alone): a window
@@ -136,6 +159,10 @@ fn tiled_frame_matches(
 const MAX_APPLY_DIAG_FEEDBACK: usize = 16;
 const MAX_APPLY_DIAG_SCOPES: usize = 16;
 const MAX_APPLY_DIAG_TRANSFERS: usize = 16;
+/// Trace-only focus oracle cap: minted effects plus per-effect dispatch
+/// rows stay bounded with honest `omitted` counts. Effects are already
+/// bounded by the reply budget; this caps only the retained trace rows.
+const MAX_APPLY_DIAG_FOCUS: usize = 8;
 
 /// Redacted fixed command vocabulary for the apply diagnostic: the kind
 /// alone, never window tokens, output/workspace strings, exe paths,
@@ -169,6 +196,7 @@ fn command_result_kind(result: &Option<CommandResult>) -> &'static str {
         None => "none",
         Some(CommandResult::DragPreview { .. }) => "drag-preview",
         Some(CommandResult::Float { .. }) => "float",
+        Some(CommandResult::Directional { .. }) => "directional",
         Some(CommandResult::ActiveGroup { .. }) => "active-group",
         Some(CommandResult::NoGroup { .. }) => "no-group",
         Some(CommandResult::Migration { .. }) => "migration",
@@ -177,21 +205,29 @@ fn command_result_kind(result: &Option<CommandResult>) -> &'static str {
 
 /// Event-driven throttle: commands always log (the owner trace only runs on
 /// dispatch), while observation ticks log only on change: staged raw
-/// attempts, landed writes, or a stopped/partial pass. Pure-held
-/// observation ticks (steady-state holds with no attempt) stay quiet; a
-/// command that holds with no attempt still logs on its own command row
-/// with `held > 0` and empty attempt rows, which is exactly the no-attempt
-/// Hold signature.
+/// attempts, landed writes, any minted focus effect (dispatched or held),
+/// a changed hover triple (see `hover_changed`), or a stopped/partial pass.
+/// Pure-idle observation ticks (no attempt, no minted effect, unchanged
+/// hover) stay quiet; minting is transition/motion driven so idle rows never
+/// re-log. A command that holds with no attempt still logs on its own
+/// command row with `held > 0` and empty attempt rows, which is exactly the
+/// no-attempt Hold signature. A held minted effect logs with its individual
+/// hold reason, so dispatched-but-unproven and held-without-setter are both
+/// distinguishable from idle quiet.
 fn should_log_apply(
     command_kind: &str,
     stats: &super::world_diff::ApplyStats,
     member_attempts: &[tiler_core::world_report::MemberAttempt],
     view_attempts: &[tiler_core::world_report::ViewAttempt],
+    clear_attempts: &[tiler_core::world_report::ClearAttempt],
 ) -> bool {
     if command_kind != "observation" {
         return true;
     }
-    if !member_attempts.is_empty() || !view_attempts.is_empty() {
+    if !member_attempts.is_empty() || !view_attempts.is_empty() || !clear_attempts.is_empty() {
+        return true;
+    }
+    if !stats.focus_dispatch.is_empty() {
         return true;
     }
     if stats.stopped_mid_apply || stats.partial {
@@ -200,9 +236,11 @@ fn should_log_apply(
     stats.geometry_writes
         + stats.membership_writes
         + stats.view_writes
+        + stats.clear_writes
         + stats.creations
         + stats.removals
         + stats.effects
+        + stats.cursor_warps
         > 0
 }
 
@@ -244,7 +282,7 @@ fn fresh_route_value(
 /// surfaces explicit refusal as `Ok(false)` and torn state as `Err`
 /// without a native errno, so deeper refusal detail would need a broader
 /// seam change (reported as a limitation, not papered over here).
-// Nine inputs are the disjoint trace context plus the pass products;
+// Eleven inputs are the disjoint trace context plus the pass products;
 // bundling would hide the call-site borrow split the tick relies on.
 #[allow(clippy::too_many_arguments)]
 fn apply_diag_value(
@@ -255,7 +293,10 @@ fn apply_diag_value(
     stats: &super::world_diff::ApplyStats,
     member_attempts: &[tiler_core::world_report::MemberAttempt],
     view_attempts: &[tiler_core::world_report::ViewAttempt],
+    clear_attempts: &[tiler_core::world_report::ClearAttempt],
     fresh_route: serde_json::Value,
+    cursor_hit: Option<String>,
+    ffc_enabled: bool,
 ) -> serde_json::Value {
     let member_rows: Vec<serde_json::Value> = member_attempts
         .iter()
@@ -284,6 +325,19 @@ fn apply_diag_value(
                 "pre": item.pre,
                 "post": item.post,
                 "base": item.baseline,
+            })
+        })
+        .collect();
+    let clear_rows: Vec<serde_json::Value> = clear_attempts
+        .iter()
+        .take(MAX_APPLY_DIAG_FEEDBACK)
+        .map(|item| {
+            serde_json::json!({
+                "op": item.operation_id.clone(),
+                "window": item.window.0.clone(),
+                "setter": item.setter.as_str(),
+                "pre": item.pre_maximized,
+                "post": item.post_maximized,
             })
         })
         .collect();
@@ -321,6 +375,34 @@ fn apply_diag_value(
             })
         })
         .collect();
+    let focus_effects: Vec<serde_json::Value> = reply
+        .effects
+        .iter()
+        .take(MAX_APPLY_DIAG_FOCUS)
+        .map(|effect| {
+            serde_json::json!({
+                "id": effect.id.clone(),
+                "kind": effect.kind.as_str(),
+                "target": effect.target.0.clone(),
+            })
+        })
+        .collect();
+    let focus_dispatch: Vec<serde_json::Value> = stats
+        .focus_dispatch
+        .iter()
+        .take(MAX_APPLY_DIAG_FOCUS)
+        .map(|row| {
+            serde_json::json!({
+                "id": row.id.clone(),
+                "target": row.target.clone(),
+                "kind": row.kind,
+                "dispatched": row.dispatched,
+                "setter": row.setter,
+                "foreground": row.foreground,
+                "hold": row.hold,
+            })
+        })
+        .collect();
     serde_json::json!({
         "event": "world-apply",
         "tick": tick,
@@ -335,15 +417,19 @@ fn apply_diag_value(
             "geometry_writes": stats.geometry_writes,
             "membership_writes": stats.membership_writes,
             "view_writes": stats.view_writes,
+            "clear_writes": stats.clear_writes,
             "creations": stats.creations,
             "removals": stats.removals,
             "effects": stats.effects,
+            "cursor_warps": stats.cursor_warps,
             "held": stats.held,
             "migration_total": stats.migration_total,
             "migration_proven": stats.migration_proven,
             "stopped_mid_apply": stats.stopped_mid_apply,
             "partial": stats.partial,
         },
+        "cursor_hit": cursor_hit,
+        "ffc_enabled": ffc_enabled,
         "members": member_rows,
         "members_omitted": member_attempts
             .len()
@@ -352,6 +438,10 @@ fn apply_diag_value(
         "views_omitted": view_attempts
             .len()
             .saturating_sub(MAX_APPLY_DIAG_FEEDBACK.min(view_attempts.len())),
+        "clears": clear_rows,
+        "clears_omitted": clear_attempts
+            .len()
+            .saturating_sub(MAX_APPLY_DIAG_FEEDBACK.min(clear_attempts.len())),
         "held_scopes": held_scopes,
         "held_scopes_omitted": reply
             .scopes
@@ -366,15 +456,28 @@ fn apply_diag_value(
             .transfers
             .len()
             .saturating_sub(desired_transfers.len()),
+        "focus_effects": focus_effects,
+        "focus_effects_omitted": reply
+            .effects
+            .len()
+            .saturating_sub(focus_effects.len()),
+        "focus_dispatch": focus_dispatch,
+        "focus_dispatch_omitted": reply
+            .effects
+            .len()
+            .saturating_sub(focus_dispatch.len()),
         "fresh_route": fresh_route,
     })
 }
 
 /// Trace-only emission for one apply pass. Event-driven owner trace only:
-/// no input-hook cost, no native re-read, no per-window dump.
-// Eight inputs are the disjoint trace context plus the pass products
-// (reply, delivery, command kind, stats, raw attempts); bundling would
-// hide the call-site borrow split the tick relies on.
+/// no input-hook cost, no native re-read, no per-window dump. Returns true
+/// when a row was emitted (the caller records the hover triple then, never
+/// on quiet ticks).
+// Twelve inputs are the disjoint trace context plus the pass products
+// (reply, delivery, command kind, stats, raw attempts, cursor-hit/FFC,
+// hover-change); bundling would hide the call-site borrow split the tick
+// relies on.
 #[allow(clippy::too_many_arguments)]
 fn log_apply_diag(
     log_path: &std::path::Path,
@@ -386,10 +489,22 @@ fn log_apply_diag(
     stats: &super::world_diff::ApplyStats,
     member_attempts: &[tiler_core::world_report::MemberAttempt],
     view_attempts: &[tiler_core::world_report::ViewAttempt],
+    clear_attempts: &[tiler_core::world_report::ClearAttempt],
     fresh_route: serde_json::Value,
-) {
-    if !trace || !should_log_apply(command_kind, stats, member_attempts, view_attempts) {
-        return;
+    cursor_hit: Option<String>,
+    ffc_enabled: bool,
+    hover_changed: bool,
+) -> bool {
+    if !trace
+        || !(should_log_apply(
+            command_kind,
+            stats,
+            member_attempts,
+            view_attempts,
+            clear_attempts,
+        ) || hover_changed)
+    {
+        return false;
     }
     super::trace::log_json_at(
         log_path,
@@ -401,9 +516,13 @@ fn log_apply_diag(
             stats,
             member_attempts,
             view_attempts,
+            clear_attempts,
             fresh_route,
+            cursor_hit,
+            ffc_enabled,
         ),
     );
+    true
 }
 
 /// Mechanical admission preamble: bind observed windows to stable tokens
@@ -623,6 +742,14 @@ pub(super) fn run_observation_tick(
     admit_retained_and_marks(state, me, observed, retained, areas);
     snapshot_frames(state, observed);
     super::rows::refresh_world_hints(state, observed, retained);
+    // Normalized gesture ingress rides this tick's capture (stage 4a):
+    // computed before the disjoint split borrows the loop.
+    let gesture = state.gesture_ingress(cursor);
+    // Raw cursor-hit HWND for the same tick as the cursor sample: the
+    // exact managed binding resolves in capture over the owner tables.
+    // `None` whenever the cursor itself is unsampled (game lane,
+    // unreadable), so a hit never travels without its position.
+    let hit_hwnd = super::observation::cursor_hit_hwnd(cursor);
     // Disjoint borrows: `world` mutably alongside every read-only input
     // field, never the whole loop (see `TileLoop::owner_inputs`).
     let TileLoop {
@@ -691,6 +818,8 @@ pub(super) fn run_observation_tick(
         outer_gap,
         active,
         cursor,
+        hit_hwnd,
+        gesture.clone(),
     );
     let report = match world.try_dispatch_observation(
         &inputs,
@@ -748,6 +877,8 @@ pub(super) fn run_observation_tick(
         outer_gap,
         active,
         cursor,
+        hit_hwnd,
+        gesture.clone(),
     );
     let captured = capture_world(&inputs, Some(observed), retained, areas, foreground_hwnd);
     let inputs = TileLoop::owner_inputs(
@@ -777,6 +908,8 @@ pub(super) fn run_observation_tick(
         outer_gap,
         active,
         cursor,
+        hit_hwnd,
+        gesture.clone(),
     );
     let fresh = FreshHost::from_sources(&inputs, observed, retained, &captured);
     let (homing, rings, views) = world.core_projections();
@@ -824,6 +957,7 @@ pub(super) fn run_observation_tick(
     let mut frame_attempts = Vec::new();
     let mut member_attempts = Vec::new();
     let mut view_attempts = Vec::new();
+    let mut clear_attempts = Vec::new();
     let stats = world.apply_accepted(
         &reply,
         &fresh,
@@ -831,9 +965,16 @@ pub(super) fn run_observation_tick(
         &mut frame_attempts,
         &mut member_attempts,
         &mut view_attempts,
+        &mut clear_attempts,
         tick_ms,
     );
-    log_apply_diag(
+    let hover_hit = captured.cursor_hit.as_ref().map(|hit| hit.0.clone());
+    let hover_changed = world.hover_trace_changed(
+        hover_hit.as_deref(),
+        &captured.focused_global,
+        captured.focus_follows_cursor,
+    );
+    let emitted = log_apply_diag(
         &log_path,
         trace,
         tick,
@@ -843,6 +984,7 @@ pub(super) fn run_observation_tick(
         &stats,
         &member_attempts,
         &view_attempts,
+        &clear_attempts,
         fresh_route_value(
             &captured.focused_global,
             captured.cursor,
@@ -850,7 +992,19 @@ pub(super) fn run_observation_tick(
             captured.switch_target.as_wire_str(),
             world.engine().fresh_focus_trace(),
         ),
+        hover_hit,
+        captured.focus_follows_cursor,
+        hover_changed,
     );
+    // Record the hover triple only for an emitted row, never on quiet
+    // ticks, so a changed hover keeps triggering until it is on the trace.
+    if emitted {
+        world.note_hover_traced(
+            captured.cursor_hit.as_ref().map(|hit| hit.0.clone()),
+            captured.focused_global.clone(),
+            captured.focus_follows_cursor,
+        );
+    }
     // Proven receipt snapshot: desired values only where live native
     // evidence proves arrival (identity/tag/claim/visibility/scope
     // gates, exact frame on the target for tiled rows). Changed homing
@@ -885,18 +1039,30 @@ pub(super) fn run_observation_tick(
     for attempt in view_attempts {
         world.note_view_attempt(attempt);
     }
+    for attempt in clear_attempts {
+        world.note_clear_attempt(attempt);
+    }
     let mut pending = std::mem::take(pending_closed);
     let (ack_outcome, pruned) = world.ack(&reply, &mut pending);
     *pending_closed = pending;
     for token in pruned {
         applied_homing.remove(&token);
     }
+    // Only a freshly accepted reply claims incorporation: stale and
+    // duplicate deliveries never stand in. A stashed terminal survives
+    // transient busy/gap ticks until an eligible observation runs it. A
+    // fresh run clears a matching stash even when the ack races stale:
+    // incorporation already happened, only the claim is withheld.
+    let fresh_run = delivery != "duplicate";
+    if fresh_run {
+        TileLoop::clear_gesture_override_on_incorporation(&mut state.gesture_override, &reply);
+    }
     match ack_outcome {
         super::world_sequencer::AckOutcome::Applied(_) => {
             world.note_diff_applied(&reply);
             Some(reply)
         }
-        super::world_sequencer::AckOutcome::Stale(_) => world.last_reply().cloned(),
+        super::world_sequencer::AckOutcome::Stale(_) => None,
         super::world_sequencer::AckOutcome::Ignored { .. } => None,
     }
 }
@@ -929,6 +1095,14 @@ pub(super) fn run_world_command(
     admit_retained_and_marks(state, me, observed, retained, areas);
     snapshot_frames(state, observed);
     super::rows::refresh_world_hints(state, observed, retained);
+    // Normalized gesture ingress rides this tick's capture (stage 4a):
+    // computed before the disjoint split borrows the loop.
+    let gesture = state.gesture_ingress(cursor);
+    // Raw cursor-hit HWND for the same tick as the cursor sample: the
+    // exact managed binding resolves in capture over the owner tables.
+    // `None` whenever the cursor itself is unsampled (game lane,
+    // unreadable), so a hit never travels without its position.
+    let hit_hwnd = super::observation::cursor_hit_hwnd(cursor);
     // Disjoint borrows: `world` mutably alongside every read-only input
     // field, never the whole loop (see `TileLoop::owner_inputs`).
     let TileLoop {
@@ -996,6 +1170,8 @@ pub(super) fn run_world_command(
             outer_gap,
             active,
             cursor,
+            hit_hwnd,
+            gesture.clone(),
         );
         match world.try_dispatch_command(
             &inputs,
@@ -1092,6 +1268,8 @@ pub(super) fn run_world_command(
         outer_gap,
         active,
         cursor,
+        hit_hwnd,
+        gesture.clone(),
     );
     let captured = capture_world(&inputs, Some(observed), retained, areas, foreground_hwnd);
     let inputs = TileLoop::owner_inputs(
@@ -1121,6 +1299,8 @@ pub(super) fn run_world_command(
         outer_gap,
         active,
         cursor,
+        hit_hwnd,
+        gesture.clone(),
     );
     let fresh = FreshHost::from_sources(&inputs, observed, retained, &captured);
     let (homing, rings, views) = world.core_projections();
@@ -1164,6 +1344,7 @@ pub(super) fn run_world_command(
     let mut frame_attempts = Vec::new();
     let mut member_attempts = Vec::new();
     let mut view_attempts = Vec::new();
+    let mut clear_attempts = Vec::new();
     let stats = world.apply_accepted(
         &reply,
         &fresh,
@@ -1171,9 +1352,16 @@ pub(super) fn run_world_command(
         &mut frame_attempts,
         &mut member_attempts,
         &mut view_attempts,
+        &mut clear_attempts,
         tick_ms,
     );
-    log_apply_diag(
+    let hover_hit = captured.cursor_hit.as_ref().map(|hit| hit.0.clone());
+    let hover_changed = world.hover_trace_changed(
+        hover_hit.as_deref(),
+        &captured.focused_global,
+        captured.focus_follows_cursor,
+    );
+    let emitted = log_apply_diag(
         &log_path,
         trace,
         tick,
@@ -1183,6 +1371,7 @@ pub(super) fn run_world_command(
         &stats,
         &member_attempts,
         &view_attempts,
+        &clear_attempts,
         fresh_route_value(
             &captured.focused_global,
             captured.cursor,
@@ -1190,7 +1379,17 @@ pub(super) fn run_world_command(
             captured.switch_target.as_wire_str(),
             world.engine().fresh_focus_trace(),
         ),
+        hover_hit,
+        captured.focus_follows_cursor,
+        hover_changed,
     );
+    if emitted {
+        world.note_hover_traced(
+            captured.cursor_hit.as_ref().map(|hit| hit.0.clone()),
+            captured.focused_global.clone(),
+            captured.focus_follows_cursor,
+        );
+    }
     // Proven receipt snapshot plus raw-attempt post proofs (see the
     // observation path): re-proof of unchanged homing plus exact proven
     // arrivals with independent fresh revalidation. Never wholesale desire.
@@ -1223,6 +1422,9 @@ pub(super) fn run_world_command(
     for attempt in view_attempts {
         world.note_view_attempt(attempt);
     }
+    for attempt in clear_attempts {
+        world.note_clear_attempt(attempt);
+    }
     let mut pending = std::mem::take(pending_closed);
     let (ack_outcome, pruned) = world.ack(&reply, &mut pending);
     *pending_closed = pending;
@@ -1232,9 +1434,30 @@ pub(super) fn run_world_command(
     match ack_outcome {
         super::world_sequencer::AckOutcome::Applied(_) => {
             world.note_diff_applied(&reply);
+            // Incorporation proof only on a fresh run; a stale cached
+            // reply never clears the stashed terminal.
+            if delivery != "duplicate" {
+                TileLoop::clear_gesture_override_on_incorporation(
+                    &mut state.gesture_override,
+                    &reply,
+                );
+            }
             Some(reply)
         }
-        super::world_sequencer::AckOutcome::Stale(_) => world.last_reply().cloned(),
+        // Stale command deliveries keep the existing cached-reply contract
+        // (callers resubmit after the next observation tick runs the
+        // owed catch-up); only the observation tick refuses to equate a
+        // cached reply with a fresh run. A fresh run still clears a
+        // matching stash even when the ack races stale.
+        super::world_sequencer::AckOutcome::Stale(_) => {
+            if delivery != "duplicate" {
+                TileLoop::clear_gesture_override_on_incorporation(
+                    &mut state.gesture_override,
+                    &reply,
+                );
+            }
+            world.last_reply().cloned()
+        }
         super::world_sequencer::AckOutcome::Ignored { .. } => None,
     }
 }
@@ -1284,6 +1507,10 @@ pub(super) fn dispatch_test_observation(
     monotonic_ms: u64,
 ) -> Option<tiler_core::world_report::WorldReply> {
     super::rows::refresh_world_hints(state, observed, retained);
+    // Test seeding carries the loop's gesture tables as ingress (same as
+    // production): tests needing terminal phases set the override slot
+    // before dispatching.
+    let gesture = state.gesture_ingress(cursor);
     let TileLoop {
         ref mut world,
         ref member_tokens,
@@ -1314,6 +1541,8 @@ pub(super) fn dispatch_test_observation(
         ..
     } = *state;
     world.invalidate();
+    // Offline seeding carries no native hit read: tests set
+    // `inputs.hit_hwnd` explicitly when they need a hit.
     let inputs = TileLoop::owner_inputs(
         member_tokens,
         member_identity,
@@ -1341,6 +1570,8 @@ pub(super) fn dispatch_test_observation(
         outer_gap,
         active,
         cursor,
+        None,
+        gesture.clone(),
     );
     let report = match world.try_dispatch_observation(
         &inputs,
@@ -1353,10 +1584,13 @@ pub(super) fn dispatch_test_observation(
         Ok(report) => report,
         Err(_) => return world.last_reply().cloned(),
     };
-    let reply = match world.deliver_production(&report) {
-        tiler_core::world_engine::WorldOutcome::Accepted(reply)
-        | tiler_core::world_engine::WorldOutcome::Duplicate(reply)
-        | tiler_core::world_engine::WorldOutcome::CommandConsumed(reply) => reply,
+    let outcome = world.deliver_production(&report);
+    let (delivery, reply) = match outcome {
+        tiler_core::world_engine::WorldOutcome::Accepted(reply) => ("accepted", reply),
+        tiler_core::world_engine::WorldOutcome::Duplicate(reply) => ("duplicate", reply),
+        tiler_core::world_engine::WorldOutcome::CommandConsumed(reply) => {
+            ("command-consumed", reply)
+        }
         tiler_core::world_engine::WorldOutcome::Rejected { .. } => {
             world.note_rejected_or_lost(&report.request_id);
             return None;
@@ -1366,12 +1600,21 @@ pub(super) fn dispatch_test_observation(
     for token in pruned {
         applied_homing.remove(&token);
     }
+    // Only a freshly accepted reply claims incorporation: stale and
+    // duplicate deliveries never stand in. A stashed terminal survives
+    // transient busy/gap ticks until an eligible observation runs it. A
+    // fresh run clears a matching stash even when the ack races stale:
+    // incorporation already happened, only the claim is withheld.
+    let fresh_run = delivery != "duplicate";
+    if fresh_run {
+        TileLoop::clear_gesture_override_on_incorporation(&mut state.gesture_override, &reply);
+    }
     match ack_outcome {
         super::world_sequencer::AckOutcome::Applied(_) => {
             world.note_diff_applied(&reply);
             Some(reply)
         }
-        super::world_sequencer::AckOutcome::Stale(_) => world.last_reply().cloned(),
+        super::world_sequencer::AckOutcome::Stale(_) => None,
         super::world_sequencer::AckOutcome::Ignored { .. } => None,
     }
 }
@@ -1415,6 +1658,8 @@ mod apply_diag_tests {
             }],
             effects: Vec::new(),
             command_result: None,
+            gesture_settled: None,
+            cursor_warp: None,
             presentation_bytes: 0,
         }
     }
@@ -1424,14 +1669,17 @@ mod apply_diag_tests {
             geometry_writes: 0,
             membership_writes: 1,
             view_writes: 0,
+            clear_writes: 0,
             creations: 0,
             removals: 0,
             effects: 0,
+            cursor_warps: 0,
             held: 2,
             migration_total: 0,
             migration_proven: 0,
             stopped_mid_apply: false,
             partial: false,
+            focus_dispatch: Vec::new(),
         }
     }
 
@@ -1467,6 +1715,7 @@ mod apply_diag_tests {
             &stats,
             &members,
             &views,
+            &[],
             fresh_route_value(
                 "w1",
                 Some((10, 20)),
@@ -1479,6 +1728,8 @@ mod apply_diag_tests {
                     "retained",
                 ),
             ),
+            Some("w2".to_owned()),
+            true,
         );
         assert_eq!(value["event"], serde_json::json!("world-apply"));
         assert_eq!(value["tick"], serde_json::json!(11));
@@ -1519,6 +1770,16 @@ mod apply_diag_tests {
         assert_eq!(transfers[0]["kind"], serde_json::json!("window"));
         assert_eq!(transfers[0]["target_workspace"], serde_json::json!("w2"));
         assert_eq!(value["desired_transfers_omitted"], serde_json::json!(0));
+        // Stage 4b FFC oracle: the exact reported hit plus the FFC switch flag
+        // ride trace-only, never as policy input.
+        assert_eq!(value["cursor_hit"], serde_json::json!("w2"));
+        assert_eq!(value["ffc_enabled"], serde_json::json!(true));
+        // No minted effects or dispatch rows on this transfer-only reply:
+        // empty arrays with zero omission, never absent fields.
+        assert_eq!(value["focus_effects"], serde_json::json!([]));
+        assert_eq!(value["focus_effects_omitted"], serde_json::json!(0));
+        assert_eq!(value["focus_dispatch"], serde_json::json!([]));
+        assert_eq!(value["focus_dispatch_omitted"], serde_json::json!(0));
         assert_eq!(
             value["fresh_route"]["focused_token"],
             serde_json::json!("w1")
@@ -1572,7 +1833,8 @@ mod apply_diag_tests {
             "observation",
             &quiet,
             &empty_members,
-            &empty_views
+            &empty_views,
+            &[],
         ));
         // Pure-held observation ticks stay quiet: steady-state holds with no
         // attempt carry no new evidence.
@@ -1584,7 +1846,8 @@ mod apply_diag_tests {
             "observation",
             &held_only,
             &empty_members,
-            &empty_views
+            &empty_views,
+            &[],
         ));
         // Commands always log, so a no-attempt Hold on a command still shows
         // as `held > 0` with empty attempt rows.
@@ -1592,7 +1855,8 @@ mod apply_diag_tests {
             "send",
             &held_only,
             &empty_members,
-            &empty_views
+            &empty_views,
+            &[],
         ));
         assert!(should_log_apply(
             "observation",
@@ -1608,6 +1872,7 @@ mod apply_diag_tests {
                 attempt_ms: 3,
             }],
             &empty_views,
+            &[],
         ));
         let writes = super::super::world_diff::ApplyStats {
             geometry_writes: 1,
@@ -1617,7 +1882,8 @@ mod apply_diag_tests {
             "observation",
             &writes,
             &empty_members,
-            &empty_views
+            &empty_views,
+            &[],
         ));
         let stopped = super::super::world_diff::ApplyStats {
             stopped_mid_apply: true,
@@ -1628,8 +1894,170 @@ mod apply_diag_tests {
             "observation",
             &stopped,
             &empty_members,
-            &empty_views
+            &empty_views,
+            &[],
         ));
+        // Any minted focus effect logs on observation ticks, dispatched or
+        // held: the individual hold reason must reach the trace in the
+        // exact FFC observation-only scenario. Idle ticks with no minted
+        // effect stay quiet below.
+        let dispatched_unproven = super::super::world_diff::ApplyStats {
+            held: 1,
+            focus_dispatch: vec![super::super::world_diff::FocusDispatchDiag {
+                id: "ffc-w1".to_owned(),
+                target: "w1".to_owned(),
+                kind: "focus",
+                dispatched: true,
+                setter: "refused",
+                foreground: false,
+                hold: Some("foreground-unproven"),
+            }],
+            ..Default::default()
+        };
+        assert!(should_log_apply(
+            "observation",
+            &dispatched_unproven,
+            &empty_members,
+            &empty_views,
+            &[],
+        ));
+        let held_no_setter = super::super::world_diff::ApplyStats {
+            held: 1,
+            focus_dispatch: vec![super::super::world_diff::FocusDispatchDiag {
+                id: "ffc-w1".to_owned(),
+                target: "w1".to_owned(),
+                kind: "focus",
+                dispatched: false,
+                setter: "skipped",
+                foreground: false,
+                hold: Some("view-not-shown"),
+            }],
+            ..Default::default()
+        };
+        // Regression: a held minted effect is emitted, not lost to quiet.
+        assert!(should_log_apply(
+            "observation",
+            &held_no_setter,
+            &empty_members,
+            &empty_views,
+            &[],
+        ));
+    }
+
+    #[test]
+    fn diag_held_focus_dispatch_carries_hold_reason() {
+        // The held observation oracle: a minted-but-held FFC effect rides
+        // with its individual hold reason, so the live leg can attribute a
+        // quiet native focus to a held dispatch rather than an absent hit.
+        let mut reply = reply_shell();
+        reply.effects.push(tiler_core::world_report::OneShotEffect {
+            id: "ffc-w1".to_owned(),
+            kind: tiler_core::world_report::EffectKind::Focus,
+            target: WindowId("w1".to_owned()),
+            issued_revision: 1,
+        });
+        let stats = super::super::world_diff::ApplyStats {
+            held: 1,
+            focus_dispatch: vec![super::super::world_diff::FocusDispatchDiag {
+                id: "ffc-w1".to_owned(),
+                target: "w1".to_owned(),
+                kind: "focus",
+                dispatched: false,
+                setter: "skipped",
+                foreground: false,
+                hold: Some("view-not-shown"),
+            }],
+            ..Default::default()
+        };
+        let value = apply_diag_value(
+            15,
+            &reply,
+            "accepted",
+            "observation",
+            &stats,
+            &[],
+            &[],
+            &[],
+            serde_json::json!({}),
+            Some("w1".to_owned()),
+            true,
+        );
+        assert_eq!(value["cursor_hit"], serde_json::json!("w1"));
+        let minted = value["focus_effects"].as_array().expect("effects");
+        assert_eq!(minted.len(), 1);
+        assert_eq!(minted[0]["id"], serde_json::json!("ffc-w1"));
+        let dispatch = value["focus_dispatch"].as_array().expect("dispatch");
+        assert_eq!(dispatch.len(), 1);
+        assert_eq!(dispatch[0]["dispatched"], serde_json::json!(false));
+        assert_eq!(dispatch[0]["setter"], serde_json::json!("skipped"));
+        assert_eq!(dispatch[0]["foreground"], serde_json::json!(false));
+        assert_eq!(dispatch[0]["hold"], serde_json::json!("view-not-shown"));
+    }
+
+    #[test]
+    fn diag_focus_oracle_bounds_rows_and_omits_honestly() {
+        // Minted FFC effects plus per-effect dispatch rows ride bounded
+        // with honest omission: the oracle distinguishes dispatched from
+        // held without a per-window dump.
+        use tiler_core::world_report::OneShotEffect;
+        let mut reply = reply_shell();
+        reply.effects = (0..10)
+            .map(|n| OneShotEffect {
+                id: format!("ffc-w{n}"),
+                kind: tiler_core::world_report::EffectKind::Focus,
+                target: WindowId(format!("w{n}")),
+                issued_revision: 1,
+            })
+            .collect();
+        let stats = super::super::world_diff::ApplyStats {
+            effects: 1,
+            held: 9,
+            focus_dispatch: (0..10)
+                .map(|n| super::super::world_diff::FocusDispatchDiag {
+                    id: format!("ffc-w{n}"),
+                    target: format!("w{n}"),
+                    kind: "focus",
+                    dispatched: n == 0,
+                    setter: if n == 0 { "accepted" } else { "skipped" },
+                    foreground: n == 0,
+                    hold: if n == 0 { None } else { Some("view-not-shown") },
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let value = apply_diag_value(
+            14,
+            &reply,
+            "accepted",
+            "observation",
+            &stats,
+            &[],
+            &[],
+            &[],
+            serde_json::json!({}),
+            Some("w0".to_owned()),
+            true,
+        );
+        assert_eq!(value["cursor_hit"], serde_json::json!("w0"));
+        assert_eq!(value["ffc_enabled"], serde_json::json!(true));
+        let minted = value["focus_effects"].as_array().expect("effects");
+        assert_eq!(minted.len(), MAX_APPLY_DIAG_FOCUS);
+        assert_eq!(minted[0]["id"], serde_json::json!("ffc-w0"));
+        assert_eq!(minted[0]["target"], serde_json::json!("w0"));
+        assert_eq!(minted[0]["kind"], serde_json::json!("focus"));
+        assert_eq!(value["focus_effects_omitted"], serde_json::json!(2));
+        let dispatch = value["focus_dispatch"].as_array().expect("dispatch");
+        assert_eq!(dispatch.len(), MAX_APPLY_DIAG_FOCUS);
+        assert_eq!(dispatch[0]["dispatched"], serde_json::json!(true));
+        assert_eq!(dispatch[0]["setter"], serde_json::json!("accepted"));
+        // Immediate foreground proof rides even when false: the held row
+        // below carries explicit false, never a missing field.
+        assert_eq!(dispatch[0]["foreground"], serde_json::json!(true));
+        assert!(dispatch[0]["hold"].is_null());
+        assert_eq!(dispatch[1]["dispatched"], serde_json::json!(false));
+        assert_eq!(dispatch[1]["foreground"], serde_json::json!(false));
+        assert_eq!(dispatch[1]["hold"], serde_json::json!("view-not-shown"));
+        assert_eq!(value["focus_dispatch_omitted"], serde_json::json!(2));
     }
 
     #[test]
@@ -1652,7 +2080,10 @@ mod apply_diag_tests {
             &stats,
             &empty_members,
             &empty_views,
+            &[],
             serde_json::json!({}),
+            None,
+            false,
         );
         let rows = value["members"].as_array().expect("member rows");
         assert!(rows.is_empty());
@@ -1679,7 +2110,10 @@ mod apply_diag_tests {
             &stats,
             &[],
             &[],
+            &[],
             serde_json::json!({}),
+            None,
+            false,
         );
         assert_eq!(value["command"], serde_json::json!("send"));
         let rendered = value.to_string();

@@ -94,16 +94,19 @@ fn report(
             .unwrap_or_default(),
         inventory_complete,
         gesture_barrier: false,
+        gesture: None,
         switch_target: tiler_core::cursor_targeting::SwitchTarget::default(),
         fresh_placement: tiler_core::cursor_targeting::FreshPlacement::default(),
         focus_follows_cursor: false,
         cursor_warp: false,
         cursor: None,
+        cursor_hit: None,
         feedback: Vec::new(),
         monotonic_ms: 0,
         frames: Vec::new(),
         member_attempts,
         view_attempts: Vec::new(),
+        clear_attempts: Vec::new(),
     }
 }
 

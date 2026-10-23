@@ -101,15 +101,18 @@ fn report_obs(
         focus_follows_cursor: false,
         cursor_warp: false,
         cursor: None,
+        cursor_hit: None,
         default_tiled: true,
         focused_global: String::new(),
         inventory_complete: true,
         gesture_barrier: false,
+        gesture: None,
         feedback: Vec::new(),
         monotonic_ms: 0,
         frames: Vec::new(),
         member_attempts: Vec::new(),
         view_attempts: Vec::new(),
+        clear_attempts: Vec::new(),
     }
 }
 
@@ -251,7 +254,6 @@ fn malformed_reports_are_transactional() {
                 Some(WorldCommand::FocusDirectional {
                     window: WindowId("win-a".to_owned()),
                     direction: "sideways".to_owned(),
-                    float_subject: false,
                 }),
             )
         ),

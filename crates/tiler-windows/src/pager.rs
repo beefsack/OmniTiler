@@ -45,7 +45,7 @@
 //! - Fullscreen/game suppression is fail-closed: any suspend veto, elevated
 //!   foreground, or unreadable fact hides every strip.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::HashMap;
 
 use tiler_core::geometry::Rect;
 
@@ -532,89 +532,65 @@ fn overlap_area(a: Rect, b: Rect) -> i64 {
     w * h
 }
 
-/// Resolve one member's pager rectangle by exact member key, newest first:
-/// 1. the live identity-verified frame from the latest observation (visible
-///    tiled members, floats, kept maximized/fullscreen overlays, and
-///    slotless born-fullscreen holds: all observed with fresh frames);
-/// 2. the live float frame (floats between observations);
-/// 3. the saved tile slot / hide-time snapshot (hidden members, minimized
-///    members, and slotless holds that are currently hidden: born holds seed
-///    a hidden snapshot at admission for exactly this).
-///
-/// Members with no rectangle anywhere contribute no miniature, never a
-/// guess. This reads only owned managed identities and never mutates the
-/// tiling `member_rects`/`float_rects` tables.
-#[must_use]
-pub fn resolve_member_rect(
-    key: &crate::native_guards::WindowKey,
-    live: &HashMap<crate::native_guards::WindowKey, Rect>,
-    member_tokens: &BTreeMap<crate::native_guards::WindowKey, String>,
-    member_rects: &HashMap<String, Rect>,
-    float_rects: &HashMap<String, Rect>,
-) -> Option<Rect> {
-    if let Some(rect) = live.get(key).copied() {
-        return Some(rect);
-    }
-    let token = member_tokens.get(key)?;
-    float_rects
-        .get(token)
-        .or_else(|| member_rects.get(token))
-        .copied()
+/// One workspace's pre-ordered pager content: the core content decision for
+/// one ring slot — the stable id, its 1-based core ordinal, whether it is
+/// the core current view, plus its windows in paint order (bottom first,
+/// topmost last) with resolved miniature source rectangles. The core owns
+/// order, ordinal, and currency; this only lays out and scales, never sorts,
+/// renumbers, or filters content.
+pub struct PagerContentWorkspace {
+    pub id: String,
+    pub ordinal: u32,
+    pub current: bool,
+    pub windows: Vec<(crate::native_guards::WindowKey, Rect)>,
 }
 
-/// Retained native stacking order for pager miniatures (portable policy).
-///
-/// `previous` is the last retained order, top-to-bottom in native
-/// `EnumWindows` sequence (first is topmost on screen). `visible` is the
-/// current observation's verified live-frame member sequence in that same
-/// native order: observed eligible members plus retained maximized/fullscreen
-/// rows with fresh frames. Minimized/iconic members without frames, foreign
-/// windows, and unreadable HWNDs never appear there. `members` is the
-/// retention roster: current managed membership plus freshly verified visible
-/// keys (observe runs before assignment, so admission may adopt them right
-/// after; the frame builder still filters to actual membership, and the next
-/// observation prunes candidates that never joined and are now absent).
-///
-/// Returns the next retained order, still top-to-bottom:
-/// 1. visible members in native order, so the active stack is always exact;
-/// 2. still-assigned but currently absent members (hidden, minimized) in
-///    their previous relative order, so a hidden workspace keeps its last
-///    observed stacking;
-/// 3. roster members in neither (never observed) in deterministic
-///    `WindowKey` order as the fallback.
-///
-/// Departed identities (no longer roster members) are pruned, so a recycled
-/// never inherits a stale slot: reuse arrives as a new full identity in step
-/// 3 until its first observation. Duplicate visible entries keep their first
-/// occurrence. Painters draw this sequence reversed per workspace (bottom
-/// first, topmost last); see `build_output_pager`.
-#[must_use]
-pub fn retain_pager_order(
-    previous: &[crate::native_guards::WindowKey],
-    members: &BTreeSet<crate::native_guards::WindowKey>,
-    visible_top_to_bottom: &[crate::native_guards::WindowKey],
-) -> Vec<crate::native_guards::WindowKey> {
-    let mut seen: BTreeSet<&crate::native_guards::WindowKey> = BTreeSet::new();
-    let mut next: Vec<crate::native_guards::WindowKey> = Vec::with_capacity(members.len());
-    for key in visible_top_to_bottom {
-        if members.contains(key) && seen.insert(key) {
-            next.push(key.clone());
+/// Build one output's pager frame from core-ordered content: the core logical
+/// ring in order with its current view marked, plus the per-workspace paint
+/// lists. Ordinals and the active cell ride the core values verbatim; the
+/// renderer may format a provided ordinal numerically as host styling.
+/// Presentation only; the core remains the sole authority.
+pub fn build_output_pager_from_content(
+    content: &[PagerContentWorkspace],
+    icons: &HashMap<crate::native_guards::WindowKey, std::sync::Arc<crate::pager_icons::IconImage>>,
+    output: &str,
+    monitor_full: Rect,
+    taskbar: &TaskbarFacts,
+) -> Result<OutputPager, PagerRefusal> {
+    let ids: Vec<String> = content.iter().map(|row| row.id.clone()).collect();
+    let strip = strip_for_taskbar(monitor_full, taskbar, ids.len())?;
+    let cell_rects = cells_for_strip(strip, ids.len(), dpi_cell_w(taskbar.dpi));
+    // The core marks exactly one current row per non-empty content (falling
+    // back to the ring head when no view is retained); the guard below only
+    // covers empty content, which already refused above.
+    let active_index = content.iter().position(|row| row.current).unwrap_or(0);
+    let mut cells = Vec::with_capacity(ids.len());
+    for (index, cell_rect) in cell_rects.into_iter().enumerate() {
+        let mut minis = Vec::new();
+        let mut mini_keys = Vec::new();
+        let mut mini_icons = Vec::new();
+        for (key, rect) in &content[index].windows {
+            minis.push(miniature(cell_rect, monitor_full, *rect, taskbar.dpi));
+            mini_icons.push(icons.get(key).cloned());
+            mini_keys.push(key.clone());
         }
+        cells.push(PagerCell {
+            rect: cell_rect,
+            active: content[index].current,
+            ordinal: content[index].ordinal,
+            minis,
+            mini_keys,
+            mini_icons,
+        });
     }
-    for key in previous {
-        if members.contains(key) && seen.insert(key) {
-            next.push(key.clone());
-        }
-    }
-    // `members` iterates in `WindowKey` order, and every member already in
-    // `seen` (visible or previously retained) is skipped, so the remainder is
-    // the deterministic never-observed fallback.
-    for key in members {
-        if seen.insert(key) {
-            next.push(key.clone());
-        }
-    }
-    next
+    Ok(OutputPager {
+        output: output.to_owned(),
+        strip,
+        ids,
+        cells,
+        active_index,
+        dpi: taskbar.dpi,
+    })
 }
 
 /// FNV-1a hash of one snapshot for the change-gated repaint fence: steady
@@ -718,78 +694,6 @@ pub fn verify_output_scoped_select_keys(
         && ring.iter().any(|id| id == &rendered.workspace)
 }
 
-/// Build one output's pager frame from world-owned parts: the core logical
-/// ring, its current view, and a per-workspace member resolver. Presentation
-/// only; the core remains the sole authority.
-#[allow(clippy::too_many_arguments)]
-pub fn build_output_pager_from_parts(
-    ring: &[String],
-    active: Option<&str>,
-    members_of: &dyn Fn(&str) -> std::collections::BTreeSet<crate::native_guards::WindowKey>,
-    live: &HashMap<crate::native_guards::WindowKey, Rect>,
-    member_tokens: &BTreeMap<crate::native_guards::WindowKey, String>,
-    member_rects: &HashMap<String, Rect>,
-    float_rects: &HashMap<String, Rect>,
-    icons: &HashMap<crate::native_guards::WindowKey, std::sync::Arc<crate::pager_icons::IconImage>>,
-    zorder: &[crate::native_guards::WindowKey],
-    output: &str,
-    monitor_full: Rect,
-    taskbar: &TaskbarFacts,
-) -> Result<OutputPager, PagerRefusal> {
-    let ids: Vec<String> = ring.to_owned();
-    let strip = strip_for_taskbar(monitor_full, taskbar, ids.len())?;
-    let cell_rects = cells_for_strip(strip, ids.len(), dpi_cell_w(taskbar.dpi));
-    let active_index = active
-        .and_then(|active| ids.iter().position(|id| id == active))
-        .unwrap_or(0);
-    let mut cells = Vec::with_capacity(ids.len());
-    for (index, cell_rect) in cell_rects.into_iter().enumerate() {
-        let workspace = &ids[index];
-        let present = members_of(workspace);
-        let zset: std::collections::HashSet<&crate::native_guards::WindowKey> =
-            zorder.iter().collect();
-        let mut ordered: Vec<crate::native_guards::WindowKey> = present
-            .iter()
-            .filter(|key| !zset.contains(*key))
-            .cloned()
-            .collect();
-        ordered.extend(
-            zorder
-                .iter()
-                .filter(|key| present.contains(*key))
-                .rev()
-                .cloned(),
-        );
-        let mut minis = Vec::new();
-        let mut mini_keys = Vec::new();
-        let mut mini_icons = Vec::new();
-        for key in ordered {
-            if let Some(rect) =
-                resolve_member_rect(&key, live, member_tokens, member_rects, float_rects)
-            {
-                minis.push(miniature(cell_rect, monitor_full, rect, taskbar.dpi));
-                mini_icons.push(icons.get(&key).cloned());
-                mini_keys.push(key);
-            }
-        }
-        cells.push(PagerCell {
-            rect: cell_rect,
-            active: index == active_index,
-            ordinal: index as u32 + 1,
-            minis,
-            mini_keys,
-            mini_icons,
-        });
-    }
-    Ok(OutputPager {
-        output: output.to_owned(),
-        strip,
-        ids,
-        cells,
-        active_index,
-        dpi: taskbar.dpi,
-    })
-}
 /// Live settings accessor for the default-on opt-out.
 #[must_use]
 pub fn pager_enabled(settings: &crate::settings::Settings) -> bool {
@@ -976,7 +880,6 @@ mod tests {
 
     #[test]
     fn autohide_disable_reanchors_fresh_geometry_and_dpi() {
-        use std::collections::BTreeMap;
         // Stale pre-autohide frame under the old resolution/scale.
         let stale = strip_for_taskbar(full(), &bottom_bar(), 2).expect("old fits");
         // Resolution + scale change while auto-hide hides everything: the
@@ -1012,16 +915,9 @@ mod tests {
         // the old frame, so laying out from remembered facts would misplace.
         assert_ne!(fresh, stale);
         assert_ne!(fresh.w, stale.w);
-        let frame = build_output_pager_from_parts(
-            &ring_ids(),
-            Some("ws-1"),
-            &empty_members,
+        let frame = build_output_pager_from_content(
+            &content_rows(&ring_ids(), "ws-1"),
             &HashMap::new(),
-            &BTreeMap::new(),
-            &HashMap::new(),
-            &HashMap::new(),
-            &HashMap::new(),
-            &[],
             "mon-a",
             new_full,
             &bar,
@@ -1034,22 +930,14 @@ mod tests {
 
     #[test]
     fn autohide_refusal_reaches_frames_with_tray_edge_intact() {
-        use std::collections::BTreeMap;
         // The frame refuses (never a guessed strip) while the proven tray
         // edge stays staged, so the tray number/menu path is untouched.
         let mut bar = bottom_bar();
         bar.autohide = true;
         assert_eq!(
-            build_output_pager_from_parts(
-                &ring_ids(),
-                Some("ws-1"),
-                &empty_members,
+            build_output_pager_from_content(
+                &content_rows(&ring_ids(), "ws-1"),
                 &HashMap::new(),
-                &BTreeMap::new(),
-                &HashMap::new(),
-                &HashMap::new(),
-                &HashMap::new(),
-                &[],
                 "mon-a",
                 full(),
                 &bar,
@@ -1177,18 +1065,10 @@ mod tests {
 
     #[test]
     fn secondary_frames_one_strip_per_output() {
-        use std::collections::BTreeMap;
         let frame_for = |bar: &TaskbarFacts| {
-            build_output_pager_from_parts(
-                &ring_ids(),
-                Some("ws-1"),
-                &empty_members,
+            build_output_pager_from_content(
+                &content_rows(&ring_ids(), "ws-1"),
                 &HashMap::new(),
-                &BTreeMap::new(),
-                &HashMap::new(),
-                &HashMap::new(),
-                &HashMap::new(),
-                &[],
                 "mon-b",
                 secondary_full(),
                 bar,
@@ -1911,34 +1791,23 @@ mod tests {
 
     #[test]
     fn snapshot_hash_is_stable_and_change_gated() {
-        let ring = ring_ids();
-        let live = HashMap::new();
-        let tokens = BTreeMap::new();
-        let rects = HashMap::new();
-        let frame_for = |active: Option<&str>| {
-            build_output_pager_from_parts(
-                &ring,
-                active,
-                &empty_members,
-                &live,
-                &tokens,
-                &rects,
-                &rects,
+        let frame_for = |active: &str| {
+            build_output_pager_from_content(
+                &content_rows(&ring_ids(), active),
                 &HashMap::new(),
-                &[],
                 "mon-a",
                 full(),
                 &bottom_bar(),
             )
             .expect("fits")
         };
-        let first = frame_for(Some("ws-1"));
-        let second = frame_for(Some("ws-1"));
+        let first = frame_for("ws-1");
+        let second = frame_for("ws-1");
         assert_eq!(
             snapshot_hash(std::slice::from_ref(&first)),
             snapshot_hash(&[second])
         );
-        let moved = frame_for(Some("ws-2"));
+        let moved = frame_for("ws-2");
         assert_ne!(snapshot_hash(&[first]), snapshot_hash(&[moved]));
     }
 
@@ -1958,16 +1827,9 @@ mod tests {
             // Taller physical bars at higher DPI (same 40 CSS px).
             bar.rect.h = dpi_scale(40, dpi);
             bar.rect.y = 1080 - bar.rect.h;
-            build_output_pager_from_parts(
-                &ring_ids(),
-                Some("ws-1"),
-                &empty_members,
+            build_output_pager_from_content(
+                &content_rows(&ring_ids(), "ws-1"),
                 &HashMap::new(),
-                &BTreeMap::new(),
-                &HashMap::new(),
-                &HashMap::new(),
-                &HashMap::new(),
-                &[],
                 "mon-a",
                 full(),
                 &bar,
@@ -1993,115 +1855,47 @@ mod tests {
         vec!["ws-1".to_owned(), "ws-2".to_owned()]
     }
 
-    fn empty_members(_: &str) -> std::collections::BTreeSet<crate::native_guards::WindowKey> {
-        std::collections::BTreeSet::new()
+    fn content_rows(ids: &[String], active: &str) -> Vec<PagerContentWorkspace> {
+        ids.iter()
+            .enumerate()
+            .map(|(index, id)| PagerContentWorkspace {
+                id: id.clone(),
+                ordinal: index as u32 + 1,
+                current: id == active,
+                windows: Vec::new(),
+            })
+            .collect()
     }
 
-    #[test]
-    fn member_rects_prefer_live_then_float_then_slot() {
-        use crate::native_guards::WindowKey;
-        let key = WindowKey {
-            hwnd: 11,
+    fn content_key(hwnd: u64, tag: &str) -> crate::native_guards::WindowKey {
+        crate::native_guards::WindowKey {
+            hwnd,
             pid: 7,
-            creation: "c1".to_owned(),
-        };
-        let slot = Rect {
-            x: 0,
-            y: 0,
-            w: 960,
-            h: 540,
-        };
-        let float_frame = Rect {
-            x: 100,
-            y: 100,
-            w: 800,
-            h: 600,
-        };
-        let live_frame = Rect {
-            x: 0,
-            y: 0,
-            w: 1920,
-            h: 1080,
-        };
-        let mut tokens = BTreeMap::new();
-        tokens.insert(key.clone(), "tok-1".to_owned());
-        let mut slots = HashMap::new();
-        slots.insert("tok-1".to_owned(), slot);
-        let mut floats = HashMap::new();
-        floats.insert("tok-1".to_owned(), float_frame);
-        let mut live = HashMap::new();
-        // Slot alone resolves.
-        assert_eq!(
-            resolve_member_rect(&key, &live, &tokens, &slots, &HashMap::new()),
-            Some(slot)
-        );
-        // Float beats the slot.
-        assert_eq!(
-            resolve_member_rect(&key, &live, &tokens, &slots, &floats),
-            Some(float_frame)
-        );
-        // Live identity-verified frame beats both (kept maximized overlays
-        // and slotless born holds carry no usable slot).
-        live.insert(key.clone(), live_frame);
-        assert_eq!(
-            resolve_member_rect(&key, &live, &tokens, &slots, &floats),
-            Some(live_frame)
-        );
-        // Unknown members resolve to nothing, never a guess.
-        let gone = WindowKey {
-            hwnd: 99,
-            pid: 9,
-            creation: "gone".to_owned(),
-        };
-        assert_eq!(
-            resolve_member_rect(&gone, &live, &tokens, &slots, &floats),
-            None
-        );
+            creation: tag.to_owned(),
+        }
     }
 
     #[test]
     fn every_managed_window_renders_with_no_cap() {
-        use crate::native_guards::WindowKey;
-        use std::collections::BTreeSet;
-        let active = "ws-1";
-        let mut members = BTreeSet::new();
-        let mut tokens = BTreeMap::new();
-        let mut slots = HashMap::new();
+        // Core-ordered paint list with 24 resolved source rects: ordinary
+        // crowding only adds miniatures, never changes the cell layout.
+        let mut windows = Vec::new();
         for n in 0..24u64 {
-            let key = WindowKey {
-                hwnd: 100 + n,
-                pid: 7,
-                creation: format!("c{n}"),
-            };
-            members.insert(key.clone());
-            tokens.insert(key, format!("tok-{n}"));
-            slots.insert(
-                format!("tok-{n}"),
+            windows.push((
+                content_key(100 + n, &format!("c{n}")),
                 Rect {
                     x: 0,
                     y: 0,
                     w: 480,
                     h: 270,
                 },
-            );
+            ));
         }
-        let members_of = |workspace: &str| {
-            if workspace == active {
-                members.clone()
-            } else {
-                BTreeSet::new()
-            }
-        };
-        let pager = build_output_pager_from_parts(
-            &ring_ids(),
-            Some(active),
-            &members_of,
+        let mut content = content_rows(&ring_ids(), "ws-1");
+        content[0].windows = windows;
+        let pager = build_output_pager_from_content(
+            &content,
             &HashMap::new(),
-            &tokens,
-            &slots,
-            &HashMap::new(),
-            &HashMap::new(),
-            &[],
             "mon-a",
             full(),
             &bottom_bar(),
@@ -2122,71 +1916,28 @@ mod tests {
 
     #[test]
     fn icons_attach_by_identity_and_repaint() {
-        use crate::native_guards::WindowKey;
         use crate::pager_icons::{IconImage, mix_mini_icon};
-        use std::collections::BTreeSet;
         use std::sync::Arc;
-        let active = "ws-1";
-        let key = WindowKey {
-            hwnd: 21,
-            pid: 7,
-            creation: "icon-1".to_owned(),
+        let key = content_key(21, "icon-1");
+        let slot = Rect {
+            x: 0,
+            y: 0,
+            w: 960,
+            h: 540,
         };
-        let members = BTreeSet::from([key.clone()]);
-        let members_of = |workspace: &str| {
-            if workspace == active {
-                members.clone()
-            } else {
-                BTreeSet::new()
-            }
+        let content_of = |artwork: &HashMap<crate::native_guards::WindowKey, Arc<IconImage>>| {
+            let mut content = content_rows(&ring_ids(), "ws-1");
+            content[0].windows = vec![(key.clone(), slot)];
+            build_output_pager_from_content(&content, artwork, "mon-a", full(), &bottom_bar())
+                .expect("fits")
         };
-        let mut tokens = BTreeMap::new();
-        tokens.insert(key.clone(), "tok-icon".to_owned());
-        let mut slots = HashMap::new();
-        slots.insert(
-            "tok-icon".to_owned(),
-            Rect {
-                x: 0,
-                y: 0,
-                w: 960,
-                h: 540,
-            },
-        );
-        let plain = build_output_pager_from_parts(
-            &ring_ids(),
-            Some(active),
-            &members_of,
-            &HashMap::new(),
-            &tokens,
-            &slots,
-            &HashMap::new(),
-            &HashMap::new(),
-            &[],
-            "mon-a",
-            full(),
-            &bottom_bar(),
-        )
-        .expect("fits");
+        let plain = content_of(&HashMap::new());
         let mut artwork = HashMap::new();
         artwork.insert(
             key.clone(),
             Arc::new(IconImage::new(32, 32, vec![9; 32 * 32 * 4])),
         );
-        let iconic = build_output_pager_from_parts(
-            &ring_ids(),
-            Some(active),
-            &members_of,
-            &HashMap::new(),
-            &tokens,
-            &slots,
-            &HashMap::new(),
-            &artwork,
-            &[],
-            "mon-a",
-            full(),
-            &bottom_bar(),
-        )
-        .expect("fits");
+        let iconic = content_of(&artwork);
         // Geometry identical; identity attached; artwork arrival repaints.
         assert_eq!(
             plain.cells[0].minis, iconic.cells[0].minis,
@@ -2200,15 +1951,7 @@ mod tests {
         );
         // A recycled HWND (same number, new creation) is a different mini.
         let mut mixed = Vec::new();
-        mix_mini_icon(
-            &mut |w| mixed.push(w),
-            &WindowKey {
-                hwnd: 21,
-                pid: 7,
-                creation: "icon-2".to_owned(),
-            },
-            None,
-        );
+        mix_mini_icon(&mut |w| mixed.push(w), &content_key(21, "icon-2"), None);
         let mut original = Vec::new();
         mix_mini_icon(&mut |w| original.push(w), &key, None);
         assert_ne!(mixed, original);
@@ -2240,68 +1983,30 @@ mod tests {
     }
 
     #[test]
-    fn stacking_paints_topmost_last_not_hwnd_order() {
-        use crate::native_guards::WindowKey;
-        use std::collections::BTreeSet;
-        let active = "ws-1";
-        // HWND numeric order is the inverse of the native stacking here: the
-        // topmost window carries the smallest HWND, so painting in HWND
-        // order would put it at the bottom instead of on top.
-        let top = WindowKey {
-            hwnd: 10,
-            pid: 7,
-            creation: "stack-top".to_owned(),
-        };
-        let middle = WindowKey {
-            hwnd: 20,
-            pid: 7,
-            creation: "stack-middle".to_owned(),
-        };
-        let bottom = WindowKey {
-            hwnd: 30,
-            pid: 7,
-            creation: "stack-bottom".to_owned(),
-        };
-        let members: BTreeSet<WindowKey> = [&bottom, &middle, &top].into_iter().cloned().collect();
-        let members_of = |workspace: &str| {
-            if workspace == active {
-                members.clone()
-            } else {
-                BTreeSet::new()
-            }
-        };
-        let mut live = HashMap::new();
-        live.insert(bottom.clone(), stack_frame(0, 540));
-        live.insert(middle.clone(), stack_frame(960, 0));
-        live.insert(top.clone(), stack_frame(0, 0));
-        // Native top-to-bottom: top first, bottom last.
-        let zorder = vec![top.clone(), middle.clone(), bottom.clone()];
-        let pager = build_output_pager_from_parts(
-            &ring_ids(),
-            Some(active),
-            &members_of,
-            &live,
-            &BTreeMap::new(),
+    fn content_paint_order_is_preserved_verbatim() {
+        // The frame lays out core-ordered paint lists verbatim: HWND numeric
+        // order never re-sorts. The topmost window arrives last (bottom
+        // first) and paints last so it occludes.
+        let top = content_key(10, "stack-top");
+        let middle = content_key(20, "stack-middle");
+        let bottom = content_key(30, "stack-bottom");
+        let mut content = content_rows(&ring_ids(), "ws-1");
+        content[0].windows = vec![
+            (bottom.clone(), stack_frame(0, 540)),
+            (middle.clone(), stack_frame(960, 0)),
+            (top.clone(), stack_frame(0, 0)),
+        ];
+        let pager = build_output_pager_from_content(
+            &content,
             &HashMap::new(),
-            &HashMap::new(),
-            &HashMap::new(),
-            &zorder,
             "mon-a",
             full(),
             &bottom_bar(),
         )
         .expect("fits");
-        // Paint order is bottom first so the topmost paints last (occludes).
-        // HWND ascending would paint the topmost first: that old order must
-        // fail here.
         assert_eq!(
             pager.cells[0].mini_keys,
             vec![bottom.clone(), middle.clone(), top.clone()]
-        );
-        assert_ne!(
-            pager.cells[0].mini_keys,
-            vec![top, middle, bottom],
-            "HWND order must not decide stacking"
         );
         let cell = pager.cells[0].rect;
         assert_eq!(
@@ -2315,41 +2020,22 @@ mod tests {
     }
 
     #[test]
-    fn retained_overlay_keeps_native_mixed_order() {
-        // A kept maximized/fullscreen overlay rides the live map with a fresh
-        // frame like an ordinary member; the retained order must interleave
-        // it with ordinary windows in native sequence, not group it apart.
-        use std::collections::BTreeSet;
-        let active = "ws-1";
+    fn content_interleaves_overlay_order_verbatim() {
+        // A kept maximized/fullscreen overlay arrives interleaved with
+        // ordinary windows in native sequence; the frame keeps that order,
+        // never grouping overlays apart.
         let plain = stack_key(40, "overlay-plain");
         let overlay = stack_key(50, "overlay-kept");
         let tiled = stack_key(60, "overlay-tiled");
-        let members: BTreeSet<crate::native_guards::WindowKey> =
-            [&plain, &overlay, &tiled].into_iter().cloned().collect();
-        let members_of = |workspace: &str| {
-            if workspace == active {
-                members.clone()
-            } else {
-                BTreeSet::new()
-            }
-        };
-        let mut live = HashMap::new();
-        live.insert(plain.clone(), stack_frame(0, 0));
-        live.insert(overlay.clone(), stack_frame(0, 0));
-        live.insert(tiled.clone(), stack_frame(960, 540));
-        // Native top-to-bottom: the retained overlay covers both ordinary
-        // windows even though its HWND sits between theirs.
-        let zorder = vec![overlay.clone(), tiled.clone(), plain.clone()];
-        let pager = build_output_pager_from_parts(
-            &ring_ids(),
-            Some(active),
-            &members_of,
-            &live,
-            &BTreeMap::new(),
+        let mut content = content_rows(&ring_ids(), "ws-1");
+        content[0].windows = vec![
+            (plain.clone(), stack_frame(0, 0)),
+            (tiled.clone(), stack_frame(960, 540)),
+            (overlay.clone(), full()),
+        ];
+        let pager = build_output_pager_from_content(
+            &content,
             &HashMap::new(),
-            &HashMap::new(),
-            &HashMap::new(),
-            &zorder,
             "mon-a",
             full(),
             &bottom_bar(),
@@ -2359,93 +2045,33 @@ mod tests {
     }
 
     #[test]
-    fn retain_keeps_hidden_relative_order_prunes_and_sorts_new() {
-        use std::collections::BTreeSet;
-        let a = stack_key(11, "retain-a");
-        let b = stack_key(12, "retain-b");
-        let c = stack_key(13, "retain-c");
-        let all: BTreeSet<crate::native_guards::WindowKey> =
-            [a.clone(), b.clone(), c.clone()].into_iter().collect();
-        // Fully hidden: nothing visible, so the last observed order stands.
-        let previous = vec![a.clone(), b.clone(), c.clone()];
-        assert_eq!(retain_pager_order(&previous, &all, &[]), previous);
-        // Partial return: visible members take the fresh native order first,
-        // the still-hidden member keeps its retained slot after them.
-        assert_eq!(
-            retain_pager_order(&previous, &all, &[c.clone(), a.clone()]),
-            vec![c.clone(), a.clone(), b.clone()]
-        );
-        // Departed members prune; a recycled HWND is a new full identity and
-        // lands in the deterministic fallback until first observed.
-        let b2 = stack_key(12, "retain-b2");
-        let members: BTreeSet<crate::native_guards::WindowKey> =
-            [a.clone(), b.clone(), b2.clone()].into_iter().collect();
-        assert_eq!(
-            retain_pager_order(&previous, &members, &[b.clone(), a.clone()]),
-            vec![b.clone(), a.clone(), b2.clone()]
-        );
-        // Duplicate visible entries keep their first occurrence only.
-        assert_eq!(
-            retain_pager_order(&[], &all, &[a.clone(), a.clone(), b.clone(), c.clone()]),
-            vec![a.clone(), b.clone(), c.clone()]
-        );
-        // Visible non-members never enter the retained order.
-        let foreign = stack_key(99, "retain-foreign");
-        assert_eq!(
-            retain_pager_order(&previous, &all, &[foreign, b.clone()]),
-            vec![b.clone(), a.clone(), c.clone()]
-        );
-    }
-
-    #[test]
-    fn never_observed_members_fall_back_to_key_order() {
-        // Empty retained order (nothing observed yet): miniatures paint in
-        // deterministic full-identity order, never HWND-guessed stacking.
-        use std::collections::BTreeSet;
-        let active = "ws-1";
-        let first = stack_key(30, "fallback-b");
-        let second = stack_key(10, "fallback-a");
-        let members: BTreeSet<crate::native_guards::WindowKey> =
-            [first.clone(), second.clone()].into_iter().collect();
-        let members_of = |workspace: &str| {
-            if workspace == active {
-                members.clone()
-            } else {
-                BTreeSet::new()
-            }
-        };
-        let mut tokens = BTreeMap::new();
-        tokens.insert(first.clone(), "tok-first".to_owned());
-        tokens.insert(second.clone(), "tok-second".to_owned());
-        let mut slots = HashMap::new();
-        slots.insert("tok-first".to_owned(), stack_frame(0, 0));
-        slots.insert("tok-second".to_owned(), stack_frame(960, 0));
-        let frame_for = |zorder: &[crate::native_guards::WindowKey]| {
-            build_output_pager_from_parts(
-                &ring_ids(),
-                Some(active),
-                &members_of,
-                &HashMap::new(),
-                &tokens,
-                &slots,
-                &HashMap::new(),
-                &HashMap::new(),
-                zorder,
-                "mon-a",
-                full(),
-                &bottom_bar(),
-            )
-            .expect("fits")
-        };
-        let pager = frame_for(&[]);
-        // `WindowKey` orders by HWND first here, so hwnd 10 paints before 30.
-        assert_eq!(
-            pager.cells[0].mini_keys,
-            vec![second.clone(), first.clone()]
-        );
-        // A partially observed workspace paints the known stack on top of
-        // the never-observed fallback, in native order.
-        let pager = frame_for(std::slice::from_ref(&first));
-        assert_eq!(pager.cells[0].mini_keys, vec![second, first]);
+    fn content_ordinal_and_currency_ride_verbatim() {
+        // Core content decisions are honored, never recomputed: ordinals
+        // need not match positions and the current cell need not be first.
+        // The renderer may format a provided ordinal numerically as host
+        // styling, like the positional path always has.
+        let rows = vec![
+            PagerContentWorkspace {
+                id: "ws-a".to_owned(),
+                ordinal: 7,
+                current: false,
+                windows: Vec::new(),
+            },
+            PagerContentWorkspace {
+                id: "ws-b".to_owned(),
+                ordinal: 3,
+                current: true,
+                windows: Vec::new(),
+            },
+        ];
+        let pager =
+            build_output_pager_from_content(&rows, &HashMap::new(), "mon-a", full(), &bottom_bar())
+                .expect("fits");
+        assert_eq!(pager.ids, vec!["ws-a".to_owned(), "ws-b".to_owned()]);
+        assert_eq!(pager.cells[0].ordinal, 7);
+        assert_eq!(pager.cells[1].ordinal, 3);
+        assert!(!pager.cells[0].active);
+        assert!(pager.cells[1].active);
+        assert_eq!(pager.active_index, 1);
     }
 }

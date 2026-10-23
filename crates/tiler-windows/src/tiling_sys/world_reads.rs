@@ -39,31 +39,6 @@ impl TileLoop {
                 .ok()?;
         (window.hwnd == hwnd).then_some(window.visible)
     }
-
-    /// Core domain fingerprint for one device output: FNV-1a over the
-    /// logical ring plus the current view. Observation-stable
-    /// (observation ticks never move rings/views) but commit-sensitive,
-    /// so only real topology changes fail the START fence.
-    pub(super) fn preview_domain_fp(&self, device: &str) -> u64 {
-        let wire = self.wire_of(device).unwrap_or_default();
-        let engine = self.world.engine();
-        let mut hash: u64 = 14695981039346656037;
-        let mut feed = |text: &str| {
-            for byte in text.bytes() {
-                hash ^= u64::from(byte);
-                hash = hash.wrapping_mul(1099511628211);
-            }
-            hash ^= 0xff;
-            hash = hash.wrapping_mul(1099511628211);
-        };
-        for id in engine.logical_ring(&wire) {
-            feed(&id);
-        }
-        if let Some(view) = engine.logical_view(&wire) {
-            feed(&view);
-        }
-        hash
-    }
 }
 
 impl TileLoop {

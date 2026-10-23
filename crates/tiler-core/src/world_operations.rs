@@ -15,18 +15,35 @@ use crate::ids::{CorrelationId, OwnerId};
 use crate::seed::EngineWindow;
 use crate::session::{DomainKey, OutputDomain};
 use crate::world_engine::{
-    KIND_DIRECTION, KIND_FOCUS, KIND_IN_FLIGHT, KIND_MIGRATION, KIND_OPERATION, KIND_SCOPE_HELD,
-    KIND_SEND_TARGET, KIND_SEND_WINDOW, KIND_SNAPSHOT, MSG_DIRECTION, MSG_FOCUS, MSG_IN_FLIGHT,
+    KIND_DIRECTION, KIND_IN_FLIGHT, KIND_MIGRATION, KIND_OPERATION, KIND_SCOPE_HELD,
+    KIND_SEND_TARGET, KIND_SEND_WINDOW, KIND_SNAPSHOT, MSG_DIRECTION, MSG_IN_FLIGHT,
     MSG_MIGRATION_TOPOLOGY, MSG_MIGRATION_TOPOLOGY_UNREADABLE, MSG_OPERATION, MSG_SCOPE_HELD,
     MSG_SEND_TARGET, MSG_SEND_WINDOW, MSG_SNAPSHOT, RetainedTransfer, WorldEngine,
 };
 use crate::world_report::{
-    CommandResult, OneShotEffect, TransferKind, TransferTarget, WorldReport,
+    CommandResult, OneShotEffect, TransferKind, TransferTarget, WorldCommand, WorldReport,
 };
 
 use crate::world_commands::CommandApplied;
 
 impl WorldEngine {
+    /// Drop any pending directional maximize-clear binding for `window`,
+    /// pruning bindings whose window left homing. Any same-window new
+    /// intent supersedes the old binding and re-evaluates fresh; no later
+    /// user command ever consumes a pending binding.
+    pub(crate) fn supersede_directional_clear(&mut self, window: &WindowId) {
+        self.retained_clears.retain(|retained| {
+            retained.window != *window && self.staged.homing.contains_key(&retained.window)
+        });
+    }
+
+    /// Prune pending directional maximize-clear bindings whose window left
+    /// homing. Runs for windowless commands; window-carrying commands use
+    /// [`WorldEngine::supersede_directional_clear`].
+    pub(crate) fn prune_directional_clears(&mut self) {
+        self.retained_clears
+            .retain(|retained| self.staged.homing.contains_key(&retained.window));
+    }
     /// Existing operation route through the full [`CoreEvent`] (D2/D3
     /// migration path for KDE): the homing (or first readable) domain
     /// supplies the observation envelope. Send operations retain a window
@@ -349,6 +366,13 @@ impl WorldEngine {
     /// target/safety fences). Up/down and missing/ambiguous/partial/
     /// edgeless topology run the local single-domain focus. No adapter
     /// target or `crossOutput` is read; the core decides.
+    ///
+    /// World-owned stage-5 lattice runs first: sticky subjects route in
+    /// the displayed view, automatic floats and floating workspaces refuse,
+    /// maximized subjects fence, and float origins resolve candidates and
+    /// targets in core (miss retains, hit emits the explicit focus
+    /// effect). Tiled subjects fall through to the pair/local path
+    /// unchanged.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn focus_directional(
         &mut self,
@@ -356,10 +380,13 @@ impl WorldEngine {
         command_seq: u64,
         window: &WindowId,
         direction: &str,
-        float_subject: bool,
         by_id: &BTreeMap<&WindowId, &EngineWindow>,
         held_scopes: &BTreeSet<DomainKey>,
     ) -> CommandApplied {
+        use crate::world_directional::{
+            DirectionalOutcome, DirectionalVerdict, early_verdict, effective_domain,
+            float_focus_candidates, select_float_focus_target,
+        };
         let Some(direction_parsed) = parse_direction_token(direction) else {
             return CommandApplied::Rejected {
                 kind: KIND_DIRECTION,
@@ -367,10 +394,24 @@ impl WorldEngine {
             };
         };
         let Some(source_row) = by_id.get(window) else {
-            return CommandApplied::Rejected {
-                kind: KIND_FOCUS,
-                message: MSG_FOCUS,
-            };
+            self.command_result = Some(CommandResult::Directional {
+                outcome: DirectionalOutcome::FocusFloatRefusedStale,
+                target: Some(window.clone()),
+                rect: None,
+                cause: Some("unknown-window".to_owned()),
+            });
+            self.note_command(command_seq);
+            return CommandApplied::NoEffect;
+        };
+        let Some(home) = self.staged.homing.get(window).cloned() else {
+            self.command_result = Some(CommandResult::Directional {
+                outcome: DirectionalOutcome::FocusFloatRefusedStale,
+                target: Some(window.clone()),
+                rect: None,
+                cause: Some("unknown-window".to_owned()),
+            });
+            self.note_command(command_seq);
+            return CommandApplied::NoEffect;
         };
         let source_key = DomainKey {
             output: source_row.output.clone(),
@@ -381,6 +422,67 @@ impl WorldEngine {
                 kind: KIND_SCOPE_HELD,
                 message: MSG_SCOPE_HELD,
             };
+        }
+        let view = self.effective_view(&home.output);
+        let effective = effective_domain(&home, source_row.sticky, view.as_deref());
+        let tiling = self.logical_tiling(&effective.output.0, &effective.workspace.0);
+        // Any same-window new intent supersedes a pending clear binding and
+        // re-evaluates fresh; no later user command consumes it.
+        self.retained_clears.retain(|retained| {
+            retained.window != *window && self.staged.homing.contains_key(&retained.window)
+        });
+        if let Some(early) = early_verdict(source_row, tiling, false) {
+            debug_assert!(!matches!(early, DirectionalVerdict::NeedClear { .. }));
+            if let DirectionalVerdict::Refused { outcome, cause } = early {
+                self.command_result = Some(CommandResult::Directional {
+                    outcome,
+                    target: None,
+                    rect: None,
+                    cause,
+                });
+                self.note_command(command_seq);
+                return CommandApplied::NoEffect;
+            }
+        }
+        if source_row.floating || source_row.sticky {
+            let mut staged: Vec<EngineWindow> = Vec::new();
+            for domain in &self.staged.domains {
+                staged.extend(domain.windows.iter().cloned());
+            }
+            let candidates = float_focus_candidates(
+                &staged,
+                &self.staged.homing,
+                window,
+                &effective.output,
+                &effective.workspace.0,
+            );
+            let Some(target) = select_float_focus_target(
+                source_row.rect.x,
+                source_row.rect.y,
+                direction,
+                &candidates,
+            ) else {
+                self.command_result = Some(CommandResult::Directional {
+                    outcome: DirectionalOutcome::FocusFloatRetained,
+                    target: None,
+                    rect: None,
+                    cause: Some("no-target".to_owned()),
+                });
+                self.note_command(command_seq);
+                return CommandApplied::NoEffect;
+            };
+            self.command_result = Some(CommandResult::Directional {
+                outcome: DirectionalOutcome::FocusFloatApplied,
+                target: Some(target.clone()),
+                rect: None,
+                cause: None,
+            });
+            self.note_command(command_seq);
+            return CommandApplied::Effect(OneShotEffect::explicit_focus(
+                command_seq,
+                target,
+                self.state_revision + 1,
+            ));
         }
         // KDE focus policy: only left/right may cross. Up/down always run
         // local, so a vertical strict edge never diverts focus. When a
@@ -396,7 +498,7 @@ impl WorldEngine {
                 window: window.0.clone(),
                 direction: direction.to_owned(),
                 cross_output_transfer: true,
-                float_subject,
+                float_subject: false,
             };
             return self.operation_directional(
                 report,
@@ -413,7 +515,7 @@ impl WorldEngine {
             window: window.0.clone(),
             direction: direction.to_owned(),
             cross_output_transfer: false,
-            float_subject,
+            float_subject: false,
         };
         self.run_local_operation(report, command_seq, &local_command, by_id, held_scopes)
     }
@@ -426,6 +528,12 @@ impl WorldEngine {
     /// Unreadable topology refuses; no candidate (or missing reverse
     /// touch) runs local R1-R3. No adapter target or `crossOutput` is
     /// read; the core decides.
+    ///
+    /// World-owned stage-5 lattice runs first with the same order as
+    /// focus: automatic/floating-workspace/fullscreen refusals, then
+    /// maximize need-clear (the adapter clears once and continues from
+    /// fresh observation), then float half-snap authorization in core.
+    /// Tiled subjects fall through to the pair/local path unchanged.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn move_directional(
         &mut self,
@@ -437,6 +545,10 @@ impl WorldEngine {
         by_id: &BTreeMap<&WindowId, &EngineWindow>,
         held_scopes: &BTreeSet<DomainKey>,
     ) -> CommandApplied {
+        use crate::world_directional::{
+            DirectionalOutcome, DirectionalVerdict, early_verdict, effective_domain,
+            float_half_snap_rect, half_snap_constraints_ok,
+        };
         let Some(direction_parsed) = parse_direction_token(direction) else {
             return CommandApplied::Rejected {
                 kind: KIND_DIRECTION,
@@ -444,10 +556,24 @@ impl WorldEngine {
             };
         };
         let Some(source_row) = by_id.get(window) else {
-            return CommandApplied::Rejected {
-                kind: KIND_OPERATION,
-                message: MSG_OPERATION,
-            };
+            self.command_result = Some(CommandResult::Directional {
+                outcome: DirectionalOutcome::MoveFloatRefusedStale,
+                target: Some(window.clone()),
+                rect: None,
+                cause: Some("unknown-window".to_owned()),
+            });
+            self.note_command(command_seq);
+            return CommandApplied::NoEffect;
+        };
+        let Some(home) = self.staged.homing.get(window).cloned() else {
+            self.command_result = Some(CommandResult::Directional {
+                outcome: DirectionalOutcome::MoveFloatRefusedStale,
+                target: Some(window.clone()),
+                rect: None,
+                cause: Some("unknown-window".to_owned()),
+            });
+            self.note_command(command_seq);
+            return CommandApplied::NoEffect;
         };
         let source_key = DomainKey {
             output: source_row.output.clone(),
@@ -458,6 +584,140 @@ impl WorldEngine {
                 kind: KIND_SCOPE_HELD,
                 message: MSG_SCOPE_HELD,
             };
+        }
+        let view = self.effective_view(&home.output);
+        let effective = effective_domain(&home, source_row.sticky, view.as_deref());
+        let tiling = self.logical_tiling(&effective.output.0, &effective.workspace.0);
+        // Retained maximize-clear supersession: no later user command ever
+        // consumes a pending binding. Any same-window new intent drops the
+        // old binding first and re-evaluates fresh below (a fresh maximized
+        // subject re-binds; an unmaximized subject proceeds normally).
+        // Prune bindings whose window left homing; closes/departures prune
+        // in settlement.
+        self.retained_clears.retain(|retained| {
+            retained.window != *window && self.staged.homing.contains_key(&retained.window)
+        });
+        match early_verdict(source_row, tiling, true) {
+            Some(DirectionalVerdict::Refused { outcome, cause }) => {
+                self.command_result = Some(CommandResult::Directional {
+                    outcome,
+                    target: None,
+                    rect: None,
+                    cause,
+                });
+                self.note_command(command_seq);
+                return CommandApplied::NoEffect;
+            }
+            Some(DirectionalVerdict::NeedClear { window }) => {
+                // Fresh need: bind the original intent under the stable
+                // originating operation identity and publish a one-shot
+                // `clear_operation` desire (see publish). The adapter
+                // dispatches the native clear at most once and reports a
+                // correlated `ClearAttempt`; the commandless settlement
+                // resumes the original intent under this same identity on
+                // proof. Never a second command or child id.
+                let operation_id = format!("op-{command_seq}");
+                self.retained_clears
+                    .retain(|retained| retained.window != window);
+                self.retained_clears
+                    .push(crate::world_engine::RetainedClear {
+                        operation_id,
+                        window: window.clone(),
+                        direction: direction.to_owned(),
+                        home: home.clone(),
+                        view: view.clone(),
+                        focus: report.focused_global.clone(),
+                        observation_seq: report.observation_seq,
+                        float_route: source_row.floating || source_row.sticky,
+                        same_axis,
+                        pending: None,
+                        ambiguous: false,
+                    });
+                self.command_result = Some(CommandResult::Directional {
+                    outcome: DirectionalOutcome::NeedClear,
+                    target: Some(window),
+                    rect: None,
+                    cause: None,
+                });
+                self.note_command(command_seq);
+                return CommandApplied::NoEffect;
+            }
+            None => {}
+        }
+        if source_row.floating || source_row.sticky {
+            // Float and sticky half-snaps share the uniform retained
+            // float-placement lane: the stable `frame_operation` token is
+            // the only write authority, so ordinary unsolicited sticky
+            // frame writes stay prohibited elsewhere (the tiled lane never
+            // writes sticky frames).
+            let Some(screen) = report.screens.iter().find(|s| s.output == effective.output) else {
+                self.command_result = Some(CommandResult::Directional {
+                    outcome: DirectionalOutcome::MoveFloatRefusedUnknownOutput,
+                    target: None,
+                    rect: None,
+                    cause: None,
+                });
+                self.note_command(command_seq);
+                return CommandApplied::NoEffect;
+            };
+            let (Some(work), gap) = (screen.work_area, screen.gap) else {
+                self.command_result = Some(CommandResult::Directional {
+                    outcome: DirectionalOutcome::MoveFloatRefusedUnknownOutput,
+                    target: None,
+                    rect: None,
+                    cause: None,
+                });
+                self.note_command(command_seq);
+                return CommandApplied::NoEffect;
+            };
+            let Some(half) = float_half_snap_rect(work, gap, direction) else {
+                self.command_result = Some(CommandResult::Directional {
+                    outcome: DirectionalOutcome::MoveFloatRefusedInvalidGeometry,
+                    target: None,
+                    rect: None,
+                    cause: None,
+                });
+                self.note_command(command_seq);
+                return CommandApplied::NoEffect;
+            };
+            if !half_snap_constraints_ok(half, source_row.hints) {
+                self.command_result = Some(CommandResult::Directional {
+                    outcome: DirectionalOutcome::MoveFloatRefusedConstraints,
+                    target: None,
+                    rect: None,
+                    cause: None,
+                });
+                self.note_command(command_seq);
+                return CommandApplied::NoEffect;
+            }
+            self.command_result = Some(CommandResult::Directional {
+                outcome: DirectionalOutcome::MoveFloatApplied,
+                target: Some(window.clone()),
+                rect: Some(half),
+                cause: None,
+            });
+            self.note_command(command_seq);
+            // Retain the explicit one-shot placement under the stable
+            // command identity so the uniform float lane (not a bespoke
+            // adapter write) actuates it at most once: the reply rect names
+            // the authorized desire, and only native observation confirms it
+            // (proven applied). One shot per command, never a continuous
+            // fight: settlement drops or supersedes the target like any
+            // explicit float placement.
+            let operation_id = format!("op-{command_seq}");
+            self.retained_floats.retain(|held| held.window != *window);
+            self.retained_floats
+                .push(crate::world_engine::RetainedFloat {
+                    operation_id,
+                    window: window.clone(),
+                    target: half,
+                    source: Some(source_row.rect),
+                    output: effective.output.clone(),
+                    workspace: effective.workspace.0.clone(),
+                    ambiguous: false,
+                    pending: None,
+                });
+            return CommandApplied::NoEffect;
         }
         // Windowed selection: unreadable refuses, no candidate runs local.
         // The dispatch-selected target is pinned through the validated
@@ -478,14 +738,18 @@ impl WorldEngine {
             Ok(None) => None,
             Ok(Some(target)) => Some(target),
         };
-        if let Some(target) = pinned {
+        // Tiled directional moves keep focus on the mover through one spent
+        // core effect (same at-most-once lane as directional focus): the
+        // adapter only verifies the foreground for its snap chain and never
+        // actuates a second time. Refusals pass through untouched.
+        let applied = if let Some(target) = pinned {
             let command = CoreCommand::Move {
                 window: window.0.clone(),
                 direction: direction.to_owned(),
                 cross_output_transfer: true,
                 same_axis_move: same_axis,
             };
-            return self.operation_directional(
+            self.operation_directional(
                 report,
                 command_seq,
                 &command,
@@ -494,15 +758,24 @@ impl WorldEngine {
                 Some(&target),
                 by_id,
                 held_scopes,
-            );
-        }
-        let local_command = CoreCommand::Move {
-            window: window.0.clone(),
-            direction: direction.to_owned(),
-            cross_output_transfer: false,
-            same_axis_move: same_axis,
+            )
+        } else {
+            let local_command = CoreCommand::Move {
+                window: window.0.clone(),
+                direction: direction.to_owned(),
+                cross_output_transfer: false,
+                same_axis_move: same_axis,
+            };
+            self.run_local_operation(report, command_seq, &local_command, by_id, held_scopes)
         };
-        self.run_local_operation(report, command_seq, &local_command, by_id, held_scopes)
+        match applied {
+            CommandApplied::NoEffect => CommandApplied::Effect(OneShotEffect::explicit_focus(
+                command_seq,
+                window.clone(),
+                self.state_revision + 1,
+            )),
+            CommandApplied::Effect(_) | CommandApplied::Rejected { .. } => applied,
+        }
     }
 
     /// Direction-only window send (core-owned topology): resolve the
@@ -1410,5 +1683,47 @@ pub(crate) fn parse_direction_token(direction: &str) -> Option<Direction> {
         "up" => Some(Direction::Up),
         "down" => Some(Direction::Down),
         _ => None,
+    }
+}
+
+/// The window lifetime a world command names, if any. Used only to
+/// supersede a pending directional maximize-clear binding: any same-window
+/// new intent drops the old binding and re-evaluates fresh, never
+/// consuming it.
+pub(crate) fn command_window(command: &WorldCommand) -> Option<WindowId> {
+    match command {
+        WorldCommand::Focus { window, .. }
+        | WorldCommand::FocusDirectional { window, .. }
+        | WorldCommand::MoveDirectional { window, .. }
+        | WorldCommand::SendDirectional { window, .. }
+        | WorldCommand::Send { window, .. }
+        | WorldCommand::SendRelative { window, .. }
+        | WorldCommand::SendNumbered { window, .. } => Some(window.clone()),
+        WorldCommand::Operation(command) => match command {
+            CoreCommand::Move { window, .. }
+            | CoreCommand::Focus { window, .. }
+            | CoreCommand::Resize { window, .. }
+            | CoreCommand::PointerResize { window, .. }
+            | CoreCommand::ToggleFloat { window, .. }
+            | CoreCommand::ToggleOrientation { window, .. }
+            | CoreCommand::DragDrop { window, .. }
+            | CoreCommand::DragPreview { window, .. } => Some(WindowId(window.clone())),
+            CoreCommand::SendToWorkspace { window, .. }
+            | CoreCommand::SendToOutput { window, .. } => Some(WindowId(window.clone())),
+            CoreCommand::Reconcile
+            | CoreCommand::UpdateGaps
+            | CoreCommand::ActiveGroup
+            | CoreCommand::ReleaseDomain
+            | CoreCommand::MigrateWorkspace { .. } => None,
+        },
+        WorldCommand::SwitchView { .. }
+        | WorldCommand::SelectWorkspace { .. }
+        | WorldCommand::SelectNumbered { .. }
+        | WorldCommand::SelectRelative { .. }
+        | WorldCommand::SelectPrevious { .. }
+        | WorldCommand::SelectTrailing { .. }
+        | WorldCommand::MigrateWorkspace { .. }
+        | WorldCommand::MigrateDirectional { .. }
+        | WorldCommand::SetWorkspaceTiling { .. } => None,
     }
 }

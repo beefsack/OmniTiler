@@ -465,7 +465,6 @@ pub(super) fn dispatch_fullscreen_intent(
     // the held handle across effects. Replaces the stale
     // tick-observation gates: the expected window is the fresh
     // eligible observation when present, otherwise a retained
-    // overlay construction exactly like `actuate_focus`, and only
     // the geometry classifier is focus-relaxed (overlays allowed).
     let owned_expected: Option<ObservedWindow>;
     let expected = if let Some(found) = observed.iter().find(|w| w.hwnd == member_key.hwnd) {

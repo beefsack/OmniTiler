@@ -1489,3 +1489,734 @@ of cursor-first fresh placement or the entire rearchitecture.
 - All four parked focus/send questions and the existing tentative learned-
   minimum, placement and dev-control choices remain unchanged. No new product
   decision or implementation blocker prevents stage 4.
+
+## Stage 4a implementation plan
+
+- Add normalized gesture start (exact window lifetime and move/resize kind),
+  cursor, release and cancel ingress to the world route. Retain the gesture,
+  resolve its target/preview, and commit release or edge-share changes in core.
+  Reuse the existing internal drag and pointer-resize machinery rather than
+  introduce a second policy implementation.
+- Replace Windows drag targeting, pending-drop and geometry decisions with
+  fact reporting and desired-overlay rendering. Preserve native input ownership,
+  cancellation detection, lifetime/freshness vetoes, coordinate conversion and
+  truthful actuation readback. Preview hide acknowledgement is a native rendering
+  fence, not release-outcome policy.
+- Acceptance: core lifecycle/target/release/resize/gap/game-pause regressions,
+  Windows report-mapping and render-consumption tests, locked core/protocol/
+  Windows build/tests/strict clippy, workspace fmt and whitespace, independent
+  boundary review, and fixture-only both-output smoke without synthetic drag.
+  Physical drag acceptance remains separate; the drag driver stays disabled.
+- Focus/warp and border/group/pager presentation follow as separate slices.
+  Preserve existing release and edge-share behavior; unsupported new behavior
+  stays TBD rather than being inferred from the extraction.
+
+## Stage 4a accepted outcome (2026-10-23)
+
+### Gesture ownership and contract
+
+- `gesture.rs` defines normalized lifecycle facts; `world_gesture.rs` retains
+  the sole gesture session, source homing, immutable start truth and hover
+  prior. Binding before the sweep shields the native-moving window's logical
+  home. Core computes drop targets/rectangles, same-output drag release,
+  cross-output send/follow and pointer-resize shares through existing internal
+  Engine policy. No adapter-selected target or geometry enters that policy.
+- `gestureIngress` carries `id` (nonzero monotonic decimal-u64 string within
+  the adapter incarnation), `win`, `kind`, `phase`, `cursor`, `startCursor`,
+  `start`, `modal` and `esc`. Ports must retain the same id and frozen
+  start facts through coalesced start/end and delayed rendering. Missing cursor
+  stays unknown. The new optional `gestureSettled` reply field carries
+  `{id, committed}`; it acknowledges incorporation, not native completion.
+  Duplicate requests repeat their reply; later unrelated reports carry null.
+  Digest, validation, conservative bounds and both encoders cover the fields.
+- The consumed-id watermark is bounded scalar state, not a frame-keyed or
+  unbounded lifetime table. Refused/unreadable terminal attempts consume their
+  id without committing; stale cancel cannot erase a newer session. Missing
+  ingress holds, explicit close clears, and fresh ids supersede abandoned
+  sessions. Observation gaps never fabricate a valid release or arrival.
+- Windows reports native start/update/release/cancel, keeps identity/tag/input
+  freshness and render-hide acknowledgement, then consumes the ordinary world
+  reply. All finish refusal, Esc, timeout and suspension paths retain a terminal
+  cancellation until incorporation. There is no mutating result-query API.
+  Diagnostics distinguish core commit from refusal/unverified native outcome.
+- Deleted Windows cross-drag destination/settlement, same/cross preview policy,
+  pending-drop destination and arrival/follow-focus branches, drag snapshots,
+  fingerprint mirrors and obsolete public gesture reexports. Pending rendering
+  remains a mechanical hide-before-effects fence, not a second drag owner.
+  Removed unused moved preview-gate APIs instead of retaining test-only policy.
+
+### Coverage and corrections
+
+| Superseded coverage | Retained production coverage |
+| --- | --- |
+| Windows preview gate table and source-bounds helper test | Core world lifecycle zero/outside/cancel/float/sticky/replacement/gap cases and production destination/derivation tests; Windows native identity/tag/input gates remain tested. |
+| Windows pending-drop policy assertions | Producer/capture/sequencer/reply tests retain hide-ack, invalidation, timeout, missing observation, lifetime drift and cancellation-delivery cases. Core owns commit assertions. |
+| Windows public pure-gesture test imports | Tests import the actual core owner; no Windows compatibility aliases. |
+| Cross-drop arrival/focus tail | Existing core retained send/transfer settlement and native raw-attempt/receipt suites remain the arrival oracle; gesture replies alone prove no native arrival. |
+
+- Review reproduced and corrected post-sweep binding duplicating the mover,
+  absent-ingress close leakage, overwritten down-point truth, terminal replay
+  under frame-based identity, abandoned native cancellations, stale-reply
+  success diagnostics and inline down-point removal before capture. Failed-
+  before/passing-after regressions cover the concrete lifecycle defects.
+  A first read-only review missed remaining adapter policy; the final ownership
+  review inspected its deletion and accepted the corrected end-to-end route.
+- Core lifecycle coverage includes resize shares, modal move across rescale,
+  no-change/cancel/Esc, zero/outside, close/replacement, incomplete recovery,
+  consumed commands, terminal replay/supersession, game pause, reply sizing and
+  transactional rejection. Windows tests exercise actual report production,
+  terminal retention/incorporation and renderer consumption, not setter echoes.
+
+### Verification and native limits
+
+- Locked core/protocol/Windows build, all-target tests and strict all-target
+  clippy pass: **2,421 passed, zero failed, one ignored across 48 suites**.
+  Workspace formatting and whitespace checks pass. Independent final boundary
+  review accepted the reply-based terminal contract; subsequent cleanup only
+  removed dead preview APIs, compatibility reexports and unused allocation.
+  KDE/macOS remain intentionally unported; required report/reply literal
+  additions are not a platform implementation or compilation claim.
+- Fixture-only both-output smoke passed admission/coverage, float/unfloat with
+  exact core-selected frames and stable peers, selection hide/reveal and
+  both-direction send-follow. Exact caller-id/native-lifetime/token joins,
+  physical frames, visibility and foreground corroborate the outcomes. Six
+  fresh accepted snapshots showed no retained transfer flights. These are
+  nondrag runtime checks, not gesture or physical shortcut acceptance.
+- Exact-owner stop, independent restore and fixture shutdown left no owned
+  processes/windows, ledger or controls. Settings bytes, relevant SPI/taskbar
+  state and protected-window geometry matched baseline. Raw scripts, artifact
+  provenance and native readbacks remain outside the repository.
+- No dependency, unsafe code, input hook or timer was added. Existing coalesced
+  native gesture wakes now run core report/preview work; its cost is unmeasured.
+  Native suspension and core fullscreen/cursor gates pause overlay/release work.
+  Physical drag/game acceptance remains user-owned; the synthetic drag driver
+  is unchanged and disabled. No zero-cost or transient-duration claim is made.
+
+### Remaining boundary and exact next action
+
+- Stage 4a is complete at the offline gesture/native nondrag acceptance bar.
+  Windows remains a working dogfood slice, not the completed rearchitecture.
+  Next: stage 4b active focus-follows-cursor and cursor warp, including i3/sway
+  cross-output preset behavior, both default off. Then stage 4c core border/
+  group/pager presentation and stage 5 ownership/dead-API/common-connector audit.
+- Cross-output pointer-precise preview versus send-based release placement is
+  inherited, not repaired or physically accepted here. A new minimal
+  [discriminator](../spec/reference-outcomes.md#windows-dual-output-transfer-discriminators)
+  records the alternatives and recommends physical discrimination before a
+  policy change. Keep current placement; do not claim preview/release parity.
+- Core gesture ingress/terminal acknowledgement is ready for port adaptation,
+  but the overall interface still awaits focus/warp and desired presentation.
+  Audit floating-scope standalone view flight behavior in stage 5. MRU refill,
+  shared/global native checks, tile-override restart and physical acceptance
+  remain gaps. Existing tentative decisions and all four parked focus/send
+  questions are unchanged.
+
+## Stage 4b implementation checkpoint (2026-10-23)
+
+- Stage 4b is implemented but **not accepted**. Stage 4a's acceptance above
+  remains its earlier artifact's evidence. Stages 4c and 5 have not started;
+  this checkpoint is not the completed rearchitecture or dogfood readiness.
+- Core now derives default-off focus-follows-cursor from an optional
+  `cursorHit` exact managed lifetime, reported alongside cursor position.
+  Native hit testing supplies observation, not focus policy. Core checks
+  current logical view, eligibility and holds; it does not guess stacking
+  from rectangles. Admission and command focus take precedence, and an
+  unchanged hover does not repeatedly steal keyboard focus.
+- Core publishes default-off cross-output `warpCursor` coordinates from the
+  final focus effect and its effective frame, constrained to the destination
+  work area. Windows requires fresh exact-target foreground, lifetime,
+  controlled shown view and input/fullscreen checks before applying the point.
+  Same-output focus does not warp. The approved i3/sway cross-output behavior
+  is expressible through these settings; no all-settings preset is introduced.
+- Windows reports genuine motion through a non-consuming `WH_MOUSE_LL` tap,
+  installed only for enabled focus-follows-cursor after the suspension check.
+  Motion coalesces into normal observation turns without a new timer.
+  Suspension removes the tap; failed release retains its handle and retries
+  with bounded diagnostics and backoff. Exit has a best-effort release guard.
+  Cost is one additional hook-chain link per mouse message while installed
+  and one owner turn per motion burst. Game-start detection latency and these
+  costs are unmeasured; input before suspension can still traverse the tap.
+  Injected-flagged motion is ignored; a native cursor warp can cause a bounded
+  self-wake. No zero-cost or physical-input acceptance is claimed.
+- Core-only, protocol and production Windows tests cover hit identity and
+  absence, current-view filtering, overlap hit truth, focus precedence,
+  stationary hover, game/gesture pauses, warp correlation/refusal and hook
+  install/release failures. Independent source review accepted these offline
+  boundaries after corrections to hidden-window guessing, decoupled warps,
+  absent idle-motion wakes and lost failed-unhook handles.
+- Locked core/protocol/Windows build, all-target tests and strict all-target
+  clippy pass: **2,467 passed, zero failed, one ignored**. Workspace formatting
+  and whitespace checks pass. KDE/macOS ports remain intentionally outside
+  these gates. No dependency was added.
+
+### Partial native evidence and unresolved attribution
+
+- Fixture-only native checks passed both-output admission, default-off FFC
+  negative controls, live setting adoption and tap installation. Cross-output
+  warp-off preserved the cursor; warp-on reached the exact constrained tile
+  centre in both directions, while same-output focus left it unchanged.
+  Selection hide/reveal on both outputs and a borderless-fullscreen coverage/
+  return probe passed. Native frames, cursor and foreground plus exact
+  caller-id/lifetime/token joins established those bounded results.
+- Actual FFC hover-follow remains **unverified**. Positioned-cursor trials
+  observed native focus reach the hovered fixture without an attributable
+  owner focus-effect row. Later trials captured an accepted observation with
+  cursor over the peer and source still focused, but no successful focus
+  effect; a later focus change again lacked attribution. Existing trace data
+  omits the reported hit, minted effect ids and individual hold reasons, so
+  it cannot distinguish absent hit, eligibility suppression, held dispatch
+  or an external focus change. In particular, a focus setter can execute
+  without immediate foreground proof and therefore without a successful
+  effect count; quiet trace alone cannot exclude delayed owner activation.
+  The source of those native changes is unknown.
+  Do not classify them as product success or operator activity.
+- Rejected-focus-probe, dwell and prompt-perturbation approaches did not close
+  this attribution gap. Some live scripts also initially wrote a setting at
+  the wrong JSON level or incorrectly required foreground to stay unchanged
+  after an FFC-enabled move; those harness errors were corrected, not product
+  repairs. A suspected rejected-command hover-consumption defect was not
+  reproduced: rejected core candidates are not adopted.
+- Every live leg stopped the exact owner, independently restored and shut
+  down the fixture. Settings bytes, cursor, relevant SPI/taskbar state and
+  protected-window geometry matched baseline; owned processes, ledger and
+  controls were absent. Raw scripts, provenance and observations remain
+  outside the repository. Physical move delivery, shortcuts, drag and games
+  remain unclaimed; the synthetic drag driver stays disabled.
+
+### Next boundary
+
+- Resolve attribution before another FFC live attempt: add bounded trace-only
+  cursor-hit, minted focus-effect identity and dispatch-hold diagnostics, with
+  offline tests proving the diagnostic oracle. Then use a fixture-only
+  positioned-cursor observation that cannot introduce a competing focus
+  command. No further identical live approach is accepted as new evidence.
+- Do not change static-hover retry policy on the present evidence: a first
+  held hover was suspected, not established. Preserve current behavior until
+  the exact sequence is reproduced; record a discriminator if it reveals a
+  genuine product choice rather than an implementation defect.
+- No stage 4b durable acceptance decision is promoted. Desired border/group/
+  pager presentation, the common acceptance audit, floating-scope standalone
+  view-flight investigation and finalized KDE/macOS port contract remain.
+  The core interface is not settled for full ports. Existing tentative
+  decisions, four parked focus/send questions and native gaps are unchanged.
+
+## Stage 4b accepted outcome (2026-10-23)
+
+- Core-owned exact-hit hover focus and cross-output cursor warp are accepted
+  with both settings default off. The implementation boundary described in
+  the checkpoint is unchanged; no static-hover retry policy was altered.
+  Native hover-follow remains explicitly unverified, not a product success.
+- Bounded `world-apply` diagnostics now join reported `cursor_hit` and FFC
+  setting, minted focus effect identity/target, native setter disposition,
+  immediate foreground proof and individual hold reason. A setter with no
+  immediate foreground proof logs as dispatched and unproven, not as silence.
+  Held minted effects and changed hit/focus/setting observations also log;
+  unchanged idle observations stay quiet. Offline production-seam tests prove
+  no-setter, refused/throwing setter, proven focus and truncation distinctions.
+- A changed fixture-only diagnostic leg established both-output admission,
+  exact native-lifetime/token joins and an FFC-off negative control. With FFC
+  armed, positioned synthetic motion produced no changed-hover observation or
+  attributed effect during the bounded window. A complete tap-wake -> hover
+  -> effect -> native-arrival chain was neither proven nor disproven. Injected
+  motion is filtered by design; synthetic positioning is not established as an
+  owner wake. No retry loop or production workaround was introduced.
+- Read-only SPI queries with verified constants report OS active-window
+  tracking disabled. The fixture ignores mouse-move events rather than
+  focusing itself. These checks exclude those proposed confounds at the
+  observed settings, but do not establish the missing hover wake or attribute
+  earlier unexplained focus changes. No OS tracking setting was changed.
+- Final-artifact cross-output warp reached the exact requested tile centre;
+  same-output focus left the pointer unchanged. Immediate focus proof was
+  initially absent on one row, but the independent foreground gate passed
+  before warp and a later report corroborated focus. The earlier artifact's
+  both-direction warp, warp-off and both-output selection checks remain
+  bounded prior evidence; the diagnostic-only final artifact reran one crossing,
+  same-output no-warp and selection smoke, not native FFC success.
+- Final locked core/protocol/Windows build, all-target tests and strict
+  all-target clippy pass: **2,478 passed, zero failed, one ignored**. Workspace
+  formatting and whitespace checks pass. Independent boundary/safety/evidence
+  review found no blocking issue and accepted the default-off residual.
+  KDE/macOS remain intentionally unported. No dependency was added.
+- Exact-owner stop, independent restore and fixture shutdown left no owned
+  processes/windows, ledger or controls. Settings bytes, cursor, relevant
+  SPI/taskbar state and protected-window geometry matched baseline. Raw source,
+  artifact, scripts, gate logs and native observations remain outside the
+  repository. Physical motion/shortcuts/drag/games remain user-owned; the
+  synthetic drag driver stays disabled. Mouse-tap cost and suspension latency
+  remain unmeasured, including input traversing the tap before suspension.
+- Next: stage 4c desired border/group/drop presentation and per-screen pager
+  content, then stage 5 ownership/dead-API/common-connector audit and finalized
+  port notes. The overall core interface is not yet settled for full ports.
+  Floating-scope standalone view flight and inherited cross-output preview/
+  send-release asymmetry remain audit targets. Existing native gaps, tentative
+  choices and four parked focus/send questions are unchanged.
+
+## Stage 4c implementation plan (2026-10-23)
+
+- Move border eligibility and complete border/group expansion into shared
+  presentation types. Fresh scoped foreground facts can describe ordinary
+  floats and unmanaged foregrounds without admitting them. Host-scaled style
+  dimensions and frame coordinates use the same adapter units; Windows keeps
+  DPI conversion, styling, lifetime/scope vetoes and z-order anchoring.
+- Use the sole retained world's read-only group projection for fast per-wake
+  presentation, without a second Engine or a presentation-triggered world
+  command. Preserve genuine foreground matching, pending/hold fences and the
+  current movement-or-chord trigger. Drop geometry already comes from the
+  stage-4a core gesture result; retain its lifecycle dispatch and audit its
+  remaining consumer rather than replacing it with a second preview resolver.
+- Core owns pager workspace content, labels, current/occupied/focused facts,
+  window lists, native-observation stacking retention and frame-source
+  precedence. Native enumeration and saved-frame caches supply observations,
+  not an adapter content-order policy. Windows retains strip/cell placement,
+  miniature coordinate scaling, artwork acquisition and click-to-command.
+- Implement border/group extraction, then pager extraction. Accept only after
+  core-only regressions, core/protocol/Windows local gates, independent review
+  and both-output fixture border/underlay/pager readback. Physical drag/input
+  and the existing default-off FFC residual remain distinct acceptance gaps.
+
+## Stage 4c accepted outcome (2026-10-23)
+
+- Core `visual.rs` owns border eligibility/reasons and checked complete
+  border/group expansion. Native-scoped ordinary floats and unmanaged
+  foregrounds remain border-eligible without acquiring membership. Dimensions
+  are host-scaled before the core call; coordinates stay in adapter units.
+- `WorldEngine::group_highlight` reads retained topology, hints, membership,
+  tiling mode, focus and holds without adoption, revision/history changes or
+  actuation. Windows no longer dispatches an `ActiveGroup` command per wake.
+  The movement-or-chord trigger and projected source group during an open
+  native move are preserved. Native scope/proof/lifetime and renderer-side
+  freshness/fullscreen vetoes remain; drop shapes still use stage 4a's single
+  core gesture lifecycle, not a second preview resolver.
+- Core owns pager rings, labels, effective current, occupied and
+  contains-focused facts, per-workspace paint lists and source rectangles.
+  Native top-to-bottom observations update core-retained stacking; hidden and
+  minimized members keep prior relative order. Frame precedence remains live,
+  then float snapshot, then tile/hide snapshot. Fresh candidate frames survive
+  same-report admission but remain invisible until membership exists. Windows
+  performs only binding, strip/cell placement, miniature scaling, artwork and
+  drawing. Core ordinals reach native paint and click attribution verbatim;
+  ordinal-only changes invalidate the paint cache.
+- This is an in-process presentation observation/query contract on the sole
+  retained world, not a new `WorldReport`/`WorldReply` wire section. KDE/macOS
+  port transport and remaining dead query APIs are stage-5 audit work; no port
+  compilation or final interface-freeze claim is made here.
+
+### Verification and native evidence
+
+- Core-only coverage includes visibility/overflow matrices, unmanaged border
+  facts, group source geometry during open moves, mismatched focus and
+  transfers, read-only queries, pager order/fallback/hidden lifetime retention,
+  same-admission frames and no-admission observations. Windows regressions
+  distinguish raw display identities from core wire ids and verify the
+  complete ordinal-to-native-frame/click path.
+- Review corrections removed an unintended blanket retained-gesture hide,
+  fixed core-wire to native-output binding, retained first-admission frames
+  and removed native positional ordinal reconstruction. The gesture defect
+  was reproduced before correction. Independent boundary review inspected
+  the broad extraction; subsequent corrections have targeted regressions and
+  final native readback. One unrelated parallel taskbar-queue test failed
+  once during development, then passed isolated and repeated full runs;
+  interference is suspected, not established or repaired in this slice.
+- Final locked core/protocol/Windows build, all-target tests and strict
+  all-target clippy pass: **2,491 passed, zero failed, one ignored across 48
+  suites**. Workspace formatting and whitespace checks pass. No dependency,
+  hook, timer or unsafe block was added by stage 4c.
+- Final-artifact fixture-only native checks passed both-output admission and
+  exact border bounds against fresh physical visible frames plus scaled style;
+  ordinary-float border retention, maximize/fullscreen hiding and return also
+  passed. Bounded synthetic chord observations showed exact group-union plus
+  extension underlays on both outputs, independently enumerated and measured;
+  release hid each underlay. This is not physical chord or drag acceptance.
+- Native pager overlays were visible on both outputs with ordered numeric
+  cells, current highlighting and light-gray miniature regions. Per-output
+  select-away/previous restored native visibility/layout without disturbing
+  the peer output. Hidden-view screenshots retained the occupied workspace's
+  miniature regions while highlighting the empty view. These screenshots do
+  not independently prove icon artwork or every window's miniature/order;
+  those content assertions have deterministic core/native-seam coverage.
+- Exact-owner stop, independent restore and fixture shutdown left no owned
+  processes/windows, ledger or controls. Settings bytes, cursor, relevant
+  SPI/taskbar state and protected-window geometry matched preimages. Raw
+  provenance, scripts, screenshots, logs and observations remain outside the
+  repository. Default-off FFC/warp were not changed. No measured-cost or
+  physical game/input claim is added.
+
+### Remaining completion boundary
+
+- Stage 4c is complete; stage 5 has not started. The current Windows slice is
+  working, but the whole rearchitecture is not yet declared dogfood-ready.
+- Next: audit every inventory row and dead API, common acceptance connector,
+  floating-scope standalone view-flight completion and cross-output
+  preview/send-release asymmetry; finalize KDE/macOS port notes, then run the
+  broad both-output fixture regression and publish the dogfood-readiness
+  summary. Keep current placement while the physical preview discriminator
+  remains unresolved, rather than deciding a parked product question.
+- Native MRU occupied refill, shared/global modes, tile-override restart and
+  physical shortcut/drag/game checks remain gaps. Native FFC hover-follow is
+  still unverified and default off; mouse-tap cost/suspension latency remain
+  unmeasured. Existing tentative learned-minimum acquisition, three-way
+  placement/launch-targeting and development controls, plus the four parked
+  focus/send questions, are unchanged.
+
+## Stage 5 completion-audit checkpoint (2026-10-23)
+
+### Ownership audit and remaining units
+
+- The inventory above is the pre-extraction map, not a list of current
+  Windows owners. Source inspection confirms one retained `WorldEngine`;
+  Windows observations, native bindings/recovery claims and renderer caches
+  are not additional workspace owners. The following is an interim audit,
+  not interface-freeze or whole-stage acceptance.
+
+| Inventory row | Current policy owner | Remaining completion check |
+| --- | --- | --- |
+| Workspace model | Core logical mapping, membership, rings and views | Dead adapter APIs and all-mode native regression |
+| Scope and lifecycle | Core mode, history, trailing and hotplug lifecycle | Shared/global native regression |
+| Workspace commands | Core selection, send, migration and refill | Floating-flight correction below; remaining adapter context/fence audit |
+| Fresh placement | Core startup/fresh distinction, output and neighbor | Retained adapter output-context consumers need disposition |
+| Output resolution | Core topology and action target selection | Audit adapter rectangle grounding and directional fences for policy duplication |
+| Classification | Core normalized eligibility and retained admission | Final disposition of remaining float/admission helpers |
+| Verification and fighting | Core raw-attempt settlement, suppression, bounds and completion | Shared acceptance connector breadth |
+| Gesture | Core retained lifecycle, preview, release and resize | Physical cross-output preview/release discriminator remains unresolved |
+| Visual shapes | Core border/group/drop eligibility and geometry | Out-of-process presentation transport contract |
+| Pager | Core content, retained order and source-frame precedence | Out-of-process observation/query transport contract |
+| Cursor | Core targeting, hover and warp policy | Native hover wake and cost gaps unchanged |
+| Behavior settings | Core behavior values; platform persistence/normalization | Final port exporter notes |
+
+- Remaining bounded units: finish portable-policy/dead-API disposition;
+  complete the shared world-action case/Windows connector and case-authoring
+  instructions; settle the transport-facing presentation interface and port
+  notes; finish taskbar-queue isolation investigation; run the full both-output
+  regression matrix and publish dogfood readiness. Do not substitute the
+  floating-flight leg below for that broad acceptance pass.
+- Confirmed cleanup candidates still need consumer inspection and removal:
+  `WorldReply::presentation_bytes` is a zero-valued reserve, not a serialized
+  presentation section; `product_hide::batch` appears superseded by the
+  retained world/native seam. Remaining command decoders and test-only
+  helpers likewise need actual consumer checks before deletion.
+- The in-process stage-4c presentation API is sufficient for Windows, not a
+  settled KDE D-Bus contract. The remote owner must receive presentation
+  observations and expose the retained pager/group projection without a
+  second Engine or adapter retention/content policy. Current wire replies
+  lack that projection. Finalize that interface before full KDE/macOS ports;
+  do not infer transport sufficiency from Windows direct queries or preserve
+  the old `ActiveGroup` command route as a compatibility shim.
+- Taskbar-queue interference remains a hypothesis: several pager tests inject
+  and drain one global queue. Reproduce the interference and isolate the test
+  seam rather than weakening assertions or treating repeated green runs as a
+  root-cause fix. Also inspect `directional_resolution::output_for_rect`:
+  its overlap fallback currently subtracts from the rectangle's left/top
+  instead of its right/bottom, producing zero intersections when the centre
+  is outside all outputs. Keep native observed affinity distinct from core
+  action targeting while resolving this helper's owner and coverage.
+
+### Floating view and migration completion correction
+
+- Reproduced a connector defect: a standalone selection into a floating
+  workspace published an `Untouched` scope, but Windows required `Controlled`
+  to switch its view. No setter, raw view attempt or observed echo could
+  arrive, so the core correctly retained the flight indefinitely. The same
+  gate defect affected floating migration targets and deferred source refills.
+- Windows now permits transfer-coupled membership/view actuation into an
+  `Untouched` target only with an unheld output and no gesture barrier.
+  Unknown/held scopes and outputs remain closed. Native freshness, input,
+  lifetime, scope, at-most-once and target-before-refill proof gates remain;
+  raw member/view attempts still go to core for every verdict. Sweep frame
+  authority is unchanged. Core-owned sessionless migration placements remain
+  distinct from intentional-float frames, which are preserved.
+- Core migration now rekeys its floating-scope marker with the workspace on
+  the commit reply, matching its existing tiling-mode/id move and swap path.
+  This removes a transient false `Controlled` target and keeps inverse
+  migration sessionless. Selection, migration/refill policy and the parked
+  focus/send choices are unchanged.
+- Independent review also found a fallible sticky-stay derivation after swap
+  commit. Both stays are now prepared before mapping/history/session mutation.
+  The refusal regression deliberately injects a multi-domain internal session
+  to reach the failure; ordinary public world reports maintain single-domain
+  sessions, so this is defensive atomicity coverage, not a reproduced native
+  user failure. Successful sticky/sessionless swaps remain covered.
+- Core regressions cover numbered/previous/trailing floating selection,
+  truthful refusal settlement, floating migration/inverse and floating swap.
+  Windows regressions cover floating target/refill dispatch, holds and
+  non-replay, plus a nonempty production-native-seam hide/reveal, receipt and
+  echo-settlement roundtrip. No core completion shortcut or desired-state
+  echo was added.
+
+### Floating-flight accepted evidence
+
+- Final locked core/protocol/Windows build, all-target tests and strict
+  all-target clippy pass: **2,503 passed, zero failed, one ignored across 48
+  suites**, plus **119 fixture tests** (2,622 total across 49 suites).
+  Workspace formatting and whitespace checks pass. Independent source review
+  accepted the floating authority, target/refill ordering, refusal rollback
+  and corrected defensive swap atomicity. No dependency, hook, timer or unsafe
+  block was added by this unit.
+- Final-artifact fixture-only native verification passed nonempty floating
+  trailing/previous hide/reveal on both outputs, stable frames/peer visibility
+  and explicit operation retirement from fresh whole snapshots. Floating
+  workspace migration and inverse passed core FULL-delta/constrained placement,
+  intentional-float frame preservation, target/refill visibility and chained
+  flight retirement. Both-output tiled selection and both-direction send-follow
+  also passed as bounded regression checks, not the full stage-5 matrix.
+- An earlier external harness initially mistook a pre-dispatch empty transfer
+  snapshot for command acceptance; the raw trace showed the later accepted
+  migration/refill pair. The corrected harness joins the accepted operations
+  before checking their retirement. No production workaround was added.
+  A new native-seam test also initially reused another test's storage identity;
+  giving it a unique identity removed that reproduced test-isolation failure.
+  Neither issue establishes the separate taskbar-queue race's cause.
+- Exact-owner stop, independent restore and fixture shutdown left no owned
+  process, ledger or control residue. Settings bytes, relevant SPI/taskbar state
+  and protected-window geometry matched preimages. Cursor restoration was
+  deliberately not attempted when the ownership guard lacked a fixture-owned
+  foreground; the pointer was left parked, not falsely reported as restored.
+  Raw scripts, identities, artifacts, logs and observations remain outside the
+  repository. Numbered floating selection is covered offline, not by this live
+  leg. No physical input, game or native FFC acceptance is claimed.
+- This floating-flight unit is accepted. Stage 5 overall, interface freeze and
+  final dogfood readiness remain incomplete. Next audit unit: disposition of
+  adapter output context/rectangle grounding and directional fences, then dead
+  APIs and taskbar test isolation; continue the connector/transport/full-matrix
+  units above. Preserve the preview/send-release asymmetry pending the existing
+  physical discriminator. Native MRU occupied refill, shared/global modes,
+  tile-override restart and physical input/game gaps remain; default-off native
+  FFC and unmeasured hook cost/suspension latency are unchanged.
+
+## Stage 5 output-grounding and dead-fence audit (2026-10-23)
+
+- Reproduced the off-screen rectangle defect: with two adjacent outputs, a
+  frame whose centre is beyond every output but whose tail overlaps the
+  non-first output incorrectly grounded to the first. The retired formula
+  intersected left/top rather than right/bottom and always scored zero area.
+- Core `output_selection::output_for_rect` now owns observed rectangle
+  grounding: integer-rounded centre with half-open containment first, then
+  largest intersection area, then first topology entry on ties (including
+  all-zero intersections). Arithmetic uses widened coordinates. Windows only
+  maps native device identities and supplies its unknown-device sentinel when
+  topology is empty. Point grounding uses existing core `output_at_cursor`.
+  Grounding reports observed affinity; it does not override logical membership,
+  command targets or native lifetime/freshness/scope vetoes.
+- Consumer inspection covered admission/startup/restart affinity, observation,
+  native member/view/arrival proof, fullscreen anchoring and foreground context.
+  Deleted unused directional target/point wrappers, parallel directional/send
+  fence snapshots and predicates, and the test-only `SendPreflight` route and
+  tests. Live `SendTarget`, fresh native pre-effect guards and core settlement
+  remain. No parked targeting, float-home or preview/release choice changed.
+
+### Verification and limits
+
+- Independent boundary review accepted geometry, numeric safety, native binding
+  and zero-production-caller deletions. Core/native-shell regressions cover the
+  original off-screen sliver, negative origins, odd extents/half-open edges,
+  centre priority over larger overlap, zero-area ties, empty topology and extreme
+  coordinates. The overlap discriminator is deterministic only; no native
+  off-screen frame was staged for this unit.
+- Locked core/protocol/Windows/fixture build, all-target tests and strict
+  all-target clippy pass: **2,503 passed, zero failed, one ignored across 48
+  suites**, plus **119 fixture tests**. Workspace format and whitespace pass.
+  No dependency, unsafe block, hook or timer was added.
+- Final-artifact fixture-only native regression passed admission/coverage on
+  both outputs, local directional focus/move on one, cross-output send-follow
+  and inverse send-stay, and trailing/previous hide/reveal on the other. Fresh
+  caller-id/lifetime/token joins, PMv2 physical frames, visibility, foreground,
+  accepted command traces and fresh operation-drain snapshots established these
+  bounded results. This is not the full stage-5 both-output matrix.
+- Exact-owner stop, independent restore and fixture shutdown left no owned
+  processes, ledger or controls. Settings bytes, cursor, relevant SPI/taskbar
+  state and protected-window geometry matched preimages. A shell-encoding
+  mismatch failed before live effects and was corrected in the external driver
+  environment, not production. Raw evidence remains outside the repository.
+  FFC/warp stayed off; no physical input/game or measured-cost claim is added.
+
+### Remaining live adapter policy
+
+- The earlier ownership table is still interim. Moving stateless geometry and
+  removing dead fences does not finish the action-policy cutover:
+  `chord_output`/`output_context_keys` still select foreground, then pointer,
+  cache and output order for migration/control context. This differs from the
+  configured core workspace-switch selector; preserve current semantics while
+  moving the remaining action context into the world contract.
+- `keyboard_directional.rs` still chooses automatic-float and floating-workspace
+  refusal, fullscreen-move refusal, maximized-focus fencing and the
+  unmaximize-before-move continuation. Some predicates are core helpers, but the
+  adapter still chooses action sequencing. These need core-owned decisions and
+  normalized observed continuation, retaining native exact-subject, fresh
+  foreground/view, input and fullscreen vetoes. Do not call them merely
+  mechanical or delete them without replacement and regression coverage.
+- Remaining units: that live policy cutover; dead API/product-hide disposition;
+  taskbar-queue root-cause/isolation; shared world-action core/native/live
+  connector; wire presentation consumed uniformly by Windows; finalized
+  KDE/macOS port notes; full both-output matrix and dogfood-readiness summary.
+  Stage 5, the portable interface and dogfood readiness remain incomplete.
+  Existing tentative decisions, parked questions and native acceptance gaps
+  remain unchanged.
+
+## Stage 5 taskbar-test isolation outcome (2026-10-23)
+
+- Deterministically reproduced shared-queue test interference: eight concurrent
+  producers staged five taskbar events each before a barrier; one drain took all
+  forty while other drains took none. The existing parallel pager tests injected
+  and drained that same process-global queue. This proves a test-isolation defect,
+  not retrospective attribution of the earlier single transient failure.
+- Test builds now give each thread its own queue storage through the existing
+  accessor. Real taskbar trampoline, bounded queue push/take, hook pending probe,
+  drain/filter and pager assertions stay on the production path. Ordinary builds
+  retain the original process-global queues. Main-hook test storage is isolated
+  the same way; no serialization, sleeps or reduced assertions were introduced.
+- Parallel verification separately reproduced a pager-fixture ledger directory
+  collision (`LockContended`): process id plus wall-clock timestamp was not unique
+  within a clock tick. An atomic suffix makes each rig distinct, matching the
+  existing gate-log fixture convention. The two reproduced mechanisms are fixed;
+  which caused the earlier transient remains unknown.
+- Barrier regressions prove independent taskbar and main-hook test storage. The
+  taskbar callback-route regression also checks all event fields, order, cap,
+  overflow coalescing and clean second take through the real trampoline. Review
+  replaced an initial separate-injection-stash draft with storage-only isolation
+  to retain callback, cap and pending-probe parity. No alternate oracle remains.
+- Independent review accepted the final source and production/test boundary.
+  Locked core/protocol/Windows/fixture build, all-target tests and strict
+  all-target clippy pass: **2,506 passed, zero failed, one ignored across 48
+  suites**, plus **119 fixture tests** (**2,625 total across 49 suites**).
+  Concurrent taskbar tests pass **14/14** and tiling-system tests **402/402**;
+  workspace formatting and whitespace checks pass. No dependency, new unsafe
+  block, native hook or timer was added.
+- Final-artifact fixture-only no-behavior-regression checks again passed the
+  bounded preceding unit's bar: admission/coverage on both outputs, directional
+  focus/move on one, send-follow/inverse send-stay across outputs, and trailing/
+  previous on the other, with fresh native frames/visibility/foreground and
+  operation retirement. This does not prove native taskbar callback delivery or
+  replace the full stage-5 matrix. Exact stop/independent restore and fixture
+  shutdown left no owned process/ledger/control residue; settings bytes, cursor,
+  relevant SPI/taskbar state and protected geometry matched preimages. FFC/warp
+  remained off; no physical/game/input or measured-cost claim is added.
+
+### Next action-policy boundary
+
+- Source audit extends the preceding directional-policy finding: Windows also
+  reroutes sticky subjects to the displayed workspace, builds floating-focus
+  candidates and selects the target, computes constrained float half-snaps, and
+  directly writes/focuses floats without dispatching a world command.
+  See `keyboard_directional.rs` (sticky routing and refusal lattice, maximize
+  clear/continue, floating focus/half-snap, tiled world dispatch),
+  `tiling/float.rs` (selection/geometry/clear predicates), and `admission.rs`
+  (`float_focus_candidates`). These are live portable policies, not dead APIs.
+- Next: design and implement one world-owned directional action route covering
+  these branches and observed maximize-clear continuation; remove the superseded
+  Windows decisions. Preserve refusal atomicity, current outcome vocabulary,
+  sticky/current-view behavior and all parked targeting choices. Keep native
+  exact-subject/input/freshness vetoes, coordinate conversion, writes and truthful
+  arrival proof. Merely adding four core guard helpers while the float branch
+  still bypasses world dispatch does not complete this boundary.
+- Then finish migration/control output-context ownership, remaining dead APIs,
+  common case/connector acceptance, uniform wire presentation, KDE/macOS port
+  notes and full both-output regression/dogfood readiness. No interface freeze
+  or whole-stage acceptance is claimed; prior tentative decisions and native
+  gaps are unchanged.
+
+## Stage 5 directional draft - not accepted (2026-10-23)
+
+- The current draft routes float and tiled directional intents through world
+  commands and moves sticky-view routing, ordered refusals, float candidate
+  selection and constrained half-snap geometry into `world_directional.rs` and
+  `world_operations.rs`. Float half-snaps now publish retained `frame_operation`
+  placements through the common native lane. Duplicate directional focus
+  actuation was removed; the common spent effect is the sole focus writer.
+  These are implementation progress, not acceptance of this draft.
+- The initial stateless clear-result/bespoke float-write design failed the
+  ownership review. Its correction added retained float placement and
+  `PendingDirectionalClear`, but still does not provide an observation-driven
+  clear operation. Both designs remain unaccepted; passing tests do not settle
+  the ownership or behavior defects below.
+
+### Blocking defects and missing discriminators
+
+- `world_operations.rs::move_directional` consumes a pending clear only when
+  another same-window directional command arrives. Ordinary reports do not
+  advance or cancel it, and the held-scope return precedes pending consumption.
+  Native veto/observation-failure returns in `keyboard_directional.rs` leave the
+  binding pending. The adapter then issues a second command after its native
+  clear rather than reporting a correlated clear attempt for the original
+  operation. The stored originating command sequence is not used to identify
+  continuation. A later genuine intent can therefore consume an abandoned
+  binding; this source-grounded defect lacks an executable regression yet.
+- The correction introduced `MoveFloatRefusedSticky` instead of preserving
+  existing sticky half-snaps because the common float setter gate rejects
+  sticky windows. This is an unintended behavior change, not an unresolved
+  product choice. Restore explicit directional sticky placement through the
+  common operation contract while retaining protection against ordinary
+  unsolicited sticky frame writes. Do not accept the new refusal or its tests
+  as the behavioral baseline.
+- The Windows `MoveFloatApplied` branch logs `move-float-applied` from the
+  presence of a requested rectangle, without proving native frame arrival or
+  inspecting refusal. A retained desire is not completion. Cover held/refused
+  writes and report truthful pending/refused/applied outcomes.
+- Add real continuation sequences: commandless reports, native veto/refused or
+  ambiguous clear, unchanged maximized observation, held scope, changed focus,
+  view/domain/lifetime, replay and a later independent intent. Existing tests
+  exercise a second command, not the required retained observation lifecycle.
+- Add production-projection coverage for retained maximized float candidates
+  and preserve original observed-then-retained encounter/tie order. The new
+  helper accepts staged maximized carriers, but that alone does not prove the
+  production capture route or candidate ordering. No confirmed production
+  candidate drop is claimed from the helper test.
+- Source comparison confirms the old half-snap output was membership-home
+  (with sticky displayed-view routing), not physical-frame output. Preserve
+  that parked choice. New screen work-area/gap inputs must be proven equivalent
+  to the former native area/inner-gap inputs.
+
+### Verification boundary and next action
+
+- Current locked core/protocol/Windows/fixture all-target build, tests and strict
+  clippy pass: **2,644 passed, zero failed, one ignored across 49 suites**.
+  Workspace formatting and whitespace checks pass. Full raw gate outputs and
+  draft snapshots remain outside the repository. These gates do not accept the
+  known defects or replace live verification. No live test was run for this
+  draft, and no final-artifact directional acceptance is claimed.
+- Next: replace the second-command clear bridge with a correlated common
+  clear desire/raw-attempt contract and retained original-intent continuation
+  driven by normalized observation. Cancel/retire on narrow refusal, lost
+  authority or supersession; never attach an unrelated command to old clear
+  state. Preserve native exact-subject/input/freshness/fullscreen vetoes. Then
+  restore explicit sticky half-snaps, correct completion diagnostics, add the
+  missing regressions, rerun gates and both-output fixture acceptance, and
+  review the finished boundary before accepting this unit.
+- Migration/control context, dead APIs, the common acceptance connector,
+  uniform wire presentation, KDE/macOS port notes, full both-output matrix and
+  dogfood-readiness summary remain after this unit. The portable interface is
+  not settled and the working draft is not ready for dogfooding. No new durable
+  product decision or change to the existing parked questions is accepted.
+
+## Stage 5 directional lifecycle checkpoint - native acceptance pending (2026-10-23)
+
+- The replacement removes the second-command clear bridge. Core publishes
+  `WindowDesire.clear_operation` under the original operation identity;
+  Windows' common diff lane spends it before one nonactivating native clear
+  and returns raw `ClearAttempt` evidence. Acknowledgement never proves arrival.
+- `RetainedClear` stages correlated evidence before observation gaps. Ordinary
+  commandless reports resume the original tiled move or retained float placement
+  only after an accepted clear attempt and readable normalized unmaximized
+  facts. External unmaximize without correlated evidence does not continue.
+  Close, home/view/focus changes and superseding intents abandon old bindings;
+  ambiguous attempts retain no-retry state. No new command identity is minted.
+- Explicit sticky half-snaps again use the common retained frame-operation
+  lane; unsolicited sticky frame writes remain blocked. The Windows handler
+  logs float dispatch rather than claiming frame arrival from a requested
+  rectangle. Production capture/order and lifecycle regressions were added.
+- Design and independent source reviews inspected original-identity correlation,
+  ordinary-observation continuation, tiled/float routing, supersession, sticky
+  authorization and diagnostic honesty. Final locked all-target build/tests and
+  strict clippy for core/protocol/Windows/fixture pass: **2,644 passed, zero
+  failed, one ignored across 49 suites**. Workspace fmt and whitespace pass.
+- This is a checkpoint, not directional or whole-stage acceptance. No native
+  run covers this artifact yet. Remaining risks include a shared native
+  suspension/foreground race between dispatch and effects, ambiguous clear
+  evidence retaining a bounded no-retry hold, and continuation refusal after a
+  proven clear leaving the window unmaximized without a terminal result.
+  Held-scope continuation and same-report supersession ordering need final
+  acceptance scrutiny, not an assumption that broad passing gates prove them.
+- Next: fixture-only both-output directional tile/float focus and move,
+  maximize-clear continuation and sticky half-snaps with independent frame,
+  foreground and operation-retirement proof. Correct any concrete lifecycle or
+  diagnostic findings before accepting this unit. Then finish the remaining
+  stage-5 ownership, connector, presentation transport, port and readiness work
+  listed above. The core interface is not frozen; dogfooding is not ready.

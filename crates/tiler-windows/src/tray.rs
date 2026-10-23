@@ -299,7 +299,7 @@ pub fn menu_items_with_pager(
         for (index, id) in pager_ids.iter().enumerate() {
             items.push(MenuItem::Command {
                 id: crate::tray_pager::menu_id_for_index(index),
-                label: crate::tray_pager::pager_label(index as u32 + 1),
+                label: tiler_core::world_presentation::pager_workspace_label(index as u32 + 1),
                 enabled: true,
                 visible: true,
                 checked: pager_active.is_some_and(|active| active == id),

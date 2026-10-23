@@ -85,6 +85,16 @@ impl WorldOwner {
         self.seq.engine_ref()
     }
 
+    /// Retain one tick of pager presentation facts on the sequenced engine
+    /// (stage 4c). Presentation-only forward; content reads through
+    /// [`WorldOwner::engine`].
+    pub(super) fn observe_pager_presentation(
+        &mut self,
+        obs: tiler_core::world_presentation::PagerPresentationObservation,
+    ) {
+        self.seq.observe_pager_presentation(obs);
+    }
+
     /// Owned core projections for one diff pass (homing, rings, views).
     pub(super) fn core_projections(&self) -> CoreProjections {
         let engine = self.engine();
@@ -120,9 +130,23 @@ impl WorldOwner {
         self.diff.gate.note_applied(reply);
     }
 
+    /// Trace-only hover-change oracle: true when `(cursor-hit, focused,
+    /// ffc-enabled)` differs from the last emitted `world-apply` row.
+    /// Pure comparison over already-captured values: no native reads.
+    pub(super) fn hover_trace_changed(&self, hit: Option<&str>, focused: &str, ffc: bool) -> bool {
+        self.diff.effects.hover_trace_changed(hit, focused, ffc)
+    }
+
+    /// Record the hover triple of an emitted row. Call only when a
+    /// `world-apply` row is actually emitted, never on quiet ticks.
+    pub(super) fn note_hover_traced(&mut self, hit: Option<String>, focused: String, ffc: bool) {
+        self.diff.effects.note_hover_traced(hit, focused, ffc);
+    }
+
     /// Run one diff pass for an accepted reply. Returns stats; attempted
-    /// writes append mechanical rows to `frame_out`, `member_out`, and
-    /// `view_out` for the next report (each stamped with `attempt_ms`).
+    /// writes append mechanical rows to `frame_out`, `member_out`,
+    /// `view_out`, and `clear_out` for the next report (each stamped with
+    /// `attempt_ms`).
     /// No verdicts are produced: the core derives every completion from
     /// the raw attempts plus staged observation. Eight inputs are the
     /// disjoint pass products; bundling would hide the borrow split the
@@ -136,6 +160,7 @@ impl WorldOwner {
         frame_out: &mut Vec<tiler_core::world_report::FrameAttempt>,
         member_out: &mut Vec<tiler_core::world_report::MemberAttempt>,
         view_out: &mut Vec<tiler_core::world_report::ViewAttempt>,
+        clear_out: &mut Vec<tiler_core::world_report::ClearAttempt>,
         attempt_ms: u64,
     ) -> super::world_diff::ApplyStats {
         apply_world_reply(
@@ -146,6 +171,7 @@ impl WorldOwner {
             frame_out,
             member_out,
             view_out,
+            clear_out,
             attempt_ms,
         )
     }
@@ -180,6 +206,11 @@ impl WorldOwner {
     /// Stage one raw view attempt for the next report.
     pub(super) fn note_view_attempt(&mut self, attempt: tiler_core::world_report::ViewAttempt) {
         self.seq.note_view_attempt(attempt);
+    }
+
+    /// Stage one raw maximize-clear attempt for the next report.
+    pub(super) fn note_clear_attempt(&mut self, attempt: tiler_core::world_report::ClearAttempt) {
+        self.seq.note_clear_attempt(attempt);
     }
 
     /// No durable restoration ingress exists.

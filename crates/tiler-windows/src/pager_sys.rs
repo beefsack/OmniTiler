@@ -43,7 +43,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::ffi::{
-    IconBlit, MiniSlot, PagerCalibrationSink, PagerClick, PagerClickSink, PagerFrame, PagerWindow,
+    IconBlit, MiniSlot, PagerCalibrationSink, PagerCellFrame, PagerClick, PagerClickSink,
+    PagerFrame, PagerWindow,
 };
 use crate::pager::{OutputPager, TaskbarFacts, TaskbarKind, pager_active_fill};
 use crate::pager_icons::icon_rect_for_mini;
@@ -181,12 +182,20 @@ fn ensure_pm_v2() -> Result<(), DynError> {
 /// shared (`Arc` clone, never re-buffered); icon destination slots use the
 /// canonical miniature sizing, so illegible miniatures keep the plain
 /// rectangle exactly as the painter always has. `active_fill` is the resolved
-/// accent-or-fallback the painter carries for the active cell.
+/// accent-or-fallback the painter carries for the active cell. Cell ordinals
+/// ride the core values verbatim into paint and click attribution.
 fn pager_frame(pager: &OutputPager, active_fill: (u8, u8, u8)) -> PagerFrame {
     PagerFrame {
         ids: pager.ids.clone(),
         output: pager.output.clone(),
-        cells: pager.cells.iter().map(|cell| cell.rect).collect(),
+        cells: pager
+            .cells
+            .iter()
+            .map(|cell| PagerCellFrame {
+                rect: cell.rect,
+                ordinal: cell.ordinal,
+            })
+            .collect(),
         active: pager.active_index,
         active_fill,
         minis: pager
@@ -212,18 +221,21 @@ fn pager_frame(pager: &OutputPager, active_fill: (u8, u8, u8)) -> PagerFrame {
 }
 
 /// Same field set the native store compared before: workspace ids, output,
-/// cell rects, active index, miniatures, and artwork (`Arc` equality
-/// short-circuits on pointer identity, so steady-state artwork costs one
-/// pointer compare per miniature, not a byte walk).
+/// cell rects and core ordinals, active index, miniatures, and artwork
+/// (`Arc` equality short-circuits on pointer identity, so steady-state
+/// artwork costs one pointer compare per miniature, not a byte walk).
+/// Ordinal changes repaint because the painter formats the stored ordinal.
 fn frames_equal(a: &OutputPager, b: &OutputPager) -> bool {
     a.ids == b.ids
         && a.output == b.output
         && a.active_index == b.active_index
         && a.cells.len() == b.cells.len()
-        && a.cells
-            .iter()
-            .zip(b.cells.iter())
-            .all(|(x, y)| x.rect == y.rect && x.minis == y.minis && x.mini_icons == y.mini_icons)
+        && a.cells.iter().zip(b.cells.iter()).all(|(x, y)| {
+            x.rect == y.rect
+                && x.ordinal == y.ordinal
+                && x.minis == y.minis
+                && x.mini_icons == y.mini_icons
+        })
 }
 
 /// Pure maintenance-deadline combination (windows are opaque values, so
@@ -851,6 +863,12 @@ mod tests {
         let mut resized = base.clone();
         resized.cells[0].rect.w = 73;
         assert!(!frames_equal(&base, &resized));
+        // Ordinal change alone gates a repaint: the painter formats the
+        // stored ordinal, so a renumber is visible pixels.
+        let mut renumbered = base.clone();
+        renumbered.cells[1].ordinal = 7;
+        assert!(!frames_equal(&base, &renumbered));
+        assert!(frames_equal(&renumbered, &renumbered.clone()));
         // Artwork arrival (shared, not copied) gates a repaint; steady
         // state with the same `Arc` does not.
         let image = Arc::new(IconImage::new(32, 32, vec![4; 32 * 32 * 4]));
@@ -888,6 +906,21 @@ mod tests {
         assert_eq!(frame.active_fill, (0xaa, 0xbb, 0xcc));
         let slot = frame.minis[0][0].icon.as_ref().expect("legible mini blits");
         assert!(Arc::ptr_eq(&slot.image, &image));
+    }
+
+    #[test]
+    fn native_frame_carries_core_ordinals_verbatim() {
+        // Non-positional core ordinals reach the owned native frame
+        // verbatim: the painter and click attribution read the stored
+        // ordinal, never the cell position.
+        let mut pager = pager_fixture(&["ws-a", "ws-b"], 1);
+        pager.cells[0].ordinal = 7;
+        pager.cells[1].ordinal = 3;
+        let frame = pager_frame(&pager, (0x2a, 0x82, 0xda));
+        assert_eq!(frame.cells.len(), 2);
+        assert_eq!(frame.cells[0].ordinal, 7);
+        assert_eq!(frame.cells[1].ordinal, 3);
+        assert_eq!(frame.active, 1);
     }
 
     #[test]

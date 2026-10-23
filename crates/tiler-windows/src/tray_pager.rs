@@ -18,12 +18,6 @@
 /// `MENU_ID_WORKSPACE_FIRST + i`. Above the fixed 1001-1007 range.
 pub const MENU_ID_WORKSPACE_FIRST: u32 = 1100;
 
-/// Tentative pager label for a 1-based workspace ordinal.
-#[must_use]
-pub fn pager_label(ordinal: u32) -> String {
-    format!("Workspace {ordinal}")
-}
-
 /// Menu id for one 0-based pager row.
 #[must_use]
 pub const fn menu_id_for_index(index: usize) -> u32 {
@@ -239,12 +233,6 @@ mod tests {
         assert_eq!(workspace_pick_index(MENU_ID_WORKSPACE_FIRST + 3, 3), None);
         assert_eq!(workspace_pick_index(1003, 3), None);
         assert_eq!(workspace_pick_index(0, 3), None);
-    }
-
-    #[test]
-    fn pager_labels_are_one_based() {
-        assert_eq!(pager_label(1), "Workspace 1");
-        assert_eq!(pager_label(12), "Workspace 12");
     }
 
     #[test]

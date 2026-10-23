@@ -8,8 +8,6 @@ pub(super) fn test_state() -> TileLoop {
     let owner = OwnerId::parse("tiler-windows").expect("owner");
     let generation = GenerationId::parse("rmax03-adapter").expect("generation");
     TileLoop {
-        owner: owner.clone(),
-        generation: generation.clone(),
         world: super::world_owner::WorldOwner::bootstrap_ids(owner.as_str(), generation.as_str())
             .expect("world owner bootstrap"),
         tokens: crate::tiling::TokenMap::default(),
@@ -18,8 +16,11 @@ pub(super) fn test_state() -> TileLoop {
         active: std::collections::HashSet::new(),
         gesture_before: std::collections::HashMap::new(),
         gesture_end_cursor: std::collections::HashMap::new(),
+        gesture_override: None,
         gesture_start_key: std::collections::HashMap::new(),
         gesture_start_tag: std::collections::HashMap::new(),
+        gesture_seq: std::collections::HashMap::new(),
+        next_gesture_seq: 0,
         tick: 0,
         allowlist: None,
         scope: Vec::new(),
@@ -71,8 +72,6 @@ pub(super) fn test_state() -> TileLoop {
         pager_areas_fp: 0,
         pager_primary: None,
         pager_secondaries: Vec::new(),
-        pager_live: std::collections::HashMap::new(),
-        pager_z: Vec::new(),
         pager_icon_cache: crate::pager_icons::PagerIconCache::new(),
         pager_icon_service: None,
         pager_icon_retry_at: None,
@@ -113,6 +112,7 @@ pub(super) fn test_state() -> TileLoop {
         underlay_last: None,
         move_kind: std::collections::HashMap::new(),
         gesture_start_cursor: std::collections::HashMap::new(),
+        gesture_started_sent: std::collections::HashSet::new(),
         preview_overlay: crate::active_border_sys::PreviewOverlay::default(),
         preview_last: None,
         preview_bound: std::collections::HashMap::new(),
@@ -134,6 +134,7 @@ pub(super) fn test_state() -> TileLoop {
         overlay_now: std::collections::HashMap::new(),
         input_bridge: None,
         render_bridge: None,
+        cursor_wake: super::cursor_wake::CursorWake::new(),
         render_frames: RenderFrameHealth::default(),
     }
 }

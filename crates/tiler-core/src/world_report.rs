@@ -30,6 +30,7 @@ use crate::boundary::NoGroupReason;
 use crate::bounds::{GEOMETRY_BOUND, is_gap, is_opaque_id, valid_carried_rect};
 use crate::directional::{Direction, NodeId, OutputId, WindowId};
 use crate::geometry::Rect;
+use crate::gesture::{GestureIngress, GestureSettled};
 use crate::session::{DomainKey, DragHoverPrior};
 use crate::workspace_scope::WorkspaceMode;
 
@@ -64,6 +65,9 @@ pub const MAX_WORLD_MEMBER_ATTEMPTS: usize = 1024;
 /// Bound on mechanical view attempts per report (one latest-wins row per
 /// owning view phase at most).
 pub const MAX_WORLD_VIEW_ATTEMPTS: usize = 1024;
+/// Bound on mechanical maximize-clear attempts per report (one latest-wins
+/// row per retained clear operation at most).
+pub const MAX_WORLD_CLEAR_ATTEMPTS: usize = 1024;
 
 /// Tiling policy for one desired workspace row. The core retains one mode
 /// per workspace (Planner-owned, toggled only through
@@ -294,6 +298,13 @@ pub struct WindowDesire {
     /// outstanding for this window; cleared on confirmation, proven refusal,
     /// external supersession, close, newer intent, or generation reset.
     pub frame_operation: Option<String>,
+    /// Explicit retained maximize-clear operation (`op-<cmdSeq>`) authorizing
+    /// exactly one nonactivating clear for this window. `None` (empty on the
+    /// wire) authorizes nothing. Set only while a retained directional clear
+    /// is outstanding and undispatched for this window; cleared on dispatch
+    /// (spent before the write), proven refusal, external supersession,
+    /// close, newer intent, or generation reset. Never re-actuated.
+    pub clear_operation: Option<String>,
 }
 
 /// Desired workspace row. `id` is the stable core logical workspace id;
@@ -522,6 +533,31 @@ pub struct ViewAttempt {
     pub attempt_ms: u64,
 }
 
+/// One normalized raw maximize-clear attempt: the mechanical facts behind a
+/// single native nonactivating clear for one retained directional clear
+/// operation. The adapter checks mechanical authority/freshness/lifetime
+/// gates, clears, re-reads maximized state, and reports; the core derives
+/// confirmation (unmaximized proof), proven refusal, ambiguity, and external
+/// supersession from this evidence plus the staged observation. Never a
+/// policy conclusion: no outcome verdict rides here.
+///
+/// - `operation_id` is the retained clear operation (`op-<cmdSeq>`). Exact
+///   match on operation id plus window.
+/// - `pre_maximized`/`post_maximized` are the live maximized states
+///   immediately before/after the write (`None` = unreadable). Only an
+///   explicit refusal with an unchanged readable `Some(true)` preimage
+///   proves refusal; anything else latches ambiguity.
+/// - `attempt_ms` matches [`FrameAttempt::attempt_ms`] idempotency.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClearAttempt {
+    pub operation_id: String,
+    pub window: WindowId,
+    pub setter: FrameSetter,
+    pub pre_maximized: Option<bool>,
+    pub post_maximized: Option<bool>,
+    pub attempt_ms: u64,
+}
+
 /// One screen observation: the stable output id, the FULL native output
 /// rectangle in one coherent adapter coordinate space, and the distinct
 /// work area the core tiles into. `gap`/`outer_gap` are settings carried
@@ -687,12 +723,10 @@ pub enum WorldCommand {
     /// rects; when it exists and the KDE focus policy allows crossing
     /// (left/right only), the cross-output pair runs, otherwise the local
     /// single-domain focus runs. Up/down never cross. Unreadable or held
-    /// scopes refuse without mutation.
-    FocusDirectional {
-        window: WindowId,
-        direction: String,
-        float_subject: bool,
-    },
+    /// scopes refuse without mutation. Float subjects resolve through the
+    /// world-owned float-focus lattice (candidates/target in core), never
+    /// an adapter bypass.
+    FocusDirectional { window: WindowId, direction: String },
     /// Direction-only move (core-owned topology): the adapter names the
     /// window, direction and same-axis mode only. Core resolves the strict
     /// target; when it exists the cross-output pair runs in all four
@@ -816,12 +850,13 @@ pub struct WorldReport {
     /// on change. Reports before any accepted complete adoption adopt
     /// native affinity (startup/restart/rebind quiet).
     pub fresh_placement: crate::cursor_targeting::FreshPlacement,
-    /// Ingress focus-follows-cursor setting (default off). Retained only;
-    /// no focus coupling actuation lives in core (stage 4 owns it).
+    /// Ingress focus-follows-cursor setting (default off). The stage-4b
+    /// core policy mints one hover-coupling focus effect per report while
+    /// this is on (see [`crate::world_cursor`]).
     pub focus_follows_cursor: bool,
-    /// Ingress cursor-warp setting (default off). Retained only; no warp
-    /// actuation lives in core (stage 4 owns it, including any
-    /// preset-specific cross-output default).
+    /// Ingress cursor-warp setting (default off). The stage-4b core policy
+    /// publishes the cross-output warp point while this is on (see
+    /// [`crate::world_cursor`]).
     pub cursor_warp: bool,
     /// Normalized cursor position in adapter units (same space as screen
     /// FULL rectangles and fact frames), `None` when the adapter cannot
@@ -831,6 +866,17 @@ pub struct WorldReport {
     /// absent cursor or a point outside every screen falls back through
     /// the focused output to the primary/first readable output.
     pub cursor: Option<(i32, i32)>,
+    /// Normalized cursor-hit managed lifetime: the exact managed window
+    /// under the reported cursor at observation time, resolved by the
+    /// adapter through native hit testing plus exact managed-lifetime
+    /// binding (never a rectangle guess, never platform focus policy).
+    /// `None` when the cursor is unreadable, during the focused
+    /// fullscreen-game lane, or when the point lands on foreign, hidden,
+    /// or otherwise unmanaged pixels. The core treats an absent hit as no
+    /// hover: only this fact plus the core's own eligibility and current
+    /// view choose focus-follows-cursor. A hit naming no reported window,
+    /// or any hit without a cursor, refuses the report.
+    pub cursor_hit: Option<WindowId>,
     /// Global active window id ("" when none): the adapter-observed
     /// foreground lifetime across all outputs. Drives focus-conditioned
     /// policy (hotplug survivor/return views); never focus proof.
@@ -843,6 +889,20 @@ pub struct WorldReport {
     pub default_tiled: bool,
     pub inventory_complete: bool,
     pub gesture_barrier: bool,
+    /// Normalized gesture lifecycle ingress (stage 4a): `None` on
+    /// observation-only reports. While a native move/size gesture is open
+    /// the adapter reports exactly one phase per report (started, updated
+    /// with the live cursor, released, or cancelled), every phase carrying
+    /// the stable nonzero gesture id allocated at native START plus the
+    /// START down point. The core retains the session, resolves the
+    /// pointer target, publishes the drop-overlay shape, and commits the
+    /// release over the existing drag/resize machinery, ordering sessions
+    /// and at-most-once terminals by id. The adapter only observes,
+    /// captures, renders, and applies. A missing ingress while a session
+    /// is retained holds the session (never an implicit cancel); an
+    /// explicit close or a cancel phase clears it (a hidden, incomplete,
+    /// or minimized departure holds, never a false close).
+    pub gesture: Option<GestureIngress>,
     pub feedback: Vec<AttemptFeedback>,
     /// Neutral adapter monotonic clock in milliseconds (arbitrary process
     /// epoch, never wall-clock): the observation time of this report. Times
@@ -868,6 +928,12 @@ pub struct WorldReport {
     /// [`MAX_WORLD_VIEW_ATTEMPTS`]). Raw setter/pre/post/baseline facts
     /// only; the core owns standalone/follow/target/refill completion.
     pub view_attempts: Vec<ViewAttempt>,
+    /// Mechanical maximize-clear attempts since the previous report (at most
+    /// one latest-wins entry per retained clear operation, bounded by
+    /// [`MAX_WORLD_CLEAR_ATTEMPTS`]). Raw setter/pre/post maximized facts
+    /// only; the core owns directional clear completion over them plus the
+    /// staged observation (see [`crate::world_settle`]).
+    pub clear_attempts: Vec<ClearAttempt>,
 }
 
 /// World reply: single globally ordered full desired snapshot. No
@@ -907,6 +973,25 @@ pub struct WorldReply {
     /// above). `None` for observation-only replies and for operations whose
     /// result the snapshot already carries.
     pub command_result: Option<CommandResult>,
+    /// Precise result of the gesture terminal incorporated by this report,
+    /// if any: the stable gesture id plus whether the core committed a
+    /// move/resize release. `None` when this report incorporated no
+    /// terminal (observation-only, preview update, held session). Set per
+    /// accepted report only; never retained across reports. Duplicate
+    /// deliveries repeat the cached reply (and its terminal); the id plus
+    /// the consumed watermark keep replays safe.
+    pub gesture_settled: Option<GestureSettled>,
+    /// Desired cursor-warp point in adapter units (same space as screen
+    /// FULL rectangles), `None` when no warp is desired on this report.
+    /// Set only when `cursor_warp` is on, the inventory is complete, the
+    /// cursor reads with a known cursor output, no focused-fullscreen-game
+    /// or gesture pause holds, and a published focus effect targets a
+    /// different output than the cursor output (cross-output only, the
+    /// approved i3/sway preset behavior): the focused target's
+    /// effective-frame centre clamped into its work area. The adapter
+    /// applies it mechanically with fresh game/lifetime/focus proof, at
+    /// most once per observation, and never under its own game lane.
+    pub cursor_warp: Option<(i32, i32)>,
     /// Reserved envelope only: negotiated full sections are not implemented
     /// in this migration.
     pub presentation_bytes: usize,
@@ -975,6 +1060,30 @@ pub enum CommandResult {
         members: Vec<WindowId>,
         floats: usize,
     },
+    /// World-owned directional decision (stage 5): the ordered refusal
+    /// lattice, float-focus target, constrained half-snap rect, and
+    /// maximize-clear need for one
+    /// [`WorldCommand::FocusDirectional`]/[`WorldCommand::MoveDirectional`]
+    /// dispatch. `outcome` is the exact snap vocabulary token the adapter
+    /// logs 1:1; `target` carries the float-focus window when one was
+    /// selected (focus) or the cleared window needing the single clear
+    /// (need-clear) or the stale subject (unknown-window stale refusals);
+    /// `rect` carries the authorized visible half-snap desire for a float
+    /// move, dispatched once through the retained float lane: the token
+    /// itself never proves application, only native observation confirms
+    /// it; `cause` carries the narrow refusal cause when one applies.
+    /// Tiled success carries no result: the snapshot, transfers, and focus
+    /// effects ARE the outcome. A need-clear result publishes a one-shot
+    /// `clear_operation` desire under the originating op; the adapter
+    /// dispatches the native clear at most once and reports a correlated
+    /// clear attempt, and the commandless core settlement resumes the
+    /// original intent under the same op on proof.
+    Directional {
+        outcome: crate::world_directional::DirectionalOutcome,
+        target: Option<WindowId>,
+        rect: Option<Rect>,
+        cause: Option<String>,
+    },
 }
 
 /// Request freshness verdict over `request_seq` alone. Command consumption
@@ -1024,13 +1133,14 @@ pub fn classify_request(
 /// native observations, inventory completeness, the default-tiling seed,
 /// the migration source-refill mode, the D2/D3 capacity settings, the
 /// switch-target and fresh-placement modes, the focus-follows-cursor and
-/// cursor-warp settings, the cursor position, the global focus, the
-/// gesture barrier, feedback (identity, kind, outcome, hold), the monotonic
-/// clock, frame attempts (window, target, setter, readback, DPI pair,
-/// attempt stamp, placement operation id, pre-write frame), member
+/// cursor-warp settings, the cursor position and cursor hit, the gesture
+/// ingress, the global focus, the gesture barrier, feedback (identity, kind, outcome, hold),
+/// the monotonic clock, frame attempts (window, target, setter, readback, DPI
+/// pair, attempt stamp, placement operation id, pre-write frame), member
 /// attempts (operation, window, target, setter, pre/post homing, stamp),
-/// and view attempts (owning operation, target, setter, pre/post/baseline
-/// views, stamp).
+/// view attempts (owning operation, target, setter, pre/post/baseline
+/// views, stamp), and clear attempts (operation, window, setter,
+/// pre/post maximized states, stamp).
 /// Duplicate detection still compares full typed input equality (see
 /// [`WorldEngine`](crate::world_engine::WorldEngine)); the digest is only
 /// a fast pre-check, never the identity.
@@ -1080,6 +1190,49 @@ pub fn report_digest(report: &WorldReport) -> u64 {
     feed(&mut hash, &report.focused_global);
     sep(&mut hash);
     flag(&mut hash, report.gesture_barrier);
+    if let Some(gesture) = report.gesture.as_ref() {
+        feed(&mut hash, &gesture.window.0);
+        sep(&mut hash);
+        feed(&mut hash, &gesture.id.to_string());
+        sep(&mut hash);
+        feed(&mut hash, gesture.kind.as_str());
+        sep(&mut hash);
+        feed(&mut hash, gesture.phase.as_str());
+        sep(&mut hash);
+        feed(
+            &mut hash,
+            &gesture
+                .cursor
+                .map(|(x, y)| format!("{x},{y}"))
+                .unwrap_or_default(),
+        );
+        sep(&mut hash);
+        feed(
+            &mut hash,
+            &gesture
+                .start_cursor
+                .map(|(x, y)| format!("{x},{y}"))
+                .unwrap_or_default(),
+        );
+        sep(&mut hash);
+        flag(&mut hash, gesture.esc);
+        flag(&mut hash, gesture.modal_move);
+        feed(
+            &mut hash,
+            &format!(
+                "{},{},{},{}",
+                gesture.start_frame.x,
+                gesture.start_frame.y,
+                gesture.start_frame.w,
+                gesture.start_frame.h
+            ),
+        );
+        sep(&mut hash);
+    } else {
+        // Absent ingress still separates the digest from a present one.
+        feed(&mut hash, "no-gesture");
+        sep(&mut hash);
+    }
     flag(&mut hash, report.focus_follows_cursor);
     flag(&mut hash, report.cursor_warp);
     feed(&mut hash, report.fixed_size_predicate.as_wire_str());
@@ -1099,6 +1252,17 @@ pub fn report_digest(report: &WorldReport) -> u64 {
         &report
             .cursor
             .map(|(x, y)| format!("{x},{y}"))
+            .unwrap_or_default(),
+    );
+    sep(&mut hash);
+    // The hit rides beside the cursor so a changed hit alone separates
+    // the digest (duplicate detection still compares full typed input).
+    feed(
+        &mut hash,
+        &report
+            .cursor_hit
+            .as_ref()
+            .map(|hit| hit.0.clone())
             .unwrap_or_default(),
     );
     sep(&mut hash);
@@ -1283,6 +1447,32 @@ pub fn report_digest(report: &WorldReport) -> u64 {
         feed(&mut hash, &attempt.attempt_ms.to_string());
         sep(&mut hash);
     }
+    for attempt in &report.clear_attempts {
+        feed(&mut hash, &attempt.operation_id);
+        sep(&mut hash);
+        feed(&mut hash, &attempt.window.0);
+        sep(&mut hash);
+        feed(&mut hash, attempt.setter.as_str());
+        sep(&mut hash);
+        feed(
+            &mut hash,
+            &attempt
+                .pre_maximized
+                .map(|v| if v { "1" } else { "0" }.to_owned())
+                .unwrap_or_default(),
+        );
+        sep(&mut hash);
+        feed(
+            &mut hash,
+            &attempt
+                .post_maximized
+                .map(|v| if v { "1" } else { "0" }.to_owned())
+                .unwrap_or_default(),
+        );
+        sep(&mut hash);
+        feed(&mut hash, &attempt.attempt_ms.to_string());
+        sep(&mut hash);
+    }
     hash
 }
 
@@ -1325,6 +1515,7 @@ pub fn validate_report_reason(report: &WorldReport) -> Option<&'static str> {
         || report.frames.len() > MAX_WORLD_FRAMES
         || report.member_attempts.len() > MAX_WORLD_MEMBER_ATTEMPTS
         || report.view_attempts.len() > MAX_WORLD_VIEW_ATTEMPTS
+        || report.clear_attempts.len() > MAX_WORLD_CLEAR_ATTEMPTS
     {
         return Some("section-over-cap");
     }
@@ -1336,8 +1527,47 @@ pub fn validate_report_reason(report: &WorldReport) -> Option<&'static str> {
     {
         return Some("cursor-invalid");
     }
+    // The cursor hit is fact reporting, never policy: it must name a
+    // reported window (a stale or foreign id proves nothing) and it
+    // never rides without the cursor position it was resolved from.
+    if let Some(hit) = report.cursor_hit.as_ref() {
+        if report.cursor.is_none() {
+            return Some("cursor-hit-without-cursor");
+        }
+        if !report.windows.iter().any(|fact| fact.window == *hit) {
+            return Some("cursor-hit-unknown");
+        }
+    }
     if !report.host_owned_workspace_domains && !report.native.is_empty() {
         return Some("native-without-capability");
+    }
+    if let Some(gesture) = report.gesture.as_ref() {
+        if !is_opaque_id(&gesture.window.0) {
+            return Some("gesture-window-invalid");
+        }
+        if gesture.id == 0 {
+            return Some("gesture-id-invalid");
+        }
+        if let Some((x, y)) = gesture.cursor
+            && (!(-GEOMETRY_BOUND..=GEOMETRY_BOUND).contains(&x)
+                || !(-GEOMETRY_BOUND..=GEOMETRY_BOUND).contains(&y))
+        {
+            return Some("gesture-cursor-invalid");
+        }
+        if let Some((x, y)) = gesture.start_cursor
+            && (!(-GEOMETRY_BOUND..=GEOMETRY_BOUND).contains(&x)
+                || !(-GEOMETRY_BOUND..=GEOMETRY_BOUND).contains(&y))
+        {
+            return Some("gesture-cursor-invalid");
+        }
+        if !valid_carried_rect(
+            gesture.start_frame.x,
+            gesture.start_frame.y,
+            gesture.start_frame.w,
+            gesture.start_frame.h,
+        ) {
+            return Some("gesture-frame-invalid");
+        }
     }
     if report.command_seq.is_none() != report.command.is_none() {
         return Some("command-pair-invalid");
@@ -1559,6 +1789,17 @@ pub fn validate_report_reason(report: &WorldReport) -> Option<&'static str> {
             }
             if !seen_views.insert(attempt.operation_id.clone()) {
                 return Some("duplicate-view-attempt");
+            }
+        }
+    }
+    {
+        let mut seen_clears = BTreeSet::new();
+        for attempt in &report.clear_attempts {
+            if !is_opaque_id(&attempt.operation_id) || !is_opaque_id(&attempt.window.0) {
+                return Some("clear-window-invalid");
+            }
+            if !seen_clears.insert((attempt.operation_id.clone(), attempt.window.0.clone())) {
+                return Some("duplicate-clear-attempt");
             }
         }
     }

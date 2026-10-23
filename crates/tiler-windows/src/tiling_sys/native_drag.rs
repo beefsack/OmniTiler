@@ -25,6 +25,30 @@ pub(super) fn capture_gesture_start(
     hwnd: u64,
     start_seq: u64,
 ) {
+    // Stable gesture id, allocated once per native START and retained
+    // across coalesced START/END through settle and the bridged-hide wait.
+    // Every ingress for the gesture carries it, so the core orders
+    // sessions and at-most-once terminals by id alone. Vacant-only: a
+    // repeated START for the same open hold keeps the original id.
+    if !state.gesture_seq.contains_key(&hwnd) {
+        state.next_gesture_seq += 1;
+        state.gesture_seq.insert(hwnd, state.next_gesture_seq);
+    }
+    // A newer gesture supersedes any stashed terminal for an older id on
+    // the SAME window: the old terminal is abandoned (its session, if
+    // any, is superseded by the new bind), so it must never ride a later
+    // tick. A stashed terminal for another window is left alone.
+    if let Some(stashed) = state.gesture_override.as_ref()
+        && let Some(seq) = state.gesture_seq.get(&hwnd).copied()
+        && stashed.id < seq
+        && state
+            .member_tokens
+            .iter()
+            .find(|(key, _)| key.hwnd == hwnd)
+            .is_some_and(|(_, token)| token.as_str() == stashed.window.0)
+    {
+        state.gesture_override = None;
+    }
     // Sequence-bound Esc coordination: the snapshot rode with the START
     // event from callback time instead of being re-read here. Only edges
     // with a newer sequence latch later, so a stale pre-gesture tap never
@@ -62,24 +86,22 @@ pub(super) fn capture_gesture_start(
         }
     }
     // START-frozen preview source binding (first START wins, never
-    // rebound): the exact member token, source output/workspace, and
-    // accepted revision the preview samples and the final drop resolve
-    // against. Unmanaged STARTs store nothing and fail closed in the
-    // refresh; drift after START fails the whole gesture closed.
+    // rebound): the exact member token plus source output/workspace. The
+    // core owns every drift decision from the staged observation; this
+    // binding is the native lifetime fence for preview rendering and the
+    // END-path identity check. Unmanaged STARTs store nothing and fail
+    // closed in the refresh; drift after START fails closed at the latch
+    // sites below.
     if !state.gesture_preview_start.contains_key(&hwnd) {
         let start_binding = state
             .member_tokens
             .iter()
             .find(|(key, _)| key.hwnd == hwnd)
             .and_then(|(key, token)| {
-                state.member_home(key).map(|loc| {
-                    let domain_fp = state.preview_domain_fp(&loc.output);
-                    PreviewStartBinding {
-                        token: token.clone(),
-                        output: loc.output,
-                        workspace: loc.workspace,
-                        domain_fp,
-                    }
+                state.member_home(key).map(|loc| PreviewStartBinding {
+                    token: token.clone(),
+                    output: loc.output,
+                    workspace: loc.workspace,
                 })
             });
         match start_binding {

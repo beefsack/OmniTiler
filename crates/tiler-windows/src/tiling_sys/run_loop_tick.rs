@@ -175,7 +175,54 @@ fn drop_blocked_intents(
 /// order on proof paths), so a stale pre-suspend edge never cancels a
 /// later gesture. Ordering, not atomicity, carries the guarantee: the
 /// edge drains here before any later START can observe it.
-fn clear_blocked_gesture(state: &mut TileLoop) {
+///
+/// Before clearing, any open gesture's terminal stashes as a Cancelled
+/// ingress for its id: a suspend/stop must never leak a retained core
+/// session, and the next eligible observation (after resume) incorporates
+/// the terminal. No tick runs here, so nothing actuates while blocked.
+pub(super) fn clear_blocked_gesture(state: &mut TileLoop) {
+    // Stash at most one terminal (native single-gesture): the first open
+    // gesture in stable HWND order. Any further open holds are unreachable
+    // in production (the adapter fails multi-gesture closed), and their
+    // tables clear below without a stash; a fresh START re-binds them.
+    let mut open: Vec<u64> = state.gesture_seq.keys().copied().collect();
+    open.sort_unstable();
+    if let Some(hwnd) = open.first().copied()
+        && let Some(id) = state.gesture_seq.get(&hwnd).copied()
+    {
+        let token = state
+            .member_tokens
+            .iter()
+            .find(|(key, _)| key.hwnd == hwnd)
+            .map(|(_, token)| token.clone())
+            .or_else(|| {
+                state
+                    .gesture_preview_start
+                    .get(&hwnd)
+                    .map(|start| start.token.clone())
+            });
+        let kind = match state.move_kind.get(&hwnd) {
+            Some(MoveSizeKind::Move) => tiler_core::gesture::GestureKind::Move,
+            Some(MoveSizeKind::Resize) => tiler_core::gesture::GestureKind::Resize,
+            _ => tiler_core::gesture::GestureKind::Move,
+        };
+        let frame = state
+            .gesture_before
+            .get(&hwnd)
+            .copied()
+            .or_else(|| state.stable.get(&hwnd).copied());
+        if let (Some(token), Some(frame)) = (token, frame) {
+            super::gesture_tick::stash_gesture_cancel(
+                state,
+                hwnd,
+                id,
+                &token,
+                kind,
+                kind == tiler_core::gesture::GestureKind::Move,
+                frame,
+            );
+        }
+    }
     state.gesture_before.clear();
     state.active.clear();
     state.move_kind.clear();
@@ -189,6 +236,8 @@ fn clear_blocked_gesture(state: &mut TileLoop) {
     state.preview_dead.clear();
     state.gesture_preview_start.clear();
     state.gesture_start_cursor.clear();
+    state.gesture_started_sent.clear();
+    state.gesture_seq.clear();
     // A stale Esc edge must not leak into the next gesture.
     // Routes through the input bridge on the product path
     // (ordered FIFO with snapshots; held pairs keep their stored
@@ -361,6 +410,13 @@ pub(super) fn run_active_tick(
     if !woke && gesture_sampling_open(state) {
         woke = true;
     }
+    // Focus-follows-cursor motion wake (event-driven, no poll): consume a
+    // pending tap wake with the flags the last suspend decision left.
+    // Arming happens after the suspend decision below, so a game holds
+    // the session before any install can run; an idle cursor never wakes.
+    if !woke && state.cursor_wake.take_wake() {
+        woke = true;
+    }
     // Trace-only owner-work gate: quiet event-less iterations drop the
     // disabled guard silently above via `continue`. Active wakes arm
     // the single sample; RAII then records suspend/held/error exits.
@@ -391,6 +447,17 @@ pub(super) fn run_active_tick(
     let limited = is_limited_fullscreen(&suspend_read_cached) && suspend_fg != 0;
     if suspend_read_cached.veto.block {
         enter_suspend(state, dir, me, store, snap_want, now, log_path, limited);
+        // A fullscreen game holds the session: park the cursor-motion tap
+        // on entry (no later tick may install it mid-game) and drain
+        // pending motion so the resume turn never wakes on stale movement.
+        // A failed release retains the handle and retries with backoff.
+        state.cursor_wake.set_suspended(true, now);
+        if let Some(diag) = state.cursor_wake.take_diag() {
+            log_json_at(
+                log_path,
+                serde_json::json!({"event":"cursor-tap","op":diag.op,"ok":diag.ok}),
+            );
+        }
         drop_blocked_intents(
             state,
             me,
@@ -430,6 +497,9 @@ pub(super) fn run_active_tick(
         let was_limited = state.suspended_limited;
         state.suspended = false;
         state.suspended_limited = false;
+        // Resume re-arms the cursor-motion tap when still wanted; motion
+        // that arrived while parked never wakes.
+        state.cursor_wake.set_suspended(false, now);
         // Monotonic suspended duration from the suspend start above, so a
         // later incident row can measure the reported delay from normal logs
         // alone. `None` (suspend predates this process snapshot) reads null.
@@ -457,6 +527,27 @@ pub(super) fn run_active_tick(
         // no longer disables. Drive once on the first active tick.
         snap_resume(dir, me, store);
         *snap_primed = true;
+    }
+    // Focus-follows-cursor motion tap: armed only after the suspend
+    // decision above, so a game holds the session before any install can
+    // run (startup under a game never installs). The wake itself was
+    // consumed before the idle gate; here the tap reconciles installs and
+    // retries with backoff. Motion between game start and the next tick
+    // still traverses the installed tap (detection interval, unmeasured).
+    // Proof paths never arm it (no live settings).
+    {
+        let ffc_on = state
+            .settings_live
+            .as_ref()
+            .is_some_and(|live| live.settings.core.focus_follows_cursor);
+        state.cursor_wake.set_armed(ffc_on, now);
+        state.cursor_wake.service(now);
+        if let Some(diag) = state.cursor_wake.take_diag() {
+            log_json_at(
+                log_path,
+                serde_json::json!({"event":"cursor-tap","op":diag.op,"ok":diag.ok}),
+            );
+        }
     }
     // Border follows the live foreground on every active wake,
     // including managed gestures that pause tiling below: the refresh
@@ -503,6 +594,12 @@ pub(super) fn run_active_tick(
         .retain(|hwnd, _| state.managed.contains(hwnd));
     state
         .gesture_start_cursor
+        .retain(|hwnd, _| state.managed.contains(hwnd));
+    state
+        .gesture_started_sent
+        .retain(|hwnd| state.managed.contains(hwnd));
+    state
+        .gesture_seq
         .retain(|hwnd, _| state.managed.contains(hwnd));
     state.active.retain(|hwnd| state.managed.contains(hwnd));
     // Sequence-bound Esc latch, drained once per pump after event and
@@ -576,6 +673,7 @@ pub(super) fn run_active_tick(
         state.preview_dead.remove(&hwnd);
         state.gesture_preview_start.remove(&hwnd);
         state.gesture_start_cursor.remove(&hwnd);
+        state.gesture_started_sent.remove(&hwnd);
     }
     let paused = state.active.iter().any(|hwnd| state.managed.contains(hwnd));
     if paused {

@@ -263,37 +263,22 @@ pub(super) fn refresh_active_border(state: &mut TileLoop, me: &ProcessIdentity, 
     // tool windows, and owned windows stay eligible here.
     let exe_file = exe_file_name(&window.identity.exe_path).to_ascii_lowercase();
     let border_shell = window.facts.shell || is_border_shell_popup(&class_of(hwnd), &exe_file);
-    if border_eligible(
-        true,
-        true,
-        window.visible,
-        window.facts.minimized,
-        window.facts.captionless_fullscreen,
-        window.facts.maximized,
-        window.facts.cloaked,
-        hidden_workspace,
-        border_shell,
-    )
-    .is_err()
+    // Core-owned eligibility from normalized facts first (same position as
+    // the retired adapter gate): ordinary floats and scoped unmanaged
+    // foregrounds carry no tiled token and stay eligible here.
+    if let Err(reason) =
+        tiler_core::visual::border_eligibility(&tiler_core::visual::BorderEligibilityFacts {
+            enabled: true,
+            has_window: true,
+            minimized: window.facts.minimized,
+            fullscreen: window.facts.captionless_fullscreen,
+            maximized: window.facts.maximized,
+            cloaked: window.facts.cloaked,
+            hidden_workspace,
+            shell: border_shell,
+        })
     {
-        hide_border(
-            state,
-            if window.facts.minimized {
-                "minimized"
-            } else if window.facts.captionless_fullscreen {
-                "fullscreen"
-            } else if window.facts.maximized {
-                "maximized"
-            } else if window.facts.cloaked {
-                "cloaked"
-            } else if hidden_workspace {
-                "hidden-workspace"
-            } else if border_shell {
-                "shell"
-            } else {
-                "no-target"
-            },
-        );
+        hide_border(state, reason.as_str());
         return;
     }
     // Mirror the target's topmost band so a topmost active window stays
@@ -309,7 +294,10 @@ pub(super) fn refresh_active_border(state: &mut TileLoop, me: &ProcessIdentity, 
         hide_border(state, "zero-width");
         return;
     }
-    let Some(outer) = border_outer_rect(window.visible, gap_px, width_px) else {
+    // Core-owned complete bounds from the already host-scaled style: the
+    // ring runs in adapter units throughout.
+    let Some((_, outer)) = tiler_core::visual::border_geometry(window.visible, gap_px, width_px)
+    else {
         hide_border(state, "geometry");
         return;
     };

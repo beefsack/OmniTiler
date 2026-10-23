@@ -343,27 +343,6 @@ fn reveal_log_line_carries_production_payload() {
 }
 
 #[test]
-fn gesture_float_cause_truth_table() {
-    assert_eq!(
-        gesture_float_cause(true, true),
-        "engine-exception",
-        "Engine exception on a tiled workspace names the exception lane"
-    );
-    assert_eq!(
-        gesture_float_cause(false, false),
-        "workspace-floating",
-        "clean Engine state on a floating workspace names the workspace mode"
-    );
-    assert_eq!(
-        gesture_float_cause(true, false),
-        "engine-exception+workspace-floating",
-        "both predicates set names both, never hides one"
-    );
-    assert_eq!(gesture_float_cause(false, true), "none");
-    vd_teardown();
-}
-
-#[test]
 fn log_json_at_stamps_common_monotonic_time() {
     let path = std::env::temp_dir().join(format!(
         "tiler-vis-mono-{}-{}",

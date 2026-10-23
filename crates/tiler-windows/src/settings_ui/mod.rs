@@ -125,6 +125,10 @@ pub const ID_SWITCH_FOCUSED: u32 = 158;
 pub const ID_PLACE_CURSOR_MRU: u32 = 159;
 pub const ID_PLACE_CURSOR_CLOSEST: u32 = 160;
 pub const ID_PLACE_FOCUSED_MRU: u32 = 161;
+/// Stage 4b cursor coupling checkboxes: hover focus plus cross-output
+/// warp. Same output-targeting group, switch row.
+pub const ID_FOCUS_FOLLOWS: u32 = 162;
+pub const ID_CURSOR_WARP: u32 = 163;
 
 pub(crate) const GAMING_TIMER_ID: usize = 1;
 pub(crate) const GAMING_TIMER_MS: u32 = 1000;
@@ -336,7 +340,9 @@ fn on_command(app: &mut App, id: u32, notify: u32) -> bool {
         | ID_PLACE_FOCUSED_MRU
         | ID_WORKSPACE_MODE_LOCAL
         | ID_WORKSPACE_MODE_GLOBAL
-        | ID_WORKSPACE_MODE_SHARED => {
+        | ID_WORKSPACE_MODE_SHARED
+        | ID_FOCUS_FOLLOWS
+        | ID_CURSOR_WARP => {
             app.dirty = true;
         }
         _ => {}

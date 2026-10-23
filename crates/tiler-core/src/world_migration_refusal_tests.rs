@@ -306,15 +306,18 @@ fn report(
         focus_follows_cursor: false,
         cursor_warp: false,
         cursor: None,
+        cursor_hit: None,
         default_tiled: true,
         focused_global: focused.to_owned(),
         inventory_complete: true,
         gesture_barrier: false,
+        gesture: None,
         feedback: Vec::new(),
         monotonic_ms: 0,
         frames: Vec::new(),
         member_attempts,
         view_attempts,
+        clear_attempts: Vec::new(),
     }
 }
 
@@ -821,15 +824,18 @@ fn report_with_screens(
         focus_follows_cursor: false,
         cursor_warp: false,
         cursor: None,
+        cursor_hit: None,
         default_tiled: true,
         focused_global: focused.to_owned(),
         inventory_complete,
         gesture_barrier: false,
+        gesture: None,
         feedback: Vec::new(),
         monotonic_ms: 0,
         frames: Vec::new(),
         member_attempts,
         view_attempts,
+        clear_attempts: Vec::new(),
     }
 }
 

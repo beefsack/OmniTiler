@@ -64,10 +64,12 @@ fn test_report() -> WorldReport {
         focus_follows_cursor: false,
         cursor_warp: false,
         cursor: None,
+        cursor_hit: None,
         default_tiled: true,
         focused_global: String::new(),
         inventory_complete: true,
         gesture_barrier: false,
+        gesture: None,
         feedback: vec![AttemptFeedback {
             operation_id: "op-1".to_owned(),
             kind: AttemptKind::Effect,
@@ -78,6 +80,7 @@ fn test_report() -> WorldReport {
         frames: Vec::new(),
         member_attempts: Vec::new(),
         view_attempts: Vec::new(),
+        clear_attempts: Vec::new(),
     }
 }
 
@@ -130,6 +133,35 @@ fn digest_covers_every_section() {
     let mut changed = base.clone();
     changed.gesture_barrier = true;
     assert_ne!(report_digest(&changed), digest);
+    let mut progress = base.clone();
+    progress.gesture = Some(crate::gesture::GestureIngress {
+        id: 3,
+        window: WindowId("win-a".to_owned()),
+        kind: crate::gesture::GestureKind::Move,
+        cursor: Some((4, 5)),
+        start_cursor: Some((1, 2)),
+        phase: crate::gesture::GesturePhase::Updated,
+        esc: false,
+        modal_move: true,
+        start_frame: rect(0, 0, 40, 90),
+    });
+    assert!(validate_report(&progress));
+    let progress_digest = report_digest(&progress);
+    // The stable gesture id, live cursor, and START cursor each move the
+    // digest: replays with a different id or down point never alias.
+    let mut changed = progress.clone();
+    changed.gesture.as_mut().expect("gesture rides").id = 4;
+    assert_ne!(report_digest(&changed), progress_digest);
+    let mut changed = progress.clone();
+    changed.gesture.as_mut().expect("gesture rides").cursor = Some((6, 5));
+    assert_ne!(report_digest(&changed), progress_digest);
+    let mut changed = progress.clone();
+    changed
+        .gesture
+        .as_mut()
+        .expect("gesture rides")
+        .start_cursor = Some((1, 3));
+    assert_ne!(report_digest(&changed), progress_digest);
     let mut changed = base.clone();
     changed.default_tiled = false;
     assert_ne!(report_digest(&changed), digest);
@@ -165,6 +197,12 @@ fn digest_covers_every_section() {
     assert_ne!(report_digest(&changed), digest);
     let mut changed = base.clone();
     changed.request_seq = 2;
+    assert_ne!(report_digest(&changed), digest);
+    // The cursor hit rides beside the cursor: a changed hit alone
+    // separates the digest.
+    let mut changed = base.clone();
+    changed.cursor = Some((4, 5));
+    changed.cursor_hit = Some(WindowId("win-a".to_owned()));
     assert_ne!(report_digest(&changed), digest);
 }
 
@@ -235,6 +273,23 @@ fn validation_gates_shapes() {
     let mut bad = good.clone();
     bad.native[0].output = OutputId("nope".to_owned());
     assert_eq!(validate_report_reason(&bad), Some("native-output-unknown"));
+    // Cursor hit names a reported window and rides with the cursor.
+    let mut good = base.clone();
+    good.cursor = Some((4, 5));
+    good.cursor_hit = Some(WindowId("win-a".to_owned()));
+    assert!(validate_report(&good));
+    // A hit without the cursor it was resolved from refuses.
+    let mut bad = base.clone();
+    bad.cursor_hit = Some(WindowId("win-a".to_owned()));
+    assert_eq!(
+        validate_report_reason(&bad),
+        Some("cursor-hit-without-cursor")
+    );
+    // A hit naming no reported window refuses (stale or foreign id).
+    let mut bad = base.clone();
+    bad.cursor = Some((4, 5));
+    bad.cursor_hit = Some(WindowId("win-ghost".to_owned()));
+    assert_eq!(validate_report_reason(&bad), Some("cursor-hit-unknown"));
     // Bad window rect refuses; hints never fail.
     let mut bad = base.clone();
     bad.windows[0].rect = Some(rect(0, 0, 0, 0));
@@ -247,6 +302,34 @@ fn validation_gates_shapes() {
     let mut good = base.clone();
     good.windows[0].rect = None;
     assert!(validate_report(&good));
+    // Gesture ids are nonzero: a zero id can never bind.
+    let mut bad = base.clone();
+    bad.gesture = Some(crate::gesture::GestureIngress {
+        id: 0,
+        window: WindowId("win-a".to_owned()),
+        kind: crate::gesture::GestureKind::Move,
+        cursor: None,
+        start_cursor: None,
+        phase: crate::gesture::GesturePhase::Updated,
+        esc: false,
+        modal_move: true,
+        start_frame: rect(0, 0, 40, 90),
+    });
+    assert_eq!(validate_report_reason(&bad), Some("gesture-id-invalid"));
+    // Out-of-bound START cursors refuse like live cursors.
+    let mut bad = base.clone();
+    bad.gesture = Some(crate::gesture::GestureIngress {
+        id: 1,
+        window: WindowId("win-a".to_owned()),
+        kind: crate::gesture::GestureKind::Move,
+        cursor: None,
+        start_cursor: Some((99999999, 0)),
+        phase: crate::gesture::GesturePhase::Updated,
+        esc: false,
+        modal_move: true,
+        start_frame: rect(0, 0, 40, 90),
+    });
+    assert_eq!(validate_report_reason(&bad), Some("gesture-cursor-invalid"));
     // Retired external verdict ingress refuses: transfer/view completion
     // rides raw member/view attempts, never feedback rows.
     for kind in [AttemptKind::Transfer, AttemptKind::View] {

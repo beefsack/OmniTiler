@@ -145,21 +145,32 @@ pub struct IconBlit {
 }
 
 /// One window's painted frame: workspace ids in cell order, the output key,
-/// cell rects, the active index, the resolved active-cell fill (live accent
-/// or the `#2a82da` fallback, decided by the host), and per-cell miniature
-/// slots.
+/// per-cell rects with the core-provided 1-based workspace ordinal each
+/// number painter formats, the active index, the resolved active-cell fill
+/// (live accent or the `#2a82da` fallback, decided by the host), and
+/// per-cell miniature slots.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PagerFrame {
     pub ids: Vec<String>,
     pub output: String,
-    pub cells: Vec<Rect>,
+    pub cells: Vec<PagerCellFrame>,
     pub active: usize,
     pub active_fill: (u8, u8, u8),
     pub minis: Vec<Vec<MiniSlot>>,
 }
 
-/// One rendered click: the output key, workspace id, and 1-based ordinal
-/// (logging only, never a positional fallback).
+/// One painted cell: its rect plus the core-provided 1-based workspace
+/// ordinal. The number painter formats the stored ordinal numerically as
+/// host styling; choosing the number from the cell position instead would
+/// be content policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PagerCellFrame {
+    pub rect: Rect,
+    pub ordinal: u32,
+}
+
+/// One rendered click: the output key, workspace id, and core-provided
+/// 1-based ordinal (logging only, never a positional fallback).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PagerClick {
     pub output: String,
@@ -552,12 +563,12 @@ fn paint_frame(hwnd: HWND, frame: &PagerFrame, font: HFONT, dpi: u32) {
         GetClientRect(hwnd, &mut client);
     }
     for (index, cell) in frame.cells.iter().enumerate() {
-        let origin_x = frame.cells.first().map(|first| first.x).unwrap_or(0);
+        let origin_x = frame.cells.first().map(|first| first.rect.x).unwrap_or(0);
         let local = RECT {
-            left: cell.x - origin_x,
+            left: cell.rect.x - origin_x,
             top: 0,
-            right: cell.x - origin_x + cell.w,
-            bottom: cell.h,
+            right: cell.rect.x - origin_x + cell.rect.w,
+            bottom: cell.rect.h,
         };
         let active = index == frame.active;
         let (r, g, b) = if active {
@@ -577,9 +588,9 @@ fn paint_frame(hwnd: HWND, frame: &PagerFrame, font: HFONT, dpi: u32) {
             let mini = slot.rect;
             let local_mini = RECT {
                 left: mini.x - origin_x,
-                top: mini.y - cell.y,
+                top: mini.y - cell.rect.y,
                 right: mini.x - origin_x + mini.w,
-                bottom: mini.y - cell.y + mini.h,
+                bottom: mini.y - cell.rect.y + mini.h,
             };
             let fill = unsafe { CreateSolidBrush(rgb(168, 168, 168)) };
             if !fill.is_null() {
@@ -609,9 +620,9 @@ fn paint_frame(hwnd: HWND, frame: &PagerFrame, font: HFONT, dpi: u32) {
                     hdc,
                     RECT {
                         left: blit.dest.x - origin_x,
-                        top: blit.dest.y - cell.y,
+                        top: blit.dest.y - cell.rect.y,
                         right: blit.dest.x - origin_x + blit.dest.w,
-                        bottom: blit.dest.y - cell.y + blit.dest.h,
+                        bottom: blit.dest.y - cell.rect.y + blit.dest.h,
                     },
                     &blit.image,
                 );
@@ -647,7 +658,7 @@ fn paint_frame(hwnd: HWND, frame: &PagerFrame, font: HFONT, dpi: u32) {
                 }
             }
         }
-        let label = wide(&(index + 1).to_string());
+        let label = wide(&cell.ordinal.to_string());
         let text_rect = local;
         // Bold white number over a centered black halo: black copies paint
         // first at the eight surrounding offsets of `pager_halo_radius`
@@ -703,18 +714,24 @@ fn paint_frame(hwnd: HWND, frame: &PagerFrame, font: HFONT, dpi: u32) {
 /// or `None` when the point names no live cell. Pure over the owned frame
 /// (no window reads), so it unit-tests without a desktop.
 fn hit_test(frame: &PagerFrame, x: i32, y: i32) -> Option<PagerClick> {
-    let origin = frame.cells.first().map(|first| (first.x, first.y));
+    let origin = frame
+        .cells
+        .first()
+        .map(|first| (first.rect.x, first.rect.y));
     let (ox, oy) = origin?;
     let px = ox + x;
     let py = oy + y;
-    let index = frame.cells.iter().position(|cell| {
-        px >= cell.x && px < cell.x + cell.w && py >= cell.y && py < cell.y + cell.h
+    let (index, cell) = frame.cells.iter().enumerate().find(|(_, cell)| {
+        px >= cell.rect.x
+            && px < cell.rect.x + cell.rect.w
+            && py >= cell.rect.y
+            && py < cell.rect.y + cell.rect.h
     })?;
     let workspace = frame.ids.get(index)?;
     Some(PagerClick {
         output: frame.output.clone(),
         workspace: workspace.clone(),
-        ordinal: index as u32 + 1,
+        ordinal: cell.ordinal,
     })
 }
 
@@ -1146,17 +1163,23 @@ mod tests {
             ids: vec!["ws-a".to_owned(), "ws-b".to_owned()],
             output: "mon-a".to_owned(),
             cells: vec![
-                Rect {
-                    x: 100,
-                    y: 1040,
-                    w: 72,
-                    h: 40,
+                PagerCellFrame {
+                    rect: Rect {
+                        x: 100,
+                        y: 1040,
+                        w: 72,
+                        h: 40,
+                    },
+                    ordinal: 1,
                 },
-                Rect {
-                    x: 172,
-                    y: 1040,
-                    w: 72,
-                    h: 40,
+                PagerCellFrame {
+                    rect: Rect {
+                        x: 172,
+                        y: 1040,
+                        w: 72,
+                        h: 40,
+                    },
+                    ordinal: 2,
                 },
             ],
             active: 0,
@@ -1235,6 +1258,45 @@ mod tests {
     }
 
     #[test]
+    fn hit_test_reports_stored_ordinals_not_positions() {
+        // Non-positional core ordinals reach the click seam verbatim: the
+        // click carries the stored ordinal, never index + 1.
+        let frame = PagerFrame {
+            ids: vec!["ws-a".to_owned(), "ws-b".to_owned()],
+            output: "mon-a".to_owned(),
+            cells: vec![
+                PagerCellFrame {
+                    rect: Rect {
+                        x: 100,
+                        y: 1040,
+                        w: 72,
+                        h: 40,
+                    },
+                    ordinal: 7,
+                },
+                PagerCellFrame {
+                    rect: Rect {
+                        x: 172,
+                        y: 1040,
+                        w: 72,
+                        h: 40,
+                    },
+                    ordinal: 3,
+                },
+            ],
+            active: 1,
+            active_fill: (42, 130, 218),
+            minis: vec![Vec::new(), Vec::new()],
+        };
+        let first = hit_test(&frame, 5, 5).expect("first cell");
+        assert_eq!(first.workspace, "ws-a");
+        assert_eq!(first.ordinal, 7);
+        let second = hit_test(&frame, 77, 5).expect("second cell");
+        assert_eq!(second.workspace, "ws-b");
+        assert_eq!(second.ordinal, 3);
+    }
+
+    #[test]
     fn hit_test_needs_a_live_workspace_id() {
         // A cell without a parallel id refuses instead of guessing.
         let mut frame = frame_with_cells();
@@ -1251,11 +1313,14 @@ mod tests {
         let frame = PagerFrame {
             ids: vec!["ws-a".to_owned()],
             output: "mon-a".to_owned(),
-            cells: vec![Rect {
-                x: 0,
-                y: 0,
-                w: 72,
-                h: 40,
+            cells: vec![PagerCellFrame {
+                rect: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 72,
+                    h: 40,
+                },
+                ordinal: 1,
             }],
             active: 0,
             active_fill: (42, 130, 218),

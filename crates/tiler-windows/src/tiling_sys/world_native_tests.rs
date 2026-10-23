@@ -144,6 +144,13 @@ thread_local! {
     static S_REVEAL: RefCell<HashMap<u64, Result<Revealed, String>>> =
         RefCell::new(HashMap::new());
     static S_ADMIT_CALLS: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
+    /// Scripted live cursor position (`None` = unreadable). Warp writes
+    /// update it so re-reads observe the move, like the real position.
+    static S_CURSOR: RefCell<Option<(i32, i32)>> = const { RefCell::new(None) };
+    /// Every scripted warp write attempted, in order.
+    static S_WARP_CALLS: RefCell<Vec<(i32, i32)>> = const { RefCell::new(Vec::new()) };
+    /// Scripted warp refusals for the offline lane.
+    static S_FAIL_WARP: RefCell<bool> = const { RefCell::new(false) };
 }
 
 fn reset_script() {
@@ -165,6 +172,9 @@ fn reset_script() {
     S_DPI.with(|m| m.borrow_mut().clear());
     S_MONITORS.with(|m| m.borrow_mut().clear());
     S_GAME_FG.with(|m| *m.borrow_mut() = None);
+    S_CURSOR.with(|m| *m.borrow_mut() = None);
+    S_WARP_CALLS.with(|m| m.borrow_mut().clear());
+    S_FAIL_WARP.with(|m| *m.borrow_mut() = false);
 }
 
 fn script_claim(hwnd: u64, identity: &ProcessIdentity) -> WindowIdentity {
@@ -220,6 +230,15 @@ fn scripted() -> NativePrimitives {
         focus: |hwnd| S_FOCUS_OK.with(|m| m.borrow().get(&hwnd).copied().unwrap_or(true)),
         member_tag: |hwnd| S_TAG.with(|m| m.borrow().get(&hwnd).cloned()),
         hook_pending: || S_HOOK.with(|m| *m.borrow()),
+        read_cursor: || S_CURSOR.with(|m| *m.borrow()),
+        warp_cursor: |x, y| {
+            S_WARP_CALLS.with(|m| m.borrow_mut().push((x, y)));
+            if S_FAIL_WARP.with(|m| *m.borrow()) {
+                return false;
+            }
+            S_CURSOR.with(|m| *m.borrow_mut() = Some((x, y)));
+            true
+        },
         dpi: s_dpi,
         process_identity: |hwnd| S_IDENT.with(|m| m.borrow().get(&hwnd).cloned()),
         read_topmost: |_| false,
@@ -407,6 +426,8 @@ fn reply_shell(obs: u64, rev: u64, scopes: &[(&str, &str)]) -> WorldReply {
         transfers: Vec::new(),
         effects: Vec::new(),
         command_result: None,
+        gesture_settled: None,
+        cursor_warp: None,
         presentation_bytes: 0,
     }
 }
@@ -423,6 +444,7 @@ fn float_row(out: &str, ws: &str, token: &str, target: Rect, op: &str) -> Window
         floating: true,
         float_origin: None,
         frame_operation: Some(op.to_owned()),
+        clear_operation: None,
     }
 }
 
@@ -473,6 +495,7 @@ fn production_setter_lie_reports_raw_attempt_without_verdict() {
         &mut attempts,
         &mut Vec::new(),
         &mut Vec::new(),
+        &mut Vec::new(),
         0,
     );
     assert_eq!(attempts.len(), 1, "{attempts:?}");
@@ -520,6 +543,7 @@ fn production_explicit_refusal_reports_raw_attempt_without_verdict() {
         &mut attempts,
         &mut Vec::new(),
         &mut Vec::new(),
+        &mut Vec::new(),
         0,
     );
     assert_eq!(attempts.len(), 1, "{attempts:?}");
@@ -565,6 +589,7 @@ fn production_identity_drift_holds_without_receipt() {
         &mut Vec::new(),
         &mut Vec::new(),
         &mut Vec::new(),
+        &mut Vec::new(),
         0,
     );
     // The recycled HWND fails the fresh frame read first: narrow hold with
@@ -596,6 +621,7 @@ fn production_racing_invalidation_stops_before_any_setter() {
         &reply,
         &fresh,
         &mut native,
+        &mut Vec::new(),
         &mut Vec::new(),
         &mut Vec::new(),
         &mut Vec::new(),
@@ -657,6 +683,7 @@ fn production_ambiguous_view_arms_at_most_once() {
         &mut Vec::new(),
         &mut first_members,
         &mut first_views,
+        &mut Vec::new(),
         0,
     );
     assert_eq!(first_stats.held, 1);
@@ -687,6 +714,7 @@ fn production_ambiguous_view_arms_at_most_once() {
         &mut Vec::new(),
         &mut second_members,
         &mut second_views,
+        &mut Vec::new(),
         0,
     );
     assert!(second_stats.held > 0);
@@ -777,6 +805,7 @@ fn production_fullscreen_foreground_vetoes_frame_write() {
         &mut Vec::new(),
         &mut members,
         &mut views,
+        &mut Vec::new(),
         0,
     );
     assert!(members.is_empty() && views.is_empty());
@@ -820,6 +849,7 @@ fn memberless_migration_actuates_views_without_members() {
         &mut Vec::new(),
         &mut members,
         &mut views,
+        &mut Vec::new(),
         0,
     );
     // A memberless migration and refill... (no members anywhere: the
@@ -1280,6 +1310,7 @@ fn receipt_updates_never_echo_unproven_desire() {
         floating: false,
         float_origin: None,
         frame_operation: None,
+        clear_operation: None,
     });
     reply.outputs.push(tiler_core::world_report::OutputDesire {
         output: OutputId(out.clone()),
@@ -1337,6 +1368,7 @@ fn receipt_updates_store_only_visibility_proven_arrival() {
             floating: false,
             float_origin: None,
             frame_operation: None,
+            clear_operation: None,
         });
     }
     reply.outputs.push(tiler_core::world_report::OutputDesire {
@@ -1659,6 +1691,7 @@ fn live_tick_cursor(
     let mut frame_attempts = Vec::new();
     let mut member_attempts = Vec::new();
     let mut view_attempts = Vec::new();
+    let mut clear_attempts = Vec::new();
     let _stats = owner.apply_accepted(
         &reply,
         &fresh,
@@ -1666,6 +1699,7 @@ fn live_tick_cursor(
         &mut frame_attempts,
         &mut member_attempts,
         &mut view_attempts,
+        &mut clear_attempts,
         tick_ms,
     );
     let (mut proven_h, mut proven_v) = native.receipt_updates(&reply);

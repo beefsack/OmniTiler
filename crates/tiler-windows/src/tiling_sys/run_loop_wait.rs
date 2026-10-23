@@ -369,9 +369,11 @@ pub(super) fn drain_hook_edges(
                 );
                 // START-time pointer for the preview zero gate: a
                 // title click with no pointer movement never shows.
-                // A failed read fails closed to no preview (the
-                // refresh hides on `no-start`).
-                if let Some(point) = cursor_pos() {
+                // A failed or out-of-bounds read fails closed to no
+                // preview (the refresh hides on `no-start`); the
+                // normalized sample also keeps every later ingress
+                // carrying it inside report bounds.
+                if let Some(point) = super::observation::sample_cursor() {
                     state.gesture_start_cursor.insert(hwnd, point);
                 } else {
                     state.gesture_start_cursor.remove(&hwnd);
@@ -390,10 +392,13 @@ pub(super) fn drain_hook_edges(
                 }
                 let hwnd = raw as u64;
                 // Release cursor carried from the WinEvent callback,
-                // never re-read later. A missing capture fails closed
-                // to no-change for moves at settle time, so drop any
-                // stale entry rather than carrying it forward.
-                match cursor {
+                // never re-read later. Normalized like every other
+                // sample (a missing or out-of-bounds capture fails
+                // closed to no-change for moves at settle time), so
+                // drop any stale entry rather than carrying it forward.
+                // A stashed terminal built from these facts always
+                // validates, so it can never wedge later reports.
+                match super::observation::normalize_cursor(cursor) {
                     Some(point) => {
                         state.gesture_end_cursor.insert(hwnd, point);
                     }

@@ -245,7 +245,7 @@ fn all_commands_decode_typed_and_refuse_bad_vocab() {
         ),
         (
             "focus-directional",
-            serde_json::json!({"win": "w", "direction": "up", "floatSubject": false}),
+            serde_json::json!({"win": "w", "direction": "up"}),
         ),
         (
             "move-directional",
@@ -419,6 +419,52 @@ fn cursor_targeting_settings_decode_strictly() {
         value["cursor"] = cursor;
         assert!(decode_request(&value.to_string()).is_err());
     }
+}
+
+#[test]
+fn cursor_hit_decodes_tolerantly_but_validates_strictly() {
+    // Missing backfills null: adapters predating the hit fact keep
+    // decoding, and the core reads absence as no hover.
+    let report = decode_request(&one_window_request()).expect("decodes");
+    assert_eq!(report.cursor_hit, None);
+    // Present hit decodes to the named lifetime.
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["cursor"] = serde_json::json!([100, 200]);
+    value["cursorHit"] = serde_json::Value::String("win-a".to_owned());
+    let report = decode_request(&value.to_string()).expect("hit decodes");
+    assert_eq!(
+        report.cursor_hit,
+        Some(tiler_core::directional::WindowId("win-a".to_owned()))
+    );
+    // Explicit null and empty string both backfill to no hit.
+    for hit in [
+        serde_json::Value::Null,
+        serde_json::Value::String(String::new()),
+    ] {
+        let mut value: serde_json::Value =
+            serde_json::from_str(&one_window_request()).expect("valid");
+        value["cursor"] = serde_json::json!([100, 200]);
+        value["cursorHit"] = hit;
+        let report = decode_request(&value.to_string()).expect("null hit decodes");
+        assert_eq!(report.cursor_hit, None);
+    }
+    // Non-id shapes refuse; a hit naming no reported window refuses at
+    // the core validation gate.
+    for hit in [
+        serde_json::json!(7),
+        serde_json::json!("not an id!"),
+        serde_json::Value::String("win-ghost".to_owned()),
+    ] {
+        let mut value: serde_json::Value =
+            serde_json::from_str(&one_window_request()).expect("valid");
+        value["cursor"] = serde_json::json!([100, 200]);
+        value["cursorHit"] = hit;
+        assert!(decode_request(&value.to_string()).is_err());
+    }
+    // A hit without the cursor it was resolved from refuses.
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["cursorHit"] = serde_json::Value::String("win-a".to_owned());
+    assert!(decode_request(&value.to_string()).is_err());
 }
 
 #[test]
@@ -658,6 +704,98 @@ fn member_and_view_attempts_decode_tolerantly_and_stay_bounded() {
 }
 
 #[test]
+fn clear_attempts_decode_tolerantly_and_clear_op_round_trips() {
+    use tiler_core::world_report::FrameSetter;
+    // Absent key backfills: predates-the-field adapters stay valid with no
+    // clear attempts.
+    let report = decode_request(&one_window_request()).expect("decodes");
+    assert!(report.clear_attempts.is_empty());
+    // Present keys decode to the typed mechanical shape: operation plus
+    // window correlation, setter disposition, and nullable immediate
+    // pre/post maximized proofs. No verdict rides the lane.
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["clearAttempts"] = serde_json::json!([{
+        "op": "op-13", "win": "win-a", "setter": "accepted",
+        "pre": true, "post": false, "attemptMs": "2000",
+    }]);
+    let wire = value.to_string();
+    let report = decode_request(&wire).expect("clear attempts decode");
+    assert_eq!(report.clear_attempts.len(), 1);
+    let attempt = &report.clear_attempts[0];
+    assert_eq!(attempt.operation_id, "op-13");
+    assert_eq!(attempt.window.0, "win-a");
+    assert_eq!(attempt.setter, FrameSetter::Accepted);
+    assert_eq!(attempt.pre_maximized, Some(true));
+    assert_eq!(attempt.post_maximized, Some(false));
+    assert_eq!(attempt.attempt_ms, 2000);
+    // Null proofs stay unknown; duplicates refuse with fixed vocabulary.
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["clearAttempts"] = serde_json::json!([{
+        "op": "op-13", "win": "win-a", "setter": "threw",
+        "pre": null, "post": null, "attemptMs": "1",
+    }]);
+    let null_report = decode_request(&value.to_string()).expect("null proofs decode");
+    assert_eq!(null_report.clear_attempts[0].pre_maximized, None);
+    assert_eq!(null_report.clear_attempts[0].post_maximized, None);
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["clearAttempts"] = serde_json::json!([
+        {"op": "op-9", "win": "win-a", "setter": "accepted",
+         "pre": true, "post": false, "attemptMs": "1"},
+        {"op": "op-9", "win": "win-a", "setter": "accepted",
+         "pre": true, "post": false, "attemptMs": "2"},
+    ]);
+    let error = decode_request(&value.to_string()).expect_err("duplicate refuses");
+    assert_eq!(error.kind, "snapshot-invalid");
+    assert_eq!(error.message, "duplicate-clear-attempt");
+    // A maximized move through the engine publishes the one-shot clear
+    // desire under the originating op, and both writers encode it.
+    let maximized_fact = "{\"win\":\"win-a\",\"out\":\"out\",\"rect\":[100,0,200,200],\
+          \"floating\":true,\"fitExcluded\":false,\"fullscreen\":false,\
+          \"maximized\":true,\"sticky\":false,\"fixedAuto\":false,\
+          \"fixedSuppress\":false,\"minimized\":false,\"observedWs\":null,
+          \"hints\":{\"minW\":null,\"minH\":null,\"maxW\":null,\"maxH\":null}}";
+    let mut value: serde_json::Value = serde_json::from_str(&request_json(
+        "owner-a",
+        "adapter-1",
+        "gen-1",
+        "2",
+        "2",
+        "req-2",
+        maximized_fact,
+    ))
+    .expect("valid");
+    value["focused"] = serde_json::json!("win-a");
+    value["command"] = serde_json::json!({"op": "move-directional", "win": "win-a", "direction": "right", "sameAxis": "group-with-neighbor"});
+    value["cmdSeq"] = serde_json::Value::String("13".to_owned());
+    let report = decode_request(&value.to_string()).expect("maximized command decodes");
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let reply = match engine.handle_report(&report) {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted, got {other:?}"),
+    };
+    let row = reply
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "win-a")
+        .expect("mover keeps a row");
+    assert_eq!(row.clear_operation.as_deref(), Some("op-13"));
+    let wire = encode_reply(&reply);
+    let canonical = tiler_core::world_report::encode_reply_canonical(&reply);
+    assert_eq!(wire, canonical, "transport mirrors the core writer");
+    assert!(
+        wire.contains("\"clear_op\":\"op-13\""),
+        "clear desire round-trips, got {wire}"
+    );
+    // Estimates bound the wider wire shape.
+    let request_estimate = tiler_core::world_report::report_estimate(&report);
+    assert!(
+        request_estimate >= value.to_string().len(),
+        "estimate {request_estimate} bounds wire {}",
+        value.to_string().len()
+    );
+}
+
+#[test]
 fn overbound_request_refuses_before_core_mutation() {
     let big = "w".repeat(WORLD_MAX_REQUEST_BYTES + 1);
     let request = one_window_request().replace("win-a", &big);
@@ -715,6 +853,51 @@ struct WorldReplyWire {
 }
 
 #[test]
+fn reply_gesture_settled_matches_core_sizing() {
+    // A reply carrying a gesture terminal encodes identically on both
+    // writers, and the structural estimate bounds the exact bytes.
+    let mut reply = WorldEngine::new("gen-1")
+        .expect("generation")
+        .bootstrap_reply("adapter-1", "req-1");
+    reply.gesture_settled = Some(tiler_core::gesture::GestureSettled {
+        id: 7,
+        committed: true,
+    });
+    let wire = encode_reply(&reply);
+    let canonical = tiler_core::world_report::encode_reply_canonical(&reply);
+    assert_eq!(wire, canonical);
+    assert!(wire.contains("\"gestureSettled\":{\"id\":\"7\",\"committed\":true}"));
+    let estimate = tiler_core::world_report::reply_estimate(&reply);
+    assert!(
+        estimate >= wire.len(),
+        "estimate {estimate} bounds wire {}",
+        wire.len()
+    );
+    assert!(wire.len() <= WORLD_MAX_REPLY_BYTES);
+}
+
+#[test]
+fn reply_warp_cursor_matches_core_sizing() {
+    // A reply carrying a desired cursor-warp point encodes identically on
+    // both writers, and the structural estimate bounds the exact bytes.
+    let mut reply = WorldEngine::new("gen-1")
+        .expect("generation")
+        .bootstrap_reply("adapter-1", "req-1");
+    reply.cursor_warp = Some((810, 300));
+    let wire = encode_reply(&reply);
+    let canonical = tiler_core::world_report::encode_reply_canonical(&reply);
+    assert_eq!(wire, canonical);
+    assert!(wire.contains("\"warpCursor\":[810,300]"));
+    let estimate = tiler_core::world_report::reply_estimate(&reply);
+    assert!(
+        estimate >= wire.len(),
+        "estimate {estimate} bounds wire {}",
+        wire.len()
+    );
+    assert!(wire.len() <= WORLD_MAX_REPLY_BYTES);
+}
+
+#[test]
 fn golden_bootstrap_reply_bytes_lock_wire_shape() {
     // The discovery reply is fixed shape: v2, ready false, empty sections.
     let engine = WorldEngine::new("gen-1").expect("generation");
@@ -725,7 +908,7 @@ fn golden_bootstrap_reply_bytes_lock_wire_shape() {
         "{\"v\":2,\"adapter\":\"adapter-1\",\"gen\":\"gen-1\",\"req\":\"req-1\",\
          \"obs\":\"0\",\"rev\":\"0\",\"ready\":false,\"consumed\":false,\
          \"scopes\":[],\"workspaces\":[],\"outputs\":[],\"windows\":[],\
-         \"transfers\":[],\"effects\":[],\"result\":null}"
+         \"transfers\":[],\"effects\":[],\"result\":null,\"gestureSettled\":null,\"warpCursor\":null}"
     );
 }
 
@@ -776,4 +959,113 @@ fn unknown_restoration_key_refuses() {
         serde_json::from_str(&one_window_request()).expect("valid");
     null_value["restored"] = serde_json::Value::Null;
     assert!(decode_request(&null_value.to_string()).is_err());
+}
+
+#[test]
+fn gesture_ingress_decodes_phases_and_refuses_unknown_tokens() {
+    use tiler_core::gesture::{GestureKind, GesturePhase};
+    // Tolerant missing backfills observation-only.
+    let plain = decode_request(&one_window_request()).expect("decodes");
+    assert!(plain.gesture.is_none());
+    // Explicit null backfills the same way.
+    let mut null_value: serde_json::Value =
+        serde_json::from_str(&one_window_request()).expect("valid");
+    null_value["gestureIngress"] = serde_json::Value::Null;
+    assert!(
+        decode_request(&null_value.to_string())
+            .expect("null decodes")
+            .gesture
+            .is_none()
+    );
+    // A present ingress carries the normalized lifecycle facts, including
+    // the stable nonzero id and the START down point.
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["gestureIngress"] = serde_json::json!({
+        "win": "win-a", "kind": "move", "phase": "updated", "id": "7",
+        "cursor": [150, 50], "startCursor": [10, 10],
+        "esc": false, "modal": true,
+        "start": [0, 0, 40, 90],
+    });
+    let report = decode_request(&value.to_string()).expect("decodes");
+    let gesture = report.gesture.as_ref().expect("gesture rides");
+    assert_eq!(gesture.window.0, "win-a");
+    assert_eq!(gesture.id, 7);
+    assert_eq!(gesture.kind, GestureKind::Move);
+    assert_eq!(gesture.phase, GesturePhase::Updated);
+    assert_eq!(gesture.cursor, Some((150, 50)));
+    assert_eq!(gesture.start_cursor, Some((10, 10)));
+    assert!(!gesture.esc);
+    assert!(gesture.modal_move);
+    // Cursor-less updates (game pause) ride as null.
+    let mut cursorless: serde_json::Value =
+        serde_json::from_str(&value.to_string()).expect("valid");
+    cursorless["gestureIngress"]["cursor"] = serde_json::Value::Null;
+    assert!(
+        decode_request(&cursorless.to_string())
+            .expect("decodes")
+            .gesture
+            .expect("gesture rides")
+            .cursor
+            .is_none()
+    );
+    // An unreadable down point rides as null.
+    let mut nocursor: serde_json::Value = serde_json::from_str(&value.to_string()).expect("valid");
+    nocursor["gestureIngress"]["startCursor"] = serde_json::Value::Null;
+    assert!(
+        decode_request(&nocursor.to_string())
+            .expect("decodes")
+            .gesture
+            .expect("gesture rides")
+            .start_cursor
+            .is_none()
+    );
+    // Zero and non-decimal ids refuse: the id space starts at one.
+    let mut zero_id: serde_json::Value = serde_json::from_str(&value.to_string()).expect("valid");
+    zero_id["gestureIngress"]["id"] = serde_json::json!("0");
+    assert!(decode_request(&zero_id.to_string()).is_err());
+    let mut bad_id: serde_json::Value = serde_json::from_str(&value.to_string()).expect("valid");
+    bad_id["gestureIngress"]["id"] = serde_json::json!(7);
+    assert!(decode_request(&bad_id.to_string()).is_err());
+    // Missing id or down-point keys refuse (exact shape, no backfill).
+    let mut missing_id: serde_json::Value =
+        serde_json::from_str(&value.to_string()).expect("valid");
+    missing_id["gestureIngress"]
+        .as_object_mut()
+        .expect("object")
+        .remove("id");
+    assert!(decode_request(&missing_id.to_string()).is_err());
+    let mut missing_down: serde_json::Value =
+        serde_json::from_str(&value.to_string()).expect("valid");
+    missing_down["gestureIngress"]
+        .as_object_mut()
+        .expect("object")
+        .remove("startCursor");
+    assert!(decode_request(&missing_down.to_string()).is_err());
+    // Unknown kind/phase tokens refuse with fixed vocabulary.
+    let mut bad_kind: serde_json::Value = serde_json::from_str(&value.to_string()).expect("valid");
+    bad_kind["gestureIngress"]["kind"] = serde_json::json!("drag");
+    assert!(decode_request(&bad_kind.to_string()).is_err());
+    let mut bad_phase: serde_json::Value = serde_json::from_str(&value.to_string()).expect("valid");
+    bad_phase["gestureIngress"]["phase"] = serde_json::json!("dropped");
+    assert!(decode_request(&bad_phase.to_string()).is_err());
+    // Degenerate start frames and out-of-bound cursors refuse.
+    let mut bad_rect: serde_json::Value = serde_json::from_str(&value.to_string()).expect("valid");
+    bad_rect["gestureIngress"]["start"] = serde_json::json!([0, 0, 0, 90]);
+    assert!(decode_request(&bad_rect.to_string()).is_err());
+    let mut bad_cursor: serde_json::Value =
+        serde_json::from_str(&value.to_string()).expect("valid");
+    bad_cursor["gestureIngress"]["cursor"] = serde_json::json!([99999999, 50]);
+    assert!(decode_request(&bad_cursor.to_string()).is_err());
+    // Unknown window ids refuse.
+    let mut bad_win: serde_json::Value = serde_json::from_str(&value.to_string()).expect("valid");
+    bad_win["gestureIngress"]["win"] = serde_json::json!("not an id!");
+    assert!(decode_request(&bad_win.to_string()).is_err());
+    // The estimate still bounds the wider gesture wire shape.
+    let wire = value.to_string();
+    let estimate = tiler_core::world_report::report_estimate(&report);
+    assert!(
+        estimate >= wire.len(),
+        "estimate {estimate} bounds wire {}",
+        wire.len()
+    );
 }

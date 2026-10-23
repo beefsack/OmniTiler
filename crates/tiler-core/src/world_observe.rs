@@ -388,6 +388,17 @@ impl WorldEngine {
         report: &WorldReport,
         window: &WindowId,
     ) -> Option<DomainKey> {
+        // Open gesture session: the mover homes at its START-validated
+        // home until the release commits, exactly like an in-flight
+        // transfer homes at its retained target. The native frame follows
+        // the pointer mid-gesture while the committed topology must not
+        // flap; the release intent derives from the carried start frame
+        // plus the raw release fact, never from this shielded homing.
+        if let Some(session) = self.gesture.as_ref()
+            && session.window == *window
+        {
+            return Some(session.home.clone());
+        }
         let fact = report.windows.iter().find(|fact| fact.window == *window)?;
         // In-flight migration member: the raw screen decides ahead of any
         // echo or session state, so member arrival proves independently of

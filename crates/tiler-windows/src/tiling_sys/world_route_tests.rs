@@ -322,6 +322,7 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
         &mut Vec::new(),
         &mut vmembers,
         &mut vviews,
+        &mut Vec::new(),
         0,
     );
     assert_eq!(vstats.view_writes, 1, "stats: {vstats:?}");
@@ -394,6 +395,7 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
         &mut Vec::new(),
         &mut Vec::new(),
         &mut Vec::new(),
+        &mut Vec::new(),
         0,
     );
     assert_eq!(stats.held, 0, "stats: {stats:?}");
@@ -406,6 +408,7 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
         &geometry_reply,
         &fresh,
         &mut native,
+        &mut Vec::new(),
         &mut Vec::new(),
         &mut Vec::new(),
         &mut Vec::new(),
@@ -455,6 +458,7 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
         frames_acked: Vec::new(),
         members_acked: Vec::new(),
         views_acked: Vec::new(),
+        clears_acked: Vec::new(),
     };
     let pruned = seq.apply_close_receipt(&mut pending, &ack_receipt);
     assert_eq!(pruned, vec!["w9".to_owned()]);
@@ -782,6 +786,8 @@ fn arrival_reply(
         transfers: Vec::new(),
         effects: Vec::new(),
         command_result: None,
+        gesture_settled: None,
+        cursor_warp: None,
         presentation_bytes: 0,
     }
 }
@@ -806,6 +812,7 @@ fn arrival_row(
         floating,
         float_origin: None,
         frame_operation: None,
+        clear_operation: None,
     }
 }
 
@@ -1047,6 +1054,8 @@ fn busy_command_reports_unverified_not_cached_reply() {
             *inner_gap,
             *outer_gap,
             active,
+            None,
+            None,
             None,
         );
         world

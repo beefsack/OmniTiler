@@ -79,8 +79,8 @@ use std::collections::BTreeSet;
 use tiler_core::ids::{GenerationId, OwnerId};
 use tiler_core::world_engine::{WorldEngine, WorldEngineConfig, WorldOutcome};
 use tiler_core::world_report::{
-    AttemptFeedback, FrameAttempt, MemberAttempt, ScreenView, ViewAttempt, WORLD_CONTRACT_VERSION,
-    WorldCommand, WorldReply, WorldReport,
+    AttemptFeedback, ClearAttempt, FrameAttempt, MemberAttempt, ScreenView, ViewAttempt,
+    WORLD_CONTRACT_VERSION, WorldCommand, WorldReply, WorldReport,
 };
 
 /// Windows carrier profile for the future world engine: automatic
@@ -114,6 +114,7 @@ struct SequencerFlight {
     delivered_frames: Vec<FrameAttempt>,
     delivered_members: Vec<MemberAttempt>,
     delivered_views: Vec<ViewAttempt>,
+    delivered_clears: Vec<ClearAttempt>,
 }
 
 /// Exact incorporation receipt for the native owner to prune against. Close
@@ -134,6 +135,7 @@ pub(super) struct AckReceipt {
     pub(super) frames_acked: Vec<String>,
     pub(super) members_acked: Vec<(String, String)>,
     pub(super) views_acked: Vec<String>,
+    pub(super) clears_acked: Vec<(String, String)>,
 }
 
 /// Outcome of offering one core reply to the sequencer.
@@ -196,6 +198,9 @@ pub(super) struct WorldSequencer {
     /// Latest-wins raw view attempts per owning view phase, drained into
     /// the next report (same ack semantics as members).
     pending_views: BTreeMap<String, ViewAttempt>,
+    /// Latest-wins raw maximize-clear attempts per operation window,
+    /// drained into the next report (same ack semantics as members).
+    pending_clears: BTreeMap<(String, String), ClearAttempt>,
     last_desired: Option<WorldReply>,
     last_accepted_obs: u64,
     last_accepted_rev: u64,
@@ -227,6 +232,7 @@ impl WorldSequencer {
             pending_frames: BTreeMap::new(),
             pending_members: BTreeMap::new(),
             pending_views: BTreeMap::new(),
+            pending_clears: BTreeMap::new(),
             last_desired: None,
             last_accepted_obs: 0,
             last_accepted_rev: 0,
@@ -290,6 +296,16 @@ impl WorldSequencer {
             .insert(attempt.operation_id.clone(), attempt);
     }
 
+    /// Stage one raw maximize-clear attempt for the next report, replacing
+    /// any entry for the same operation window (same ack semantics as
+    /// members).
+    pub(super) fn note_clear_attempt(&mut self, attempt: ClearAttempt) {
+        self.pending_clears.insert(
+            (attempt.operation_id.clone(), attempt.window.0.clone()),
+            attempt,
+        );
+    }
+
     /// Closes the current capture still obliges: every carried close plus
     /// every unhomed (absent-workspace, uncarried) close. The native map is
     /// the sole authority, so obligations read straight from the capture with
@@ -319,6 +335,7 @@ impl WorldSequencer {
             || !self.pending_frames.is_empty()
             || !self.pending_members.is_empty()
             || !self.pending_views.is_empty()
+            || !self.pending_clears.is_empty()
             || !self.outstanding_closes(captured).is_empty()
     }
 
@@ -349,6 +366,9 @@ impl WorldSequencer {
             .sort_by(|a, b| (&a.operation_id, &a.window.0).cmp(&(&b.operation_id, &b.window.0)));
         let mut view_attempts: Vec<ViewAttempt> = self.pending_views.values().cloned().collect();
         view_attempts.sort_by(|a, b| a.operation_id.cmp(&b.operation_id));
+        let mut clear_attempts: Vec<ClearAttempt> = self.pending_clears.values().cloned().collect();
+        clear_attempts
+            .sort_by(|a, b| (&a.operation_id, &a.window.0).cmp(&(&b.operation_id, &b.window.0)));
         // Observed applied views from capture (unknown when the facade has
         // no readback); never the last desired snapshot.
         let views: Vec<ScreenView> = captured.observed_views.clone();
@@ -383,15 +403,18 @@ impl WorldSequencer {
             focus_follows_cursor: captured.focus_follows_cursor,
             cursor_warp: captured.cursor_warp,
             cursor: captured.cursor,
+            cursor_hit: captured.cursor_hit.clone(),
             default_tiled: captured.default_tiled,
             focused_global: captured.focused_global.clone(),
             inventory_complete: captured.inventory_complete,
             gesture_barrier: captured.gesture_barrier,
+            gesture: captured.gesture.clone(),
             feedback,
             monotonic_ms,
             frames,
             member_attempts,
             view_attempts,
+            clear_attempts,
         }
     }
 
@@ -466,6 +489,7 @@ impl WorldSequencer {
             delivered_frames: report.frames.clone(),
             delivered_members: report.member_attempts.clone(),
             delivered_views: report.view_attempts.clone(),
+            delivered_clears: report.clear_attempts.clone(),
         });
         self.next_request_seq += 1;
         if command_seq.is_some() {
@@ -531,6 +555,7 @@ impl WorldSequencer {
                 frames_acked: Vec::new(),
                 members_acked: Vec::new(),
                 views_acked: Vec::new(),
+                clears_acked: Vec::new(),
             });
         }
         let revision_new = !self.has_accepted || reply.state_revision > self.last_accepted_rev;
@@ -613,6 +638,7 @@ impl WorldSequencer {
         self.pending_frames.clear();
         self.pending_members.clear();
         self.pending_views.clear();
+        self.pending_clears.clear();
         self.last_desired = None;
         self.has_accepted = false;
         self.last_accepted_obs = 0;
@@ -682,6 +708,18 @@ impl WorldSequencer {
                 views_acked.push(delivered.operation_id.clone());
             }
         }
+        let mut clears_acked = Vec::new();
+        for delivered in &flight.delivered_clears {
+            let key = (delivered.operation_id.clone(), delivered.window.0.clone());
+            if self
+                .pending_clears
+                .get(&key)
+                .is_some_and(|pending| pending == delivered)
+            {
+                self.pending_clears.remove(&key);
+                clears_acked.push(key);
+            }
+        }
         AckReceipt {
             adapter_incarnation: self.adapter_incarnation.clone(),
             core_generation: self.core_generation.clone(),
@@ -691,6 +729,7 @@ impl WorldSequencer {
             frames_acked,
             members_acked,
             views_acked,
+            clears_acked,
         }
     }
 
@@ -777,6 +816,17 @@ impl WorldSequencer {
     #[must_use]
     pub(super) fn engine_ref(&self) -> &WorldEngine {
         &self.engine
+    }
+
+    /// Retain one tick of pager presentation facts on the sequenced engine
+    /// (stage 4c): verified live frames, saved float/tile snapshots, and the
+    /// native stacking order. Presentation-only; never mapping, membership,
+    /// or geometry authority.
+    pub(super) fn observe_pager_presentation(
+        &mut self,
+        obs: tiler_core::world_presentation::PagerPresentationObservation,
+    ) {
+        self.engine.observe_pager_presentation(obs);
     }
 
     /// Capture plus one explicit command (single-flight). Thin wrapper over

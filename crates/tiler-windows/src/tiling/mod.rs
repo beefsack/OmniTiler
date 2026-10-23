@@ -36,14 +36,13 @@ pub use cli::{
     verify_workspace_proof_argv_consistency,
 };
 pub use float::{
-    FloatFocusCandidate, FullscreenToggle, RESTORE_WAKE_MS, StatelessVerdict,
-    authorize_maximize_clear, canonical_retained_rect, classify_focus, float_half_snap_rect,
-    float_intent_marker_value, float_topmost_restore_needed, fullscreen_toggle_decision,
-    half_snap_constraints_ok, inspect_stateless_verdict, maximize_clear_refusal,
-    parse_float_intent_marker, parse_sticky_marker, parse_tile_override_marker,
-    postclear_fullscreen_now, restore_wake_arm, restore_wake_step, retained_overlay_hint,
-    select_float_focus_target, send_flags_stable, stale_fullscreen_retire_eligible,
-    sticky_marker_value, target_rect_valid, tile_override_marker_value, toggle_gate_outcome,
+    FullscreenToggle, RESTORE_WAKE_MS, StatelessVerdict, authorize_maximize_clear,
+    canonical_retained_rect, classify_focus, float_intent_marker_value,
+    float_topmost_restore_needed, fullscreen_toggle_decision, inspect_stateless_verdict,
+    maximize_clear_refusal, parse_float_intent_marker, parse_sticky_marker,
+    parse_tile_override_marker, postclear_fullscreen_now, restore_wake_arm, restore_wake_step,
+    retained_overlay_hint, send_flags_stable, stale_fullscreen_retire_eligible,
+    sticky_marker_value, tile_override_marker_value, toggle_gate_outcome,
 };
 pub use geometry::{
     FrameInsets, INNER_GAP, OUTER_GAP, OUTPUT_ID, OWNER_ID, WORKSPACE_ID, hints_from_outer,
@@ -52,8 +51,8 @@ pub use geometry::{
     visible_max_from_outer, visible_min_from_outer,
 };
 pub use reconcile::{
-    AllowEntry, GestureIntent, ObservedTarget, allow_match, allowlist_digest, classify_gesture,
-    dpi_transition_reouter, drop_point_in_domain, parse_allowlist, prefer_modal_move,
+    AllowEntry, ObservedTarget, allow_match, allowlist_digest, dpi_transition_reouter,
+    parse_allowlist,
 };
 pub use workspace::{
     ChildrenOptions, DIRECTIONAL_REQUEST_FILE, DIRECTIONAL_REQUEST_VERSION, DirectionalOp,

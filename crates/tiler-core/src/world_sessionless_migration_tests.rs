@@ -83,15 +83,18 @@ fn report_screens(
         focus_follows_cursor: false,
         cursor_warp: false,
         cursor: None,
+        cursor_hit: None,
         default_tiled: true,
         focused_global: String::new(),
         inventory_complete: true,
         gesture_barrier: false,
+        gesture: None,
         feedback: vec![],
         monotonic_ms: 0,
         frames: Vec::new(),
         member_attempts: Vec::new(),
         view_attempts: Vec::new(),
+        clear_attempts: Vec::new(),
     }
 }
 

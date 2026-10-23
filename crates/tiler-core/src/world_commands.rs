@@ -27,6 +27,7 @@ use crate::world_engine::{
     MSG_MIGRATION_TARGET_INCOMPLETE, MSG_SCOPE_HELD, MSG_SELECT_UNKNOWN, MSG_SEND_TARGET,
     MSG_SEND_WINDOW, MSG_SNAPSHOT, RetainedTransfer, WorldEngine,
 };
+use crate::world_operations::command_window;
 use crate::world_report::{
     CommandResult, OneShotEffect, TransferKind, TransferTarget, WorldCommand, WorldReport,
 };
@@ -44,6 +45,15 @@ impl WorldEngine {
         command: &WorldCommand,
         held_scopes: &BTreeSet<DomainKey>,
     ) -> CommandApplied {
+        // Retained maximize-clear supersession: no later user command ever
+        // consumes a pending binding. Any same-window new intent drops the
+        // old binding first and re-evaluates fresh below (the directional
+        // paths repeat this for their own sequencing; the choke point here
+        // covers every other window-carrying command).
+        match command_window(command) {
+            Some(window) => self.supersede_directional_clear(&window),
+            None => self.prune_directional_clears(),
+        }
         // Staged carrier index for command planning: homed Engine
         // carriers keyed by lifetime. Owned locally so planning borrows
         // nothing from `self`.
@@ -337,6 +347,48 @@ impl WorldEngine {
                             ids_b = ids;
                             source_b = Some(session);
                         }
+                        // Derive both sessionless sticky stays before any
+                        // commit: the derivation is fallible, so both sides
+                        // prepare before the mapping/views/history commit
+                        // and either Engine rekey. A failed preparation
+                        // refuses with the migration vocabulary and leaves
+                        // all world state untouched.
+                        let mut stay_a = None;
+                        if moved_a.is_none() && !sticky_b.is_empty() {
+                            let Some(source_b) = source_b.as_ref() else {
+                                return CommandApplied::Rejected {
+                                    kind: KIND_MIGRATION,
+                                    message: MSG_MIGRATION,
+                                };
+                            };
+                            let Some(stay) =
+                                source_b.split_sticky_stay(&ids_b, &tgt_a, bounds_a, gap_a)
+                            else {
+                                return CommandApplied::Rejected {
+                                    kind: KIND_MIGRATION,
+                                    message: MSG_MIGRATION,
+                                };
+                            };
+                            stay_a = Some(stay);
+                        }
+                        let mut stay_b = None;
+                        if moved_b.is_none() && !sticky_a.is_empty() {
+                            let Some(source_a) = source_a.as_ref() else {
+                                return CommandApplied::Rejected {
+                                    kind: KIND_MIGRATION,
+                                    message: MSG_MIGRATION,
+                                };
+                            };
+                            let Some(stay) =
+                                source_a.split_sticky_stay(&ids_a, &tgt_b, bounds_b, gap_b)
+                            else {
+                                return CommandApplied::Rejected {
+                                    kind: KIND_MIGRATION,
+                                    message: MSG_MIGRATION,
+                                };
+                            };
+                            stay_b = Some(stay);
+                        }
                         // Commit mapping/views/history first (existing
                         // parked-history semantics: out-of-scope previous
                         // entries invalidate via observe).
@@ -360,9 +412,9 @@ impl WorldEngine {
                         // session on the same physical output (no frame
                         // writes, Untouched). When this side contributed no
                         // moved host (no source session at all), the opposite
-                        // sticky rides a stay derived from its own actual
-                        // source session; a stay derivation failure fences
-                        // rather than losing the lifetime.
+                        // sticky rides the stay derived before the commit
+                        // above; the derivation already fenced there rather
+                        // than losing the lifetime.
                         if let Some(mut moved) = moved_a {
                             if !sticky_b.is_empty() {
                                 moved.insert_exception_floats(sticky_b, &tgt_a);
@@ -370,15 +422,7 @@ impl WorldEngine {
                             self.engine.remove(&src_a);
                             self.engine.insert_raw(tgt_a.clone(), moved, outer_a);
                         } else if !sticky_b.is_empty() {
-                            let Some(source_b) = source_b.as_ref() else {
-                                return CommandApplied::Rejected {
-                                    kind: KIND_MIGRATION,
-                                    message: MSG_MIGRATION,
-                                };
-                            };
-                            let Some(stay) =
-                                source_b.split_sticky_stay(&ids_b, &tgt_a, bounds_a, gap_a)
-                            else {
+                            let Some(stay) = stay_a else {
                                 return CommandApplied::Rejected {
                                     kind: KIND_MIGRATION,
                                     message: MSG_MIGRATION,
@@ -393,15 +437,7 @@ impl WorldEngine {
                             self.engine.remove(&src_b);
                             self.engine.insert_raw(tgt_b.clone(), moved, outer_b);
                         } else if !sticky_a.is_empty() {
-                            let Some(source_a) = source_a.as_ref() else {
-                                return CommandApplied::Rejected {
-                                    kind: KIND_MIGRATION,
-                                    message: MSG_MIGRATION,
-                                };
-                            };
-                            let Some(stay) =
-                                source_a.split_sticky_stay(&ids_a, &tgt_b, bounds_b, gap_b)
-                            else {
+                            let Some(stay) = stay_b else {
                                 return CommandApplied::Rejected {
                                     kind: KIND_MIGRATION,
                                     message: MSG_MIGRATION,
@@ -660,19 +696,9 @@ impl WorldEngine {
                 workspace,
                 held_scopes,
             ),
-            WorldCommand::FocusDirectional {
-                window,
-                direction,
-                float_subject,
-            } => self.focus_directional(
-                report,
-                command_seq,
-                window,
-                direction,
-                *float_subject,
-                &by_id,
-                held_scopes,
-            ),
+            WorldCommand::FocusDirectional { window, direction } => {
+                self.focus_directional(report, command_seq, window, direction, &by_id, held_scopes)
+            }
             WorldCommand::MoveDirectional {
                 window,
                 direction,
@@ -1139,6 +1165,20 @@ impl WorldEngine {
             ring.insert(at, workspace.to_owned());
         }
         self.carry_tiling(workspace, &source_output.0, &target_output.0);
+        // Floating scope follows the id exactly like the tiling mode
+        // above (mirroring the global-swap commit): without this the
+        // commit reply publishes the floating target as a tiled scope
+        // until the next report recomputes it, stalling the flight
+        // mid-actuation and dropping arrived members from the rows.
+        if self.floating_scopes.remove(&DomainKey {
+            output: source_output.clone(),
+            workspace: crate::directional::WorkspaceId(workspace.to_owned()),
+        }) {
+            self.floating_scopes.insert(DomainKey {
+                output: target_output.clone(),
+                workspace: crate::directional::WorkspaceId(workspace.to_owned()),
+            });
+        }
         self.views
             .insert(target_output.0.clone(), workspace.to_owned());
         // The emptied source shows the refill (or a fresh trailing

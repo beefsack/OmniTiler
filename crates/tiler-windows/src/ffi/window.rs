@@ -3,7 +3,7 @@
 //! Every function takes a numeric window id (`u64`, as the existing model
 //! does) and owns all pointers/buffers internally. Reads fail closed.
 
-use windows_sys::Win32::Foundation::{GetLastError, HWND, RECT, SetLastError};
+use windows_sys::Win32::Foundation::{GetLastError, HWND, POINT, RECT, SetLastError};
 use windows_sys::Win32::Graphics::Dwm::DwmGetWindowAttribute;
 use windows_sys::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
@@ -15,7 +15,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     SMTO_ABORTIFHUNG, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
     SendMessageTimeoutW, SetForegroundWindow, SetPropW, SetWindowLongW, SetWindowPlacement,
     SetWindowPos, SetWindowTextW, ShowWindow, ShowWindowAsync, WINDOWPLACEMENT, WM_CLOSE,
-    WM_GETMINMAXINFO, WM_NCHITTEST,
+    WM_GETMINMAXINFO, WM_NCHITTEST, WindowFromPoint,
 };
 
 use super::hwnd_of;
@@ -205,6 +205,13 @@ pub fn set_window_placement(hwnd: u64, placement: &WINDOWPLACEMENT) -> bool {
 /// Owner handle as a numeric id; `0` when unowned.
 pub fn owner_of(hwnd: u64) -> u64 {
     unsafe { GetWindow(hwnd_of(hwnd), GW_OWNER) as usize as u64 }
+}
+
+/// Topmost native window under one cursor point; `0` when none. Pure
+/// observation (no activation, no focus): feeds the cursor-hit managed
+/// binding in capture, never a policy input by itself.
+pub fn window_at_point(x: i32, y: i32) -> u64 {
+    unsafe { WindowFromPoint(POINT { x, y }) as usize as u64 }
 }
 
 /// Parent handle as a numeric id; `0` when top-level.

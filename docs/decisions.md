@@ -2403,8 +2403,11 @@ platform API behavior.
   Windows stage 2c implements switch targeting and fresh placement, closing
   defect 4 admission; KDE/macOS adoption remains with their streams. Windows
   foreground-first workspace-switch routing (`1e7bfaf4`) is superseded.
-  Focus-follows-cursor and cursor-warp are retained settings only until
-  stage 4 implements their behavior and the i3/sway preset's cross-output warp.
+  Stage 4b implements core-owned focus-follows-cursor and cross-output warp,
+  both default off. The latter expresses the i3/sway cross-output behavior;
+  the all-settings preset control remains separate. Native FFC hover delivery
+  remains unverified; positioned synthetic motion did not establish an owner
+  hover observation. [Acceptance and limits](changes/core-world-model-rearchitecture.md#stage-4b-accepted-outcome-2026-10-23).
   User 2026-10-20 explicitly approves the platform-neutral shared-core addition:
   implement the three-way new-window placement logic in shared core where
   possible, with each platform supplying cursor position and settings.
@@ -2648,6 +2651,27 @@ platform API behavior.
   [Gaming Compatibility](principles.md#gaming-compatibility) still wins:
   pause this work while a focused fullscreen game runs, as other overlays
   already do.
+- Desired presentation extraction, 2026-10-23: core owns border eligibility
+  and complete border/group bounds from normalized foreground facts and
+  host-scaled style dimensions in adapter units. Ordinary floats and scoped
+  unmanaged foregrounds can remain border subjects without admission. The
+  retained world's read-only group query never adopts focus or runs an action;
+  a native move retains its projected source-group highlight. Drop shapes keep
+  the existing core gesture lifecycle route. Core also owns per-screen pager
+  rings, labels, current/occupied/focused flags, miniature source frames and
+  retained paint order, including hidden members and first-admission candidates.
+  Windows keeps native lifetime/scope/freshness vetoes, DPI conversion,
+  anchoring, artwork, host styling and click-to-command. In-process presentation
+  queries/observations do not add a second workspace owner or a wire section.
+  [Acceptance and port boundary](changes/core-world-model-rearchitecture.md#stage-4c-accepted-outcome-2026-10-23).
+- Observed output grounding, 2026-10-23: shared core selects a rectangle's
+  observed output from FULL rectangles using integer-rounded centre/half-open
+  containment, then largest intersection, with first topology entry winning
+  ties. Windows only translates native identities and empty-topology absence;
+  native freshness/lifetime vetoes and logical membership remain separate.
+  The off-screen overlap fallback is corrected without changing command targets
+  or the parked float physical-output versus membership-home contract.
+  [Audit and evidence](changes/core-world-model-rearchitecture.md#stage-5-output-grounding-and-dead-fence-audit-2026-10-23).
 - User approved 2026-10-20: platforms report normalized classification facts:
   window type/role, owner/parent, modal, resizable and minimum/maximum size,
   fullscreen, cannot-be-controlled (for example elevated/protected), and app
@@ -2711,10 +2735,34 @@ platform API behavior.
   native receipts; an attempt row is not a completion prerequisite. External
   transfer/view verdict ingress is retired without a compatibility route.
   [Acceptance and remaining placement work](changes/core-world-model-rearchitecture.md#stage-3b3-accepted-outcome-2026-10-23).
+- Floating-flight completion clarification, 2026-10-23: a floating workspace's
+  `Untouched` layout scope does not cancel an explicit core view or migration
+  target. Windows applies those retained membership/view requests, including
+  source refill, under unheld-output, gesture, freshness and lifetime fences;
+  sweep frame authority stays unchanged. Core retains completion from raw
+  attempts and observed receipts, and floating mode/scope follows the logical
+  workspace id on the migration commit reply. A scope omission alone still
+  authorizes no write or retirement.
+  [Correction and evidence](changes/core-world-model-rearchitecture.md#floating-view-and-migration-completion-correction).
 - User approved 2026-10-20: platforms detect and report host gesture start
   (window, move or resize), cursor updates, release and cancel, and render/apply.
   Core owns the drag session, target, overlay shape, release outcome
   (insert/swap/cross-output/float) and edge-drag share policy.
+- Gesture lifecycle extraction, 2026-10-23: the world report carries a stable
+  nonzero adapter gesture sequence, exact window lifetime, move/resize kind,
+  frozen start frame/down point, live or release cursor, and terminal phase.
+  Core binds before the observation sweep, retains source homing and hover
+  state, computes drop previews, and commits release through its existing
+  drag/send/pointer-resize machinery. A consumed sequence watermark prevents
+  terminal replay, including refused or unreadable releases; cancellation
+  cannot erase a newer gesture. Windows retains native identity/input gates
+  and proven overlay-hide ordering, not target or follow-focus policy.
+  Terminal acknowledgement rides `gestureSettled` in the ordinary world reply;
+  its `committed` flag proves a core mutation, never native arrival. Failed
+  native finish paths report cancellation rather than silently abandoning the
+  retained session. No new hook or timer is added; existing coalesced gesture
+  wakes now report into core. Physical drag and game acceptance remain separate.
+  [Acceptance and remaining stages](changes/core-world-model-rearchitecture.md#stage-4a-accepted-outcome-2026-10-23).
 - Frameless migration placement extraction, 2026-10-23: core publishes
   cross-output sessionless migration placement as an effective frame consumed
   by membership actuation, not as a tile allocation or ordinary float frame
@@ -2731,6 +2779,16 @@ platform API behavior.
   contains-focused, and per-workspace window lists if icons need them.
   Platforms own placement/anchoring, host-styled drawing and click-to-command;
   KDE's native pager maps from core's per-screen model.
+- Cursor focus/warp extraction, 2026-10-23: platforms report cursor position
+  and an optional exact managed hit lifetime; core filters current-view and
+  focus eligibility and owns hover activation and cross-output warp targets.
+  Native adapters retain last-moment input, lifetime, shown-view and exact
+  foreground vetoes. Focus setters and immediate foreground proof are logged
+  separately, including unproven dispatch and individual holds; changed hit,
+  focus and setting observations remain reconstructible without idle logging.
+  Windows uses an enabled-only, non-consuming mouse tap, removed during
+  suspension; hook-chain cost and suspension latency are unmeasured. Neither
+  setting is enabled by default. [Evidence and native-hover residual](changes/core-world-model-rearchitecture.md#stage-4b-accepted-outcome-2026-10-23).
 - Boundary extraction, 2026-10-21: ordered geometry/focus eligibility is shared
   core policy over normalized safety and overlay facts. Windows maps native
   facts and preserves its diagnostic vocabulary, not a second refusal-order

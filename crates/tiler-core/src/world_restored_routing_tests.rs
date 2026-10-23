@@ -148,15 +148,18 @@ fn report_full(
         focus_follows_cursor: false,
         cursor_warp: false,
         cursor: None,
+        cursor_hit: None,
         default_tiled,
         focused_global: focused.to_owned(),
         inventory_complete: true,
         gesture_barrier: false,
+        gesture: None,
         feedback,
         monotonic_ms: 0,
         frames: Vec::new(),
         member_attempts: Vec::new(),
         view_attempts: Vec::new(),
+        clear_attempts: Vec::new(),
     }
 }
 
@@ -605,9 +608,23 @@ fn exhausted_move_retains_identity_pinned_transfer_and_settles_on_arrival() {
     assert_eq!(transfer.operation_id, "op-112", "stable command identity");
     assert_eq!(transfer.target_output.0, "u2");
     assert!(transfer.follow, "move follows the mover to the target");
-    assert!(
-        reply.effects.is_empty(),
-        "cross-output move carries no focus effect"
+    // The tiled directional move keeps focus on the mover through one
+    // spent core effect (the old adapter follow-focus lane, now
+    // core-owned at-most-once): exactly one, naming the mover.
+    let focus_effects: Vec<_> = reply
+        .effects
+        .iter()
+        .filter(|effect| effect.kind == crate::world_report::EffectKind::Focus)
+        .collect();
+    assert_eq!(
+        focus_effects.len(),
+        1,
+        "tiled move carries one follow-focus effect, got {:?}",
+        reply.effects
+    );
+    assert_eq!(
+        focus_effects[0].target,
+        crate::directional::WindowId("win-a".to_owned())
     );
     // Local move on a gap topology retains no window transfer.
     let gap = vec![

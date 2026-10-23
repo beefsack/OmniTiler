@@ -111,9 +111,10 @@ fn staged_state() -> super::super::TileLoop {
 #[test]
 fn observation_dispatch_applies_and_projects_presentation() {
     let state = staged_state();
-    // The holder bootstraps from the same owner/generation bindings.
-    let owner = state.owner.as_str().to_owned();
-    let generation = state.generation.as_str().to_owned();
+    // The holder bootstraps from the same owner/generation bindings
+    // as the shared harness state.
+    let owner = "tiler-windows".to_owned();
+    let generation = "rmax03-adapter".to_owned();
     let mut world = WorldOwner::bootstrap_ids(&owner, &generation).expect("world bootstrap");
     let observed = vec![observed_window()];
     let retained: Vec<RetainedRow> = Vec::new();
@@ -146,8 +147,8 @@ fn observation_dispatch_applies_and_projects_presentation() {
 #[test]
 fn select_command_retains_view_transfer_without_self_echo() {
     let state = staged_state();
-    let owner = state.owner.as_str().to_owned();
-    let generation = state.generation.as_str().to_owned();
+    let owner = "tiler-windows".to_owned();
+    let generation = "rmax03-adapter".to_owned();
     let mut world = WorldOwner::bootstrap_ids(&owner, &generation).expect("world bootstrap");
     let observed = vec![observed_window()];
     let retained: Vec<RetainedRow> = Vec::new();
@@ -271,9 +272,8 @@ fn t2_staged_decline_leaves_committed_world_unchanged() {
             observed_workspace: None,
         }
     }
-    let state = staged_state();
-    let owner = state.owner.as_str().to_owned();
-    let generation = state.generation.as_str().to_owned();
+    let owner = "tiler-windows".to_owned();
+    let generation = "rmax03-adapter".to_owned();
     let mut world = WorldOwner::bootstrap_ids(&owner, &generation).expect("world bootstrap");
     // Tiny occupied target: the directional selector still picks out-b, but
     // the affected projection exhausts and floats the staged mover row.
@@ -317,15 +317,18 @@ fn t2_staged_decline_leaves_committed_world_unchanged() {
                 focus_follows_cursor: false,
                 cursor_warp: false,
                 cursor: None,
+                cursor_hit: None,
                 default_tiled: true,
                 focused_global: "win-a".to_owned(),
                 inventory_complete: true,
                 gesture_barrier: false,
+                gesture: None,
                 feedback: Vec::new(),
                 monotonic_ms: 0,
                 frames: Vec::new(),
                 member_attempts: Vec::new(),
                 view_attempts: Vec::new(),
+                clear_attempts: Vec::new(),
             }
         };
     let first = report_with(windows.clone(), None, None);
@@ -413,9 +416,8 @@ fn t2_supported_and_floating_movers_adopt_once() {
         }
     }
     for floating_source in [false, true] {
-        let state = staged_state();
-        let owner = state.owner.as_str().to_owned();
-        let generation = state.generation.as_str().to_owned();
+        let owner = "tiler-windows".to_owned();
+        let generation = "rmax03-adapter".to_owned();
         let mut world = WorldOwner::bootstrap_ids(&owner, &generation).expect("world bootstrap");
         // Stacked topology from the core routing contract: the mover frame
         // selects the upward target through centre/span ranking.
@@ -462,15 +464,18 @@ fn t2_supported_and_floating_movers_adopt_once() {
                     focus_follows_cursor: false,
                     cursor_warp: false,
                     cursor: None,
+                    cursor_hit: None,
                     default_tiled: true,
                     focused_global: "win-a".to_owned(),
                     inventory_complete: true,
                     gesture_barrier: false,
+                    gesture: None,
                     feedback: Vec::new(),
                     monotonic_ms: 0,
                     frames: Vec::new(),
                     member_attempts: Vec::new(),
                     view_attempts: Vec::new(),
+                    clear_attempts: Vec::new(),
                 }
             };
         let base = match world.deliver_production(&report_with(windows.clone(), None, None)) {

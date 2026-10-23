@@ -1,31 +1,31 @@
 #![forbid(unsafe_code)]
 use tiler_core::geometry::Rect;
+use tiler_core::gesture::{GestureIntent, classify_gesture, prefer_modal_move};
 use tiler_core::window_policy::{
     born_keep_latch, float_toggle_refusal, overlay_refusal, should_clear_maximize_at_admission,
     should_clear_maximize_at_admission_with_mode, should_hold_born_fullscreen,
 };
 use tiler_windows::tiling::{
     CaptureOptions, DirectionalOp, DirectionalRequest, FrameInsets, FullscreenToggle,
-    GestureIntent, OWN_SETTINGS_WINDOW_CLASS, ObservedTarget, ObservedTargetRef, ResizeOptions,
-    ResizeRepeat, ResizeRequest, ScopeHostChild, SendOutputRequest, SkipReason, StatelessVerdict,
-    TokenMap, WindowFacts, WorkspaceAction, WorkspaceRequest, allow_match, allowlist_digest,
-    canonical_retained_rect, classify, classify_focus, classify_gesture, fingerprint,
-    float_topmost_restore_needed, fullscreen_toggle_decision, hosted_child_allows,
-    inspect_stateless_verdict, is_borderless_fullscreen, is_own_settings_window,
-    min_hints_from_outer, normalize_min_track, parse_allowlist, parse_capture_args,
-    parse_children_args, parse_directional_args, parse_directional_request, parse_hide_proof_args,
-    parse_inspect_args, parse_resize_args, parse_resize_request, parse_scope_host_child,
-    parse_send_output_args, parse_send_output_request, parse_shortcut_proof_args, parse_tile_args,
-    parse_tile_proof_args, parse_workspace_args, parse_workspace_proof_args,
-    parse_workspace_request, prefer_modal_move, render_directional_request, render_resize_request,
-    render_send_output_request, render_workspace_request, resize_direction_valid,
-    resize_mode_valid, resize_repeat_next, scope_allows, scope_exe_basename, send_flags_stable,
-    tick_summary_signature, tiling_domain_bounds, toggle_gate_outcome,
-    verify_directional_argv_consistency, verify_hide_proof_argv_consistency,
-    verify_proof_argv_consistency, verify_resize_argv_consistency,
-    verify_send_output_argv_consistency, verify_shortcut_proof_argv_consistency,
-    verify_workspace_argv_consistency, verify_workspace_proof_argv_consistency,
-    visible_min_from_outer, workspace_dialog_refuses,
+    OWN_SETTINGS_WINDOW_CLASS, ObservedTarget, ObservedTargetRef, ResizeOptions, ResizeRepeat,
+    ResizeRequest, ScopeHostChild, SendOutputRequest, SkipReason, StatelessVerdict, TokenMap,
+    WindowFacts, WorkspaceAction, WorkspaceRequest, allow_match, allowlist_digest,
+    canonical_retained_rect, classify, classify_focus, fingerprint, float_topmost_restore_needed,
+    fullscreen_toggle_decision, hosted_child_allows, inspect_stateless_verdict,
+    is_borderless_fullscreen, is_own_settings_window, min_hints_from_outer, normalize_min_track,
+    parse_allowlist, parse_capture_args, parse_children_args, parse_directional_args,
+    parse_directional_request, parse_hide_proof_args, parse_inspect_args, parse_resize_args,
+    parse_resize_request, parse_scope_host_child, parse_send_output_args,
+    parse_send_output_request, parse_shortcut_proof_args, parse_tile_args, parse_tile_proof_args,
+    parse_workspace_args, parse_workspace_proof_args, parse_workspace_request,
+    render_directional_request, render_resize_request, render_send_output_request,
+    render_workspace_request, resize_direction_valid, resize_mode_valid, resize_repeat_next,
+    scope_allows, scope_exe_basename, send_flags_stable, tick_summary_signature,
+    tiling_domain_bounds, toggle_gate_outcome, verify_directional_argv_consistency,
+    verify_hide_proof_argv_consistency, verify_proof_argv_consistency,
+    verify_resize_argv_consistency, verify_send_output_argv_consistency,
+    verify_shortcut_proof_argv_consistency, verify_workspace_argv_consistency,
+    verify_workspace_proof_argv_consistency, visible_min_from_outer, workspace_dialog_refuses,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -2755,18 +2755,32 @@ use tiler_core::size_hints::WindowSizeHints;
 use tiler_core::window_policy::{
     maximized_focus_fence, sticky_toggle_refusal, unfloat_maximize_clear_eligible,
 };
+use tiler_core::world_directional::{
+    FloatFocusCandidate, float_half_snap_rect, half_snap_constraints_ok,
+};
 use tiler_windows::tiling::{
-    FloatFocusCandidate, authorize_maximize_clear, float_half_snap_rect, half_snap_constraints_ok,
-    maximize_clear_refusal, postclear_fullscreen_now, select_float_focus_target,
+    authorize_maximize_clear, maximize_clear_refusal, postclear_fullscreen_now,
 };
 
 fn float_candidate(token: &str, x: i32, y: i32, sticky: bool) -> FloatFocusCandidate {
     FloatFocusCandidate {
-        token: token.to_owned(),
+        token: tiler_core::directional::WindowId(token.to_owned()),
         x,
         y,
         sticky,
     }
+}
+
+// World-owned selection returns the core lifetime id; the ported KDE
+// parity assertions below keep comparing display tokens.
+fn select_float_focus_target(
+    x: i32,
+    y: i32,
+    direction: &str,
+    candidates: &[FloatFocusCandidate],
+) -> Option<String> {
+    tiler_core::world_directional::select_float_focus_target(x, y, direction, candidates)
+        .map(|id| id.0)
 }
 
 // R-FLT-07..09 float-origin focus: COSMIC top-left axis rule with the sticky

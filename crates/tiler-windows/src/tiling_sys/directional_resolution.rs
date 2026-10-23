@@ -1,42 +1,36 @@
 #![forbid(unsafe_code)]
 use super::*;
 
-/// Stable output key for a rectangle center: the monitor containing the
-/// center wins; otherwise the largest overlap; otherwise the primary.
-/// Rectangles decide placement, device names decide session identity.
+/// Observed rectangle grounding: the device of the monitor containing the
+/// rectangle centre (half-open containment); otherwise the device with the
+/// largest overlap area, first in enumeration order on ties (the all-zero
+/// case included, so the first topology entry wins there); `"display-?"`
+/// with no monitors. Core-owned
+/// ([`tiler_core::output_selection::output_for_rect`]); this only maps the
+/// core output id back to the session device key. Rectangles decide
+/// placement, device names decide session identity.
 pub(super) fn output_for_rect(areas: &[MonitorArea], rect: &Rect) -> String {
-    let cx = rect.x + rect.w / 2;
-    let cy = rect.y + rect.h / 2;
-    for area in areas {
-        let r = area.full;
-        if cx >= r.x && cx < r.x + r.w && cy >= r.y && cy < r.y + r.h {
-            return area.device.clone();
-        }
-    }
-    let mut best: Option<(&MonitorArea, i64)> = None;
-    for area in areas {
-        let r = area.full;
-        let ox = (rect.x.min(r.x + r.w) - rect.x.max(r.x)).max(0) as i64;
-        let oy = (rect.y.min(r.y + r.h) - rect.y.max(r.y)).max(0) as i64;
-        let overlap = ox * oy;
-        if best.as_ref().is_none_or(|(_, d)| overlap > *d) {
-            best = Some((area, overlap));
-        }
-    }
-    best.map(|(a, _)| a.device.clone())
-        .or_else(|| areas.first().map(|a| a.device.clone()))
+    use tiler_core::directional::OutputId;
+    use tiler_core::output_selection::{OutputEntry, output_for_rect as core_output_for_rect};
+    let all: Vec<OutputEntry> = areas
+        .iter()
+        .map(|area| OutputEntry {
+            id: OutputId(area.device.clone()),
+            rect: area.full,
+        })
+        .collect();
+    core_output_for_rect(&all, rect)
+        .map(|id| id.0)
         .unwrap_or_else(|| "display-?".to_owned())
 }
 
 pub(super) fn output_for_point(areas: &[MonitorArea], x: i32, y: i32) -> Option<String> {
-    let outputs: Vec<crate::native_guards::DirectionalOutput> = areas
+    use tiler_core::directional::OutputId;
+    let screens: Vec<(OutputId, Rect)> = areas
         .iter()
-        .map(|area| crate::native_guards::DirectionalOutput {
-            id: area.device.clone(),
-            full: area.full,
-        })
+        .map(|area| (OutputId(area.device.clone()), area.full))
         .collect();
-    crate::native_guards::output_at_point(&outputs, x, y)
+    tiler_core::cursor_targeting::output_at_cursor(&screens, (x, y)).map(|id| id.0)
 }
 
 fn foreground_output(areas: &[MonitorArea]) -> Option<String> {
@@ -78,95 +72,10 @@ pub(super) fn chord_output(state: &TileLoop, areas: &[MonitorArea]) -> Option<St
 /// areas with the live outer-gap inset; topology uses FULL rectangles. Core
 /// rects are consumed in DPI-aware physical coordinates with no rescaling.
 ///
-/// Fences (lifetime/owner/scope/recovery/geometry/visibility/current-view)
-/// are complete: snapshot at pair build, re-verified live before any
-/// membership change or native effect. Failed half-applied operations stop
-/// narrowly with no replay and no permanent disabling; the retained Engine
-/// plan stands and the next observation converges.
-/// Read the live drag-drop fences over the pointer-resolved (non-adjacency)
-/// snapshot.
-pub(super) fn drag_drop_live(
-    state: &TileLoop,
-    areas: &[MonitorArea],
-    snapshot: &crate::native_guards::DragDropFenceSnapshot,
-    mover_key: &crate::native_guards::WindowKey,
-    membership_ok: bool,
-    overlay_maximized: bool,
-    overlay_fullscreen: bool,
-) -> crate::native_guards::DirectionalFenceLive {
-    fence_live_impl(
-        state,
-        areas,
-        snapshot,
-        mover_key,
-        membership_ok,
-        overlay_maximized,
-        overlay_fullscreen,
-    )
-}
-
-/// Shared live-fence reads for directional and pointer-drop pairs.
-fn fence_live_impl(
-    state: &TileLoop,
-    areas: &[MonitorArea],
-    snapshot: &crate::native_guards::DragDropFenceSnapshot,
-    mover_key: &crate::native_guards::WindowKey,
-    membership_ok: bool,
-    overlay_maximized: bool,
-    overlay_fullscreen: bool,
-) -> crate::native_guards::DirectionalFenceLive {
-    let source_active = state.active_view(&snapshot.source_output);
-    let target_active = state.active_view(&snapshot.target_output);
-    let lifetime_ok = state.member_tags.get(mover_key).is_some_and(|stored| {
-        crate::native_guards::visible_lifetime_ok(
-            stored,
-            live_member_tag(mover_key.hwnd).as_deref(),
-        )
-    });
-    let scope_ok = state.member_identity.get(mover_key).is_some_and(|stored| {
-        crate::tiling::scope_allows(&state.scope, &stored.exe_path)
-            && hosted_gate_allows(
-                &stored.exe_path,
-                mover_key.hwnd,
-                stored.pid,
-                &state.scope_hosts,
-            )
-    });
-    let topology_ok = areas
-        .iter()
-        .find(|a| a.device == snapshot.source_output)
-        .is_some_and(|area| {
-            area.full == snapshot.source_full
-                && tiling_domain_bounds_with(area.work, state.outer_gap)
-                    .is_some_and(|bounds| bounds == snapshot.source_bounds)
-        })
-        && areas
-            .iter()
-            .find(|a| a.device == snapshot.target_output)
-            .is_some_and(|area| {
-                area.full == snapshot.target_full
-                    && tiling_domain_bounds_with(area.work, state.outer_gap)
-                        .is_some_and(|bounds| bounds == snapshot.target_bounds)
-            });
-    let owner_ok = state.owner.as_str() == snapshot.owner.as_str()
-        && state.generation.as_str() == snapshot.generation.as_str();
-    crate::native_guards::DirectionalFenceLive {
-        inner_gap: state.inner_gap,
-        outer_gap: state.outer_gap,
-        source_tiled: state.is_tiled_view(&snapshot.source_output, &snapshot.source_workspace),
-        target_tiled: state.is_tiled_view(&snapshot.target_output, &snapshot.target_workspace),
-        source_is_active: source_active.as_deref() == Some(snapshot.source_workspace.as_str()),
-        target_is_active: target_active.as_deref() == Some(snapshot.target_workspace.as_str()),
-        topology_ok,
-        scope_ok,
-        lifetime_ok,
-        membership_ok,
-        overlay_maximized,
-        overlay_fullscreen,
-        owner_ok,
-    }
-}
-
+/// Stage-4a note: native gesture settle no longer snapshots drag-drop
+/// fences here. The retired `drag_drop_live` reader is deleted with the
+/// adapter settle route: the core commits the release from the normalized
+/// ingress and the host diff applies the accepted reply with fresh proof.
 /// Verify post-apply arrival for one mover row with fresh native proof,
 /// never the setter result and never core desire.
 ///
@@ -226,4 +135,165 @@ pub(super) fn drop_arrival_verified(
         return false;
     };
     output_for_rect(areas, &live) == device
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn areas() -> Vec<MonitorArea> {
+        vec![
+            MonitorArea {
+                device: "left".to_owned(),
+                work: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 800,
+                    h: 600,
+                },
+                full: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 800,
+                    h: 600,
+                },
+            },
+            MonitorArea {
+                device: "right".to_owned(),
+                work: Rect {
+                    x: 800,
+                    y: 0,
+                    w: 800,
+                    h: 600,
+                },
+                full: Rect {
+                    x: 800,
+                    y: 0,
+                    w: 800,
+                    h: 600,
+                },
+            },
+        ]
+    }
+
+    fn negative_areas() -> Vec<MonitorArea> {
+        vec![
+            MonitorArea {
+                device: "west".to_owned(),
+                work: Rect {
+                    x: -1600,
+                    y: 0,
+                    w: 800,
+                    h: 600,
+                },
+                full: Rect {
+                    x: -1600,
+                    y: 0,
+                    w: 800,
+                    h: 600,
+                },
+            },
+            MonitorArea {
+                device: "east".to_owned(),
+                work: Rect {
+                    x: -800,
+                    y: 0,
+                    w: 800,
+                    h: 600,
+                },
+                full: Rect {
+                    x: -800,
+                    y: 0,
+                    w: 800,
+                    h: 600,
+                },
+            },
+        ]
+    }
+
+    #[test]
+    fn rect_sliver_off_screen_grounds_overlapping_output() {
+        let areas = areas();
+        // Tail sliver on the right monitor with the centre past its edge:
+        // grounds right, never the first entry.
+        assert_eq!(
+            output_for_rect(
+                &areas,
+                &Rect {
+                    x: 1500,
+                    y: 100,
+                    w: 400,
+                    h: 200
+                }
+            ),
+            "right"
+        );
+        // Odd-extent centre rounding on the shared edge: width 1 stays
+        // left, width 2 lands on 800 and belongs to the right screen.
+        assert_eq!(
+            output_for_rect(
+                &areas,
+                &Rect {
+                    x: 799,
+                    y: 100,
+                    w: 1,
+                    h: 100
+                }
+            ),
+            "left"
+        );
+        assert_eq!(
+            output_for_rect(
+                &areas,
+                &Rect {
+                    x: 799,
+                    y: 100,
+                    w: 2,
+                    h: 100
+                }
+            ),
+            "right"
+        );
+        // Negative origins: centre inside east, then a centre-outside
+        // sliver with its only overlap on the non-first east output.
+        let negative = negative_areas();
+        assert_eq!(
+            output_for_rect(
+                &negative,
+                &Rect {
+                    x: -750,
+                    y: 100,
+                    w: 100,
+                    h: 100
+                }
+            ),
+            "east"
+        );
+        assert_eq!(
+            output_for_rect(
+                &negative,
+                &Rect {
+                    x: -100,
+                    y: 100,
+                    w: 300,
+                    h: 100
+                }
+            ),
+            "east"
+        );
+        assert_eq!(output_for_point(&areas, 1500, 10), Some("right".to_owned()));
+        assert_eq!(output_for_point(&areas, 5000, 10), None);
+        assert_eq!(
+            output_for_rect(
+                &[],
+                &Rect {
+                    x: 0,
+                    y: 0,
+                    w: 100,
+                    h: 100
+                }
+            ),
+            "display-?"
+        );
+    }
 }

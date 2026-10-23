@@ -2,11 +2,13 @@
 //! Portable Windows active-border policy, settings, and raster math.
 //!
 //! KDE parity source: `kwin/native-effect/activeborderconfig.kcfg`
-//! (width 3.0, gap 0.0, `UseThemeColor` true, fallback `#2a82da`)
-//! and `tiler-core::visual` (`active_border_state`, `active_border_inner_rect`,
-//! `active_border_use_theme`). Outline radius defaults to 6.0 per the
-//! 2026-10-11 decision. The border is independent of Engine
-//! tiling/floating membership: eligibility never consults a tiled token.
+//! (width 3.0, gap 0.0, `UseThemeColor` true, fallback `#2a82da`).
+//! Eligibility, reasons, and complete bounds live in `tiler-core::visual`
+//! (`border_eligibility`, `border_geometry`, `border_presentation`): this
+//! module keeps only the Windows-side composition (settings, host-scaled
+//! style numbers, accent, drawing, z-band, freshness vetoes). The border is
+//! independent of Engine tiling/floating membership: eligibility never
+//! consults a tiled token.
 //!
 //! Theme colour mapping (confirmed in source): KDE selects the Plasma
 //! highlight colour - `KColorScheme(QPalette::Active, KColorScheme::Selection,
@@ -17,9 +19,6 @@
 //! `UISettings::GetColorValue(UIColorType::Accent)`: theme wins only when
 //! requested (`--active-border-theme` on), available, and positively
 //! alpha-quantized per the shared `tiler-core::visual` gate.
-
-use tiler_core::geometry::Rect;
-use tiler_core::visual::{VisualRect, active_border_inner_rect, active_border_state};
 
 /// Windows border defaults.
 pub const DEFAULT_WIDTH: f64 = 3.0;
@@ -661,147 +660,6 @@ pub fn effective_color(style: &ActiveBorderStyle, accent: Option<SystemAccent>) 
     }
 }
 
-fn visual_of(rect: Rect) -> VisualRect {
-    VisualRect {
-        x: rect.x as f64,
-        y: rect.y as f64,
-        w: rect.w as f64,
-        h: rect.h as f64,
-    }
-}
-
-/// Inner rectangle: the visible frame expanded by the physical gap.
-/// Governed by `tiler-core::visual::active_border_inner_rect`.
-#[must_use]
-pub fn border_inner_rect(visible: Rect, gap_px: i32) -> Rect {
-    let inner = active_border_inner_rect(visual_of(visible), f64::from(gap_px));
-    Rect {
-        x: inner.x.round() as i32,
-        y: inner.y.round() as i32,
-        w: inner.w.round() as i32,
-        h: inner.h.round() as i32,
-    }
-}
-
-/// Outer rectangle: the inner rectangle expanded by the physical border
-/// width on every side. The KDE `OutlinedBorderItem` paints its `BorderOutline`
-/// thickness outside `innerRect` (`updateBorder` sets the inner rect and the
-/// outline separately), so the ring occupies `[inner, outer)`.
-#[must_use]
-pub fn border_outer_rect(visible: Rect, gap_px: i32, width_px: i32) -> Option<Rect> {
-    let inner = border_inner_rect(visible, gap_px);
-    let w = i64::from(width_px);
-    let x = i64::from(inner.x).checked_sub(w)?;
-    let y = i64::from(inner.y).checked_sub(w)?;
-    let w_out = i64::from(inner.w).checked_add(2 * w)?;
-    let h_out = i64::from(inner.h).checked_add(2 * w)?;
-    if w_out <= 0 || h_out <= 0 || w_out > i64::from(i32::MAX) || h_out > i64::from(i32::MAX) {
-        return None;
-    }
-    if x < i64::from(i32::MIN)
-        || x > i64::from(i32::MAX)
-        || y < i64::from(i32::MIN)
-        || y > i64::from(i32::MAX)
-    {
-        return None;
-    }
-    Some(Rect {
-        x: x as i32,
-        y: y as i32,
-        w: w_out as i32,
-        h: h_out as i32,
-    })
-}
-
-/// Closed hide-reason vocabulary for the border (no tiling skip reuse).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BorderHideReason {
-    Disabled,
-    NoTarget,
-    Minimized,
-    Maximized,
-    Fullscreen,
-    Cloaked,
-    HiddenWorkspace,
-    Shell,
-}
-
-impl BorderHideReason {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Disabled => "disabled",
-            Self::NoTarget => "no-target",
-            Self::Minimized => "minimized",
-            Self::Maximized => "maximized",
-            Self::Fullscreen => "fullscreen",
-            Self::Cloaked => "cloaked",
-            Self::HiddenWorkspace => "hidden-workspace",
-            Self::Shell => "shell",
-        }
-    }
-}
-
-/// Border eligibility for one foreground target, governed by
-/// `tiler-core::visual::active_border_state`. Independent of Engine
-/// tiling/floating membership: no tiled token participates. `maximized` is
-/// the single Windows zoom axis (mapped to the horizontal maximize input).
-/// `excluded` folds the Windows analogues of the KDE applet-popup exclusion:
-/// cloaked surfaces, hidden-workspace members, and shell surfaces.
-/// The core verdict is authoritative: reasons are derived after the verdict,
-/// never pre-returned ahead of it.
-#[allow(clippy::too_many_arguments)]
-pub fn border_eligible(
-    enabled: bool,
-    has_window: bool,
-    frame: Rect,
-    minimized: bool,
-    fullscreen: bool,
-    maximized: bool,
-    cloaked: bool,
-    hidden_workspace: bool,
-    shell: bool,
-) -> Result<(), BorderHideReason> {
-    if !enabled {
-        return Err(BorderHideReason::Disabled);
-    }
-    if !has_window {
-        return Err(BorderHideReason::NoTarget);
-    }
-    let maximized_core = tiler_core::visual::active_border_is_maximized(maximized, false);
-    let state = active_border_state(
-        has_window,
-        visual_of(frame),
-        /* deleted = */ false,
-        minimized,
-        fullscreen,
-        maximized_core,
-        cloaked || hidden_workspace || shell,
-    );
-    if state.visible {
-        return Ok(());
-    }
-    if minimized {
-        return Err(BorderHideReason::Minimized);
-    }
-    if fullscreen {
-        return Err(BorderHideReason::Fullscreen);
-    }
-    if maximized {
-        return Err(BorderHideReason::Maximized);
-    }
-    if cloaked {
-        return Err(BorderHideReason::Cloaked);
-    }
-    if hidden_workspace {
-        return Err(BorderHideReason::HiddenWorkspace);
-    }
-    if shell {
-        return Err(BorderHideReason::Shell);
-    }
-    Err(BorderHideReason::NoTarget)
-}
-
 /// True when the point lies inside the rounded rectangle `(x, y, w, h)` with
 /// corner radius `radius` (clamped to half the smallest side).
 #[must_use]
@@ -905,6 +763,7 @@ pub struct BorderArgvEcho {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tiler_core::geometry::Rect;
 
     fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
         Rect { x, y, w, h }
@@ -979,126 +838,58 @@ mod tests {
     }
 
     #[test]
-    fn eligibility_agrees_with_core_verdict() {
-        // Core `active_border_state` is authoritative: for every flag
-        // combination the portable verdict matches the core visibility, and
-        // hidden reasons derive after the verdict.
-        let frame = rect(10, 20, 320, 200);
-        for bits in 0..64u32 {
-            let minimized = bits & 1 != 0;
-            let fullscreen = bits & 2 != 0;
-            let maximized = bits & 4 != 0;
-            let cloaked = bits & 8 != 0;
-            let hidden = bits & 16 != 0;
-            let shell = bits & 32 != 0;
-            let maximized_core = tiler_core::visual::active_border_is_maximized(maximized, false);
-            let core = tiler_core::visual::active_border_state(
-                true,
-                tiler_core::visual::VisualRect {
-                    x: 10.0,
-                    y: 20.0,
-                    w: 320.0,
-                    h: 200.0,
-                },
-                false,
-                minimized,
-                fullscreen,
-                maximized_core,
-                cloaked || hidden || shell,
-            );
-            let verdict = border_eligible(
-                true, true, frame, minimized, fullscreen, maximized, cloaked, hidden, shell,
-            );
-            assert_eq!(verdict.is_ok(), core.visible, "bits={bits:06b}");
-        }
-    }
-
-    #[test]
-    fn ring_expands_gap_then_width() {
-        // Visible 100x80 at (10,20), gap 2, width 4:
-        // inner (8,18,104,84), outer (4,14,112,92).
-        let visible = rect(10, 20, 100, 80);
-        assert_eq!(border_inner_rect(visible, 2), rect(8, 18, 104, 84));
-        assert_eq!(border_outer_rect(visible, 2, 4), Some(rect(4, 14, 112, 92)));
-        // Zero gap/width is the identity.
-        assert_eq!(border_outer_rect(visible, 0, 3), Some(rect(7, 17, 106, 86)));
-    }
-
-    #[test]
-    fn eligibility_suppression_matrix() {
-        let frame = rect(10, 20, 320, 200);
-        assert!(
-            border_eligible(true, true, frame, false, false, false, false, false, false).is_ok()
-        );
+    fn scaled_style_flows_into_core_presentation() {
+        // Windows seam: logical style scales to physical pixels first, then
+        // the core presentation owns eligibility and bounds. Visible 100x80
+        // at (10,20) with logical gap 2 / width 4 at 96 DPI scales to
+        // physical 2/4, and the core ring is inner (8,18,104,84), outer
+        // (4,14,112,92).
+        use tiler_core::visual::{BorderEligibilityFacts, BorderFacts, border_presentation};
+        let style = ActiveBorderStyle {
+            width: 4.0,
+            gap: 2.0,
+            ..ActiveBorderStyle::default()
+        };
+        let Some((width_px, gap_px, _)) = scale_style(&style, 96) else {
+            panic!("style must scale at 96 DPI");
+        };
+        assert_eq!((width_px, gap_px), (4, 2));
+        let eligibility = BorderEligibilityFacts {
+            enabled: true,
+            has_window: true,
+            minimized: false,
+            fullscreen: false,
+            maximized: false,
+            cloaked: false,
+            hidden_workspace: false,
+            shell: false,
+        };
+        let shown = border_presentation(&BorderFacts {
+            eligibility,
+            frame: rect(10, 20, 100, 80),
+            gap_px,
+            width_px,
+        });
+        assert!(shown.visible);
+        assert_eq!(shown.reason, None);
+        assert_eq!(shown.inner, Some(rect(8, 18, 104, 84)));
+        assert_eq!(shown.outer, Some(rect(4, 14, 112, 92)));
+        // Shell-popup fold stays adapter-side: the same frame with the shell
+        // fact set hides as shell, with no other fact consulted.
+        let shelled = border_presentation(&BorderFacts {
+            eligibility: BorderEligibilityFacts {
+                shell: true,
+                ..eligibility
+            },
+            frame: rect(10, 20, 100, 80),
+            gap_px,
+            width_px,
+        });
+        assert!(!shelled.visible);
         assert_eq!(
-            border_eligible(false, true, frame, false, false, false, false, false, false),
-            Err(BorderHideReason::Disabled)
+            shelled.reason,
+            Some(tiler_core::visual::BorderHideReason::Shell)
         );
-        assert_eq!(
-            border_eligible(true, false, frame, false, false, false, false, false, false),
-            Err(BorderHideReason::NoTarget)
-        );
-        for (min, fs, max, cloak, hidden, shell, want) in [
-            (
-                true,
-                false,
-                false,
-                false,
-                false,
-                false,
-                BorderHideReason::Minimized,
-            ),
-            (
-                false,
-                true,
-                false,
-                false,
-                false,
-                false,
-                BorderHideReason::Fullscreen,
-            ),
-            (
-                false,
-                false,
-                true,
-                false,
-                false,
-                false,
-                BorderHideReason::Maximized,
-            ),
-            (
-                false,
-                false,
-                false,
-                true,
-                false,
-                false,
-                BorderHideReason::Cloaked,
-            ),
-            (
-                false,
-                false,
-                false,
-                false,
-                true,
-                false,
-                BorderHideReason::HiddenWorkspace,
-            ),
-            (
-                false,
-                false,
-                false,
-                false,
-                false,
-                true,
-                BorderHideReason::Shell,
-            ),
-        ] {
-            assert_eq!(
-                border_eligible(true, true, frame, min, fs, max, cloak, hidden, shell),
-                Err(want)
-            );
-        }
     }
 
     #[test]

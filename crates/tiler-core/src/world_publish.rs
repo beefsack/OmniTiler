@@ -228,6 +228,7 @@ impl WorldEngine {
                             ScopeAuthority::Untouched
                         },
                         frame_operation: None,
+                        clear_operation: None,
                         floating: false,
                         float_origin: None,
                     });
@@ -248,6 +249,7 @@ impl WorldEngine {
                         frame_authority: ScopeAuthority::Hold(HoldReason::Minimized),
                         membership_authority: ScopeAuthority::Untouched,
                         frame_operation: None,
+                        clear_operation: None,
                         floating: false,
                         float_origin: None,
                     });
@@ -314,6 +316,7 @@ impl WorldEngine {
                             frame_authority: ScopeAuthority::Hold(reason),
                             membership_authority: ScopeAuthority::Hold(reason),
                             frame_operation: None,
+                            clear_operation: None,
                             floating: false,
                             float_origin: None,
                         });
@@ -331,6 +334,7 @@ impl WorldEngine {
                             frame_authority: ScopeAuthority::Hold(HoldReason::Minimized),
                             membership_authority: ScopeAuthority::Hold(reason),
                             frame_operation: None,
+                            clear_operation: None,
                             floating: false,
                             float_origin: None,
                         });
@@ -348,6 +352,7 @@ impl WorldEngine {
                             frame_authority: ScopeAuthority::Hold(reason),
                             membership_authority: ScopeAuthority::Hold(reason),
                             frame_operation: None,
+                            clear_operation: None,
                             floating: false,
                             float_origin: None,
                         });
@@ -396,6 +401,7 @@ impl WorldEngine {
                                 None => ScopeAuthority::Controlled,
                             },
                             frame_operation: None,
+                            clear_operation: None,
                             floating: false,
                             float_origin: None,
                         });
@@ -584,6 +590,7 @@ impl WorldEngine {
                     },
                     // Tiled rows never carry a float-placement token.
                     frame_operation: None,
+                    clear_operation: None,
                     floating: false,
                     float_origin: None,
                 });
@@ -612,14 +619,23 @@ impl WorldEngine {
                 // floats carry none and never take frame writes. A
                 // core-suppressed pair withholds the token while the
                 // retained target stays outstanding (same clamp/transient
-                // owner as tiled rows); an exact match clears memory.
+                // owner as tiled rows); an exact match clears memory. The
+                // published frame is the retained desire (directional
+                // half-snaps, explicit placements), falling back to the
+                // session geometry only with no outstanding target.
+                let retained_target = self
+                    .retained_floats
+                    .iter()
+                    .find(|held| held.window == observed.window)
+                    .map(|held| held.target);
                 let mut frame_operation = self
                     .retained_floats
                     .iter()
                     .find(|held| held.window == observed.window)
                     .map(|held| held.operation_id.clone());
                 if frame_operation.is_some() {
-                    let target = session.floating_geometry(&observed.window);
+                    let target =
+                        retained_target.or_else(|| session.floating_geometry(&observed.window));
                     let fact_rect = staged
                         .facts
                         .get(&observed.window)
@@ -648,12 +664,35 @@ impl WorldEngine {
                 let float_origin = session
                     .is_capacity_float(&observed.window)
                     .then_some(FloatOrigin::Capacity);
+                // Retained directional clear desire: the one-shot
+                // `clear_operation` token authorizes exactly one native
+                // clear for this window. Withheld on held scopes, gesture
+                // barriers, minimized/unreadable facts, and after the
+                // attempt is spent (never re-actuated); the settlement
+                // owns every verdict over the correlated attempt.
+                let fact_unreadable = self
+                    .staged
+                    .facts
+                    .get(&observed.window)
+                    .is_none_or(|fact| fact.minimized || fact.rect.is_none());
+                let clear_operation =
+                    if report.gesture_barrier || member_hold.is_some() || fact_unreadable {
+                        None
+                    } else {
+                        self.retained_clears
+                            .iter()
+                            .find(|retained| {
+                                retained.window == observed.window && retained.pending.is_none()
+                            })
+                            .map(|retained| retained.operation_id.clone())
+                    };
                 windows.push(WindowDesire {
                     lifetime: observed.window.clone(),
                     output: observed.output.clone(),
                     workspace: observed.workspace.0.clone(),
                     allocation: None,
-                    effective_frame: session.floating_geometry(&observed.window),
+                    effective_frame: retained_target
+                        .or_else(|| session.floating_geometry(&observed.window)),
                     frame_authority: ScopeAuthority::Untouched,
                     membership_authority: match member_hold {
                         Some(reason) => ScopeAuthority::Hold(reason),
@@ -661,6 +700,7 @@ impl WorldEngine {
                         None => ScopeAuthority::Untouched,
                     },
                     frame_operation,
+                    clear_operation,
                     floating: true,
                     float_origin,
                 });
@@ -697,6 +737,7 @@ impl WorldEngine {
                         None => ScopeAuthority::Controlled,
                     },
                     frame_operation: None,
+                    clear_operation: None,
                     floating: false,
                     float_origin: None,
                 });
@@ -764,6 +805,7 @@ impl WorldEngine {
                     None => ScopeAuthority::Controlled,
                 },
                 frame_operation: None,
+                clear_operation: None,
                 floating: false,
                 float_origin: None,
             });
@@ -817,6 +859,7 @@ impl WorldEngine {
                     None => ScopeAuthority::Controlled,
                 },
                 frame_operation: None,
+                clear_operation: None,
                 floating: false,
                 float_origin: None,
             });
@@ -826,6 +869,13 @@ impl WorldEngine {
         // means "no managed geometry", never a close or teardown instruction.
         let workspaces = self.plan_workspaces(report);
         let outputs = self.plan_outputs(report, held_scopes);
+        // Per-report warp desire (stage 4b, cross-output only): computed
+        // over the final focus effects plus the published window rows, so
+        // explicit, admission, and hover-coupling focus share one rule.
+        let cursor_warp = self.warp_for_publish(report, &effects, &windows, held_scopes);
+        // Per-report gesture terminal: taken here so the next unrelated
+        // report publishes `None`. Duplicates repeat the cached reply.
+        let gesture_settled = self.gesture_terminal.take();
         WorldReply {
             contract_version: WORLD_CONTRACT_VERSION,
             adapter_incarnation: report.adapter_incarnation.clone(),
@@ -842,6 +892,8 @@ impl WorldEngine {
             transfers: self.retained_transfers(),
             effects,
             command_result,
+            gesture_settled,
+            cursor_warp,
             presentation_bytes: 0,
         }
     }
@@ -874,6 +926,7 @@ impl WorldEngine {
                 frame_authority: ScopeAuthority::Hold(reason),
                 membership_authority: ScopeAuthority::Hold(reason),
                 frame_operation: None,
+                clear_operation: None,
                 floating: false,
                 float_origin: None,
             });
@@ -894,6 +947,7 @@ impl WorldEngine {
                 frame_authority: ScopeAuthority::Hold(reason),
                 membership_authority: ScopeAuthority::Hold(reason),
                 frame_operation: None,
+                clear_operation: None,
                 floating: false,
                 float_origin: None,
             });
@@ -914,6 +968,7 @@ impl WorldEngine {
                 frame_authority: ScopeAuthority::Hold(HoldReason::Minimized),
                 membership_authority: ScopeAuthority::Hold(reason),
                 frame_operation: None,
+                clear_operation: None,
                 floating: false,
                 float_origin: None,
             });
