@@ -28,7 +28,8 @@ use crate::world_engine::{
     MSG_SEND_WINDOW, MSG_SNAPSHOT, RetainedTransfer, WorldEngine,
 };
 use crate::world_report::{
-    CommandResult, OneShotEffect, TransferKind, TransferTarget, WorldCommand, WorldReport,
+    CommandResult, OneShotEffect, SendSource, TransferKind, TransferTarget, WorldCommand,
+    WorldReport,
 };
 
 impl WorldEngine {
@@ -36,13 +37,22 @@ impl WorldEngine {
     /// one-shot effect, if any. Every accepted command advances the
     /// monotonic command high-watermark; commandless reports never move it.
     /// Staged carriers back the planning index; logical rings and views
-    /// authorize every target.
+    /// authorize every target. `frozen_send_source` carries the implicit
+    /// send source resolved from pre-observation retained homing in
+    /// [`run_accepted`](crate::world_engine::WorldEngine::run_accepted)
+    /// before staging (`None` unless the report carries an implicit send
+    /// that resolved, or an implicit send that did not resolve): the
+    /// command below must use it verbatim and never re-resolve, so
+    /// first-tick admissions and rehomed movers keep the retired
+    /// adapter contract exactly.
     pub(crate) fn execute_command(
         &mut self,
         report: &WorldReport,
         command_seq: u64,
         command: &WorldCommand,
         held_scopes: &BTreeSet<DomainKey>,
+        frozen_send_source: Option<OutputId>,
+        frozen_migration_source: Option<(OutputId, String)>,
     ) -> CommandApplied {
         // Staged carrier index for command planning: homed Engine
         // carriers keyed by lifetime. Owned locally so planning borrows
@@ -625,7 +635,7 @@ impl WorldEngine {
             }
             WorldCommand::SendRelative {
                 window,
-                output,
+                source,
                 delta,
                 follow,
             } => {
@@ -636,6 +646,23 @@ impl WorldEngine {
                     };
                 };
                 let current = source_row.workspace.0.clone();
+                // Implicit sources arrive frozen from pre-observation
+                // retained homing (see `run_accepted`); explicit outputs
+                // pass through unchanged. An unfrozen implicit source
+                // refuses here: nothing was invented, so there is no
+                // source scope to resolve a ring over.
+                let source = match source {
+                    SendSource::Explicit(output) => output.clone(),
+                    SendSource::HomeThenAction | SendSource::HomeThenCachedLive => {
+                        let Some(resolved) = frozen_send_source.clone() else {
+                            return CommandApplied::Rejected {
+                                kind: KIND_SEND_WINDOW,
+                                message: MSG_SEND_WINDOW,
+                            };
+                        };
+                        resolved
+                    }
+                };
                 let ring = self.send_ring(report, &source_row.output);
                 let Some(target_workspace) = resolve_relative_send(&ring, &current, *delta) else {
                     return CommandApplied::Rejected {
@@ -647,7 +674,7 @@ impl WorldEngine {
                     report,
                     command_seq,
                     window,
-                    output,
+                    &source,
                     &target_workspace,
                     *follow,
                     &by_id,
@@ -656,19 +683,33 @@ impl WorldEngine {
             }
             WorldCommand::SendNumbered {
                 window,
-                output,
+                source,
                 index,
                 follow,
-            } => self.start_numbered_send(
-                report,
-                command_seq,
-                window,
-                output,
-                *index,
-                *follow,
-                &by_id,
-                held_scopes,
-            ),
+            } => {
+                let output = match source {
+                    SendSource::Explicit(output) => output.clone(),
+                    SendSource::HomeThenAction | SendSource::HomeThenCachedLive => {
+                        let Some(resolved) = frozen_send_source.clone() else {
+                            return CommandApplied::Rejected {
+                                kind: KIND_SEND_WINDOW,
+                                message: MSG_SEND_WINDOW,
+                            };
+                        };
+                        resolved
+                    }
+                };
+                self.start_numbered_send(
+                    report,
+                    command_seq,
+                    window,
+                    &output,
+                    *index,
+                    *follow,
+                    &by_id,
+                    held_scopes,
+                )
+            }
             WorldCommand::SetWorkspaceTiling {
                 output,
                 workspace,
@@ -715,19 +756,30 @@ impl WorldEngine {
                 &by_id,
                 held_scopes,
             ),
-            WorldCommand::MigrateDirectional {
-                source_output,
-                workspace,
-                direction,
-            } => self.migrate_directional(
-                report,
-                command_seq,
-                source_output,
-                workspace,
-                direction,
-                &by_id,
-                held_scopes,
-            ),
+            WorldCommand::MigrateDirectional { direction } => {
+                // Direction-only commands resolve no output: the frozen
+                // pre-observation source (output plus its retained view)
+                // applies verbatim, or the command refuses when the frozen
+                // source is unknown. Same-report view settlement or
+                // bootstrap must never retarget the current intent; the
+                // strict topology target and all gates below run on staged
+                // state unchanged.
+                let Some((source, view)) = frozen_migration_source.clone() else {
+                    return CommandApplied::Rejected {
+                        kind: KIND_MIGRATION,
+                        message: MSG_MIGRATION_SOURCE,
+                    };
+                };
+                self.migrate_directional(
+                    report,
+                    command_seq,
+                    &source,
+                    &view,
+                    direction,
+                    &by_id,
+                    held_scopes,
+                )
+            }
             WorldCommand::Operation(command) => {
                 self.execute_operation(report, command_seq, command, &by_id, held_scopes)
             }

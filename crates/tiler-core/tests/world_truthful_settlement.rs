@@ -92,6 +92,9 @@ fn report(
             .first()
             .map(|f| f.window.0.clone())
             .unwrap_or_default(),
+        action_foreground: None,
+        action_cached: None,
+        action_outputs: Vec::new(),
         inventory_complete,
         gesture_barrier: false,
         gesture: None,

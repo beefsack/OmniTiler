@@ -9,15 +9,6 @@
 use super::*;
 use tiler_core::world_report::WorldCommand;
 
-/// Native device key for one send intent: the cached output when live, else
-/// the first live area. Pure native topology; never rings or views.
-fn send_device(state: &TileLoop, areas: &[MonitorArea]) -> Option<String> {
-    if !state.active_output.is_empty() && areas.iter().any(|a| a.device == state.active_output) {
-        return Some(state.active_output.clone());
-    }
-    areas.first().map(|a| a.device.clone())
-}
-
 /// Drain one bounded batch of relative workspace-send intents through the
 /// world owner. Previous/next steps resolve from the mover source through
 /// the core's scoped ring; follow/stay ride the operator intent. Only
@@ -99,7 +90,12 @@ pub(super) fn workspace_relative_send_tick(
             );
             continue;
         }
-        let Some(device) = send_device(state, areas) else {
+        // Mechanical topology-existence fence (no policy): with no live
+        // area the core has no registry to resolve from. The command
+        // below omits the source output; the core resolves the mover's
+        // retained home, else the cached-live fallback (cached output
+        // when live, else first live screen), never the action context.
+        if areas.is_empty() {
             log_json_at(
                 &log_path,
                 serde_json::json!({
@@ -121,32 +117,15 @@ pub(super) fn workspace_relative_send_tick(
         let tick = state.tick;
         match origin.filter(|o| o.hwnd == foreground_hwnd) {
             Some(o) if !o.token.is_empty() => {
-                // Focused window source output as the existing contract:
-                // the mover's own homed output, never the cursor output.
-                let mover_wire = state
-                    .member_tokens
-                    .iter()
-                    .find(|(_, token)| token.as_str() == o.token.as_str())
-                    .and_then(|(key, _)| state.member_home(key))
-                    .and_then(|home| state.wire_of(&home.output))
-                    .or_else(|| state.output_tokens.get(&device).cloned());
-                let Some(wire) = mover_wire else {
-                    log_json_at(
-                        &log_path,
-                        serde_json::json!({
-                            "event": "workspace-send",
-                            "delta": intent.delta,
-                            "follow": intent.follow,
-                            "edge": intent.edge.as_str(),
-                            "disposition": "consumed",
-                            "outcome": "unknown-output",
-                        }),
-                    );
-                    continue;
-                };
+                // The command carries a home-then-cached-live source:
+                // the core resolves the mover's retained home, else the
+                // cached output when live, else the first live screen.
+                // The cursor never steers a homed mover; only a homed
+                // miss falls through to the cached-live fallback, never
+                // an adapter decision.
                 let command = WorldCommand::SendRelative {
                     window: tiler_core::directional::WindowId(o.token.clone()),
-                    output: tiler_core::directional::OutputId(wire),
+                    source: tiler_core::world_report::SendSource::HomeThenCachedLive,
                     delta: intent.delta,
                     follow: intent.follow,
                 };
@@ -340,7 +319,6 @@ pub(super) fn workspace_output_send_one(
     areas: &[MonitorArea],
     observed: &mut [ObservedWindow],
     retained: &[RetainedRow],
-    _output: &str,
     intent: &QueuedWorkspaceOutputIntent,
     origin: &crate::snapkey::SnapOrigin,
     tick: u64,

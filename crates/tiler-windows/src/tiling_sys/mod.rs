@@ -56,9 +56,7 @@ pub use self::commands::{
 };
 use self::diag::{WindowDiagSample, diag_identity_broke, diag_identity_rebound, drop_diag_sample};
 use self::dir_watch::DirWatch;
-use self::directional_resolution::{
-    chord_output, drop_arrival_verified, output_for_point, output_for_rect,
-};
+use self::directional_resolution::{drop_arrival_verified, output_for_point, output_for_rect};
 pub use self::dispatch::{LaunchBackend, SystemLaunchBackend};
 use self::dispatch::{
     dispatch_float_intent, dispatch_launch_intent, dispatch_orientation_intent,

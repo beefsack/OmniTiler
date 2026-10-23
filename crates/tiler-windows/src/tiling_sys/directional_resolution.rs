@@ -33,36 +33,6 @@ pub(super) fn output_for_point(areas: &[MonitorArea], x: i32, y: i32) -> Option<
     tiler_core::cursor_targeting::output_at_cursor(&screens, (x, y)).map(|id| id.0)
 }
 
-fn foreground_output(areas: &[MonitorArea]) -> Option<String> {
-    let foreground = crate::ffi::foreground_window();
-    if foreground == 0 {
-        return None;
-    }
-    let raw = crate::ffi::window_rect(foreground)?;
-    rect_from_win(raw).map(|r| output_for_rect(areas, &r))
-}
-
-/// Exact output context for a digit chord: the genuine foreground monitor
-/// when known, else the pointer monitor, else the cached last-switch
-/// output when still known, else output ordering. The cached value is
-/// deliberately last: a stale last-switch cache must never beat live
-/// focus (tray pager parity). Never invents a key.
-pub(super) fn chord_output(state: &TileLoop, areas: &[MonitorArea]) -> Option<String> {
-    let cached = if state.active_output.is_empty() {
-        None
-    } else {
-        Some(state.active_output.as_str())
-    };
-    let foreground = foreground_output(areas);
-    let pointer = cursor_pos().and_then(|(x, y)| output_for_point(areas, x, y));
-    crate::native_guards::output_context_keys(
-        &state.output_devices(),
-        cached,
-        foreground.as_deref(),
-        pointer.as_deref(),
-    )
-}
-
 /// Windows multi-output directional foundation (REQ-OUT-01..03, REQ-MOV-08).
 ///
 /// Exhausted directional tiled moves cross all four directions into the

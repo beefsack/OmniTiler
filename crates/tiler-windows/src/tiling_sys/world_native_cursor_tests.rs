@@ -694,7 +694,9 @@ fn shared_switch_and_send_cases_resolve_per_fixture() {
                     by_id[mover].hwnd,
                     Some(WorldCommand::SendNumbered {
                         window: WindowId(mover.to_owned()),
-                        output: OutputId(wire.clone()),
+                        source: tiler_core::world_report::SendSource::Explicit(OutputId(
+                            wire.clone(),
+                        )),
                         index: command["index"].as_u64().expect("index") as u8,
                         follow: command["follow"].as_bool().expect("follow"),
                     }),

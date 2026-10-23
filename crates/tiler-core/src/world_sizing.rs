@@ -32,6 +32,19 @@ pub fn json_string_len(value: &str) -> usize {
     bytes
 }
 
+/// Structural size estimate for one typed send source: the exact object
+/// width for explicit ids (`{"explicit":S}`), and the exact token-object
+/// widths for the implicit legs (`{"implicit":"home-then-action"}` and
+/// `{"implicit":"home-then-cached-live"}`).
+#[must_use]
+pub fn send_source_estimate(source: &crate::world_report::SendSource) -> usize {
+    match source {
+        crate::world_report::SendSource::Explicit(output) => 13 + json_string_len(&output.0),
+        crate::world_report::SendSource::HomeThenAction => 31,
+        crate::world_report::SendSource::HomeThenCachedLive => 36,
+    }
+}
+
 /// Canonical decimal width of an `i32` (sign plus up to 10 digits).
 #[must_use]
 pub const fn int_len(value: i32) -> usize {
@@ -429,7 +442,7 @@ pub fn command_result_estimate(result: &Option<CommandResult>) -> usize {
 /// nullable command, `screens`, `windows`, `views`, `closed`, capability
 /// flags, `native`, `predicate`, `refill`, `anchorFallback`,
 /// `noSpaceResult`, `switchTarget`, `freshPlacement`, nullable `cursor`,
-/// nullable `cursorHit`, `defaultTiled`/`focused`/`complete`/`gesture`/
+/// nullable `cursorHit`, nullable action-context outputs, `defaultTiled`/`focused`/`complete`/`gesture`/
 /// `focusFollowsCursor`/`cursorWarp` values, `feedback`, `monotonicMs` decimal string,
 /// `frameAttempts`, `memberAttempts`, `viewAttempts`).
 /// Conservative: any compact encoding of the report fits within this
@@ -445,15 +458,20 @@ pub fn report_estimate(report: &WorldReport) -> usize {
     // targeting keys (10 + 16 + 18 + 22 + 13 = 79):
     // ,"cursor":,"switchTarget":,"freshPlacement":,"focusFollowsCursor":,
     // "cursorWarp": = 322
-    // plus ,"cursorHit": (13) = 335, plus ,"monotonicMs":"" (19) and
-    // ,"frameAttempts":[] (19) = 373, plus ,"memberAttempts":[] (20) and
-    // ,"viewAttempts":[] (18) = 411, plus ,\"clearAttempts\":[] (18) = 429, plus ,\"gesture\":null (12) = 441, plus
-    // the version digits. Values counted
-    // separately below; nullable command, cursor, and cursor-hit slots
-    // count `null` (4). The workspace
+    // plus ,"cursorHit": (13) = 335, plus ,"actionForeground": (20) and
+    // ,"actionCached": (16) = 371, plus ,"actionOutputs":[] (20) = 391,
+    // plus ,"monotonicMs":"" (19) and ,"frameAttempts":[] (19) = 429,
+    // plus ,"memberAttempts":[] (20) and ,"viewAttempts":[] (18) = 467,
+    // plus ,\"clearAttempts\":[] (18) = 485, plus ,\"gesture\":null (12) =
+    // 497, plus the version digits. Values counted
+    // separately below; nullable command, cursor, cursor-hit, and
+    // action-context slots count `null` (4), while the action-output
+    // registry counts its brackets plus one comma per entry. The workspace
     // mode token rides as `"mode":S` (9 fixed plus the token); membership
     // evidence rides per fact below (absent counts `null`).
     let mut bytes = 429
+        + 36
+        + 20
         + gesture_estimate(report)
         + usize_len(report.contract_version as usize)
         + json_string_len(&report.owner)
@@ -474,6 +492,19 @@ pub fn report_estimate(report: &WorldReport) -> usize {
             .cursor_hit
             .as_ref()
             .map_or(4, |hit| json_string_len(&hit.0))
+        + report
+            .action_foreground
+            .as_ref()
+            .map_or(4, |out| json_string_len(&out.0))
+        + report
+            .action_cached
+            .as_ref()
+            .map_or(4, |out| json_string_len(&out.0))
+        + report
+            .action_outputs
+            .iter()
+            .map(|out| json_string_len(&out.0) + 1)
+            .sum::<usize>()
         + u64_len(report.request_seq)
         + u64_len(report.observation_seq)
         + u64_len(report.monotonic_ms)
@@ -701,28 +732,30 @@ fn command_estimate_owned(command: &WorldCommand) -> usize {
         }
         WorldCommand::SendRelative {
             window,
-            output,
+            source,
             delta,
             follow,
         } => {
-            // {"op":"send-relative","win":S,"out":S,"delta":N,"follow":B}
-            // = 55 fixed.
-            55 + bool_len(*follow)
+            // {"op":"send-relative","win":S,"source":{...},"delta":N,
+            // "follow":B} = 58 fixed plus the source object, the delta
+            // digits, and the bool.
+            58 + bool_len(*follow)
                 + json_string_len(&window.0)
-                + json_string_len(&output.0)
+                + send_source_estimate(source)
                 + int_len(*delta)
         }
         WorldCommand::SendNumbered {
             window,
-            output,
+            source,
             index,
             follow,
         } => {
-            // {"op":"send-numbered","win":S,"out":S,"index":N,"follow":B}
-            // = 57 fixed.
-            57 + bool_len(*follow)
+            // {"op":"send-numbered","win":S,"source":{...},"index":N,
+            // "follow":B} = 59 fixed plus the source object, the index
+            // digits, and the bool.
+            59 + bool_len(*follow)
                 + json_string_len(&window.0)
-                + json_string_len(&output.0)
+                + send_source_estimate(source)
                 + usize_len(usize::from(*index))
         }
         WorldCommand::SetWorkspaceTiling {
@@ -768,16 +801,9 @@ fn command_estimate_owned(command: &WorldCommand) -> usize {
             // = 55 fixed.
             55 + json_string_len(&window.0) + json_string_len(direction) + bool_len(*follow)
         }
-        WorldCommand::MigrateDirectional {
-            source_output,
-            workspace,
-            direction,
-        } => {
-            // {"op":"migrate-directional","from":S,"ws":S,"direction":S}
-            // = 55 fixed.
-            55 + json_string_len(&source_output.0)
-                + json_string_len(workspace)
-                + json_string_len(direction)
+        WorldCommand::MigrateDirectional { direction } => {
+            // {"op":"migrate-directional","direction":S} = 41 fixed.
+            41 + json_string_len(direction)
         }
         WorldCommand::Operation(command) => {
             // {"op":"operation","command":{...}} = 30 fixed.

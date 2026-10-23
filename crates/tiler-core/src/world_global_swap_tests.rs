@@ -116,6 +116,9 @@ fn report(
         cursor_hit: None,
         default_tiled: true,
         focused_global: focused.to_owned(),
+        action_foreground: None,
+        action_cached: None,
+        action_outputs: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -1050,6 +1053,8 @@ fn global_unique_swap_failed_stay_keeps_world_unchanged() {
         12,
         swap_report.command.as_ref().expect("command"),
         &held,
+        None,
+        None,
     ) {
         CommandApplied::Rejected { kind, message } => {
             assert_eq!(kind, KIND_MIGRATION);

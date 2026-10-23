@@ -220,10 +220,11 @@ fn occupied_target_migration_arrival_proves_without_deferred_view() {
         .engine()
         .logical_view(&o1)
         .expect("migrated workspace");
-    // Production route: direction-only command off the live source output,
-    // exactly like the chord and CLI dispatches.
+    // Production route: direction-only command; the staged DEV1 cursor
+    // resolves the live source output with its current view, exactly
+    // like the chord and CLI dispatches.
     let observed = live_visible_observed();
-    let moved = live_tick(
+    let moved = live_tick_cursor(
         &mut env,
         &mut owner,
         &observed,
@@ -233,10 +234,9 @@ fn occupied_target_migration_arrival_proves_without_deferred_view() {
         moving_prims(),
         0,
         Some(WorldCommand::MigrateDirectional {
-            source_output: OutputId(o1.clone()),
-            workspace: ws_m.clone(),
             direction: "right".to_owned(),
         }),
+        Some((10, 10)),
     );
     let migration_op = moved
         .reply
@@ -463,7 +463,7 @@ fn asymmetric_migration_members_land_on_published_slots_both_prove() {
         .logical_view(&o1)
         .expect("migrated workspace");
     let observed = live_visible_observed();
-    let moved = live_tick(
+    let moved = live_tick_cursor(
         &mut env,
         &mut owner,
         &observed,
@@ -473,10 +473,9 @@ fn asymmetric_migration_members_land_on_published_slots_both_prove() {
         moving_prims(),
         0,
         Some(WorldCommand::MigrateDirectional {
-            source_output: OutputId(o1.clone()),
-            workspace: ws_m.clone(),
             direction: "right".to_owned(),
         }),
+        Some((10, 10)),
     );
     let migration_op = moved
         .reply
@@ -739,7 +738,7 @@ fn roundtrip_migration_select_occupied_then_close_reflows_and_settles() {
         r1.hwnd,
         Some(WorldCommand::SendNumbered {
             window: WindowId("w4".to_owned()),
-            output: OutputId(o1.clone()),
+            source: tiler_core::world_report::SendSource::Explicit(OutputId(o1.clone())),
             index: 0,
             follow: false,
         }),
@@ -781,8 +780,9 @@ fn roundtrip_migration_select_occupied_then_close_reflows_and_settles() {
         settled.reply.transfers
     );
     // A->B with the source-side occupied workspace retained hidden.
+    // The staged DEV1 cursor resolves the source with its current view.
     let observed = live_visible_observed();
-    live_tick(
+    live_tick_cursor(
         &mut env,
         &mut owner,
         &observed,
@@ -792,10 +792,9 @@ fn roundtrip_migration_select_occupied_then_close_reflows_and_settles() {
         moving_prims(),
         0,
         Some(WorldCommand::MigrateDirectional {
-            source_output: OutputId(o1.clone()),
-            workspace: ws_m.clone(),
             direction: "right".to_owned(),
         }),
+        Some((10, 10)),
     );
     settle_until_clean(&mut env, &mut owner, &areas, &fulls, "A->B");
     for token in ["w1", "w2", "w3"] {
@@ -821,9 +820,10 @@ fn roundtrip_migration_select_occupied_then_close_reflows_and_settles() {
         !S_VISIBLE.with(|m| m.borrow().contains(&r1.hwnd)),
         "r1 stays hidden through A->B"
     );
-    // B->A back onto the occupied source output.
+    // B->A back onto the occupied source output. The staged DEV2
+    // cursor resolves the source with its current view.
     let observed = live_visible_observed();
-    live_tick(
+    live_tick_cursor(
         &mut env,
         &mut owner,
         &observed,
@@ -833,10 +833,9 @@ fn roundtrip_migration_select_occupied_then_close_reflows_and_settles() {
         moving_prims(),
         0,
         Some(WorldCommand::MigrateDirectional {
-            source_output: OutputId(o2.clone()),
-            workspace: ws_m.clone(),
             direction: "left".to_owned(),
         }),
+        Some((2000, 10)),
     );
     settle_until_clean(&mut env, &mut owner, &areas, &fulls, "B->A");
     for token in ["w1", "w2", "w3"] {

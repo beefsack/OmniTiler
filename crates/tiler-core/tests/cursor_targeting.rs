@@ -14,7 +14,7 @@ use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::geometry::Rect;
 use tiler_core::size_hints::WindowSizeHints;
 use tiler_core::world_engine::{WorldEngine, WorldOutcome};
-use tiler_core::world_report::{ScreenReport, WindowFact, WorldCommand, WorldReport};
+use tiler_core::world_report::{ScreenReport, SendSource, WindowFact, WorldCommand, WorldReport};
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
     Rect { x, y, w, h }
@@ -95,6 +95,9 @@ fn report(
         cursor_hit: None,
         default_tiled: true,
         focused_global: focused.to_owned(),
+        action_foreground: None,
+        action_cached: None,
+        action_outputs: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -909,7 +912,7 @@ fn sends_resolve_on_focused_member_output_despite_cursor() {
             "out-a",
             WorldCommand::SendNumbered {
                 window: WindowId("win-a".to_owned()),
-                output: OutputId("out-a".to_owned()),
+                source: SendSource::Explicit(OutputId("out-a".to_owned())),
                 index: 2,
                 follow: false,
             },
@@ -920,7 +923,7 @@ fn sends_resolve_on_focused_member_output_despite_cursor() {
             "out-b",
             WorldCommand::SendRelative {
                 window: WindowId("win-b1".to_owned()),
-                output: OutputId("out-b".to_owned()),
+                source: SendSource::Explicit(OutputId("out-b".to_owned())),
                 delta: 1,
                 follow: false,
             },

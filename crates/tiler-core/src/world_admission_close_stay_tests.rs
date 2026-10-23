@@ -104,6 +104,9 @@ fn report(
         cursor_hit: None,
         default_tiled: true,
         focused_global: focused.to_owned(),
+        action_foreground: None,
+        action_cached: None,
+        action_outputs: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -865,7 +868,7 @@ fn stay_hidden_mover_scope_converges_without_staged_focus_or_close() {
             Some(11),
             Some(WorldCommand::SendNumbered {
                 window: WindowId("win-b".to_owned()),
-                output: OutputId("out-a".to_owned()),
+                source: crate::world_report::SendSource::Explicit(OutputId("out-a".to_owned())),
                 index: 0,
                 follow: false,
             }),

@@ -504,16 +504,14 @@ pub(super) fn poll_workspace_cli_request(
         );
         return;
     }
-    let Some(output) = chord_output(state, areas) else {
-        state.tick += 1;
-        let tick = state.tick;
-        log_json_at(
-            &state.log_path,
-            workspace_log(state, tick, op, request.index, "cli", "unknown-output"),
-        );
-        return;
-    };
-    state.ensure_device(&output);
+    // The world route resolves every select/send target in core (selects
+    // from the cursor-first switch target, CLI sends from the mover's
+    // retained home else the migration/control action context); the
+    // adapter never preselects an output. Ensure the live topology carries wire ids
+    // first: mechanical mapping only, never policy.
+    for area in areas {
+        state.ensure_device(&area.device);
+    }
     state.tick += 1;
     let tick = state.tick;
     // Dispatch beginning for the CLI path: the clock starts before the
@@ -612,7 +610,6 @@ pub(super) fn poll_workspace_cli_request(
                     areas,
                     &mut observed,
                     &retained,
-                    &output,
                     target,
                     follow,
                     o.hwnd,

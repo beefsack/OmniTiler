@@ -25,34 +25,6 @@ pub struct WindowKey {
     pub creation: String,
 }
 
-/// Fixed workspace-scope helpers over plain key slices (world-owned
-/// topology): the same foreground/pointer/cache/ordering rule as the removed
-/// session query, without the removed session type.
-#[must_use]
-pub fn output_context_keys(
-    keys: &[String],
-    cached: Option<&str>,
-    foreground: Option<&str>,
-    pointer: Option<&str>,
-) -> Option<String> {
-    if let Some(key) = foreground
-        && keys.iter().any(|k| k == key)
-    {
-        return Some(key.to_owned());
-    }
-    if let Some(key) = pointer
-        && keys.iter().any(|k| k == key)
-    {
-        return Some(key.to_owned());
-    }
-    if let Some(key) = cached
-        && keys.iter().any(|k| k == key)
-    {
-        return Some(key.to_owned());
-    }
-    keys.first().cloned()
-}
-
 /// Same-HWND reuse set: known member keys sharing the fresh window's HWND
 /// with a different full identity. The fresh enumeration read is
 /// authoritative: a HWND hosts exactly one process, so any other key for the
@@ -451,41 +423,6 @@ mod tests {
             "hidden claims own their HWND through the ledger path"
         );
         assert!(reused_hwnd_stale(&known, &BTreeSet::new(), &key(22, "other")).is_empty());
-    }
-
-    #[test]
-    fn output_context_prefers_foreground_then_pointer_then_cache() {
-        let keys = vec!["mon-a".to_owned(), "mon-b".to_owned()];
-        assert_eq!(
-            output_context_keys(&keys, Some("mon-a"), Some("mon-b"), Some("mon-a")),
-            Some("mon-b".to_owned())
-        );
-        assert_eq!(
-            output_context_keys(&keys, Some("mon-a"), None, Some("mon-b")),
-            Some("mon-b".to_owned())
-        );
-        assert_eq!(
-            output_context_keys(&keys, Some("mon-a"), None, None),
-            Some("mon-a".to_owned())
-        );
-        assert_eq!(
-            output_context_keys(&keys, Some("mon-gone"), None, None),
-            Some("mon-a".to_owned())
-        );
-        assert!(output_context_keys(&[], Some("mon-a"), None, None).is_none());
-    }
-
-    #[test]
-    fn output_context_live_foreground_beats_live_stale_cache() {
-        // Live focus/cache disagreement: focus moved to mon-b while the
-        // last-switch cache still names the live mon-a. The cached value
-        // stays last, so migration/chord source resolution follows live
-        // focus instead of pinning the stale output.
-        let keys = vec!["mon-a".to_owned(), "mon-b".to_owned()];
-        assert_eq!(
-            output_context_keys(&keys, Some("mon-a"), Some("mon-b"), None),
-            Some("mon-b".to_owned())
-        );
     }
 
     #[test]

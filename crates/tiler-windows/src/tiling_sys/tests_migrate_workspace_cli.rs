@@ -9,8 +9,10 @@ use super::workspace_migrate_one;
 // no setters on foreign windows, no live apps. The three poll tests stop
 // before any native read (proof/malformed/owner fences); the routing test
 // drives the exact CLI-shaped intent through the production
-// `workspace_migrate_one` entry on the hermetic unknown-output path (no
-// observation, no Engine mutation).
+// `workspace_migrate_one` entry on the unresolved-source path (core
+// refuses with no live context): with no observation and no screens the
+// neutral facts are all unknown, so the direction-only command refuses
+// without Engine, focus, or view mutation.
 fn log_dir(name: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("tiler-migws-{name}-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("tmp dir");
@@ -197,10 +199,10 @@ fn migrate_workspace_owner_mismatch_consumes_with_refused() {
 fn migrate_workspace_cli_intent_routes_through_production_dispatch() {
     // The exact intent shape the poll builds (direction from the validated
     // request, down edge, consumed/announced, no foreground origin) routes
-    // through the production `workspace_migrate_one` entry. With no output
-    // token behind the device name it settles `unknown-output` with no
-    // Engine, focus, or view mutation. Fully hermetic: the token-lookup path
-    // runs before any observation or native read.
+    // through the production `workspace_migrate_one` entry. With no live
+    // topology behind the neutral facts the core-owned source resolution
+    // refuses, settling `migrate-unverified` with no Engine, focus, or
+    // view mutation.
     let dir = log_dir("route");
     let mut state = test_state();
     state.log_path = dir.join("owner.log");
@@ -223,16 +225,22 @@ fn migrate_workspace_cli_intent_routes_through_production_dispatch() {
         &[],
         &mut [],
         &[],
-        "output-1",
         &intent,
+        None,
         1,
     );
-    assert_eq!(outcome, "unknown-output");
+    assert_eq!(outcome, "migrate-unverified");
     let lines = log_lines(&dir);
-    assert_eq!(lines.len(), 1);
-    assert_eq!(lines[0]["event"], serde_json::json!("workspace-migrate"));
-    assert_eq!(lines[0]["direction"], serde_json::json!("right"));
-    assert_eq!(lines[0]["outcome"], serde_json::json!("unknown-output"));
+    assert_eq!(lines.len(), 2, "core refusal plus outcome: {lines:?}");
+    assert_eq!(lines[0]["event"], serde_json::json!("world-apply"));
+    assert_eq!(
+        lines[0]["command"],
+        serde_json::json!("migrate-directional")
+    );
+    assert_eq!(lines[0]["delivery"], serde_json::json!("rejected"));
+    assert_eq!(lines[1]["event"], serde_json::json!("workspace-migrate"));
+    assert_eq!(lines[1]["direction"], serde_json::json!("right"));
+    assert_eq!(lines[1]["outcome"], serde_json::json!("migrate-unverified"));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -453,8 +461,8 @@ fn migrate_workspace_applied_path_through_production_route() {
         &areas,
         &mut [],
         &[],
-        "DEV1",
         &intent,
+        Some((10, 10)),
         99,
     );
     assert_eq!(outcome, "migrate-applied", "healthy roster applies");
@@ -596,8 +604,8 @@ fn migrate_workspace_refusal_logs_bounded_core_reason() {
         &areas,
         &mut [],
         &[],
-        "DEV1",
         &intent,
+        Some((10, 10)),
         7,
     );
     assert_eq!(outcome, "migrate-unverified", "no neighbor must refuse");
@@ -609,6 +617,510 @@ fn migrate_workspace_refusal_logs_bounded_core_reason() {
                 && line["command"] == serde_json::json!("migrate-directional")
                 && line["delivery"] == serde_json::json!("rejected")),
         "bounded refusal row logged"
+    );
+    clear_pending_seams();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn migrate_workspace_capture_projects_neutral_action_facts() {
+    // The report carries the action context as neutral facts: the
+    // adapter-grounded foreground output plus the retained cache output,
+    // both as wire ids with unknown legs as `None`. Core policy applies
+    // the foreground/pointer/cache/order legs; the adapter never
+    // preselects.
+    use super::MonitorArea;
+    use super::world_capture::capture_world;
+    use tiler_core::directional::OutputId;
+    use tiler_core::geometry::Rect;
+    let areas = vec![
+        MonitorArea {
+            device: "DEV-A".to_owned(),
+            work: Rect {
+                x: 0,
+                y: 0,
+                w: 800,
+                h: 560,
+            },
+            full: Rect {
+                x: 0,
+                y: 0,
+                w: 800,
+                h: 600,
+            },
+        },
+        MonitorArea {
+            device: "DEV-B".to_owned(),
+            work: Rect {
+                x: 800,
+                y: 0,
+                w: 800,
+                h: 560,
+            },
+            full: Rect {
+                x: 800,
+                y: 0,
+                w: 800,
+                h: 600,
+            },
+        },
+    ];
+    let mut state = test_state();
+    state.ensure_device("DEV-A");
+    state.ensure_device("DEV-B");
+    let wire_a = state.wire_of("DEV-A").expect("wire a");
+    // Retained cache maps to wire; no foreground reads unknown. Screens
+    // preserve native areas order for the cached-live first-screen
+    // fallback; the registry follows the sorted native registry.
+    state.active_output = "DEV-A".to_owned();
+    let inputs = state.inputs();
+    let captured = capture_world(&inputs, Some(&[]), &[], &areas, 0);
+    assert_eq!(captured.action_foreground, None);
+    assert_eq!(captured.action_cached, Some(OutputId(wire_a.clone())));
+    assert_eq!(
+        captured
+            .screens
+            .iter()
+            .map(|screen| screen.output.0.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            state.wire_of("DEV-A").expect("wire a"),
+            state.wire_of("DEV-B").expect("wire b")
+        ]
+    );
+    // An unmapped cache stays unknown instead of inventing a key.
+    state.active_output = "DEV-Z".to_owned();
+    let inputs = state.inputs();
+    let captured = capture_world(&inputs, Some(&[]), &[], &areas, 0);
+    assert_eq!(captured.action_foreground, None);
+    assert_eq!(captured.action_cached, None);
+    // An empty cache stays unknown; the core falls back to output order.
+    state.active_output.clear();
+    let inputs = state.inputs();
+    let captured = capture_world(&inputs, Some(&[]), &[], &areas, 0);
+    assert_eq!(captured.action_cached, None);
+}
+
+#[test]
+fn migrate_workspace_dispatch_prefers_pointer_over_stale_cache() {
+    // Two seeded screens, one managed window each. The direction-only
+    // command carries no source: the core resolves it from the neutral
+    // report facts. A pointer on DEV-B beats a disagreeing live cache on
+    // DEV-A; a stale-but-registered cache pins for downstream refusal
+    // instead of silently retargeting; with no facts the first registry
+    // entry wins. Each case seeds a fresh engine so retained flights
+    // never leak across resolutions.
+    use super::world_tick::run_world_command;
+    use super::{
+        MonitorArea, ObservedTarget, ObservedWindow, clear_pending_seams, inject_pending_elevated,
+        inject_pending_foreground, inject_pending_observe, inject_pending_suspend,
+        inject_pending_tag,
+    };
+    use tiler_core::geometry::Rect;
+    use tiler_core::world_report::{TransferKind, WorldCommand, WorldReply};
+    struct Fixture {
+        state: super::TileLoop,
+        me: crate::model::ProcessIdentity,
+        store: crate::storage::LedgerStore,
+        dir: std::path::PathBuf,
+        observed: Vec<ObservedWindow>,
+        areas: Vec<MonitorArea>,
+        fulls: Vec<Rect>,
+        wire1: String,
+        wire2: String,
+        view_a: String,
+        view_b: String,
+    }
+    fn seeded(name: &str) -> Fixture {
+        clear_pending_seams();
+        let dir = log_dir(name);
+        let mut state = test_state();
+        state.log_path = dir.join("owner.log");
+        let me = fake_me();
+        let areas = vec![
+            MonitorArea {
+                device: "DEV1".to_owned(),
+                work: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 800,
+                    h: 560,
+                },
+                full: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 800,
+                    h: 600,
+                },
+            },
+            MonitorArea {
+                device: "DEV2".to_owned(),
+                work: Rect {
+                    x: 800,
+                    y: 0,
+                    w: 800,
+                    h: 560,
+                },
+                full: Rect {
+                    x: 800,
+                    y: 0,
+                    w: 800,
+                    h: 600,
+                },
+            },
+        ];
+        let fulls: Vec<Rect> = areas.iter().map(|a| a.full).collect();
+        state.ensure_device("DEV1");
+        state.ensure_device("DEV2");
+        let wire1 = state.wire_of("DEV1").expect("wire 1");
+        let wire2 = state.wire_of("DEV2").expect("wire 2");
+        let plain = || crate::tiling::WindowFacts {
+            visible: true,
+            minimized: false,
+            maximized: false,
+            cloaked: false,
+            elevated: false,
+            shell: false,
+            tool_window: false,
+            owned: false,
+            captionless_fullscreen: false,
+            no_activate: false,
+            dialog: false,
+        };
+        for (hwnd, token, pid, creation, _x) in [
+            (0x5101u64, "w-m1", 8101u32, "c-5101", 10),
+            (0x5102u64, "w-n1", 8102u32, "c-5102", 810),
+        ] {
+            let key = crate::native_guards::WindowKey {
+                hwnd,
+                pid,
+                creation: creation.to_owned(),
+            };
+            state.member_tokens.insert(key.clone(), token.to_owned());
+            state.member_identity.insert(
+                key.clone(),
+                crate::model::ProcessIdentity {
+                    pid,
+                    process_creation: creation.to_owned(),
+                    user_sid: me.user_sid.clone(),
+                    session_id: me.session_id,
+                    exe_path: me.exe_path.clone(),
+                },
+            );
+            state.member_tags.insert(key, format!("tag-{hwnd}"));
+            inject_pending_tag(hwnd, Some(format!("tag-{hwnd}")));
+        }
+        let observed: Vec<ObservedWindow> = [
+            (0x5101u64, "w-m1", 8101u32, "c-5101", 10),
+            (0x5102u64, "w-n1", 8102u32, "c-5102", 810),
+        ]
+        .into_iter()
+        .map(|(hwnd, token, pid, creation, x)| {
+            let rect = Rect {
+                x,
+                y: 10,
+                w: 200,
+                h: 200,
+            };
+            ObservedWindow {
+                hwnd,
+                token: token.to_owned(),
+                outer: rect,
+                visible: rect,
+                insets: crate::tiling::FrameInsets::measure(rect, rect),
+                identity: ObservedTarget {
+                    hwnd,
+                    pid,
+                    process_creation: creation.to_owned(),
+                    exe_path: me.exe_path.clone(),
+                    user_sid: me.user_sid.clone(),
+                    session_id: me.session_id,
+                    tag: format!("tag-{hwnd}"),
+                },
+                facts: plain(),
+                member_tag: Some(format!("tag-{hwnd}")),
+            }
+        })
+        .collect();
+        let store = crate::storage::LedgerStore::open(&dir.join("ledger")).expect("ledger");
+        inject_pending_observe(observed.clone(), Vec::new(), false);
+        inject_pending_suspend(Some(false));
+        inject_pending_elevated(Some(false));
+        inject_pending_foreground(Some(0));
+        let seed = super::world_tick::run_observation_tick(
+            &mut state,
+            &me,
+            &store,
+            &dir,
+            &observed,
+            &[],
+            &areas,
+            0,
+            &fulls,
+            None,
+        )
+        .expect("seed converges");
+        assert!(seed.ready, "seed converges");
+        let view_of = |reply: &WorldReply, output: &str| {
+            reply
+                .outputs
+                .iter()
+                .find(|row| row.output.0 == output)
+                .and_then(|row| row.logical_view.clone())
+                .unwrap_or_else(|| panic!("view {output}"))
+        };
+        let view_a = view_of(&seed, &wire1);
+        let view_b = view_of(&seed, &wire2);
+        Fixture {
+            state,
+            me,
+            store,
+            dir,
+            observed,
+            areas,
+            fulls,
+            wire1,
+            wire2,
+            view_a,
+            view_b,
+        }
+    }
+    fn migrated(reply: &WorldReply) -> (String, String) {
+        let transfer = reply
+            .transfers
+            .iter()
+            .find(|t| matches!(t.kind, TransferKind::Migration))
+            .expect("migration retained");
+        (
+            transfer.target_output.0.clone(),
+            transfer.target_workspace.clone(),
+        )
+    }
+    // Pointer on DEV2 beats the disagreeing live DEV1 cache: the left
+    // migration applies from the DEV2 view onto DEV1. The ordered
+    // known-output registry rides the sorted native device map.
+    let mut fx = seeded("dispatch-pointer");
+    fx.state.active_output = "DEV1".to_owned();
+    let reply = run_world_command(
+        &mut fx.state,
+        &fx.me,
+        &fx.store,
+        &fx.dir,
+        &fx.observed,
+        &[],
+        &fx.areas,
+        0,
+        &fx.fulls,
+        WorldCommand::MigrateDirectional {
+            direction: "left".to_owned(),
+        },
+        Some((810, 10)),
+    )
+    .expect("pointer resolves a live source");
+    assert_eq!(migrated(&reply), (fx.wire1.clone(), fx.view_b.clone()));
+    let _ = std::fs::remove_dir_all(&fx.dir);
+    // A stale-but-registered cache pins for downstream refusal instead
+    // of silently retargeting live state.
+    let mut fx = seeded("dispatch-stale");
+    fx.state.ensure_device("STALE-DEV");
+    fx.state.active_output = "STALE-DEV".to_owned();
+    let refused = run_world_command(
+        &mut fx.state,
+        &fx.me,
+        &fx.store,
+        &fx.dir,
+        &fx.observed,
+        &[],
+        &fx.areas,
+        0,
+        &fx.fulls,
+        WorldCommand::MigrateDirectional {
+            direction: "right".to_owned(),
+        },
+        None,
+    );
+    assert!(refused.is_none(), "stale cache refuses without retarget");
+    let _ = std::fs::remove_dir_all(&fx.dir);
+    // No facts at all falls back to registry order: the first registered
+    // output DEV1 migrates right.
+    let mut fx = seeded("dispatch-order");
+    let reply = run_world_command(
+        &mut fx.state,
+        &fx.me,
+        &fx.store,
+        &fx.dir,
+        &fx.observed,
+        &[],
+        &fx.areas,
+        0,
+        &fx.fulls,
+        WorldCommand::MigrateDirectional {
+            direction: "right".to_owned(),
+        },
+        None,
+    )
+    .expect("registry order resolves a live source");
+    assert_eq!(migrated(&reply), (fx.wire2.clone(), fx.view_a.clone()));
+    let _ = std::fs::remove_dir_all(&fx.dir);
+    clear_pending_seams();
+}
+
+#[test]
+fn migrate_workspace_tick_and_cli_share_core_resolution() {
+    // Single screen: every context leg agrees on DEV1, so the production
+    // chord route and the CLI control route must reach the same core
+    // outcome (no right neighbor) with no adapter preselection. Both
+    // refuse through the core topology gate, never the retired
+    // adapter output fence.
+    use super::{
+        MonitorArea, ObservedTarget, ObservedWindow, clear_pending_seams, inject_pending_elevated,
+        inject_pending_foreground, inject_pending_observe, inject_pending_suspend,
+        inject_pending_tag, poll_migrate_workspace_cli_request, workspace_migrate_tick,
+    };
+    use tiler_core::geometry::Rect;
+    clear_pending_seams();
+    let dir = log_dir("parity");
+    let mut state = test_state();
+    state.log_path = dir.join("owner.log");
+    let me = fake_me();
+    let areas = vec![MonitorArea {
+        device: "DEV1".to_owned(),
+        work: Rect {
+            x: 0,
+            y: 0,
+            w: 800,
+            h: 560,
+        },
+        full: Rect {
+            x: 0,
+            y: 0,
+            w: 800,
+            h: 600,
+        },
+    }];
+    let fulls: Vec<Rect> = areas.iter().map(|a| a.full).collect();
+    state.ensure_device("DEV1");
+    let rect = Rect {
+        x: 10,
+        y: 10,
+        w: 200,
+        h: 200,
+    };
+    let key = crate::native_guards::WindowKey {
+        hwnd: 0x5201,
+        pid: 8201,
+        creation: "c-5201".to_owned(),
+    };
+    state.member_tokens.insert(key.clone(), "w-1".to_owned());
+    state.member_identity.insert(
+        key.clone(),
+        crate::model::ProcessIdentity {
+            pid: 8201,
+            process_creation: "c-5201".to_owned(),
+            user_sid: me.user_sid.clone(),
+            session_id: me.session_id,
+            exe_path: me.exe_path.clone(),
+        },
+    );
+    state.member_tags.insert(key, "tag-0x5201".to_owned());
+    inject_pending_tag(0x5201, Some("tag-0x5201".to_owned()));
+    let observed = vec![ObservedWindow {
+        hwnd: 0x5201,
+        token: "w-1".to_owned(),
+        outer: rect,
+        visible: rect,
+        insets: crate::tiling::FrameInsets::measure(rect, rect),
+        identity: ObservedTarget {
+            hwnd: 0x5201,
+            pid: 8201,
+            process_creation: "c-5201".to_owned(),
+            exe_path: me.exe_path.clone(),
+            user_sid: me.user_sid.clone(),
+            session_id: me.session_id,
+            tag: "tag-0x5201".to_owned(),
+        },
+        facts: crate::tiling::WindowFacts {
+            visible: true,
+            minimized: false,
+            maximized: false,
+            cloaked: false,
+            elevated: false,
+            shell: false,
+            tool_window: false,
+            owned: false,
+            captionless_fullscreen: false,
+            no_activate: false,
+            dialog: false,
+        },
+        member_tag: Some("tag-0x5201".to_owned()),
+    }];
+    let store = crate::storage::LedgerStore::open(&dir.join("ledger")).expect("ledger");
+    inject_pending_observe(observed.clone(), Vec::new(), false);
+    inject_pending_suspend(Some(false));
+    inject_pending_elevated(Some(false));
+    inject_pending_foreground(Some(0));
+    super::world_tick::run_observation_tick(
+        &mut state,
+        &me,
+        &store,
+        &dir,
+        &observed,
+        &[],
+        &areas,
+        0,
+        &fulls,
+        None,
+    )
+    .expect("seed converges");
+    // Production route: one consumed/announced hook intent.
+    state.keyboard.takeover = true;
+    inject_pending_observe(observed.clone(), Vec::new(), false);
+    inject_pending_suspend(Some(false));
+    inject_pending_elevated(Some(false));
+    inject_pending_foreground(Some(0));
+    inject_pending_tag(0x5201, Some("tag-0x5201".to_owned()));
+    workspace_migrate_tick(
+        &mut state,
+        &me,
+        &store,
+        &dir,
+        &fulls,
+        &areas,
+        vec![crate::snapkey::QueuedWorkspaceMigrateIntent {
+            direction: tiler_core::directional::Direction::Right,
+            edge: crate::snapkey::SnapEdge::Down,
+            origin: None,
+            consumed: true,
+            announce: true,
+            tick: std::time::Instant::now(),
+        }],
+        None,
+    );
+    // Control route: the exact-owner CLI request file.
+    inject_pending_observe(observed.clone(), Vec::new(), false);
+    inject_pending_suspend(Some(false));
+    inject_pending_elevated(Some(false));
+    inject_pending_foreground(Some(0));
+    inject_pending_tag(0x5201, Some("tag-0x5201".to_owned()));
+    write_request(&dir, &owner_body(&me, me.pid));
+    poll_migrate_workspace_cli_request(&mut state, &me, &store, &dir, &fulls, &areas);
+    let lines = log_lines(&dir);
+    let tick_outcomes: Vec<&serde_json::Value> = lines
+        .iter()
+        .filter(|line| {
+            line["event"] == serde_json::json!("workspace-migrate")
+                && line["direction"] == serde_json::json!("right")
+        })
+        .collect();
+    assert_eq!(tick_outcomes.len(), 2, "both routes settle: {lines:?}");
+    for line in tick_outcomes {
+        assert_eq!(line["outcome"], serde_json::json!("migrate-unverified"));
+    }
+    assert!(
+        !lines
+            .iter()
+            .any(|line| line["outcome"] == serde_json::json!("unknown-output")),
+        "no adapter output fence remains: {lines:?}"
     );
     clear_pending_seams();
     let _ = std::fs::remove_dir_all(&dir);

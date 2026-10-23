@@ -632,6 +632,21 @@ pub struct NativeObservation {
     pub current_native: String,
 }
 
+/// Source-output intent resolved before this report changes retained homing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SendSource {
+    /// Genuinely semantic explicit output; passes through unchanged.
+    Explicit(OutputId),
+    /// Retained pre-observation home, else the full migration/control
+    /// action context (foreground, pointer, cache, known-registry order).
+    /// The CLI numbered/relative send route.
+    HomeThenAction,
+    /// Retained pre-observation home, else the cached output when live,
+    /// else the first live screen in report order. The keyboard
+    /// digit/relative send route.
+    HomeThenCachedLive,
+}
+
 /// Explicit world commands. At most one per report; observation-only
 /// reports carry none. Every variant consumes one `command_seq` (bound to
 /// the adapter incarnation/core generation high-watermark) and is retained
@@ -681,22 +696,27 @@ pub enum WorldCommand {
     /// resolution as above.
     SelectTrailing { output: Option<OutputId> },
     /// Relative send (D2): the scoped ring resolves once before transfer;
-    /// filling a resolved trailing empty is an ordinary transfer.
+    /// filling a resolved trailing empty is an ordinary transfer. The
+    /// source resolves in core from the [`SendSource`] intent: explicit
+    /// outputs pass through unchanged, implicit sources resolve from the
+    /// pre-observation retained home plus their fallback chain. Never an
+    /// adapter output decision.
     SendRelative {
         window: WindowId,
-        output: OutputId,
+        source: SendSource,
         delta: i32,
         follow: bool,
     },
-    /// Numbered send: positional `0..=9` over the scoped send ring for
-    /// `output` (`0` is the trailing path: reuse the live trailing empty
-    /// or create the trailing workspace immediately, exactly like
+    /// Numbered send: positional `0..=9` over the scoped send ring for the
+    /// resolved source (`0` is the trailing path: reuse the live trailing
+    /// empty or create the trailing workspace immediately, exactly like
     /// lifecycle). Commits an ordinary transfer; follow additionally selects
     /// the same-output target view while `follow=false` stays never move
-    /// any view.
+    /// any view. Source resolution as above; explicit outputs bypass
+    /// unchanged.
     SendNumbered {
         window: WindowId,
-        output: OutputId,
+        source: SendSource,
         index: u8,
         follow: bool,
     },
@@ -748,16 +768,14 @@ pub enum WorldCommand {
         follow: bool,
     },
     /// Direction-only whole-workspace migration (core-owned topology): the
-    /// adapter names the source output, its current workspace and the
-    /// direction only, never the target. Core resolves the strict target
-    /// and runs the world migration path. Explicit source context is
-    /// required even with no active window. No resolvable target refuses
-    /// without mutation.
-    MigrateDirectional {
-        source_output: OutputId,
-        workspace: String,
-        direction: String,
-    },
+    /// adapter names the direction only, never the source or the target.
+    /// Core resolves the action source from the neutral report facts
+    /// (foreground, pointer, cache, then known-registry order) plus the
+    /// source's current logical view, then resolves the strict target and
+    /// runs the world migration path. No resolvable source or target
+    /// refuses without mutation. Genuine explicit migrations route
+    /// [`WorldCommand::MigrateWorkspace`] with both scopes named.
+    MigrateDirectional { direction: String },
     /// Existing operation route: one [`CoreCommand`] executed against the
     /// homing (or first readable) domain through the full [`CoreEvent`].
     /// `SendToWorkspace`/`SendToOutput` retain a window transfer exactly
@@ -881,6 +899,29 @@ pub struct WorldReport {
     /// foreground lifetime across all outputs. Drives focus-conditioned
     /// policy (hotplug survivor/return views); never focus proof.
     pub focused_global: String,
+    /// Neutral migration/control action foreground: the adapter-grounded
+    /// output of the live foreground window's frame (rect grounding, same
+    /// rule as observed affinity, mapped to wire), `None` without a
+    /// readable foreground frame or on an unmapped device. Core filters it
+    /// to the known registry and applies it as the first action-context
+    /// leg (foreground, pointer, cache, registry order); never focus proof
+    /// and never an adapter output decision.
+    pub action_foreground: Option<OutputId>,
+    /// Neutral migration/control action cache: the adapter's cached output
+    /// context (wire id, `None` when empty or unmapped). Core applies it as
+    /// the third action-context leg after foreground and pointer; a mapped
+    /// but removed entry still selects from the retained registry and
+    /// refuses downstream instead of retargeting. Never an adapter output
+    /// decision.
+    pub action_cached: Option<OutputId>,
+    /// Neutral ordered known-output registry for the migration/control
+    /// action context: every native registry key the adapter remembers
+    /// (including disconnected mappings), sorted in native registry order
+    /// and translated to wire. The core filters every action-context leg
+    /// through this vector with first-entry fallback, exactly the retired
+    /// platform selection universe; the adapter never preselects. Empty
+    /// only when the adapter knows no output at all.
+    pub action_outputs: Vec<OutputId>,
     /// Saved default tiling seed (legacy `defaultTiled` parity): seeds
     /// newly created logical workspaces (bootstrap seeds all; live changes
     /// seed only subsequently created workspaces). Manual per-workspace
@@ -1260,6 +1301,28 @@ pub fn report_digest(report: &WorldReport) -> u64 {
     flag(&mut hash, report.equal_workspace_count);
     feed(&mut hash, &report.focused_global);
     sep(&mut hash);
+    feed(
+        &mut hash,
+        &report
+            .action_foreground
+            .as_ref()
+            .map(|out| out.0.clone())
+            .unwrap_or_default(),
+    );
+    sep(&mut hash);
+    feed(
+        &mut hash,
+        &report
+            .action_cached
+            .as_ref()
+            .map(|out| out.0.clone())
+            .unwrap_or_default(),
+    );
+    sep(&mut hash);
+    for output in &report.action_outputs {
+        feed(&mut hash, &output.0);
+        sep(&mut hash);
+    }
     flag(&mut hash, report.gesture_barrier);
     if let Some(gesture) = report.gesture.as_ref() {
         feed(&mut hash, &gesture.window.0);
@@ -1612,6 +1675,30 @@ pub fn validate_report_reason(report: &WorldReport) -> Option<&'static str> {
     if !report.host_owned_workspace_domains && !report.native.is_empty() {
         return Some("native-without-capability");
     }
+    // Action-context facts are neutral adapter observations: opaque ids
+    // only here. Registry membership filters at use (a mapped but
+    // removed entry still selects and refuses downstream instead of
+    // retargeting), so validation never retargets. The registry itself
+    // carries opaque unique ids in adapter registry order.
+    for output in [&report.action_foreground, &report.action_cached]
+        .into_iter()
+        .flatten()
+    {
+        if !is_opaque_id(&output.0) {
+            return Some("action-output-invalid");
+        }
+    }
+    {
+        let mut seen_action_outputs = BTreeSet::new();
+        for output in &report.action_outputs {
+            if !is_opaque_id(&output.0) {
+                return Some("action-outputs-invalid");
+            }
+            if !seen_action_outputs.insert(output.0.clone()) {
+                return Some("duplicate-action-output");
+            }
+        }
+    }
     if let Some(gesture) = report.gesture.as_ref() {
         if !is_opaque_id(&gesture.window.0) {
             return Some("gesture-window-invalid");
@@ -1877,6 +1964,17 @@ pub fn validate_report_reason(report: &WorldReport) -> Option<&'static str> {
     None
 }
 
+/// Validate one send source: explicit outputs carry opaque ids, implicit
+/// variants are always well-formed (resolution refuses unknown sources
+/// without inventing focus).
+#[must_use]
+pub fn valid_send_source(source: &SendSource) -> bool {
+    match source {
+        SendSource::Explicit(output) => is_opaque_id(&output.0),
+        SendSource::HomeThenAction | SendSource::HomeThenCachedLive => true,
+    }
+}
+
 /// Validate one world command: every carried id is opaque, every direction
 /// token is in a closed vocabulary, every index/delta is in range, and
 /// every rect/coordinate is within carried bounds.
@@ -1912,16 +2010,16 @@ pub fn valid_command(command: &WorldCommand) -> bool {
         }
         WorldCommand::SendRelative {
             window,
-            output,
+            source,
             delta,
             ..
-        } => is_opaque_id(&window.0) && is_opaque_id(&output.0) && (*delta == -1 || *delta == 1),
+        } => is_opaque_id(&window.0) && valid_send_source(source) && (*delta == -1 || *delta == 1),
         WorldCommand::SendNumbered {
             window,
-            output,
+            source,
             index,
             ..
-        } => is_opaque_id(&window.0) && is_opaque_id(&output.0) && *index <= 9,
+        } => is_opaque_id(&window.0) && valid_send_source(source) && *index <= 9,
         WorldCommand::SetWorkspaceTiling {
             output, workspace, ..
         } => is_opaque_id(&output.0) && is_opaque_id(workspace),
@@ -1944,15 +2042,7 @@ pub fn valid_command(command: &WorldCommand) -> bool {
         WorldCommand::SendDirectional {
             window, direction, ..
         } => is_opaque_id(&window.0) && DIRECTIONS.contains(&direction.as_str()),
-        WorldCommand::MigrateDirectional {
-            source_output,
-            workspace,
-            direction,
-        } => {
-            is_opaque_id(&source_output.0)
-                && is_opaque_id(workspace)
-                && DIRECTIONS.contains(&direction.as_str())
-        }
+        WorldCommand::MigrateDirectional { direction } => DIRECTIONS.contains(&direction.as_str()),
         WorldCommand::Operation(command) => valid_operation(command),
     }
 }

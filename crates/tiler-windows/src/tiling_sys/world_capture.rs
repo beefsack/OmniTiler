@@ -177,6 +177,10 @@ pub(super) struct OwnerInputs<'a> {
     /// Mechanical device-to-wire-output map (native device keys to opaque
     /// `oN` ids). Native-wire ids only, never rings/views/tiling/history.
     pub output_tokens: &'a HashMap<String, String>,
+    /// Adapter-retained cached output context as a neutral device fact
+    /// (empty when none): the report maps it to wire for the core-owned
+    /// migration/control action legs. Never an adapter output decision.
+    pub active_output: &'a str,
     /// Adapter-retained last applied logical homing per Engine token
     /// (from the last applied reply rows). Receipts prove this commitment
     /// with fresh evidence; the core remains the sole homing authority.
@@ -216,6 +220,7 @@ impl TileLoop {
         scope: &'a [String],
         settings_live: &'a Option<LiveSettings>,
         output_tokens: &'a HashMap<String, String>,
+        active_output: &'a str,
         applied_homing: &'a HashMap<String, (String, String)>,
         applied_views: &'a HashMap<String, String>,
         inner_gap: i32,
@@ -246,6 +251,7 @@ impl TileLoop {
             scope,
             settings_live,
             output_tokens,
+            active_output,
             applied_homing,
             applied_views,
             inner_gap,
@@ -284,6 +290,7 @@ impl TileLoop {
             scope: &self.scope,
             settings_live: &self.settings_live,
             output_tokens: &self.output_tokens,
+            active_output: self.active_output.as_str(),
             applied_homing: &self.applied_homing,
             applied_views: &self.applied_views,
             inner_gap: self.inner_gap,
@@ -431,6 +438,26 @@ pub(super) struct CapturedWorld {
     /// `None` on observation-only ticks.
     pub(super) gesture: Option<tiler_core::gesture::GestureIngress>,
     pub(super) focused_global: String,
+    /// Neutral migration/control action foreground: the live foreground
+    /// window's frame grounded to a live device and mapped to wire
+    /// (`None` without a readable foreground frame or on an unmapped
+    /// device). Same rectangle rule as observed affinity, including
+    /// unmanaged windows; the core filters it to the known registry and
+    /// applies it as the first action-context leg. Never an adapter
+    /// decision.
+    pub(super) action_foreground: Option<OutputId>,
+    /// Neutral migration/control action cache: the adapter-retained cached
+    /// output context mapped to wire (`None` when empty or unmapped). The
+    /// core filters it to the known registry like every other leg and
+    /// applies it as the third action-context leg; a mapped-but-removed
+    /// entry still selects and refuses downstream. Never an adapter
+    /// decision.
+    pub(super) action_cached: Option<OutputId>,
+    /// Neutral ordered known-output registry for the migration/control
+    /// action context: sorted native registry keys (including
+    /// disconnected mappings, never reordered) translated to wire. Empty
+    /// only when the adapter knows no output at all.
+    pub(super) action_outputs: Vec<OutputId>,
     pub(super) default_tiled: bool,
     pub(super) fixed_size_predicate: tiler_core::size_hints::FixedSizePredicate,
     pub(super) migration_source_refill: tiler_core::output_selection::MigrationSourceRefill,
@@ -1279,6 +1306,41 @@ pub(super) fn capture_world(
         areas,
         &mut windows,
     );
+    // Neutral migration/control action context (core-owned policy):
+    // the live foreground frame grounded to a live device and mapped to
+    // wire, the adapter-retained cache mapped to wire, and the ordered
+    // known-output registry (sorted native keys, including disconnected
+    // mappings) translated to wire. Same rectangle rule as observed
+    // affinity, including unmanaged windows; unreadable frames and
+    // unmapped devices stay unknown. The core filters every leg to the
+    // registry with first-entry fallback and refuses when nothing
+    // resolves. Never an adapter decision.
+    let action_foreground = if foreground_hwnd == 0 {
+        None
+    } else {
+        crate::ffi::window_rect(foreground_hwnd)
+            .and_then(rect_from_win)
+            .map(|rect| super::directional_resolution::output_for_rect(areas, &rect))
+            .and_then(|device| state.output_tokens.get(&device).cloned())
+            .map(OutputId)
+    };
+    let action_cached = if state.active_output.is_empty() {
+        None
+    } else {
+        state
+            .output_tokens
+            .get(state.active_output)
+            .cloned()
+            .map(OutputId)
+    };
+    let mut known: Vec<&String> = state.output_tokens.keys().collect();
+    known.sort();
+    let action_outputs: Vec<OutputId> = known
+        .into_iter()
+        .filter_map(|device| state.output_tokens.get(device))
+        .cloned()
+        .map(OutputId)
+        .collect();
     CapturedWorld {
         screens,
         windows,
@@ -1296,6 +1358,9 @@ pub(super) fn capture_world(
             .find(|w| w.hwnd == foreground_hwnd)
             .map(|w| w.token.clone())
             .unwrap_or_default(),
+        action_foreground,
+        action_cached,
+        action_outputs,
         default_tiled: state
             .settings_live
             .as_ref()

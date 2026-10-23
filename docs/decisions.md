@@ -2672,6 +2672,21 @@ platform API behavior.
   The off-screen overlap fallback is corrected without changing command targets
   or the parked float physical-output versus membership-home contract.
   [Audit and evidence](changes/core-world-model-rearchitecture.md#stage-5-output-grounding-and-dead-fence-audit-2026-10-23).
+- Action-context ownership, 2026-10-24: core resolves directional migration
+  from normalized foreground output, pointer output, cached output, then the
+  ordered known-output registry. Every leg filters through that registry,
+  which includes remembered disconnected mappings; a stale selected source
+  refuses downstream rather than silently retargeting. Registry order is a
+  reported fact, not primary-output preference. Migration freezes the source
+  and its retained current view before incorporating this report's changes.
+  Numbered/relative send source intents likewise freeze the pre-observation
+  retained home. Its existing fallback remains explicit in the contract:
+  action context for controls, live cache then report-screen order for
+  keyboard sends. Genuine explicit outputs remain explicit. This preserves
+  current behavior without resolving the parked send-policy mismatch.
+  Windows captures those facts and emits intents; superseded platform
+  selectors and old directional-migration payloads are removed.
+  [Acceptance and limits](changes/core-world-model-rearchitecture.md#stage-5-action-context-ownership-2026-10-24).
 - User approved 2026-10-20: platforms report normalized classification facts:
   window type/role, owner/parent, modal, resizable and minimum/maximum size,
   fullscreen, cannot-be-controlled (for example elevated/protected), and app

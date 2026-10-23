@@ -30,7 +30,10 @@ fn request_json(
          \"views\":[{{\"out\":\"out\",\"view\":\"\"}}],\"closed\":[],\"mode\":\"per-output-local\",
          \"hostOwned\":false,\"equalCount\":false,\"native\":[],\
          \"predicate\":\"both-axes-fixed\",\"refill\":\"last-remaining-workspace\",\
-         \"switchTarget\":\"cursor-output\",\"freshPlacement\":\"cursor-output-last-focused\",\"cursor\":null,\"focusFollowsCursor\":false,\"cursorWarp\":false,\"defaultTiled\":true,\"focused\":\"\",\
+         \"switchTarget\":\"cursor-output\",\"freshPlacement\":\"cursor-output-last-focused\",\
+         \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
+         \"actionOutputs\":[\"out\"],\"focusFollowsCursor\":false,\"cursorWarp\":false,\
+         \"defaultTiled\":true,\"focused\":\"\",\
          \"complete\":true,\"gesture\":false,\"feedback\":[]}}"
     )
 }
@@ -229,11 +232,11 @@ fn all_commands_decode_typed_and_refuse_bad_vocab() {
         ("select-trailing", serde_json::json!({"out": "o"})),
         (
             "send-relative",
-            serde_json::json!({"win": "w", "out": "o", "delta": 1, "follow": false}),
+            serde_json::json!({"win": "w", "source": {"explicit": "o"}, "delta": 1, "follow": false}),
         ),
         (
             "send-numbered",
-            serde_json::json!({"win": "w", "out": "o", "index": 0, "follow": true}),
+            serde_json::json!({"win": "w", "source": {"explicit": "o"}, "index": 0, "follow": true}),
         ),
         (
             "set-workspace-tiling",
@@ -257,7 +260,7 @@ fn all_commands_decode_typed_and_refuse_bad_vocab() {
         ),
         (
             "migrate-directional",
-            serde_json::json!({"from": "a", "ws": "ws-1", "direction": "right"}),
+            serde_json::json!({"direction": "right"}),
         ),
     ] {
         let mut map = serde_json::Map::new();
@@ -274,7 +277,7 @@ fn all_commands_decode_typed_and_refuse_bad_vocab() {
     assert!(decode_request(&with_command(&bad_numbered, "7")).is_err());
     let bad_relative = serde_json::json!({"op": "select-relative", "out": "o", "delta": 2});
     assert!(decode_request(&with_command(&bad_relative, "7")).is_err());
-    let bad_send_numbered = serde_json::json!({"op": "send-numbered", "win": "w", "out": "o", "index": 10, "follow": false});
+    let bad_send_numbered = serde_json::json!({"op": "send-numbered", "win": "w", "source": {"explicit": "o"}, "index": 10, "follow": false});
     assert!(decode_request(&with_command(&bad_send_numbered, "7")).is_err());
     let bad_migrate =
         serde_json::json!({"op": "migrate-workspace", "from": "a", "to": "a", "ws": "ws-1"});
@@ -313,6 +316,137 @@ fn all_commands_decode_typed_and_refuse_bad_vocab() {
         };
         assert_eq!(resolved, None, "{op}");
     }
+    // A direction-only migration carries no source: the core resolves
+    // the action source and its current view from the neutral report
+    // facts, never from an adapter-preselected output.
+    let migrate = serde_json::json!({"op": "migrate-directional", "direction": "right"});
+    let report = decode_request(&with_command(&migrate, "7")).expect("direction decodes");
+    match report.command {
+        Some(C::MigrateDirectional { direction }) => {
+            assert_eq!(direction, "right");
+        }
+        _ => panic!("migrate-directional decoded"),
+    }
+    // Legacy source/workspace legs are deleted and refuse as unknown.
+    let legacy_migrate = serde_json::json!({"op": "migrate-directional", "from": "a", "ws": "ws-1", "direction": "right"});
+    assert!(decode_request(&with_command(&legacy_migrate, "7")).is_err());
+    // A send source carries an explicit output or a named implicit
+    // fallback; legacy string/null `out` shapes refuse as malformed.
+    use tiler_core::world_report::SendSource as S;
+    for (op, extra, expect_implicit) in [
+        (
+            "send-numbered",
+            serde_json::json!({"win": "w", "source": {"explicit": "o"}, "index": 9, "follow": false}),
+            None,
+        ),
+        (
+            "send-numbered",
+            serde_json::json!({"win": "w", "source": {"implicit": "home-then-action"}, "index": 9, "follow": false}),
+            Some("home-then-action"),
+        ),
+        (
+            "send-relative",
+            serde_json::json!({"win": "w", "source": {"implicit": "home-then-cached-live"}, "delta": -1, "follow": true}),
+            Some("home-then-cached-live"),
+        ),
+    ] {
+        let mut map = serde_json::Map::new();
+        map.insert("op".to_owned(), serde_json::Value::String(op.to_owned()));
+        for (key, value) in extra.as_object().expect("object") {
+            map.insert(key.clone(), value.clone());
+        }
+        let command = serde_json::Value::Object(map);
+        let report = decode_request(&with_command(&command, "7")).expect("source decodes");
+        match (report.command, expect_implicit) {
+            (
+                Some(C::SendNumbered {
+                    source: S::Explicit(out),
+                    ..
+                })
+                | Some(C::SendRelative {
+                    source: S::Explicit(out),
+                    ..
+                }),
+                None,
+            ) => assert_eq!(out.0, "o", "{op}"),
+            (
+                Some(C::SendNumbered {
+                    source: S::HomeThenAction,
+                    ..
+                })
+                | Some(C::SendRelative {
+                    source: S::HomeThenAction,
+                    ..
+                }),
+                Some("home-then-action"),
+            ) => {}
+            (
+                Some(C::SendNumbered {
+                    source: S::HomeThenCachedLive,
+                    ..
+                })
+                | Some(C::SendRelative {
+                    source: S::HomeThenCachedLive,
+                    ..
+                }),
+                Some("home-then-cached-live"),
+            ) => {}
+            (command, _) => panic!("{op} decoded {command:?}"),
+        }
+    }
+    for bad in [
+        serde_json::json!({"op": "send-numbered", "win": "w", "source": "o", "index": 9, "follow": false}),
+        serde_json::json!({"op": "send-numbered", "win": "w", "source": null, "index": 9, "follow": false}),
+        serde_json::json!({"op": "send-numbered", "win": "w", "source": {"explicit": ""}, "index": 9, "follow": false}),
+        serde_json::json!({"op": "send-numbered", "win": "w", "source": {"implicit": "bogus"}, "index": 9, "follow": false}),
+        serde_json::json!({"op": "send-numbered", "win": "w", "source": {"explicit": "o", "implicit": "home-then-action"}, "index": 9, "follow": false}),
+        serde_json::json!({"op": "send-numbered", "win": "w", "index": 9, "follow": false}),
+    ] {
+        assert!(decode_request(&with_command(&bad, "7")).is_err());
+    }
+}
+
+#[test]
+fn action_context_facts_decode_strictly() {
+    // The envelope carries the required neutral facts: null legs read as
+    // unknown, the ordered registry rides in adapter order.
+    let report = decode_request(&one_window_request()).expect("decodes");
+    assert_eq!(report.action_foreground, None);
+    assert_eq!(report.action_cached, None);
+    assert_eq!(
+        report.action_outputs,
+        vec![tiler_core::directional::OutputId("out".to_owned())]
+    );
+    // Carried outputs decode to wire ids.
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["actionForeground"] = serde_json::Value::String("out".to_owned());
+    value["actionCached"] = serde_json::Value::String("out".to_owned());
+    value["actionOutputs"] = serde_json::json!(["out", "out-b"]);
+    let report = decode_request(&value.to_string()).expect("facts decode");
+    assert_eq!(
+        report.action_foreground.map(|out| out.0),
+        Some("out".to_owned())
+    );
+    assert_eq!(
+        report.action_cached.map(|out| out.0),
+        Some("out".to_owned())
+    );
+    assert_eq!(report.action_outputs.len(), 2);
+    // Empty strings refuse: unknown rides `null`, never a blank id.
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["actionForeground"] = serde_json::Value::String(String::new());
+    assert!(decode_request(&value.to_string()).is_err());
+    // Missing keys refuse: the contract requires the neutral facts.
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value
+        .as_object_mut()
+        .expect("object")
+        .remove("actionOutputs");
+    assert!(decode_request(&value.to_string()).is_err());
+    // Duplicate registry entries refuse.
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["actionOutputs"] = serde_json::json!(["out", "out"]);
+    assert!(decode_request(&value.to_string()).is_err());
 }
 
 fn with_command(command: &serde_json::Value, seq: &str) -> String {
@@ -481,6 +615,18 @@ fn request_estimate_bounds_actual_wire_bytes() {
     let report = decode_request(&empty).expect("empty decodes");
     let estimate = tiler_core::world_report::report_estimate(&report);
     assert!(estimate >= empty.len());
+    // Carried action-context facts stay bounded too.
+    let mut full: serde_json::Value = serde_json::from_str(&compact).expect("valid");
+    full["actionForeground"] = serde_json::Value::String("out".to_owned());
+    full["actionCached"] = serde_json::Value::String("out".to_owned());
+    let wire = full.to_string();
+    let report = decode_request(&wire).expect("facts decode");
+    let estimate = tiler_core::world_report::report_estimate(&report);
+    assert!(
+        estimate >= wire.len(),
+        "estimate {estimate} bounds wire {}",
+        wire.len()
+    );
 }
 
 #[test]

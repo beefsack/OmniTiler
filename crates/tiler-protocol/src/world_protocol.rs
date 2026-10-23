@@ -31,6 +31,7 @@
 //!  hostOwned:bool, equalCount:bool, native, predicate, refill,
 //!  defaultTiled:bool, focused:""|id, complete:bool, gesture:bool,
 //!  switchTarget, freshPlacement, cursor:[x,y]|null,
+//!  actionForeground:id|null, actionCached:id|null, actionOutputs:[id...],
 //!  focusFollowsCursor:bool, cursorWarp:bool, feedback}
 //! (plus optional tolerant D2/D3 settings: anchorFallback, noSpaceResult;
 //!  missing or invalid values backfill the defaults)
@@ -58,6 +59,14 @@
 //!   normalized cursor-hit managed lifetime: the exact managed window under
 //!   the cursor at observation time, resolved natively. Absent, foreign, or
 //!   hidden hits report null; the core never focuses without one.
+//! actionForeground/actionCached: id|null (required) - the neutral
+//!   migration/control action context: the adapter-grounded foreground
+//!   output and the adapter-retained cache output (`None` when unknown).
+//!   The core applies foreground, pointer, cache, then known-registry
+//!   order; `migrate-directional` carries no source (direction only).
+//! actionOutputs: [id...] (required, possibly empty) - the neutral
+//!   ordered known-output registry in adapter registry order. Every
+//!   action-context leg filters through it with first-entry fallback.
 //! focusFollowsCursor/cursorWarp: bool (stage-4b core-actuated settings)
 //! feedback[]: {op, kind:transfer|view|creation|effect|property,
 //!              outcome:unattempted|possibly-executed|refused-proven|
@@ -479,6 +488,44 @@ fn opt_id_or_null(
             Ok(Some(text.to_owned()))
         }
         Some(_) => Err(unknown_value()),
+    }
+}
+
+/// Typed send source: `{"explicit": id}` names a genuinely semantic
+/// explicit output; `{"implicit": "home-then-action" |
+/// "home-then-cached-live"}` selects the core-owned fallback chain. Any
+/// other shape is malformed; non-opaque ids and unknown tokens are
+/// unknown values. Legacy string/null `out` payloads refuse here (no
+/// compatibility route).
+fn decode_send_source(
+    map: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Result<tiler_core::world_report::SendSource> {
+    use tiler_core::world_report::SendSource;
+    let inner = as_object(map.get(key).ok_or_else(malformed)?)?;
+    if let Some(value) = inner.get("explicit") {
+        check_keys(inner, &["explicit"])?;
+        match value {
+            serde_json::Value::String(text) => {
+                if !is_opaque_id(text) {
+                    return Err(unknown_value());
+                }
+                Ok(SendSource::Explicit(OutputId(text.clone())))
+            }
+            _ => Err(unknown_value()),
+        }
+    } else if let Some(value) = inner.get("implicit") {
+        check_keys(inner, &["implicit"])?;
+        match value {
+            serde_json::Value::String(token) => match token.as_str() {
+                "home-then-action" => Ok(SendSource::HomeThenAction),
+                "home-then-cached-live" => Ok(SendSource::HomeThenCachedLive),
+                _ => Err(unknown_value()),
+            },
+            _ => Err(unknown_value()),
+        }
+    } else {
+        Err(unknown_value())
     }
 }
 
@@ -1192,7 +1239,7 @@ fn decode_command(value: &serde_json::Value) -> Result<WorldCommand> {
             Ok(WorldCommand::SelectTrailing { output })
         }
         "send-relative" => {
-            check_keys(map, &["op", "win", "out", "delta", "follow"])?;
+            check_keys(map, &["op", "win", "source", "delta", "follow"])?;
             let delta = map
                 .get("delta")
                 .and_then(serde_json::Value::as_i64)
@@ -1201,15 +1248,18 @@ fn decode_command(value: &serde_json::Value) -> Result<WorldCommand> {
             if delta != -1 && delta != 1 {
                 return Err(unknown_value());
             }
+            // The source selects the pre-observation retained home or an
+            // explicit output; only the two named implicit fallbacks exist.
+            let source = decode_send_source(map, "source")?;
             Ok(WorldCommand::SendRelative {
                 window: WindowId(req_id(map, "win")?),
-                output: OutputId(req_id(map, "out")?),
+                source,
                 delta,
                 follow: req_bool(map, "follow")?,
             })
         }
         "send-numbered" => {
-            check_keys(map, &["op", "win", "out", "index", "follow"])?;
+            check_keys(map, &["op", "win", "source", "index", "follow"])?;
             let index = map
                 .get("index")
                 .and_then(serde_json::Value::as_u64)
@@ -1219,9 +1269,10 @@ fn decode_command(value: &serde_json::Value) -> Result<WorldCommand> {
             if index > 9 {
                 return Err(unknown_value());
             }
+            let source = decode_send_source(map, "source")?;
             Ok(WorldCommand::SendNumbered {
                 window: WindowId(req_id(map, "win")?),
-                output: OutputId(req_id(map, "out")?),
+                source,
                 index,
                 follow: req_bool(map, "follow")?,
             })
@@ -1274,10 +1325,11 @@ fn decode_command(value: &serde_json::Value) -> Result<WorldCommand> {
             })
         }
         "migrate-directional" => {
-            check_keys(map, &["op", "from", "ws", "direction"])?;
+            // Direction only: the core resolves the action source and its
+            // current view from the neutral report facts. Legacy `from`/`ws`
+            // keys are deleted and refuse as unknown fields.
+            check_keys(map, &["op", "direction"])?;
             Ok(WorldCommand::MigrateDirectional {
-                source_output: OutputId(req_id(map, "from")?),
-                workspace: req_id(map, "ws")?,
                 direction: parse_direction_token(req_str(map, "direction")?)?,
             })
         }
@@ -1333,6 +1385,9 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
             "switchTarget",
             "freshPlacement",
             "cursor",
+            "actionForeground",
+            "actionCached",
+            "actionOutputs",
             "focusFollowsCursor",
             "cursorWarp",
         ],
@@ -1520,6 +1575,49 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
         focus_follows_cursor: req_bool(map, "focusFollowsCursor")?,
         cursor_warp: req_bool(map, "cursorWarp")?,
         default_tiled: req_bool(map, "defaultTiled")?,
+        action_foreground: match map.get("actionForeground") {
+            // Required neutral fact: `null` when the foreground output is
+            // unknown; a carried id must be opaque (empty refuses).
+            Some(serde_json::Value::Null) => None,
+            Some(serde_json::Value::String(text)) => {
+                if !is_opaque_id(text) {
+                    return Err(unknown_value());
+                }
+                Some(OutputId(text.clone()))
+            }
+            _ => return Err(malformed()),
+        },
+        action_cached: match map.get("actionCached") {
+            Some(serde_json::Value::Null) => None,
+            Some(serde_json::Value::String(text)) => {
+                if !is_opaque_id(text) {
+                    return Err(unknown_value());
+                }
+                Some(OutputId(text.clone()))
+            }
+            _ => return Err(malformed()),
+        },
+        action_outputs: match map.get("actionOutputs") {
+            // Required ordered known-output registry (possibly empty):
+            // every entry must be an opaque id; duplicates refuse in the
+            // core gate below.
+            Some(serde_json::Value::Array(items)) => {
+                let mut outputs = Vec::with_capacity(items.len());
+                for item in items {
+                    match item {
+                        serde_json::Value::String(text) => {
+                            if !is_opaque_id(text) {
+                                return Err(unknown_value());
+                            }
+                            outputs.push(OutputId(text.clone()));
+                        }
+                        _ => return Err(malformed()),
+                    }
+                }
+                outputs
+            }
+            _ => return Err(malformed()),
+        },
         focused_global: {
             let text = req_str(map, "focused")?;
             if !text.is_empty() && !is_opaque_id(text) {

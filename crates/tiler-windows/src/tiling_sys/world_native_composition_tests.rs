@@ -12,6 +12,7 @@
 
 use super::*;
 use tiler_core::world_report::FrameSetter;
+use tiler_core::world_report::SendSource;
 
 #[test]
 fn bootstrap_first_binding_proves_homing_and_views_then_settles() {
@@ -219,7 +220,7 @@ fn singleton_follow_preproven_settles_without_attempts() {
         mover.hwnd,
         Some(WorldCommand::SendNumbered {
             window: WindowId("w1".to_owned()),
-            output: OutputId(out.clone()),
+            source: SendSource::Explicit(OutputId(out.clone())),
             index,
             follow: true,
         }),
@@ -332,7 +333,7 @@ fn same_output_numbered_send_follow_selects_proves_and_settles() {
         mover.hwnd,
         Some(WorldCommand::SendNumbered {
             window: WindowId("w1".to_owned()),
-            output: OutputId(out.clone()),
+            source: SendSource::Explicit(OutputId(out.clone())),
             index,
             follow: true,
         }),
@@ -482,7 +483,7 @@ fn same_output_follow_lying_frame_setter_holds_without_applied() {
         mover.hwnd,
         Some(WorldCommand::SendNumbered {
             window: WindowId("w1".to_owned()),
-            output: OutputId(out.clone()),
+            source: SendSource::Explicit(OutputId(out.clone())),
             index,
             follow: true,
         }),
@@ -641,7 +642,7 @@ fn same_output_follow_partial_sibling_hide_holds_view_unproven() {
         mover.hwnd,
         Some(WorldCommand::SendNumbered {
             window: WindowId("w1".to_owned()),
-            output: OutputId(out.clone()),
+            source: SendSource::Explicit(OutputId(out.clone())),
             index,
             follow: true,
         }),
@@ -775,7 +776,7 @@ fn same_output_follow_hook_busy_stops_then_recovers_without_replay() {
         mover.hwnd,
         Some(WorldCommand::SendNumbered {
             window: WindowId("w1".to_owned()),
-            output: OutputId(out.clone()),
+            source: SendSource::Explicit(OutputId(out.clone())),
             index,
             follow: true,
         }),
@@ -922,7 +923,7 @@ fn same_output_follow_iconic_mover_proves_homing_without_writes_or_focus() {
         mover.hwnd,
         Some(WorldCommand::SendNumbered {
             window: WindowId("w1".to_owned()),
-            output: OutputId(out.clone()),
+            source: SendSource::Explicit(OutputId(out.clone())),
             index,
             follow: true,
         }),
@@ -1197,7 +1198,7 @@ fn composed_follow_selectback_stay_hides_and_settles() {
         n1.hwnd,
         Some(WorldCommand::SendNumbered {
             window: WindowId("w1".to_owned()),
-            output: OutputId(out.clone()),
+            source: SendSource::Explicit(OutputId(out.clone())),
             index: 0,
             follow: true,
         }),
@@ -1319,7 +1320,7 @@ fn composed_follow_selectback_stay_hides_and_settles() {
         n2.hwnd,
         Some(WorldCommand::SendNumbered {
             window: WindowId("w2".to_owned()),
-            output: OutputId(out.clone()),
+            source: SendSource::Explicit(OutputId(out.clone())),
             index: 0,
             follow: false,
         }),
@@ -1454,7 +1455,7 @@ fn composed_stay_return_select_reveals_hidden_and_settles() {
         n1.hwnd,
         Some(WorldCommand::SendNumbered {
             window: WindowId("w1".to_owned()),
-            output: OutputId(out.clone()),
+            source: SendSource::Explicit(OutputId(out.clone())),
             index: 0,
             follow: true,
         }),
@@ -1539,7 +1540,7 @@ fn composed_stay_return_select_reveals_hidden_and_settles() {
         n2.hwnd,
         Some(WorldCommand::SendNumbered {
             window: WindowId("w2".to_owned()),
-            output: OutputId(out.clone()),
+            source: SendSource::Explicit(OutputId(out.clone())),
             index: 0,
             follow: false,
         }),
@@ -1643,7 +1644,7 @@ fn composed_stay_return_select_reveals_hidden_and_settles() {
         n1.hwnd,
         Some(WorldCommand::SendNumbered {
             window: WindowId("w1".to_owned()),
-            output: OutputId(out.clone()),
+            source: SendSource::Explicit(OutputId(out.clone())),
             index: home_index,
             follow: true,
         }),

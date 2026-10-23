@@ -108,6 +108,9 @@ fn report(
         cursor_hit: None,
         default_tiled: true,
         focused_global: focused.to_owned(),
+        action_foreground: None,
+        action_cached: None,
+        action_outputs: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -1136,10 +1139,13 @@ fn refused_and_held_sends_emit_no_focus_and_retain_nothing() {
 }
 
 #[test]
-fn second_migration_while_outstanding_refuses_without_mutation() {
-    // One flight per source workspace: a retained migration fences a
-    // second commit (explicit and directional share the fence) with the
-    // migration vocabulary and no mutation.
+fn second_migration_explicit_refuses_while_directional_resolves_current() {
+    // One flight per source workspace: a retained migration fences an
+    // explicit second commit naming the same source workspace with the
+    // migration vocabulary and no mutation. A direction-only retry cannot
+    // name that stale workspace: it resolves the current source view and
+    // retains its own flight (the same commit the old production route
+    // made by pinning the live view at dispatch).
     let mut engine = WorldEngine::new("gen-1").expect("generation");
     let screens = two_roomy();
     let first = accepted(
@@ -1180,59 +1186,85 @@ fn second_migration_while_outstanding_refuses_without_mutation() {
         "flight: {:?}",
         flight.transfers
     );
-    for (seq, command) in [
-        (
-            12u64,
-            WorldCommand::MigrateWorkspace {
-                source_output: OutputId("out-a".to_owned()),
-                target_output: OutputId("out-b".to_owned()),
-                workspace: view_a.clone(),
-            },
-        ),
-        (
-            13u64,
-            WorldCommand::MigrateDirectional {
-                source_output: OutputId("out-a".to_owned()),
-                workspace: view_a.clone(),
-                direction: "right".to_owned(),
-            },
-        ),
-    ] {
-        let retry = report(
-            3,
-            screens.clone(),
-            vec![fact("w0", "out-a", 0)],
-            "w0",
-            vec![],
-            Some(seq),
-            Some(command),
-        );
-        match engine.handle_report(&retry) {
-            WorldOutcome::Rejected { kind, .. } => {
-                assert_eq!(kind, "migration-refused", "seq {seq}")
-            }
-            other => panic!("seq {seq}: expected migration-refused, got {other:?}"),
+    // The explicit retry names the outstanding source workspace and
+    // refuses on the flight fence with no mutation.
+    let mut retry_explicit = report(
+        3,
+        screens.clone(),
+        vec![fact("w0", "out-a", 0)],
+        "w0",
+        vec![],
+        Some(12),
+        Some(WorldCommand::MigrateWorkspace {
+            source_output: OutputId("out-a".to_owned()),
+            target_output: OutputId("out-b".to_owned()),
+            workspace: view_a.clone(),
+        }),
+    );
+    retry_explicit.action_foreground = Some(OutputId("out-a".to_owned()));
+    retry_explicit.action_outputs =
+        vec![OutputId("out-a".to_owned()), OutputId("out-b".to_owned())];
+    match engine.handle_report(&retry_explicit) {
+        WorldOutcome::Rejected { kind, .. } => {
+            assert_eq!(kind, "migration-refused", "explicit retry")
         }
+        other => panic!("explicit retry: expected migration-refused, got {other:?}"),
     }
     assert_eq!(
         engine.state_revision(),
         revision_before + 1,
-        "refusals mutate nothing"
+        "explicit refusal mutates nothing"
     );
-    // The migration flight plus its source-refill view flight both
-    // survive with stable identity.
+    // The direction-only retry resolves the current source view with the
+    // same staged context and retains its own flight.
+    let mut retry_directional = report(
+        3,
+        screens.clone(),
+        vec![fact("w0", "out-a", 0)],
+        "w0",
+        vec![],
+        Some(13),
+        Some(WorldCommand::MigrateDirectional {
+            direction: "right".to_owned(),
+        }),
+    );
+    retry_directional.action_foreground = Some(OutputId("out-a".to_owned()));
+    retry_directional.action_outputs =
+        vec![OutputId("out-a".to_owned()), OutputId("out-b".to_owned())];
+    let applied = match engine.handle_report(&retry_directional) {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("directional retry: expected apply, got {other:?}"),
+    };
+    let flight = applied
+        .command_result
+        .clone()
+        .and_then(|result| match result {
+            crate::world_report::CommandResult::Migration { source, .. } => Some(source),
+            _ => None,
+        })
+        .expect("migration provenance");
+    assert_eq!(flight.output.0, "out-a", "directional resolves live source");
     assert_eq!(
-        engine.retained_transfers().len(),
-        2,
-        "both flights survive: {:?}",
+        engine.state_revision(),
+        revision_before + 2,
+        "directional retry commits its own flight"
+    );
+    // Both migration flights survive with stable identity: the original
+    // plus the direction-only retry's own commit.
+    assert!(
+        engine
+            .retained_transfers()
+            .iter()
+            .any(|t| matches!(t.kind, TransferKind::Migration) && t.operation_id == "op-11"),
+        "original flight stable: {:?}",
         engine.retained_transfers()
     );
     assert!(
         engine
             .retained_transfers()
             .iter()
-            .any(|t| matches!(t.kind, TransferKind::Migration) && t.operation_id == "op-11"),
-        "migration flight stable: {:?}",
+            .any(|t| matches!(t.kind, TransferKind::Migration) && t.operation_id == "op-13"),
+        "directional flight stable: {:?}",
         engine.retained_transfers()
     );
 }

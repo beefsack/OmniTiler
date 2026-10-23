@@ -67,6 +67,9 @@ fn test_report() -> WorldReport {
         cursor_hit: None,
         default_tiled: true,
         focused_global: String::new(),
+        action_foreground: None,
+        action_cached: None,
+        action_outputs: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -129,6 +132,15 @@ fn digest_covers_every_section() {
     assert_ne!(report_digest(&changed), digest);
     let mut changed = base.clone();
     changed.focused_global = "win-a".to_owned();
+    assert_ne!(report_digest(&changed), digest);
+    let mut changed = base.clone();
+    changed.action_foreground = Some(crate::directional::OutputId("out".to_owned()));
+    assert_ne!(report_digest(&changed), digest);
+    let mut changed = base.clone();
+    changed.action_cached = Some(crate::directional::OutputId("out".to_owned()));
+    assert_ne!(report_digest(&changed), digest);
+    let mut changed = base.clone();
+    changed.action_outputs = vec![crate::directional::OutputId("out".to_owned())];
     assert_ne!(report_digest(&changed), digest);
     let mut changed = base.clone();
     changed.gesture_barrier = true;
@@ -290,6 +302,30 @@ fn validation_gates_shapes() {
     bad.cursor = Some((4, 5));
     bad.cursor_hit = Some(WindowId("win-ghost".to_owned()));
     assert_eq!(validate_report_reason(&bad), Some("cursor-hit-unknown"));
+    // Action-context facts carry opaque ids only; liveness filters at use.
+    let mut good = base.clone();
+    good.action_foreground = Some(OutputId("out".to_owned()));
+    good.action_cached = Some(OutputId("out".to_owned()));
+    assert!(validate_report(&good));
+    let mut bad = base.clone();
+    bad.action_foreground = Some(OutputId(String::new()));
+    assert_eq!(validate_report_reason(&bad), Some("action-output-invalid"));
+    let mut bad = base.clone();
+    bad.action_cached = Some(OutputId(String::new()));
+    assert_eq!(validate_report_reason(&bad), Some("action-output-invalid"));
+    // Registry entries are opaque unique ids in adapter order.
+    let mut good = base.clone();
+    good.action_outputs = vec![OutputId("out-a".to_owned()), OutputId("out-b".to_owned())];
+    assert!(validate_report(&good));
+    let mut bad = base.clone();
+    bad.action_outputs = vec![OutputId(String::new())];
+    assert_eq!(validate_report_reason(&bad), Some("action-outputs-invalid"));
+    let mut bad = base.clone();
+    bad.action_outputs = vec![OutputId("out".to_owned()), OutputId("out".to_owned())];
+    assert_eq!(
+        validate_report_reason(&bad),
+        Some("duplicate-action-output")
+    );
     // Bad window rect refuses; hints never fail.
     let mut bad = base.clone();
     bad.windows[0].rect = Some(rect(0, 0, 0, 0));
@@ -454,15 +490,29 @@ fn command_validation_keeps_closed_vocabularies() {
     }));
     assert!(valid_command(&C::SendNumbered {
         window: win.clone(),
-        output: out.clone(),
+        source: SendSource::Explicit(out.clone()),
         index: 0,
         follow: false,
     }));
     assert!(!valid_command(&C::SendNumbered {
         window: win.clone(),
-        output: out.clone(),
+        source: SendSource::Explicit(out.clone()),
         index: 10,
         follow: false,
+    }));
+    // Implicit sources are always well-formed: the core resolves or
+    // refuses them without inventing focus.
+    assert!(valid_command(&C::SendNumbered {
+        window: win.clone(),
+        source: SendSource::HomeThenAction,
+        index: 9,
+        follow: false,
+    }));
+    assert!(valid_command(&C::SendRelative {
+        window: win.clone(),
+        source: SendSource::HomeThenCachedLive,
+        delta: -1,
+        follow: true,
     }));
     assert!(valid_command(&C::SelectNumbered {
         output: Some(out.clone()),
@@ -479,5 +529,13 @@ fn command_validation_keeps_closed_vocabularies() {
     assert!(!valid_command(&C::SelectRelative {
         output: Some(out.clone()),
         delta: 2,
+    }));
+    // A direction-only migration carries no source: the core resolves the
+    // action source and its current view from the neutral report facts.
+    assert!(valid_command(&C::MigrateDirectional {
+        direction: "right".to_owned(),
+    }));
+    assert!(!valid_command(&C::MigrateDirectional {
+        direction: "sideways".to_owned(),
     }));
 }

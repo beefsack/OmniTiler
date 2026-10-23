@@ -405,7 +405,7 @@ fn production_sends_use_focused_source_output_despite_cursor() {
         &fulls(),
         WorldCommand::SendNumbered {
             window: WindowId("win-a".to_owned()),
-            output: OutputId(wire_a.clone()),
+            source: tiler_core::world_report::SendSource::Explicit(OutputId(wire_a.clone())),
             index: 0,
             follow: false,
         },
@@ -450,7 +450,7 @@ fn production_sends_use_focused_source_output_despite_cursor() {
         &fulls(),
         WorldCommand::SendRelative {
             window: WindowId("win-b1".to_owned()),
-            output: OutputId(wire_b.clone()),
+            source: tiler_core::world_report::SendSource::Explicit(OutputId(wire_b.clone())),
             delta: 1,
             follow: false,
         },

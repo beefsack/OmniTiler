@@ -211,6 +211,9 @@ fn report(
         cursor_hit: None,
         default_tiled: true,
         focused_global: focused.to_owned(),
+        action_foreground: None,
+        action_cached: None,
+        action_outputs: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -281,12 +284,12 @@ fn build_command(
         "select-trailing" => WorldCommand::SelectTrailing { output: None },
         "send-numbered" => WorldCommand::SendNumbered {
             window: WindowId(command["window"].as_str().expect("window").to_owned()),
-            output: OutputId(
+            source: tiler_core::world_report::SendSource::Explicit(OutputId(
                 outputs
                     .get(command["window"].as_str().expect("window"))
                     .expect("mover output")
                     .clone(),
-            ),
+            )),
             index: command["index"].as_u64().expect("index") as u8,
             follow: command["follow"].as_bool().expect("follow"),
         },

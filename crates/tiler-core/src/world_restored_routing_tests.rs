@@ -151,6 +151,9 @@ fn report_full(
         cursor_hit: None,
         default_tiled,
         focused_global: focused.to_owned(),
+        action_foreground: None,
+        action_cached: None,
+        action_outputs: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -428,7 +431,7 @@ fn world_migration_selects_largest_edge_despite_window_centre() {
         screen_full("u2", rect(1200, 0, 720, 1080), false),
     ];
     let mut engine = WorldEngine::new("gen-1").expect("valid generation");
-    let first = accepted(
+    accepted(
         &mut engine,
         &report(
             1,
@@ -445,28 +448,32 @@ fn world_migration_selects_largest_edge_despite_window_centre() {
             None,
         ),
     );
-    let view_l = output_view(&first, "out-l").expect("view l");
-    let reply = accepted(
-        &mut engine,
-        &report(
-            2,
-            2,
-            screens,
-            vec![
-                fact_rect("win-a", "out-l", rect(100, 1150, 100, 100)),
-                fact_rect("win-b", "out-l", rect(1550, 1150, 100, 100)),
-                fact("win-u1", "u1", 10),
-                fact("win-u2", "u2", 1210),
-            ],
-            "win-b",
-            Some(21),
-            Some(WorldCommand::MigrateDirectional {
-                source_output: OutputId("out-l".to_owned()),
-                workspace: view_l,
-                direction: "up".to_owned(),
-            }),
-        ),
+    // Direction-only command: the staged out-l foreground resolves the
+    // source with its current view; the largest shared edge still selects
+    // U1 over the window-centre projection.
+    let mut cmd_report = report(
+        2,
+        2,
+        screens,
+        vec![
+            fact_rect("win-a", "out-l", rect(100, 1150, 100, 100)),
+            fact_rect("win-b", "out-l", rect(1550, 1150, 100, 100)),
+            fact("win-u1", "u1", 10),
+            fact("win-u2", "u2", 1210),
+        ],
+        "win-b",
+        Some(21),
+        Some(WorldCommand::MigrateDirectional {
+            direction: "up".to_owned(),
+        }),
     );
+    cmd_report.action_foreground = Some(OutputId("out-l".to_owned()));
+    cmd_report.action_outputs = vec![
+        OutputId("out-l".to_owned()),
+        OutputId("u1".to_owned()),
+        OutputId("u2".to_owned()),
+    ];
+    let reply = accepted(&mut engine, &cmd_report);
     let migration = reply
         .transfers
         .iter()

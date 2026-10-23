@@ -9,15 +9,6 @@
 use super::*;
 use tiler_core::world_report::WorldCommand;
 
-/// Native device key for one digit intent: the cached output when live,
-/// else the first live area. Pure native topology; never rings or views.
-fn digit_device(state: &TileLoop, areas: &[MonitorArea]) -> Option<String> {
-    if !state.active_output.is_empty() && areas.iter().any(|a| a.device == state.active_output) {
-        return Some(state.active_output.clone());
-    }
-    areas.first().map(|a| a.device.clone())
-}
-
 /// Drain one bounded batch of workspace digit intents through the world
 /// owner. Select works on empty workspaces and unmanaged foreground; send
 /// refuses unmanaged focus. The takeover-off switch disables all
@@ -99,7 +90,12 @@ pub(super) fn workspace_tick(
             );
             continue;
         }
-        let Some(device) = digit_device(state, areas) else {
+        // Mechanical topology-existence fence (no policy): with no live
+        // area the core has no registry to resolve from. Every command
+        // below omits the output; the core resolves select targets from
+        // the cursor-first switch target and keyboard send sources from
+        // the mover's retained home else the cached-live fallback.
+        if areas.is_empty() {
             log_json_at(
                 &log_path,
                 serde_json::json!({
@@ -164,33 +160,16 @@ pub(super) fn workspace_tick(
                 let origin = intent.origin.clone();
                 match origin.filter(|o| o.hwnd == foreground_hwnd) {
                     Some(o) if !o.token.is_empty() => {
-                        // Focused window source output as the existing
-                        // contract: the mover's own homed output, never the
-                        // cursor output.
-                        let mover_wire = state
-                            .member_tokens
-                            .iter()
-                            .find(|(_, token)| token.as_str() == o.token.as_str())
-                            .and_then(|(key, _)| state.member_home(key))
-                            .and_then(|home| state.wire_of(&home.output))
-                            .or_else(|| state.output_tokens.get(&device).cloned());
-                        let Some(wire) = mover_wire else {
-                            log_json_at(
-                                &log_path,
-                                workspace_log(
-                                    state,
-                                    tick,
-                                    op.as_str(),
-                                    index,
-                                    edge.as_str(),
-                                    "unknown-output",
-                                ),
-                            );
-                            continue;
-                        };
+                        // The command carries a home-then-cached-live
+                        // source: the core resolves the mover's retained
+                        // home, else the cached output when live, else the
+                        // first live screen. The cursor never steers a
+                        // homed mover; only a homeless mover can fall
+                        // through to a pointer-independent cached-live
+                        // fallback, never an adapter decision.
                         let command = WorldCommand::SendNumbered {
                             window: tiler_core::directional::WindowId(o.token.clone()),
-                            output: tiler_core::directional::OutputId(wire),
+                            source: tiler_core::world_report::SendSource::HomeThenCachedLive,
                             index,
                             follow: intent.follow,
                         };

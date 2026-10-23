@@ -2557,3 +2557,84 @@ of cursor-first fresh placement or the entire rearchitecture.
   connector and case-authoring documentation, finalized KDE/macOS port notes,
   full both-output regression and the readiness summary. No parked question
   or tentative product choice was changed.
+
+## Stage 5 action-context ownership (2026-10-24)
+
+### Contract and preservation
+
+- The world contract now carries required `actionForeground`, `actionCached`
+  and `actionOutputs` facts. The last is the ordered known-output registry,
+  translated to opaque wire IDs, including remembered disconnected mappings.
+  Core filters foreground, pointer and cache through that registry, then
+  falls back to its first entry. This preserves the removed Windows
+  `chord_output` / `output_context_keys` universe and order, not a new
+  primary-first or live-output fallback. Unknown/unmapped facts stay unknown;
+  stale selected sources refuse downstream.
+- `MigrateDirectional` carries only direction. Core freezes its source output
+  and retained current view before incorporating the report, then uses the
+  existing staged topology and migration gates. Bootstrap or view creation
+  in that report cannot silently retarget the intent. Explicit migration
+  remains `MigrateWorkspace`; old directional `from`/`ws` payloads refuse.
+- Numbered/relative sends use a typed `SendSource`: genuine explicit output,
+  retained home then action context, or retained home then live cache and
+  report-screen order. These preserve the existing control and keyboard
+  fallback differences without platform-side selection. Implicit sources
+  freeze before admission/reconciliation, preserving prior newcomer/rehome
+  mismatch refusals. The parked send-policy questions are not resolved.
+- Removed platform selectors include `foreground_output`, `chord_output`,
+  `output_context_keys`, `digit_device` and `send_device`. Windows captures
+  neutral facts, maps identities and submits intent; no affinity fallback,
+  alternate owner, tolerant backfill or legacy source payload remains.
+  Required facts, source variants, ordering, digest, sizing and strict decode
+  are covered. KDE/macOS implementations remain intentionally unported.
+
+### Verification and native evidence
+
+- Final locked core/protocol/Windows/fixture build, all-target tests and strict
+  all-target clippy pass: **2,701 passed, zero failed, one ignored across
+  49 suites**. Formatting and whitespace pass. Independent source review
+  accepted the final pre-report freezes, exact registry universe, strict wire
+  shapes and source-intent handling. Full-report regressions cover bootstrap,
+  same-report view creation, newcomer/rehome source preservation, stale and
+  absent context, and distinct keyboard/control fallback chains.
+- Review rejected live-primary fallback, unfiltered cache, compatibility
+  backfill and post-reconciliation source selection during development.
+  The accepted implementation restores the old selection universe and
+  pre-report timing rather than adopting those behavior changes. No new
+  product decision or dependency was required.
+- Fresh fixture-only native acceptance passed both-output admission,
+  numbered trailing follow/stay and relative next/previous follow/stay
+  roundtrips, then occupied-target whole-workspace migration and inverse
+  with source refills, stable shares/order and retained hidden peers.
+  Outward migration proved foreground over a disagreeing pointer; inverse
+  proved foreground over disagreeing cache. These are complementary source
+  discriminators, not pointer disagreement on both outputs.
+- Native physical frames, foreground, visibility, member lifetimes and raw
+  accepted transfer rows corroborated effects. Different-subject focus
+  probes produced positive accepted empty operation/transfer replies with
+  zero omitted rows and stable later observations. Queue acceptance and
+  idle silence were not completion proof. Owner debug/staged/launched
+  SHA-256 matched
+  `4e251c2ca23efca6bfc45718b84e0cb2e79c9df275bdbdb1ddd69ce43312701a`.
+- Independent evidence review accepted the final leg and distinguished its
+  harness-only oracle corrections: diagnostic versus resolved workspace
+  names, re-appended send order, legitimate partial settlement and pruned
+  trailing identities. Send roundtrips restored coverage and the same frame
+  set with the mover re-appended; migration preserved its incoming order.
+  No product failure was hidden by those corrections. Raw native frame
+  checks ran in the driver; not every intermediate frame was persisted.
+- Exact-owner stop, independent restore and fixture shutdown left no owned
+  processes, windows, ledger or pending controls. Settings bytes, cursor,
+  relevant SPI/taskbar state and protected-window geometry matched preimages.
+  FFC/warp remained off; no synthetic keys, clicks, drag or Esc were used.
+  Keyboard fallback and physical shortcuts remain offline-only here; native
+  missing-foreground/hotplug timing and a three-way context split are unrun.
+
+### Remaining pre-dogfood scope
+
+- Windows is not yet dogfood-ready. Next: consumer-checked dead API
+  disposition, then uniform wire border/underlay/drop/pager presentation,
+  shared core/Windows acceptance connector and case-authoring documentation,
+  finalized KDE/macOS port notes, full both-output regression and the
+  readiness summary. No tentative decision was added or parked question
+  resolved by this unit.

@@ -226,7 +226,6 @@ fn send_output_cli_intent_routes_through_production_dispatch() {
         &[],
         &mut observed,
         &retained,
-        "output-1",
         &intent,
         &origin,
         1,

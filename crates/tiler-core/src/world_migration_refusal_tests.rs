@@ -309,6 +309,11 @@ fn report(
         cursor_hit: None,
         default_tiled: true,
         focused_global: focused.to_owned(),
+        action_foreground: None,
+        action_cached: None,
+        // Known registry matches the report screens: the action-context
+        // tests below resolve through it.
+        action_outputs: vec![OutputId("out-a".to_owned()), OutputId("out-b".to_owned())],
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -827,6 +832,11 @@ fn report_with_screens(
         cursor_hit: None,
         default_tiled: true,
         focused_global: focused.to_owned(),
+        action_foreground: None,
+        action_cached: None,
+        // Known registry matches the report screens: the action-context
+        // tests below resolve through it.
+        action_outputs: vec![OutputId("out-a".to_owned()), OutputId("out-b".to_owned())],
         inventory_complete,
         gesture_barrier: false,
         gesture: None,
@@ -1899,10 +1909,8 @@ fn directional_fences_carry_distinct_fixed_reasons() {
         vec![screen("out-a", 0, true), screen("out-b", 800, false)]
     }
 
-    fn dir_cmd(ws: &str) -> WorldCommand {
+    fn dir_cmd() -> WorldCommand {
         WorldCommand::MigrateDirectional {
-            source_output: OutputId("out-a".to_owned()),
-            workspace: ws.to_owned(),
             direction: "right".to_owned(),
         }
     }
@@ -1929,18 +1937,21 @@ fn directional_fences_carry_distinct_fixed_reasons() {
         .and_then(|row| row.logical_view.clone())
         .expect("view a");
 
-    // No adjacent target: eastmost output heading right.
+    // No adjacent target: eastmost output heading right. The action
+    // context stages the out-b foreground so the core resolves the
+    // eastmost source with its current view, then refuses topology.
     let east = WorldReport {
         screens: screens_two(),
         windows: vec![fact("win-a", "out-b", 800)],
         focused_global: "win-a".to_owned(),
+        action_foreground: Some(OutputId("out-b".to_owned())),
+        action_cached: None,
+        action_outputs: vec![OutputId("out-a".to_owned()), OutputId("out-b".to_owned())],
         request_seq: 2,
         observation_seq: 2,
         request_id: "req-2".to_owned(),
         command_seq: Some(11),
         command: Some(WorldCommand::MigrateDirectional {
-            source_output: OutputId("out-b".to_owned()),
-            workspace: view_a.clone(),
             direction: "right".to_owned(),
         }),
         inventory_complete: true,
@@ -1961,7 +1972,7 @@ fn directional_fences_carry_distinct_fixed_reasons() {
         vec![fact("win-a", "out-a", 0)],
         "win-a",
         Some(12),
-        Some(dir_cmd(&view_a)),
+        Some(dir_cmd()),
         vec![],
         vec![],
     );
@@ -1974,17 +1985,22 @@ fn directional_fences_carry_distinct_fixed_reasons() {
         other => panic!("incomplete inventory must refuse, got {other:?}"),
     }
 
-    // Source workspace not homed.
-    let ghost = report(
+    // Stale registered cache: a mapped-but-removed source still selects
+    // from the retained registry and refuses downstream instead of
+    // silently retargeting. The explicit ghost-workspace route is gone:
+    // direction-only commands always name the source's current view.
+    let mut ghost = report(
         4,
         4,
         vec![fact("win-a", "out-a", 0)],
         "win-a",
         Some(13),
-        Some(dir_cmd("ws-ghost")),
+        Some(dir_cmd()),
         vec![],
         vec![],
     );
+    ghost.action_outputs.push(OutputId("out-z".to_owned()));
+    ghost.action_cached = Some(OutputId("out-z".to_owned()));
     match engine.handle_report(&ghost) {
         WorldOutcome::Rejected { kind, message } => {
             assert_eq!(kind, "migration-refused");
@@ -2004,7 +2020,7 @@ fn directional_fences_carry_distinct_fixed_reasons() {
         vec![unread],
         "",
         Some(14),
-        Some(dir_cmd(&view_a)),
+        Some(dir_cmd()),
         vec![],
         vec![],
     );
@@ -2051,7 +2067,7 @@ fn directional_fences_carry_distinct_fixed_reasons() {
         vec![fact("win-a", "out-a", 0)],
         "win-a",
         Some(16),
-        Some(dir_cmd(&view_a)),
+        Some(dir_cmd()),
         vec![],
         vec![],
     );
@@ -2064,11 +2080,14 @@ fn directional_fences_carry_distinct_fixed_reasons() {
         other => panic!("unreadable topology must refuse, got {other:?}"),
     }
 
-    // Second migrate after a commit: the source workspace has moved, so
-    // the homed fence (not flight) names the refusal. Flight stays as a
-    // defensive fence for retained-but-still-homed states.
+    // Second migrate after a commit resolves the source's current view
+    // (the refill workspace), not the moved-away one: the direction-only
+    // command cannot name the stale workspace the old explicit legs
+    // pinned, so the homed fence never fires here. Flight stays as a
+    // defensive fence for retained-but-still-homed states (covered
+    // above by the explicit retry).
     let mut flight_engine = WorldEngine::new("gen-1").expect("generation");
-    let seed = accepted(
+    accepted(
         &mut flight_engine,
         &report(
             1,
@@ -2081,12 +2100,6 @@ fn directional_fences_carry_distinct_fixed_reasons() {
             vec![],
         ),
     );
-    let seed_view = seed
-        .outputs
-        .iter()
-        .find(|row| row.output.0 == "out-a")
-        .and_then(|row| row.logical_view.clone())
-        .expect("seed view");
     accepted(
         &mut flight_engine,
         &report(
@@ -2095,7 +2108,7 @@ fn directional_fences_carry_distinct_fixed_reasons() {
             vec![fact("win-a", "out-a", 0)],
             "win-a",
             Some(21),
-            Some(dir_cmd(&seed_view)),
+            Some(dir_cmd()),
             vec![],
             vec![],
         ),
@@ -2106,16 +2119,23 @@ fn directional_fences_carry_distinct_fixed_reasons() {
         vec![fact("win-a", "out-a", 0)],
         "win-a",
         Some(22),
-        Some(dir_cmd(&seed_view)),
+        Some(dir_cmd()),
         vec![],
         vec![],
     );
     match flight_engine.handle_report(&again) {
-        WorldOutcome::Rejected { kind, message } => {
-            assert_eq!(kind, "migration-refused");
-            assert_eq!(message, MSG_MIGRATION_SOURCE);
+        WorldOutcome::Accepted(reply) => {
+            let source = reply
+                .command_result
+                .clone()
+                .and_then(|result| match result {
+                    crate::world_report::CommandResult::Migration { source, .. } => Some(source),
+                    _ => None,
+                })
+                .expect("migration provenance");
+            assert_eq!(source.output.0, "out-a", "resolves the live source");
         }
-        other => panic!("second migrate after commit must refuse homed, got {other:?}"),
+        other => panic!("second migrate after commit must apply current view, got {other:?}"),
     }
 }
 
@@ -2174,37 +2194,37 @@ fn offset_two_output_migration_applies() {
         ]
     };
     let mut engine = WorldEngine::new("gen-1").expect("generation");
-    let first = accepted(
+    accepted(
         &mut engine,
         &WorldReport {
             screens: screens.clone(),
             windows: wins(),
             focused_global: "m1".to_owned(),
+            action_foreground: None,
+            action_cached: None,
+            action_outputs: Vec::new(),
             request_seq: 1,
             observation_seq: 1,
             request_id: "req-1".to_owned(),
             ..report(1, 1, vec![], "", None, None, vec![], vec![])
         },
     );
-    let view_a = first
-        .outputs
-        .iter()
-        .find(|row| row.output.0 == "out-a")
-        .and_then(|row| row.logical_view.clone())
-        .expect("view a");
+    // Offset outputs still resolve the registry-order source with its
+    // current view; the strict largest-edge target is unchanged.
     let reply = accepted(
         &mut engine,
         &WorldReport {
             screens: screens.clone(),
             windows: wins(),
             focused_global: "m1".to_owned(),
+            action_foreground: None,
+            action_cached: None,
+            action_outputs: vec![OutputId("out-a".to_owned()), OutputId("out-b".to_owned())],
             request_seq: 2,
             observation_seq: 2,
             request_id: "req-2".to_owned(),
             command_seq: Some(11),
             command: Some(WorldCommand::MigrateDirectional {
-                source_output: OutputId("out-a".to_owned()),
-                workspace: view_a,
                 direction: "right".to_owned(),
             }),
             ..report(2, 2, vec![], "", None, None, vec![], vec![])
@@ -2696,4 +2716,366 @@ fn refused_refill_external_source_echo_settles_parent() {
         "refused child drops on external source move: {:?}",
         settled.transfers
     );
+}
+
+#[test]
+fn migrate_directional_resolves_action_context_without_adapter_preselect() {
+    use crate::world_engine::MSG_MIGRATION_SOURCE;
+    // Seed one window per output; views name the live workspace per wire.
+    fn seeded() -> (WorldEngine, String, String) {
+        let mut engine = WorldEngine::new("gen-1").expect("generation");
+        let first = accepted(
+            &mut engine,
+            &report(
+                1,
+                1,
+                vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)],
+                "win-a",
+                None,
+                None,
+                vec![],
+                vec![],
+            ),
+        );
+        let view = |output: &str| {
+            first
+                .outputs
+                .iter()
+                .find(|row| row.output.0 == output)
+                .and_then(|row| row.logical_view.clone())
+                .unwrap_or_else(|| panic!("view {output}"))
+        };
+        (engine, view("out-a"), view("out-b"))
+    }
+    fn registry(outputs: &[&str]) -> Vec<OutputId> {
+        outputs
+            .iter()
+            .map(|out| OutputId((*out).to_owned()))
+            .collect()
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn context_cmd(
+        seq: u64,
+        outputs: Vec<OutputId>,
+        foreground: Option<&str>,
+        cursor: Option<(i32, i32)>,
+        cached: Option<&str>,
+        direction: &str,
+    ) -> WorldReport {
+        WorldReport {
+            cursor,
+            action_foreground: foreground.map(|out| OutputId(out.to_owned())),
+            action_cached: cached.map(|out| OutputId(out.to_owned())),
+            action_outputs: outputs,
+            request_seq: seq,
+            observation_seq: seq,
+            request_id: format!("req-{seq}"),
+            command_seq: Some(10 + seq),
+            command: Some(WorldCommand::MigrateDirectional {
+                direction: direction.to_owned(),
+            }),
+            ..report(
+                seq,
+                seq,
+                vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)],
+                "win-a",
+                None,
+                None,
+                vec![],
+                vec![],
+            )
+        }
+    }
+    fn migrated(reply: &crate::world_report::WorldReply) -> (String, String) {
+        let transfer = reply
+            .transfers
+            .iter()
+            .find(|t| matches!(t.kind, TransferKind::Migration))
+            .expect("migration retained");
+        (
+            transfer.target_output.0.clone(),
+            transfer.target_workspace.clone(),
+        )
+    }
+    let live = || registry(&["out-a", "out-b"]);
+    // Pointer leg beats the cache: cursor on out-b resolves the out-b
+    // source even while the cache still names live out-a.
+    let (mut engine, _, view_b) = seeded();
+    let reply = accepted(
+        &mut engine,
+        &context_cmd(2, live(), None, Some((810, 10)), Some("out-a"), "left"),
+    );
+    assert_eq!(migrated(&reply), ("out-a".to_owned(), view_b.clone()));
+    // Foreground beats a disagreeing pointer: the out-a source migrates
+    // right even with the cursor on out-b.
+    let (mut engine, view_a, _) = seeded();
+    let reply = accepted(
+        &mut engine,
+        &context_cmd(
+            2,
+            live(),
+            Some("out-a"),
+            Some((810, 10)),
+            Some("out-b"),
+            "right",
+        ),
+    );
+    assert_eq!(migrated(&reply), ("out-b".to_owned(), view_a.clone()));
+    // Cache leg carries an absent pointer: no foreground, no cursor, the
+    // cached out-b source migrates left.
+    let (mut engine, _, view_b) = seeded();
+    let reply = accepted(
+        &mut engine,
+        &context_cmd(2, live(), None, None, Some("out-b"), "left"),
+    );
+    assert_eq!(migrated(&reply), ("out-a".to_owned(), view_b.clone()));
+    // Registry order is the last leg: no facts at all resolves the first
+    // registry entry out-a, which migrates right.
+    let (mut engine, view_a, _) = seeded();
+    let reply = accepted(
+        &mut engine,
+        &context_cmd(2, live(), None, None, None, "right"),
+    );
+    assert_eq!(migrated(&reply), ("out-b".to_owned(), view_a.clone()));
+    // Unknown foreground and an outside pointer never invent: they fall
+    // through to the cache, then to registry order.
+    let (mut engine, view_a, _) = seeded();
+    let reply = accepted(
+        &mut engine,
+        &context_cmd(2, live(), Some("gone"), Some((5000, 5000)), None, "right"),
+    );
+    assert_eq!(migrated(&reply), ("out-b".to_owned(), view_a.clone()));
+    // A cached output outside the known registry never selects: it falls
+    // through to registry order (the adapter sends `None` for unmapped
+    // caches, so only registry filtering can observe this).
+    let (mut engine, view_a, _) = seeded();
+    let reply = accepted(
+        &mut engine,
+        &context_cmd(2, live(), None, None, Some("gone"), "right"),
+    );
+    assert_eq!(migrated(&reply), ("out-b".to_owned(), view_a.clone()));
+    // A stale-but-registered cache still selects and refuses downstream
+    // instead of silently retargeting live state.
+    let (mut engine, _, _) = seeded();
+    match engine.handle_report(&context_cmd(
+        2,
+        registry(&["out-a", "out-b", "out-z"]),
+        None,
+        None,
+        Some("out-z"),
+        "right",
+    )) {
+        WorldOutcome::Rejected { kind, message } => {
+            assert_eq!(kind, "migration-refused");
+            assert_eq!(message, MSG_MIGRATION_SOURCE);
+        }
+        other => panic!("stale cache must refuse the source, got {other:?}"),
+    }
+    // No known registry at all refuses without inventing focus. The
+    // struct-update base carries a registry, so clear it explicitly:
+    // empty screens plus an empty registry resolve nothing.
+    let (mut engine, _, _) = seeded();
+    let empty = WorldReport {
+        screens: vec![],
+        windows: vec![],
+        focused_global: String::new(),
+        action_foreground: None,
+        action_cached: None,
+        action_outputs: vec![],
+        request_seq: 2,
+        observation_seq: 2,
+        request_id: "req-2".to_owned(),
+        command_seq: Some(12),
+        command: Some(WorldCommand::MigrateDirectional {
+            direction: "right".to_owned(),
+        }),
+        ..report(2, 2, vec![], "", None, None, vec![], vec![])
+    };
+    match engine.handle_report(&empty) {
+        WorldOutcome::Rejected { kind, message } => {
+            assert_eq!(kind, "migration-refused");
+            assert_eq!(message, MSG_MIGRATION_SOURCE);
+        }
+        other => panic!("empty registry must refuse the source, got {other:?}"),
+    }
+}
+
+#[test]
+fn migrate_directional_freezes_source_view_pre_observation() {
+    use crate::world_engine::MSG_MIGRATION_SOURCE;
+    // The direction-only source (output plus its current view) freezes at
+    // run_accepted entry, before staging can converge views or settle
+    // rehoming: first-tick unbootstrapped migration refuses like the old
+    // pre-tick logical_view lookup, while the same command after a prior
+    // observation applies.
+    // Fresh engine, no prior observation: no retained view exists, so the
+    // frozen source is unknown and the command refuses without mutation.
+    let mut fresh = WorldEngine::new("gen-1").expect("valid generation");
+    let unbootstrapped = WorldReport {
+        request_seq: 1,
+        observation_seq: 1,
+        request_id: "req-1".to_owned(),
+        command_seq: Some(11),
+        command: Some(WorldCommand::MigrateDirectional {
+            direction: "right".to_owned(),
+        }),
+        ..report(1, 1, vec![], "", None, None, vec![], vec![])
+    };
+    match fresh.handle_report(&unbootstrapped) {
+        WorldOutcome::Rejected { kind, message } => {
+            assert_eq!(kind, "migration-refused");
+            assert_eq!(message, MSG_MIGRATION_SOURCE);
+        }
+        other => panic!("unbootstrapped migration must refuse, got {other:?}"),
+    }
+    // The same command after a prior observation applies: the retained
+    // view resolves the frozen source.
+    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![fact("win-a", "out-a", 0)],
+            "win-a",
+            None,
+            None,
+            vec![],
+            vec![],
+        ),
+    );
+    let reply = accepted(
+        &mut engine,
+        &WorldReport {
+            request_seq: 2,
+            observation_seq: 2,
+            request_id: "req-2".to_owned(),
+            command_seq: Some(12),
+            command: Some(WorldCommand::MigrateDirectional {
+                direction: "right".to_owned(),
+            }),
+            ..report(
+                2,
+                2,
+                vec![fact("win-a", "out-a", 0)],
+                "win-a",
+                None,
+                None,
+                vec![],
+                vec![],
+            )
+        },
+    );
+    assert!(
+        reply
+            .transfers
+            .iter()
+            .any(|t| matches!(t.kind, TransferKind::Migration)),
+        "retained view applies: {:?}",
+        reply.transfers
+    );
+}
+
+#[test]
+fn migrate_directional_ignores_same_report_view_creation() {
+    use crate::world_engine::MSG_MIGRATION_SOURCE;
+    // A newly appearing screen must not supply the migration source view:
+    // the frozen source predates staging, so the unknown pre-observation
+    // view refuses instead of migrating the newly converged workspace.
+    // A follow-up report with the now-retained view applies.
+    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    accepted(
+        &mut engine,
+        &report_with_screens(
+            1,
+            1,
+            vec![screen("out-a", 0, true)],
+            vec![fact("win-a", "out-a", 0)],
+            "",
+            None,
+            None,
+            vec![],
+            vec![],
+            true,
+            vec![],
+        ),
+    );
+    let hotplug = WorldReport {
+        screens: vec![screen("out-a", 0, true), screen("out-b", 800, false)],
+        cursor: Some((900, 10)),
+        action_outputs: vec![OutputId("out-a".to_owned()), OutputId("out-b".to_owned())],
+        request_seq: 2,
+        observation_seq: 2,
+        request_id: "req-2".to_owned(),
+        command_seq: Some(12),
+        command: Some(WorldCommand::MigrateDirectional {
+            direction: "left".to_owned(),
+        }),
+        ..report(
+            2,
+            2,
+            vec![fact("win-a", "out-a", 0)],
+            "",
+            None,
+            None,
+            vec![],
+            vec![],
+        )
+    };
+    match engine.handle_report(&hotplug) {
+        WorldOutcome::Rejected { kind, message } => {
+            assert_eq!(kind, "migration-refused");
+            assert_eq!(message, MSG_MIGRATION_SOURCE);
+        }
+        other => panic!("hotplug source must refuse without a pre-observation view, got {other:?}"),
+    }
+    // The observation-only catch-up retains the new screen's view, so the
+    // same context on the next report applies instead of refusing.
+    accepted(
+        &mut engine,
+        &report_with_screens(
+            3,
+            3,
+            vec![screen("out-a", 0, true), screen("out-b", 800, false)],
+            vec![fact("win-a", "out-a", 0)],
+            "",
+            None,
+            None,
+            vec![],
+            vec![],
+            true,
+            vec![],
+        ),
+    );
+    let reply = accepted(
+        &mut engine,
+        &WorldReport {
+            screens: vec![screen("out-a", 0, true), screen("out-b", 800, false)],
+            cursor: Some((900, 10)),
+            action_outputs: vec![OutputId("out-a".to_owned()), OutputId("out-b".to_owned())],
+            request_seq: 4,
+            observation_seq: 4,
+            request_id: "req-4".to_owned(),
+            command_seq: Some(14),
+            command: Some(WorldCommand::MigrateDirectional {
+                direction: "left".to_owned(),
+            }),
+            ..report(
+                4,
+                4,
+                vec![fact("win-a", "out-a", 0)],
+                "",
+                None,
+                None,
+                vec![],
+                vec![],
+            )
+        },
+    );
+    let transfer = reply
+        .transfers
+        .iter()
+        .find(|t| matches!(t.kind, TransferKind::Migration))
+        .expect("migration applies once the view is retained");
+    assert_eq!(transfer.target_output.0, "out-a");
 }

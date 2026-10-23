@@ -16,7 +16,7 @@
 use super::world_capture::capture_world;
 use super::world_diff::{FreshHost, NativeOps};
 use super::world_native::{LiveNative, NativePrimitives};
-use super::{MonitorArea, ObservedWindow, RetainedRow, TileLoop};
+use super::{MonitorArea, ObservedWindow, RetainedRow, TileLoop, live_foreground_window};
 use std::collections::HashMap;
 use tiler_core::world_report::{CommandResult, TransferKind, WorldCommand, WorldReply};
 
@@ -939,6 +939,7 @@ pub(super) fn run_observation_tick(
         ref scope_hosts,
         ref settings_live,
         ref output_tokens,
+        ref active_output,
         ref mut applied_homing,
         ref mut applied_views,
         inner_gap,
@@ -976,6 +977,7 @@ pub(super) fn run_observation_tick(
         scope,
         settings_live,
         output_tokens,
+        active_output.as_str(),
         applied_homing,
         applied_views,
         inner_gap,
@@ -1035,6 +1037,7 @@ pub(super) fn run_observation_tick(
         scope,
         settings_live,
         output_tokens,
+        active_output.as_str(),
         applied_homing,
         applied_views,
         inner_gap,
@@ -1066,6 +1069,7 @@ pub(super) fn run_observation_tick(
         scope,
         settings_live,
         output_tokens,
+        active_output.as_str(),
         applied_homing,
         applied_views,
         inner_gap,
@@ -1293,6 +1297,7 @@ pub(super) fn run_world_command(
         ref scope_hosts,
         ref settings_live,
         ref output_tokens,
+        ref active_output,
         ref mut applied_homing,
         ref mut applied_views,
         inner_gap,
@@ -1329,6 +1334,7 @@ pub(super) fn run_world_command(
             scope,
             settings_live,
             output_tokens,
+            active_output.as_str(),
             applied_homing,
             applied_views,
             inner_gap,
@@ -1427,6 +1433,7 @@ pub(super) fn run_world_command(
         scope,
         settings_live,
         output_tokens,
+        active_output.as_str(),
         applied_homing,
         applied_views,
         inner_gap,
@@ -1458,6 +1465,7 @@ pub(super) fn run_world_command(
         scope,
         settings_live,
         output_tokens,
+        active_output.as_str(),
         applied_homing,
         applied_views,
         inner_gap,
@@ -1642,13 +1650,33 @@ pub(super) fn observe_and_command(
     areas: &[MonitorArea],
     command: WorldCommand,
 ) -> Option<tiler_core::world_report::WorldReply> {
-    let mut skipped: Vec<(String, String)> = Vec::new();
-    let mut retained: Vec<RetainedRow> = Vec::new();
-    let foreground = crate::ffi::foreground_window();
     // One normalized sample for this command snapshot (existing capture
     // sampling only; the focused-fullscreen-game lane never reaches here,
     // so no cursor work runs under it).
     let cursor = super::observation::sample_cursor();
+    observe_and_command_at(state, me, store, dir, fulls, areas, command, cursor)
+}
+
+/// Observe once and route one [`WorldCommand`] with a caller-supplied
+/// cursor sample (one sample per dispatch, matching the retired
+/// per-chord sampling). Used by migration dispatch so tests script the
+/// pointer leg deterministically; all other routes sample internally.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn observe_and_command_at(
+    state: &mut TileLoop,
+    me: &crate::model::ProcessIdentity,
+    store: &crate::storage::LedgerStore,
+    dir: &std::path::Path,
+    fulls: &[tiler_core::geometry::Rect],
+    areas: &[MonitorArea],
+    command: WorldCommand,
+    cursor: Option<(i32, i32)>,
+) -> Option<tiler_core::world_report::WorldReply> {
+    let mut skipped: Vec<(String, String)> = Vec::new();
+    let mut retained: Vec<RetainedRow> = Vec::new();
+    // Seam-aware foreground read (production-identical; scripted in unit
+    // tests): the neutral action-foreground fact grounds from this HWND.
+    let foreground = live_foreground_window();
     let observed = state.observe(me, fulls, &mut skipped, &mut retained)?;
     run_world_command(
         state, me, store, dir, &observed, &retained, areas, foreground, fulls, command, cursor,
@@ -1699,6 +1727,7 @@ pub(super) fn dispatch_test_observation(
         ref scope,
         ref settings_live,
         ref output_tokens,
+        ref active_output,
         ref mut applied_homing,
         ref mut applied_views,
         inner_gap,
@@ -1730,6 +1759,7 @@ pub(super) fn dispatch_test_observation(
         scope,
         settings_live,
         output_tokens,
+        active_output.as_str(),
         applied_homing,
         applied_views,
         inner_gap,

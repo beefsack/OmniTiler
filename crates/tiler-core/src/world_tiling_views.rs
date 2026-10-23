@@ -4,9 +4,9 @@
 //! Split from [`crate::world_commands`]: this module only extends the
 //! [`crate::world_engine::WorldEngine`] `impl`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use crate::directional::OutputId;
+use crate::directional::{OutputId, WindowId};
 use crate::session::DomainKey;
 use crate::world_commands::CommandApplied;
 use crate::world_engine::{
@@ -233,5 +233,74 @@ impl WorldEngine {
     /// selection, resolved once before transfer.
     pub(crate) fn send_ring(&self, report: &WorldReport, output: &OutputId) -> Vec<String> {
         self.selection_ring(report, output)
+    }
+
+    /// Resolve the migration/control action output from the neutral
+    /// report facts: the adapter-grounded foreground output, the cursor
+    /// output, the adapter-cached output, then known-registry order. Every
+    /// leg filters to the ordered known registry (which retains mapped
+    /// stale outputs); a stale mapped leg selects and refuses downstream.
+    /// The sole policy owner for migration/control source selection;
+    /// explicit command outputs bypass it unchanged.
+    pub(crate) fn resolve_action_output(&self, report: &WorldReport) -> Option<OutputId> {
+        crate::cursor_targeting::resolve_action_output(
+            report.action_foreground.as_ref(),
+            self.fresh_cursor_output(report).as_ref(),
+            report.action_cached.as_ref(),
+            &report.action_outputs,
+        )
+    }
+
+    /// Resolve an omitted send source from the pre-observation retained
+    /// home, else the migration/control action context. `None` only when
+    /// both are unknown: callers refuse without inventing focus. Call with
+    /// pre-sweep engine state only (see `run_accepted`): the retained home
+    /// must predate staging, settle, and reconcile for the comparison
+    /// against the staged mover to preserve the retired adapter contract
+    /// exactly.
+    pub(crate) fn resolve_home_then_action(
+        &self,
+        report: &WorldReport,
+        window: &WindowId,
+    ) -> Option<OutputId> {
+        if let Some(home) = self
+            .members
+            .get(window)
+            .map(|state| state.home.output.clone())
+        {
+            return Some(home);
+        }
+        self.resolve_action_output(report)
+    }
+
+    /// Resolve an omitted send source from the pre-observation retained
+    /// home, else the cached output when live, else the first live screen
+    /// in report order. Same pre-sweep contract as
+    /// [`resolve_home_then_action`](Self::resolve_home_then_action):
+    /// the keyboard digit/relative fallback universe (cached-live, then
+    /// native screen enumeration order), never the pointer.
+    pub(crate) fn resolve_home_then_cached_live(
+        &self,
+        report: &WorldReport,
+        window: &WindowId,
+    ) -> Option<OutputId> {
+        if let Some(home) = self
+            .members
+            .get(window)
+            .map(|state| state.home.output.clone())
+        {
+            return Some(home);
+        }
+        let live: BTreeSet<&str> = report
+            .screens
+            .iter()
+            .map(|screen| screen.output.0.as_str())
+            .collect();
+        if let Some(cached) = report.action_cached.as_ref()
+            && live.contains(cached.0.as_str())
+        {
+            return Some(cached.clone());
+        }
+        report.screens.first().map(|screen| screen.output.clone())
     }
 }

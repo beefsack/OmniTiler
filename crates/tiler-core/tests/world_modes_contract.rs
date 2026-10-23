@@ -101,6 +101,9 @@ fn report(
         cursor_hit: None,
         default_tiled: true,
         focused_global: focused.to_owned(),
+        action_foreground: None,
+        action_cached: None,
+        action_outputs: Vec::new(),
         inventory_complete: true,
         gesture_barrier: false,
         gesture: None,
@@ -537,7 +540,7 @@ fn equal_count_pads_shorter_rings() {
         Some(11),
         Some(WorldCommand::SendNumbered {
             window: WindowId("win-a".to_owned()),
-            output: OutputId("out-a".to_owned()),
+            source: tiler_core::world_report::SendSource::Explicit(OutputId("out-a".to_owned())),
             index: 0,
             follow: false,
         }),

@@ -531,16 +531,30 @@ native outcomes remain pending
 
 ### Core-owned directional continuation discriminators (2026-10-23)
 
-The stage-5 draft replaces invocation-local sequencing above with one retained
-original intent and commandless observation settlement. It is not natively
-accepted; [checkpoint and blocker](../changes/core-world-model-rearchitecture.md#stage-5-common-clear-repair-checkpoint---native-hold-unresolved-2026-10-23).
+Stage 5 replaces invocation-local sequencing above with one retained original
+intent and commandless observation settlement. Horizontal tiled, float and
+sticky continuation passed on both Windows outputs; failure-timing variants
+below remain unsupported natively. [Acceptance and limits](../changes/core-world-model-rearchitecture.md#stage-5-both-output-directional-acceptance-2026-10-24).
 
 | Variant | Minimal action sequence | Offline draft outcome | Unsupported / native outcome |
 | --- | --- | --- | --- |
-| Published tiled clear versus actual attempt | Tile A/B; maximize retained A; move A once; observe without another command | Original clear token must be published before a common-lane attempt; accepted correlated attempt plus readable cleared facts permits original-op continuation | Windows identified substituted tile-slot versus live-maximized-frame mismatch at `frame-race`. Native-frame normalization preserves the veto; focused and final-artifact partial legs prove one accepted clear and commandless tiled continuation on one output. Full both-output/sticky acceptance TBD |
+| Published tiled clear versus actual attempt | Tile A/B; maximize retained A; move A once; observe without another command | Original clear token must be published before a common-lane attempt; accepted correlated attempt plus readable cleared facts permits original-op continuation | Windows native-frame normalization preserves the race veto. Native 2026-10-24 passed original-operation clear and commandless continuation for tiled, float and sticky subjects on both outputs, with independent frames/foreground and positive retirement snapshots. Up/down and physical input TBD |
 | Ambiguous once-only clear | Maximize A; move once; report a thrown clear; later observe A unmaximized without another attempt; then issue a fresh intent | Ambiguous old binding holds without retry or continuation; fresh same-window intent supersedes independently, never consumes old proof | Native thrown-clear timing and reference outcomes TBD; no second accepted attempt fabricated |
 | Same-report proof and newer intent | Bind A's clear; deliver its accepted proof and a newer same-window intent in one report | Old binding supersedes before continuation, even if the new intent refuses; consumed command replay does not supersede | Native same-report ordering and reference outcomes TBD |
 | Unknown versus contradictory focus | Bind with unknown focus; stage accepted clear proof; report unknown, then exact A focus; repeat with known B focus | Unknown current holds; exact A may continue on staged accepted proof without guessing baseline; known B abandons. Known changed/non-subject originating focus abandons | Native maximized fixture managed-focus capture and exact hold cause TBD; no focus/native gate bypass selected |
+
+### Core-owned action-context discriminators (2026-10-24)
+
+These preserve existing action-source selection, not a new focus or send policy.
+Registry order includes remembered mappings and is distinct from live topology
+or primary-output preference. Unsupported reference outcomes remain TBD.
+
+| Variant | Minimal action sequence | Core / Windows contract | Native / unsupported outcome |
+| --- | --- | --- | --- |
+| Foreground versus pointer/cache | Keep registered L/R; focus fixture on L with pointer on R and cached L; migrate right; then focus the migrated fixture on R with cached L and migrate left | Core selects registered foreground before pointer, cache and first registry entry; retains the pre-report current source view | Native both-direction migration/refill passed; outward foreground beat disagreeing pointer, return foreground beat disagreeing cache. Return pointer disagreement and three-way split not exercised |
+| Missing source and registry fallback | Remove foreground/pointer facts; use cached registered R; repeat with unmapped cache, then remembered disconnected first entry and empty registry | Registered cache wins; otherwise first registry entry wins, including disconnected mappings that refuse downstream. Empty registry refuses without inventing focus | Core resolver/projection and stale/empty refusal regressions pass; native missing-foreground/hotplug timing and exact references TBD |
+| Pre-report source view | Submit directional migration before any view exists; repeat after observation establishes it; then introduce a new output/view in the command report | Freeze source/view before report incorporation; first-tick and same-report-created source views refuse; later independent intent may migrate | Full core report sequences pass; native startup/hotplug timing TBD |
+| Pre-report send home and distinct fallbacks | Establish mover on L, then observe it on R while sending; repeat with a new unhomed mover, foreground R, cached L | Freeze retained home before reconciliation; preserve mismatch refusals. Without a home, control sends use action context; keyboard sends use live cache then report-screen order. Explicit outputs remain explicit | Full core report regressions and Windows production routes pass. Native numbered/relative control follow/stay roundtrips passed on one output; keyboard and new-lifetime race outcomes TBD |
 
 ### Windows floating candidate discriminator (2026-10-12)
 

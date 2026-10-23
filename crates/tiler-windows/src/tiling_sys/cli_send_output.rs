@@ -149,13 +149,13 @@ pub(super) fn poll_send_output_cli_request(
         log_json_at(&log_path, cli_line(tick, "unmanaged"));
         return;
     }
-    let Some(output) = chord_output(state, areas) else {
-        state.tick += 1;
-        let tick = state.tick;
-        log_json_at(&log_path, cli_line(tick, "unknown-output"));
-        return;
-    };
-    state.ensure_device(&output);
+    // The world route resolves the explicit output-send target in core
+    // from the direction-only command (window, direction, follow only);
+    // the adapter never preselects an output. Ensure the live topology
+    // carries wire ids first: mechanical mapping only, never policy.
+    for area in areas {
+        state.ensure_device(&area.device);
+    }
     state.tick += 1;
     let tick = state.tick;
     let mut skipped: Vec<(String, String)> = Vec::new();
@@ -192,7 +192,6 @@ pub(super) fn poll_send_output_cli_request(
         areas,
         &mut observed,
         &retained,
-        &output,
         &intent,
         &origin,
         tick,

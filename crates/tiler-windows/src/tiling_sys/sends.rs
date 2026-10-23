@@ -12,12 +12,13 @@ use tiler_core::world_report::WorldCommand;
 
 /// Route one same-output send through the world owner.
 ///
-/// `output` is the native device key (wire id via `output_tokens` only);
 /// `target` is the frozen operator intent. `follow` pins the explicit
-/// intent. Returns an honest [`SendEffect`]: `ok` when the owner accepted
-/// and applied a reply, `unmanaged` when the mover token is unknown,
-/// `unknown-output` when the device has no wire id, and `unverified` when
-/// the command was rejected or lost (never a silent no-op).
+/// intent. The command omits the source output: the core resolves the
+/// mover's retained home, else the migration/control action context
+/// (explicit send commands with named outputs are unaffected). Returns an
+/// honest [`SendEffect`]: `ok` when the owner accepted and applied a
+/// reply, `unmanaged` when the mover token is unknown, and `unverified`
+/// when the command was rejected or lost (never a silent no-op).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn workspace_do_send(
     state: &mut TileLoop,
@@ -28,7 +29,6 @@ pub(super) fn workspace_do_send(
     areas: &[MonitorArea],
     observed: &mut [ObservedWindow],
     retained: &[RetainedRow],
-    output: &str,
     target: SendTarget,
     follow: bool,
     mover_hwnd: u64,
@@ -63,37 +63,30 @@ pub(super) fn workspace_do_send(
     {
         return fail("unmanaged");
     }
-    // Focused window source output as the existing contract: the mover's own
-    // homed output, never the cursor output. Falls back to the passed device
-    // context only while homing is not yet known.
+    // The command carries a home-then-action source: the core resolves
+    // the mover's retained home, else the full migration/control action
+    // context (foreground, pointer, cache, registry). The mover log line
+    // below stays diagnostic only; selection is core-owned.
     let mover_device = state
         .member_tokens
         .iter()
         .find(|(_, token)| token.as_str() == origin_token)
         .and_then(|(key, _)| state.member_home(key))
         .map(|home| home.output);
-    let wire = mover_device
-        .as_deref()
-        .and_then(|device| state.wire_of(device))
-        .or_else(|| state.output_tokens.get(output).cloned());
-    let Some(wire) = wire else {
-        return fail("unknown-output");
-    };
     if state.allowlist.is_some() && !state.workspace_proof {
         return fail("workspace-disabled");
     }
     let window = tiler_core::directional::WindowId(origin_token.to_owned());
-    let output_id = tiler_core::directional::OutputId(wire);
     let command = match target {
         SendTarget::Numbered(index) => WorldCommand::SendNumbered {
             window,
-            output: output_id,
+            source: tiler_core::world_report::SendSource::HomeThenAction,
             index,
             follow,
         },
         SendTarget::Relative(delta) => WorldCommand::SendRelative {
             window,
-            output: output_id,
+            source: tiler_core::world_report::SendSource::HomeThenAction,
             delta,
             follow,
         },
@@ -128,7 +121,7 @@ pub(super) fn workspace_do_send(
             focus_ms: 0,
             source_plan_ms: 0,
             target_plan_ms: 0,
-            source_workspace: mover_device.unwrap_or_else(|| output.to_owned()),
+            source_workspace: mover_device.unwrap_or_else(|| "ws?".to_owned()),
             target_workspace: target.log_op().to_owned(),
         },
         None => {

@@ -125,15 +125,10 @@ pub(super) fn poll_migrate_workspace_cli_request(
     // Migration acts on the live output context's active workspace, never
     // a managed mover: no foreground origin resolves here, matching the
     // production chord route (origin rides only for queue parity and is
-    // ignored at dispatch). Both routes share `chord_output` so a stale
-    // last-switch cache never pins the source when live focus moved.
-    let Some(output) = chord_output(state, areas) else {
-        state.tick += 1;
-        let tick = state.tick;
-        log_json_at(&log_path, cli_line(tick, "unknown-output"));
-        return;
-    };
-    state.ensure_device(&output);
+    // ignored at dispatch). The world route resolves the action source in
+    // core from the neutral report facts (foreground, pointer, cache,
+    // output order), so a stale cache never pins the source when live
+    // focus moved.
     state.tick += 1;
     let tick = state.tick;
     let queued = cli_line(tick, "dispatched");
@@ -158,8 +153,8 @@ pub(super) fn poll_migrate_workspace_cli_request(
         areas,
         &mut [],
         &[],
-        &output,
         &intent,
+        super::observation::sample_cursor(),
         tick,
     );
 }

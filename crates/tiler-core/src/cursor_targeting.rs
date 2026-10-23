@@ -144,6 +144,41 @@ fn resolve_output(
     primary_first.first().cloned()
 }
 
+/// Resolve the migration/control action output from neutral adapter facts:
+/// the genuine foreground output when known, else the pointer (cursor)
+/// output when known, else the adapter-cached output when known, else the
+/// first ordered registry output. Every leg filters to the ordered known
+/// registry (which retains mapped stale outputs, exactly like the retired
+/// platform selector); a stale mapped leg selects and refuses downstream
+/// instead of silently retargeting. `None` only when every source is
+/// unknown: callers refuse without inventing focus. This is the sole
+/// policy owner for migration/control source selection; adapters capture
+/// the neutral facts in the report and never preselect.
+#[must_use]
+pub fn resolve_action_output(
+    foreground: Option<&OutputId>,
+    cursor: Option<&OutputId>,
+    cached: Option<&OutputId>,
+    ordered: &[OutputId],
+) -> Option<OutputId> {
+    if let Some(output) = foreground
+        && ordered.iter().any(|live| live == output)
+    {
+        return Some(output.clone());
+    }
+    if let Some(output) = cursor
+        && ordered.iter().any(|live| live == output)
+    {
+        return Some(output.clone());
+    }
+    if let Some(output) = cached
+        && ordered.iter().any(|live| live == output)
+    {
+        return Some(output.clone());
+    }
+    ordered.first().cloned()
+}
+
 /// Resolve the switch target output for numbered/relative/previous/trailing
 /// selections: cursor output under [`SwitchTarget::Cursor`], focused output
 /// under [`SwitchTarget::Focused`], then primary/first fallback.
@@ -390,6 +425,63 @@ mod tests {
             ),
             Some(output("primary"))
         );
+    }
+
+    #[test]
+    fn action_resolution_preserves_foreground_pointer_cache_order() {
+        let foreground = output("fore");
+        let pointer = output("point");
+        let cached = output("cache");
+        let ordered = vec![output("fore"), output("point"), output("cache")];
+        // Foreground beats live pointer and live cache.
+        assert_eq!(
+            resolve_action_output(Some(&foreground), Some(&pointer), Some(&cached), &ordered),
+            Some(foreground.clone())
+        );
+        // Pointer disagreement: foreground wins; without it the pointer wins.
+        assert_eq!(
+            resolve_action_output(Some(&foreground), Some(&pointer), None, &ordered),
+            Some(foreground.clone())
+        );
+        assert_eq!(
+            resolve_action_output(None, Some(&pointer), Some(&cached), &ordered),
+            Some(pointer.clone())
+        );
+        // Absent foreground with unknown pointer falls to the cache.
+        assert_eq!(
+            resolve_action_output(None, None, Some(&cached), &ordered),
+            Some(cached.clone())
+        );
+        // Unknown foreground/pointer never invent: they fall through.
+        let unknown = output("gone");
+        assert_eq!(
+            resolve_action_output(Some(&unknown), Some(&unknown), Some(&cached), &ordered),
+            Some(cached.clone())
+        );
+        assert_eq!(
+            resolve_action_output(Some(&unknown), Some(&unknown), None, &ordered),
+            Some(output("fore"))
+        );
+        // A cached output outside the known registry never selects: it
+        // falls through to output order (the adapter sends `None` for an
+        // unmapped cache; only mapped-but-removed entries can arrive here
+        // via the retained registry, and those still select below).
+        let stale = output("stale");
+        let registry = vec![output("fore"), output("point"), stale.clone()];
+        assert_eq!(
+            resolve_action_output(None, None, Some(&stale), &registry),
+            Some(stale.clone())
+        );
+        assert_eq!(
+            resolve_action_output(None, None, Some(&stale), &ordered),
+            Some(output("fore"))
+        );
+        // No facts: output order, then nothing.
+        assert_eq!(
+            resolve_action_output(None, None, None, &ordered),
+            Some(output("fore"))
+        );
+        assert_eq!(resolve_action_output(None, None, None, &[]), None);
     }
 
     fn leaf(id: &str) -> NodeId {

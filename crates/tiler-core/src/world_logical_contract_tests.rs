@@ -10,8 +10,8 @@ use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
 use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
-    HoldReason, ScopeAuthority, ScreenReport, ScreenView, TransferKind, WORLD_CONTRACT_VERSION,
-    WindowFact, WorldCommand, WorldReport,
+    HoldReason, ScopeAuthority, ScreenReport, ScreenView, SendSource, TransferKind,
+    WORLD_CONTRACT_VERSION, WindowFact, WorldCommand, WorldReport,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -180,6 +180,9 @@ fn report_attempts(
         cursor_hit: None,
         default_tiled: true,
         focused_global: focused.to_owned(),
+        action_foreground: None,
+        action_cached: None,
+        action_outputs: Vec::new(),
         inventory_complete,
         gesture_barrier,
         gesture: None,
@@ -1048,7 +1051,7 @@ fn numbered_send_trailing_path_creates_and_commits_immediately() {
             Some(11),
             Some(WorldCommand::SendNumbered {
                 window: WindowId("win-a".to_owned()),
-                output: OutputId("out-a".to_owned()),
+                source: SendSource::Explicit(OutputId("out-a".to_owned())),
                 index: 0,
                 follow: true,
             }),
@@ -1141,7 +1144,7 @@ fn numbered_send_mismatched_output_refuses_without_mutation() {
             Some(11),
             Some(WorldCommand::SendNumbered {
                 window: WindowId("win-a".to_owned()),
-                output: OutputId("out-b".to_owned()),
+                source: SendSource::Explicit(OutputId("out-b".to_owned())),
                 index,
                 follow: true,
             }),
@@ -1182,6 +1185,283 @@ fn numbered_send_mismatched_output_refuses_without_mutation() {
         output_view(&calm, "out-b").as_deref(),
         Some(view_b.as_str())
     );
+}
+
+#[test]
+fn implicit_send_source_freezes_pre_observation_home() {
+    use crate::world_report::SendSource;
+    // Implicit send sources resolve the mover's retained home frozen
+    // before staging, then run the staged equality check exactly like the
+    // retired adapter contract (homed mover output, else the per-route
+    // fallback). Direct core tests below construct the implicit variants
+    // and drive full handle_report ticks: homed wins over a disagreeing
+    // pointer, rehomed movers and unhomed newcomers keep the old
+    // mismatch refusal, and the keyboard (cached-live) and CLI (action
+    // context) fallbacks disagree exactly where the old routes did.
+    fn staged(
+        seq: u64,
+        windows: Vec<WindowFact>,
+        focused: &str,
+        cursor: Option<(i32, i32)>,
+        cached: Option<&str>,
+        registry: Vec<&str>,
+        command: WorldCommand,
+    ) -> WorldReport {
+        WorldReport {
+            cursor,
+            action_foreground: None,
+            action_cached: cached.map(|out| OutputId(out.to_owned())),
+            action_outputs: registry
+                .into_iter()
+                .map(|out| OutputId(out.to_owned()))
+                .collect(),
+            ..report(
+                seq,
+                seq,
+                two_screens(),
+                windows,
+                vec![],
+                vec![],
+                focused,
+                Some(10 + seq),
+                Some(command),
+                true,
+                false,
+                vec![],
+            )
+        }
+    }
+    fn sent_to(reply: &crate::world_report::WorldReply, window: &str) -> Option<String> {
+        reply.transfers.iter().find_map(|t| match &t.kind {
+            TransferKind::Window(w) if w.0 == window => Some(t.target_output.0.clone()),
+            _ => None,
+        })
+    }
+    // Homed mover beats a disagreeing pointer: the frozen out-a home
+    // matches the staged source and the send commits there.
+    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            two_screens(),
+            vec![fact("win-a", "out-a", 0)],
+            vec![],
+            vec![],
+            "",
+            None,
+            None,
+            true,
+            false,
+            vec![],
+        ),
+    );
+    let reply = accepted(
+        &mut engine,
+        &staged(
+            2,
+            vec![fact("win-a", "out-a", 0)],
+            "win-a",
+            Some((810, 10)),
+            Some("out-b"),
+            vec!["out-a", "out-b"],
+            WorldCommand::SendNumbered {
+                window: WindowId("win-a".to_owned()),
+                source: SendSource::HomeThenAction,
+                index: 0,
+                follow: false,
+            },
+        ),
+    );
+    assert_eq!(sent_to(&reply, "win-a").as_deref(), Some("out-a"));
+    // Rehomed mover keeps the old mismatch refusal: frozen out-a against
+    // the staged out-b source refuses instead of following the move.
+    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            two_screens(),
+            vec![fact("win-a", "out-a", 0)],
+            vec![],
+            vec![],
+            "",
+            None,
+            None,
+            true,
+            false,
+            vec![],
+        ),
+    );
+    match engine.handle_report(&staged(
+        2,
+        vec![fact("win-a", "out-b", 800)],
+        "win-a",
+        None,
+        None,
+        vec!["out-a", "out-b"],
+        WorldCommand::SendNumbered {
+            window: WindowId("win-a".to_owned()),
+            source: SendSource::HomeThenAction,
+            index: 1,
+            follow: false,
+        },
+    )) {
+        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "cross-domain-mismatch"),
+        other => panic!("rehomed mover must refuse mismatch, got {other:?}"),
+    }
+    // Unhomed newcomer with a live cached output the staged affinity
+    // disagrees with: the cached leg still refuses, never retargets.
+    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            two_screens(),
+            vec![],
+            vec![],
+            vec![],
+            "",
+            None,
+            None,
+            true,
+            false,
+            vec![],
+        ),
+    );
+    match engine.handle_report(&staged(
+        2,
+        vec![fact("win-n", "out-a", 10)],
+        "win-n",
+        None,
+        Some("out-b"),
+        vec!["out-a", "out-b"],
+        WorldCommand::SendNumbered {
+            window: WindowId("win-n".to_owned()),
+            source: SendSource::HomeThenAction,
+            index: 0,
+            follow: false,
+        },
+    )) {
+        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "cross-domain-mismatch"),
+        other => panic!("newcomer cache disagreement must refuse, got {other:?}"),
+    }
+    // Live cached output resolves for the keyboard variant (and the
+    // same-setup action variant would refuse): the cached leg filters to
+    // live screens.
+    let mut live_cached = WorldEngine::new("gen-1").expect("valid generation");
+    accepted(
+        &mut live_cached,
+        &report(
+            1,
+            1,
+            two_screens(),
+            vec![],
+            vec![],
+            vec![],
+            "",
+            None,
+            None,
+            true,
+            false,
+            vec![],
+        ),
+    );
+    match live_cached.handle_report(&staged(
+        2,
+        vec![fact("win-n", "out-a", 10)],
+        "win-n",
+        None,
+        Some("out-b"),
+        vec!["out-a", "out-b"],
+        WorldCommand::SendNumbered {
+            window: WindowId("win-n".to_owned()),
+            source: SendSource::HomeThenCachedLive,
+            index: 0,
+            follow: false,
+        },
+    )) {
+        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "cross-domain-mismatch"),
+        other => panic!("live cached mismatch must refuse, got {other:?}"),
+    }
+    // Keyboard versus CLI fallbacks disagree exactly where the old
+    // routes did: a stale-but-registered cache pins the CLI variant
+    // into a mismatch refusal while the keyboard variant falls back to
+    // the first live screen and commits there.
+    let mut cli = WorldEngine::new("gen-1").expect("valid generation");
+    accepted(
+        &mut cli,
+        &report(
+            1,
+            1,
+            two_screens(),
+            vec![],
+            vec![],
+            vec![],
+            "",
+            None,
+            None,
+            true,
+            false,
+            vec![],
+        ),
+    );
+    match cli.handle_report(&staged(
+        2,
+        vec![fact("win-n", "out-a", 10)],
+        "win-n",
+        None,
+        Some("out-z"),
+        vec!["out-a", "out-b", "out-z"],
+        WorldCommand::SendNumbered {
+            window: WindowId("win-n".to_owned()),
+            source: SendSource::HomeThenAction,
+            index: 0,
+            follow: false,
+        },
+    )) {
+        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "cross-domain-mismatch"),
+        other => panic!("stale cache must refuse the CLI send, got {other:?}"),
+    }
+    let mut keyboard = WorldEngine::new("gen-1").expect("valid generation");
+    accepted(
+        &mut keyboard,
+        &report(
+            1,
+            1,
+            two_screens(),
+            vec![],
+            vec![],
+            vec![],
+            "",
+            None,
+            None,
+            true,
+            false,
+            vec![],
+        ),
+    );
+    let reply = accepted(
+        &mut keyboard,
+        &staged(
+            2,
+            vec![fact("win-n", "out-a", 10), fact("win-m", "out-a", 100)],
+            "win-n",
+            None,
+            Some("out-z"),
+            vec!["out-a", "out-b", "out-z"],
+            WorldCommand::SendRelative {
+                window: WindowId("win-n".to_owned()),
+                source: SendSource::HomeThenCachedLive,
+                delta: 1,
+                follow: false,
+            },
+        ),
+    );
+    assert_eq!(sent_to(&reply, "win-n").as_deref(), Some("out-a"));
 }
 
 #[test]
@@ -1279,7 +1559,7 @@ fn numbered_send_trailing_create_stages_fresh_target_and_commits() {
             Some(12),
             Some(WorldCommand::SendNumbered {
                 window: WindowId("win-a".to_owned()),
-                output: OutputId("out-a".to_owned()),
+                source: SendSource::Explicit(OutputId("out-a".to_owned())),
                 index: 0,
                 follow: true,
             }),
@@ -1388,7 +1668,7 @@ fn numbered_follow_selects_target_view_and_stay_keeps_source() {
             Some(11),
             Some(WorldCommand::SendNumbered {
                 window: WindowId("win-a".to_owned()),
-                output: OutputId("out-a".to_owned()),
+                source: SendSource::Explicit(OutputId("out-a".to_owned())),
                 index,
                 follow: true,
             }),
@@ -1428,7 +1708,7 @@ fn numbered_follow_selects_target_view_and_stay_keeps_source() {
             Some(12),
             Some(WorldCommand::SendNumbered {
                 window: WindowId("win-b".to_owned()),
-                output: OutputId("out-a".to_owned()),
+                source: SendSource::Explicit(OutputId("out-a".to_owned())),
                 index,
                 follow: false,
             }),
@@ -1554,7 +1834,7 @@ fn numbered_follow_fans_out_views_in_shared_mode() {
             Some(11),
             Some(WorldCommand::SendNumbered {
                 window: WindowId("win-a".to_owned()),
-                output: OutputId("out-a".to_owned()),
+                source: SendSource::Explicit(OutputId("out-a".to_owned())),
                 index,
                 follow: true,
             }),
@@ -1646,7 +1926,7 @@ fn numbered_follow_moves_only_its_output_in_global_mode() {
             Some(11),
             Some(WorldCommand::SendNumbered {
                 window: WindowId("win-a".to_owned()),
-                output: OutputId("out-a".to_owned()),
+                source: SendSource::Explicit(OutputId("out-a".to_owned())),
                 index,
                 follow: true,
             }),

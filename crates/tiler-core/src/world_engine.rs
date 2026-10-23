@@ -53,9 +53,9 @@ use crate::world_commands::CommandApplied;
 use crate::world_gesture::{GestureOutcome, RetainedGesture};
 use crate::world_report::{
     CommandResult, FrameAttempt, HoldReason, TilingMode, TransferKind, TransferTarget,
-    WORLD_CONTRACT_VERSION, WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES, WorldReply,
-    WorldReport, encode_reply_canonical, reply_estimate, reply_upper_bound, report_digest,
-    report_estimate, validate_report_reason,
+    WORLD_CONTRACT_VERSION, WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES, WorldCommand,
+    WorldReply, WorldReport, encode_reply_canonical, reply_estimate, reply_upper_bound,
+    report_digest, report_estimate, validate_report_reason,
 };
 
 pub(crate) const KIND_VERSION: &str = "unsupported-version";
@@ -1249,6 +1249,44 @@ impl WorldEngine {
         digest: u64,
         consumed: bool,
     ) -> WorldOutcome {
+        // Freeze implicit send sources from pre-observation retained
+        // homing, before staging can admit newcomers or settle rehoming.
+        // The frozen explicit output is the only source the command below
+        // may use; the home leg must predate stage_facts/settle/reconcile
+        // so first-tick admissions and rehomed movers keep the retired
+        // adapter contract exactly (homed pre-tick output, never post-sweep
+        // membership). Report-only fallback legs need no freeze.
+        let frozen_send_source: Option<OutputId> = match report.command.as_ref() {
+            Some(WorldCommand::SendRelative { window, source, .. })
+            | Some(WorldCommand::SendNumbered { window, source, .. }) => match source {
+                crate::world_report::SendSource::Explicit(_) => None,
+                crate::world_report::SendSource::HomeThenAction => {
+                    self.resolve_home_then_action(report, window)
+                }
+                crate::world_report::SendSource::HomeThenCachedLive => {
+                    self.resolve_home_then_cached_live(report, window)
+                }
+            },
+            _ => None,
+        };
+        // Freeze the direction-only migration source (output plus its
+        // current view) from pre-observation retained state, same position
+        // as the send freeze: the old production route pinned the pre-tick
+        // retained view, so view settlement or bootstrap in this report
+        // must never retarget the current intent. First-tick
+        // unbootstrapped migration refuses; same-report created views
+        // never migrate. Retained topology target selection and all gates
+        // stay downstream on staged state.
+        let frozen_migration_source: Option<(OutputId, String)> = match report.command.as_ref() {
+            Some(WorldCommand::MigrateDirectional { .. }) => {
+                let resolved = self.resolve_action_output(report);
+                match resolved {
+                    Some(output) => self.logical_view(&output.0).map(|view| (output, view)),
+                    None => None,
+                }
+            }
+            _ => None,
+        };
         // Logical rings/views converge first (bootstrap, hotplug, tiling
         // seeds) so staging assigns facts against this report's ownership.
         self.stage_facts(report);
@@ -1453,7 +1491,14 @@ impl WorldEngine {
         if let Some(command) = report.command.as_ref() {
             let command_seq = report.command_seq.expect("validated pair");
             let was_floating = self.floating_scopes.clone();
-            match self.execute_command(report, command_seq, command, &held_scopes) {
+            match self.execute_command(
+                report,
+                command_seq,
+                command,
+                &held_scopes,
+                frozen_send_source.clone(),
+                frozen_migration_source.clone(),
+            ) {
                 CommandApplied::Effect(effect) => {
                     self.resweep_retiled(
                         report,
