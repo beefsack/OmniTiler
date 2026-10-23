@@ -2751,3 +2751,40 @@ of cursor-first fresh placement or the entire rearchitecture.
   Existing core-only, production-seam and private native evidence remain valid,
   but are not the requested common executable baseline. The accepted uniform
   presentation unit is unchanged; Windows remains not dogfood-ready.
+
+## Stage 5 accepted-desire diagnostic projection (2026-10-24)
+
+- A third oracle draft was rejected before any live driver: missing native
+  frames and fenced coverage could pass, report/reply provenance was unbound,
+  allocation and effective frame were conflated, and positive observations
+  were derived from desire. Adversarial review reproduced the holes. The draft
+  was withdrawn; no acceptance runner or new public core API from it remains.
+- The smaller accepted unit extends the existing Windows `world-apply` trace
+  at its production delivered-reply seam. `desired_windows` publishes distinct
+  allocation/effective-frame, homing, per-property authority, float state and
+  operation tokens; `desired_outputs` publishes the actual logical view map;
+  `desired_workspaces` publishes the logical ring rows. Existing attempt,
+  pending-transfer and terminal-operation sections remain distinct evidence.
+- Geometry comes from the actual dispatched report's screens, joined by wire
+  output, not a second native-area projection. Request, observation, incarnation,
+  generation and contract must match the reply before geometry is paired.
+  Mismatch emits an explicit status and null omission rather than false empty
+  completeness. All new arrays have bounded rows and honest omissions.
+- Fresh, duplicate and command-consumed delivery labels retain their different
+  meanings. Trace throttling is unchanged: quiet absence proves nothing.
+  Point-of-use reading rules are in the live Windows guide. This is diagnostic
+  evidence plumbing, not a shared oracle or proof of native settlement.
+- Independent source review verified both production delivery paths. Regression
+  coverage pins separate geometry fields, logical views versus attempt views,
+  held rows, report/reply mismatch, truncation, explicit zero completeness,
+  delivery labels and terminal-versus-quiet throttling. Locked build and
+  all-target tests, strict all-target clippy, workspace formatting and whitespace
+  pass for core/protocol/Windows/fixture: **2,693 passed, zero failed, one ignored
+  across 49 suites**. No live leg was run for this unit.
+- Next: the smallest truthful core-alone ordered case runner and fail-closed
+  common assertions, followed only by a narrow native connector subset using
+  this projection. Missing readback, held/fenced scopes, omitted rows, pending
+  operations and skipped intermediate hide/reveal checkpoints must never pass
+  by omission. Broader unsupported predicates remain explicit platform gaps.
+  Final port notes, final-artifact native regression and readiness summary are
+  still pending. Windows remains not dogfood-ready.

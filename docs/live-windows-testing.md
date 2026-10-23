@@ -237,6 +237,23 @@ do not broaden cleanup or repeatedly restart the experiment.
   rejected no-op focus probes have no desired snapshot. Emptied workspace
   pruning can change ordinals, and default migration refills the trailing empty
   rather than revealing an occupied hidden workspace.
+- `world-apply` accepted-desire rows: `desired_windows` (separate
+  `allocation` vs `effective_frame`, per-property authority, `floating`,
+  homing, `frame_op`/`clear_op`), `desired_outputs` (core-owned logical
+  views), and `desired_workspaces` ride the exact accepted reply, distinct
+  from mechanical `members`/`views`/`clears`/`frames` attempt rows
+  (`pre`/`post`/`base` proof) and terminal `operation_settled` verdicts.
+  `desired_geometry` screen rows (`output`, `full`/`work`, `gap`,
+  `outer_gap`, `complete`, `primary`) ride the dispatched report only on a
+  proven report/reply binding, with `geometry_status: paired` and numeric
+  `desired_geometry_omitted`; a mismatched report emits empty geometry, a
+  null omission (never a valid zero), `geometry_status: mismatch`, and the
+  presented `geometry_report` provenance. Every section caps rows with honest
+  `*_omitted` counts. `delivery` is the freshness gate (`accepted` fresh,
+  `duplicate` cached with no new revision, `command-consumed` fresh
+  observation with an already-consumed command and no re-execution): never
+  read a `duplicate` row as fresh acceptance. Quiet-row absence is never
+  settlement: only terminal events on an emitted row prove a binding retired.
 
 ## Fixture-First Live Tests
 
