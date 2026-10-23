@@ -2412,10 +2412,10 @@ of cursor-first fresh placement or the entire rearchitecture.
   uniform wire border/underlay/drop/pager presentation consumed by Windows,
   the full both-output fixture regression matrix, and the readiness summary.
 - The shared core/Windows acceptance-case connector and case-authoring docs,
-  plus finalized KDE/macOS port notes, are deferred to the post-dogfood
-  separation review and platform-implementation documentation. Earlier lists
-  including those items before dogfooding are superseded by this scope boundary.
-  No parked product question or tentative product choice is resolved here.
+  plus finalized KDE/macOS port notes, are required before dogfooding. The
+  later scope clarification restores these completion-audit deliverables;
+  neither core-only expectations nor interim port notes satisfy them. No
+  parked product question or tentative product choice is resolved here.
 
 ## Stage 5 native clear hold attribution (2026-10-23)
 
@@ -2509,6 +2509,51 @@ of cursor-first fresh placement or the entire rearchitecture.
   border/underlay/drop/pager presentation consumed by Windows; the full
   both-output regression matrix; and the dogfood-readiness summary. Shared
   acceptance-case connector/case-authoring docs and finalized KDE/macOS port
-  notes remain deferred to the post-dogfood separation review.
+  notes are also required before dogfooding.
 - No tentative product decision was added and no parked product question was
   resolved. Existing focus/send/drag questions and defaults are preserved.
+
+## Stage 5 both-output directional acceptance (2026-10-24)
+
+- Fresh fixture-only native acceptance on `a3abda1a` passed the horizontal
+  directional matrix on both outputs: tiled focus and swap; tiled
+  maximize-clear with original-operation `continued-tiled`; float focus,
+  half-snap and maximize-clear; sticky retention, both half-snaps and
+  maximize-clear. Each maximize was observed on a previously admitted
+  lifetime without an admission clear. Float and sticky clear continued
+  under the original operation and reached `float-frame-proven`.
+- Fixture socket focus replaced pointer-dependent acquisition. Explicit
+  per-output pairs and unoccupied sticky destinations avoided occlusion.
+  Cursor positioning was needed only to choose the output for cursor-targeted
+  workspace selection; it was restored after each such leg. Native PMv2
+  frames, foreground HWNDs, visibility, lifetimes and unchanged peers were
+  checked independently of CLI queue acceptance.
+- Actual accepted clear attempts, same-operation continuation and native
+  arrival preceded different-subject focus probes. Those probes produced
+  fresh accepted replies with empty desired operations/transfers and zero
+  omitted rows. Ordinary tiled moves instead joined their own accepted
+  command snapshot, which can include their frame writes. Quiet idle logs
+  were not treated as retirement proof: an initial harness-only stop exposed
+  that an idle owner need not publish a fresh reply.
+- Independent evidence review accepted the raw trace, driver, matrix and
+  cleanup. Owner debug/staged/launched SHA-256 matched
+  `1aad29a9b9c99ef84071b016e1d2bda5905429c9e97a60fa007828491893f1d4`.
+  No production source changed in this acceptance unit; the preceding locked
+  build, 2,694 passing tests, strict all-target clippy and formatting gates
+  remain applicable. Documentation whitespace was checked again.
+- Exact-owner stop, independent restore and fixture shutdown left no owned
+  processes, windows, ledger or control requests. Settings bytes, cursor,
+  relevant SPI/taskbar state and protected-window geometry matched preimages.
+  FFC/warp stayed off; no synthetic keys, clicks, drag or Esc were used.
+- Limits: left/right only, four fixture windows, two outputs. Sticky first
+  half-snap had native arrival/retention proof and a terminal in the trace,
+  but the driver explicitly waited for `float-frame-proven` only on the
+  second half and clears. Up/down, broader regression, physical shortcuts,
+  drag, games and native hover-follow are not established by this unit.
+- Windows is not yet dogfood-ready. Next is core ownership of migration and
+  control action-context selection, preserving foreground, pointer, cache,
+  then output-order semantics. Remaining pre-dogfood units are dead API
+  disposition, uniform wire presentation, the shared core/Windows acceptance
+  connector and case-authoring documentation, finalized KDE/macOS port notes,
+  full both-output regression and the readiness summary. No parked question
+  or tentative product choice was changed.
