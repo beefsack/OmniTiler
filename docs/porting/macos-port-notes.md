@@ -28,8 +28,9 @@ with the fixture-first rules and the signed bundle in
   `space_drag_transfer.rs`, `dock_swipe_select.rs`,
   `input_session.rs`, `runtime*.rs`: move classification,
   selection/send/trailing and drag policy to core. AX/CG/Space facts,
-  native-to-logical binding and coordinate/lifetime mechanics stay
-  native. Translate observed Space membership and view facts into
+  coordinate/lifetime mechanics stay native. Core publishes native-to-logical
+  bindings in replies; macOS uses live lookups, never a durable mapping table.
+  Translate observed Space membership and view facts into
   logical receipts (`observed_workspace`, exact-logical-id views),
   never desired-state echoes. Opt into equal counts only if the host
   requires it.
@@ -55,6 +56,8 @@ with the fixture-first rules and the signed bundle in
   frames, hints, cursor and style dimensions into the same adapter space before
   reporting; do not mix physical fixture hints with logical-point frames.
   Document the port's integer rounding and native/render conversion explicitly.
+  macOS frame-attempt DPI fields are `None`: logical points have no per-window
+  basis. Write whole points; round fixture-derived minima up and maxima down.
 - Input stays native (tap pump, eligibility caches, consume-first
   drain, health recovery); only the targeting and settlement policy
   moves to core commands. Focus arrival needs the SLPS/NSWorkspace
@@ -76,11 +79,22 @@ with the fixture-first rules and the signed bundle in
 
 ## Approved core changes and deferred questions
 
-- Host-owned native adoption (user-approved 2026-10-24, not yet
-  implemented in core): macOS reuses the same core change the KDE
+- Host-owned native adoption (user-approved 2026-10-24, core delivery
+  `c7f6af40`, native acceptance separate): macOS reuses the core change the KDE
   port delivers (adopt native Spaces in native order per display,
   membership preserved, no moves at launch; outside moves/creations
   adopted later). Do not implement a macOS-side equivalent.
+- Only startup adoption and its live acceptance wait on that delivery; other
+  stages and offline translation/executor/readback tests proceed. Core owns
+  native bindings and creation correlation; hosts execute desires with raw
+  attempts. Removal remains eligibility plus fresh native checks.
+- Interim tentative Cmd+H behavior treats app-hidden windows as gone; before a
+  final choice compare local yabai/AeroSpace/Amethyst and core minimized
+  handling. No new hidden-state core type or SafetyFacts renaming selected.
+- Fullscreen/system Spaces are omitted from desktop `native_order`; fullscreen
+  windows report their flag with no observed-workspace receipt, and logical
+  views are empty while fullscreen is current. Sticky requires positive
+  all-Spaces proof; per-display scope still needs checking.
 - Activities default stays tentative pending KDE evidence (see
   [decisions](../decisions.md#port-deferred-investigations-2026-10-24)):
   inactive-activity windows stay retained unmanaged (never tile, move,

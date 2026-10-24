@@ -2,8 +2,9 @@
 
 ## Goal and status
 
-- Proposed migration; implementation has not started. Stage 0 evidence is from
-  `a0f54105` (2026-10-24). No live tests were performed for this record.
+- Stage 0 reviewed; stage 1 in progress. Stage 0 evidence is from `a0f54105`
+  (2026-10-24). The source-only fit review below is historical where superseded
+  by the reviewed outcomes. No live tests were performed for this record.
 - Replace the retired macOS contract, not wrap it. One `WorldEngine` owns policy;
   macOS captures native facts, actuates authorized desires and renders replies.
 - Contract: [adapter guide](../porting/world-adapter-guide.md),
@@ -67,9 +68,60 @@ Paths in this subsection are under `crates/tiler-macos/src/`.
   no workspace moves at launch, and later outside moves/creations. macOS consumes
   that delivery and its accepted tests; it implements no equivalent in the host
   or core. Recheck the actual source after updating, not only documentation.
-- Offline report/dispatch work can proceed independently. Native workspace
-  cutover and adoption acceptance cannot. No temporary adapter-minted logical
-  workspace policy, fake native bindings or logical-only fallback.
+- Update 2026-10-24: `c7f6af40` delivers the host-owned core adoption change;
+  native acceptance is still separate. Only startup adoption and its live
+  acceptance depend on that delivery. Stages 1, 2, 4 and offline stage-3
+  translation/executors/readback/fake-native work proceed independently. No
+  temporary adapter-minted logical workspace policy or fake native bindings.
+
+## Reviewed outcomes (2026-10-24)
+
+- Workspace authority: core owns adoption, existence/order/current/membership
+  after outside changes, and native-to-logical bindings published through
+  `WorkspaceDesire.native_binding`. macOS publishes native order/current,
+  translates actual membership and views to logical receipts, and executes
+  desires with raw attempts. No durable host binding table: only live reply
+  lookups. Adapter-owned mapping was rejected as a second policy owner.
+- App-hidden/Cmd+H: interim tentative A treats the window as gone, preserving
+  legacy macOS behavior and the Windows precedent in the minimize/hidden
+  reference outcomes. When this behavior is reached, inspect local pinned yabai,
+  AeroSpace and Amethyst hide/unhide handling and core minimized behavior
+  (including restore-on-focus); compare A, B (report minimized, possibly only
+  documentation clarification), and C (neutral kept-but-host-hidden core state)
+  before a final selection. No new core state now. Keep Windows-named
+  `SafetyFacts`; renaming is cosmetic churn. This supersedes the source-only
+  fit review's blanket prohibition on app-hidden omission.
+- Async settlement: existing raw attempts (A), no core change. Stage 3 tests
+  delayed arrival, intermediate Space reads, partial AX transition inventory
+  (incomplete/hold, never closes), explicit refusal and a newer user switch. If
+  A mis-settles, first test adapter-only B: post readback at a host completion
+  notification with a justified genuine deadline. Only if B fails propose
+  neutral pending C, aligned with KDE's async-configure investigation.
+- Coordinates: macOS `FrameAttempt.dpi_before/after = None`; the logical-point
+  space has no per-window basis. Approved documentation-only core/guide
+  clarification landed separately as `b2d12a7c`; runtime semantics unchanged
+  (`dpi_basis_changed` treats None as no change). Write whole points; round
+  fixture-derived minima up and maxima down at the documented conversion.
+  Stage 2 tests fractional AX readbacks and cross-display clamping, checking
+  yabai/AeroSpace move sequencing. Only an actual clamp not fixable mechanically
+  justifies proposing an opaque coordinate-basis token after KDE core delivery;
+  Windows could send its DPI with no Windows behavior change.
+- Creation correlation belongs to KDE's adoption design: no creation-attempt
+  type exists and core does not construct `HoldReason::AmbiguousCreation`.
+  Re-evaluate the delivered interface if it fits macOS poorly; no macOS-side
+  correlation authority. Removal remains `existence=false` eligibility plus
+  fresh occupant/pin checks.
+- Fullscreen/system Spaces are not desktops: omit them from `native_order`.
+  Report fullscreen windows with `fullscreen=true`, `observed_workspace=None`
+  so core retains home; emit an empty logical view while a fullscreen Space
+  is current. The former nonoptional `current_native` limitation belongs to the
+  shared adoption design. Sticky requires positive all-Spaces proof. Stage 2
+  checks whether All Desktops is per-display and whether core sticky scope fits.
+  Fullscreen/sticky product questions stay parked TBD.
+- The KDE adoption design received the ownership/creation/fullscreen issues,
+  incomplete-snapshot adoption, in-flight-move correlation, separate-Spaces-off
+  spanning domains, opaque/unstable native IDs and sticky scope. No separate
+  macOS policy solution is implied by that handoff.
 
 ## Staged plan and gates
 
@@ -188,6 +240,7 @@ Paths in this subsection are under `crates/tiler-macos/src/`.
 | Normalize all report geometry to current CG/AX logical points and preserve nearest whole-point frame rounding; document fixture/hint conversion separately | Switch all AX/CG observations to physical pixels or mix spaces | Least native conversion churn and one coherent adapter space; no invented DPI |
 | Reuse existing shared policy entry points before proposing richer ingress | Keep the native classifier as policy, or immediately widen core | Consumer-driven fit test; preserves policy ownership while exposing genuine unrepresentable facts |
 | Treat missing native proof as inability/hold, not successful logical settlement | Success-by-dispatch or desired-state echo | Native arrival, visibility and focus must remain independently falsifiable |
+| Interim app-hidden A treats the window as gone, pending the reviewed evidence comparison | B: report minimized; C: neutral kept-but-hidden core state | Preserve current legacy behavior without a new core state; not a final hidden-window product choice |
 
 ## Stage-0 verification
 
@@ -226,8 +279,7 @@ All Cargo commands below were run with `mise exec --` at `a0f54105`.
   product work. Previously accepted legacy behavior is evidence to preserve, not
   proof the new route works. Fixture input-harness limitations block automated
   claims until its own ownership contract is accepted.
-- Numeric DPI has no selected macOS encoding; assess unknown-DPI settlement in
-  fake-native tests before any claim of explicit float-placement completion.
-- Remaining exact next step: discuss this staged proposal and ranked fit review;
-  then implement stage 1 against the current shared contract. Keep core proposals
-  separate from adapter implementation.
+- macOS uses absent DPI by reviewed decision; fractional readbacks and
+  cross-display clamps still need the planned fake-native coverage.
+- Remaining exact next step: complete the atomic stage-1 cutover against the
+  delivered shared contract; keep any new core proposal separate.
