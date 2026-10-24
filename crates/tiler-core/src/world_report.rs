@@ -422,8 +422,9 @@ impl FrameSetter {
 ///   as correlation so the core matches the attempt to its desire).
 /// - `readback` is the immediate post-write frame (`None` = unreadable).
 /// - `dpi_before`/`dpi_after` are the live window DPI around the write
-///   (`None` = unreadable, never guessed). A changed basis invalidates the
-///   placement: it never becomes a stable clamp and never confirms a float.
+///   (`None` = unreadable, or the adapter coordinate space has no per-window
+///   basis; never guessed). A changed basis invalidates the placement: it
+///   never becomes a stable clamp and never confirms a float.
 /// - `attempt_ms` is the adapter monotonic clock at the write, in the same
 ///   arbitrary-epoch milliseconds as the report `monotonic_ms`. The core
 ///   consumes each attempt idempotently by this stamp, so redelivery after

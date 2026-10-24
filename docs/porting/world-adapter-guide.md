@@ -234,8 +234,9 @@ facts only, at most one latest-wins entry per window/operation/phase:
 
 - `FrameAttempt`: attempted frame (echoed desire as correlation),
   immediate post-write readback (`None` unreadable), DPI before/after
-  (`None` unreadable, never guessed; a changed basis invalidates the
-  placement), `attempt_ms`, optional `operation_id` (`Some("op-<cmdSeq>")`
+  (`None` unreadable, or the adapter coordinate space has no per-window
+  basis; never guessed; a changed basis invalidates the placement),
+  `attempt_ms`, optional `operation_id` (`Some("op-<cmdSeq>")`
   only for explicit float-placement writes; `None` never settles a
   float) and `prewrite` (live frame before the write; required with an
   operation id). Only an explicit native refusal with an unchanged
