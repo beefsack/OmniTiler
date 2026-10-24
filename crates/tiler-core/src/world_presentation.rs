@@ -446,7 +446,7 @@ impl WorldEngine {
             return hidden(GroupHideReason::RootLeaf);
         };
         // Host-scaled outer fill in adapter units: the projected union
-        // expanded by the physical gap, border width, and resolved extension
+        // expanded by the gap, border width, and resolved extension
         // from the same ingress. Uncomputable shapes fail closed with the
         // retained revision, never a partial fill.
         let outer = group_underlay_outer_rect_px(

@@ -1,5 +1,8 @@
 # tiler-macos — scoped tiling preview and capability probes
 
+Port contract: [macOS port notes](../../docs/porting/macos-port-notes.md)
+and the generic [world-adapter guide](../../docs/porting/world-adapter-guide.md).
+
 Tier 2 (public + scoped private APIs, SIP left enabled). Apple Silicon only;
 minimum macOS 15. All Rust; `unsafe` exists
 only in `src/ffi.rs` (single dedicated module); every other module carries

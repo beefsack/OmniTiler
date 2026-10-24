@@ -5878,6 +5878,19 @@ commits; PaperWM.spoon stays corroboration only, never a separate profile.
 | Managed tiled A; readable adjacent output; default follow row | Hold Win+Ctrl+Alt+Right through down, repeat, release; fresh reset with Shift also held | Live repeats dispatch; release is consumed without dispatch; default shifted follow refuses. Modifier drift ends repeat dispatch while preserving paired release verdict | Windows physical suppression/repeat and KDE/reference held-key outcomes TBD |
 | Stay row rebound to Win+Ctrl+Alt+Shift+F6 | Down, repeat, release with exact modifiers; fresh reset without Shift | Only exact rebound arm dispatches stay, using the directional letter hold slot; source MRU/null focus and visible target membership retained | Physical rebound adoption/containment and KDE/reference modifier outcomes TBD |
 
+## 2026-10-24 port discriminator stubs
+
+Minimal rows for the user-approved 2026-10-24 port decisions in
+[decisions](../decisions.md#workspace-vocabulary-2026-10-24). Native
+results stay TBD until KDE-tested.
+
+| Variant | Minimal action sequence | Decided status | Unsupported outcome |
+| --- | --- | --- | --- |
+| Native adoption preserves membership | Fresh core with four occupied native desktops on one display; enable once; record logical workspaces and members | User-approved core change, not yet implemented: adopt native desktops/Spaces in native order per display, membership preserved, no workspace moves at launch; outside moves/creations adopted later | Native four-to-four result TBD; current `native[]` rows that do not bootstrap rings are the gap |
+| Per-output desktop setting warning | Run either separate-view scope with the KWin per-output desktop setting disabled; repeat in span-displays mode; repeat with it enabled | User-approved: warn under either separate-view scope when disabled (actionable in settings if feasible); span-displays needs no warning | Native warning and switching behavior TBD |
+| Inactive-activity window retention | Park windows on an inactive activity; observe admission, tiling, moves and focus; reactivate | Tentative pending KDE evidence: inactive-activity windows stay retained unmanaged, never tile/move/focus, slots held until active; all-desktop maps to sticky; subset-of-desktops floats and never rehomes | Evidence-backed alternative may be proposed; any core change needs user approval |
+| Async configure completion signal | Request a tiled resize on KDE/Wayland; observe before and after configure completion; check whether KWin exposes pending/completion | Reproduce first; only a reproduced failure justifies proposing neutral settling representation; default stays current convergence | Native outcome and signal availability TBD; core change needs user approval |
+
 ## Deferred areas
 
 - All approved behavioral areas are assessed, including ratio balance

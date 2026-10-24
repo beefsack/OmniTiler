@@ -631,3 +631,13 @@ These observations remain pending and require the reviewed live-test protocol:
   D-Bus `/Effects` `loadEffect`/`unloadEffect`; successful KWin/session reload
   remains pending live evidence.
 - `effect-status` is read-only.
+
+## World contract and porting notes
+
+- [World-contract platform adapter guide](docs/porting/world-adapter-guide.md):
+  the strict v2 report/reply contract every adapter (Windows reference,
+  KDE and macOS ports) implements.
+- [KDE port notes](docs/porting/kde-port-notes.md) and
+  [macOS port notes](docs/porting/macos-port-notes.md): per-port
+  inventory (port or delete), native API facts, approved core changes
+  and build/check/test commands.

@@ -412,6 +412,9 @@ impl FrameSetter {
 /// re-reads, and reports; the core compares desired and observed and owns
 /// suppression, retry backoff, and completion. Never a policy conclusion:
 /// no clamp/suppress verdict and no float outcome verdict ride here.
+/// The next report's window observations must be captured after this
+/// attempt's immediate readback. Later observation is not, by itself,
+/// proof that an asynchronous native configure completed.
 ///
 /// - `target` is the attempted frame (the core's published desire, echoed
 ///   as correlation so the core matches the attempt to its desire).
@@ -562,9 +565,11 @@ pub struct PresentationPagerFrame {
 /// - `foreground_frame` is its live frame in adapter units (`None` when
 ///   unreadable; the border hides instead of guessing).
 /// - `border_gap_px`/`border_width_px`/`underlay_extension_px` are the
-///   already host-scaled physical style numbers (DPI conversion stays
-///   adapter-side and runs before this report; the extension sentinel is
-///   already resolved, so the outset here is literal).
+///   already host-scaled style numbers in the same coherent adapter
+///   units as screens and fact frames (physical pixels on Windows,
+///   KWin logical pixels on KDE). DPI conversion stays adapter-side
+///   and runs before this report; the extension sentinel is already
+///   resolved, so the outset here is literal.
 /// - `chord_held` is the movement-only Win+Shift level; `move_window` names
 ///   the classified focused Move subject (`""` when none). The core derives
 ///   the underlay trigger as chord OR a matching focused move.

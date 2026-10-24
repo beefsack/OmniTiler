@@ -57,10 +57,12 @@ ownership before stage 1; accepted extractions are recorded below.
 
 ### KDE and macOS porting map
 
-| Platform | Current additional policy | Port requirement |
-| --- | --- | --- |
-| KDE | `kwin/src/born-maximized.ts`, `world-born-maximized.ts`, `fixed-size-predicate.ts`, `migration-source-refill.ts`, `world-drag.ts`, `world-observe.ts`, `world-apply.ts` | Port to world contract v2: screen/window facts and core logical ids replace native-derived domains/bindings. Enable `host_owned_workspace_domains` and `equal_workspace_count` for desktops spanning outputs; mechanically translate independently observed native membership/view into logical receipts. Missing native destination backing never holds logical mapping authority. Remove TypeScript admission/gesture/refill policy copies. Native pager maps the core model; held scope/member fences still apply. |
-| macOS | `crates/tiler-macos/src/classifier.rs`, `workspace_select.rs`, `workspace_send*.rs`, `drag_drop.rs`, `runtime.rs` coexist with `world_runtime.rs` | Port all consumers to world contract v2 and `host_owned_workspace_domains`; opt into equal counts only if the host requires them. AX/CG/Space facts, native-to-logical binding and coordinate/lifetime mechanics stay native. Translate observed Space membership/view into logical receipts, not desired-state echoes. Move classification, selection/send/trailing and drag policy to core. The legacy drag consumers cannot access the now-internal Engine/CoreEvent/CoreReply boundary; use world commands and presentation instead. Report inability to create/transfer through truthful feedback, never fabricate backing, arrival or capability. |
+Final requirements replace the interim inventory here:
+[generic world adapter guide](../porting/world-adapter-guide.md),
+[KDE port notes](../porting/kde-port-notes.md) and
+[macOS port notes](../porting/macos-port-notes.md). They distinguish delivered
+v2 interfaces from approved core work the ports must deliver; no compatibility
+route is retained for stale consumers.
 
 - Remove public portable per-domain `CoreEvent`/`CoreReply` application and
   session-query interfaces when Windows no longer needs them. Internal
@@ -2898,3 +2900,67 @@ of cursor-first fresh placement or the entire rearchitecture.
 - The Windows Settings selector now says "Workspaces span displays" and explains
   linked switching, retaining the stored `shared` token and behavior. Existing
   label tests are updated. The shared portable catalog remains its text source.
+
+## Finalized port contract and remaining native acceptance (2026-10-24)
+
+- Delivered the [generic adapter guide](../porting/world-adapter-guide.md),
+  [KDE notes](../porting/kde-port-notes.md) and
+  [macOS notes](../porting/macos-port-notes.md), linked from the repository and
+  macOS READMEs. They specify report/command ownership, the single remote broker,
+  deduplication and requester-result routing, desired authority, repeatable
+  reconcile versus one-shot operations, truthful native receipts, coherent
+  geometry/style units, gaming safety, presentation and acceptance limits.
+- Public-contract review corrected ordinary tiled writes versus float-operation
+  tokens, current absent native bindings and KWin's actual pinned `windowAt`
+  API (missing only from local declarations). Presentation dimensions are now
+  documented in coherent adapter units, with no runtime behavior change.
+  Raw attempts are reported with later-captured observations; later is not
+  proof that asynchronous native configure completed.
+- Durable user decisions are recorded in `docs/decisions.md`: linked versus
+  separate views with unchanged tokens; KDE support for both separate-view
+  modes subject to the KWin setting and required warning; equal workspace count
+  as a host limitation; native startup/outside-change adoption as approved core
+  work for the KDE port, reused by macOS; deferred Activities/multi-desktop and
+  async-configure investigations; independent host highlight colors. Four
+  minimal port discriminator rows retain untested native outcomes TBD.
+- Material interface work left to ports: host-owned bootstrap/bindings and
+  outside native changes are not implemented; remote raw classification facts
+  need a broker transport to existing shared policy entry points (the world
+  wire carries projected `WindowFact`s); async configure has no neutral pending
+  representation. These are explicit work or risks, not shims or permission
+  for another policy owner. KDE JS/Rust v1 consumers and macOS legacy routes
+  remain intentionally stale and must be replaced together with no dual route.
+- Final locked core/protocol/Windows/fixture gates pass: **2,732 passed, zero
+  failed, one ignored across 50 suites**, strict all-target clippy, fmt and
+  whitespace. The earlier migration CLI log-count flake was retried once in
+  isolation and passed; its cause remains unknown.
+- Native acceptance is **not complete**. A broad attempted final matrix lacked
+  artifact-hash provenance, positive both-output directional/clear paths and
+  migration readbacks; it is not accepted as a final pass. A fresh hash-paired
+  leg subsequently proved both-output focus arrival, directional moves and
+  actual core maximize-clear continuation, plus independent pager colors and
+  saved-override restart. Both migration directions dispatched with target and
+  refill evidence, but one companion member remained hidden at capture time;
+  native member reveal was not subsequently confirmed. Underlay shown/release
+  was not exercised in that leg. Neither missing proof is waived.
+- Hash-paired native evidence uses the pager artifact cited above. Cleanup
+  verified exact owner exit, fixture shutdown, settings bytes, SPI/taskbar,
+  protected-window baseline and cursor restoration with no owned residue.
+  FFC/warp stayed off; no synthetic drag, Esc or physical/game acceptance claim.
+  Earlier superseded evidence scripts had pre-effect syntax/path defects and
+  one degraded settings-encoding run; corrected fresh evidence, not those runs,
+  supplies the accepted pager result.
+- Remaining close-out: confirm every migrated member's target visibility/frame
+  and source refill after both migration directions; show and release the
+  guarded underlay on both outputs. Preserve earlier stage evidence but do not
+  call it a complete final-artifact pass. Then write the closing outcome and
+  archive this record with links updated. The native shared connector and
+  separation review/cleanup remain deferred as agreed.
+- Existing tentative decisions remain: learned-minimum heuristic, stage
+  sequencing, three-way placement subsuming launch targeting, and development
+  controls including exact-owner migration. Activities defaults are tentative
+  pending KDE evidence. Parked product questions remain empty-workspace focus
+  across outputs, directional edge-nearest versus MRU, float physical-output
+  versus membership-home direction, explicit-output versus directional send,
+  and cross-output drag preview versus release placement. No new answer is
+  inferred from these native checks.

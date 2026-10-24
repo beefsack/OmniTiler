@@ -1104,6 +1104,11 @@ platform API behavior.
     artwork was deferred until the user saw Calculator physically (now seen);
     User 2026-10-17: keep the pager miniature as implemented (plain gray, no
     packaged artwork) for now; the user reviews dogfooding.
+    User-requested 2026-10-24 active-window styling supersedes plain gray for
+    the focused miniature only: full independently resolved highlight border
+    and dimmer fill (opaque channels scaled by 0x66/255). Unfocused miniatures retain the
+    gray border/fill. Focus comes from the accepted reply's foreground token;
+    this is native styling, not another focus-policy owner.
     icon/number, centered-halo and accent-parity appearance physically
     user-accepted 2026-10-19; wider native variants remain pending
     ([record](changes/windows-taskbar-pager-icons.md)). Secondary tray anchors and non-bottom
@@ -1389,10 +1394,14 @@ platform API behavior.
   creation and sticky exclusion support this boundary; Hyprland creates only
   a missing selected target, not a new spare for an existing empty target.
   [Discriminator and evidence](spec/reference-outcomes.md#kde-dual-output-admission-and-workspace-scope-discriminators).
-- **Tentative (user review pending), 2026-10-19:** a saved KDE
-  `global-unique` mode falls back to `per-output-local` with a logged reason.
-- KDE `workspaceMode` exposes `per-output-local` and `shared`; its former
-    `global-unique` mapping is superseded by alignment. The session-local
+- Superseded 2026-10-24 (was tentative 2026-10-19): both separate-view
+  modes are fully supported. See
+  [workspace vocabulary 2026-10-24](#workspace-vocabulary-2026-10-24).
+  A saved KDE `global-unique` mode no longer falls back to
+  `per-output-local`.
+- Historical KDE selector restriction, superseded by the 2026-10-24 support
+    for both separate-view modes: `workspaceMode` exposed only
+    `per-output-local` and `shared`. The session-local
     mapping is never the native COSMIC workspace-set mapping. Adopted
     preexisting desktops are managed, never disposed on teardown. The minimum
     is two workspaces in total, including a trailing empty, not two plus a
@@ -4514,3 +4523,98 @@ platform API behavior.
   until its individual replacement paths are promoted. Group trigger,
   highlight delivery and the tabs gate live under Visuals above (including
   user decision R/S, option 2, 2026-09-26 on endpoint retry).
+
+## Workspace vocabulary 2026-10-24
+
+User-approved 2026-10-24 (final confirmations):
+
+- The existing shared core scope is linked views with the user label
+  "Workspaces span displays": all displays show and switch the same
+  workspace.
+- `per-output-local` and `global-unique` are separate views with the
+  user label "Displays have separate workspaces". COSMIC terminology
+  is `WorkspaceMode::Global` vs `OutputBound`.
+- `equal_workspace_count` is a host limitation with the user label
+  "equal workspace count": same lengths but independent current views.
+  Never call it shared. KDE default remains `per-output-local`;
+  separate-view modes are both fully supported only with the KWin
+  per-output desktop setting enabled. Warn when either per-monitor
+  scope runs with that setting disabled; the port should make the
+  warning actionable in settings if feasible. Shared needs no warning.
+  KDE native global list means `equal_workspace_count` true; empty
+  padded workspaces are expected (for example output 2 with ws4
+  occupied while 1-3 stay empty). Do not overspecify lifecycle beyond
+  the existing rules.
+- This supersedes the stale tentative 2026-10-19 saved global-unique
+  fallback above. Core
+  linked-vs-separate modes are valid on every platform; no new setting
+  is added. Windows Settings uses "Workspaces span displays" without changing
+  the stored `shared` token. The KDE warning is a port requirement.
+
+## Native adoption 2026-10-24
+
+User-approved 2026-10-24, approved core change not yet implemented:
+
+- Host-owned workspace adoption: a fresh core generation adopts native
+  desktops/Spaces in native order for each display with native window
+  membership preserved and no workspace moves at launch. Tiling still
+  follows the existing startup arrangement inference (size/position).
+  Subsequent outside host moves are adopted as new membership; an
+  outside-created native desktop becomes a workspace.
+- The KDE port delivers and accepts this against native facts; macOS
+  reuses it. Four occupied native desktops on a fresh core mean four
+  logical workspaces with the same members and no workspace-move
+  discriminator; the native result stays TBD until KDE-tested.
+- Current `native[]` rows that do not bootstrap rings or publish
+  `native_binding` are the implementation gap, not an uncertain
+  product choice.
+
+## Port deferred investigations 2026-10-24
+
+User-approved 2026-10-24:
+
+- Activities default stays tentative pending KDE evidence:
+  inactive-activity windows stay retained unmanaged (never tile, move,
+  focus or lose their slots) until active; all-desktop maps to sticky
+  (existing core); subset-of-desktops floats and never rehomes. The
+  port may propose an evidence-backed alternative; any core change
+  needs user approval.
+- Async configure: first reproduce the KDE/Wayland pending leg
+  natively and check whether KWin exposes a pending/completion signal; only if
+  reproduced may the port propose a neutral settling representation,
+  and any core change needs user approval. Default stays the current
+  convergence without a speculative new core signal. Distinguish this
+  from the Windows resize lane: shipped `01a73798` prefers a later
+  staged frame over the immediate readback (exact immediate target
+  plus eligible later same-origin growth learns minima; the producer
+  reports prior attempts then fresh facts). Later facts are not native
+  completion, and no settling-protocol redesign is in scope.
+- Generic affected-ports note: macOS and future remote adapters share
+  the broker, startup adoption and async settlement concerns above.
+  macOS multi-Space and accessibility variants apply where stated;
+  they do not auto-prove Activities semantics.
+- The core-only ordered baseline `83d77f5c` is retained. The native
+  shared connector stays deferred after the rearchitecture to a
+  separation review; three failed drafts are withdrawn. Logical
+  receipts do not prove native hide/reveal. The next narrow checker
+  must first reject missing readback, pending operations,
+  omissions/fences, coverage defects and skipped intermediate
+  hide/reveal; no new connector is built here.
+
+## Independent host highlight colors 2026-10-24
+
+User-approved 2026-10-24:
+
+- Active-window border and pager active-window highlight have independent
+  color overrides. Both default to the live system accent. The existing border
+  default already does this; its tokens and behavior are unchanged.
+- Windows stores the new style in `core.pager_highlight.color` (`#rrggbb`,
+  fallback `#2a82da`) and `core.pager_highlight.use_theme` (default `true`).
+  These are Windows host styling despite their historical storage namespace,
+  not shared-core behavior settings. Settings exposes both controls using the
+  existing color/theme validation, persistence and live-apply mechanism.
+- A focused miniature uses the resolved highlight at full strength on its
+  border and dimmed channels for its fill. Unfocused miniature gray and the
+  active workspace cell's system-accent fill are unchanged. Border overrides
+  never affect pager highlight. Every port should offer the independent styles;
+  core presentation semantics remain unchanged.
