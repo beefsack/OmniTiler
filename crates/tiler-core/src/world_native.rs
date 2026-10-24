@@ -156,11 +156,19 @@ impl WorldEngine {
         }
     }
 
-    /// View echo actually proving for one output: the explicit logical echo
-    /// when present, else the native-derived echo under the capability.
-    /// A conflicting pair (both present and different, both known) holds
-    /// (`None`): the core never invents which truth wins.
+    /// View echo actually proving for one output.
+    ///
+    /// Host-owned domains are native-only: the explicit logical echo is
+    /// never consulted and never conflicts. The staged echo derives
+    /// solely from the native current map; an unknown current proves
+    /// nothing (retained views hold, flights hold).
+    ///
+    /// Without the capability no native echo exists here: only the
+    /// explicit logical echo proves, when it names a known workspace.
     pub(crate) fn view_echo_for(&self, report: &WorldReport, output: &OutputId) -> Option<String> {
+        if report.host_owned_workspace_domains {
+            return self.native_echo_for(report, output);
+        }
         let explicit = report
             .views
             .iter()
@@ -168,18 +176,9 @@ impl WorldEngine {
             .map(|view| view.view.as_str())
             .filter(|view| !view.is_empty())
             .map(str::to_owned);
-        let native = self.native_echo_for(report, output);
-        match (explicit, native) {
-            (Some(explicit), Some(native)) if explicit != native => None,
-            (Some(explicit), _) => {
-                if self.known_workspace(output, &explicit) {
-                    Some(explicit)
-                } else {
-                    None
-                }
-            }
-            (None, Some(native)) => Some(native),
-            (None, None) => None,
+        match explicit {
+            Some(explicit) if self.known_workspace(output, &explicit) => Some(explicit),
+            _ => None,
         }
     }
 
@@ -238,22 +237,18 @@ impl WorldEngine {
             .map(|screen| screen.output.clone())
             .collect();
         for output in &outputs {
-            let explicit = report
-                .views
-                .iter()
-                .find(|view| view.output == *output)
-                .map(|view| view.view.as_str())
-                .filter(|view| !view.is_empty())
-                .map(str::to_owned);
-            let native = self.native_echo_for(report, output);
-            match (explicit, native) {
-                (Some(explicit), Some(native)) if explicit != native => {
-                    self.staged.echoes.remove(&output.0);
-                }
-                (None, Some(native)) => {
+            // Native-only view receipts (this function returns early
+            // without the capability): the explicit logical echo is
+            // never evidence and never conflicts. The staged echo
+            // derives solely from the native current; an unknown
+            // current stages nothing so the retained view holds.
+            match self.native_echo_for(report, output) {
+                Some(native) => {
                     self.staged.echoes.insert(output.0.clone(), native);
                 }
-                _ => {}
+                None => {
+                    self.staged.echoes.remove(&output.0);
+                }
             }
         }
         if !shared {

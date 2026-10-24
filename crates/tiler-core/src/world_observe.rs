@@ -154,6 +154,11 @@ impl WorldEngine {
     /// echoes, facts, closes, and the gesture barrier. Homing and domains
     /// follow in [`WorldEngine::build_staged_domains`], after rings/views
     /// converge.
+    ///
+    /// Host-owned outputs are native-only: explicit logical echoes are
+    /// never staged there (the core derives every view receipt from the
+    /// native current map in [`WorldEngine::converge_native_pre`]).
+    /// Tiler-owned outputs keep the logical route unchanged.
     pub(crate) fn stage_facts(&mut self, report: &WorldReport) {
         let mut staged = StagedReport {
             screens: report.screens.clone(),
@@ -161,11 +166,15 @@ impl WorldEngine {
             ..StagedReport::default()
         };
         for view in &report.views {
-            if !view.view.is_empty() {
-                staged
-                    .echoes
-                    .insert(view.output.0.clone(), view.view.clone());
+            if view.view.is_empty() {
+                continue;
             }
+            if self.native_authoritative(report, &view.output) {
+                continue;
+            }
+            staged
+                .echoes
+                .insert(view.output.0.clone(), view.view.clone());
         }
         for fact in &report.windows {
             staged

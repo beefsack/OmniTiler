@@ -30,7 +30,7 @@
 | --- | --- | --- |
 | 0. Inventory and plan | This plan, current-tree discrepancies, explicit parked contracts | Source inspection and unchanged core baseline; complete |
 | 1. Host-owned adoption | Capability-gated core native order/bindings and native member intake; preserve startup inference and adopt later outside moves/creations; no KDE policy workaround | Core-only delivery: four bound workspaces plus ordinary spare, no launch moves/effects, stable bindings, exact startup geometry, outside move/create and uncertainty regressions; native result TBD |
-| 1b. Native-only evidence and backing correlation | Core/protocol complete; optional native current, native-only host receipts, hybrid creation desires/attempts, native order/removal and spanning regressions | 30 creation/adoption discriminators and 16 unknown/minimized pins pass; full core/protocol/Windows gates pass; host consumption and native acceptance remain separate |
+| 1b. Native-only evidence and backing correlation | Core/protocol complete; optional native current, native-only host receipts, hybrid creation desires/attempts, native order/removal and spanning regressions | 32 creation/adoption discriminators and 16 unknown/minimized pins pass; full core/protocol/Windows gates pass; host consumption and native acceptance remain separate |
 | 2. Broker and strict v2 cutover | Partial: paired Rust/JS implementation, explicit creation consumption and canonical v2 fixtures exist; command wake delivery and migration/reuse/lifecycle expectations remain unresolved | Rust 192 pass; KDE 690/695 pass, five retained integration failures; no native or completion claim |
 | 3. Observe and actuate | v2 facts/receipts, presentation ingress and operation tokens; preserve native identity/recovery and last-moment vetoes; delete old feedback/verdict and native-derived homing routes | Fresh post-dispatch facts, truthful attempts, token spending, generation/watermark refusal, transfer/clear/float settlement and no fabricated arrival |
 | 4. Shared policy only | Broker capture envelope carries raw native role/control/ownership/app/hint facts to existing Rust core entry points; delete TS admission, born-maximized, fixed-size, refill, scope, drag/gesture, same-axis move and tiling-toggle policy | Core-policy normalization and real capture-envelope tests; shortcut/gesture inputs never preselect verdicts; no shared-ingress redesign implied |
@@ -412,7 +412,7 @@
   tests require a readable macOS version and fail on a non-macOS host. No
   unrelated repair, dependency change or live mutation was attempted.
 - Stage 1b accepted offline evidence (2026-10-25): locked all-target core/protocol/
-  Windows build and strict clippy pass; 2,032 tests pass across 52 suites (30
+  Windows build and strict clippy initially pass; 2,032 tests across 52 suites (30
   Stage 1b, 16 unknown/minimized, 28 codec). Formatting and whitespace pass.
   The exact world-acceptance runner passes 6/6 checkpoints; final gates use
   isolated build artifacts after identifying cross-revision cache reuse.
@@ -423,6 +423,17 @@
   The trailing-join fixture now supplies exact creation attempts instead of
   relying on the former uncorrelated outside-adoption path; production macOS
   creation-attempt consumption remains follow-up work, not delivered here.
+- Native-only view closure: final audit reproduced logical view echoes falsely
+  settling a host-owned flight under unknown native current, and stale logical
+  echoes blocking actual native proof. Logical echoes are now ignored throughout
+  host-owned staging, settlement and supersession tracking; tiler-owned logical
+  receipt behavior is unchanged. Two regressions fail before and pass after;
+  independent review removed the superseded conflict branch. Final fresh-artifact
+  gates: 2,034 core/protocol/Windows tests across 52 suites, strict clippy/build,
+  fmt/whitespace and acceptance 6/6 pass; Stage 1b suite is 32/32. macOS world
+  52/52 and trailing-join 7/7 pass, all targets compile; full library is 1,120 pass
+  plus the same four non-macOS version-gate failures. KDE remains 690/695 and
+  `omnitiler` 192/192 after this closure, with typecheck/build/strict clippy green.
 - KDE creation integration (2026-10-25): execute only `nativeCreations`, spend
   before the synchronous native call, and report full before/after orders plus
   unique same-turn `created`. Core-published bindings alone release dependents.

@@ -137,6 +137,9 @@ missing facts. Shape:
   read output-specific `native_binding` and keep only live native-id/handle
   lookups, never their own native-to-logical table. Tiler-owned domains keep the
   logical receipt route. This amends the earlier macOS receipt assumption.
+  Explicit logical window/view receipts are ignored under the capability,
+  including for settlement and external-supersession tracking; they cannot
+  substitute for unknown native membership/current or veto genuine native proof.
 - `current_native: Option<String>` is delivered (`current: null` on the wire):
   a non-desktop current surface keeps the retained logical view while its desktop
   order is still used. Fullscreen/system surfaces omitted from the order are
@@ -195,10 +198,10 @@ Minimized path audit (core behavior preserved, 2026-10-25):
 | Frame/maximize clear | No allocation, placement, frame or clear token | `world_publish.rs:736-764,829-888` |
 | Focus-by-id/pager click | Refuses `focus-unknown`; minimized absent from live lookup/snapshot | `world_commands.rs:60-99`, `session/world.rs:727-729` |
 | Direct send/directional move | Refuses unknown/stale subject, no new transfer | `world_sends.rs:201-216`, `world_operations.rs:378-387` |
-| Close-reflow/automatic focus | Excludes minimized candidates | `world_observe.rs:324-339`, `world_model.rs:947-971`, `session/world.rs:1869-1900` |
-| Trailing/native desktop removal | Minimized occupancy retains logical workspace, even if binding disappears | `world_model.rs:36-51`, `world_native.rs:293-308` |
+| Close-reflow/automatic focus | Excludes minimized candidates | `world_observe.rs:333-348`, `world_model.rs:947-971`, `session/world.rs:1869-1900` |
+| Trailing/native desktop removal | Minimized occupancy retains logical workspace, even if binding disappears | `world_model.rs:36-51`, `world_native.rs:288-303` |
 | Whole-workspace migration/global swap | Includes non-sticky minimized members; can move membership | `world_commands.rs:790-823,1071-1105` |
-| Output removal | Displaced homing follows survivor; can move membership | `world_observe.rs:136-151,489-497,630-638` |
+| Output removal | Displaced homing follows survivor; can move membership | `world_observe.rs:136-151,498-506,639-647` |
 | Transfer already pending at minimize | Publishes target membership, no geometry/unminimize | `world_publish.rs:743-750,837-855` |
 | Restore | Host-observed restoration reuses stored neighborhood; not a core restore command | `session/world.rs:1498-1575,1871-1877` |
 

@@ -1694,12 +1694,35 @@ impl WorldEngine {
         if report.inventory_complete {
             self.placement_bootstrapped = true;
         }
-        for view in &report.views {
-            if view.view.is_empty() {
-                continue;
+        // Latest proving echo per output for external-supersession
+        // detection. Host-owned domains are native-only: track the
+        // native-derived echo (never the explicit logical echo), so the
+        // staged comparison keeps a single provenance. Tiler-owned
+        // outputs keep tracking the raw logical echo.
+        if report.host_owned_workspace_domains {
+            let outputs: Vec<OutputId> = report
+                .screens
+                .iter()
+                .map(|screen| screen.output.clone())
+                .collect();
+            for output in &outputs {
+                match self.view_echo_for(report, output) {
+                    Some(echo) => {
+                        self.last_views.insert(output.clone(), echo);
+                    }
+                    None => {
+                        self.last_views.remove(output);
+                    }
+                }
             }
-            self.last_views
-                .insert(view.output.clone(), view.view.clone());
+        } else {
+            for view in &report.views {
+                if view.view.is_empty() {
+                    continue;
+                }
+                self.last_views
+                    .insert(view.output.clone(), view.view.clone());
+            }
         }
         if reply.command_consumed {
             WorldOutcome::CommandConsumed(reply)

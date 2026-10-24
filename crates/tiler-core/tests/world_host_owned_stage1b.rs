@@ -2968,3 +2968,191 @@ fn two_correlated_creations_settle_sequentially() {
     assert_eq!(workspace_hold(&after_second, "out-b", &spare_b), None);
     assert!(after_second.native_creations.is_empty());
 }
+
+#[test]
+fn none_current_conflicting_view_holds_flight_until_native_proof() {
+    // Native-only view receipts: with an unknown current (`None`, e.g. a
+    // fullscreen Space) a conflicting explicit logical echo proves
+    // nothing. The retained SwitchView flight holds (never settles on the
+    // logical echo) and the later native current settles it with no
+    // logical evidence at all.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            one_screen(),
+            vec![fact_native(
+                "win-a",
+                "out-a",
+                rect(0, 0, 400, 560),
+                Some(D1),
+            )],
+            vec![native_obs("out-a", &[D1, D2], Some(D1))],
+            vec![],
+            None,
+            None,
+            true,
+        ),
+    );
+    let bound: std::collections::BTreeMap<String, String> = bound_ids(&first, "out-a")
+        .into_iter()
+        .map(|(id, n)| (n, id))
+        .collect();
+    accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            one_screen(),
+            vec![fact_native(
+                "win-a",
+                "out-a",
+                rect(0, 0, 400, 560),
+                Some(D1),
+            )],
+            vec![native_obs("out-a", &[D1, D2], Some(D1))],
+            vec![],
+            Some(11),
+            Some(WorldCommand::SwitchView {
+                output: OutputId("out-a".to_owned()),
+                workspace: bound[D2].clone(),
+            }),
+            true,
+        ),
+    );
+    // Unknown current echoing the flight target logically: proves nothing.
+    let mut bogus = report(
+        3,
+        3,
+        one_screen(),
+        vec![fact_native(
+            "win-a",
+            "out-a",
+            rect(0, 0, 400, 560),
+            Some(D1),
+        )],
+        vec![native_obs("out-a", &[D1, D2], None)],
+        vec![],
+        None,
+        None,
+        true,
+    );
+    bogus.views = vec![ScreenView {
+        output: OutputId("out-a".to_owned()),
+        view: bound[D2].clone(),
+    }];
+    let held = accepted(&mut engine, &bogus);
+    assert_eq!(
+        held.transfers.len(),
+        1,
+        "unknown current holds the flight despite the logical echo: {:?}",
+        held.transfers
+    );
+    // The native current later proves the target with no logical echo.
+    let settled = accepted(
+        &mut engine,
+        &report(
+            4,
+            4,
+            one_screen(),
+            vec![fact_native(
+                "win-a",
+                "out-a",
+                rect(0, 0, 400, 560),
+                Some(D1),
+            )],
+            vec![native_obs("out-a", &[D1, D2], Some(D2))],
+            vec![],
+            None,
+            None,
+            true,
+        ),
+    );
+    assert!(
+        settled.transfers.is_empty(),
+        "native proof settles: {:?}",
+        settled.transfers
+    );
+}
+
+#[test]
+fn actual_native_current_settles_despite_bogus_view() {
+    // Native-only view receipts: the actual native current proves the
+    // retained flight even when the explicit logical echo names a stale
+    // workspace. No conflict hold, no logical fallback.
+    let mut engine = WorldEngine::new("gen-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            one_screen(),
+            vec![fact_native(
+                "win-a",
+                "out-a",
+                rect(0, 0, 400, 560),
+                Some(D1),
+            )],
+            vec![native_obs("out-a", &[D1, D2], Some(D1))],
+            vec![],
+            None,
+            None,
+            true,
+        ),
+    );
+    let bound: std::collections::BTreeMap<String, String> = bound_ids(&first, "out-a")
+        .into_iter()
+        .map(|(id, n)| (n, id))
+        .collect();
+    accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            one_screen(),
+            vec![fact_native(
+                "win-a",
+                "out-a",
+                rect(0, 0, 400, 560),
+                Some(D1),
+            )],
+            vec![native_obs("out-a", &[D1, D2], Some(D1))],
+            vec![],
+            Some(11),
+            Some(WorldCommand::SwitchView {
+                output: OutputId("out-a".to_owned()),
+                workspace: bound[D2].clone(),
+            }),
+            true,
+        ),
+    );
+    // The host shows the target natively while the logical echo is stale.
+    let mut stale = report(
+        3,
+        3,
+        one_screen(),
+        vec![fact_native(
+            "win-a",
+            "out-a",
+            rect(0, 0, 400, 560),
+            Some(D1),
+        )],
+        vec![native_obs("out-a", &[D1, D2], Some(D2))],
+        vec![],
+        None,
+        None,
+        true,
+    );
+    stale.views = vec![ScreenView {
+        output: OutputId("out-a".to_owned()),
+        view: bound[D1].clone(),
+    }];
+    let settled = accepted(&mut engine, &stale);
+    assert!(
+        settled.transfers.is_empty(),
+        "actual native current wins despite the bogus echo: {:?}",
+        settled.transfers
+    );
+}
