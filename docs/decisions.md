@@ -2416,7 +2416,7 @@ platform API behavior.
   both default off. The latter expresses the i3/sway cross-output behavior;
   the all-settings preset control remains separate. Native FFC hover delivery
   remains unverified; positioned synthetic motion did not establish an owner
-  hover observation. [Acceptance and limits](changes/core-world-model-rearchitecture.md#stage-4b-accepted-outcome-2026-10-23).
+  hover observation. [Acceptance and limits](changes/archive/core-world-model-rearchitecture.md#stage-4b-accepted-outcome-2026-10-23).
   User 2026-10-20 explicitly approves the platform-neutral shared-core addition:
   implement the three-way new-window placement logic in shared core where
   possible, with each platform supplying cursor position and settings.
@@ -2621,7 +2621,7 @@ platform API behavior.
   still preserve committed source state; diagnostic float origin never
   selects policy. Stage 2a implements this logical boundary; Windows owner
   adoption and cursor-first placement remain separate slices.
-  [Implementation and evidence](changes/core-world-model-rearchitecture.md#stage-2a-accepted-outcome-2026-10-21).
+  [Implementation and evidence](changes/archive/core-world-model-rearchitecture.md#stage-2a-accepted-outcome-2026-10-21).
 - Windows world-owner adoption, 2026-10-22: stage 2b uses the retained
   `WorldOwner` as the sole workspace/layout policy owner. Native member/view
   receipts remain distinct from core desires; scoped inventory completeness
@@ -2633,7 +2633,7 @@ platform API behavior.
   interfaces are removed. Startup/restart adopt native markers but introduce
   no durable workspace-ring or hidden-view store. Cursor-first switch and fresh
   placement remain stage 2c, not part of this adoption.
-  [Acceptance and limits](changes/core-world-model-rearchitecture.md#stage-2b-accepted-outcome-2026-10-22).
+  [Acceptance and limits](changes/archive/core-world-model-rearchitecture.md#stage-2b-accepted-outcome-2026-10-22).
 - Cursor-first world adoption, 2026-10-22: core resolves implicit numbered,
   relative, previous and trailing selection from the configured cursor/focused
   target; explicit screen selections remain explicit. Core chooses fresh
@@ -2647,7 +2647,7 @@ platform API behavior.
   fullscreen-game lane. Native DPI rebasing can reassert the same intended
   physical frame once after an observed DPI transition, with renewed safety
   gates; stable clamp/adoption policy is not part of that conversion.
-  [Acceptance and remaining stages](changes/core-world-model-rearchitecture.md#stage-2c-accepted-outcome-2026-10-22).
+  [Acceptance and remaining stages](changes/archive/core-world-model-rearchitecture.md#stage-2c-accepted-outcome-2026-10-22).
 - **Tentative, pending review (2026-10-22):** retain a dev-only exact-owner
   `migrate-workspace --direction` control, parallel to `send-output`, for
   whole-workspace native acceptance. It invokes the existing production
@@ -2673,7 +2673,7 @@ platform API behavior.
   anchoring, artwork, host styling and click-to-command. The initial in-process
   presentation queries/observations are superseded by uniform wire presentation
   below.
-  [Acceptance and port boundary](changes/core-world-model-rearchitecture.md#stage-4c-accepted-outcome-2026-10-23).
+  [Acceptance and port boundary](changes/archive/core-world-model-rearchitecture.md#stage-4c-accepted-outcome-2026-10-23).
 - Observed output grounding, 2026-10-23: shared core selects a rectangle's
   observed output from FULL rectangles using integer-rounded centre/half-open
   containment, then largest intersection, with first topology entry winning
@@ -2681,7 +2681,7 @@ platform API behavior.
   native freshness/lifetime vetoes and logical membership remain separate.
   The off-screen overlap fallback is corrected without changing command targets
   or the parked float physical-output versus membership-home contract.
-  [Audit and evidence](changes/core-world-model-rearchitecture.md#stage-5-output-grounding-and-dead-fence-audit-2026-10-23).
+  [Audit and evidence](changes/archive/core-world-model-rearchitecture.md#stage-5-output-grounding-and-dead-fence-audit-2026-10-23).
 - Action-context ownership, 2026-10-24: core resolves directional migration
   from normalized foreground output, pointer output, cached output, then the
   ordered known-output registry. Every leg filters through that registry,
@@ -2696,7 +2696,7 @@ platform API behavior.
   current behavior without resolving the parked send-policy mismatch.
   Windows captures those facts and emits intents; superseded platform
   selectors and old directional-migration payloads are removed.
-  [Acceptance and limits](changes/core-world-model-rearchitecture.md#stage-5-action-context-ownership-2026-10-24).
+  [Acceptance and limits](changes/archive/core-world-model-rearchitecture.md#stage-5-action-context-ownership-2026-10-24).
 - World-contract cleanup, 2026-10-24: obsolete external operation-verdict
   feedback is removed, not decoded into a retired route. Current adapters
   report raw frame, clear, membership and view attempts; core derives
@@ -2704,7 +2704,7 @@ platform API behavior.
   latches remain intact. The zero-valued presentation byte reserve is also
   removed; it was not a serialized presentation contract. The uniform wire
   contract is delivered separately below.
-  [Consumer audit and verification](changes/core-world-model-rearchitecture.md#stage-5-dead-api-disposition-2026-10-24).
+  [Consumer audit and verification](changes/archive/core-world-model-rearchitecture.md#stage-5-dead-api-disposition-2026-10-24).
 - Uniform world presentation, 2026-10-24: every report carries normalized
   foreground, host-scaled style, movement/chord, pause, stacking and distinct
   live/float/tile frame-source facts. Core publishes border and group shapes
@@ -2716,7 +2716,7 @@ platform API behavior.
   Focused-fullscreen-game pause publishes hidden shapes and no pager projection.
   The old presentation queries and `ActiveGroup` command/reply path are deleted,
   not retained as alternate or compatibility routes.
-  [Contract and native acceptance](changes/core-world-model-rearchitecture.md#stage-5-uniform-wire-presentation-2026-10-24).
+  [Contract and native acceptance](changes/archive/core-world-model-rearchitecture.md#stage-5-uniform-wire-presentation-2026-10-24).
 - User approved 2026-10-20: platforms report normalized classification facts:
   window type/role, owner/parent, modal, resizable and minimum/maximum size,
   fullscreen, cannot-be-controlled (for example elevated/protected), and app
@@ -2739,7 +2739,7 @@ platform API behavior.
   origin-delta remap; observed arrival/view/refill still proves completion.
   Same-output sequencing is unchanged. Learned constraints, remaining operation
   completion and frameless migration placement remain separate stage 3 work.
-  [Acceptance and limits](changes/core-world-model-rearchitecture.md#stage-3a-accepted-outcome-2026-10-22).
+  [Acceptance and limits](changes/archive/core-world-model-rearchitecture.md#stage-3a-accepted-outcome-2026-10-22).
 - Learned-constraint extraction, 2026-10-22: core retains minimum-size evidence
   per exact lifetime and merges it into the existing normalized size-hint path
   for every world projection. Declared maxima are not widened; infeasible
@@ -2760,7 +2760,7 @@ platform API behavior.
   suppression pair over immediate post-write readback. An exact immediate
   readback never clears a later stable mismatch; infeasible learned floors
   retain proportional allocation and suppress an unchanged clamped pair.
-  [Acceptance and live limits](changes/core-world-model-rearchitecture.md#stage-3b1-accepted-outcome-2026-10-22).
+  [Acceptance and live limits](changes/archive/core-world-model-rearchitecture.md#stage-3b1-accepted-outcome-2026-10-22).
 - Explicit float-placement completion, 2026-10-22: core consumes raw frame
   attempts correlated by operation id, lifetime and target, including the
   immediate pre-write frame. It derives confirmation/refusal/ambiguity from
@@ -2772,7 +2772,7 @@ platform API behavior.
   Platforms retain mechanical freshness/lifetime gates and at-most-once
   dispatch, but no float outcome classifier or applied-float policy memory.
   Transfer/view completion remains a separate extraction.
-  [Acceptance and limits](changes/core-world-model-rearchitecture.md#stage-3b2-accepted-outcome-2026-10-22).
+  [Acceptance and limits](changes/archive/core-world-model-rearchitecture.md#stage-3b2-accepted-outcome-2026-10-22).
 - Transfer/view completion extraction, 2026-10-23: core derives window,
   standalone/follow and migration target/refill settlement from raw member and
   view attempts correlated by operation, target and member lifetime. Retained
@@ -2784,7 +2784,7 @@ platform API behavior.
   or ambiguous policy maps. No-write arrivals still prove through independent
   native receipts; an attempt row is not a completion prerequisite. External
   transfer/view verdict ingress is retired without a compatibility route.
-  [Acceptance and remaining placement work](changes/core-world-model-rearchitecture.md#stage-3b3-accepted-outcome-2026-10-23).
+  [Acceptance and remaining placement work](changes/archive/core-world-model-rearchitecture.md#stage-3b3-accepted-outcome-2026-10-23).
 - Floating-flight completion clarification, 2026-10-23: a floating workspace's
   `Untouched` layout scope does not cancel an explicit core view or migration
   target. Windows applies those retained membership/view requests, including
@@ -2793,7 +2793,7 @@ platform API behavior.
   attempts and observed receipts, and floating mode/scope follows the logical
   workspace id on the migration commit reply. A scope omission alone still
   authorizes no write or retirement.
-  [Correction and evidence](changes/core-world-model-rearchitecture.md#floating-view-and-migration-completion-correction).
+  [Correction and evidence](changes/archive/core-world-model-rearchitecture.md#floating-view-and-migration-completion-correction).
 - User approved 2026-10-20: platforms detect and report host gesture start
   (window, move or resize), cursor updates, release and cancel, and render/apply.
   Core owns the drag session, target, overlay shape, release outcome
@@ -2812,7 +2812,7 @@ platform API behavior.
   native finish paths report cancellation rather than silently abandoning the
   retained session. No new hook or timer is added; existing coalesced gesture
   wakes now report into core. Physical drag and game acceptance remain separate.
-  [Acceptance and remaining stages](changes/core-world-model-rearchitecture.md#stage-4a-accepted-outcome-2026-10-23).
+  [Acceptance and remaining stages](changes/archive/core-world-model-rearchitecture.md#stage-4a-accepted-outcome-2026-10-23).
 - Frameless migration placement extraction, 2026-10-23: core publishes
   cross-output sessionless migration placement as an effective frame consumed
   by membership actuation, not as a tile allocation or ordinary float frame
@@ -2823,7 +2823,7 @@ platform API behavior.
   Windows no longer guesses a remap. Same-output follow ordering,
   cross-output-only pre-arrival tile slots, intentional-float physical frames
   and unsupported tiled-to-float source-state transactions are unchanged.
-  [Acceptance and limits](changes/core-world-model-rearchitecture.md#stage-3b4-accepted-outcome-2026-10-23).
+  [Acceptance and limits](changes/archive/core-world-model-rearchitecture.md#stage-3b4-accepted-outcome-2026-10-23).
 - User approved 2026-10-20: core publishes per-screen pager content in the
   world state: ordered workspaces with labels, current, occupied,
   contains-focused, and per-workspace window lists if icons need them.
@@ -2838,7 +2838,7 @@ platform API behavior.
   focus and setting observations remain reconstructible without idle logging.
   Windows uses an enabled-only, non-consuming mouse tap, removed during
   suspension; hook-chain cost and suspension latency are unmeasured. Neither
-  setting is enabled by default. [Evidence and native-hover residual](changes/core-world-model-rearchitecture.md#stage-4b-accepted-outcome-2026-10-23).
+  setting is enabled by default. [Evidence and native-hover residual](changes/archive/core-world-model-rearchitecture.md#stage-4b-accepted-outcome-2026-10-23).
 - Boundary extraction, 2026-10-21: ordered geometry/focus eligibility is shared
   core policy over normalized safety and overlay facts. Windows maps native
   facts and preserves its diagnostic vocabulary, not a second refusal-order
@@ -2847,7 +2847,7 @@ platform API behavior.
   safety. This changes no behavior and does not yet migrate the retained
   workspace/world owner. Core-only shared cases, Windows projection/admission
   regressions and fixture-only checks on both outputs pass.
-  [Scope and evidence](changes/core-world-model-rearchitecture.md#stage-1-accepted-outcome-2026-10-21).
+  [Scope and evidence](changes/archive/core-world-model-rearchitecture.md#stage-1-accepted-outcome-2026-10-21).
 - User 2026-10-16, full-state replies D1: retain the stateful, side-effect-free
   `Engine` behind a world-level report/reply boundary. Deterministic typed
   replay remains explicit. No caller-owned or serialized core state crosses
@@ -4530,10 +4530,10 @@ User-approved 2026-10-24 (final confirmations):
 
 - The existing shared core scope is linked views with the user label
   "Workspaces span displays": all displays show and switch the same
-  workspace.
+  workspace. This is COSMIC `WorkspaceMode::Global`.
 - `per-output-local` and `global-unique` are separate views with the
-  user label "Displays have separate workspaces". COSMIC terminology
-  is `WorkspaceMode::Global` vs `OutputBound`.
+  user label "Displays have separate workspaces". These correspond to
+  COSMIC `WorkspaceMode::OutputBound`.
 - `equal_workspace_count` is a host limitation with the user label
   "equal workspace count": same lengths but independent current views.
   Never call it shared. KDE default remains `per-output-local`;
@@ -4600,6 +4600,9 @@ User-approved 2026-10-24:
   must first reject missing readback, pending operations,
   omissions/fences, coverage defects and skipped intermediate
   hide/reveal; no new connector is built here.
+- Code cleanup and abstraction review remain a separate follow-up after the
+  world-model rearchitecture. This does not defer any known correctness defect
+  or restore a retired platform policy route.
 
 ## Independent host highlight colors 2026-10-24
 

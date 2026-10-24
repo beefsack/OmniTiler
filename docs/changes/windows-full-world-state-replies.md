@@ -618,7 +618,7 @@
   Migration requires rework under the core-owned mapping direction above. No core,
   protocol, runtime-owner or native behavior change; W2/W3 remain unaccepted.
 - `WorldSequencer::deliver_production` is now called by the incomplete
-  [world-owner cutover](core-world-model-rearchitecture.md#stage-2b-partial-implementation-checkpoint-2026-10-21),
+  [world-owner cutover](archive/core-world-model-rearchitecture.md#stage-2b-partial-implementation-checkpoint-2026-10-21),
   not an accepted native runtime. The `#[cfg(test)]` `deliver_staged` is a
   thin branch-indicator wrapper over it, never a second staging route. A
   fresh candidate evaluates the exact report once, then adopts a supported

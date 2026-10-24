@@ -145,7 +145,7 @@ decisions of 2026-09-24 are under
   remaining migration/control context, dead APIs, common acceptance
   connector, uniform wire presentation, port notes, regression matrix and
   dogfood summary. KDE/macOS ports follow once the core interface settles
-  ([record](changes/core-world-model-rearchitecture.md)). Goal: a consistent test
+  ([record](changes/archive/core-world-model-rearchitecture.md)). Goal: a consistent test
   process over agreed cases, consistent with Tier 1 input tilers, for high
   quality and cross-platform consistency. A maximal, high-quality core also
   eases future targets (GNOME, Cinnamon) and lets window-manager developers

@@ -1,12 +1,15 @@
 # Core world-model rearchitecture
 
+Status: closed 2026-10-24. The [closing outcome](#closing-outcome-2026-10-24)
+supersedes historical pending-stage and readiness statements below.
+
 ## Goal and scope
 
-- Implement the approved [core/platform boundary](../decisions.md#core-platform-boundary):
+- Implement the approved [core/platform boundary](../../decisions.md#core-platform-boundary):
   one shared-core model and policy owner; Windows captures input, observes,
   actuates and renders. Windows is the first migrated platform.
 - Preserve existing specified behavior except the already-decided
-  [cursor-first switch and placement policy](../backlog.md). Preserve current
+  [cursor-first switch and placement policy](../../backlog.md). Preserve current
   empty-workspace cross-output focus and cross-output directional MRU behavior;
   their outstanding product questions are not resolved here.
 - No compatibility routes, duplicated policy implementations or second active
@@ -14,7 +17,7 @@
   KDE/macOS porting is outside this implementation; their compilation is not
   a constraint on the new boundary.
 - This is the implementation successor to the W2/W3 plan in
-  [Windows full-world adoption](windows-full-world-state-replies.md), not
+  [Windows full-world adoption](../windows-full-world-state-replies.md), not
   acceptance of its parked diagnostics or authority shortcuts.
 
 ## Inventory and core destinations
@@ -58,9 +61,9 @@ ownership before stage 1; accepted extractions are recorded below.
 ### KDE and macOS porting map
 
 Final requirements replace the interim inventory here:
-[generic world adapter guide](../porting/world-adapter-guide.md),
-[KDE port notes](../porting/kde-port-notes.md) and
-[macOS port notes](../porting/macos-port-notes.md). They distinguish delivered
+[generic world adapter guide](../../porting/world-adapter-guide.md),
+[KDE port notes](../../porting/kde-port-notes.md) and
+[macOS port notes](../../porting/macos-port-notes.md). They distinguish delivered
 v2 interfaces from approved core work the ports must deliver; no compatibility
 route is retained for stale consumers.
 
@@ -94,7 +97,7 @@ remove the code it supersedes before its acceptance.
   observed settlement predicates. Core runner and Windows live connector share
   case data/assertions; only staging, input delivery and native observation
   differ. Avoid claiming shared live acceptance from core expectations alone.
-- The accepted [Windows fixture](archive/windows-live-fixture-first-use.md)
+- The accepted [Windows fixture](windows-live-fixture-first-use.md)
   supports caller IDs, many windows, batch mutation and observed waits. Its
   min/max are track hints, fullscreen mode readback is unknown, constraints
   cannot be cleared, and history is not request-correlated. Use fresh windows
@@ -152,7 +155,7 @@ remove the code it supersedes before its acceptance.
   for core + Windows through `mise exec --`; include protocol/FFI when their
   contracts are touched. Workspace formatting and `git diff --check`.
 - Behavioral stages require fixture-only native checks on both outputs under
-  the [live Windows guide](../live-windows-testing.md), independent readbacks,
+  the [live Windows guide](../../live-windows-testing.md), independent readbacks,
   graceful stop/restore and verified absence of owned processes/control residue.
   Keep raw provenance and machine details outside the repository.
 - Promote authorized durable stage decisions to `docs/decisions.md` only after
@@ -408,7 +411,7 @@ remove the code it supersedes before its acceptance.
 - Logical-native-free world contract v2 is accepted for the core boundary,
   not as Windows runtime adoption. The previous unresolved-outcome section
   records the failing predecessor, not a remaining blocker. The
-  [logical-authority decision](../decisions.md#logical-workspace-authority)
+  [logical-authority decision](../../decisions.md#logical-workspace-authority)
   is user-approved, not tentative. Inherited machinery can be simplified;
   preserving its implementation is not an acceptance requirement.
 - Terminal migration refusal/supersession survives acknowledgement under
@@ -1124,7 +1127,7 @@ of cursor-first fresh placement or the entire rearchitecture.
 - Closing, complete-inventory departure and incarnation reset prune all three
   frame-policy maps together. A float excursion preserves the lifetime's bound
   but grants no automatic float geometry authority. The acquisition heuristic is
-  [tentative pending dogfooding](../decisions.md#core-platform-boundary): an
+  [tentative pending dogfooding](../../decisions.md#core-platform-boundary): an
   external enlargement racing a setter cannot be causally distinguished from
   an application clamp. Smaller stable evidence prevents permanent fighting.
 - Shared `test-fixtures/frame-convergence.json` supplies acquisition and
@@ -1603,7 +1606,7 @@ of cursor-first fresh placement or the entire rearchitecture.
   group/pager presentation and stage 5 ownership/dead-API/common-connector audit.
 - Cross-output pointer-precise preview versus send-based release placement is
   inherited, not repaired or physically accepted here. A new minimal
-  [discriminator](../spec/reference-outcomes.md#windows-dual-output-transfer-discriminators)
+  [discriminator](../../spec/reference-outcomes.md#windows-dual-output-transfer-discriminators)
   records the alternatives and recommends physical discrimination before a
   policy change. Keep current placement; do not claim preview/release parity.
 - Core gesture ingress/terminal acknowledgement is ready for port adaptation,
@@ -2903,9 +2906,9 @@ of cursor-first fresh placement or the entire rearchitecture.
 
 ## Finalized port contract and remaining native acceptance (2026-10-24)
 
-- Delivered the [generic adapter guide](../porting/world-adapter-guide.md),
-  [KDE notes](../porting/kde-port-notes.md) and
-  [macOS notes](../porting/macos-port-notes.md), linked from the repository and
+- Delivered the [generic adapter guide](../../porting/world-adapter-guide.md),
+  [KDE notes](../../porting/kde-port-notes.md) and
+  [macOS notes](../../porting/macos-port-notes.md), linked from the repository and
   macOS READMEs. They specify report/command ownership, the single remote broker,
   deduplication and requester-result routing, desired authority, repeatable
   reconcile versus one-shot operations, truthful native receipts, coherent
@@ -2964,3 +2967,94 @@ of cursor-first fresh placement or the entire rearchitecture.
   versus membership-home direction, explicit-output versus directional send,
   and cross-output drag preview versus release placement. No new answer is
   inferred from these native checks.
+
+## Closing outcome (2026-10-24)
+
+### Delivered boundary
+
+- The core world-model rearchitecture is complete for shared core and the
+  Windows adapter. One retained `WorldEngine` owns logical mapping, rings,
+  history, membership, admission, cursor-first placement/switching, directional
+  policy and maximize-clear continuation, migration/refill, convergence and
+  learned constraints, gesture lifecycle, focus/warp and desired presentation.
+  Windows captures input and facts, actuates under native safety gates, and
+  renders the accepted reply. Superseded owners, public per-domain interfaces,
+  verdict ingress and presentation query routes are removed, not preserved as
+  compatibility paths. The preceding inventory is historical.
+- Uniform wire presentation includes border/underlay shapes and ordered pager
+  content; drop shapes use the same core gesture result. Windows independently
+  styles its active-window border and pager highlight. The three stable
+  [port guides](../../porting/world-adapter-guide.md) distinguish delivered v2
+  interfaces from approved work still required by the later ports.
+- The accepted local gates remain **2,732 passed, zero failed, one ignored
+  across 50 suites**, locked build and strict all-target clippy for core,
+  protocol, Windows and fixture, workspace fmt and whitespace. The core-only
+  ordered action baseline passes all **6/6 checkpoints**. These gates do not
+  claim KDE/macOS compilation or native shared acceptance.
+
+### Final native close-out
+
+- Final-source, hash-paired fixture-only Windows checks close both missing
+  proofs. Debug, staged and launched owner SHA-256 matched
+  `1b09d3c3b659748d16bab48b6baed638d15c9f142271687d6bbd839f710032d4`.
+  Both workspace-migration directions revealed both companions at the target
+  with native physical-frame coverage, stable lifetimes, order/shares and follow
+  focus; occupied peers remained hidden. Independent full fixture enumeration
+  joined every caller to admitted membership and proved zero visible members
+  on the emptied source. Auxiliary winit windows were recorded as non-members,
+  not mistaken for workspace content. Fresh accepted replies joined each
+  source's unheld trailing-refill view to empty operation/transfer lists with
+  zero omissions; later native observations remained stable.
+- Guarded synthetic chord observations showed the group underlay on both
+  outputs at the exact native group-union-plus-extension bounds; release hid
+  each underlay. Independent owner-overlay enumeration corroborated the shape
+  inspection. A floated-subject negative remained hidden. This is not physical
+  chord or drag acceptance. The disabled synthetic drag driver was not used.
+- Independent evidence review accepted companion reveal and underlay geometry/
+  release, then identified the need for explicit source-empty enumeration.
+  The supplemental migration leg supplied that proof and the refill receipt/
+  retirement join. Initial auxiliary-window and quiet-owner assertions were
+  harness oracle errors, corrected without changing product behavior.
+- Exact-owner stop, independent restore and fixture shutdown left no owned
+  processes/windows, overlays, ledger or control requests. Settings bytes,
+  relevant SPI/taskbar state and protected-window geometry matched preimages.
+  The underlay leg restored and verified the cursor; the supplemental leg made
+  no cursor writes. Raw artifact provenance, scripts, native readbacks and logs
+  remain outside the repository. No new product defect was found.
+- Together with the preceding final-artifact both-output directional focus/
+  move, actual maximize-clear continuation and pager styling/restart checks,
+  the missing close-out acceptance is complete. Windows is ready for continued
+  dogfooding at this bounded acceptance level, not a claim of every physical
+  input, game or native platform scenario.
+
+### Deferred work, tentative decisions and known gaps
+
+- The native side of the shared acceptance connector remains deferred to the
+  later separation review; the accepted core-only baseline stays. A future
+  checker must reject missing native readback, pending operations, omissions/
+  fences, coverage defects and skipped intermediate hide/reveal before a live
+  driver is accepted. Three rejected connector drafts remain withdrawn.
+- The code cleanup/abstraction review and fixture follow-ups remain separate
+  work. No known correctness defect is waived by those deferrals. Durable
+  ownership, scope and port decisions are in [decisions](../../decisions.md).
+- Tentative choices remain learned-minimum acquisition, historical stage
+  sequencing, three-way placement subsuming launch targeting, development
+  controls (including exact-owner migration), and Activities defaults pending
+  KDE evidence. Nothing in this close-out promotes them to final decisions.
+- Parked questions remain cross-output empty-workspace focus, edge-nearest
+  versus MRU directional focus, float physical-output versus membership-home
+  direction, explicit-output versus directional send, and cross-output drag
+  preview versus release placement. Current behavior and existing TBD
+  discriminators remain unchanged.
+- Native gaps remain MRU occupied-source refill, shared/global-unique modes,
+  tile-override restart staging, up/down directional breadth, physical
+  shortcuts/drag/games and default-off FFC hover-follow. Mouse-tap cost and
+  suspension latency remain unmeasured. Fixture track hints do not enforce
+  programmatic/delayed application clamps; those predicates retain offline
+  regressions, not fabricated live evidence.
+- KDE and macOS remain unported to v2. Their later ports must replace stale
+  consumers, supply truthful native receipts and transport, and deliver the
+  approved host-owned bootstrap/outside-change adoption. Native bindings,
+  remote classification-fact transport, Activities/multi-desktop behavior and
+  async configure remain explicit port work or evidence gaps in the guides.
+  Gaming Compatibility continues to take precedence.

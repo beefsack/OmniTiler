@@ -28,7 +28,7 @@ trivially different start state.
 User 2026-10-20 [accepted configurable targeting](../decisions.md#cursor-first-output-targeting)
 on the Tier 1 evidence, replacing R-OUT-05 / REQ-OUT-05's focused-output default
 with cursor output and a focused-output option. Windows switch/fresh-placement
-adoption is [accepted](../changes/core-world-model-rearchitecture.md#stage-2c-accepted-outcome-2026-10-22);
+adoption is [accepted](../changes/archive/core-world-model-rearchitecture.md#stage-2c-accepted-outcome-2026-10-22);
 KDE/macOS adoption and focus/warp behavior remain pending.
 Workspace-switch and three-way new-window settings are recorded in that decision.
 The user's COSMIC recollection is uncertain; existing
@@ -534,7 +534,7 @@ native outcomes remain pending
 Stage 5 replaces invocation-local sequencing above with one retained original
 intent and commandless observation settlement. Horizontal tiled, float and
 sticky continuation passed on both Windows outputs; failure-timing variants
-below remain unsupported natively. [Acceptance and limits](../changes/core-world-model-rearchitecture.md#stage-5-both-output-directional-acceptance-2026-10-24).
+below remain unsupported natively. [Acceptance and limits](../changes/archive/core-world-model-rearchitecture.md#stage-5-both-output-directional-acceptance-2026-10-24).
 
 | Variant | Minimal action sequence | Offline draft outcome | Unsupported / native outcome |
 | --- | --- | --- | --- |
