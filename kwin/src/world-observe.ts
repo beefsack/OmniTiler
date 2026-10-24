@@ -83,6 +83,83 @@ export interface ObservedWindow {
     fixedSuppress: boolean;
     hints: { minW: number | null; minH: number | null; maxW: number | null; maxH: number | null };
     minimized: boolean;
+    // Stage1 host-owned native workspace evidence: the ACTUAL native
+    // desktop id homing this window when exactly one member desktop is
+    // enumerated (multi-homed and sticky-empty-homed windows read null,
+    // never a guess), nulled for the whole report when hostOwned is false.
+    // Never an alias of the logical observedWs (which the adapter cannot
+    // claim and always reports null).
+    nativeWs: string | null;
+}
+
+// Projected v2 window fact (wire shape without broker keys): rect is never
+// null here (unreadable frames skip the window and hold the scope); unknown
+// slots read null, never defaults that fabricate state.
+export interface ObservedWindowFact {
+    win: string;
+    out: string;
+    rect: { x: number; y: number; w: number; h: number };
+    floating: boolean;
+    fitExcluded: boolean;
+    fullscreen: boolean;
+    maximized: boolean;
+    sticky: boolean;
+    fixedAuto: boolean;
+    fixedSuppress: boolean;
+    minimized: boolean;
+    hints: { minW: number | null; minH: number | null; maxW: number | null; maxH: number | null };
+    observedWs: null;
+    nativeWs: string | null;
+}
+
+export interface ObservedScreenFact {
+    out: string;
+    full: { x: number; y: number; w: number; h: number } | null;
+    work: { x: number; y: number; w: number; h: number } | null;
+    gap: number;
+    outer: number;
+    complete: boolean;
+    primary: boolean;
+}
+
+export interface ObservedViewFact {
+    out: string;
+    // Logical workspace id viewed on this output, or "" when unmapped
+    // (unknown). Resolved through the converged adapter binding snapshot;
+    // never the native id, never a guess.
+    view: string;
+}
+
+export interface ObservedNativeFact {
+    out: string;
+    order: string[];
+    current: string;
+}
+
+export interface ObservedPresentation {
+    foreground: string;
+    minimized: boolean;
+    maximized: boolean;
+    fullscreen: boolean;
+    cloaked: boolean;
+    hiddenWorkspace: boolean;
+    shell: boolean;
+    frame: { x: number; y: number; w: number; h: number } | null;
+    borderEnabled: boolean;
+    underlayEnabled: boolean;
+    borderGap: number;
+    borderWidth: number;
+    underlayExtension: number;
+    chordHeld: boolean;
+    moveWindow: string;
+    paused: boolean;
+    pagerOrder: string[];
+    pagerFrames: Array<{
+        win: string;
+        live: { x: number; y: number; w: number; h: number } | null;
+        float: { x: number; y: number; w: number; h: number } | null;
+        tile: { x: number; y: number; w: number; h: number } | null;
+    }>;
 }
 
 export interface ObservedDomain {
@@ -123,6 +200,39 @@ export interface WorldObservation {
     complete: boolean;
     gesture: boolean;
     focusedGlobal: string;
+    // Projected v2 facts (wire shape without broker keys). The entry formats
+    // these verbatim into the inner report; the broker stamps its own
+    // namespace around them.
+    screens: ObservedScreenFact[];
+    windowFacts: ObservedWindowFact[];
+    views: ObservedViewFact[];
+    closed: string[];
+    // Host-owned native desktop evidence: true only when the native
+    // inventory enumerated readably with a known current per screen. When
+    // false, nativeWs reads null everywhere and native rides empty (the
+    // core refuses nativeWs without hostOwned).
+    hostOwned: boolean;
+    // True when every native order has the same length.
+    equalCount: boolean;
+    native: ObservedNativeFact[];
+    // Neutral action/cursor facts: cursor in FULL-rect adapter units (null
+    // when unreadable); actionForeground is the active output (null when
+    // unknown); actionCached is null (the adapter retains no output cache);
+    // actionOutputs is the ordered known-output registry.
+    cursor: { x: number; y: number } | null;
+    actionForeground: string | null;
+    actionCached: null;
+    actionOutputs: string[];
+    // Stage-4b core-actuated cursor settings: the adapter declares no
+    // core-actuated cursor behavior (never warps; preserves unsupported
+    // warp truth), so both read false.
+    focusFollowsCursor: boolean;
+    cursorWarp: boolean;
+    // Cursor-first targeting declarations matching adapter behavior: the
+    // adapter resolves from the focused/active output, never cursor-first.
+    switchTarget: "focused-output";
+    freshPlacement: "focused-output-last-focused";
+    presentation: ObservedPresentation;
 }
 
 function readProp(value: object, property: string): unknown {
@@ -483,6 +593,8 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
         // Home workspace: first member desktop id (sticky rides homed here;
         // the core excludes sticky occupancy per-domain itself).
         let home = "";
+        let stickyEmptyHomed = false;
+        const memberCount = members.length;
         for (const m of members) {
             if (typeof m === "object" && m !== null && isOpaqueId(readProp(m as object, "id"))) {
                 home = readProp(m as object, "id") as string;
@@ -505,6 +617,7 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
                 const current = screenEntries.find((s) => s.name === (outName as string))?.current ?? "";
                 if (current !== "" && desktopById.has(current)) {
                     home = current;
+                    stickyEmptyHomed = true;
                 } else {
                     continue;
                 }
@@ -513,6 +626,11 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
                 continue;
             }
         }
+        // Stage1 native evidence: exactly one enumerated member desktop
+        // names the host-owned native workspace truthfully; multi-homed and
+        // sticky-empty-homed windows read null (never a guess, never the
+        // logical observedWs which the adapter cannot claim).
+        const nativeWs = !stickyEmptyHomed && memberCount === 1 ? home : null;
         const min = readHintSize(readProp(ref, "minSize"));
         const max = readHintSize(readProp(ref, "maxSize"));
         const adapterFloat = (() => {
@@ -589,6 +707,7 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
                 maxW: max ? max.w : null, maxH: max ? max.h : null,
             },
             minimized: readProp(ref, "minimized") === true,
+            nativeWs,
         });
     }
     // Truncated global inventories hold where the cut tail is unprovable:
@@ -695,9 +814,11 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
             minimized.push(w);
         }
     }
-    const closed = [...env.knownClosed()].filter((id) => isOpaqueId(id) && !liveById.has(id));
-    if (closed.length > 0 && domains.length > 0) {
-        (domains[0] as ObservedDomain).closed = closed.slice(0, MAX_CLOSED);
+    // Explicit closes ride top-level (v2 `closed`) and stay mirrored on
+    // the first domain carrier (offline doubles read either shape).
+    const closedTop: string[] = [...env.knownClosed()].filter((id) => isOpaqueId(id) && !liveById.has(id));
+    if (closedTop.length > 0 && domains.length > 0) {
+        (domains[0] as ObservedDomain).closed = closedTop.slice(0, MAX_CLOSED);
     }
     // Bindings from the adapter-owned mapping snapshot (logical<->native).
     // Replicated mode emits one row per (output, native) so the shared
@@ -758,5 +879,115 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
     }));
     const complete = topologyCompleteAll && windowsReadable && desktopsReadable && !domainsTruncated && !inventoryTruncated;
     const predicateWire = predicate === FIXED_SIZE_PREDICATE_EITHER ? FIXED_SIZE_PREDICATE_EITHER : FIXED_SIZE_PREDICATE_DEFAULT;
-    return { mode, topology, bindings, domains, minimized, predicate: predicateWire, complete, gesture, focusedGlobal: activeId };
+    // Projected v2 facts. hostOwned requires a readable native inventory
+    // with a known current per screen; without it every nativeWs reads null
+    // and native rides empty (core refuses nativeWs without hostOwned).
+    const hostOwned = desktopsReadable && screenEntries.every((s) => s.current !== "");
+    const closed: string[] = [...closedTop];
+    const nativeOrderFull = hostOwned
+        ? (orderTruncated ? nativeOrder.slice(0, MAX_NATIVE_PER_OUTPUT) : nativeOrder)
+        : [];
+    const screenFacts: ObservedScreenFact[] = screenEntries.map((s, index) => {
+        const full = screenRects[index] ?? null;
+        let work: { x: number; y: number; w: number; h: number } | null = null;
+        if (s.current !== "") {
+            const desktopRef = desktopById.get(s.current) ?? null;
+            if (desktopRef !== null) {
+                work = readClientArea(target, s.ref, desktopRef);
+            }
+        }
+        // The core refuses partial screen rectangles outright: an
+        // unreadable work area makes the whole screen explicitly
+        // unreadable (never a fabricated work area, never a partial pair).
+        const readable = full !== null && work !== null;
+        return {
+            out: s.name, full: readable ? full : null, work: readable ? work : null, gap, outer,
+            complete: readable,
+            primary: activeName !== null && activeName === s.name,
+        };
+    });
+    const windowFacts: ObservedWindowFact[] = [];
+    // An unreadable inventory read holds the whole fact set (never a
+    // partial publication): the report stays non-null with complete=false
+    // so the core holds instead of inferring from a cut tail.
+    if (windowsReadable) {
+        for (const w of liveById.values()) {
+            windowFacts.push({
+                win: w.win, out: w.out, rect: w.rect,
+                floating: w.floating, fitExcluded: w.fitExcluded,
+                fullscreen: w.fullscreen, maximized: w.maximized, sticky: w.sticky,
+                fixedAuto: w.fixedAuto, fixedSuppress: w.fixedSuppress,
+                minimized: w.minimized, hints: w.hints,
+                observedWs: null,
+                nativeWs: hostOwned ? w.nativeWs : null,
+            });
+        }
+    }
+    const views: ObservedViewFact[] = screenEntries.map((s) => {
+        let view = "";
+        if (s.current !== "") {
+            try {
+                const bound = env.logicalBindingOf(s.current, s.name);
+                if (bound !== null && bound.logical !== "") {
+                    view = bound.logical;
+                }
+            } catch (error) {
+                void error;
+            }
+        }
+        return { out: s.name, view };
+    });
+    const native: ObservedNativeFact[] = hostOwned
+        ? screenEntries.map((s) => ({ out: s.name, order: [...nativeOrderFull], current: s.current }))
+        : [];
+    const equalCount = native.every((n) => n.order.length === (native[0]?.order.length ?? 0));
+    const cursor = (() => {
+        try {
+            const pos = readProp(target, "cursorPos");
+            if (typeof pos === "object" && pos !== null) {
+                const cx = toInt((pos as Record<string, unknown>)["x"]);
+                const cy = toInt((pos as Record<string, unknown>)["y"]);
+                if (cx !== null && cy !== null && Math.abs(cx) <= 16384 && Math.abs(cy) <= 16384) {
+                    return { x: cx, y: cy };
+                }
+            }
+        } catch (error) {
+            void error;
+        }
+        return null;
+    })();
+    const visibleCurrents = new Set(screenEntries.map((s) => s.current).filter((c) => c !== ""));
+    const fgRecord = activeId !== "" ? liveById.get(activeId) ?? null : null;
+    const presentation: ObservedPresentation = {
+        foreground: fgRecord !== null ? fgRecord.win : "",
+        minimized: fgRecord?.minimized ?? false,
+        maximized: fgRecord?.maximized ?? false,
+        fullscreen: fgRecord?.fullscreen ?? false,
+        cloaked: false,
+        hiddenWorkspace: fgRecord !== null && !visibleCurrents.has(fgRecord.ws),
+        shell: false,
+        frame: fgRecord !== null ? fgRecord.rect : null,
+        borderEnabled: false,
+        underlayEnabled: false,
+        borderGap: 0,
+        borderWidth: 0,
+        underlayExtension: 0,
+        chordHeld: false,
+        moveWindow: "",
+        paused: false,
+        // Native enumeration order (windowList order), never re-sorted or
+        // inferred: the pager mirrors the live inventory.
+        pagerOrder: [...liveById.keys()],
+        pagerFrames: [...liveById.values()].map((w) => ({ win: w.win, live: w.rect, float: null, tile: null })),
+    };
+    return {
+        mode, topology, bindings, domains, minimized, predicate: predicateWire, complete, gesture,
+        focusedGlobal: activeId,
+        screens: screenFacts, windowFacts, views, closed, hostOwned, equalCount, native,
+        cursor, actionForeground: activeName, actionCached: null,
+        actionOutputs: screenEntries.map((s) => s.name),
+        focusFollowsCursor: false, cursorWarp: false,
+        switchTarget: "focused-output", freshPlacement: "focused-output-last-focused",
+        presentation,
+    };
 }

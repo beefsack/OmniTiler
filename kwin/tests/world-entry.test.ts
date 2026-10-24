@@ -7,6 +7,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { startWorldAdapterEntry, mintAdapterIncarnation } from "../src/world-entry";
+import { createMiniBroker, type MiniBroker } from "./world-wire-harness";
 import { isOpaqueId } from "../src/world-seq";
 
 interface FakeDesktop {
@@ -246,6 +247,19 @@ function makeHarness(mode: unknown = "per-output-local", gesture = false, defaul
         adapter: "test-adapter",
         callDbus: (_service, _path, _iface, method, payload, callback) => {
             calls.push({ method, payload, callback });
+            if (method === "QueueWorldCommand") {
+                const queueBody = JSON.parse(payload) as Record<string, unknown>;
+                callback(JSON.stringify({ v: 2, outcome: "queued", gen: "gen-1",
+                    client: queueBody["client"], clientCmd: queueBody["clientCmd"], globalCmd: "1" }));
+            } else if (method === "TakeCommandResult") {
+                const stagedTake = (globalThis as Record<string, unknown>)["__takeResult"] as Record<string, unknown> | undefined;
+                if (stagedTake !== undefined) {
+                    delete (globalThis as Record<string, unknown>)["__takeResult"];
+                    callback(JSON.stringify({ v: 2, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
+                } else {
+                    callback(JSON.stringify({ v: 2, outcome: "pending", gen: "gen-1" }));
+                }
+            }
         },
         oracleCallDbus: (_service, _path, _iface, _method, callback) => {
             oracleCalls.push(callback);
@@ -289,9 +303,11 @@ function makeHarness(mode: unknown = "per-output-local", gesture = false, defaul
 }
 
 const BOOTSTRAP = (gen: string, req: string): string => JSON.stringify({
-    v: 1, adapter: "test-adapter", gen, req, obs: "0", rev: "0",
+    v: 2, adapter: "broker-1", gen, req, obs: "0", rev: "0",
     ready: false, consumed: false, scopes: [], workspaces: [], outputs: [],
-    windows: [], transfers: [], effects: [],
+    windows: [], transfers: [], effects: [], result: null,
+    gestureSettled: null, operationSettled: [], warpCursor: null,
+    presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
 });
 
 function discover(h: Harness, gen = "gen-1"): void {
@@ -304,26 +320,44 @@ function discover(h: Harness, gen = "gen-1"): void {
     // Replying here leaves the flight idle for the test body.
     const auto = h.lastCall("DescribeWorld");
     const autoBody = JSON.parse(auto.payload);
-    assert.equal(autoBody.command, null);
-    auto.callback(acceptedReply(gen, autoBody.req, autoBody.obs, "0"));
+    assert.equal((autoBody["report"] as Record<string, unknown>)["command"], undefined, "inner reports never carry a command");
+    auto.callback(acceptedReply(gen, autoBody["source"] as string, autoBody["nativeInvalid"] as string, "0"));
 }
 
-function acceptedReply(gen: string, req: string, obs: string, rev: string, extra: Record<string, unknown> = {}): string {
+function acceptedReply(gen: string, source: string, nativeInvalid: string, rev: string, extra: Record<string, unknown> = {}): string {
     return JSON.stringify({
-        v: 1, adapter: "test-adapter", gen, req, obs, rev,
+        v: 2, adapter: "broker-1", gen, req: source, obs: rev, rev,
         ready: true, consumed: false,
+        source, nativeInvalid, clock: "1",
+        gestureSettled: null, operationSettled: [], warpCursor: null,
+        presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
         scopes: [{ scope: "out/ws1", auth: "controlled", reason: "" }],
         workspaces: [],
         outputs: [],
         windows: [],
         transfers: [],
         effects: [],
+        result: null,
         ...extra,
     });
 }
 
 function requestOf(h: Harness): Record<string, unknown> {
     return JSON.parse(h.lastCall("DescribeWorld").payload) as Record<string, unknown>;
+}
+
+function reportOf(h: Harness): Record<string, unknown> {
+    return requestOf(h)["report"] as Record<string, unknown>;
+}
+
+function queueOf(h: Harness): string {
+    return h.lastCall("QueueWorldCommand").payload;
+}
+
+function queueCalls(h: Harness): Array<Record<string, unknown>> {
+    return h.calls
+        .filter((c) => c.method === "QueueWorldCommand")
+        .map((c) => JSON.parse(c.payload) as Record<string, unknown>);
 }
 
 describe("world entry discovery and observation", () => {
@@ -334,21 +368,28 @@ describe("world entry discovery and observation", () => {
         h.handle?.requestWorkspaceRelative(1);
         h.runTimers();
         const req = requestOf(h);
-        assert.equal(req["v"], 1);
+        assert.equal(req["v"], 2);
         assert.equal(req["gen"], "gen-1");
-        assert.equal(req["mode"], "per-output-local");
-        const domains = req["domains"] as Array<Record<string, unknown>>;
-        // Both workspaces observed (visible + hidden), never silent absence.
-        assert.equal(domains.length, 2);
-        const wins = (domains as Array<Record<string, unknown>>).flatMap((d) => d["windows"] as Array<unknown>);
+        const inner = req["report"] as Record<string, unknown>;
+        assert.equal(inner["mode"], "per-output-local");
+        for (const key of ["owner", "adapter", "gen", "obs", "reqSeq", "req", "cmdSeq", "command", "monotonicMs"]) {
+            assert.ok(!(key in inner), `inner report carries no ${key}`);
+        }
+        const screens = inner["screens"] as Array<Record<string, unknown>>;
+        assert.equal(screens.length, 1);
+        assert.deepEqual(screens[0]?.["full"], [0, 0, 1920, 1080]);
+        assert.deepEqual(screens[0]?.["work"], [0, 0, 800, 600]);
+        const wins = inner["windows"] as Array<Record<string, unknown>>;
         assert.equal(wins.length, 2);
-        // Settings/safety/constraints ride every domain/window.
-        assert.equal((domains[0] as Record<string, unknown>)["gap"], 8);
+        assert.equal((inner["native"] as Array<Record<string, unknown>>)[0]?.["current"], "ws1");
+        assert.equal(screens[0]?.["gap"], 8);
         const first = (wins[0] as Record<string, unknown>);
         assert.equal(typeof first["hints"], "object");
-        // Command rides with its own sequence distinct from reqSeq.
-        assert.ok((req["cmdSeq"] as string) !== null);
-        assert.deepEqual((req["command"] as Record<string, unknown>)["op"], "select-relative");
+        assert.equal(first["nativeWs"], "ws1", "truthful native workspace evidence");
+        assert.equal(first["observedWs"], null, "never alias native as logical");
+        const filed = JSON.parse(queueOf(h)) as Record<string, unknown>;
+        assert.ok(typeof filed["clientCmd"] === "string");
+        assert.deepEqual((filed["command"] as Record<string, unknown>)["op"], "select-relative");
     });
 
     it("degrades per-output modes to shared without the 6.7 seam", () => {
@@ -360,7 +401,7 @@ describe("world entry discovery and observation", () => {
         h.runTimers();
         // The shared harness below covers the seam; this host keeps the
         // legacy-shared shape, so observation still succeeds.
-        assert.ok((requestOf(h)["domains"] as Array<unknown>).length >= 1);
+        assert.ok((reportOf(h)["screens"] as Array<unknown>).length >= 1);
     });
 
     it("accepts per-output-local and shared; global-unique falls back with a logged reason", () => {
@@ -369,7 +410,7 @@ describe("world entry discovery and observation", () => {
             discover(h);
             h.handle?.requestWorkspaceRelative(1);
             h.runTimers();
-            assert.equal(requestOf(h)["mode"], mode);
+            assert.equal(reportOf(h)["mode"], mode);
         }
         // Tentative (user review pending): a persisted `global-unique`
         // falls back to `per-output-local` on the world route, once.
@@ -377,7 +418,7 @@ describe("world entry discovery and observation", () => {
         discover(h);
         h.handle?.requestWorkspaceRelative(1);
         h.runTimers();
-        assert.equal(requestOf(h)["mode"], "per-output-local");
+        assert.equal(reportOf(h)["mode"], "per-output-local");
         assert.ok(
             h.logs.some((l) => l.includes("workspace-mode-fallback") && l.includes("from=global-unique")),
             "fallback logged",
@@ -388,14 +429,14 @@ describe("world entry discovery and observation", () => {
         // Backfill default: reports true and the snapshot seeds tiled.
         const backfill = makeHarness("per-output-local", false);
         discover(backfill);
-        assert.equal(requestOf(backfill)["defaultTiled"], true);
+        assert.equal(reportOf(backfill)["defaultTiled"], true);
         assert.equal(backfill.handle?.getWorkspaceTilingSnapshot().defaultTiled, true);
         backfill.handle?.stop();
         // Saved false: reports false and the pre-reply snapshot seeds
         // floating; the entry keeps no per-workspace flag of its own.
         const floating = makeHarness("per-output-local", false, false);
         discover(floating);
-        assert.equal(requestOf(floating)["defaultTiled"], false);
+        assert.equal(reportOf(floating)["defaultTiled"], false);
         const snapshot = floating.handle?.getWorkspaceTilingSnapshot();
         assert.equal(snapshot?.defaultTiled, false);
         assert.equal(snapshot?.tiled, false);
@@ -408,13 +449,13 @@ describe("world entry discovery and observation", () => {
         h.handle?.requestWorkspaceRelative(1);
         h.runTimers();
         const req = requestOf(h);
-        const reply = acceptedReply("gen-1", req["req"] as string, req["obs"] as string, "1", {
+        const reply = acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
             windows: [{
                 win: "win-a", out: "out", ws: "ws1",
                 alloc: [10, 10, 300, 300], frame: [10, 10, 300, 300],
                 frame_auth: "controlled", frame_hold: "",
                 member_auth: "controlled", member_hold: "",
-                frame_op: "",
+                frame_op: "", clear_op: "",
                 floating: false, float_origin: "",
             }],
         });
@@ -426,7 +467,7 @@ describe("world entry discovery and observation", () => {
         h.runTimers();
         const req2 = requestOf(h);
         // Deliver the OLD rev against the new obs: accepted-rev gate refuses.
-        h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req2["req"] as string, req2["obs"] as string, "1"));
+        h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req2["source"] as string, req2["nativeInvalid"] as string, "1"));
         assert.equal(h.world.geometryWrites.length, writes);
     });
 
@@ -439,29 +480,28 @@ describe("world entry discovery and observation", () => {
         const describes = h.calls.filter((c) => c.method === "DescribeWorld");
         assert.equal(describes.length, 2);
         const first = requestOf(h);
-        const firstObs = first["obs"] as string;
-        assert.notEqual((first["command"] as Record<string, unknown>)["op"], null);
-        const firstCmdSeq = first["cmdSeq"] as string;
+        const firstObs = first["nativeInvalid"] as string;
+        const headQ = JSON.parse(queueOf(h)) as Record<string, unknown>;
+        assert.notEqual(((headQ["command"] as Record<string, unknown>)["op"]), null);
+        const firstClientCmd = headQ["clientCmd"] as string;
         // A second directional press queues WITHOUT advancing the
         // watermark: only native changes invalidate, so the head reply
         // still matches and applies.
         h.handle?.requestFocus("right");
         assert.ok(!h.logs.some((l) => l.includes("command-busy")));
         assert.ok(!h.logs.some((l) => l.includes("shortcut-failed")));
-        h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", first["req"] as string, firstObs, "1"));
+        h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", first["source"] as string, firstObs, "1"));
         assert.ok(!h.logs.some((l) => l.includes("stale")));
         // The queued press drains zero-delay after the acceptance.
         h.runTimers();
+        const queued = queueCalls(h);
+        const secondCmd = (queued[queued.length - 1]?.["command"] as Record<string, unknown>);
+        assert.deepEqual(secondCmd["op"], "focus-directional");
+        assert.deepEqual(secondCmd["direction"], "right");
         const second = requestOf(h);
-        assert.deepEqual((second["command"] as Record<string, unknown>)["op"], "focus-directional");
-        assert.deepEqual((second["command"] as Record<string, unknown>)["direction"], "right");
-        h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", second["req"] as string, second["obs"] as string, "2"));
-        const seqs = h.calls
-            .filter((c) => c.method === "DescribeWorld")
-            .map((c) => JSON.parse(c.payload) as Record<string, unknown>)
-            .filter((req) => req["command"] !== null)
-            .map((req) => req["cmdSeq"] as string);
-        assert.deepEqual(seqs, [firstCmdSeq, "2"]);
+        h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", second["source"] as string, second["nativeInvalid"] as string, "2"));
+        const seqs = queueCalls(h).map((req) => req["clientCmd"] as string);
+        assert.deepEqual(seqs, [firstClientCmd, seqs[1] as string]);
     });
 
     it("suspends geometry under a gesture barrier but keeps observation flowing", () => {
@@ -470,14 +510,14 @@ describe("world entry discovery and observation", () => {
         h.handle?.requestWorkspaceRelative(1);
         h.runTimers();
         const req = requestOf(h);
-        assert.equal(req["gesture"], true);
-        h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["req"] as string, req["obs"] as string, "1", {
+        assert.equal((req["report"] as Record<string, unknown>)["gesture"], true);
+        h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
             windows: [{
                 win: "win-a", out: "out", ws: "ws1",
                 alloc: [50, 50, 300, 300], frame: [50, 50, 300, 300],
                 frame_auth: "controlled", frame_hold: "",
                 member_auth: "controlled", member_hold: "",
-                frame_op: "",
+                frame_op: "", clear_op: "",
                 floating: false, float_origin: "",
             }],
         }));
@@ -499,11 +539,11 @@ describe("world entry discovery and observation", () => {
         h.runTimers();
         // The explicit closed id rides the report (bare absence alone would
         // read as minimize, never close); the survivor stays fully covered.
-        const domains = requestOf(h)["domains"] as Array<Record<string, unknown>>;
-        const wins = domains.flatMap((d) => d["windows"] as Array<Record<string, unknown>>);
+        const inner = reportOf(h);
+        const wins = inner["windows"] as Array<Record<string, unknown>>;
         assert.ok(wins.every((w) => (w as Record<string, unknown>)["win"] !== "win-b"));
         assert.ok(wins.some((w) => (w as Record<string, unknown>)["win"] === "win-a"));
-        const closed = domains.flatMap((d) => d["closed"] as Array<string>);
+        const closed = inner["closed"] as Array<string>;
         assert.ok(closed.includes("win-b"));
     });
 
@@ -515,15 +555,14 @@ describe("world entry discovery and observation", () => {
         discover(h);
         h.handle?.requestWorkspaceRelative(1);
         h.runTimers();
-        const req = requestOf(h);
-        // Minimized lifetimes ride the explicit minimized section, separate
-        // from active tiled domain membership (never silent absence, never
-        // an inferred close).
-        const minimized = req["minimized"] as Array<Record<string, unknown>>;
-        assert.ok(minimized.some((m) => m["win"] === "win-b" && m["out"] === "out" && m["ws"] === "ws2"));
-        const domains = req["domains"] as Array<Record<string, unknown>>;
-        const wins = domains.flatMap((d) => d["windows"] as Array<Record<string, unknown>>);
-        assert.ok(!wins.some((w) => (w as Record<string, unknown>)["win"] === "win-b"));
+        const req = reportOf(h);
+        // Minimized lifetimes ride as explicit minimized facts with full
+        // geometry (never silent absence, never an inferred close).
+        const wins = req["windows"] as Array<Record<string, unknown>>;
+        const minimized = wins.filter((w) => w["minimized"] === true);
+        assert.ok(minimized.some((m) => m["win"] === "win-b" && m["out"] === "out" && m["nativeWs"] === "ws2"));
+        const tiled = wins.filter((w) => w["minimized"] !== true);
+        assert.ok(!tiled.some((w) => (w as Record<string, unknown>)["win"] === "win-b"));
         assert.equal(req["predicate"], "both-axes-fixed");
         assert.equal(req["refill"], "last-remaining-workspace");
     });
@@ -532,7 +571,7 @@ describe("world entry discovery and observation", () => {
         let refill: unknown = "most-recently-used-workspace";
         const h = makeHarness("per-output-local", false, true, () => refill);
         discover(h);
-        assert.equal(requestOf(h)["refill"], "most-recently-used-workspace");
+        assert.equal(reportOf(h)["refill"], "most-recently-used-workspace");
         // A setting change applies to the next report only: invalid values
         // fall back to the default without touching committed state.
         refill = "bogus";
@@ -540,7 +579,7 @@ describe("world entry discovery and observation", () => {
         h.handle?.requestWorkspaceRelative(1);
         h.runTimers();
         assert.equal(h.calls.filter((c) => c.method === "DescribeWorld").length, before + 1);
-        assert.equal(requestOf(h)["refill"], "last-remaining-workspace");
+        assert.equal(reportOf(h)["refill"], "last-remaining-workspace");
     });
 
     it("rediscovers on generation mismatch without replaying the command", () => {
@@ -550,7 +589,8 @@ describe("world entry discovery and observation", () => {
         h.runTimers();
         const callsBefore = h.calls.filter((c) => c.method === "DescribeWorld").length;
         h.lastCall("DescribeWorld").callback(JSON.stringify({
-            v: 1, outcome: "rejected", kind: "generation-mismatch", message: "stale", gen: "gen-2",
+            v: 2, outcome: "rejected", kind: "generation-mismatch", message: "stale", gen: "gen-2",
+            source: "", nativeInvalid: "0", clock: "0",
         }));
         // A fresh discovery goes out; the dropped command is NOT redispatched
         // as a DescribeWorld (only the new DiscoverWorld).
@@ -562,7 +602,7 @@ describe("world entry discovery and observation", () => {
         {
             const auto = h.lastCall("DescribeWorld");
             const autoBody = JSON.parse(auto.payload);
-            auto.callback(acceptedReply("gen-2", autoBody.req, autoBody.obs, "0"));
+            auto.callback(acceptedReply("gen-2", autoBody.source, autoBody.nativeInvalid, "0"));
         }
         // After rebinding, a new explicit command flows with the new gen.
         h.handle?.requestWorkspaceRelative(1);
@@ -576,14 +616,14 @@ describe("world entry discovery and observation", () => {
         h.handle?.requestWorkspaceRelative(1);
         h.runTimers();
         const req = requestOf(h);
-        h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["req"] as string, req["obs"] as string, "1", {
+        h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
             scopes: [{ scope: "out/ws2", auth: "hold", reason: "unreadable" }],
             windows: [{
                 win: "win-b", out: "out", ws: "ws2",
                 alloc: [0, 0, 100, 100], frame: [0, 0, 100, 100],
                 frame_auth: "hold", frame_hold: "unreadable",
                 member_auth: "hold", member_hold: "unreadable",
-                frame_op: "",
+                frame_op: "", clear_op: "",
                 floating: false, float_origin: "",
             }],
         }));
@@ -597,7 +637,7 @@ describe("world entry discovery and observation", () => {
         h.handle?.requestFocus("left");
         h.runTimers();
         const req = requestOf(h);
-        h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["req"] as string, req["obs"] as string, "1", {
+        h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
             effects: [{ id: "fx-1", kind: "focus", target: "win-b", rev: "1" }],
         }));
         assert.equal(h.world.focused.length, 1);
@@ -605,7 +645,7 @@ describe("world entry discovery and observation", () => {
         h.handle?.requestWorkspaceRelative(1);
         h.runTimers();
         const req2 = requestOf(h);
-        h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req2["req"] as string, req2["obs"] as string, "2", {
+        h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req2["source"] as string, req2["nativeInvalid"] as string, "2", {
             effects: [{ id: "fx-1", kind: "focus", target: "win-b", rev: "1" }],
         }));
         assert.equal(h.world.focused.length, 1);
@@ -617,14 +657,15 @@ describe("world entry discovery and observation", () => {
         h.handle?.requestWorkspaceRelativeMove(1, true);
         h.runTimers();
         const req = requestOf(h);
-        assert.deepEqual((req["command"] as Record<string, unknown>)["op"], "send-relative");
-        h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["req"] as string, req["obs"] as string, "1", {
+        const filedRefused = JSON.parse(queueOf(h)) as Record<string, unknown>;
+        assert.deepEqual((filedRefused["command"] as Record<string, unknown>)["op"], "send-relative");
+        h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
             windows: [{
                 win: "win-a", out: "out", ws: "ws1",
                 alloc: null, frame: null,
                 frame_auth: "controlled", frame_hold: "",
                 member_auth: "hold", member_hold: "refused-target",
-                frame_op: "",
+                frame_op: "", clear_op: "",
                 floating: false, float_origin: "",
             }],
         }));
@@ -638,12 +679,12 @@ describe("world entry discovery and observation", () => {
         h.handle?.requestWorkspaceRelative(1);
         h.runTimers();
         const req = requestOf(h);
-        h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["req"] as string, req["obs"] as string, "1", {
+        h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
             workspaces: [
-                { id: "ws1", out: "out", bind: "ws1", logical: "", scope: "out", order: 0, mode: "tiled", exist: true, hold: "" },
-                { id: "wl-1", out: "out", bind: "", logical: "wl-1", scope: "out", order: 2, mode: "tiled", exist: true, hold: "" },
+                { id: "ws1", out: "out", bind: "ws1", scope: "out", order: 0, mode: "tiled", exist: true, hold: "" },
+                { id: "wl-1", out: "out", bind: "", scope: "out", order: 2, mode: "tiled", exist: true, hold: "" },
                 // Desired-absent but occupied: the fresh occupancy gate keeps it.
-                { id: "ws2", out: "out", bind: "ws2", logical: "", scope: "out", order: 1, mode: "tiled", exist: false, hold: "" },
+                { id: "ws2", out: "out", bind: "ws2", scope: "out", order: 1, mode: "tiled", exist: false, hold: "" },
             ],
         }));
         assert.equal(h.world.created.length, 1);
@@ -675,14 +716,14 @@ describe("world entry discovery and observation", () => {
         // rows target distinct live windows and the harness marks dirty only
         // through explicit commands, so both apply. The narrow assertion is
         // that held rows never write.
-        h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["req"] as string, req["obs"] as string, "1", {
+        h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
             windows: [
                 {
                     win: "win-a", out: "out", ws: "ws1",
                     alloc: [11, 11, 300, 300], frame: [11, 11, 300, 300],
                     frame_auth: "controlled", frame_hold: "",
                     member_auth: "controlled", member_hold: "",
-                    frame_op: "",
+                    frame_op: "", clear_op: "",
                     floating: false, float_origin: "",
                 },
                 {
@@ -690,7 +731,7 @@ describe("world entry discovery and observation", () => {
                     alloc: [22, 22, 300, 300], frame: [22, 22, 300, 300],
                     frame_auth: "hold", frame_hold: "gesture-barrier",
                     member_auth: "controlled", member_hold: "",
-                    frame_op: "",
+                    frame_op: "", clear_op: "",
                     floating: false, float_origin: "",
                 },
             ],
@@ -708,9 +749,8 @@ describe("world entry discovery and observation", () => {
         discover(h);
         h.handle?.requestWorkspaceRelative(1);
         h.runTimers();
-        const req = requestOf(h);
-        const domains = req["domains"] as Array<Record<string, unknown>>;
-        const wins = domains.flatMap((d) => d["windows"] as Array<Record<string, unknown>>);
+        const req = reportOf(h);
+        const wins = req["windows"] as Array<Record<string, unknown>>;
         const row = wins.find((w) => w["win"] === "win-a");
         assert.ok(row !== undefined);
         assert.equal(row["fixedAuto"], true);
@@ -727,14 +767,15 @@ describe("world entry discovery and observation", () => {
         (h.handle as unknown as { requestWorkspaceMove: (index: number, follow: boolean) => void }).requestWorkspaceMove(0, false);
         h.runTimers();
         const first = requestOf(h);
-        const cmd = first["command"] as Record<string, unknown>;
+        const filed = JSON.parse(queueOf(h)) as Record<string, unknown>;
+        const cmd = filed["command"] as Record<string, unknown>;
         assert.equal(cmd["op"], "send-numbered");
         assert.equal(cmd["index"], 0);
         assert.equal(cmd["follow"], false);
-        h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", first["req"] as string, first["obs"] as string, "1", {
+        h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", first["source"] as string, first["nativeInvalid"] as string, "1", {
             workspaces: [
-                { id: "ws1", out: "out", bind: "ws1", logical: "", scope: "out", order: 0, mode: "tiled", exist: true, hold: "" },
-                { id: "ws2", out: "out", bind: "ws2", logical: "", scope: "out", order: 1, mode: "tiled", exist: true, hold: "" },
+                { id: "ws1", out: "out", bind: "ws1", scope: "out", order: 0, mode: "tiled", exist: true, hold: "" },
+                { id: "ws2", out: "out", bind: "ws2", scope: "out", order: 1, mode: "tiled", exist: true, hold: "" },
             ],
             outputs: [{ out: "out", view: "ws1", mode: "tiled", hold: "" }],
             transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: false }],
@@ -765,8 +806,8 @@ describe("world entry discovery and observation", () => {
             windowIdentity: "win-a", correlation: "drag-1", reason: "ok-moved",
         }));
         h.runTimers();
-        const req = requestOf(h);
-        const cmd = req["command"] as Record<string, unknown>;
+        const filed = JSON.parse(queueOf(h)) as Record<string, unknown>;
+        const cmd = filed["command"] as Record<string, unknown>;
         assert.equal(cmd["op"], "operation");
         const inner = cmd["command"] as Record<string, unknown>;
         assert.equal(inner["op"], "pointer-resize");
@@ -844,7 +885,8 @@ describe("world entry discovery and observation", () => {
         assert.ok(resize !== undefined);
         resize();
         h.runTimers();
-        const cmd = (requestOf(h)["command"] as Record<string, unknown>);
+        const filed = JSON.parse(queueOf(h)) as Record<string, unknown>;
+        const cmd = (filed["command"] as Record<string, unknown>);
         assert.equal(cmd["op"], "operation");
         const inner = cmd["command"] as Record<string, unknown>;
         assert.equal(inner["op"], "resize");
@@ -860,13 +902,13 @@ describe("world entry discovery and observation", () => {
         h.handle?.requestWorkspaceRelative(1);
         h.runTimers();
         const seed = requestOf(h);
-        h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", seed["req"] as string, seed["obs"] as string, "1", {
+        h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", seed["source"] as string, seed["nativeInvalid"] as string, "1", {
             windows: [{
                 win: "win-a", out: "out", ws: "ws1",
                 alloc: null, frame: null,
                 frame_auth: "untouched", frame_hold: "",
                 member_auth: "controlled", member_hold: "",
-                frame_op: "",
+                frame_op: "", clear_op: "",
                 floating: true, float_origin: "",
             }],
         }));
@@ -877,21 +919,23 @@ describe("world entry discovery and observation", () => {
         // Deferred: the sync fake settles in the same stack, but no
         // toggle-float command rides it (no same-stack echo admission).
         h.runTimers();
+        const queuesBefore = queueCalls(h).length;
         let req = requestOf(h);
-        assert.equal(req["command"], null, "clear schedules observation first");
-        h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["req"] as string, req["obs"] as string, "2", {
+        assert.equal(queuesBefore, 1, "clear schedules observation first");
+        h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "2", {
             windows: [{
                 win: "win-a", out: "out", ws: "ws1",
                 alloc: null, frame: null,
                 frame_auth: "untouched", frame_hold: "",
                 member_auth: "controlled", member_hold: "",
-                frame_op: "",
+                frame_op: "", clear_op: "",
                 floating: true, float_origin: "",
             }],
         }));
         h.runTimers();
         req = requestOf(h);
-        const cmd = req["command"] as Record<string, unknown>;
+        const filed = JSON.parse(queueOf(h)) as Record<string, unknown>;
+        const cmd = filed["command"] as Record<string, unknown>;
         assert.equal(cmd["op"], "operation");
         assert.equal((cmd["command"] as Record<string, unknown>)["op"], "toggle-float");
         assert.equal((target as FakeWindow).maximizeMode, 0);
@@ -902,11 +946,8 @@ describe("world entry discovery and observation", () => {
 describe("world entry rapid directional FIFO", () => {
     // Producer-shaped helpers over the harness above: every discrete press
     // dispatches in press order across debounce and flight boundaries.
-    const sentCmdSeqs = (h: Harness): string[] => h.calls
-        .filter((c) => c.method === "DescribeWorld")
-        .map((c) => JSON.parse(c.payload) as Record<string, unknown>)
-        .filter((req) => req["command"] !== null)
-        .map((req) => req["cmdSeq"] as string);
+    const sentCmdSeqs = (h: Harness): string[] => queueCalls(h)
+        .map((req) => req["clientCmd"] as string);
     // Fire the earliest due timer at/after `from` only: the entry arms
     // follow-up timers from inside callbacks, firing the whole queue at
     // once would also expire a follow-up's own timeout before its reply
@@ -926,7 +967,7 @@ describe("world entry rapid directional FIFO", () => {
     };
     const acceptLast = (h: Harness, gen: string, rev: string): void => {
         const req = requestOf(h);
-        h.lastCall("DescribeWorld").callback(acceptedReply(gen, req["req"] as string, req["obs"] as string, rev));
+        h.lastCall("DescribeWorld").callback(acceptedReply(gen, req["source"] as string, req["nativeInvalid"] as string, rev));
     };
 
     it("dispatches rapid left then right in order across a coalescing debounce", () => {
@@ -946,18 +987,19 @@ describe("world entry rapid directional FIFO", () => {
         assert.ok(!h.logs.some((l) => l.includes("shortcut-failed")));
         // The debounce flushes the head first with a fresh observation.
         h.runTimers();
-        const head = requestOf(h);
-        const headCmd = head["command"] as Record<string, unknown>;
+        const headQ = JSON.parse(queueOf(h)) as Record<string, unknown>;
+        const headCmd = headQ["command"] as Record<string, unknown>;
         assert.equal(headCmd["op"], "focus-directional");
         assert.equal(headCmd["direction"], "left");
         acceptLast(h, "gen-1", "1");
-        // The accepted head drains the queued opposite press next.
+        // The accepted head files the queued opposite press next.
         h.runTimers();
-        const tail = requestOf(h);
-        const tailCmd = tail["command"] as Record<string, unknown>;
+        const queued = queueCalls(h);
+        assert.equal(queued.length, 2);
+        const tailCmd = queued[1]?.["command"] as Record<string, unknown>;
         assert.equal(tailCmd["op"], "focus-directional");
         assert.equal(tailCmd["direction"], "right");
-        assert.ok((tail["cmdSeq"] as string) > (head["cmdSeq"] as string));
+        assert.ok((queued[1]?.["clientCmd"] as string) > (queued[0]?.["clientCmd"] as string));
     });
 
     it("preserves repeated directional moves in order across successive flights", () => {
@@ -965,27 +1007,32 @@ describe("world entry rapid directional FIFO", () => {
         discover(h);
         const moveLeft = h.shortcuts.get("omnitiler-move-left") as () => void;
         assert.ok(moveLeft !== undefined);
-        // First press takes the idle fast path into flight.
+        // First press takes the idle fast path: filed at once, then
+        // drained by its fresh capture.
         moveLeft();
-        const head = requestOf(h);
-        assert.notEqual(head["command"], null);
-        const headObs = head["obs"] as string;
+        const headQ = JSON.parse(queueOf(h)) as Record<string, unknown>;
+        assert.equal((headQ["command"] as Record<string, unknown>)["op"], "move-directional");
         // Two more presses queue behind the flight without moving the
-        // watermark, so the head still accepts; each tail then drains
+        // watermark, so the head still accepts; each tail then files
         // zero-delay after the previous acceptance.
         moveLeft();
         moveLeft();
         assert.ok(!h.logs.some((l) => l.includes("command-busy")));
         assert.ok(!h.logs.some((l) => l.includes("shortcut-failed")));
         assert.ok(!h.logs.some((l) => l.includes("stale")));
-        h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", head["req"] as string, headObs, "1"));
+        const head = requestOf(h);
+        h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", head["source"] as string, head["nativeInvalid"] as string, "1"));
         h.runTimers();
-        const second = requestOf(h)["command"] as Record<string, unknown>;
+        const queued = queueCalls(h);
+        assert.equal(queued.length, 2);
+        const second = queued[1]?.["command"] as Record<string, unknown>;
         assert.equal(second["op"], "move-directional");
         assert.equal(second["direction"], "left");
         acceptLast(h, "gen-1", "2");
         h.runTimers();
-        const third = requestOf(h)["command"] as Record<string, unknown>;
+        const queued3 = queueCalls(h);
+        assert.equal(queued3.length, 3);
+        const third = queued3[2]?.["command"] as Record<string, unknown>;
         assert.equal(third["op"], "move-directional");
         assert.equal(third["direction"], "left");
         acceptLast(h, "gen-1", "3");
@@ -1000,25 +1047,27 @@ describe("world entry rapid directional FIFO", () => {
         const h = makeHarness();
         discover(h);
         h.handle?.requestFocus("left");
-        // Core busy: the sent head ends without replay.
+        // Core busy: the filed head ends without replay.
         h.handle?.requestFocus("right");
         h.lastCall("DescribeWorld").callback(JSON.stringify({
-            v: 1, outcome: "rejected", kind: "busy", message: "busy", gen: "gen-1",
+            v: 2, outcome: "rejected", kind: "busy", message: "busy", gen: "gen-1",
+            source: "", nativeInvalid: "0", clock: "0",
         }));
         // No native event and no new press: the terminal failure alone
-        // schedules the catchup, which stays observation-only.
+        // schedules an observation-only catchup first.
         h.runTimers();
-        const catchup = requestOf(h);
-        assert.equal(catchup["command"], null);
+        assert.equal(queueCalls(h).length, 1, "catchup files nothing");
         acceptLast(h, "gen-1", "1");
         // The accepted catchup drains the queued tail zero-delay.
         h.runTimers();
-        const drained = requestOf(h)["command"] as Record<string, unknown>;
+        const queued = queueCalls(h);
+        assert.equal(queued.length, 2);
+        const drained = queued[1]?.["command"] as Record<string, unknown>;
         assert.equal(drained["op"], "focus-directional");
         assert.equal(drained["direction"], "right");
         acceptLast(h, "gen-1", "2");
         // No replay anywhere: the refused head and the queued tail each
-        // rode exactly one report.
+        // filed exactly once.
         const cmdSeqs = sentCmdSeqs(h);
         assert.equal(new Set(cmdSeqs).size, cmdSeqs.length);
         assert.equal(cmdSeqs.length, 2);
@@ -1029,28 +1078,32 @@ describe("world entry rapid directional FIFO", () => {
         discover(h);
         const mark = h.timers.length;
         h.handle?.requestFocus("left");
-        const first = requestOf(h);
-        const firstCmdSeq = first["cmdSeq"] as string;
-        // Queue a second press behind the flight, then expire the flight's
-        // own timeout only: the auto-drain schedules the catchup, which is
-        // answered before its own timeout can fire. No native event is
-        // delivered anywhere below.
+        const firstQ = JSON.parse(queueOf(h)) as Record<string, unknown>;
+        const firstClientCmd = firstQ["clientCmd"] as string;
+        // Queue a second press behind the flight, then expire the debounce,
+        // the settled queue timer, and the flight's own capture timeout in
+        // turn: the auto-drain files the tail on the debounce. No native
+        // event is delivered anywhere below.
         h.handle?.requestFocus("right");
         fireNextTimer(h, 2000, mark);
         fireNextTimer(h, 2000, mark);
         fireNextTimer(h, 2000, mark);
         assert.ok(h.logs.some((l) => l.includes("timeout")));
-        const catchup = requestOf(h);
-        assert.equal(catchup["command"], null);
-        acceptLast(h, "gen-1", "1");
+        // The timeout schedules an observation-only catchup first.
         h.runTimers();
-        const drained = requestOf(h)["command"] as Record<string, unknown>;
+        assert.equal(queueCalls(h).length, 1, "catchup files nothing");
+        acceptLast(h, "gen-1", "1");
+        // The accepted catchup drains the queued tail zero-delay.
+        h.runTimers();
+        const queued = queueCalls(h);
+        assert.equal(queued.length, 2);
+        const drained = queued[1]?.["command"] as Record<string, unknown>;
         assert.equal(drained["op"], "focus-directional");
         assert.equal(drained["direction"], "right");
         acceptLast(h, "gen-1", "2");
         // The timed-out head never reappears.
         const seqs = sentCmdSeqs(h);
-        assert.equal(seqs.filter((s) => s === firstCmdSeq).length, 1);
+        assert.equal(seqs.filter((s) => s === firstClientCmd).length, 1);
         assert.equal(new Set(seqs).size, seqs.length);
     });
 
@@ -1063,7 +1116,8 @@ describe("world entry rapid directional FIFO", () => {
         // Poison while one head flies and two tails wait: the whole queue
         // belongs to the dead generation.
         h.lastCall("DescribeWorld").callback(JSON.stringify({
-            v: 1, outcome: "rejected", kind: "generation-mismatch", message: "stale", gen: "gen-2",
+            v: 2, outcome: "rejected", kind: "generation-mismatch", message: "stale", gen: "gen-2",
+            source: "", nativeInvalid: "0", clock: "0",
         }));
         assert.ok(h.logs.some((l) => l.includes("queue-dropped reason=generation-mismatch depth=2")));
         assert.equal(h.calls.filter((c) => c.method === "DiscoverWorld").length, 2);
@@ -1081,17 +1135,15 @@ describe("world entry rapid directional FIFO", () => {
         {
             const auto = h.lastCall("DescribeWorld");
             const autoBody = JSON.parse(auto.payload);
-            auto.callback(acceptedReply("gen-2", autoBody.req, autoBody.obs, "0"));
+            auto.callback(acceptedReply("gen-2", autoBody.source, autoBody.nativeInvalid, "0"));
         }
         // After rebinding, a fresh press flows; the dropped tails never do.
         h.handle?.requestFocus("right");
         const fresh = requestOf(h);
         assert.equal(fresh["gen"], "gen-2");
-        assert.deepEqual((fresh["command"] as Record<string, unknown>)["direction"], "right");
-        const dirs = h.calls
-            .filter((c) => c.method === "DescribeWorld")
-            .map((c) => JSON.parse(c.payload) as Record<string, unknown>)
-            .filter((req) => req["command"] !== null)
+        const freshQ = JSON.parse(queueOf(h)) as Record<string, unknown>;
+        assert.equal((freshQ["command"] as Record<string, unknown>)["direction"], "right");
+        const dirs = queueCalls(h)
             .map((req) => (req["command"] as Record<string, unknown>)["direction"]);
         assert.deepEqual(dirs, ["left", "right"]);
     });
@@ -1111,7 +1163,7 @@ describe("world entry rapid directional FIFO", () => {
         // Draining the head still works afterwards.
         acceptLast(h, "gen-1", "1");
         h.runTimers();
-        const drained = requestOf(h)["command"] as Record<string, unknown>;
+        const drained = (JSON.parse(queueOf(h)) as Record<string, unknown>)["command"] as Record<string, unknown>;
         assert.equal(drained["op"], "focus-directional");
     });
 
@@ -1145,9 +1197,9 @@ describe("world entry aligned bindings", () => {
         const first = h.lastCall("DescribeWorld");
         const firstBody = JSON.parse(first.payload);
         const wsRow = (id: string, out: string, bind: string, order: number) => ({
-            id, out, bind, logical: id, scope: out, order, mode: "tiled", exist: true, hold: "",
+            id, out, bind, scope: out, order, mode: "tiled", exist: true, hold: "",
         });
-        first.callback(acceptedReply("gen-1", firstBody.req, firstBody.obs, "1", {
+        first.callback(acceptedReply("gen-1", firstBody.source as string, firstBody.nativeInvalid as string, "1", {
             workspaces: [
                 wsRow("al-1", "out", "ws1", 0),
                 wsRow("al-9", "out-2", "ws1", 0),
@@ -1160,26 +1212,24 @@ describe("world entry aligned bindings", () => {
             handler();
         }
         h.runTimers();
-        const second = requestOf(h);
-        const bindings = second["bindings"] as Array<Record<string, unknown>>;
-        assert.deepEqual(bindings, [
-            { logical: "al-1", native: "ws1", out: "out", pin: false, disp: false, managed: true },
-        ]);
+        const second = reportOf(h);
+        const views = second["views"] as Array<Record<string, unknown>>;
+        assert.ok(views.some((v) => v["out"] === "out" && v["view"] === "al-1"), "live cell publishes its logical");
     });
 
     it("replicates bindings per output in per-output-local across two screens", () => {
         const h = makeHarness("per-output-local");
         h.world.screens.push({ name: "out-2", geometry: { x: 1920, y: 0, width: 1920, height: 1080 } });
         discover(h);
-        assert.equal(requestOf(h)["mode"], "per-output-local");
+        assert.equal(reportOf(h)["mode"], "per-output-local");
         h.handle?.requestWorkspaceRelative(1);
         h.runTimers();
         const first = h.lastCall("DescribeWorld");
         const firstBody = JSON.parse(first.payload);
         const wsRow = (id: string, out: string, bind: string, order: number) => ({
-            id, out, bind, logical: id, scope: out, order, mode: "tiled", exist: true, hold: "",
+            id, out, bind, scope: out, order, mode: "tiled", exist: true, hold: "",
         });
-        first.callback(acceptedReply("gen-1", firstBody.req, firstBody.obs, "1", {
+        first.callback(acceptedReply("gen-1", firstBody.source as string, firstBody.nativeInvalid as string, "1", {
             workspaces: [
                 wsRow("al-1", "out", "ws1", 0),
                 wsRow("al-9", "out-2", "ws1", 0),
@@ -1189,13 +1239,12 @@ describe("world entry aligned bindings", () => {
             handler();
         }
         h.runTimers();
-        const second = requestOf(h);
-        const bindings = second["bindings"] as Array<Record<string, unknown>>;
-        // One row per (output, native): the same native binds a distinct
+        const second = reportOf(h);
+        // One logical view per output: the same native publishes a distinct
         // logical on each output.
-        assert.deepEqual(bindings, [
-            { logical: "al-1", native: "ws1", out: "out", pin: false, disp: false, managed: true },
-            { logical: "al-9", native: "ws1", out: "out-2", pin: false, disp: false, managed: true },
+        assert.deepEqual(second["views"], [
+            { out: "out", view: "al-1" },
+            { out: "out-2", view: "al-9" },
         ]);
     });
 
@@ -1206,23 +1255,20 @@ describe("world entry aligned bindings", () => {
         h.runTimers();
         const first = h.lastCall("DescribeWorld");
         const firstBody = JSON.parse(first.payload);
-        assert.equal(firstBody.mode, "shared");
-        first.callback(acceptedReply("gen-1", firstBody.req, firstBody.obs, "1", {
+        assert.equal((firstBody["report"] as Record<string, unknown>)["mode"], "shared");
+        first.callback(acceptedReply("gen-1", firstBody.source, firstBody.nativeInvalid, "1", {
             workspaces: [
-                { id: "sh-1", out: "out", bind: "ws1", logical: "sh-1", scope: "shared", order: 0, mode: "tiled", exist: true, hold: "" },
+                { id: "sh-1", out: "out", bind: "ws1", scope: "shared", order: 0, mode: "tiled", exist: true, hold: "" },
             ],
         }));
         for (const handler of (h.signals.desktopsChanged as FakeSignal).handlers) {
             handler();
         }
         h.runTimers();
-        const second = requestOf(h);
-        const bindings = second["bindings"] as Array<Record<string, unknown>>;
-        // Shared is unchanged: one row per native, resolved through the
+        const second = reportOf(h);
+        // Shared is unchanged: one logical view resolves through the
         // output-less lookup (never replicated per output).
-        assert.deepEqual(bindings, [
-            { logical: "sh-1", native: "ws1", out: "out", pin: false, disp: false, managed: true },
-        ]);
+        assert.deepEqual(second["views"], [{ out: "out", view: "sh-1" }]);
     });
 });
 
@@ -1339,6 +1385,10 @@ describe("world entry restart float-intent preservation", () => {
         // poisons the whole inventory read, so every domain empties its
         // windows while the report stays non-null.
         let heldFirst = true;
+        // Sole-broker mini-harness: the envelope becomes the exact core
+        // report (broker namespace plus at most one queued command) and
+        // the core reply returns bound with a nulled terminal result.
+        const broker = createMiniBroker();
         const signals: Record<string, FakeSignal> = {
             windowAdded: fakeSignal(),
             windowRemoved: fakeSignal(),
@@ -1421,6 +1471,17 @@ describe("world entry restart float-intent preservation", () => {
                 }
                 if (method === "DiscoverWorld" || method === "DescribeWorld") {
                     calls.push({ method, payload, callback });
+                    return;
+                }
+                if (method === "QueueWorldCommand") {
+                    calls.push({ method, payload, callback });
+                    callback(broker.answerQueue(payload));
+                    return;
+                }
+                if (method === "TakeCommandResult") {
+                    calls.push({ method, payload, callback });
+                    callback(broker.answerTake(payload));
+                    return;
                 }
             },
             scheduleOnce: (delay, cb) => {
@@ -1449,40 +1510,49 @@ describe("world entry restart float-intent preservation", () => {
             const at = calls.findIndex((c, i) => i >= flushed && c.method === "DescribeWorld");
             assert.ok(at >= 0, "expected a queued DescribeWorld");
             flushed = at + 1;
-            const rawReply = await engineSend(calls[at]!.method, calls[at]!.payload);
+            // Mini-broker stamping: the envelope becomes the exact core
+            // report the sole broker would dispatch, and the core reply
+            // returns bound with a nulled terminal result.
+            const envelope = calls[at]!.payload;
+            const stamped = broker.stampCapture(envelope);
+            const coreReply = await engineSend("DescribeWorld", stamped);
+            const rawReply = broker.bindReply(coreReply, envelope);
             calls[at]!.callback(rawReply);
             return { req: JSON.parse(calls[at]!.payload) as Record<string, unknown>, reply: JSON.parse(rawReply) as Record<string, unknown>, rawReply };
         };
         try {
             const discAt = calls.findIndex((c) => c.method === "DiscoverWorld");
             assert.ok(discAt >= 0, "entry discovers on start");
-            calls[discAt]!.callback(await engineSend("DiscoverWorld", calls[discAt]!.payload));
+            const engineBootstrap = await engineSend("DiscoverWorld", calls[discAt]!.payload);
+            calls[discAt]!.callback(broker.bindDiscovery(engineBootstrap));
             // First accepted observation: the auto observation-only dispatch
             // after discovery, with the hold applied. No commands.
             const first = await flushNextDescribe();
-            const firstDomains = first.req["domains"] as Array<Record<string, unknown>>;
+            // v2 holds ride screen completeness and window facts (no
+            // domains lane on the wire): the scoped hold leaves out-a's
+            // work area unreadable while out-b stays complete; the global
+            // hold empties the window facts with the report incomplete.
+            const firstReport = first.req["report"] as Record<string, unknown>;
+            const firstScreens = firstReport["screens"] as Array<Record<string, unknown>>;
             if (holdMode === "scoped") {
-                const heldDomain = firstDomains.find((d) => d["id"] === "out-a" && d["ws"] === "ws1");
+                const screenA = firstScreens.find((s) => s["out"] === "out-a");
+                const screenB = firstScreens.find((s) => s["out"] === "out-b");
                 assert.equal(
-                    heldDomain?.["hold"],
-                    "unreadable",
-                    `first dispatched request holds out-a/ws-1 unreadable: ${JSON.stringify(firstDomains.map((d) => [d["id"], d["ws"], d["hold"]]))}`,
+                    screenA?.["complete"],
+                    false,
+                    `first dispatched request holds out-a unreadable: ${JSON.stringify(firstScreens)}`,
                 );
-                const otherDomain = firstDomains.find((d) => d["id"] === "out-b" && d["ws"] === "ws2");
                 assert.equal(
-                    otherDomain?.["hold"],
-                    "",
-                    `out-b/ws-2 stays complete: ${JSON.stringify(firstDomains.map((d) => [d["id"], d["ws"], d["hold"]]))}`,
+                    screenB?.["complete"],
+                    true,
+                    `out-b stays complete: ${JSON.stringify(firstScreens)}`,
                 );
             } else {
-                // Global inventory failure empties every domain's windows
-                // while the report stays non-null.
-                const wins = firstDomains.flatMap((d) => d["windows"] as Array<unknown>);
-                assert.equal(wins.length, 0, `global hold empties domain windows: ${JSON.stringify(firstDomains.map((d) => [d["id"], d["ws"], d["hold"], (d["windows"] as Array<unknown>).length]))}`);
-                assert.ok(
-                    firstDomains.some((d) => d["hold"] !== ""),
-                    `global hold marks unreadable: ${JSON.stringify(firstDomains.map((d) => [d["id"], d["ws"], d["hold"]]))}`,
-                );
+                // Global inventory failure empties every window fact while
+                // the report stays non-null.
+                const wins = firstReport["windows"] as Array<unknown>;
+                assert.equal(wins.length, 0, `global hold empties window facts: ${JSON.stringify(firstReport)}`);
+                assert.equal(firstReport["complete"], false, "global hold marks the report incomplete");
             }
             // The genuine Engine reply must lack any untouched/no-hold row
             // for the seeded float: that absence is the producer condition
@@ -1507,10 +1577,11 @@ describe("world entry restart float-intent preservation", () => {
             }
             runTimers();
             const second = await flushNextDescribe();
-            const secondDomains = second.req["domains"] as Array<Record<string, unknown>>;
+            const secondReport = second.req["report"] as Record<string, unknown>;
+            const secondScreens = secondReport["screens"] as Array<Record<string, unknown>>;
             assert.ok(
-                secondDomains.every((d) => d["hold"] === ""),
-                `second dispatched request is complete: ${JSON.stringify(secondDomains.map((d) => [d["id"], d["ws"], d["hold"]]))}`,
+                secondScreens.every((s) => s["complete"] === true),
+                `second dispatched request is complete: ${JSON.stringify(secondScreens)}`,
             );
             // No uncommanded settled float loss: every durable snapshot
             // retains win-a, keeps win-b on the tile side only (disjoint),
@@ -1527,7 +1598,7 @@ describe("world entry restart float-intent preservation", () => {
             }
             // The second dispatched observation still reports the seeded
             // float as floating with the same live identities.
-            const secondWins = secondDomains.flatMap((d) => d["windows"] as Array<Record<string, unknown>>);
+            const secondWins = (secondReport["windows"] as Array<Record<string, unknown>>);
             const rowA = secondWins.find((w) => w["win"] === "win-a");
             assert.equal(
                 rowA?.["floating"],
@@ -1574,13 +1645,16 @@ describe("world entry restart float-intent preservation", () => {
 });
 
 describe("world entry script-restart sequence handover", () => {
-    it("hands reset counters to a fresh incarnation on the retained engine", { timeout: 120000 }, async () => {
+    it("rotation hands a fresh generation and engine to the new producer lifetime", { timeout: 120000 }, async () => {
         // Producer-shaped restart replay through the real WorldEngine behind
-        // one retained world_eval process (aligned, like production): the
-        // first producer advances request+command watermarks with a float +
-        // fixed tile seed, then a second producer with a fresh
-        // production-minted incarnation restarts both counters at 1 on the
-        // same generation and is accepted, never superseded/consumed.
+        // one world_eval process (aligned, like production): the first
+        // producer advances request+command watermarks with a float + fixed
+        // tile seed, then the restarted producer discovers as a NEW
+        // lifetime. Like the real WorldBroker::discovery_body, the new
+        // lifetime rotates onto a fresh generation and a fresh engine
+        // (world_eval rebinds both on DiscoverWorld): the old generation
+        // refuses outright, queued/settled state from the old world is
+        // gone, and the saved default reseeds the fresh engine.
         const { spawn } = await import("node:child_process");
         const { existsSync } = await import("node:fs");
         const { createInterface } = await import("node:readline");
@@ -1714,6 +1788,7 @@ describe("world entry script-restart sequence handover", () => {
             geometryWrites.filter((line) => line.startsWith("win-a@") || line.startsWith("win-b@")).length;
         interface Producer {
             handle: NonNullable<ReturnType<typeof startWorldAdapterEntry>>;
+            broker: MiniBroker;
             calls: CapturedCall[];
             timers: Array<{ delay: number; cb: () => void }>;
             writes: string[];
@@ -1721,7 +1796,7 @@ describe("world entry script-restart sequence handover", () => {
             flushed: { count: number };
             runTimers: (maxDelay?: number) => void;
         }
-        const startProducer = (adapter: string, tag: string): Producer => {
+        const startProducer = (adapter: string, tag: string, broker: MiniBroker): Producer => {
             const signals = {
                 windowAdded: fakeSignal(),
                 windowRemoved: fakeSignal(),
@@ -1795,8 +1870,11 @@ describe("world entry script-restart sequence handover", () => {
                         writes.push(payload);
                         return;
                     }
-                    if (method === "DiscoverWorld" || method === "DescribeWorld") {
-                        calls.push({ method, payload, callback });
+                    calls.push({ method, payload, callback });
+                    if (method === "QueueWorldCommand") {
+                        callback(broker.answerQueue(payload));
+                    } else if (method === "TakeCommandResult") {
+                        callback(broker.answerTake(payload));
                     }
                 },
                 scheduleOnce: (delay, cb) => {
@@ -1812,7 +1890,7 @@ describe("world entry script-restart sequence handover", () => {
             assert.ok(handle !== null);
             return {
                 handle: handle as NonNullable<typeof handle>,
-                calls, timers, writes, signals,
+                broker, calls, timers, writes, signals,
                 flushed: { count: 0 },
                 runTimers: (maxDelay = 120): void => {
                     for (let i = 0; i < timers.length; i += 1) {
@@ -1826,13 +1904,23 @@ describe("world entry script-restart sequence handover", () => {
                 },
             };
         };
-        const flushNext = async (p: Producer): Promise<{ req: Record<string, unknown>; reply: Record<string, unknown> }> => {
+        const flushNext = async (p: Producer): Promise<{ req: Record<string, unknown>; reply: Record<string, unknown>; stamped: Record<string, unknown>; stampedText: string }> => {
             const at = p.calls.findIndex((c, i) => i >= p.flushed.count && c.method === "DescribeWorld");
             assert.ok(at >= 0, "expected a queued DescribeWorld");
             p.flushed.count = at + 1;
-            const rawReply = await engineSend("DescribeWorld", p.calls[at]!.payload);
+            // Mini-broker stamping: the envelope becomes the exact core
+            // report the sole broker would dispatch, and the core reply
+            // returns bound with a nulled terminal result.
+            const stamped = p.broker.stampCapture(p.calls[at]!.payload);
+            const coreReply = await engineSend("DescribeWorld", stamped);
+            const rawReply = p.broker.bindReply(coreReply, p.calls[at]!.payload);
             p.calls[at]!.callback(rawReply);
-            return { req: JSON.parse(p.calls[at]!.payload) as Record<string, unknown>, reply: JSON.parse(rawReply) as Record<string, unknown> };
+            return {
+                req: JSON.parse(p.calls[at]!.payload) as Record<string, unknown>,
+                reply: JSON.parse(rawReply) as Record<string, unknown>,
+                stamped: JSON.parse(stamped) as Record<string, unknown>,
+                stampedText: stamped,
+            };
         };
         const assertStoreSettled = (writes: string[], label: string): void => {
             assert.ok(writes.length >= 1, `${label}: expected store writes`);
@@ -1848,21 +1936,27 @@ describe("world entry script-restart sequence handover", () => {
         };
         let p1: Producer | null = null;
         let p2: Producer | null = null;
+        // One broker per producer lifetime: the real service rotates the
+        // whole broker (fresh generation, fresh engine, dropped queues) when
+        // a new producer lifetime binds, so the restart models rotation with
+        // a fresh harness broker, never the retained one.
         try {
             // Producer 1: fresh production-minted stream on the saved
             // default (false) with an explicit tiling override, advancing
             // both watermarks with real commands.
+            const broker1: MiniBroker = createMiniBroker();
             const adapter1 = mintAdapterIncarnation();
             assert.ok(isOpaqueId(adapter1) && adapter1.startsWith("kwin-world-adapter-"));
-            p1 = startProducer(adapter1, "p1");
+            p1 = startProducer(adapter1, "p1", broker1);
             const disc1 = [...p1.calls].reverse().find((c) => c.method === "DiscoverWorld");
             assert.ok(disc1 !== undefined, "producer1 discovers on start");
             assert.equal((JSON.parse(disc1.payload) as Record<string, unknown>)["adapter"], adapter1);
             const bootRaw = await engineSend("DiscoverWorld", disc1.payload);
-            const boot = JSON.parse(bootRaw) as Record<string, unknown>;
+            const bootBound = broker1.bindDiscovery(bootRaw);
+            const boot = JSON.parse(bootBound) as Record<string, unknown>;
             const gen = boot["gen"] as string;
-            assert.ok(typeof gen === "string" && gen.length > 0, "retained generation bound");
-            disc1.callback(bootRaw);
+            assert.ok(typeof gen === "string" && gen.length > 0, "first generation bound");
+            disc1.callback(bootBound);
             const first = await flushNext(p1);
             assert.equal(first.reply["ready"], true, `first observation accepted: ${JSON.stringify(first.reply)}`);
             for (let round = 0; round < 2; round += 1) {
@@ -1878,24 +1972,20 @@ describe("world entry script-restart sequence handover", () => {
             // The dispatched report carries the genuine fixed origin plus
             // the tile-override suppress flag for win-b.
             const findWin = (req: Record<string, unknown>, id: string): Record<string, unknown> | undefined => {
-                const domains = req["domains"] as Array<Record<string, unknown>>;
-                for (const domain of domains) {
-                    const found = (domain["windows"] as Array<Record<string, unknown>>).find((w) => w["win"] === id);
-                    if (found !== undefined) {
-                        return found;
-                    }
-                }
-                return undefined;
+                // v2: the inner report carries flat window facts (no
+                // domains lane on the wire).
+                const report = req["report"] as Record<string, unknown>;
+                return ((report["windows"] as Array<Record<string, unknown>>) ?? []).find((w) => w["win"] === id);
             };
             let lastRev = first.reply["rev"] as string;
-            let lastReqSeq = first.req["reqSeq"] as string;
+            let lastReqSeq = first.stamped["reqSeq"] as string;
             p1.handle.requestWorkspaceTilingToggle();
             p1.runTimers();
             const toggledA = await flushNext(p1);
             assert.equal(toggledA.reply["ready"], true, "toggle out-a accepted");
             assert.equal(toggledA.reply["consumed"], false, "toggle out-a executes");
             lastRev = toggledA.reply["rev"] as string;
-            lastReqSeq = toggledA.req["reqSeq"] as string;
+            lastReqSeq = toggledA.stamped["reqSeq"] as string;
             focus.screen = "out-b";
             focus.window = w2;
             p1.handle.requestWorkspaceTilingToggle();
@@ -1904,13 +1994,21 @@ describe("world entry script-restart sequence handover", () => {
             assert.equal(toggledB.reply["ready"], true, "toggle out-b accepted");
             assert.equal(toggledB.reply["consumed"], false, "toggle out-b executes");
             lastRev = toggledB.reply["rev"] as string;
-            lastReqSeq = toggledB.req["reqSeq"] as string;
+            lastReqSeq = toggledB.stamped["reqSeq"] as string;
             const reportedB = findWin(toggledB.req, "win-b");
             assert.equal(reportedB?.["fixedAuto"], true, `fixed origin declared for win-b: ${JSON.stringify(reportedB)}`);
             assert.equal(reportedB?.["fixedSuppress"], true, `tile override suppresses float admission: ${JSON.stringify(reportedB)}`);
             assert.equal(reportedB?.["floating"], false, "tile override stays tiled in report");
             const replyScopesB = toggledB.reply["scopes"] as Array<Record<string, unknown>>;
-            assert.equal(replyScopesB.find((s) => s["scope"] === "out-b/ws2")?.["auth"], "controlled", "out-b/ws2 tiled and controlled");
+            // v2: scope ids name the core logical; the controlled out-b
+            // scope must bind the out-b current native (ws2).
+            const controlledB = replyScopesB.find((s) => (s["scope"] as string).startsWith("out-b/") && s["auth"] === "controlled");
+            assert.ok(controlledB !== undefined, `out-b has a controlled scope: ${JSON.stringify(replyScopesB)}`);
+            const scopeLogical = (controlledB["scope"] as string).split("/")[1] as string;
+            const scopeRow = ((toggledB.reply["workspaces"] as Array<Record<string, unknown>>) ?? []).find(
+                (w) => w["out"] === "out-b" && w["id"] === scopeLogical,
+            );
+            assert.equal(scopeRow?.["bind"], "ws2", "controlled scope binds the out-b current native");
             const replyRowsB = toggledB.reply["windows"] as Array<Record<string, unknown>>;
             const rowB = replyRowsB.find((w) => w["win"] === "win-b");
             assert.equal(rowB?.["frame_auth"], "controlled", "fixed tile under controlled frame authority");
@@ -1931,31 +2029,58 @@ describe("world entry script-restart sequence handover", () => {
             const memberBefore = membershipWrites.length;
             p1.handle.stop();
             // Producer 2: script restart with a fresh production-minted
-            // incarnation on the SAME retained engine/generation. Discovery
-            // replays the retained generation for the new stream without
-            // resetting the engine (world_eval resets only on its own
-            // DiscoverWorld, which the restart never sends).
+            // incarnation as a NEW producer lifetime. Like the real
+            // WorldBroker::discovery_body, the restart rotates onto a fresh
+            // generation and a fresh engine (world_eval rebinds both on its
+            // own DiscoverWorld, which the restart sends).
             const adapter2 = mintAdapterIncarnation();
             assert.notEqual(adapter2, adapter1, "restart mints a fresh stream");
-            p2 = startProducer(adapter2, "p2");
+            const broker2: MiniBroker = createMiniBroker();
+            p2 = startProducer(adapter2, "p2", broker2);
             const disc2 = [...p2.calls].reverse().find((c) => c.method === "DiscoverWorld");
             assert.ok(disc2 !== undefined, "producer2 discovers on start");
-            const disc2Body = JSON.parse(disc2.payload) as Record<string, unknown>;
-            disc2.callback(JSON.stringify({ ...boot, adapter: adapter2, req: disc2Body["req"] }));
+            const bootRaw2 = await engineSend("DiscoverWorld", disc2.payload);
+            const bootBound2 = broker2.bindDiscovery(bootRaw2);
+            disc2.callback(bootBound2);
+            const boot2 = JSON.parse(bootBound2) as Record<string, unknown>;
+            const gen2 = broker2.gen;
+            assert.ok(typeof gen2 === "string" && gen2.length > 0, "rotated generation bound");
+            assert.notEqual(gen2, gen, "new lifetime rotates the generation");
+            assert.equal(boot2["gen"], gen2, "bootstrap names the rotated generation");
+            // The dead world is gone: a retained first-generation capture
+            // refuses outright and can never apply again.
+            const staleGen = JSON.parse(await engineSend("DescribeWorld", toggledB.stampedText)) as Record<string, unknown>;
+            assert.equal(staleGen["outcome"], "rejected");
+            assert.equal(
+                staleGen["kind"],
+                "generation-mismatch",
+                "old-generation capture refuses after rotation",
+            );
             const restarted = await flushNext(p2);
             assert.equal(restarted.req["adapter"], adapter2);
-            assert.equal(restarted.req["req"], "req-1", "restarted request counter begins at 1");
-            assert.equal(restarted.req["command"], null, "restart carries no replayed command");
-            assert.equal(restarted.reply["ready"], true, `restart accepted on retained engine, never superseded: ${JSON.stringify(restarted.reply)}`);
-            assert.equal(restarted.reply["rev"], String(Number(lastRev) + 1), "retained revision advances");
-            // A subsequent observation is accepted and the store keeps both
-            // identities with no drop.
+            assert.match(
+                restarted.req["source"] as string,
+                /^src-1-/,
+                "restarted source namespace begins at 1 for the fresh incarnation",
+            );
+            assert.ok(!("command" in (restarted.req as Record<string, unknown>)), "restart carries no replayed command");
+            assert.equal(restarted.reply["ready"], true, `restart accepted on the rotated engine, never superseded: ${JSON.stringify(restarted.reply)}`);
+            assert.equal(restarted.reply["rev"], "1", "rotated engine starts at rev 1");
+            assert.equal(restarted.reply["gen"], gen2, "restart binds the rotated generation");
+            assert.equal(restarted.req["gen"], gen2, "restart capture binds the rotated generation");
+            // Queue/take lanes rebind to the rotated generation: the first
+            // retile files under gen2, never the dead gen1 namespace.
+            lastRev = restarted.reply["rev"] as string;
+            lastReqSeq = restarted.stamped["reqSeq"] as string;
             for (const handler of [...(p2.signals.desktopsChanged as FakeSignal).handlers]) {
                 handler();
             }
             p2.runTimers();
             const settled = await flushNext(p2);
             assert.equal(settled.reply["ready"], true, "post-restart observation accepted");
+            assert.equal(settled.reply["rev"], "2", "rotated engine advances from rev 1");
+            lastRev = settled.reply["rev"] as string;
+            lastReqSeq = settled.stamped["reqSeq"] as string;
             assertStoreSettled(p2.writes, "producer2");
             // REQ-CTL-04: per-workspace overrides reset on restart; the saved
             // default (false) reseeds BOTH scopes and native state is untouched.
@@ -1977,7 +2102,25 @@ describe("world entry script-restart sequence handover", () => {
             const retiledA = await flushNext(p2);
             assert.equal(retiledA.reply["ready"], true, "retile out-a accepted");
             assert.equal(retiledA.reply["consumed"], false, "retile out-a executes, never consumed");
+            assert.equal(retiledA.reply["rev"], String(Number(lastRev) + 1), "rotated revision advances");
+            lastRev = retiledA.reply["rev"] as string;
             assert.equal(p2.handle.getWorkspaceTilingSnapshot().tiled, true, "out-a scope retiled");
+            // The retile filed under the rotated generation, never the dead
+            // one: queue/take lanes rebind with the new world.
+            const filedQueue = [...p2.calls].reverse().find((c) => c.method === "QueueWorldCommand");
+            assert.ok(filedQueue !== undefined, "retile files a queue command");
+            assert.equal(
+                (JSON.parse(filedQueue.payload) as Record<string, unknown>)["gen"],
+                gen2,
+                "queue binds the rotated generation",
+            );
+            const filedTake = [...p2.calls].reverse().find((c) => c.method === "TakeCommandResult");
+            assert.ok(filedTake !== undefined, "retile collects its terminal result");
+            assert.equal(
+                (JSON.parse(filedTake.payload) as Record<string, unknown>)["gen"],
+                gen2,
+                "take binds the rotated generation",
+            );
             focus.screen = "out-b";
             focus.window = w2;
             p2.handle.requestWorkspaceTilingToggle();
@@ -2138,6 +2281,25 @@ describe("world entry float-intent reconcile controls", () => {
                 }
                 if (method === "DiscoverWorld" || method === "DescribeWorld") {
                     calls.push({ method, payload, callback });
+                    return;
+                }
+                if (method === "QueueWorldCommand") {
+                    calls.push({ method, payload, callback });
+                    const queueBody = JSON.parse(payload) as Record<string, unknown>;
+                    callback(JSON.stringify({ v: 2, outcome: "queued", gen: "gen-1",
+                        client: queueBody["client"], clientCmd: queueBody["clientCmd"], globalCmd: "1" }));
+                    return;
+                }
+                if (method === "TakeCommandResult") {
+                    calls.push({ method, payload, callback });
+                    const stagedTake = (globalThis as Record<string, unknown>)["__takeResult"] as Record<string, unknown> | undefined;
+                    if (stagedTake !== undefined) {
+                        delete (globalThis as Record<string, unknown>)["__takeResult"];
+                        callback(JSON.stringify({ v: 2, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
+                    } else {
+                        callback(JSON.stringify({ v: 2, outcome: "pending", gen: "gen-1" }));
+                    }
+                    return;
                 }
             },
             scheduleOnce: (delay, cb) => {
@@ -2176,7 +2338,7 @@ describe("world entry float-intent reconcile controls", () => {
         const auto = h.lastCall("DescribeWorld");
         const autoBody = JSON.parse(auto.payload);
         h.rev.count += 1;
-        auto.callback(acceptedReply("gen-1", autoBody.req, autoBody.obs, String(h.rev.count)));
+        auto.callback(acceptedReply("gen-1", autoBody.source, autoBody.nativeInvalid, String(h.rev.count)));
         return h;
     }
 
@@ -2185,7 +2347,7 @@ describe("world entry float-intent reconcile controls", () => {
         alloc: null, frame: null,
         frame_auth: "untouched", frame_hold: "",
         member_auth: "controlled", member_hold: "",
-        frame_op: "",
+        frame_op: "", clear_op: "",
         floating: true, float_origin: "",
         ...extra,
     });
@@ -2195,7 +2357,7 @@ describe("world entry float-intent reconcile controls", () => {
         alloc: null, frame: null,
         frame_auth: "controlled", frame_hold: "",
         member_auth: "controlled", member_hold: "",
-        frame_op: "",
+        frame_op: "", clear_op: "",
         floating: false, float_origin: "",
         ...extra,
     });
@@ -2206,7 +2368,11 @@ describe("world entry float-intent reconcile controls", () => {
         const req = h.lastCall("DescribeWorld");
         const body = JSON.parse(req.payload);
         h.rev.count += 1;
-        req.callback(acceptedReply("gen-1", body.req, body.obs, String(h.rev.count), extra));
+        const { result, ...rest } = extra;
+        if (result !== undefined) {
+            (globalThis as Record<string, unknown>)["__takeResult"] = result;
+        }
+        req.callback(acceptedReply("gen-1", body.source, body.nativeInvalid, String(h.rev.count), rest));
     }
 
     const lastWrite = (h: FloatHarness): Record<string, unknown> =>

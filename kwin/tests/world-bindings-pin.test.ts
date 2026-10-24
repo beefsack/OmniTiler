@@ -66,6 +66,18 @@ describe("world binding retention flags", () => {
             adapter: "test-adapter",
             callDbus: (_s, _p, _i, method, payload, callback) => {
                 calls.push({ method, payload, callback });
+                if (method === "QueueWorldCommand") {
+                    const queueBody = JSON.parse(payload) as Record<string, unknown>;
+                    callback(JSON.stringify({ v: 2, outcome: "queued", gen: "gen-1",
+                        client: queueBody["client"], clientCmd: queueBody["clientCmd"], globalCmd: "1" }));
+                } else if (method === "TakeCommandResult") {
+                    const stagedTake = (globalThis as Record<string, unknown>)["__takeResult"] as Record<string, unknown> | undefined;
+                    if (stagedTake !== undefined) {
+                        delete (globalThis as Record<string, unknown>)["__takeResult"];
+                        callback(JSON.stringify({ v: 2, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
+                    } else {
+                        callback(JSON.stringify({ v: 2, outcome: "pending", gen: "gen-1" }));
+                    }                }
             },
             scheduleOnce: (delay, cb) => {
                 timers.push({ delay, cb });
@@ -78,23 +90,34 @@ describe("world binding retention flags", () => {
         });
         assert.ok(handle !== null);
         calls.find((c) => c.method === "DiscoverWorld")?.callback(JSON.stringify({
-            v: 1, adapter: "test-adapter", gen: "gen-1", req: "disc-1",
+            v: 2, adapter: "broker-1", gen: "gen-1", req: "disc-1",
             obs: "0", rev: "0", ready: false, consumed: false,
+            gestureSettled: null,
+            operationSettled: [],
+            warpCursor: null,
+            presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
             scopes: [], workspaces: [], outputs: [], windows: [],
-            transfers: [], effects: [],
+            transfers: [], effects: [], result: null,
         }));
         // Settle the auto report with a reply that binds both natives, so
-        // the next report carries bindings.
+        // the next report converges the adapter binding snapshot.
         const auto = [...calls].reverse().find((c) => c.method === "DescribeWorld");
         assert.ok(auto !== undefined);
         const autoBody = JSON.parse((auto as { payload: string }).payload) as Record<string, unknown>;
         (auto as { callback: (reply: unknown) => void }).callback(JSON.stringify({
-            v: 1, adapter: "test-adapter", gen: "gen-1", req: autoBody["req"],
-            obs: autoBody["obs"], rev: "1", ready: true, consumed: false,
-            scopes: [], outputs: [], windows: [], transfers: [], effects: [],
+            v: 2, adapter: "broker-1", gen: "gen-1", req: autoBody["source"],
+            obs: "1", rev: "1", ready: true, consumed: false,
+            source: autoBody["source"],
+            nativeInvalid: autoBody["nativeInvalid"],
+            clock: "0",
+            gestureSettled: null,
+            operationSettled: [],
+            warpCursor: null,
+            presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
+            scopes: [], outputs: [], windows: [], transfers: [], effects: [], result: null,
             workspaces: [
-                { id: "ws-1", out: "out-1", bind: "ws-1", logical: "desk-1", scope: "out-1", order: 0, mode: "tiled", exist: true, hold: "" },
-                { id: "ws-2", out: "out-2", bind: "ws-2", logical: "desk-2", scope: "out-2", order: 0, mode: "tiled", exist: true, hold: "" },
+                { id: "ws-1", out: "out-1", bind: "ws-1", scope: "out-1", order: 0, mode: "tiled", exist: true, hold: "" },
+                { id: "ws-2", out: "out-2", bind: "ws-2", scope: "out-2", order: 0, mode: "tiled", exist: true, hold: "" },
             ],
         }));
         // Observation-only reports carry no retention: nothing pinned.
@@ -109,13 +132,22 @@ describe("world binding retention flags", () => {
                 t.cb();
             }
         }
+        const sentQ = [...calls].reverse().find((c) => c.method === "QueueWorldCommand");
+        assert.ok(sentQ !== undefined);
+        const qbody = JSON.parse((sentQ as { payload: string }).payload) as Record<string, unknown>;
+        const command = qbody["command"] as Record<string, unknown>;
+        assert.equal(command["op"], "send-directional");
+        // Bindings never ride the wire (adapter-owned snapshot only): the
+        // inner report carries views, never a bindings key. Direction-only
+        // intents name no workspace, so nothing pins.
         const sent = [...calls].reverse().find((c) => c.method === "DescribeWorld");
         assert.ok(sent !== undefined);
         const body = JSON.parse((sent as { payload: string }).payload) as Record<string, unknown>;
-        const command = body["command"] as Record<string, unknown>;
-        assert.equal(command["op"], "send-directional");
-        const bindings = body["bindings"] as Array<Record<string, unknown>>;
-        assert.ok(bindings.length >= 2);
+        const inner = body["report"] as Record<string, unknown>;
+        assert.ok(!("bindings" in inner), "bindings never ride the wire");
+        assert.ok(!("command" in inner), "captures stay commandless");
+        const bindings: Array<Record<string, unknown>> = [];
+        void bindings;
         for (const b of bindings) {
             assert.equal(b["disp"], false, "no native displaced source exists");
             assert.equal(b["managed"], true, "listed bindings are managed inventory");

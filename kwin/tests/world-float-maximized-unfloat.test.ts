@@ -156,6 +156,18 @@ function makeHarness(mode: ClearMode) {
         adapter: "test-adapter",
         callDbus: (_s, _p, _i, method, payload, callback) => {
             calls.push({ method, payload, callback });
+            if (method === "QueueWorldCommand") {
+                const queueBody = JSON.parse(payload) as Record<string, unknown>;
+                callback(JSON.stringify({ v: 2, outcome: "queued", gen: "gen-1",
+                    client: queueBody["client"], clientCmd: queueBody["clientCmd"], globalCmd: "1" }));
+            } else if (method === "TakeCommandResult") {
+                const stagedTake = (globalThis as Record<string, unknown>)["__takeResult"] as Record<string, unknown> | undefined;
+                if (stagedTake !== undefined) {
+                    delete (globalThis as Record<string, unknown>)["__takeResult"];
+                    callback(JSON.stringify({ v: 2, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
+                } else {
+                    callback(JSON.stringify({ v: 2, outcome: "pending", gen: "gen-1" }));
+                }            }
         },
         scheduleOnce: (delay, cb) => {
             timers.push({ delay, cb });
@@ -187,29 +199,47 @@ function makeHarness(mode: ClearMode) {
     };
     const accepted = (
         gen: string,
-        req: string,
-        obs: string,
+        source: string,
+        nativeInvalid: string,
         rev: string,
         extra: Record<string, unknown> = {},
-    ): string =>
-        JSON.stringify({
-            v: 1, adapter: "test-adapter", gen, req, obs, rev,
+    ): string => {
+        // Terminal results ride the take lane requester-only, never the
+        // capture reply.
+        const { result, ...snapshot } = extra;
+        if (result !== undefined) {
+            (globalThis as Record<string, unknown>)["__takeResult"] = result;
+        }
+        return JSON.stringify({
+            v: 2, adapter: "broker-1", gen, req: source, obs: rev, rev,
             ready: true, consumed: false,
+            source,
+            nativeInvalid,
+            clock: "0",
+            gestureSettled: null,
+            operationSettled: [],
+            warpCursor: null,
+            presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
             scopes: [{ scope: `${OUT}/${WS_A}`, auth: "controlled", reason: "" }],
-            workspaces: [], outputs: [], windows: [], transfers: [], effects: [],
-            ...extra,
+            workspaces: [], outputs: [], windows: [], transfers: [], effects: [], result: null,
+            ...snapshot,
         });
+    };
     const discover = (gen = "gen-1"): void => {
         const call = lastCall("DiscoverWorld");
         const body = JSON.parse(call.payload);
         call.callback(JSON.stringify({
-            v: 1, adapter: "test-adapter", gen, req: body.req, obs: "0", rev: "0",
+            v: 2, adapter: "broker-1", gen, req: body.req, obs: "0", rev: "0",
             ready: false, consumed: false, scopes: [], workspaces: [], outputs: [],
-            windows: [], transfers: [], effects: [],
+            gestureSettled: null,
+            operationSettled: [],
+            warpCursor: null,
+            presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
+            windows: [], transfers: [], effects: [], result: null,
         }));
         const auto = lastCall("DescribeWorld");
         const autoBody = JSON.parse(auto.payload);
-        auto.callback(accepted(gen, autoBody.req, autoBody.obs, "0"));
+        auto.callback(accepted(gen, autoBody.source, autoBody.nativeInvalid, "0"));
     };
     const winRow = (
         bare: string,
@@ -222,6 +252,7 @@ function makeHarness(mode: ClearMode) {
         frame_auth: auth, frame_hold: "",
         member_auth: auth, member_hold: "",
         frame_op: "",
+        clear_op: "",
         floating: auth === "untouched", float_origin: "",
         ...extra,
     });
@@ -237,7 +268,7 @@ function makeHarness(mode: ClearMode) {
         runTimers();
         const call = lastCall("DescribeWorld");
         const body = JSON.parse(call.payload) as Record<string, unknown>;
-        call.callback(accepted("gen-1", body["req"] as string, body["obs"] as string, rev, {
+        call.callback(accepted("gen-1", body["source"] as string, body["nativeInvalid"] as string, rev, {
             windows: [winRow(WIN_A, FLOAT_A, "untouched"), winRow(WIN_B, TILE_B, "controlled")],
             result: { op: "toggle-float", win: WIN_A, rect: FLOAT_A },
         }));
@@ -281,15 +312,18 @@ function makeHarness(mode: ClearMode) {
         setGesture: (value: boolean) => {
             gesture = value;
         },
-        commandOf: (payload: string): Record<string, unknown> | null =>
-            (JSON.parse(payload) as Record<string, unknown>)["command"] as Record<string, unknown> | null,
+        commandOf: (payload: string): Record<string, unknown> | null => {
+            const parsed = JSON.parse(payload) as Record<string, unknown>;
+            const cmd = parsed["command"] as Record<string, unknown> | undefined;
+            return cmd ?? null;
+        },
     };
 }
 
 describe("world B9 deferred maximized unfloat", () => {
     const toggleCount = (h: ReturnType<typeof makeHarness>): number =>
         h.calls
-            .filter((c) => c.method === "DescribeWorld")
+            .filter((c) => c.method === "QueueWorldCommand")
             .map((c) => h.commandOf(c.payload))
             .filter((cmdVal) => cmdVal !== null && (cmdVal["op"] as unknown) === "operation")
             .filter((op) => ((op as Record<string, unknown>)["command"] as Record<string, unknown>)["op"] === "toggle-float")
@@ -299,8 +333,8 @@ describe("world B9 deferred maximized unfloat", () => {
         h.runTimers();
         const call = h.lastCall("DescribeWorld");
         const body = JSON.parse(call.payload) as Record<string, unknown>;
-        assert.equal(body["command"], null, "clear schedules observation first");
-        call.callback(h.accepted("gen-1", body["req"] as string, body["obs"] as string, rev, {
+        assert.ok(!("command" in (body["report"] as Record<string, unknown>)), "clear schedules observation first");
+        call.callback(h.accepted("gen-1", body["source"] as string, body["nativeInvalid"] as string, rev, {
             windows: [h.winRow(WIN_A, FLOAT_A, "untouched"), h.winRow(WIN_B, TILE_B, "controlled")],
             result: null,
         }));
@@ -315,7 +349,7 @@ describe("world B9 deferred maximized unfloat", () => {
         // Same-stack: the clear issued and armed, but no toggle-float
         // command rides the current stack.
         assert.ok(h.logs.some((l) => l.includes("float-unfloat-maximize-clear") && l.includes("outcome=issued")));
-        const syncCalls = h.calls.filter((c) => c.method === "DescribeWorld");
+        const syncCalls = h.calls.filter((c) => c.method === "QueueWorldCommand");
         const syncCommands = syncCalls
             .map((c) => h.commandOf(c.payload))
             .filter((cmd) => cmd !== null && (cmd["op"] as unknown) === "operation");
@@ -324,9 +358,9 @@ describe("world B9 deferred maximized unfloat", () => {
         // Next report observes the cleared mode and admits exactly once.
         boundaryReply(h, "2");
         h.runTimers();
-        const admitted = h.lastCall("DescribeWorld");
-        const admittedBody = JSON.parse(admitted.payload) as Record<string, unknown>;
-        const cmd = admittedBody["command"] as Record<string, unknown>;
+        h.runTimers();
+        const admittedQ = JSON.parse(h.lastCall("QueueWorldCommand").payload) as Record<string, unknown>;
+        const cmd = admittedQ["command"] as Record<string, unknown>;
         assert.equal(cmd["op"], "operation");
         assert.deepEqual((cmd["command"] as Record<string, unknown>)["op"], "toggle-float");
         assert.deepEqual((cmd["command"] as Record<string, unknown>)["rect"], [...FLOAT_A]);
@@ -351,9 +385,8 @@ describe("world B9 deferred maximized unfloat", () => {
         h.settleAsync();
         h.handle.requestFloat();
         h.runTimers();
-        const retry = h.lastCall("DescribeWorld");
-        const retryBody = JSON.parse(retry.payload) as Record<string, unknown>;
-        const retryCmd = retryBody["command"] as Record<string, unknown>;
+        const retryQ = JSON.parse(h.lastCall("QueueWorldCommand").payload) as Record<string, unknown>;
+        const retryCmd = retryQ["command"] as Record<string, unknown>;
         assert.equal((retryCmd["command"] as Record<string, unknown>)["op"], "toggle-float");
         assert.deepEqual((retryCmd["command"] as Record<string, unknown>)["rect"], [...FLOAT_A]);
         assert.equal(toggleCount(h), 2, "seed float plus exactly one retried unfloat command");
@@ -393,7 +426,7 @@ describe("world B9 deferred maximized unfloat", () => {
         h.runTimers();
         const call = h.lastCall("DescribeWorld");
         const body = JSON.parse(call.payload) as Record<string, unknown>;
-        call.callback(h.accepted("gen-1", body["req"] as string, body["obs"] as string, "2", {
+        call.callback(h.accepted("gen-1", body["source"] as string, body["nativeInvalid"] as string, "2", {
             windows: [h.winRow(WIN_B, TILE_B, "controlled")],
             result: null,
         }));
@@ -452,9 +485,10 @@ describe("world B9 deferred maximized unfloat", () => {
         h.runTimers();
         const call = h.lastCall("DescribeWorld");
         const body = JSON.parse(call.payload) as Record<string, unknown>;
-        const cmd = body["command"] as Record<string, unknown>;
+        const resizeQ = JSON.parse(h.lastCall("QueueWorldCommand").payload) as Record<string, unknown>;
+        const cmd = resizeQ["command"] as Record<string, unknown>;
         assert.equal((cmd["command"] as Record<string, unknown>)["op"], "resize");
-        call.callback(h.accepted("gen-1", body["req"] as string, body["obs"] as string, "2", {
+        call.callback(h.accepted("gen-1", body["source"] as string, body["nativeInvalid"] as string, "2", {
             windows: [h.winRow(WIN_A, FLOAT_A, "untouched"), h.winRow(WIN_B, TILE_B, "controlled")],
             result: null,
         }));
@@ -473,7 +507,10 @@ describe("world B9 deferred maximized unfloat", () => {
         // Poison generation: the attempt terminates, discovery rebinds,
         // and no toggle-float rides any generation.
         call.callback(JSON.stringify({
-            outcome: "rejected", kind: "generation-mismatch", message: "poison", gen: "gen-2",
+            v: 2, outcome: "rejected", kind: "generation-mismatch", message: "poison", gen: "gen-2",
+            source: (JSON.parse(call.payload) as Record<string, unknown>)["source"],
+            nativeInvalid: (JSON.parse(call.payload) as Record<string, unknown>)["nativeInvalid"],
+            clock: "0",
         }));
         assert.ok(h.logs.some((l) => l.includes("generation-mismatch")));
         assert.ok(h.logs.some((l) => l.includes("float-refused-maximize-clear") && l.includes("cause=generation-mismatch")));
@@ -482,14 +519,18 @@ describe("world B9 deferred maximized unfloat", () => {
         const disc = h.lastCall("DiscoverWorld");
         const discBody = JSON.parse(disc.payload);
         disc.callback(JSON.stringify({
-            v: 1, adapter: "test-adapter", gen: "gen-2", req: discBody.req, obs: "0", rev: "0",
+            v: 2, adapter: "broker-1", gen: "gen-2", req: discBody.req, obs: "0", rev: "0",
             ready: false, consumed: false, scopes: [], workspaces: [], outputs: [],
-            windows: [], transfers: [], effects: [],
+            gestureSettled: null,
+            operationSettled: [],
+            warpCursor: null,
+            presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
+            windows: [], transfers: [], effects: [], result: null,
         }));
         h.runTimers();
         const auto = h.lastCall("DescribeWorld");
         const autoBody = JSON.parse(auto.payload) as Record<string, unknown>;
-        auto.callback(h.accepted("gen-2", autoBody["req"] as string, autoBody["obs"] as string, "3", {
+        auto.callback(h.accepted("gen-2", autoBody["source"] as string, autoBody["nativeInvalid"] as string, "3", {
             windows: [h.winRow(WIN_A, FLOAT_A, "untouched"), h.winRow(WIN_B, TILE_B, "controlled")],
             result: null,
         }));
@@ -529,8 +570,9 @@ describe("world B9 deferred maximized unfloat", () => {
         h.handle.requestFloat();
         h.runTimers();
         const call = h.lastCall("DescribeWorld");
-        const body = JSON.parse(call.payload) as Record<string, unknown>;
-        const cmd = body["command"] as Record<string, unknown>;
+        JSON.parse(call.payload);
+        const immQ = JSON.parse(h.lastCall("QueueWorldCommand").payload) as Record<string, unknown>;
+        const cmd = immQ["command"] as Record<string, unknown>;
         assert.equal(cmd["op"], "operation");
         assert.deepEqual(cmd["command"], { op: "toggle-float", win: WIN_A, rect: [...FLOAT_A] });
         assert.ok(!h.logs.some((l) => l.includes("float-unfloat-maximize-clear") && l.includes("outcome=issued")));

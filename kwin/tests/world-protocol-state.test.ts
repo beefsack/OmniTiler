@@ -1,7 +1,10 @@
-// Offline unit coverage for the world decimal/parse/state boundary (D1-D5):
-// bounded decimal strings (no Number precision), strict reply parsing, and
-// the adapter lifetime state machine (freshness, dirty/ack, creation,
-// ambiguous holds). No D-Bus, no KWin.
+// Offline unit coverage for the world decimal/parse/state boundary
+// (strict v2, sole broker): bounded decimal strings (no Number precision),
+// strict envelope/reply parsing, the broker wire codec, and the adapter
+// lifetime state machine (transport fences, dirty/ack, creation, ambiguous
+// holds). The broker owns ALL sequencing; the adapter owns only the
+// per-capture source correlation, the local native-invalidation watermark,
+// and the queue-client command counter. No D-Bus, no KWin.
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -17,22 +20,35 @@ import {
     WORLD_U64_MAX,
 } from "../src/world-seq";
 import {
+    buildCaptureEnvelope,
+    buildDiscoveryRequest,
+    buildQueueRequest,
+    buildTakeRequest,
     cmdMigrateWorkspace,
     cmdSelectNumbered,
     cmdSelectRelative,
-    cmdSelectTrailing,
     cmdSend,
-    cmdSendRelative,
+    cmdSendNumbered,
+    explicitSource,
+    isCoreWorldReply,
+    isWorldQueueReply,
     isWorldRejection,
     parseWorldReply,
 } from "../src/world-report";
 import { WorldAdapterState } from "../src/world-state";
 
+const DISABLED_PRESENTATION = {
+    foreground: "",
+    border: { visible: false, reason: "disabled", inner: null, outer: null },
+    underlay: { status: "hidden", reason: "disabled", baseRev: null },
+    pager: [],
+};
+
 const ACCEPTED = (
     overrides: Record<string, unknown> = {},
 ): string => JSON.stringify({
-    v: 1,
-    adapter: "test-adapter",
+    v: 2,
+    adapter: "broker-1",
     gen: "gen-1",
     req: "req-1",
     obs: "3",
@@ -45,6 +61,14 @@ const ACCEPTED = (
     windows: [],
     transfers: [],
     effects: [],
+    result: null,
+    gestureSettled: null,
+    operationSettled: [],
+    warpCursor: null,
+    presentation: DISABLED_PRESENTATION,
+    source: "req-1",
+    nativeInvalid: "1",
+    clock: "0",
     ...overrides,
 });
 
@@ -93,103 +117,143 @@ describe("world-report commands and reply parsing", () => {
         assert.equal(cmdSelectNumbered("out", 0), null);
         assert.equal(cmdSelectNumbered("out", 10), null);
         assert.notEqual(cmdSelectNumbered("out", 3), null);
+        // Null output resolves in core; explicit strings stay valid.
+        assert.deepEqual(cmdSelectNumbered(null, 3), { op: "select-numbered", out: null, index: 3 });
         assert.equal(cmdSelectRelative("out", 2), null);
-        assert.notEqual(cmdSendRelative("win-a", "out", -1, false), null);
+        assert.notEqual(cmdSendNumbered("win-a", explicitSource("out"), 0, false), null);
+        assert.equal(cmdSendNumbered("win-a", explicitSource("out"), 10, false), null);
         assert.equal(cmdMigrateWorkspace("out", "out", "ws"), null);
         assert.notEqual(cmdMigrateWorkspace("a", "b", "ws"), null);
-        assert.notEqual(cmdSelectTrailing("out"), null);
     });
 
     it("parses the golden ready reply and bounded rejections, refuses the rest", () => {
         const parsed = parseWorldReply(ACCEPTED());
-        assert.ok(parsed !== null && !isWorldRejection(parsed));
-        if (!isWorldRejection(parsed) && parsed !== null) {
+        assert.ok(parsed !== null && isCoreWorldReply(parsed));
+        if (isCoreWorldReply(parsed)) {
             assert.equal(parsed.rev, "7");
             assert.equal(parsed.obs, "3");
             assert.equal(parsed.ready, true);
+            assert.equal(parsed.source, "req-1");
+            assert.equal(parsed.nativeInvalid, "1");
+            assert.equal(parsed.clock, "0");
+            assert.equal(parsed.result, null);
         }
-        const rejection = parseWorldReply('{"v":1,"outcome":"rejected","kind":"busy","message":"busy","gen":"gen-1"}');
+        const rejection = parseWorldReply('{"v":2,"outcome":"rejected","kind":"busy","message":"busy","gen":"gen-1","source":"","nativeInvalid":"0","clock":"0"}');
         assert.ok(isWorldRejection(rejection));
+        // v1 refuses: no compatibility route.
+        assert.equal(parseWorldReply(ACCEPTED().replace('"v":2', '"v":1')), null);
+        // Actuator lane with a terminal result refuses.
+        assert.equal(parseWorldReply(ACCEPTED({ result: { op: "no-group", reason: "pending", rev: null } })), null);
         // Bare-number counters refuse: no f64 precision-loss path.
         assert.equal(parseWorldReply(ACCEPTED().replace('"obs":"3"', '"obs":3')), null);
         assert.equal(parseWorldReply(ACCEPTED().replace('"rev":"7"', '"rev":"007"')), null);
         assert.equal(parseWorldReply("not json"), null);
+    });
+
+    it("builds strict v2 envelopes with no broker keys inside the report", () => {
+        const inner = buildCaptureEnvelope("a-1", "gen-1", "src-1", "1", "4", '{"v":2}');
+        assert.deepEqual(JSON.parse(inner), {
+            v: 2, adapter: "a-1", gen: "gen-1", source: "src-1", sourceSeq: "1", nativeInvalid: "4", report: { v: 2 },
+        });
+        assert.deepEqual(JSON.parse(buildDiscoveryRequest("a-1", "disc-9")), { v: 2, adapter: "a-1", req: "disc-9" });
+        assert.deepEqual(
+            JSON.parse(buildQueueRequest("panel-1", "gen-1", "3", { op: "select-trailing", out: null })),
+            { v: 2, gen: "gen-1", client: "panel-1", clientCmd: "3", command: { op: "select-trailing", out: null } },
+        );
+        assert.deepEqual(JSON.parse(buildTakeRequest("panel-1", "gen-1", "3")), { v: 2, gen: "gen-1", client: "panel-1", clientCmd: "3" });
+        const queued = parseWorldReply('{"v":2,"outcome":"queued","gen":"gen-1","client":"panel-1","clientCmd":"3","globalCmd":"9"}');
+        assert.ok(isWorldQueueReply(queued));
     });
 });
 
 describe("world adapter lifetime state", () => {
     const bound = (): WorldAdapterState => {
         const state = new WorldAdapterState("test-adapter", "owner-a");
-        state.onDiscovery("gen-1");
+        state.onDiscovery("gen-1", "broker-1");
         return state;
     };
 
-    it("advances obs synchronously and separates request/command highwaters", () => {
+    it("advances the local watermark synchronously, even during flight", () => {
         const state = bound();
-        assert.equal(state.currentObs, "0");
+        assert.equal(state.currentInvalid, "0");
         state.invalidate();
-        assert.equal(state.currentObs, "1");
+        assert.equal(state.currentInvalid, "1");
         state.invalidate();
-        assert.equal(state.currentObs, "2");
-        const begun = state.beginDispatch({ op: "select-trailing", out: "out" });
-        assert.ok(begun !== null && begun.cmdSeq !== null);
-        assert.equal(begun.reqSeq, "1");
-        assert.equal(begun.cmdSeq, "1");
-        assert.equal(state.nextReqSeq, "2");
-        assert.equal(state.nextCmdSeq, "2");
-        // Second dispatch while in flight refuses at the entry, but the
-        // state itself tracks the single flight.
-        assert.equal(state.inFlightReq?.reqSeq, "1");
+        assert.equal(state.currentInvalid, "2");
+        // The watermark advances even with a capture in flight.
+        const flight = state.beginCapture("src-1", null);
+        assert.ok(flight !== null && flight.watermark === "2");
+        state.invalidate();
+        assert.equal(state.currentInvalid, "3");
+        assert.equal(state.inFlight?.source, "src-1");
     });
 
-    it("accepts only bound-generation ready newer-rev current-obs replies", () => {
+    it("mints queue-client command ids monotonically", () => {
+        const state = bound();
+        assert.equal(state.mintClientCmd(), "1");
+        assert.equal(state.mintClientCmd(), "2");
+        assert.equal(state.nextClientCmd, "3");
+        // A fresh generation restarts the namespace at 1.
+        state.onDiscovery("gen-2", "broker-2");
+        assert.equal(state.mintClientCmd(), "1");
+    });
+
+    it("accepts only bound-generation incarnation source-correlated replies", () => {
         const state = bound();
         state.invalidate();
         state.invalidate();
-        const begun = state.beginDispatch(null);
-        assert.ok(begun !== null);
-        const dispatchObs = state.currentObs;
-        const reply = parseWorldReply(ACCEPTED({ obs: dispatchObs, rev: "1" }));
-        assert.ok(reply !== null && !isWorldRejection(reply));
-        const verdict = state.acceptReply(reply, dispatchObs);
+        const flight = state.beginCapture("src-9", null);
+        assert.ok(flight !== null);
+        const reply = parseWorldReply(ACCEPTED({ req: "src-9", source: "src-9", obs: "12", rev: "1" }));
+        assert.ok(reply !== null && isCoreWorldReply(reply));
+        if (!isCoreWorldReply(reply)) {
+            return;
+        }
+        const verdict = state.acceptReply(reply, "src-9", flight.watermark);
         assert.deepEqual(verdict, { applied: true, reason: "accepted" });
+        assert.equal(state.lastClock, "0");
         // Duplicate rev refuses without setters.
-        const dup = state.acceptReply(reply, dispatchObs);
+        const dup = state.acceptReply(reply, "src-9", flight.watermark);
         assert.equal(dup.applied, false);
-        // Newer input invalidates the watermark: the next reply on the old
-        // obs is stale-obs catchup, never applied. A fresh flight names the
-        // current req, so the stale obs (not the req) decides.
-        state.invalidate();
-        const begun2 = state.beginDispatch(null);
-        assert.ok(begun2 !== null);
-        const stale = parseWorldReply(ACCEPTED({ obs: dispatchObs, rev: "2", req: begun2.reqId }));
-        assert.ok(stale !== null && !isWorldRejection(stale));
-        const staleVerdict = state.acceptReply(stale, dispatchObs);
-        assert.deepEqual(staleVerdict, { applied: false, reason: "stale-obs" });
-        assert.equal(state.observationOnlyCatchup, true);
+        // A reply bound to another incarnation never applies.
+        state.beginCapture("src-10", null);
+        const foreign = parseWorldReply(ACCEPTED({ adapter: "broker-9", req: "src-10", source: "src-10", rev: "2" }));
+        assert.ok(foreign !== null && isCoreWorldReply(foreign));
+        if (isCoreWorldReply(foreign)) {
+            assert.deepEqual(state.acceptReply(foreign, "src-10", state.currentInvalid), { applied: false, reason: "adapter-mismatch" });
+        }
         // Wrong generation never applies.
-        const foreign = parseWorldReply(ACCEPTED({ obs: state.currentObs, rev: "9" }));
-        assert.ok(foreign !== null && !isWorldRejection(foreign));
-        if (!isWorldRejection(foreign) && foreign !== null) {
-            foreign.gen = "gen-2";
-            assert.equal(state.acceptReply(foreign, state.currentObs).applied, false);
+        const staleGen = parseWorldReply(ACCEPTED({ gen: "gen-2", req: "src-10", source: "src-10", rev: "9" }));
+        assert.ok(staleGen !== null && isCoreWorldReply(staleGen));
+        if (isCoreWorldReply(staleGen)) {
+            assert.equal(state.acceptReply(staleGen, "src-10", state.currentInvalid).applied, false);
         }
     });
 
-    it("retains closes and feedback until an accepted reply acks them", () => {
+    it("records the broker clock for the foreign attempt epoch", () => {
+        const state = bound();
+        const flight = state.beginCapture("src-1", "5");
+        assert.ok(flight !== null && flight.clientCmd === "5");
+        const reply = parseWorldReply(ACCEPTED({ req: "src-1", source: "src-1", rev: "1", clock: "48" }));
+        assert.ok(reply !== null && isCoreWorldReply(reply));
+        if (isCoreWorldReply(reply)) {
+            assert.deepEqual(state.acceptReply(reply, "src-1", flight.watermark), { applied: true, reason: "accepted" });
+        }
+        assert.equal(state.lastClock, "48");
+    });
+
+    it("retains closes until an accepted reply acks them", () => {
         const state = bound();
         state.noteClosed("gone-1");
-        state.noteFeedback({ op: "op-5", kind: "transfer", outcome: "possibly-executed", hold: "" });
         assert.equal(state.pendingClosed.length, 1);
-        const begun = state.beginDispatch(null);
-        assert.ok(begun !== null);
-        const reply = parseWorldReply(ACCEPTED({ obs: state.currentObs, rev: "1" }));
-        assert.ok(reply !== null && !isWorldRejection(reply));
-        state.acceptReply(reply, state.currentObs);
+        const flight = state.beginCapture("src-1", null);
+        assert.ok(flight !== null);
+        const reply = parseWorldReply(ACCEPTED({ req: "src-1", source: "src-1", rev: "1" }));
+        assert.ok(reply !== null && isCoreWorldReply(reply));
+        if (isCoreWorldReply(reply)) {
+            state.acceptReply(reply, "src-1", flight.watermark);
+        }
         assert.equal(state.pendingClosed.length, 0);
-        // Possibly-executed feedback is retained (held, never replayed).
-        assert.equal(state.pendingFeedback.some((f) => f.op === "op-5"), true);
-        assert.equal(state.isHeldAmbiguous("op-5"), true);
     });
 
     it("holds one creation flight per logical id and recovers by enumeration", () => {
@@ -229,78 +293,89 @@ describe("world adapter lifetime state", () => {
         ]), null);
     });
 
-    it("spends one-shot effects once and settles attempts explicitly", () => {
+    it("spends one-shot effects and frame/clear tokens once and settles attempts explicitly", () => {
         const state = bound();
         assert.equal(state.markEffectSpent("fx-1"), true);
         assert.equal(state.markEffectSpent("fx-1"), false);
+        assert.equal(state.markFloatSpent("op-3"), true);
+        assert.equal(state.markFloatSpent("op-3"), false);
+        assert.equal(state.markClearSpent("op-4"), true);
+        assert.equal(state.markClearSpent("op-4"), false);
         state.armPossiblyExecuted("op-9", "transfer", "out/ws2");
         assert.equal(state.isHeldAmbiguous("op-9"), true);
         state.settleAttempt("op-9", "refused-proven", "refused-target");
         assert.equal(state.isHeldAmbiguous("op-9"), false);
     });
 
-    it("rebinds generation on discovery, cancelling flights but keeping natives", () => {
+    it("rebinds generation on discovery, cancelling flights and restarting the client namespace", () => {
         const state = bound();
-        state.beginDispatch({ op: "select-trailing", out: "out" });
-        assert.ok(state.inFlightReq !== null);
-        state.onDiscovery("gen-2");
+        state.mintClientCmd();
+        const flight = state.beginCapture("src-1", "1");
+        assert.ok(flight !== null && state.inFlight !== null);
+        const changed = state.onDiscovery("gen-2", "broker-2");
+        assert.equal(changed, true);
         assert.equal(state.boundGen, "gen-2");
-        assert.equal(state.inFlightReq, null);
+        assert.equal(state.brokerIncarnation, "broker-2");
+        assert.equal(state.inFlight, null);
         assert.equal(state.hasAccepted, false);
+        assert.equal(state.nextClientCmd, "1");
     });
 
-    it("rejects delayed arbitrary replies by adapter and exact req without setters or ack", () => {
+    it("rejects delayed arbitrary replies by incarnation and exact source without setters or ack", () => {
         const state = bound();
         state.invalidate();
-        const begun = state.beginDispatch(null);
-        assert.ok(begun !== null);
-        const flightObs = state.currentObs;
-        const flightReq = begun.reqId;
+        const flight = state.beginCapture("src-7", null);
+        assert.ok(flight !== null);
+        const watermark = flight.watermark;
         state.noteClosed("gone-9");
-        // Same gen/obs/newer rev but a different adapter namespace: no
+        // Same gen/newer rev but a different broker incarnation: no
         // setters, no ack, catchup only.
-        const foreign = parseWorldReply(ACCEPTED({ obs: flightObs, rev: "5", req: flightReq, adapter: "other-adapter" }));
-        assert.ok(foreign !== null && !isWorldRejection(foreign));
-        if (!isWorldRejection(foreign) && foreign !== null) {
-            const verdict = state.acceptReply(foreign, flightObs);
-            assert.deepEqual(verdict, { applied: false, reason: "adapter-mismatch" });
+        const foreign = parseWorldReply(ACCEPTED({ adapter: "broker-x", req: "src-7", source: "src-7", rev: "5" }));
+        assert.ok(foreign !== null && isCoreWorldReply(foreign));
+        if (isCoreWorldReply(foreign)) {
+            // The foreign incarnation was never discovered, so binding
+            // holds the discovered one: adapter-mismatch.
+            assert.deepEqual(state.acceptReply(foreign, "src-7", watermark), { applied: false, reason: "adapter-mismatch" });
         }
         assert.equal(state.pendingClosed.length, 1);
         assert.equal(state.hasAccepted, false);
-        assert.ok(state.inFlightReq !== null);
-        // Same gen/obs/newer rev but the wrong req: no setters, no ack.
-        const wrongReq = parseWorldReply(ACCEPTED({ obs: flightObs, rev: "6", req: "req-999" }));
-        assert.ok(wrongReq !== null && !isWorldRejection(wrongReq));
-        if (!isWorldRejection(wrongReq) && wrongReq !== null) {
-            const verdict = state.acceptReply(wrongReq, flightObs);
-            assert.deepEqual(verdict, { applied: false, reason: "stale-req" });
+        assert.ok(state.inFlight !== null);
+        // Same gen/newer rev but the wrong source: no setters, no ack.
+        const wrongReq = parseWorldReply(ACCEPTED({ req: "src-999", source: "src-999", rev: "6" }));
+        assert.ok(wrongReq !== null && isCoreWorldReply(wrongReq));
+        if (isCoreWorldReply(wrongReq)) {
+            assert.deepEqual(state.acceptReply(wrongReq, "src-7", watermark), { applied: false, reason: "stale-req" });
         }
         assert.equal(state.pendingClosed.length, 1);
         assert.equal(state.hasAccepted, false);
         // The exact flight still applies and acks.
-        const good = parseWorldReply(ACCEPTED({ obs: flightObs, rev: "7", req: flightReq }));
-        assert.ok(good !== null && !isWorldRejection(good));
-        if (!isWorldRejection(good) && good !== null) {
-            assert.deepEqual(state.acceptReply(good, flightObs), { applied: true, reason: "accepted" });
+        const good = parseWorldReply(ACCEPTED({ req: "src-7", source: "src-7", rev: "7" }));
+        assert.ok(good !== null && isCoreWorldReply(good));
+        if (isCoreWorldReply(good)) {
+            assert.deepEqual(state.acceptReply(good, "src-7", watermark), { applied: true, reason: "accepted" });
         }
         assert.equal(state.pendingClosed.length, 0);
     });
 
     it("binds discovery only for the exact adapter and req", () => {
         const state = bound();
-        state.beginDispatch({ op: "select-trailing", out: "out" });
-        assert.ok(state.inFlightReq !== null);
+        const flight = state.beginCapture("src-1", null);
+        assert.ok(flight !== null && state.inFlight !== null);
         // Wrong adapter: binds nothing, resets nothing.
-        state.onDiscovery("gen-9", "other-adapter", "disc-1", "disc-1");
+        state.onDiscovery("gen-9", "broker-9", "other-adapter", "disc-1", "disc-1");
         assert.equal(state.boundGen, "gen-1");
-        assert.ok(state.inFlightReq !== null);
+        assert.ok(state.inFlight !== null);
         // Wrong req: binds nothing, resets nothing.
-        state.onDiscovery("gen-9", "test-adapter", "disc-2", "disc-1");
+        state.onDiscovery("gen-9", "broker-9", "test-adapter", "disc-2", "disc-1");
         assert.equal(state.boundGen, "gen-1");
-        assert.ok(state.inFlightReq !== null);
+        assert.ok(state.inFlight !== null);
         // Exact match binds and cancels flights.
-        state.onDiscovery("gen-9", "test-adapter", "disc-1", "disc-1");
+        const changed = state.onDiscovery("gen-9", "broker-9", "test-adapter", "disc-1", "disc-1");
+        assert.equal(changed, true);
         assert.equal(state.boundGen, "gen-9");
-        assert.equal(state.inFlightReq, null);
+        assert.equal(state.brokerIncarnation, "broker-9");
+        assert.equal(state.inFlight, null);
+        // Same generation rediscovery is not a change.
+        assert.equal(state.onDiscovery("gen-9", "broker-9", "test-adapter", "disc-2", "disc-2"), false);
     });
 });

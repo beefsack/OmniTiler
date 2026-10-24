@@ -20,7 +20,7 @@ import assert from "node:assert/strict";
 import { applyWorldReply } from "../src/world-apply";
 import { createWorldApplyHost } from "../src/world-native";
 import { WorldAdapterState } from "../src/world-state";
-import type { WorldReply } from "../src/world-report";
+import type { WorldReply, WorldReplyResult } from "../src/world-report";
 import type { WorldObservation } from "../src/world-observe";
 
 const DP = "out-left";
@@ -155,6 +155,7 @@ function observe(surf: ReturnType<typeof makeSurface>): WorldObservation {
         sticky: false,
         fixedAuto: false,
         fixedSuppress: false,
+        nativeWs: null,
         hints: { minW: null, minH: null, maxW: null, maxH: null },
         minimized: false,
     });
@@ -193,15 +194,20 @@ function observe(surf: ReturnType<typeof makeSurface>): WorldObservation {
         complete: true,
         gesture: false,
         focusedGlobal: "",
+        screens: [], windowFacts: [], views: [], closed: [], hostOwned: false, equalCount: true, native: [],
+        cursor: null, actionForeground: null, actionCached: null, actionOutputs: [],
+        focusFollowsCursor: false, cursorWarp: false,
+        switchTarget: "focused-output", freshPlacement: "focused-output-last-focused",
+        presentation: { foreground: "", minimized: false, maximized: false, fullscreen: false, cloaked: false, hiddenWorkspace: false, shell: false, frame: null, borderEnabled: false, underlayEnabled: false, borderGap: 0, borderWidth: 0, underlayExtension: 0, chordHeld: false, moveWindow: "", paused: false, pagerOrder: [], pagerFrames: [] },
     };
 }
 
 function freshState(reply: WorldReply): WorldAdapterState {
     const state = new WorldAdapterState("adapter-1", "owner-a");
-    state.onDiscovery("gen-1");
+    state.onDiscovery("gen-1", "broker-1");
     state.invalidate();
     state.invalidate();
-    reply.obs = state.currentObs;
+    reply.obs = state.currentInvalid;
     return state;
 }
 
@@ -211,16 +217,32 @@ function windowRow(win: string, out: string, ws: string): WorldReply["windows"][
         alloc: null, frame: null,
         frame_auth: "", frame_hold: "",
         member_auth: "controlled", member_hold: "",
-        frame_op: "", floating: false, float_origin: "",
+        frame_op: "", clear_op: "", floating: false, float_origin: "",
     };
 }
+
+// Bound rows the broker always ships alongside transfers (fused here,
+// matching the fake native ids): adapter-side resolution never falls
+// back to native string equality.
+const fusedRows = (): WorldReply["workspaces"] => ([
+    { id: D6, out: HDMI, bind: D6, scope: HDMI, order: 0, mode: "tiled", exist: true, hold: "" },
+    { id: D3, out: DP, bind: D3, scope: DP, order: 0, mode: "tiled", exist: true, hold: "" },
+    { id: DY, out: HDMI, bind: DY, scope: HDMI, order: 1, mode: "tiled", exist: true, hold: "" },
+]);
 
 function migrationReply(): WorldReply {
     return {
         adapter: "test-adapter", gen: "gen-1", req: "req-1", obs: "", rev: "1",
         ready: true, consumed: false,
+        source: "req-1",
+        nativeInvalid: "1",
+        clock: "0",
+        gestureSettled: null,
+        operationSettled: [],
+        warpCursor: null,
+        presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
         scopes: [],
-        workspaces: [],
+        workspaces: fusedRows(),
         outputs: [],
         windows: [windowRow("win-a", HDMI, D6), windowRow("win-b", HDMI, D6)],
         transfers: [
@@ -228,13 +250,18 @@ function migrationReply(): WorldReply {
             { op: "op-22-refill", kind: "view", win: "", out: DP, ws: D3, follow: false, held: false },
         ],
         effects: [],
-        result: {
-            op: "migrate-workspace", direction: "right",
-            sourceOut: DP, sourceWs: D6, targetOut: HDMI, targetWs: D6,
-            members: ["win-a", "win-b"], floats: 0,
-        },
+        result: null,
     };
 }
+
+// Correlated terminal result for the filed migration command (take lane,
+// requester-only): member/source provenance the snapshot alone cannot
+// express. Previously rode the capture reply; now strictly separated.
+const MIGRATE_TAKE: WorldReplyResult = {
+    op: "migrate-workspace", direction: "right",
+    sourceOut: DP, sourceWs: D6, targetOut: HDMI, targetWs: D6,
+    members: ["win-a", "win-b"], floats: 0,
+};
 
 function applyThroughHost(
     surf: ReturnType<typeof makeSurface>,
@@ -243,7 +270,7 @@ function applyThroughHost(
     observation: WorldObservation,
 ) {
     const host = createWorldApplyHost(surf.surface as object, readProp);
-    return applyWorldReply({ ...host, state, observation, reply, log: () => undefined });
+    return applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: MIGRATE_TAKE, ...host, state, observation, reply, log: () => undefined });
 }
 
 describe("world native output echo", () => {
@@ -282,7 +309,14 @@ describe("world native output echo", () => {
         const reply: WorldReply = {
             adapter: "test-adapter", gen: "gen-1", req: "req-1", obs: "", rev: "1",
             ready: true, consumed: false,
-            scopes: [], workspaces: [], outputs: [],
+            source: "req-1",
+            nativeInvalid: "1",
+            clock: "0",
+            gestureSettled: null,
+            operationSettled: [],
+            warpCursor: null,
+            presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
+            scopes: [], workspaces: fusedRows(), outputs: [],
             windows: [windowRow("win-a", HDMI, DY), windowRow("win-b", HDMI, DY)],
             transfers: [
                 { op: "op-1", kind: "window", win: "win-a", out: HDMI, ws: DY, follow: true, held: false },
@@ -326,11 +360,7 @@ describe("world native output echo", () => {
         const b = surf.wins.find((w) => w.internalId === "win-b") as FakeWin;
         assert.deepEqual(`${b.output.name}/${b.desktops[0]?.id}`, `${DP}/${D6}`, "second member untouched");
         assert.deepEqual(surf.viewCalls, [], "no follow or refill view without proof");
-        assert.deepEqual(
-            state.pendingFeedback.find((f) => f.op === "op-22")?.outcome,
-            "superseded-external",
-            "third-location proof settles the whole migration",
-        );
+        assert.equal(state.isHeldAmbiguous("op-22"), false, "third-location proof settles the whole migration");
         assert.equal(state.appliedWindowTarget.has("win-a"), false);
         assert.equal(state.appliedWindowTarget.has("win-b"), false);
         // A repeat retries nothing settled.
@@ -358,11 +388,7 @@ describe("world native output echo", () => {
         const b = surf.wins.find((w) => w.internalId === "win-b") as FakeWin;
         assert.deepEqual(`${b.output.name}/${b.desktops[0]?.id}`, `${DP}/${D6}`, "second member untouched");
         assert.deepEqual(surf.viewCalls, [], "no follow or refill view without proof");
-        assert.deepEqual(
-            state.pendingFeedback.find((f) => f.op === "op-22")?.outcome,
-            "superseded-external",
-            "refreshed target current is never tolerated as the echo",
-        );
+        assert.equal(state.isHeldAmbiguous("op-22"), false, "refreshed target current is never tolerated as the echo");
         assert.equal(state.appliedWindowTarget.has("win-a"), false);
         // A repeat retries nothing settled.
         applyThroughHost(surf, state, reply, obs);
@@ -414,11 +440,7 @@ describe("world native output echo", () => {
         const b = surf.wins.find((w) => w.internalId === "win-b") as FakeWin;
         assert.deepEqual(`${b.output.name}/${b.desktops[0]?.id}`, `${DP}/${D6}`, "second member untouched");
         assert.deepEqual(surf.viewCalls, [], "no follow or refill view without proof");
-        assert.deepEqual(
-            state.pendingFeedback.find((f) => f.op === "op-22")?.outcome,
-            "superseded-external",
-            "an unreadable target view never verifies the echo",
-        );
+        assert.equal(state.isHeldAmbiguous("op-22"), false, "an unreadable target view never verifies the echo");
         assert.equal(state.appliedWindowTarget.has("win-a"), false);
         // A repeat retries nothing settled.
         applyThroughHost(surf, state, reply, obs);
@@ -435,7 +457,7 @@ describe("world migration per-member diagnostics", () => {
     ): string[] => {
         const lines: string[] = [];
         const host = createWorldApplyHost(surf.surface as object, readProp);
-        applyWorldReply({ ...host, state, observation: observe(surf), reply, log: (m: string) => lines.push(m) });
+        applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null, ...host, state, observation: observe(surf), reply, log: (m: string) => lines.push(m) });
         return lines;
     };
     const memberLines = (lines: string[]): string[] => lines.filter((l) => l.includes("migrate-member"));
@@ -501,7 +523,7 @@ describe("world native output lag (T05 producer shape)", () => {
         // tolerated, never a superseded-external refusal stranding the
         // second member.
         assert.deepEqual(surf.sendCalls, [`win-a=>${HDMI}`, `win-b=>${HDMI}`]);
-        assert.notEqual(state.pendingFeedback.find((f) => f.op === "op-22")?.outcome ?? "none", "superseded-external");
+        assert.equal(state.isHeldAmbiguous("op-22"), true, "lag echo tolerated, attempt stays ambiguous");
         assert.equal(out.held >= 1, true, "deferred output completion holds without views");
         assert.deepEqual(surf.viewCalls, [], "no follow or refill view before all arrivals prove");
         assert.equal(surf.wins.every((w) => w.desktops[0]?.id === D6), true, "requested membership set on both");
@@ -536,10 +558,7 @@ describe("world native output lag (T05 producer shape)", () => {
         void out;
         assert.equal(surf.sendCalls.length, 1, "no second-member call after unrelated proof");
         assert.deepEqual(surf.viewCalls, [], "no views on unrelated proof");
-        assert.deepEqual(
-            state.pendingFeedback.find((f) => f.op === "op-22")?.outcome,
-            "superseded-external",
-        );
+        assert.equal(state.isHeldAmbiguous("op-22"), false, "unrelated proof settles the whole migration");
     });
 
     it("ordinary sends tolerate the same-flight lag echo without premature follow", () => {
@@ -547,7 +566,14 @@ describe("world native output lag (T05 producer shape)", () => {
         const reply: WorldReply = {
             adapter: "test-adapter", gen: "gen-1", req: "req-1", obs: "", rev: "1",
             ready: true, consumed: false,
-            scopes: [], workspaces: [], outputs: [],
+            source: "req-1",
+            nativeInvalid: "1",
+            clock: "0",
+            gestureSettled: null,
+            operationSettled: [],
+            warpCursor: null,
+            presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
+            scopes: [], workspaces: fusedRows(), outputs: [],
             windows: [windowRow("win-a", HDMI, DY)],
             transfers: [
                 { op: "op-1", kind: "window", win: "win-a", out: HDMI, ws: DY, follow: true, held: false },
@@ -560,7 +586,7 @@ describe("world native output lag (T05 producer shape)", () => {
         // Lag echo tolerated: no superseded-external, membership set on the
         // same flight, follow view waits for exact-target arrival.
         assert.equal(surf.sendCalls.length, 1);
-        assert.notEqual(state.pendingFeedback.find((f) => f.op === "op-1")?.outcome ?? "none", "superseded-external");
+        assert.equal(state.isHeldAmbiguous("op-1"), true, "lag echo tolerated, attempt stays ambiguous");
         assert.deepEqual(surf.wins.find((w) => w.internalId === "win-a")?.desktops[0]?.id, DY);
         assert.deepEqual(surf.viewCalls, [], "no follow before exact-target arrival");
         void out;

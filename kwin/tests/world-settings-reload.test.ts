@@ -151,6 +151,18 @@ function makeHarness(): Harness {
         adapter: "test-adapter",
         callDbus: (_service, _path, _iface, method, payload, callback) => {
             calls.push({ method, payload, callback });
+            if (method === "QueueWorldCommand") {
+                const queueBody = JSON.parse(payload) as Record<string, unknown>;
+                callback(JSON.stringify({ v: 2, outcome: "queued", gen: "gen-1",
+                    client: queueBody["client"], clientCmd: queueBody["clientCmd"], globalCmd: "1" }));
+            } else if (method === "TakeCommandResult") {
+                const stagedTake = (globalThis as Record<string, unknown>)["__takeResult"] as Record<string, unknown> | undefined;
+                if (stagedTake !== undefined) {
+                    delete (globalThis as Record<string, unknown>)["__takeResult"];
+                    callback(JSON.stringify({ v: 2, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
+                } else {
+                    callback(JSON.stringify({ v: 2, outcome: "pending", gen: "gen-1" }));
+                }            }
         },
         scheduleOnce: (delay, cb) => {
             timers.push({ delay, cb });
@@ -194,13 +206,20 @@ function makeHarness(): Harness {
     };
 }
 
-function accept(gen: string, req: string, obs: string, rev: string): string {
+function accept(gen: string, source: string, nativeInvalid: string, rev: string): string {
     return JSON.stringify({
-        v: 1, adapter: "test-adapter", gen, req, obs, rev,
+        v: 2, adapter: "broker-1", gen, req: source, obs: rev, rev,
         ready: true, consumed: false,
+        source,
+        nativeInvalid,
+        clock: "0",
+        gestureSettled: null,
+        operationSettled: [],
+        warpCursor: null,
+        presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
         scopes: [{ scope: "out/ws1", auth: "controlled", reason: "" }],
         workspaces: [], outputs: [], windows: [],
-        transfers: [], effects: [],
+        transfers: [], effects: [], result: null,
     });
 }
 
@@ -208,25 +227,29 @@ function discover(h: Harness, gen = "gen-1"): void {
     const call = h.lastCall("DiscoverWorld");
     const body = JSON.parse(call.payload);
     call.callback(JSON.stringify({
-        v: 1, adapter: "test-adapter", gen, req: body.req, obs: "0", rev: "0",
+        v: 2, adapter: "broker-1", gen, req: body.req, obs: "0", rev: "0",
         ready: false, consumed: false, scopes: [], workspaces: [], outputs: [],
-        windows: [], transfers: [], effects: [],
+        gestureSettled: null,
+        operationSettled: [],
+        warpCursor: null,
+        presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
+        windows: [], transfers: [], effects: [], result: null,
     }));
     const auto = h.lastCall("DescribeWorld");
     const autoBody = JSON.parse(auto.payload);
-    assert.equal(autoBody.command, null);
-    auto.callback(accept(gen, autoBody.req, autoBody.obs, "0"));
+    assert.equal((autoBody["report"] as Record<string, unknown>)["command"], undefined, "inner reports never carry a command");
+    auto.callback(accept(gen, autoBody.source, autoBody.nativeInvalid, "0"));
 }
 
 function moveSameAxis(h: Harness): string {
-    const req = JSON.parse(h.lastPayload("DescribeWorld")) as Record<string, unknown>;
+    const req = JSON.parse(h.lastPayload("QueueWorldCommand")) as Record<string, unknown>;
     const cmd = req["command"] as Record<string, unknown>;
     assert.equal(cmd["op"], "move-directional");
     return cmd["sameAxis"] as string;
 }
 
 function resizePress(h: Harness): number {
-    const req = JSON.parse(h.lastPayload("DescribeWorld")) as Record<string, unknown>;
+    const req = JSON.parse(h.lastPayload("QueueWorldCommand")) as Record<string, unknown>;
     const cmd = req["command"] as Record<string, unknown>;
     assert.equal(cmd["op"], "operation");
     const inner = cmd["command"] as Record<string, unknown>;
@@ -237,7 +260,7 @@ function resizePress(h: Harness): number {
 function settle(h: Harness, rev: string): void {
     const req = JSON.parse(h.lastPayload("DescribeWorld")) as Record<string, unknown>;
     h.lastCall("DescribeWorld").callback(
-        accept("gen-1", req["req"] as string, req["obs"] as string, rev),
+        accept("gen-1", req["source"] as string, req["nativeInvalid"] as string, rev),
     );
 }
 
@@ -247,7 +270,7 @@ describe("world settings reload", () => {
         discover(h);
         h.handle.requestMove("right");
         h.runTimers();
-        let domains = (JSON.parse(h.lastPayload("DescribeWorld")) as Record<string, unknown>)["domains"] as Array<Record<string, unknown>>;
+        let domains = ((JSON.parse(h.lastPayload("DescribeWorld")) as Record<string, unknown>)["report"] as Record<string, unknown>)["screens"] as Array<Record<string, unknown>>;
         assert.equal(domains[0]?.["gap"], 8);
         assert.equal(domains[0]?.["outer"], 8);
         settle(h, "1");
@@ -259,7 +282,7 @@ describe("world settings reload", () => {
             handler();
         }
         h.runTimers();
-        domains = (JSON.parse(h.lastPayload("DescribeWorld")) as Record<string, unknown>)["domains"] as Array<Record<string, unknown>>;
+        domains = ((JSON.parse(h.lastPayload("DescribeWorld")) as Record<string, unknown>)["report"] as Record<string, unknown>)["screens"] as Array<Record<string, unknown>>;
         assert.equal(domains[0]?.["gap"], 16);
         assert.equal(domains[0]?.["outer"], 20);
         h.handle.stop();
@@ -476,6 +499,18 @@ describe("world workspace mode startup", () => {
             adapter: "test-adapter",
             callDbus: (_service, _path, _iface, method, payload, callback) => {
                 calls.push({ method, payload, callback });
+                if (method === "QueueWorldCommand") {
+                    const queueBody = JSON.parse(payload) as Record<string, unknown>;
+                    callback(JSON.stringify({ v: 2, outcome: "queued", gen: "gen-1",
+                        client: queueBody["client"], clientCmd: queueBody["clientCmd"], globalCmd: "1" }));
+                } else if (method === "TakeCommandResult") {
+                    const stagedTake = (globalThis as Record<string, unknown>)["__takeResult"] as Record<string, unknown> | undefined;
+                    if (stagedTake !== undefined) {
+                        delete (globalThis as Record<string, unknown>)["__takeResult"];
+                        callback(JSON.stringify({ v: 2, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
+                    } else {
+                        callback(JSON.stringify({ v: 2, outcome: "pending", gen: "gen-1" }));
+                    }                }
             },
             scheduleOnce: (delay, cb) => {
                 timers.push({ delay, cb });
@@ -508,18 +543,22 @@ describe("world workspace mode startup", () => {
             const call = lastCall("DiscoverWorld");
             const body = JSON.parse(call.payload);
             call.callback(JSON.stringify({
-                v: 1, adapter: "test-adapter", gen, req: body.req, obs: "0", rev: "0",
+                v: 2, adapter: "broker-1", gen, req: body.req, obs: "0", rev: "0",
                 ready: false, consumed: false, scopes: [], workspaces: [], outputs: [],
-                windows: [], transfers: [], effects: [],
+                gestureSettled: null,
+                operationSettled: [],
+                warpCursor: null,
+                presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
+                windows: [], transfers: [], effects: [], result: null,
             }));
             const auto = lastCall("DescribeWorld");
             const autoBody = JSON.parse(auto.payload);
-            auto.callback(accept(gen, autoBody.req, autoBody.obs, "0"));
+            auto.callback(accept(gen, autoBody.source, autoBody.nativeInvalid, "0"));
         };
         return {
             calls, logs, configChanged, handle: handle as NonNullable<typeof handle>,
             lastCall, runTimers, discoverNow,
-            lastMode: (): unknown => (JSON.parse(lastCall("DescribeWorld").payload) as Record<string, unknown>)["mode"],
+            lastMode: (): unknown => ((JSON.parse(lastCall("DescribeWorld").payload) as Record<string, unknown>)["report"] as Record<string, unknown>)["mode"],
         };
     }
 
@@ -582,6 +621,18 @@ describe("world shortcut profile startup", () => {
             adapter: "test-adapter",
             callDbus: (_service, _path, _iface, method, payload, callback) => {
                 calls.push({ method, payload, callback });
+                if (method === "QueueWorldCommand") {
+                    const queueBody = JSON.parse(payload) as Record<string, unknown>;
+                    callback(JSON.stringify({ v: 2, outcome: "queued", gen: "gen-1",
+                        client: queueBody["client"], clientCmd: queueBody["clientCmd"], globalCmd: "1" }));
+                } else if (method === "TakeCommandResult") {
+                    const stagedTake = (globalThis as Record<string, unknown>)["__takeResult"] as Record<string, unknown> | undefined;
+                    if (stagedTake !== undefined) {
+                        delete (globalThis as Record<string, unknown>)["__takeResult"];
+                        callback(JSON.stringify({ v: 2, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
+                    } else {
+                        callback(JSON.stringify({ v: 2, outcome: "pending", gen: "gen-1" }));
+                    }                }
             },
             scheduleOnce: () => () => undefined,
             log: (message) => {

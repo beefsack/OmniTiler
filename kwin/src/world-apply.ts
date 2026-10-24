@@ -18,13 +18,24 @@
 // elsewhere settles superseded-external; mere mismatches hold.
 
 import type { ObservedWindow, WorldObservation } from "./world-observe";
-import { type WorldReply, type WorldReplyTransfer, type WorldReplyWindow } from "./world-report";
+import { type WorldReply, type WorldReplyTransfer, type WorldReplyWindow, type WorldReplyResult } from "./world-report";
 import { WorldAdapterState } from "./world-state";
 
 export interface ApplyEnv {
     state: WorldAdapterState;
     observation: WorldObservation;
     reply: WorldReply;
+    // Local native-invalidation fence sampled at dispatch (the capture
+    // flight watermark): mid-apply invalidation compares against this, so
+    // native input landing mid-apply stops remaining unsafe writes. Never
+    // the broker-owned obs.
+    dispatchWatermark: string;
+    // Terminal result for the filed command that this capture drained
+    // (requester-only via TakeCommandResult, never the capture lane):
+    // migration member/source provenance when it names this transfer's
+    // target, else the desired rows homed at the target decide. Null when
+    // the snapshot alone is the outcome.
+    takeResult: WorldReplyResult | null;
     log: (message: string) => void;
     // Native setters through public KWin state only.
     isStillListed: (ref: object) => boolean;
@@ -98,11 +109,11 @@ function clampKeyFor(win: string, frame: [number, number, number, number], obser
 }
 
 // Reply freshness at setter time: the bound generation still matches, the
-// accepted obs/rev still name this reply (CURRENT watermark, not a stale
-// dispatch copy), and the watermark has not advanced since apply started.
-// Self-sent feedback dirty alone never stops apply; only a moved watermark
-// (native external input, including synchronous setter echoes that have not
-// yet converged) or observation-only catchup does.
+// bound rev still names this reply, and the local native-invalidation
+// watermark has not advanced since the dispatch fence was sampled.
+// Sequencing (obs) is broker-owned and never compared here; a moved local
+// watermark (native external input, including synchronous setter echoes
+// that have not yet converged) or observation-only catchup fails closed.
 function replyFresh(env: ApplyEnv, reply: WorldReply, entryObs: string): boolean {
     const { state } = env;
     if (state.observationOnlyCatchup) {
@@ -111,17 +122,17 @@ function replyFresh(env: ApplyEnv, reply: WorldReply, entryObs: string): boolean
     if (state.boundGen === null || state.boundGen !== reply.gen) {
         return false;
     }
-    if (state.hasAccepted && (reply.obs !== state.lastAcceptedObs || reply.rev !== state.lastAcceptedRev)) {
+    if (state.hasAccepted && reply.rev !== state.lastAcceptedRev) {
         return false;
     }
-    if (reply.obs !== entryObs || state.currentObs !== entryObs) {
+    if (state.currentInvalid !== entryObs) {
         return false;
     }
     return true;
 }
 
 function midApplyStopped(env: ApplyEnv, entryObs: string): boolean {
-    return env.state.observationOnlyCatchup || env.state.currentObs !== entryObs;
+    return env.state.observationOnlyCatchup || env.state.currentInvalid !== entryObs;
 }
 
 // Freshness/safety recheck immediately before a setter: the ref must still
@@ -410,6 +421,28 @@ function liveViewShowsOn(env: ApplyEnv, out: string, wsNativeId: string): boolea
     }
 }
 
+// Logical->native workspace resolution for actuation (D2): reply
+// transfer, view, and migration rows name the stable core LOGICAL
+// workspace id; native setters, live membership, and live views speak
+// NATIVE desktop ids. Resolve through the accepted reply's own workspace
+// rows for the exact output, never by ordinal or native string equality.
+// Unbound or unknown targets resolve to null and hold (never guess).
+function nativeWsOf(reply: WorldReply, out: string, logical: string): string | null {
+    for (const row of reply.workspaces) {
+        if (row.out === out && row.id === logical) {
+            return row.bind !== "" ? row.bind : null;
+        }
+    }
+    return null;
+}
+
+// Live-view proof for a logical transfer/view target: unknown or unbound
+// targets never prove (callers hold).
+function liveViewShowsLogical(env: ApplyEnv, reply: WorldReply, out: string, logical: string): boolean {
+    const native = nativeWsOf(reply, out, logical);
+    return native !== null && liveViewShowsOn(env, out, native);
+}
+
 // Log-only per-member migration trace: never throws, never actuates, never
 // changes settlement. All fields are bounded tags or counts, no raw ids.
 function traceMigrate(env: ApplyEnv, message: string): void {
@@ -436,7 +469,8 @@ function actuateViewForTransfer(
     if (!replyFresh(env, reply, entryObs)) {
         return false;
     }
-    const wsRef = safeResolve(() => env.desktopById(transfer.ws));
+    const targetNative = nativeWsOf(reply, transfer.out, transfer.ws);
+    const wsRef = targetNative === null ? null : safeResolve(() => env.desktopById(targetNative));
     const outRef = safeResolve(() => env.resolveOutput(transfer.out));
     if (wsRef === null || outRef === null) {
         return false;
@@ -445,9 +479,9 @@ function actuateViewForTransfer(
         env.switchView(wsRef, outRef);
     } catch (error) {
         void error;
-        return liveViewShowsOn(env, transfer.out, transfer.ws);
+        return targetNative !== null && liveViewShowsOn(env, transfer.out, targetNative);
     }
-    return liveViewShowsOn(env, transfer.out, transfer.ws);
+    return targetNative !== null && liveViewShowsOn(env, transfer.out, targetNative);
 }
 
 // Same-flight view switch for one migration's paired target/refill views
@@ -461,12 +495,13 @@ function actuateViewForTransfer(
 // check plus exact-output read-back proof is the complete safety case:
 // wrong-output visibility never proves, throws stay ambiguous, and any
 // later external view move settles superseded instead of fighting.
-function actuateViewSameFlight(
+function actuateViewSameFlightNative(
     env: ApplyEnv,
-    transfer: WorldReplyTransfer,
+    out: string,
+    nativeWs: string,
 ): boolean {
-    const wsRef = safeResolve(() => env.desktopById(transfer.ws));
-    const outRef = safeResolve(() => env.resolveOutput(transfer.out));
+    const wsRef = safeResolve(() => env.desktopById(nativeWs));
+    const outRef = safeResolve(() => env.resolveOutput(out));
     if (wsRef === null || outRef === null) {
         return false;
     }
@@ -474,9 +509,18 @@ function actuateViewSameFlight(
         env.switchView(wsRef, outRef);
     } catch (error) {
         void error;
-        return liveViewShowsOn(env, transfer.out, transfer.ws);
+        return liveViewShowsOn(env, out, nativeWs);
     }
-    return liveViewShowsOn(env, transfer.out, transfer.ws);
+    return liveViewShowsOn(env, out, nativeWs);
+}
+
+function actuateViewSameFlight(
+    env: ApplyEnv,
+    reply: WorldReply,
+    transfer: WorldReplyTransfer,
+): boolean {
+    const targetNative = nativeWsOf(reply, transfer.out, transfer.ws);
+    return targetNative !== null && actuateViewSameFlightNative(env, transfer.out, targetNative);
 }
 
 // Shared follow-view settlement for one window transfer whose membership
@@ -493,13 +537,17 @@ function settleFollowView(
     result: ApplyResult,
 ): void {
     const { state } = env;
-    if (!transfer.follow || liveViewShowsOn(env, transfer.out, transfer.ws)) {
+    // Follow-view target in native terms for causality bookkeeping (live
+    // membership and views speak native; the reply row names logical).
+    const targetNative = nativeWsOf(reply, transfer.out, transfer.ws);
+    const appliedWs = targetNative ?? transfer.ws;
+    if (!transfer.follow || (targetNative !== null && liveViewShowsOn(env, transfer.out, targetNative))) {
         state.settleAttempt(transfer.op, "applied", "");
-        state.noteAppliedWindowTarget(win, transfer.op, transfer.out, transfer.ws);
+        state.noteAppliedWindowTarget(win, transfer.op, transfer.out, appliedWs);
     } else if (actuateViewForTransfer(env, reply, entryObs, transfer)) {
         result.viewWrites += 1;
         state.settleAttempt(transfer.op, "applied", "");
-        state.noteAppliedWindowTarget(win, transfer.op, transfer.out, transfer.ws);
+        state.noteAppliedWindowTarget(win, transfer.op, transfer.out, appliedWs);
     } else {
         result.held += 1;
     }
@@ -512,9 +560,9 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
         creations: 0, removals: 0, effects: 0, held: 0, stoppedMidApply: false,
     };
     // Watermark at apply start: mid-apply invalidation compares against
-    // this, never against the feedback-dirty flag (self-sent feedback must
-    // not stop multi-window geometry/membership).
-    const entryObs = state.currentObs;
+    // this dispatch fence, never against the dirty flag (self-sent dirty
+    // must not stop multi-window geometry/membership).
+    const entryObs = env.dispatchWatermark;
     const byWin = new Map<string, ObservedWindow>();
     for (const domain of observation.domains) {
         for (const w of domain.windows) {
@@ -669,6 +717,14 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
         const op = transfer.op;
         const targetOut = transfer.out;
         const targetWs = transfer.ws;
+        // Native target for every setter, live comparison, and read-back
+        // below (the reply row names the logical workspace). Unbound or
+        // unknown targets hold with no attempt recorded.
+        const targetNative = nativeWsOf(reply, targetOut, targetWs);
+        if (targetNative === null) {
+            result.held += 1;
+            continue;
+        }
         let liveHome: { out: string; ws: string } | null = null;
         try {
             liveHome = env.readLiveMembership(observed.ref);
@@ -685,7 +741,7 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
         // convergence). Confirmation settles even a held/ambiguous
         // operation with no new native call; the follow view rides the
         // same operation when requested.
-        if (liveHome.out === targetOut && liveHome.ws === targetWs) {
+        if (liveHome.out === targetOut && liveHome.ws === targetNative) {
             settleFollowView(env, reply, entryObs, transfer, row.win, result);
             continue;
         }
@@ -706,7 +762,7 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
         const atSource = liveHome.out === observed.out && liveHome.ws === observed.ws;
         const partialProgress =
             (liveHome.out === targetOut && liveHome.ws === observed.ws) ||
-            (liveHome.out === observed.out && liveHome.ws === targetWs);
+            (liveHome.out === observed.out && liveHome.ws === targetNative);
         if (!atSource && !partialProgress) {
             // Fresh proof of newer external input elsewhere: the move is
             // superseded, never fought. Every other mismatch holds.
@@ -728,7 +784,7 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             continue;
         }
         const outRef: object | null = needOutMove ? safeResolve(() => env.resolveOutput(targetOut)) : null;
-        const wsRef = safeResolve(() => env.desktopById(targetWs));
+        const wsRef = safeResolve(() => env.desktopById(targetNative));
         if ((needOutMove && outRef === null) || wsRef === null) {
             result.held += 1;
             continue;
@@ -789,7 +845,7 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             void error;
             midHome = null;
         }
-        if (midHome !== null && midHome.out === targetOut && midHome.ws === targetWs) {
+        if (midHome !== null && midHome.out === targetOut && midHome.ws === targetNative) {
             if (outAttempted && outOk) {
                 result.membershipWrites += 1;
             }
@@ -803,7 +859,7 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             ? tolerateNativeOutputEcho(env, reply, entryObs, observed, echoSrcView, echoTgtView, midHome, targetOut)
             : "skipped";
         const echoOk = echoGate === "ok";
-        if (midHome === null || (!echoOk && ((midHome.out !== observed.out && midHome.out !== targetOut) || (midHome.ws !== observed.ws && midHome.ws !== targetWs)))) {
+        if (midHome === null || (!echoOk && ((midHome.out !== observed.out && midHome.out !== targetOut) || (midHome.ws !== observed.ws && midHome.ws !== targetNative)))) {
             // Third-location proof arrived between the two setters: external
             // input supersedes; never fight it.
             state.settleAttempt(op, "superseded-external", "");
@@ -812,10 +868,10 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             }
             continue;
         }
-        if (midHome.ws !== targetWs) {
+        if (midHome.ws !== targetNative) {
             wsAttempted = true;
             try {
-                wsOk = wsRef !== null && env.setMembership(observed.ref, targetWs, wsRef);
+                wsOk = wsRef !== null && env.setMembership(observed.ref, targetNative, wsRef);
             } catch (error) {
                 void error;
                 threw = true;
@@ -832,7 +888,7 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             void error;
             proof = null;
         }
-        if (proof !== null && proof.out === targetOut && proof.ws === targetWs) {
+        if (proof !== null && proof.out === targetOut && proof.ws === targetNative) {
             settleFollowView(env, reply, entryObs, transfer, row.win, result);
         } else if (!threw && (!outAttempted || !outOk) && (!wsAttempted || !wsOk) && proof !== null && proof.out === observed.out && proof.ws === observed.ws) {
             // Fresh proof nothing happened plus explicit native refusal on
@@ -998,6 +1054,66 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
     if (result.stoppedMidApply) {
         return result;
     }
+    // 1c. Explicit retained maximize-clear verdicts: window rows carrying a
+    // stable core clear operation id (`clear_op`) settle exactly once per
+    // operation. Proof-only (Stage3 parks native clear actuation): a live
+    // read-back proving the window is already unmaximized spends the token
+    // and settles applied; a still-maximized target holds (the core retains
+    // the desire, the adapter never fights the user and never invents a
+    // write). Unreadable safety fails closed with a narrow hold.
+    for (const row of reply.windows as WorldReplyWindow[]) {
+        const op = row.clear_op ?? "";
+        if (op === "") {
+            continue;
+        }
+        if (midApplyStopped(env, entryObs)) {
+            result.stoppedMidApply = true;
+            break;
+        }
+        if (!replyFresh(env, reply, entryObs)) {
+            result.stoppedMidApply = true;
+            break;
+        }
+        const observed = byWin.get(row.win);
+        if (observed === undefined) {
+            // Window gone: spend the operation so a removed lifetime never
+            // wedges later replies. The core settles closed lifetimes from
+            // explicit close observation.
+            state.markClearSpent(op);
+            continue;
+        }
+        if (state.clearSpent.has(op)) {
+            // Already settled for this operation (including across duplicate
+            // replies): never re-settle. Unsettled holds re-evaluate per
+            // reply until proof arrives.
+            continue;
+        }
+        if (observation.gesture) {
+            result.held += 1;
+            continue;
+        }
+        let maximizedNow: boolean | null = null;
+        try {
+            const safety = env.readLiveSafety(observed.ref);
+            maximizedNow = safety === null ? null : safety.maximized;
+        } catch (error) {
+            void error;
+            maximizedNow = null;
+        }
+        if (maximizedNow === null) {
+            result.held += 1;
+            continue;
+        }
+        if (maximizedNow === false) {
+            state.markClearSpent(op);
+            state.noteFeedback({ op, kind: "property", outcome: "applied", hold: "" });
+            continue;
+        }
+        result.held += 1;
+    }
+    if (result.stoppedMidApply) {
+        return result;
+    }
     // 2. Workspace lifecycle: creation one-flight per logical id with
     // enumeration recovery against the pre-attempt baseline; dependent
     // membership writes blocked until bound.
@@ -1005,14 +1121,14 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
     // visibility gate; unknown occupancy keeps.
     for (const ws of reply.workspaces) {
         if (ws.bind !== "") {
-            if (ws.logical !== "") {
-                state.bindCreation(ws.logical, ws.bind);
+            if (ws.id !== "") {
+                state.bindCreation(ws.id, ws.bind);
             }
             continue;
         }
         // Unbound row: pending logical token. Exactly one flight per id,
         // armed before the native call and never repeated while ambiguous.
-        const logical = ws.logical !== "" ? ws.logical : ws.id;
+        const logical = ws.id;
         if (logical === "") {
             continue;
         }
@@ -1138,8 +1254,8 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
         // desired window rows referencing this workspace retain it
         // (transaction lifetime): removal must not race an in-flight
         // send/view/migration. Desired omission alone never removes.
-        const referenced = reply.transfers.some((t) => t.ws === ws.bind) ||
-            reply.windows.some((w) => w.ws === ws.bind);
+        const referenced = reply.transfers.some((t) => t.out === ws.out && t.ws === ws.id) ||
+            reply.windows.some((w) => w.out === ws.out && w.ws === ws.id);
         if (referenced) {
             state.noteFeedback({ op: `remove-${ws.bind}`, kind: "creation", outcome: "unattempted", hold: "occupied-removal" });
             result.held += 1;
@@ -1230,13 +1346,16 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             continue;
         }
         const topo = observation.topology.find((entry) => entry.out === t.out);
+        // Native target for proof and setters (the reply row names the
+        // logical workspace). Unbound or unknown targets hold.
+        const targetNative = nativeWsOf(reply, t.out, t.ws);
         // Read-back confirmation first: the TARGET output actually showing
         // the target settles even a held/ambiguous operation with no new
         // native call. Any-output visibility never settles: the target
         // output exact view decides.
-        if (liveViewShowsOn(env, t.out, t.ws)) {
+        if (targetNative !== null && liveViewShowsOn(env, t.out, targetNative)) {
             state.settleAttempt(t.op, "applied", "");
-            state.noteAppliedViewTarget(t.out, t.op, t.ws);
+            state.noteAppliedViewTarget(t.out, t.op, targetNative);
             continue;
         }
         if (t.held || state.isHeldAmbiguous(t.op)) {
@@ -1256,7 +1375,7 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             result.stoppedMidApply = true;
             break;
         }
-        const wsRef = safeResolve(() => env.desktopById(t.ws));
+        const wsRef = targetNative === null ? null : safeResolve(() => env.desktopById(targetNative));
         const outRef = safeResolve(() => env.resolveOutput(t.out));
         if (wsRef === null || outRef === null) {
             result.held += 1;
@@ -1272,10 +1391,10 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             threw = true;
         }
         void ok;
-        if (liveViewShowsOn(env, t.out, t.ws)) {
+        if (targetNative !== null && liveViewShowsOn(env, t.out, targetNative)) {
             result.viewWrites += 1;
             state.settleAttempt(t.op, "applied", "");
-            state.noteAppliedViewTarget(t.out, t.op, t.ws);
+            state.noteAppliedViewTarget(t.out, t.op, targetNative);
         } else if (!threw) {
             state.settleAttempt(t.op, "refused-proven", "refused-target");
             result.held += 1;
@@ -1312,9 +1431,9 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             result.stoppedMidApply = true;
             break;
         }
-        const migrationResult = reply.result !== null && reply.result.op === "migrate-workspace" &&
-            reply.result.targetOut === t.out && reply.result.targetWs === t.ws
-            ? reply.result
+        const migrationResult = env.takeResult !== null && env.takeResult.op === "migrate-workspace" &&
+            env.takeResult.targetOut === t.out && env.takeResult.targetWs === t.ws
+            ? env.takeResult
             : null;
         let members: string[] | null = null;
         if (migrationResult !== null) {
@@ -1341,6 +1460,15 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             result.held += 1;
             continue;
         }
+        // Native target for every live comparison and setter below (the
+        // reply row names the logical workspace). Unbound or unknown
+        // targets hold with no attempt recorded.
+        const targetNative = nativeWsOf(reply, t.out, t.ws);
+        if (targetNative === null) {
+            result.held += 1;
+            continue;
+        }
+        const targetLogical = { out: t.out, ws: targetNative };
         // Paired refill child: the core-chosen refill view for THIS
         // migration only (exact stable op pairing). Any other view to
         // the source (stale selects, policy views) is never chosen as
@@ -1384,7 +1512,7 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
                     void error;
                     home = null;
                 }
-                if (home === null || home.out !== t.out || home.ws !== t.ws) {
+                if (home === null || home.out !== t.out || home.ws !== targetNative) {
                     lateProof = false;
                     break;
                 }
@@ -1414,21 +1542,21 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
                 continue;
             }
             const home = liveHomeOf(observed.ref);
-            const pre = migrationHomeShape(home, observed, t);
+            const pre = migrationHomeShape(home, observed, targetLogical);
             if (home === null) {
                 traceMigrate(env, `omnitiler:world:migrate-prescan op=${t.op} idx=${scanIdx}/${members.length} pre=${pre} branch=held-unreadable`);
                 result.held += 1;
                 superseded = true;
                 break;
             }
-            if (home.out === t.out && home.ws === t.ws) {
+            if (home.out === t.out && home.ws === targetNative) {
                 traceMigrate(env, `omnitiler:world:migrate-prescan op=${t.op} idx=${scanIdx}/${members.length} pre=${pre} branch=already-homed`);
                 continue;
             }
             const atSource = home.out === observed.out && home.ws === observed.ws;
             const partialProgress =
                 (home.out === t.out && home.ws === observed.ws) ||
-                (home.out === observed.out && home.ws === t.ws);
+                (home.out === observed.out && home.ws === targetNative);
             if (!atSource && !partialProgress) {
                 traceMigrate(env, `omnitiler:world:migrate-prescan op=${t.op} idx=${scanIdx}/${members.length} pre=${pre} branch=superseded`);
                 state.settleAttempt(t.op, "superseded-external", "");
@@ -1457,16 +1585,16 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
                 continue;
             }
             let home = liveHomeOf(observed.ref);
-            const pre = migrationHomeShape(home, observed, t);
+            const pre = migrationHomeShape(home, observed, targetLogical);
             if (home === null) {
                 traceMigrate(env, `omnitiler:world:migrate-member op=${t.op} idx=${actIdx}/${members.length} pre=${pre} srcView=null tgtView=null echo=skipped set=skipped proof=unreadable branch=failed-home-unreadable`);
                 result.held += 1;
                 failed = true;
                 break;
             }
-            if (home.out === t.out && home.ws === t.ws) {
+            if (home.out === t.out && home.ws === targetNative) {
                 traceMigrate(env, `omnitiler:world:migrate-member op=${t.op} idx=${actIdx}/${members.length} pre=${pre} srcView=na tgtView=na echo=skipped set=skipped proof=target branch=already-homed`);
-                state.noteAppliedWindowTarget(id, t.op, t.out, t.ws);
+                state.noteAppliedWindowTarget(id, t.op, t.out, targetNative);
                 continue;
             }
             if (!preSetterOk(env, reply, entryObs, observed, false)) {
@@ -1476,7 +1604,7 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             }
             const needOutMove = home.out !== t.out;
             const outRef: object | null = needOutMove ? safeResolve(() => env.resolveOutput(t.out)) : null;
-            const wsRef = safeResolve(() => env.desktopById(t.ws));
+            const wsRef = safeResolve(() => env.desktopById(targetNative));
             if ((needOutMove && outRef === null) || wsRef === null) {
                 traceMigrate(env, `omnitiler:world:migrate-member op=${t.op} idx=${actIdx}/${members.length} pre=${pre} srcView=na tgtView=na echo=skipped set=skipped proof=${pre} branch=failed-resolve`);
                 result.held += 1;
@@ -1528,10 +1656,10 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
                 void error;
                 home = null;
             }
-            if (home !== null && home.out === t.out && home.ws === t.ws) {
+            if (home !== null && home.out === t.out && home.ws === targetNative) {
                 traceMigrate(env, `omnitiler:world:migrate-member op=${t.op} idx=${actIdx}/${members.length} pre=${pre} srcView=${echoSrcView === null ? "null" : "ok"} tgtView=${echoTgtView === null ? "null" : "ok"} echo=skipped set=skipped proof=target branch=homed-no-write`);
                 result.membershipWrites += 1;
-                state.noteAppliedWindowTarget(id, t.op, t.out, t.ws);
+                state.noteAppliedWindowTarget(id, t.op, t.out, targetNative);
                 continue;
             }
             // The exact expected native echo of our own output setter is
@@ -1542,18 +1670,18 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
                 ? tolerateNativeOutputEcho(env, reply, entryObs, observed, echoSrcView, echoTgtView, home, t.out)
                 : "skipped";
             const echoOk = echoGate === "ok";
-            const midShape = migrationHomeShape(home, observed, t);
+            const midShape = migrationHomeShape(home, observed, targetLogical);
             if (home === null || (!echoOk && ((home.out !== observed.out && home.out !== t.out) ||
-                (home.ws !== observed.ws && home.ws !== t.ws)))) {
+                (home.ws !== observed.ws && home.ws !== targetNative)))) {
                 traceMigrate(env, `omnitiler:world:migrate-member op=${t.op} idx=${actIdx}/${members.length} pre=${pre} srcView=${echoSrcView === null ? "null" : "ok"} tgtView=${echoTgtView === null ? "null" : "ok"} echo=${echoGate} set=skipped proof=${midShape} branch=superseded`);
                 state.settleAttempt(t.op, "superseded-external", "");
                 superseded = true;
                 break;
             }
             let setTag = "skipped";
-            if (home.ws !== t.ws && wsRef !== null) {
+            if (home.ws !== targetNative && wsRef !== null) {
                 try {
-                    if (env.setMembership(observed.ref, t.ws, wsRef)) {
+                    if (env.setMembership(observed.ref, targetNative, wsRef)) {
                         result.membershipWrites += 1;
                         setTag = "done-true";
                     } else {
@@ -1571,10 +1699,10 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
                 void error;
                 proof = null;
             }
-            const proofShape = migrationHomeShape(proof, observed, t);
-            if (proof !== null && proof.out === t.out && proof.ws === t.ws) {
+            const proofShape = migrationHomeShape(proof, observed, targetLogical);
+            if (proof !== null && proof.out === t.out && proof.ws === targetNative) {
                 traceMigrate(env, `omnitiler:world:migrate-member op=${t.op} idx=${actIdx}/${members.length} pre=${pre} srcView=${echoSrcView === null ? "null" : "ok"} tgtView=${echoTgtView === null ? "null" : "ok"} echo=${echoGate} set=${setTag} proof=${proofShape} branch=homed`);
-                state.noteAppliedWindowTarget(id, t.op, t.out, t.ws);
+                state.noteAppliedWindowTarget(id, t.op, t.out, targetNative);
             } else {
                 traceMigrate(env, `omnitiler:world:migrate-member op=${t.op} idx=${actIdx}/${members.length} pre=${pre} srcView=${echoSrcView === null ? "null" : "ok"} tgtView=${echoTgtView === null ? "null" : "ok"} echo=${echoGate} set=${setTag} proof=${proofShape} branch=held-unproven`);
                 result.held += 1;
@@ -1602,7 +1730,7 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
         // settles applied only with all members homed and both views
         // proven. Wrong-output visibility never proves.
         const membersProven = !failed && !unproven;
-        const targetShown = liveViewShowsOn(env, t.out, t.ws);
+        const targetShown = liveViewShowsLogical(env, reply, t.out, t.ws);
         let refillChild = pairedRefill;
         // Newer external input supersedes a proven-then-abandoned refill
         // child (same rule as the general view loop): drop it for this
@@ -1630,17 +1758,20 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
                 refillWs = (candidates[0] as { bind: string }).bind;
             }
         }
-        const refillShown = refillWs === null || (sourceOut !== null && liveViewShowsOn(env, sourceOut, refillWs));
+        const refillNative = refillWs === null || refillChild === undefined
+            ? refillWs
+            : nativeWsOf(reply, refillChild.out, refillChild.ws);
+        const refillShown = refillWs === null || (sourceOut !== null && refillNative !== null && liveViewShowsOn(env, sourceOut, refillNative));
         let viewsProven = targetShown && refillShown;
         if (membersProven && !viewsProven && replyFresh(env, reply, entryObs)) {
             if (!targetShown) {
                 // Same-flight switch: the entry check above is the
                 // freshness proof; read-back decides.
-                if (actuateViewSameFlight(env, t)) {
+                if (actuateViewSameFlight(env, reply, t)) {
                     result.viewWrites += 1;
                 }
             }
-            if (refillWs !== null && sourceOut !== null && !liveViewShowsOn(env, sourceOut, refillWs)) {
+            if (refillWs !== null && sourceOut !== null && refillNative !== null && !liveViewShowsOn(env, sourceOut, refillNative)) {
                 if (refillChild !== undefined) {
                     if (state.isHeldAmbiguous(refillOp)) {
                         // Never retry an ambiguous refill view under a fresh
@@ -1654,10 +1785,10 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
                         // switch's own synchronous signal cannot fail this
                         // attempt closed.
                         state.armPossiblyExecuted(refillOp, "view", `${sourceOut}/${refillWs}`);
-                        if (actuateViewSameFlight(env, { ...refillChild, follow: false })) {
+                        if (actuateViewSameFlight(env, reply, { ...refillChild, follow: false })) {
                             result.viewWrites += 1;
                             state.settleAttempt(refillOp, "applied", "");
-                            state.noteAppliedViewTarget(sourceOut, refillOp, refillWs);
+                            state.noteAppliedViewTarget(sourceOut, refillOp, refillNative ?? refillWs);
                         } else {
                             result.held += 1;
                         }
@@ -1665,22 +1796,23 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
                 } else {
                     // Legacy fallback for replies predating the refill
                     // transfer: the refill rides the parent operation with
-                    // no separate arming, exactly as before.
-                    const refillTransfer = { ...t, out: sourceOut, ws: refillWs };
-                    if (actuateViewSameFlight(env, refillTransfer)) {
+                    // no separate arming, exactly as before. The fallback
+                    // workspace is already the native binding, never a
+                    // logical id, so it switches without row resolution.
+                    if (actuateViewSameFlightNative(env, sourceOut, refillWs)) {
                         result.viewWrites += 1;
                     }
                 }
             }
-            viewsProven = liveViewShowsOn(env, t.out, t.ws) &&
-                (refillWs === null || (sourceOut !== null && liveViewShowsOn(env, sourceOut, refillWs)));
+            viewsProven = liveViewShowsLogical(env, reply, t.out, t.ws) &&
+                (refillWs === null || (sourceOut !== null && refillNative !== null && liveViewShowsOn(env, sourceOut, refillNative)));
         }
         // All members homed is rechecked from the per-member proofs above:
         // any held member blocks settlement without another native call.
         if (!failed && !unproven && viewsProven) {
             state.settleAttempt(t.op, "applied", "");
             if (sourceOut !== null) {
-                state.noteAppliedViewTarget(t.out, t.op, t.ws);
+                state.noteAppliedViewTarget(t.out, t.op, targetNative);
             }
         } else {
             result.held += 1;
@@ -1705,7 +1837,7 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
         if (t.kind !== "window" || !t.follow) {
             return false;
         }
-        return !liveViewShowsOn(env, t.out, t.ws);
+        return !liveViewShowsLogical(env, reply, t.out, t.ws);
     });
     for (const fx of reply.effects) {
         if (fx.kind !== "focus" && fx.kind !== "raise" && fx.kind !== "stack") {

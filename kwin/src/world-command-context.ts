@@ -32,8 +32,8 @@ export function createWorldCommandContext(
     // targets plus operation inner targets/sources. Positional commands
     // (numbered/relative/trailing) resolve in core and name no native.
     // Direction-only intents name no target: focus/move/send-directional
-    // carry only window+direction, migrate-directional carries the source
-    // workspace only.
+    // carry only window+direction, migrate-directional carries nothing (the
+    // core resolves the action source from the neutral report facts).
     const commandWorkspaceRefs = (command: WorldCommand | null): Set<string> => {
         const refs = new Set<string>();
         if (command === null) {
@@ -49,7 +49,7 @@ export function createWorldCommandContext(
         if (op === "send" || op === "switch-view" || op === "select-workspace") {
             take(rec["ws"]);
             take(rec["workspace"]);
-        } else if (op === "migrate-workspace" || op === "migrate-directional") {
+        } else if (op === "migrate-workspace") {
             take(rec["ws"]);
         } else if (op === "operation") {
             const inner = rec["command"];

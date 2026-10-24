@@ -968,7 +968,7 @@ function readAutoAboveBelow(readProp: WorldNativeEnv["readProp"], ref: object): 
 // through. Minimal injected context is the live surface plus the reflective
 // reader; lifecycle state and flight ordering stay owned by the entry, which
 // spreads this host into its single applyWorldReply call. No copied state.
-export type WorldApplyHost = Omit<ApplyEnv, "state" | "observation" | "reply" | "log">;
+export type WorldApplyHost = Omit<ApplyEnv, "state" | "observation" | "reply" | "dispatchWatermark" | "takeResult" | "log">;
 
 export function createWorldApplyHost(
     surface: object,

@@ -32,7 +32,7 @@ function loadReply(): WorldReply {
 function loadAlignedReply(): WorldReply {
     const reply = loadReply();
     const wsRow = (logical: string, out: string, bind: string, order: number) => ({
-        id: logical, out, bind, logical, scope: out, order, mode: "tiled", exist: true, hold: "",
+        id: logical, out, bind, scope: out, order, mode: "tiled", exist: true, hold: "",
     });
     reply.workspaces = [
         wsRow("al-1", "out-a", "ws-1", 0),
@@ -51,20 +51,24 @@ function loadAlignedReply(): WorldReply {
     const winRow = (win: string, out: string, ws: string) => ({
         win, out, ws, alloc: null, frame: null,
         frame_auth: "hold", frame_hold: "", member_auth: "controlled", member_hold: "",
-        frame_op: "", floating: false, float_origin: "",
+        frame_op: "", clear_op: "", floating: false, float_origin: "",
     });
+    // Transfer and member rows name the stable core LOGICAL workspace id
+    // (resolved adapter-side through the accepted rows above, never by
+    // native string equality): the out-b trailing is al-1 (bound to
+    // native ws-3), the out-a refill is al-4 (bound to native ws-4).
     reply.windows = [
-        winRow("win-a", "out-b", "ws-3"),
-        winRow("win-c", "out-b", "ws-3"),
+        winRow("win-a", "out-b", "al-1"),
+        winRow("win-c", "out-b", "al-1"),
         winRow("win-b", "out-b", "ws-2"),
     ];
     reply.transfers = [
-        { op: "op-61", kind: "migration", win: "", out: "out-b", ws: "ws-3", follow: false, held: false },
-        { op: "op-61-refill", kind: "view", win: "", out: "out-a", ws: "ws-4", follow: false, held: false },
+        { op: "op-61", kind: "migration", win: "", out: "out-b", ws: "al-1", follow: false, held: false },
+        { op: "op-61-refill", kind: "view", win: "", out: "out-a", ws: "al-4", follow: false, held: false },
     ];
     reply.result = {
         op: "migrate-workspace", direction: "right",
-        sourceOut: "out-a", sourceWs: "ws-1", targetOut: "out-b", targetWs: "ws-3",
+        sourceOut: "out-a", sourceWs: "ws-1", targetOut: "out-b", targetWs: "al-1",
         members: ["win-a", "win-c"], floats: 0,
     };
     reply.effects = [];
@@ -88,7 +92,7 @@ function makeObservation(world: FakeWorld): WorldObservation {
             win: id, ref: { id }, out: home.out, ws: home.ws,
             rect: { x: 0, y: 0, w: 100, h: 100 },
             floating: false, fitExcluded: false, fullscreen: false,
-            maximized: false, sticky: false, fixedAuto: false, fixedSuppress: false,
+            maximized: false, sticky: false, fixedAuto: false, fixedSuppress: false, nativeWs: null,
             hints: { minW: null, minH: null, maxW: null, maxH: null },
             minimized: false,
         };
@@ -121,6 +125,11 @@ function makeObservation(world: FakeWorld): WorldObservation {
         complete: true,
         gesture: false,
         focusedGlobal: "win-a",
+        screens: [], windowFacts: [], views: [], closed: [], hostOwned: false, equalCount: true, native: [],
+        cursor: null, actionForeground: null, actionCached: null, actionOutputs: [],
+        focusFollowsCursor: false, cursorWarp: false,
+        switchTarget: "focused-output", freshPlacement: "focused-output-last-focused",
+        presentation: { foreground: "", minimized: false, maximized: false, fullscreen: false, cloaked: false, hiddenWorkspace: false, shell: false, frame: null, borderEnabled: false, underlayEnabled: false, borderGap: 0, borderWidth: 0, underlayExtension: 0, chordHeld: false, moveWindow: "", paused: false, pagerOrder: [], pagerFrames: [] },
     };
 }
 
@@ -189,10 +198,10 @@ function makeEnv(state: WorldAdapterState, world: FakeWorld) {
 
 function freshState(reply: WorldReply): WorldAdapterState {
     const state = new WorldAdapterState("adapter-1", "owner-a");
-    state.onDiscovery("gen-1");
+    state.onDiscovery("gen-1", "broker-1");
     state.invalidate();
     state.invalidate();
-    reply.obs = state.currentObs;
+    reply.obs = state.currentInvalid;
     return state;
 }
 
@@ -214,7 +223,7 @@ describe("world aligned migration apply", () => {
         const reply = loadAlignedReply();
         const world = baseWorld();
         const state = freshState(reply);
-        const applied = applyWorldReply({
+        const applied = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: reply.result,
             ...makeEnv(state, world),
             observation: makeObservation(world),
             reply,
@@ -236,7 +245,7 @@ describe("world aligned migration apply", () => {
         assert.ok(applied.membershipWrites >= 2);
         assert.ok(applied.viewWrites >= 2);
         // Converged repeat settles with no new native calls.
-        const settled = applyWorldReply({
+        const settled = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: reply.result,
             ...makeEnv(state, world),
             observation: makeObservation(world),
             reply,
@@ -252,7 +261,7 @@ describe("world aligned migration apply", () => {
         const world = baseWorld();
         world.lieMembership = true;
         const state = freshState(reply);
-        const first = applyWorldReply({
+        const first = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: reply.result,
             ...makeEnv(state, world),
             observation: makeObservation(world),
             reply,
@@ -263,7 +272,7 @@ describe("world aligned migration apply", () => {
         void first;
         // win-a lands externally; win-c still delayed: still no views.
         world.homing.set("win-a", { out: "out-b", ws: "ws-3" });
-        const partial = applyWorldReply({
+        const partial = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: reply.result,
             ...makeEnv(state, world),
             observation: makeObservation(world),
             reply,
@@ -275,7 +284,7 @@ describe("world aligned migration apply", () => {
         // Full arrival: both views switch exactly once, then settle.
         world.homing.set("win-c", { out: "out-b", ws: "ws-3" });
         world.lieMembership = false;
-        const second = applyWorldReply({
+        const second = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: reply.result,
             ...makeEnv(state, world),
             observation: makeObservation(world),
             reply,
@@ -287,7 +296,7 @@ describe("world aligned migration apply", () => {
         );
         assert.ok(second.viewWrites >= 2);
         void second;
-        const third = applyWorldReply({
+        const third = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: reply.result,
             ...makeEnv(state, world),
             observation: makeObservation(world),
             reply,
@@ -305,7 +314,7 @@ describe("world aligned migration apply", () => {
         // win-c closes mid-flight: absent from every domain.
         world.homing.delete("win-c");
         const state = freshState(reply);
-        const out = applyWorldReply({
+        const out = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: reply.result,
             ...makeEnv(state, world),
             observation: makeObservation(world),
             reply,
@@ -334,7 +343,7 @@ describe("world aligned migration apply", () => {
                 return world.homing.get(id) ?? null;
             },
         };
-        const out = applyWorldReply({ ...lying, observation: makeObservation(world), reply });
+        const out = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: reply.result, ...lying, observation: makeObservation(world), reply });
         assert.ok(out.held >= 1, "unreadable arrival holds");
         assert.equal(world.switchViewCalls.length, 0, "no views on unreadable proof");
         void out;
@@ -355,7 +364,7 @@ describe("world aligned migration apply", () => {
         const state = freshState(reply);
         const env = makeEnv(state, world);
         let removed = 0;
-        const out = applyWorldReply({
+        const out = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: reply.result,
             ...env,
             removeDesktop: () => {
                 removed += 1;

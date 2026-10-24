@@ -9,7 +9,9 @@
 - Stage 0 complete against `a0f54105`; stage 1 implements capability-gated
   host-owned adoption in core/protocol. KDE remains unported and native
   acceptance remains TBD. This record stays active for the whole port;
-  stages 2 onward have not started.
+  stage 2 has a committed partial paired implementation, not accepted as a
+  completed stage; stages 3 onward remain outstanding except for the
+  observation/actuation vocabulary required by the atomic wire cutover.
 - Initial inventory confirmed the `01a73798` KDE gaps: JS pins version 1
   (`world-seq.ts`), `world-report.ts` emits the old report vocabulary,
   `world_service.rs::parse_discovery_request` requires v1, and
@@ -28,7 +30,7 @@
 | --- | --- | --- |
 | 0. Inventory and plan | This plan, current-tree discrepancies, explicit parked contracts | Source inspection and unchanged core baseline; complete |
 | 1. Host-owned adoption | Capability-gated core native order/bindings and native member intake; preserve startup inference and adopt later outside moves/creations; no KDE policy workaround | Core-only delivery: four bound workspaces plus ordinary spare, no launch moves/effects, stable bindings, exact startup geometry, outside move/create and uncertainty regressions; native result TBD |
-| 2. Broker and strict v2 cutover | Port Rust service and JS wire together; sole identity/sequencer, stream, request/observation namespace and monotonic clock; replace v1 discovery, stale config, wire vectors and legacy routes, never shim them | Protocol/service/JS paired tests; invalidation during flight, duplicates, lost replies, reset, reconnect; authorization separated for query/presentation/commands versus report/actuator; native work actuator-only, terminal results issuing-reply-only, no subscriber effect replay |
+| 2. Broker and strict v2 cutover | Parked: paired Rust/JS implementation and canonical v2 fixtures exist, but command wake delivery and native backing/settlement remain unresolved | Partial offline gates below; six KDE integration failures remain, no native or completion claim |
 | 3. Observe and actuate | v2 facts/receipts, presentation ingress and operation tokens; preserve native identity/recovery and last-moment vetoes; delete old feedback/verdict and native-derived homing routes | Fresh post-dispatch facts, truthful attempts, token spending, generation/watermark refusal, transfer/clear/float settlement and no fabricated arrival |
 | 4. Shared policy only | Broker capture envelope carries raw native role/control/ownership/app/hint facts to existing Rust core entry points; delete TS admission, born-maximized, fixed-size, refill, scope, drag/gesture, same-axis move and tiling-toggle policy | Core-policy normalization and real capture-envelope tests; shortcut/gesture inputs never preselect verdicts; no shared-ingress redesign implied |
 | 5. Pure presentation and coordinates | Effect renders core border/underlay/drop/pager bounds; delete effect geometry/eligibility derivation and obsolete policy FFI routes; keep native anchoring and immediate hide-only safety vetoes | Rendering/token/freshness/game-pause tests and host-matched native build; one KWin-logical coordinate space with fractional rounding and style-unit conversion proof; add window clientGeometry reads for hint conversion (not workspace clientArea), never Windows border compensation |
@@ -60,6 +62,36 @@
   reset/repeat, separate/linked lists, outside move/create, uncertainty,
   pending transfer, truthful migrated bindings and equal-count cases.
 
+## Stage 2 implementation boundary
+
+- Replace the service's report passthrough with one broker-owned engine,
+  identity, ordering namespace and monotonic clock. Capture transports projected
+  v2 facts for now; raw classification capture remains stage 4.
+- Separate the exclusive KWin capture/actuator route from same-user command and
+  presentation routes. Bind command deduplication and terminal collection to the
+  authenticated sender, never a caller-supplied client id alone. Native work
+  travels only on capture replies; terminal outcomes travel only on the issuing
+  sender's collection route. Presentation reconnect never replays either lane.
+- Capture envelopes bind the discovered generation/incarnation, a fresh source
+  correlation and the native invalidation watermark. Exact redelivery replays
+  without draining newly queued work; changed source reuse and stale watermarks
+  refuse. The JS callback also fences invalidation during flight.
+- Bounded units: Rust broker and authorization; paired JS wire/entry and minimum
+  v2 observation/actuation carriers; independent boundary review; complete KDE
+  offline gates and documentation reconciliation. No core changes are planned.
+- Core command rejections are explicit terminal failures for their requester,
+  not fabricated null successes or arbitrary retries; the same fresh facts then
+  enter the observation-only lane. Malformed capture never retires a command.
+- Minimum stage 3 work pulled into the draft: projected v2 facts and native
+  membership evidence, desire parsing, clear/frame tokens and output-specific
+  logical-to-native target resolution. Raw frame/member/view/clear attempts are
+  still absent; local legacy attempt bookkeeping is not settlement evidence.
+- Canonical reply fixtures are generated by
+  `crates/omnitiler/examples/world_wire_fixtures.rs` through `WorldService`.
+  Request byte gates exercise the JS producer. The TS real-engine transport
+  harness is entry-only, not a second broker oracle; Rust tests own broker
+  sequencing, authorization, deduplication and replay evidence.
+
 ## Tentative technical decisions
 
 - Sequence the atomic service/JS v2 wire cutover before deleting capture-policy
@@ -73,6 +105,16 @@
   membership preserved and no workspace moves; the existing ordinary trailing
   spare follows unchanged. This preserves core behavior rather than adding a
   host-owned lifecycle exception.
+- Broker transport (tentative): one discovered producer lifetime; a replacement
+  lifetime rotates generation/incarnation and all retained broker state.
+  Capture carries a local invalidation watermark plus a monotonic transport
+  nonce, not core request/command counters. Exact remembered redelivery is
+  byte-identical; forgotten old nonces refuse without draining new commands.
+- Command transport (tentative): authenticated sender plus client id and
+  command id define deduplication/collection; both queue and take bind the
+  serving generation. Terminal collection is redeliverable without replaying
+  native effects. A new bus connection cannot collect an old sender's results;
+  stable reconnect claims would need a separately reviewed ownership mechanism.
 
 ## Decisions and core-neutrality concerns
 
@@ -124,6 +166,45 @@
   Windows creates logical backing locally; KDE/macOS native creation and future
   GNOME/ChromeOS adapters must distinguish observed backing from desired ids.
   Native deletion/reordering policy is not selected by this adoption change.
+- The paired adapter draft exposes the correlation gap offline: creating
+  backing for an unbound desired logical row is observed as a new native id,
+  which core adopts under another logical id. Treating that adoption as proof
+  for the requested logical row is false; forgetting the pending creation can
+  lead to repeated creation. No live desktop creation was attempted.
+- Recommendation remains an explicit neutral correlation proposal before any
+  core change; do not guess by ordinal, rename a native id into a logical id,
+  or weaken the pending-creation oracle. Add native proof after that contract
+  is agreed.
+
+### N4. Migrated logical workspace without destination backing (parked)
+
+- `world_commands.rs::commit_migration` moves the logical id between rings;
+  it does not invent a destination native binding. The draft correctly resolves
+  transfers through `(output, logical id) -> native_binding` and holds an
+  unbound target. Migration/member/view settlement is therefore not established
+  by the current producer sequence. A correct logical migration result alone
+  does not establish native output movement.
+- Options: explicitly correlate creation/reuse of destination backing with the
+  retained logical operation; require pre-existing observed backing; or defer
+  native migration until that contract exists. Recommendation: investigate the
+  same smallest neutral binding receipt as N3, retaining hold meanwhile. No
+  destination rebinding or core change is selected.
+- Windows' local backing, KDE's output-projected global desktops, macOS Spaces,
+  and future GNOME/ChromeOS native domains all need truthful operation/backing
+  correlation without assumed id equality or fabricated cross-output binding.
+
+### B1. External command wake delivery (parked)
+
+- The draft exposes same-user queue/query routes and emits `WorldWake`, but
+  KWin JS `callDBus` has no signal-subscription primitive. An external queued
+  command waits for a subsequent native-event capture. This is not accepted
+  command responsiveness or a completed broker cutover.
+- Options: a narrow native event bridge, an outstanding asynchronous wait route
+  with proven bus timeout/reconnect behavior, or defer external command clients.
+  Recommendation: prove the smallest event-driven transport before selecting
+  one; do not add idle polling or describe a signal emission as delivery.
+- This is host transport, not a core policy hook. Other remote hosts must be
+  able to use their own event delivery without a KWin-shaped core abstraction.
 
 ### Existing deferred product boundaries
 
@@ -201,5 +282,33 @@
   coverage includes native membership parsing, capability refusal and size
   bounds. Independent boundary review accepted the corrected implementation.
   No KDE build, native-host or physical acceptance is claimed.
-- Next: stage 2 atomic Rust/JS v2 broker/wire cutover; no stage 2 work delivered
-  here. Native adoption and hide/reveal acceptance remain fixture-first work.
+- Stage 2 partial evidence (2026-10-25): locked `omnitiler` build and tests pass
+  (192 passed: 157 library, 24 world-service flow, 11 tray); strict all-target
+  clippy and package-scoped formatting checks pass. JS typecheck and build pass; `npm test`
+  reports 694 tests, 688 passed, six failed, zero skipped/cancelled.
+- Fresh full-workspace formatting and whitespace gates pass. Locked
+  `omnitiler` build, all-target tests (192 passed), strict all-target clippy,
+  JS typecheck/build and world acceptance (6/6) pass. The full KDE suite still
+  reports 688 passed and the same six failures, zero skipped/cancelled.
+  Dependencies and shared core/protocol are unchanged.
+- The six retained failures are two aligned migration engine cases plus
+  migration producer, spare occupancy/retirement, native homing migration and
+  split-edge native migration. They are not waived, skipped or claimed as
+  positive acceptance. The split-edge logical result selects the expected
+  output; the unresolved native move does not follow from it. No new target
+  selection policy is needed on that evidence. Native-bound empty retention
+  also differs from the older tentative departed-spare retirement oracle;
+  preserve current core behavior pending N3/N4 investigation.
+- Two harness-only migration settlement variations did not establish the missing
+  backing proof. They are not accepted fixes; the failing integration oracles
+  remain intact. Staged-binding apply tests prove only behavior after a binding
+  is supplied, never that the current host/core creation path can supply it.
+- Boundary review found replay of older non-last captures, lost queue
+  acknowledgements, subscriber-parser mismatch, logical/native target confusion
+  and late-generation queue/take hazards. Corrections have focused regressions;
+  the final queue/take stale-callback regressions fail without their gates and
+  pass with them. No shared core/protocol or native effect code was changed.
+- Stage 2 remains parked, not complete. No native run, full-core gate rerun or
+  live hide/reveal acceptance is claimed. Next: resolve event-driven command
+  delivery and N3/N4 backing correlation, finish truthful raw attempts, then
+  rerun the complete KDE gate without weakening the six integration oracles.

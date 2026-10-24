@@ -28,6 +28,7 @@ import { dirname, join, resolve } from "node:path";
 import { describe, it } from "node:test";
 
 import { WORLD_DEBOUNCE_MS, startWorldAdapterEntry } from "../src/world-entry";
+import { createMiniBroker, type MiniBroker } from "./world-wire-harness";
 
 function repoRoot(): string {
     let dir = resolve(process.cwd());
@@ -179,6 +180,7 @@ interface CapturedCall {
 }
 interface Harness {
     readonly bridge: WorldBridge;
+    readonly broker: MiniBroker;
     workspace: Record<string, unknown>;
     readonly screens: { left: FakeScreen; right: FakeScreen };
     readonly wins: FakeWindow[];
@@ -187,6 +189,8 @@ interface Harness {
     readonly calls: CapturedCall[];
     readonly answered: Set<number>;
     readonly replies: Map<number, string>;
+    readonly takeReplies: string[];
+    readonly drainCapture: Map<unknown, number>;
     readonly timers: Array<{ delayMs: number; callback: () => void; cancelled: boolean; fired: boolean }>;
     readonly logs: string[];
     readonly geometryWrites: string[];
@@ -269,6 +273,7 @@ async function makeHarness(): Promise<Harness> {
     }
     const harness: Harness = {
         bridge: WorldBridge.start(),
+        broker: createMiniBroker(),
         workspace: {},
         screens: { left, right },
         wins,
@@ -277,6 +282,8 @@ async function makeHarness(): Promise<Harness> {
         calls: [],
         answered: new Set<number>(),
         replies: new Map<number, string>(),
+        takeReplies: [],
+        drainCapture: new Map<unknown, number>(),
         timers: [],
         logs: [],
         geometryWrites,
@@ -304,7 +311,19 @@ async function makeHarness(): Promise<Harness> {
         flush: async () => {
             const index = harness.calls.findIndex((call, at) => call.method === "DescribeWorld" && !harness.answered.has(at));
             assert.ok(index >= 0, "expected a queued DescribeWorld dispatch to flush to the real Engine");
-            const reply = await harness.bridge.send(harness.calls[index]?.method as string, harness.calls[index]?.payload as string);
+            // Mini-broker stamping: the envelope becomes the exact core
+            // report the sole broker would dispatch (own namespace plus at
+            // most one queued command), and the core reply returns bound
+            // with a nulled terminal result.
+            const envelope = (harness.calls[index] as CapturedCall).payload;
+            const drainedBefore = harness.broker.drained.length;
+            const stamped = harness.broker.stampCapture(envelope);
+            if (harness.broker.drained.length > drainedBefore) {
+                const drained = harness.broker.drained[harness.broker.drained.length - 1] as { clientCmd: unknown };
+                harness.drainCapture.set(drained.clientCmd, index);
+            }
+            const coreReply = await harness.bridge.send("DescribeWorld", stamped);
+            const reply = harness.broker.bindReply(coreReply, envelope);
             harness.answered.add(index);
             harness.replies.set(index, reply);
             (harness.calls[index] as CapturedCall).callback(reply);
@@ -334,9 +353,12 @@ async function makeHarness(): Promise<Harness> {
             throw new Error("settle did not converge");
         },
         commandPayloads: (op: string): Array<{ index: number; body: Record<string, unknown> }> => {
+            // v2 command lane: presses file QueueWorldCommand (the broker
+            // drains at most one per capture); DescribeWorld envelopes
+            // carry no inline command.
             const out: Array<{ index: number; body: Record<string, unknown> }> = [];
             harness.calls.forEach((call, index) => {
-                if (call.method !== "DescribeWorld") {
+                if (call.method !== "QueueWorldCommand") {
                     return;
                 }
                 try {
@@ -443,10 +465,17 @@ async function makeHarness(): Promise<Harness> {
         owner: "owner-a",
         adapter: "test-adapter",
         callDbus: (_service, _path, _iface, method, payload, callback): void => {
-            if (method !== "DiscoverWorld" && method !== "DescribeWorld") {
+            if (method !== "DiscoverWorld" && method !== "DescribeWorld" && method !== "QueueWorldCommand" && method !== "TakeCommandResult") {
                 return;
             }
             harness.calls.push({ method, payload, callback });
+            if (method === "QueueWorldCommand") {
+                callback(harness.broker.answerQueue(payload));
+            } else if (method === "TakeCommandResult") {
+                const takeReply = harness.broker.answerTake(payload);
+                harness.takeReplies.push(takeReply);
+                callback(takeReply);
+            }
         },
         scheduleOnce: (delayMs, callback): (() => void) => {
             const timer = { delayMs, callback, cancelled: false, fired: false };
@@ -472,7 +501,8 @@ async function discover(h: Harness): Promise<void> {
     const discIndex = h.calls.findIndex((call) => call.method === "DiscoverWorld");
     assert.ok(discIndex >= 0, "entry discovers on start");
     const disc = h.calls[discIndex] as CapturedCall;
-    const reply = await h.bridge.send(disc.method, disc.payload);
+    const engineBootstrap = await h.bridge.send(disc.method, disc.payload);
+    const reply = h.broker.bindDiscovery(engineBootstrap);
     const parsed = JSON.parse(reply) as Record<string, unknown>;
     assert.equal(parsed["ready"], false, "bootstrap is not ready");
     disc.callback(reply);
@@ -492,6 +522,8 @@ function winById(h: Harness, id: string): FakeWindow {
 function appliedMatchesReply(h: Harness, reply: Record<string, unknown>): void {
     const geometry = reply["windows"] as Array<Record<string, unknown>>;
     assert.ok(Array.isArray(geometry) && geometry.length > 0, "real reply carries desired window rows");
+    const rows = reply["workspaces"] as Array<Record<string, unknown>>;
+    assert.ok(Array.isArray(rows), "real reply carries workspace rows");
     for (const entry of geometry) {
         const frame = entry["frame"] as [number, number, number, number] | null;
         const win = winById(h, entry["win"] as string);
@@ -499,10 +531,14 @@ function appliedMatchesReply(h: Harness, reply: Record<string, unknown>): void {
             assert.deepEqual(frameOf(win), { x: frame[0], y: frame[1], w: frame[2], h: frame[3] }, `native frame of ${entry["win"]} matches the Engine plan`);
         }
         assert.equal(win.output.name, entry["out"], `native output of ${entry["win"]} matches the Engine plan`);
+        // v2: reply `ws` is the core logical id; producer natives resolve
+        // through the core-owned binding, never by string equality.
+        const planned = rows.find((row) => row["out"] === entry["out"] && row["id"] === entry["ws"]);
+        assert.ok(planned !== undefined, `Engine plans a workspace row for ${entry["win"]} at ${entry["out"]}/${entry["ws"]}`);
         assert.deepEqual(
             win.desktops.map((desk) => desk.id),
-            [entry["ws"]],
-            `native membership of ${entry["win"]} matches the Engine plan`,
+            [planned["bind"]],
+            `native membership of ${entry["win"]} matches the Engine plan through the core binding`,
         );
     }
 }
@@ -557,9 +593,12 @@ describe("world unequal-height occupied-target R4 through the production entry (
                 await h.settle();
                 const moves = h.commandPayloads("move-directional");
                 assert.equal(moves.length, leg + 1, `exactly one new move dispatch on leg ${leg}`);
-                const answered = moves.filter(({ index }) => h.answered.has(index));
-                assert.equal(answered.length, leg + 1, `the core answered every move through leg ${leg}`);
-                const reply = JSON.parse(h.replies.get(answered[leg]?.index as number) as string) as Record<string, unknown>;
+                // v2: filed moves drain FIFO through captures; the draining
+                // capture's bound reply carries the plan (never the queue
+                // call, which carries no reply).
+                const captureIndex = h.drainCapture.get((moves[leg]?.body as Record<string, unknown>)["clientCmd"]);
+                assert.ok(captureIndex !== undefined, `the core drained every move through leg ${leg}`);
+                const reply = JSON.parse(h.replies.get(captureIndex as number) as string) as Record<string, unknown>;
                 assert.notEqual(reply["outcome"], "rejected", `real Engine plans R4 leg ${leg}, got ${JSON.stringify(reply).slice(0, 200)}`);
                 const transfers = reply["transfers"] as Array<Record<string, unknown>>;
                 assert.equal(transfers.length, 1, `leg ${leg} retains exactly one transfer`);

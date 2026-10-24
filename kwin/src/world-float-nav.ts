@@ -30,7 +30,7 @@ export interface FloatNavEnv {
     readonly activeWindowId: () => string | null;
     readonly observe: () => WorldObservation | null;
     readonly liveRefById: (id: string) => object | null;
-    readonly submitCommand: (command: WorldCommand, label: string) => boolean;
+    readonly submitCommand: (command: WorldCommand, label: string, keepSubject?: boolean) => boolean;
     readonly invalidate: () => void;
     readonly scheduleDispatch: () => void;
 }
@@ -226,8 +226,9 @@ export function createFloatNav(env: FloatNavEnv): FloatNav {
             return "failed";
         }
         const ok = env.submitCommand(
-            { op: "focus-directional", win: w, direction, floatSubject: true },
+            { op: "focus-directional", win: w, direction },
             `focus-${direction}`,
+            true,
         );
         return ok ? "handled" : "failed";
     };

@@ -121,6 +121,18 @@ function setup(stored: { members: string[]; tile: string[] }): Harness {
                 return;
             }
             calls.push({ method, payload, callback });
+            if (method === "QueueWorldCommand") {
+                const queueBody = JSON.parse(payload) as Record<string, unknown>;
+                callback(JSON.stringify({ v: 2, outcome: "queued", gen: "gen-1",
+                    client: queueBody["client"], clientCmd: queueBody["clientCmd"], globalCmd: "1" }));
+            } else if (method === "TakeCommandResult") {
+                const stagedTake = (globalThis as Record<string, unknown>)["__takeResult"] as Record<string, unknown> | undefined;
+                if (stagedTake !== undefined) {
+                    delete (globalThis as Record<string, unknown>)["__takeResult"];
+                    callback(JSON.stringify({ v: 2, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
+                } else {
+                    callback(JSON.stringify({ v: 2, outcome: "pending", gen: "gen-1" }));
+                }            }
         },
         scheduleOnce: (delay, cb) => {
             timers.push({ delay, cb });
@@ -159,8 +171,12 @@ function discover(h: Harness): void {
     assert.ok(disc !== undefined);
     const req = (JSON.parse(disc.payload) as Record<string, unknown>)["req"];
     disc.callback(JSON.stringify({
-        v: 1, adapter: "test-adapter", gen: "gen-1", req,
+        v: 2, adapter: "broker-1", gen: "gen-1", req,
         obs: "0", rev: "0", ready: false, consumed: false,
+        gestureSettled: null,
+        operationSettled: [],
+        warpCursor: null,
+        presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
         scopes: [], workspaces: [], outputs: [], windows: [],
         transfers: [], effects: [], result: null,
     }));
@@ -186,6 +202,7 @@ function row(spec: RowSpec): Record<string, unknown> {
         frame_auth: spec.frame_auth, frame_hold: spec.frame_hold,
         member_auth: spec.member_auth, member_hold: spec.member_hold,
         frame_op: spec.frame_op ?? "",
+        clear_op: "",
         floating: spec.floating, float_origin: spec.float_origin,
     };
 }
@@ -195,26 +212,38 @@ function replyFor(h: Harness, mutate: (body: Record<string, unknown>) => void): 
     assert.ok(last !== undefined);
     const body = JSON.parse(last.payload) as Record<string, unknown>;
     const pending: Record<string, unknown> = {
-        v: 1, adapter: "test-adapter", gen: "gen-1",
-        req: body["req"], obs: body["obs"], rev: "1",
+        v: 2, adapter: "broker-1", gen: "gen-1",
+        req: body["source"], obs: "1", rev: "1",
         ready: true, consumed: false,
+        source: body["source"],
+        nativeInvalid: body["nativeInvalid"],
+        clock: "0",
+        gestureSettled: null,
+        operationSettled: [],
+        warpCursor: null,
+        presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
         scopes: [{ scope: "out/ws1", auth: "controlled", reason: "" }],
         workspaces: [], outputs: [], transfers: [], effects: [], result: null,
         windows: [],
     };
     mutate(pending);
-    last.callback(JSON.stringify(pending));
+    // Terminal results ride Take, never the capture lane: the actuator
+    // reply always carries an explicit null result (exact v2 shape).
+    const { result, ...snapshot } = pending;
+    if (result !== undefined && result !== null) {
+        (globalThis as Record<string, unknown>)["__takeResult"] = result;
+    }
+    last.callback(JSON.stringify({ ...snapshot, result: null }));
 }
 
 function reportFloating(h: Harness): Record<string, boolean> {
     const last = [...h.calls].reverse().find((c) => c.method === "DescribeWorld");
     assert.ok(last !== undefined);
     const body = JSON.parse(last.payload) as Record<string, unknown>;
+    const inner = body["report"] as Record<string, unknown>;
     const out: Record<string, boolean> = {};
-    for (const d of body["domains"] as Array<Record<string, unknown>>) {
-        for (const w of d["windows"] as Array<Record<string, unknown>>) {
-            out[w["win"] as string] = w["floating"] as boolean;
-        }
+    for (const w of inner["windows"] as Array<Record<string, unknown>>) {
+        out[w["win"] as string] = w["floating"] as boolean;
     }
     return out;
 }

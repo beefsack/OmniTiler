@@ -22,6 +22,7 @@ import { dirname, join, resolve } from "node:path";
 import { describe, it } from "node:test";
 
 import { WORLD_DEBOUNCE_MS, startWorldAdapterEntry } from "../src/world-entry";
+import { createMiniBroker, type MiniBroker } from "./world-wire-harness";
 
 function repoRoot(): string {
     let dir = resolve(process.cwd());
@@ -182,6 +183,7 @@ interface Timer {
 
 interface Harness {
     readonly bridge: WorldBridge;
+    readonly broker: MiniBroker;
     readonly wins: FakeWindow[];
     readonly desktops: FakeDesktop[];
     readonly screens: Array<{ name: string; geometry: Record<string, number> }>;
@@ -189,6 +191,7 @@ interface Harness {
     readonly calls: CapturedCall[];
     readonly answered: Set<number>;
     readonly replies: Map<number, string>;
+    readonly takeReplies: string[];
     readonly timers: Timer[];
     readonly logs: string[];
     readonly membershipWrites: string[];
@@ -248,6 +251,7 @@ async function makeHarness(): Promise<Harness> {
     }
     const harness: Harness = {
         bridge: WorldBridge.start(),
+        broker: createMiniBroker(),
         wins,
         desktops,
         screens,
@@ -255,6 +259,7 @@ async function makeHarness(): Promise<Harness> {
         calls: [],
         answered: new Set<number>(),
         replies: new Map<number, string>(),
+        takeReplies: [],
         timers: [],
         logs: [],
         membershipWrites: [],
@@ -286,10 +291,14 @@ async function makeHarness(): Promise<Harness> {
                 (harness.calls[index] as CapturedCall | undefined)?.method === "DescribeWorld",
                 "expected the targeted DescribeWorld dispatch to be unanswered",
             );
-            const reply = await harness.bridge.send(
-                (harness.calls[index] as CapturedCall).method,
-                (harness.calls[index] as CapturedCall).payload,
-            );
+            // Mini-broker stamping: the envelope becomes the exact core
+            // report the sole broker would dispatch (own namespace plus at
+            // most one queued command), and the core reply returns bound
+            // with a nulled terminal result.
+            const envelope = (harness.calls[index] as CapturedCall).payload;
+            const stamped = harness.broker.stampCapture(envelope);
+            const coreReply = await harness.bridge.send("DescribeWorld", stamped);
+            const reply = harness.broker.bindReply(coreReply, envelope);
             harness.answered.add(index);
             harness.replies.set(index, reply);
             (harness.calls[index] as CapturedCall).callback(reply);
@@ -393,10 +402,17 @@ async function makeHarness(): Promise<Harness> {
         owner: "owner-a",
         adapter: "test-adapter",
         callDbus: (_service, _path, _iface, method, payload, callback): void => {
-            if (method !== "DiscoverWorld" && method !== "DescribeWorld") {
+            if (method !== "DiscoverWorld" && method !== "DescribeWorld" && method !== "QueueWorldCommand" && method !== "TakeCommandResult") {
                 return;
             }
             harness.calls.push({ method, payload, callback });
+            if (method === "QueueWorldCommand") {
+                callback(harness.broker.answerQueue(payload));
+            } else if (method === "TakeCommandResult") {
+                const takeReply = harness.broker.answerTake(payload);
+                harness.takeReplies.push(takeReply);
+                callback(takeReply);
+            }
         },
         scheduleOnce: (delayMs, callback): (() => void) => {
             const timer: Timer = { delayMs, callback, cancelled: false, fired: false };
@@ -422,11 +438,20 @@ async function discover(h: Harness): Promise<void> {
     const discIndex = h.calls.findIndex((call) => call.method === "DiscoverWorld");
     assert.ok(discIndex >= 0, "entry discovers on start");
     const disc = h.calls[discIndex] as CapturedCall;
-    const reply = await h.bridge.send(disc.method, disc.payload);
+    const engineBootstrap = await h.bridge.send(disc.method, disc.payload);
+    const reply = h.broker.bindDiscovery(engineBootstrap);
     const parsed = JSON.parse(reply) as Record<string, unknown>;
     assert.equal(parsed["ready"], false, "bootstrap is not ready");
     disc.callback(reply);
     await h.settle();
+}
+
+function lastTakeResult(h: Harness): Record<string, unknown> {
+    const readys = h.takeReplies
+        .map((raw) => JSON.parse(raw) as Record<string, unknown>)
+        .filter((r) => r["outcome"] === "ready");
+    assert.ok(readys.length > 0, "at least one ready take result");
+    return (readys[readys.length - 1] as Record<string, unknown>)["result"] as Record<string, unknown>;
 }
 
 function lastReply(h: Harness): Record<string, unknown> {
@@ -436,10 +461,6 @@ function lastReply(h: Harness): Record<string, unknown> {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     assert.equal(parsed["outcome"] ?? "accepted", "accepted", `fresh reply accepted, got ${raw.slice(0, 200)}`);
     return parsed;
-}
-
-function payloadOf(h: Harness, index: number): Record<string, unknown> {
-    return JSON.parse((h.calls[index] as CapturedCall).payload) as Record<string, unknown>;
 }
 
 function transfersOf(reply: Record<string, unknown>): Array<Record<string, unknown>> {
@@ -513,19 +534,20 @@ describe("world aligned migration engine", () => {
         const h = await makeHarness();
         try {
             await discover(h);
-            // One more observation round so the report carries the
-            // bindings converged from the first accepted reply.
+            // One more observation round so the adapter snapshot converges
+            // the core-owned mapping from the first accepted reply.
             h.fire("desktopsChanged");
             await h.settle();
-            // The settled observation report replicates bindings per
-            // (output, native): ws-1 binds a distinct logical per output.
-            const settledPayload = payloadOf(h, h.calls.length - 1);
-            const bindings = settledPayload["bindings"] as Array<Record<string, string>>;
-            const ws1 = bindings.filter((b) => b["native"] === "ws-1");
+            // The core-owned workspace rows bind each native once per
+            // output with a distinct logical identity per cell (id IS the
+            // logical id in v2, no `logical` key).
+            const settled = lastReply(h);
+            const settledRows = settled["workspaces"] as Array<Record<string, string>>;
+            const ws1 = settledRows.filter((b) => b["bind"] === "ws-1");
             assert.equal(ws1.length, 2, "ws-1 binds once per output");
-            assert.notEqual(ws1[0]?.["logical"], ws1[1]?.["logical"], "distinct logical identity per cell");
-            const sourceLogicalBefore = (ws1.find((b) => b["out"] === "out-a") as Record<string, string>)["logical"];
-            assert.deepEqual(lastReply(h)["transfers"], [], "no transfers before the command");
+            assert.notEqual(ws1[0]?.["id"], ws1[1]?.["id"], "distinct logical identity per cell");
+            const sourceLogicalBefore = (ws1.find((b) => b["out"] === "out-a") as Record<string, string>)["id"];
+            assert.deepEqual(settled["transfers"], [], "no transfers before the command");
 
             // Migrate the active workspace (out-a/ws-1) right.
             h.handle.requestWorkspaceMigrate("right");
@@ -533,7 +555,7 @@ describe("world aligned migration engine", () => {
             const migrateCalls = h.calls
                 .map((call, index) => ({ call, index }))
                 .filter(({ call }) => {
-                    if (call.method !== "DescribeWorld") {
+                    if (call.method !== "QueueWorldCommand") {
                         return false;
                     }
                     try {
@@ -544,8 +566,14 @@ describe("world aligned migration engine", () => {
                     }
                 });
             assert.equal(migrateCalls.length, 1, "one directional migration command, never replayed");
-            const migrateReply = JSON.parse(h.replies.get(migrateCalls[0]?.index as number) as string) as Record<string, unknown>;
-            const result = migrateReply["result"] as Record<string, unknown>;
+            // The drained capture is the first DescribeWorld after the queue.
+            const drainIndex = h.calls.findIndex(
+                (call, at) => at > (migrateCalls[0]?.index as number) && call.method === "DescribeWorld",
+            );
+            assert.ok(drainIndex >= 0, "queued command drains on a fresh capture");
+            const migrateReply = JSON.parse(h.replies.get(drainIndex) as string) as Record<string, unknown>;
+            assert.equal(migrateReply["result"], null, "actuator lane never carries the terminal result");
+            const result = lastTakeResult(h);
             assert.equal(result["op"], "migrate-workspace");
             assert.equal(result["sourceOut"], "out-a");
             assert.equal(result["targetOut"], "out-b");
@@ -590,13 +618,12 @@ describe("world aligned migration engine", () => {
             // trailing while the source cell minted fresh.
             const finalReply = lastReply(h);
             assert.deepEqual(finalReply["transfers"], [], "all transfers settle");
-            const finalPayload = payloadOf(h, h.calls.length - 1);
-            const finalBindings = finalPayload["bindings"] as Array<Record<string, string>>;
-            const moved = finalBindings.find((b) => b["out"] === "out-b" && b["native"] === "ws-3");
-            assert.equal(moved?.["logical"], sourceLogicalBefore, "logical identity rides the move");
-            const sourceFresh = finalBindings.find((b) => b["out"] === "out-a" && b["native"] === "ws-1");
+            const finalRows = finalReply["workspaces"] as Array<Record<string, string>>;
+            const moved = finalRows.find((b) => b["out"] === "out-b" && b["bind"] === "ws-3");
+            assert.equal(moved?.["id"], sourceLogicalBefore, "logical identity rides the move");
+            const sourceFresh = finalRows.find((b) => b["out"] === "out-a" && b["bind"] === "ws-1");
             assert.ok(
-                sourceFresh !== undefined && sourceFresh["logical"] !== sourceLogicalBefore,
+                sourceFresh !== undefined && sourceFresh["id"] !== sourceLogicalBefore,
                 "emptied source cell mints fresh",
             );
             // No replay anywhere: one command, bounded native calls.

@@ -125,6 +125,18 @@ function setup(wins: FakeWindow[], currents: Map<string, string>, floatIntent = 
                 return;
             }
             calls.push({ method, payload, callback });
+            if (method === "QueueWorldCommand") {
+                const queueBody = JSON.parse(payload) as Record<string, unknown>;
+                callback(JSON.stringify({ v: 2, outcome: "queued", gen: "gen-1",
+                    client: queueBody["client"], clientCmd: queueBody["clientCmd"], globalCmd: "1" }));
+            } else if (method === "TakeCommandResult") {
+                const stagedTake = (globalThis as Record<string, unknown>)["__takeResult"] as Record<string, unknown> | undefined;
+                if (stagedTake !== undefined) {
+                    delete (globalThis as Record<string, unknown>)["__takeResult"];
+                    callback(JSON.stringify({ v: 2, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
+                } else {
+                    callback(JSON.stringify({ v: 2, outcome: "pending", gen: "gen-1" }));
+                }            }
         },
         scheduleOnce: (delay, cb) => {
             timers.push({ delay, cb });
@@ -156,17 +168,35 @@ function setup(wins: FakeWindow[], currents: Map<string, string>, floatIntent = 
         }
     };
     const replyNext = (mutate?: (body: Record<string, unknown>) => void): void => {
+        // File a benign command so the drained capture collects its
+        // terminal result requester-only via TakeCommandResult, then flush
+        // the debounce so the queue files and the fresh capture dispatches.
+        handle?.requestWorkspacePrevious();
+        runTimers();
         const last = [...calls].reverse().find((c) => c.method === "DescribeWorld");
         assert.ok(last !== undefined);
-        const body = JSON.parse((last as { payload: string }).payload) as Record<string, unknown>;
-        const pending = (globalThis as Record<string, unknown>)["__pendingReply"] as Record<string, unknown>;
-        pending["obs"] = body["obs"];
-        pending["req"] = body["req"];
-        pending["adapter"] = "test-adapter";
+        const envelope = JSON.parse((last as { payload: string }).payload) as Record<string, unknown>;
+        const staged = (globalThis as Record<string, unknown>)["__pendingReply"] as Record<string, unknown>;
+        takeRev.n += 1;
+        const accept: Record<string, unknown> = {
+            ...staged,
+            v: 2, adapter: "broker-1", gen: "gen-1",
+            req: envelope["source"], obs: String(takeRev.n), rev: String(takeRev.n),
+            ready: true, consumed: false,
+            source: envelope["source"], nativeInvalid: envelope["nativeInvalid"], clock: "1",
+            result: null,
+        };
         if (mutate !== undefined) {
-            mutate(pending);
+            mutate(accept);
         }
-        (last as { callback: (reply: unknown) => void }).callback(JSON.stringify(pending));
+        // The terminal result rides the take lane, never the capture.
+        // A mutate callback may stage one per reply via `takeResult`;
+        // otherwise a previously staged result stands.
+        if ("takeResult" in accept) {
+            (globalThis as Record<string, unknown>)["__takeResult"] = accept["takeResult"];
+            delete accept["takeResult"];
+        }
+        (last as { callback: (reply: unknown) => void }).callback(JSON.stringify(accept));
     };
     return { handle, calls, timers, renders, sentToOutput, currents, runTimers, replyNext };
 }
@@ -176,8 +206,26 @@ function discover(h: Harness): void {
     assert.ok(disc !== undefined);
     const req = (JSON.parse((disc as { payload: string }).payload) as Record<string, unknown>)["req"];
     (disc as { callback: (reply: unknown) => void }).callback(JSON.stringify({
-        v: 1, adapter: "test-adapter", gen: "gen-1", req,
+        v: 2, adapter: "broker-1", gen: "gen-1", req,
         obs: "0", rev: "0", ready: false, consumed: false,
+        gestureSettled: null,
+        operationSettled: [],
+        warpCursor: null,
+        presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
+        scopes: [], workspaces: [], outputs: [], windows: [],
+        transfers: [], effects: [], result: null,
+    }));
+    // Settle the discovery-triggered auto capture so the command filed by
+    // replyNext drains on a fresh flight instead of queueing behind it.
+    const auto = [...h.calls].reverse().find((c) => c.method === "DescribeWorld");
+    assert.ok(auto !== undefined);
+    const autoEnv = JSON.parse((auto as { payload: string }).payload) as Record<string, unknown>;
+    (auto as { callback: (reply: unknown) => void }).callback(JSON.stringify({
+        v: 2, adapter: "broker-1", gen: "gen-1", req: autoEnv["source"], obs: "1", rev: "0",
+        ready: true, consumed: false,
+        source: autoEnv["source"], nativeInvalid: autoEnv["nativeInvalid"], clock: "1",
+        gestureSettled: null, operationSettled: [], warpCursor: null,
+        presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
         scopes: [], workspaces: [], outputs: [], windows: [],
         transfers: [], effects: [], result: null,
     }));
@@ -187,6 +235,99 @@ function stageFixture(name: string): void {
     (globalThis as Record<string, unknown>)["__pendingReply"] = loadFixture(name);
 }
 
+// Take-revision counter: every staged accept must advance the revision or
+// the freshness gate holds it as stale.
+const takeRev = { n: 10 };
+
+const TAKE_RESULTS: Record<string, Record<string, unknown>> = {
+    "float": {
+        "op": "toggle-float",
+        "win": "win-a",
+        "rect": [
+            162,
+            122,
+            475,
+            355
+        ]
+    },
+    "group": {
+        "op": "active-group",
+        "rev": "1",
+        "group": "grp-win-a-r0",
+        "leaf": "leaf-win-a",
+        "win": "win-a",
+        "bounds": [
+            4,
+            4,
+            792,
+            592
+        ],
+        "members": [
+            {
+                "leaf": "leaf-win-b",
+                "win": "win-b",
+                "rect": [
+                    4,
+                    4,
+                    392,
+                    592
+                ]
+            },
+            {
+                "leaf": "leaf-win-a",
+                "win": "win-a",
+                "rect": [
+                    404,
+                    4,
+                    392,
+                    592
+                ]
+            }
+        ]
+    },
+    "migrate": {
+        "op": "migrate-workspace",
+        "direction": "right",
+        "sourceOut": "out-a",
+        "sourceWs": "ws-1",
+        "targetOut": "out-b",
+        "targetWs": "ws-1",
+        "members": [
+            "win-a"
+        ],
+        "floats": 0
+    },
+    "preview": {
+        "op": "drag-preview",
+        "rev": "1",
+        "domainOut": "out",
+        "domainWs": "ws",
+        "sourceOut": "out",
+        "sourceWs": "ws",
+        "rect": [
+            4,
+            4,
+            392,
+            592
+        ],
+        "hover": {
+            "domainOut": "out",
+            "domainWs": "ws",
+            "leaf": "leaf-win-a",
+            "win": "win-a",
+            "rev": "1",
+            "prior": null,
+            "priorOut": "out",
+            "priorWs": "ws"
+        },
+        "win": "win-b"
+    }
+};
+
+function stageTake(name: string): void {
+    (globalThis as Record<string, unknown>)["__takeResult"] = TAKE_RESULTS[name];
+}
+
 describe("world command result entry", () => {
     it("renders nothing for a preview result with no gesture in flight", () => {
         const out = { name: "out" };
@@ -194,6 +335,7 @@ describe("world command result entry", () => {
         const h = setup([makeWindow("win-a", out, ws), makeWindow("win-b", out, ws)], new Map([["out", "ws"]]));
         discover(h);
         stageFixture("reply-preview.json");
+        stageTake("preview");
         h.replyNext();
         assert.ok(!h.renders.some((r) => r.method === "SetDragTargetPreview"), "no gesture means no overlay");
         h.handle?.stop();
@@ -207,6 +349,7 @@ describe("world command result entry", () => {
         const h = setup([makeWindow("win-a", out, ws), makeWindow("win-b", out, ws)], new Map([["out", "ws"]]));
         discover(h);
         stageFixture("reply-group.json");
+        stageTake("group");
         h.replyNext();
         const sets = h.renders.filter((r) => r.method === "SetGroupHighlight");
         assert.equal(sets.length, 1);
@@ -236,6 +379,15 @@ describe("world command result entry", () => {
         const h = setup([makeWindow("win-a", outA, wa1), makeWindow("win-b", outB, wb1)], currents);
         discover(h);
         stageFixture("reply-migrate.json");
+        // Stage the creation-flow binding proof for the migrated unit
+        // (ws-1 to native wa1 on out-b): the live broker leaves it unbound
+        // until the adapter proves the desktop.
+        for (const ws of ((globalThis as Record<string, unknown>)["__pendingReply"] as Record<string, unknown>)["workspaces"] as Array<Record<string, unknown>>) {
+            if (ws["id"] === "ws-1" && ws["out"] === "out-b") {
+                ws["bind"] = "wa1";
+            }
+        }
+        stageTake("migrate");
         h.replyNext();
         assert.ok(h.sentToOutput.some((c) => c === "win-a->out-b"), "member arrives natively");
         assert.equal(currents.get("out-b"), "wa1", "target view follows");
@@ -244,13 +396,25 @@ describe("world command result entry", () => {
         h.runTimers();
         const last = [...h.calls].reverse().find((c) => c.method === "DescribeWorld");
         if (last !== undefined) {
-            const body = JSON.parse((last as { payload: string }).payload) as Record<string, unknown>;
+            const repBody = JSON.parse((last as { payload: string }).payload) as Record<string, unknown>;
             const pending = loadFixture("reply-migrate.json");
-            pending["obs"] = body["obs"];
-            pending["req"] = body["req"];
-            pending["adapter"] = "test-adapter";
-            pending["rev"] = "3";
+            takeRev.n += 1;
+            pending["req"] = repBody["source"];
+            pending["obs"] = String(takeRev.n);
+            pending["rev"] = String(takeRev.n);
+            pending["adapter"] = "broker-1";
+            pending["source"] = repBody["source"];
+            pending["nativeInvalid"] = repBody["nativeInvalid"];
+            pending["result"] = null;
+            (globalThis as Record<string, unknown>)["__takeResult"] = {
+                op: "migrate-workspace", direction: "right",
+                sourceOut: "out-a", sourceWs: "ws-1", targetOut: "out-b", targetWs: "ws-1",
+                members: ["win-a"], floats: 0,
+            };
             (last as { callback: (reply: unknown) => void }).callback(JSON.stringify(pending));
+            // Re-stage: the repeat dispatch drains observation-only. Take a
+            // pending collection path instead of reusing the result.
+            delete (globalThis as Record<string, unknown>)["__takeResult"];
         }
         assert.equal(h.sentToOutput.length, sends, "no repeated ambiguous moves");
         h.handle?.stop();
@@ -263,8 +427,9 @@ describe("world command result entry", () => {
         const h = setup([makeWindow("win-a", out, ws), makeWindow("win-b", out, ws)], new Map([["out", "ws"]]));
         discover(h);
         stageFixture("reply-group.json");
-        h.replyNext((pending) => {
-            pending["result"] = { op: "no-group", reason: "no-parent-group", rev: null };
+        h.replyNext((accept) => {
+            (globalThis as Record<string, unknown>)["__takeResult"] = { op: "no-group", reason: "no-parent-group", rev: null };
+            void accept;
         });
         const clears = h.renders.filter((r) => r.method === "ClearGroupHighlight");
         assert.ok(clears.length >= 1, "no-group clears the renderer");
@@ -281,26 +446,32 @@ describe("world command result entry", () => {
         discover(h);
         // Float first: the accepted untouched row converges membership.
         stageFixture("reply-float.json");
+        stageTake("float");
         h.replyNext();
         // Unfloat through the production shortcut: the command carries the
         // live frame, and the accepted result (no placement rect) records
         // the explicit tile override.
         h.handle?.requestFloat();
         h.runTimers();
-        const sent = [...h.calls].reverse().find((c) => c.method === "DescribeWorld");
+        const sent = [...h.calls].reverse().find((c) => c.method === "QueueWorldCommand");
         assert.ok(sent !== undefined);
         const cmd = (JSON.parse((sent as { payload: string }).payload) as Record<string, unknown>)["command"] as Record<string, unknown>;
         assert.equal(cmd["op"], "operation");
         const inner = cmd["command"] as Record<string, unknown>;
         assert.equal(inner["op"], "toggle-float");
         assert.ok(Array.isArray(inner["rect"]), "unfloat carries the live frame");
-        const body = JSON.parse((sent as { payload: string }).payload) as Record<string, unknown>;
+        const capture = [...h.calls].reverse().find((c) => c.method === "DescribeWorld");
+        assert.ok(capture !== undefined);
+        const envelope = JSON.parse((capture as { payload: string }).payload) as Record<string, unknown>;
         const unfloat = loadFixture("reply-float.json");
-        unfloat["obs"] = body["obs"];
-        unfloat["req"] = body["req"];
-        unfloat["adapter"] = "test-adapter";
-        unfloat["rev"] = "3";
-        (unfloat["result"] as Record<string, unknown>) = { op: "toggle-float", win: "win-a", rect: null };
+        takeRev.n += 1;
+        unfloat["req"] = envelope["source"];
+        unfloat["obs"] = String(takeRev.n);
+        unfloat["rev"] = String(takeRev.n);
+        unfloat["source"] = envelope["source"];
+        unfloat["nativeInvalid"] = envelope["nativeInvalid"];
+        unfloat["adapter"] = "broker-1";
+        (globalThis as Record<string, unknown>)["__takeResult"] = { op: "toggle-float", win: "win-a", rect: null };
         // A real unfloat reply re-admits the window tiled: the untouched
         // exception row is gone, so membership leaves the float set while
         // the tile override records.
@@ -312,11 +483,12 @@ describe("world command result entry", () => {
                 frame_auth: "controlled", frame_hold: "",
                 member_auth: "controlled", member_hold: "",
                 frame_op: "",
+                clear_op: "",
                 floating: false, float_origin: "",
             },
             ...((unfloat["windows"] as Array<Record<string, unknown>>).filter((w) => w["win"] !== "win-a")),
         ];
-        (sent as { callback: (reply: unknown) => void }).callback(JSON.stringify(unfloat));
+        (capture as unknown as { callback: (reply: unknown) => void }).callback(JSON.stringify(unfloat));
 
         const intentCalls = h.calls.filter((c) => c.method === "WriteFloatIntent");
         assert.ok(intentCalls.length >= 1, "settled change persists");

@@ -36,7 +36,7 @@ function makeObservation(world: FakeWorld): WorldObservation {
                 win: "win-a", ref: { id: "win-a" }, out: "out", ws: "ws",
                 rect: { ...rect },
                 floating: false, fitExcluded: false, fullscreen: false,
-                maximized: false, sticky: false, fixedAuto: false, fixedSuppress: false,
+                maximized: false, sticky: false, fixedAuto: false, fixedSuppress: false, nativeWs: null,
                 hints: { minW: null, minH: null, maxW: null, maxH: null },
                 minimized: false,
             }],
@@ -47,6 +47,11 @@ function makeObservation(world: FakeWorld): WorldObservation {
         complete: true,
         gesture: false,
         focusedGlobal: "",
+        screens: [], windowFacts: [], views: [], closed: [], hostOwned: false, equalCount: true, native: [],
+        cursor: null, actionForeground: null, actionCached: null, actionOutputs: [],
+        focusFollowsCursor: false, cursorWarp: false,
+        switchTarget: "focused-output", freshPlacement: "focused-output-last-focused",
+        presentation: { foreground: "", minimized: false, maximized: false, fullscreen: false, cloaked: false, hiddenWorkspace: false, shell: false, frame: null, borderEnabled: false, underlayEnabled: false, borderGap: 0, borderWidth: 0, underlayExtension: 0, chordHeld: false, moveWindow: "", paused: false, pagerOrder: [], pagerFrames: [] },
     };
 }
 
@@ -91,13 +96,20 @@ function replyFor(frame: [number, number, number, number]): WorldReply {
     return {
         adapter: "adapter-1", gen: "gen-1", req: "req-1", obs: "1", rev: "1",
         ready: true, consumed: false,
+        source: "req-1",
+        nativeInvalid: "1",
+        clock: "0",
+        gestureSettled: null,
+        operationSettled: [],
+        warpCursor: null,
+        presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
         scopes: [], workspaces: [], outputs: [],
         windows: [{
             win: "win-a", out: "out", ws: "ws",
             alloc: frame, frame,
             frame_auth: "controlled", frame_hold: "",
             member_auth: "untouched", member_hold: "",
-            frame_op: "", floating: false, float_origin: "",
+            frame_op: "", clear_op: "", floating: false, float_origin: "",
         }],
         transfers: [], effects: [], result: null,
     } as unknown as WorldReply;
@@ -105,8 +117,8 @@ function replyFor(frame: [number, number, number, number]): WorldReply {
 
 function freshState(): WorldAdapterState {
     const state = new WorldAdapterState("adapter-1", "owner-a");
-    state.onDiscovery("gen-1");
-    while (state.currentObs !== "1") {
+    state.onDiscovery("gen-1", "broker-1");
+    while (state.currentInvalid !== "1") {
         state.invalidate();
     }
     return state;
@@ -122,9 +134,9 @@ describe("world clamp lifetime", () => {
         const world = makeWorld([["win-a", { x: 0, y: 0, w: 100, h: 100 }]]);
         const state = freshState();
         for (let i = 0; i < 4; i += 1) {
-            const outA = applyWorldReply({ ...makeEnv(state, world), observation: makeObservation(world), reply: replyFor(A) });
+            const outA = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null, ...makeEnv(state, world), observation: makeObservation(world), reply: replyFor(A) });
             assert.equal(outA.geometryWrites, 1, `A leg ${i} still writes`);
-            const outB = applyWorldReply({ ...makeEnv(state, world), observation: makeObservation(world), reply: replyFor(B) });
+            const outB = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null, ...makeEnv(state, world), observation: makeObservation(world), reply: replyFor(B) });
             assert.equal(outB.geometryWrites, 1, `B leg ${i} still writes`);
         }
         assert.equal(world.sets.length, 8, "four alternations write every leg");
@@ -152,10 +164,10 @@ describe("world clamp lifetime", () => {
             }
         };
         for (let i = 0; i < 4; i += 1) {
-            const outA = applyWorldReply({ ...env, observation: makeObservation(world), reply: replyFor(A) });
+            const outA = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null, ...env, observation: makeObservation(world), reply: replyFor(A) });
             assert.equal(outA.geometryWrites, 1, `A leg ${i} still writes`);
             converge();
-            const outB = applyWorldReply({ ...env, observation: makeObservation(world), reply: replyFor(B) });
+            const outB = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null, ...env, observation: makeObservation(world), reply: replyFor(B) });
             assert.equal(outB.geometryWrites, 1, `B leg ${i} still writes`);
             converge();
         }
@@ -180,13 +192,13 @@ describe("world clamp lifetime", () => {
         };
         let bWrites = 0;
         for (let i = 0; i < 4; i += 1) {
-            const outA = applyWorldReply({ ...env, observation: makeObservation(world), reply: replyFor(A) });
+            const outA = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null, ...env, observation: makeObservation(world), reply: replyFor(A) });
             if (i === 0) {
                 assert.equal(outA.geometryWrites, 1, "first A leg moves to A");
             } else {
                 assert.equal(outA.geometryWrites, 0, `A leg ${i} already converged`);
             }
-            const outB = applyWorldReply({ ...env, observation: makeObservation(world), reply: replyFor(B) });
+            const outB = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null, ...env, observation: makeObservation(world), reply: replyFor(B) });
             bWrites += outB.geometryWrites;
             if (i < 3) {
                 assert.equal(outB.geometryWrites, 1, `B attempt ${i} still writes`);
@@ -203,10 +215,10 @@ describe("world clamp lifetime", () => {
         const state = freshState();
         const env = makeEnv(state, world, () => false);
         for (let i = 0; i < 3; i += 1) {
-            const out = applyWorldReply({ ...env, observation: makeObservation(world), reply: replyFor(A) });
+            const out = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null, ...env, observation: makeObservation(world), reply: replyFor(A) });
             assert.equal(out.geometryWrites, 1, `clamped attempt ${i} still writes`);
         }
-        const held = applyWorldReply({ ...env, observation: makeObservation(world), reply: replyFor(A) });
+        const held = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null, ...env, observation: makeObservation(world), reply: replyFor(A) });
         assert.equal(held.geometryWrites, 0, "spent budget writes nothing more");
         assert.ok(held.held >= 1, "spent budget holds narrowly");
     });

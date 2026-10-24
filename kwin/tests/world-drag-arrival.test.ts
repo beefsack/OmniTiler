@@ -16,11 +16,24 @@ function arrivalReply(): WorldReply {
     return {
         adapter: "adapter-1", gen: "gen-1", req: "req-9", obs: "9", rev: "9",
         ready: true, consumed: false,
+        source: "req-1",
+        nativeInvalid: "1",
+        clock: "0",
+        gestureSettled: null,
+        operationSettled: [],
+        warpCursor: null,
+        presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
         scopes: [
             { scope: "out-a/wa1", auth: "controlled", reason: "" },
             { scope: "out-b/wb1", auth: "controlled", reason: "" },
         ],
-        workspaces: [],
+        // Bound rows the broker always ships alongside transfers (fused
+        // here, matching the fake natives): adapter-side resolution never
+        // falls back to native string equality.
+        workspaces: [
+            { id: "wa1", out: "out-a", bind: "wa1", scope: "out-a", order: 0, mode: "tiled", exist: true, hold: "" },
+            { id: "wb1", out: "out-b", bind: "wb1", scope: "out-b", order: 0, mode: "tiled", exist: true, hold: "" },
+        ],
         outputs: [],
         windows: [
             {
@@ -29,6 +42,7 @@ function arrivalReply(): WorldReply {
                 frame_auth: "controlled", frame_hold: "",
                 member_auth: "controlled", member_hold: "",
                 frame_op: "",
+                clear_op: "",
                 floating: false, float_origin: "",
             },
             {
@@ -37,6 +51,7 @@ function arrivalReply(): WorldReply {
                 frame_auth: "controlled", frame_hold: "",
                 member_auth: "controlled", member_hold: "",
                 frame_op: "",
+                clear_op: "",
                 floating: false, float_origin: "",
             },
         ],
@@ -65,7 +80,7 @@ function makeObservation(world: FakeWorld): WorldObservation {
             win: id, ref: { id }, out: home.out, ws: home.ws,
             rect: { ...rect },
             floating: false, fitExcluded: false, fullscreen: false,
-            maximized: false, sticky: false, fixedAuto: false, fixedSuppress: false,
+            maximized: false, sticky: false, fixedAuto: false, fixedSuppress: false, nativeWs: null,
             hints: { minW: null, minH: null, maxW: null, maxH: null },
             minimized: false,
         };
@@ -96,6 +111,11 @@ function makeObservation(world: FakeWorld): WorldObservation {
         complete: true,
         gesture: false,
         focusedGlobal: "",
+        screens: [], windowFacts: [], views: [], closed: [], hostOwned: false, equalCount: true, native: [],
+        cursor: null, actionForeground: null, actionCached: null, actionOutputs: [],
+        focusFollowsCursor: false, cursorWarp: false,
+        switchTarget: "focused-output", freshPlacement: "focused-output-last-focused",
+        presentation: { foreground: "", minimized: false, maximized: false, fullscreen: false, cloaked: false, hiddenWorkspace: false, shell: false, frame: null, borderEnabled: false, underlayEnabled: false, borderGap: 0, borderWidth: 0, underlayExtension: 0, chordHeld: false, moveWindow: "", paused: false, pagerOrder: [], pagerFrames: [] },
     };
 }
 
@@ -150,8 +170,8 @@ function makeEnv(state: WorldAdapterState, world: FakeWorld) {
 
 function freshState(reply: WorldReply): WorldAdapterState {
     const state = new WorldAdapterState("adapter-1", "owner-a");
-    state.onDiscovery("gen-1");
-    while (state.currentObs !== reply.obs) {
+    state.onDiscovery("gen-1", "broker-1");
+    while (state.currentInvalid !== reply.obs) {
         state.invalidate();
     }
     return state;
@@ -173,7 +193,7 @@ describe("world drag arrival", () => {
             sets: [], membershipCalls: [], outputCalls: [],
         };
         const state = freshState(reply);
-        const arrived = applyWorldReply({
+        const arrived = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null,
             ...makeEnv(state, world),
             observation: makeObservation(world),
             reply,
@@ -188,7 +208,7 @@ describe("world drag arrival", () => {
         // After arrival proof, geometry converges with no new membership.
         const outCalls = world.outputCalls.length;
         const memberCalls = world.membershipCalls.length;
-        const converged = applyWorldReply({
+        const converged = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null,
             ...makeEnv(state, world),
             observation: makeObservation(world),
             reply,

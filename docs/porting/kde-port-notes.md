@@ -2,12 +2,16 @@
 
 How the KDE adapter moves to the strict v2 contract in
 [world-adapter-guide](world-adapter-guide.md). Status below is
-implemented vs approved-not-implemented vs open as of `01a73798`.
-Rechecked at `a0f54105`: the v1/service/presentation gaps below remain.
+implemented vs approved-not-implemented vs open. The v1 inventory below
+describes the delivered baseline, not an accepted v2 KDE runtime.
 The staged implementation and parked boundaries are tracked in
 [KDE world-v2 port](../changes/kde-world-v2-port.md). Stages 0/1 are delivered
 at the core-only boundary; KDE runtime adoption and native acceptance remain
-outstanding. Later stages have not started.
+outstanding. Stage 2 has a paired v2 draft but is parked: six offline
+integration cases, event-driven external-command delivery and native backing
+correlation remain unresolved. The draft pulls in only the v2 observation,
+token and target-resolution pieces needed by the wire cutover; no stage 3
+or native acceptance is claimed.
 
 KWin source is read from the local sibling clone at the documented
 `v6.7.4` pin; port work must not web-fetch KWin sources. Mechanical
@@ -48,7 +52,30 @@ API checks use `git show <pin>:<path>` and `git grep <pattern>
   removes them and moves JS and Rust together to the v2 wire, with no
   shims and no compatibility route.
 
-## Current KDE inventory (port or delete)
+### Stage 2 draft boundary (not accepted)
+
+- The paired implementation removes the stale alignment option and v1 discovery,
+  and introduces sole-broker capture, sender-bound queue/take and presentation
+  query routes. Capture binds generation, producer lifetime, source nonce and
+  native invalidation watermark; core ordering and the monotonic clock remain
+  service-owned. Queue and take also bind generation.
+- Capture replies carry native work but no terminal command result; take serves
+  only the authenticated issuing sender. Presentation queries contain neither
+  one-shot work nor write-operation tokens. Lost queue/take replies retain their
+  identity rather than minting duplicate commands.
+- This is not a deployable cutover yet: KWin JS cannot hear `WorldWake` through
+  `callDBus`; external commands currently await another native event. No idle
+  polling workaround is selected. See [B1](../changes/kde-world-v2-port.md#b1-external-command-wake-delivery-parked).
+- Actual v2 reply fixtures now come from the Rust `world_wire_fixtures` example;
+  retired `logical` workspace fields refuse. The entry-only TS engine harness
+  does not prove broker authentication/replay; Rust flow/private-bus tests do.
+- Logical targets resolve only through accepted output-specific native bindings.
+  Unbound migration/creation targets hold, never native-id equality or ordinal
+  guesses. [N3/N4](../changes/kde-world-v2-port.md#n3-empty-native-creation-versus-an-unbound-logical-spare-parked)
+  remain unresolved. Raw attempt production is still pending; omission is not
+  settlement proof. Do not run this draft live as accepted behavior.
+
+## Delivered-baseline inventory (port or delete)
 
 JS adapter (`kwin/src/`):
 

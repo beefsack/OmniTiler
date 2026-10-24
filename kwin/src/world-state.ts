@@ -1,10 +1,18 @@
-// World adapter lifetime state (D1-D5): generation binding, observation /
-// request / command sequencing, freshness acceptance, dirty/ack retention,
-// creation one-flight, and event-driven recovery. No KWin or D-Bus imports:
-// the entry drives this with captured observations and transport results.
+// World adapter lifetime state (broker era): generation/broker binding,
+// transport fences, and dirty/ack retention. The sole broker owns ALL
+// sequencing (obs/reqSeq/cmdSeq/cmdSeq) and its own clock: this adapter
+// owns only two transport fences - the per-capture source correlation and
+// the local native-invalidation watermark - plus the queue-client command
+// counter. No KWin or D-Bus imports: the entry drives this with captured
+// observations and transport results.
 
 import { compareU64, incrementU64, isCanonicalU64 } from "./world-seq";
-import { isWorldRejection, type WorldCommand, type WorldReply } from "./world-report";
+import {
+    isWorldRejection,
+    type WorldCommand,
+    type WorldReply,
+    type WorldReplyResult,
+} from "./world-report";
 
 export type AttemptOutcome =
     | "unattempted"
@@ -38,69 +46,101 @@ export interface PendingCreation {
     knownBefore: string[];
 }
 
+// One queued user intent awaiting the queue-then-capture route. keepSubject
+// is LOCAL routing only (float-origin fallback keeps its press-time subject
+// instead of rebinding to the current native focus): it never rides the
+// wire, where every focus-directional is exactly {op,win,direction}.
+export interface QueuedIntent {
+    command: WorldCommand;
+    keepSubject: boolean;
+}
+
+export interface CaptureFlight {
+    source: string;
+    watermark: string;
+    // Queue-client command the fresh capture drains (FIFO head), if any.
+    // Terminal results arrive requester-only via TakeCommandResult, never
+    // in the capture reply.
+    clientCmd: string | null;
+}
+
 export class WorldAdapterState {
     readonly adapter: string;
     readonly owner: string;
+    // Queue-client namespace (stable per evaluation; the sender binds the
+    // D-Bus unique name server-side).
+    readonly client: string;
     boundGen: string | null = null;
-    // CURRENT local watermark: advanced synchronously on every invalidation,
-    // including during flight and gestures, before any debounce.
-    currentObs = "0";
-    lastAcceptedObs = "0";
-    lastAcceptedRev = "0";
-    lastAcceptedReq = "0";
+    // Broker incarnation from authenticated discovery (the reply adapter):
+    // authority stays with the broker; callbacks bind it before setters.
+    brokerIncarnation: string | null = null;
+    // LOCAL native-invalidation watermark (canonical u64): advanced
+    // synchronously on every native invalidation, including during flight
+    // and gestures, before any debounce. A pure transport fence echoed in
+    // the capture envelope and bound in the response; never a sequence.
+    currentInvalid = "0";
+    // Broker dispatch-clock reading (foreign epoch milliseconds) from the
+    // last capture response. Raw native attempt stamps must fit this epoch;
+    // "0" means unreported and never suppresses.
+    lastClock = "0";
+    nextClientCmd = "1";
+    inFlight: CaptureFlight | null = null;
     hasAccepted = false;
-    // Distinct high-watermarks: request seq per dispatch, command seq per
-    // explicit user command. Never conflated.
-    nextReqSeq = "1";
-    nextCmdSeq = "1";
-    cmdHighwater: string | null = null;
-    inFlightReq: { reqSeq: string; obs: string; cmdSeq: string | null; reqId: string } | null = null;
+    lastAcceptedRev = "0";
     dirty = false;
     observationOnlyCatchup = false;
-    // Dirty ack retention: closes and feedback survive until an accepted
-    // reply acknowledges them.
+    // Dirty ack retention: explicit closes survive until an accepted reply
+    // acknowledges them. (Old verdict `feedback` transport is deleted: no
+    // verdicts ride the wire, so only closes retain.)
     pendingClosed: string[] = [];
-    pendingFeedback: AttemptFeedback[] = [];
     // Transfer/view attempts keyed by operation id.
     attempts = new Map<string, PendingAttempt>();
     possiblyExecuted = new Set<string>();
     spentEffects = new Set<string>();
     // Explicit retained float placements spent per stable core property
-    // operation id (`frame_op`, `op-<cmdSeq>`): the row token places exactly
-    // once, never again for the same operation across duplicate or unrelated
-    // later replies. Rows without the token (ordinary floats) never place.
+    // operation id (`frame_op`): the row token places exactly once, never
+    // again for the same operation across duplicate or unrelated later
+    // replies. Rows without the token (ordinary floats) never place.
+    // `clear_op` spends exactly once the same way.
     floatSpent = new Set<string>();
+    clearSpent = new Set<string>();
     // Last proven-applied native targets, for external-input causality: a
     // repeat of the SAME operation after the subject demonstrably left the
     // applied target proves newer external input (supersede), while a
     // distinct operation id is always a fresh actuation. Operation ids are
-    // never reused (`op-<cmdSeq>` monotonic), so same-op means same intent.
+    // never reused, so same-op means same intent.
     appliedWindowTarget = new Map<string, { op: string; out: string; ws: string }>();
     appliedViewTarget = new Map<string, { op: string; ws: string }>();
     pendingCreations: PendingCreation[] = [];
-    // Bounded per-context clamp reassertions (window+target+constraints).
+    // Bounded per-context clamp reassertions.
     clampAttempts = new Map<string, number>();
     // Last accepted desired snapshot for per-property diffing.
     lastReply: WorldReply | null = null;
+    // Last terminal take result, for entry routing (drag-preview,
+    // toggle-float, group highlight consume take results, never the
+    // capture reply).
+    lastTakeResult: WorldReplyResult | null = null;
 
     constructor(adapter: string, owner: string) {
         this.adapter = adapter;
         this.owner = owner;
+        this.client = adapter;
     }
 
-    // Synchronous invalidation: advance CURRENT obs BEFORE debounce/dispatch,
-    // even with a request in flight or a gesture barrier active.
+    // Synchronous invalidation: advance the LOCAL watermark BEFORE
+    // debounce/dispatch, even with a request in flight or a gesture barrier
+    // active. Never resets, never aliases a sequence.
     invalidate(): string {
-        const next = incrementU64(this.currentObs);
+        const next = incrementU64(this.currentInvalid);
         if (next === null) {
             // Counter exhaustion: hold at max; the next discovery bootstraps
-            // a new generation rather than wrapping in place.
+            // a fresh generation rather than wrapping in place.
             this.dirty = true;
-            return this.currentObs;
+            return this.currentInvalid;
         }
-        this.currentObs = next;
+        this.currentInvalid = next;
         this.dirty = true;
-        return this.currentObs;
+        return this.currentInvalid;
     }
 
     noteClosed(id: string): void {
@@ -110,13 +150,11 @@ export class WorldAdapterState {
         this.dirty = true;
     }
 
+    // Local attempt-outcome bookkeeping (possibly-executed gating for
+    // mid-apply causality). Never a wire transport: no verdicts ride
+    // captures, and raw attempt lanes stay absent until truthful producers
+    // exist (absent backfills [] server-side).
     noteFeedback(feedback: AttemptFeedback): void {
-        const at = this.pendingFeedback.findIndex((f) => f.op === feedback.op);
-        if (at >= 0) {
-            this.pendingFeedback[at] = feedback;
-        } else {
-            this.pendingFeedback.push(feedback);
-        }
         if (feedback.outcome === "possibly-executed") {
             this.possiblyExecuted.add(feedback.op);
         } else if (feedback.outcome === "applied" || feedback.outcome === "refused-proven") {
@@ -130,7 +168,7 @@ export class WorldAdapterState {
     armPossiblyExecuted(op: string, kind: AttemptFeedback["kind"], target: string): void {
         this.attempts.set(op, { op, kind, target });
         this.possiblyExecuted.add(op);
-        this.noteFeedback({ op, kind, outcome: "possibly-executed", hold: "" });
+        this.dirty = true;
     }
 
     isHeldAmbiguous(op: string): boolean {
@@ -138,14 +176,14 @@ export class WorldAdapterState {
     }
 
     settleAttempt(op: string, outcome: AttemptOutcome, hold = ""): void {
-        const known = this.attempts.get(op);
-        this.noteFeedback({ op, kind: known?.kind ?? "transfer", outcome, hold });
+        void hold;
         if (outcome === "applied" || outcome === "refused-proven" || outcome === "superseded-external") {
             this.possiblyExecuted.delete(op);
             if (outcome !== "applied") {
                 this.attempts.delete(op);
             }
         }
+        this.dirty = true;
     }
 
     markEffectSpent(id: string): boolean {
@@ -159,12 +197,24 @@ export class WorldAdapterState {
     // Spend one explicit retained float placement before its possible
     // setter. Returns false when this exact property operation already
     // placed (never double-place, including across duplicate replies and
-    // unrelated later replies still carrying the retained token).
+    // unrelated later replies still carrying the retained token). Rows
+    // without the token (ordinary floats) never place.
     markFloatSpent(key: string): boolean {
         if (this.floatSpent.has(key)) {
             return false;
         }
         this.floatSpent.add(key);
+        return true;
+    }
+
+    // Spend one explicit retained clear operation exactly once, like
+    // frame_op above. `clear_op` carries `op-<cmdSeq>`-shaped tokens for
+    // directional maximize-clear verdicts.
+    markClearSpent(key: string): boolean {
+        if (this.clearSpent.has(key)) {
+            return false;
+        }
+        this.clearSpent.add(key);
         return true;
     }
 
@@ -174,6 +224,12 @@ export class WorldAdapterState {
 
     noteAppliedViewTarget(out: string, op: string, ws: string): void {
         this.appliedViewTarget.set(out, { op, ws });
+    }
+
+    recordClock(clock: string): void {
+        if (isCanonicalU64(clock)) {
+            this.lastClock = clock;
+        }
     }
 
     creationFor(logical: string): PendingCreation | null {
@@ -296,29 +352,42 @@ export class WorldAdapterState {
         this.clampAttempts.delete(key);
     }
 
-    nextRequestId(reqSeq: string): string {
-        return `req-${reqSeq}`;
+    nextSourceId(counter: string): string {
+        return `src-${counter}`;
     }
 
-    // Freshness acceptance: only a bound-generation, ready, newer-rev reply
-    // whose adapter matches this adapter, whose req names the current
-    // flight requestId, and whose obs equals the CURRENT watermark applies
-    // setters. Anything else is observation-only catchup with no command
-    // replay and no setters. Single-flight alone never authenticates: a
-    // delayed arbitrary reply (different adapter or wrong req, even with the
-    // same gen/obs/newer rev) applies nothing and acks nothing.
-    acceptReply(reply: WorldReply, dispatchObs: string): { applied: boolean; reason: string } {
+    // Mint one queue-client command id, or null on exhaustion (the caller
+    // fails closed and re-establishes after re-discovery).
+    mintClientCmd(): string | null {
+        const id = this.nextClientCmd;
+        const next = incrementU64(this.nextClientCmd);
+        if (next === null) {
+            return null;
+        }
+        this.nextClientCmd = next;
+        return id;
+    }
+
+    // Freshness acceptance: only a bound-generation, broker-incarnation,
+    // source-correlated reply whose watermark names the CURRENT local fence
+    // mismatch-or-match applies setters. Anything else is observation-only
+    // catchup with no setters. Single-flight alone never authenticates: a
+    // delayed arbitrary reply (different incarnation or wrong source, even
+    // with the same gen) applies nothing and acks nothing. A watermark
+    // advance since dispatch (native input landed during flight) still
+    // applies, then schedules follow-up via dirty.
+    acceptReply(reply: WorldReply, dispatchSource: string, dispatchWatermark: string): { applied: boolean; reason: string } {
         if (this.boundGen === null || reply.gen !== this.boundGen) {
             this.observationOnlyCatchup = true;
             this.dirty = true;
             return { applied: false, reason: "generation-mismatch" };
         }
-        if (reply.adapter !== this.adapter) {
+        if (this.brokerIncarnation === null || reply.adapter !== this.brokerIncarnation) {
             this.observationOnlyCatchup = true;
             this.dirty = true;
             return { applied: false, reason: "adapter-mismatch" };
         }
-        if (this.inFlightReq === null || reply.req !== this.inFlightReq.reqId) {
+        if (this.inFlight === null || reply.req !== dispatchSource || reply.source !== dispatchSource) {
             this.observationOnlyCatchup = true;
             this.dirty = true;
             return { applied: false, reason: "stale-req" };
@@ -336,115 +405,101 @@ export class WorldAdapterState {
         if (this.hasAccepted && compareU64(reply.rev, this.lastAcceptedRev) <= 0) {
             return { applied: false, reason: "stale-rev" };
         }
-        if (reply.obs !== this.currentObs || reply.obs !== dispatchObs) {
-            // Superseded by newer local input: catch up observation-only,
-            // never replay the command.
-            this.observationOnlyCatchup = true;
-            this.dirty = true;
-            return { applied: false, reason: "stale-obs" };
-        }
+        void dispatchWatermark;
         this.lastAcceptedRev = reply.rev;
-        this.lastAcceptedObs = reply.obs;
-        this.lastAcceptedReq = reply.req;
         this.hasAccepted = true;
         this.lastReply = reply;
-        this.inFlightReq = null;
+        this.recordClock(reply.clock);
+        this.inFlight = null;
         this.observationOnlyCatchup = false;
-        // Ack: the accepted reply observed this report's closes/feedback.
+        // Ack: the accepted reply observed this report's closes.
         this.pendingClosed = [];
-        this.pendingFeedback = this.pendingFeedback.filter((f) => this.possiblyExecuted.has(f.op));
-        if (this.cmdHighwater !== null) {
-            void this.cmdHighwater;
+        if (this.currentInvalid !== dispatchWatermark) {
+            // Native input landed during flight: the setters below run
+            // against the dispatched observation, then follow-up observes
+            // the newer watermark.
+            this.dirty = true;
         }
         return { applied: true, reason: "accepted" };
     }
 
     noteRejectedOrTransportError(): void {
-        // Busy/timeout/transport loss: retain dirty work, drop the command
-        // (never silently coalesce or replay it), and wait for the next
-        // native event. No idle polling, no timer retry.
-        this.inFlightReq = null;
+        // Busy/timeout/transport loss: retain dirty work and the queued
+        // intent order, drop the flight (never silently replay a queued
+        // head: it was already shifted at queue-send), and wait for the
+        // next native event. No idle polling, no timer retry.
+        this.inFlight = null;
         this.observationOnlyCatchup = true;
         this.dirty = true;
     }
 
     // Release exactly the consumed flight token so a freshness/correlation
     // rejection on its callback can redispatch observation-only catchup.
-    // Never clears a newer reentrant flight: a token mismatch keeps the
+    // Never clears a newer reentrant flight: a source mismatch keeps the
     // current flight untouched (the stale callback owns nothing then).
-    releaseFlight(reqId: string): boolean {
-        if (this.inFlightReq !== null && this.inFlightReq.reqId === reqId) {
-            this.inFlightReq = null;
+    releaseFlight(source: string): boolean {
+        if (this.inFlight !== null && this.inFlight.source === source) {
+            this.inFlight = null;
             return true;
         }
         return false;
     }
 
-    beginDispatch(command: WorldCommand | null): { reqSeq: string; cmdSeq: string | null; reqId: string } | null {
-        if (this.inFlightReq !== null) {
+    beginCapture(source: string, clientCmd: string | null): CaptureFlight | null {
+        if (this.inFlight !== null) {
             return null;
         }
-        const reqSeq = this.nextReqSeq;
-        const nextReq = incrementU64(this.nextReqSeq);
-        if (nextReq === null) {
-            return null;
-        }
-        this.nextReqSeq = nextReq;
-        let cmdSeq: string | null = null;
-        if (command !== null) {
-            cmdSeq = this.nextCmdSeq;
-            const nextCmd = incrementU64(this.nextCmdSeq);
-            if (nextCmd === null) {
-                return null;
-            }
-            this.nextCmdSeq = nextCmd;
-            this.cmdHighwater = this.cmdHighwater === null
-                ? cmdSeq
-                : (compareU64(cmdSeq, this.cmdHighwater) > 0 ? cmdSeq : this.cmdHighwater);
-        }
-        const reqId = this.nextRequestId(reqSeq);
-        this.inFlightReq = { reqSeq, obs: this.currentObs, cmdSeq, reqId };
+        const flight: CaptureFlight = { source, watermark: this.currentInvalid, clientCmd };
+        this.inFlight = flight;
         this.dirty = false;
         this.observationOnlyCatchup = false;
-        return { reqSeq, cmdSeq, reqId };
+        return flight;
     }
 
-    onDiscovery(gen: string, adapter?: string, req?: string, expectedReq?: string): void {
-        // Authenticated discovery binds the generation only for the exact
-        // adapter namespace and the exact outstanding discovery req. A
-        // delayed arbitrary reply (different adapter or wrong req) binds
-        // nothing and resets nothing.
+    onDiscovery(gen: string, incarnation: string, adapter?: string, req?: string, expectedReq?: string): boolean {
+        // Authenticated discovery binds the generation plus the broker
+        // incarnation only for the exact adapter namespace and the exact
+        // outstanding discovery req. A delayed arbitrary reply (different
+        // adapter or wrong req) binds nothing and resets nothing.
         if (adapter !== undefined && adapter !== this.adapter) {
-            return;
+            return false;
         }
         if (expectedReq !== undefined && req !== expectedReq) {
-            return;
+            return false;
         }
         // Authenticated discovery binds the generation; a changed generation
         // cancels flights, ordering, and desired caches, never native wins.
-        if (this.boundGen !== gen) {
+        // The queue-client namespace restarts at 1: commands queued under a
+        // dead generation settle there and are uncollectible here.
+        if (this.boundGen !== gen || this.brokerIncarnation !== incarnation) {
             this.boundGen = gen;
-            this.inFlightReq = null;
+            this.brokerIncarnation = incarnation;
+            this.inFlight = null;
             this.lastReply = null;
+            this.lastTakeResult = null;
             this.hasAccepted = false;
             this.lastAcceptedRev = "0";
-            this.lastAcceptedObs = "0";
-            this.cmdHighwater = null;
+            this.nextClientCmd = "1";
             this.attempts.clear();
             this.possiblyExecuted.clear();
             this.spentEffects.clear();
             this.floatSpent.clear();
+            this.clearSpent.clear();
             this.appliedWindowTarget.clear();
             this.appliedViewTarget.clear();
             this.pendingCreations = [];
             this.clampAttempts.clear();
+            return true;
         }
         this.dirty = true;
+        return false;
     }
 
     describeForLog(): string {
-        const flight = this.inFlightReq === null ? "idle" : `flight-req-${this.inFlightReq.reqSeq}-obs-${this.inFlightReq.obs}`;
-        return `adapter=${this.adapter} gen=${this.boundGen ?? "-"} obs=${this.currentObs} rev=${this.lastAcceptedRev} ${flight} dirty=${this.dirty ? "1" : "0"}`;
+        const flight = this.inFlight === null
+            ? "idle"
+            : `flight-src-${this.inFlight.source}-nwinv-${this.inFlight.watermark}`;
+        return `adapter=${this.adapter} gen=${this.boundGen ?? "-"} nwinv=${this.currentInvalid} rev=${this.lastAcceptedRev} ${flight} dirty=${this.dirty ? "1" : "0"}`;
     }
 
     isRejectionNotReady(value: unknown): boolean {

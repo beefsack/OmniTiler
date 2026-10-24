@@ -103,6 +103,18 @@ function makeHarness(wins: FakeWindow[], screens: Array<{ name: string; geometry
         adapter: "test-adapter",
         callDbus: (_service, _path, _iface, method, payload, callback) => {
             calls.push({ method, payload, callback });
+            if (method === "QueueWorldCommand") {
+                const queueBody = JSON.parse(payload) as Record<string, unknown>;
+                callback(JSON.stringify({ v: 2, outcome: "queued", gen: "gen-1",
+                    client: queueBody["client"], clientCmd: queueBody["clientCmd"], globalCmd: "1" }));
+            } else if (method === "TakeCommandResult") {
+                const stagedTake = (globalThis as Record<string, unknown>)["__takeResult"] as Record<string, unknown> | undefined;
+                if (stagedTake !== undefined) {
+                    delete (globalThis as Record<string, unknown>)["__takeResult"];
+                    callback(JSON.stringify({ v: 2, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
+                } else {
+                    callback(JSON.stringify({ v: 2, outcome: "pending", gen: "gen-1" }));
+                }            }
         },
         scheduleOnce: (delay, cb) => {
             timers.push({ delay, cb });
@@ -129,9 +141,13 @@ function makeHarness(wins: FakeWindow[], screens: Array<{ name: string; geometry
 }
 
 const BOOTSTRAP = (gen: string, req: string): string => JSON.stringify({
-    v: 1, adapter: "test-adapter", gen, req, obs: "0", rev: "0",
+    v: 2, adapter: "broker-1", gen, req, obs: "0", rev: "0",
     ready: false, consumed: false, scopes: [], workspaces: [], outputs: [],
-    windows: [], transfers: [], effects: [],
+    gestureSettled: null,
+    operationSettled: [],
+    warpCursor: null,
+    presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
+    windows: [], transfers: [], effects: [], result: null,
 });
 
 function discover(h: Harness, gen = "gen-1"): void {
@@ -143,20 +159,21 @@ function discover(h: Harness, gen = "gen-1"): void {
     assert.ok(auto !== undefined);
     const autoBody = JSON.parse(auto.payload);
     auto.callback(JSON.stringify({
-        v: 1, adapter: "test-adapter", gen, req: autoBody.req, obs: autoBody.obs, rev: "1",
+        v: 2, adapter: "broker-1", gen, req: autoBody.source, obs: "1", rev: "1",
         ready: true, consumed: false,
-        scopes: [], workspaces: [], outputs: [], windows: [], transfers: [], effects: [],
+        source: autoBody.source,
+        nativeInvalid: autoBody.nativeInvalid,
+        clock: "0",
+        gestureSettled: null,
+        operationSettled: [],
+        warpCursor: null,
+        presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
+        scopes: [], workspaces: [], outputs: [], windows: [], transfers: [], effects: [], result: null,
     }));
 }
 
 function lastCommand(h: Harness): Record<string, unknown> | null {
-    const found = [...h.calls].reverse().find((c) => {
-        if (c.method !== "DescribeWorld") {
-            return false;
-        }
-        const body = JSON.parse(c.payload) as { command?: Record<string, unknown> | null };
-        return body.command !== null && body.command !== undefined;
-    });
+    const found = [...h.calls].reverse().find((c) => c.method === "QueueWorldCommand");
     if (found === undefined) {
         return null;
     }
@@ -179,7 +196,7 @@ describe("world directional intent (core-owned crossing)", () => {
         assert.ok(cmd !== null, "focus intent dispatched");
         assert.equal(cmd["op"], "focus-directional");
         assert.equal(cmd["direction"], "right");
-        assert.equal(cmd["floatSubject"], false);
+        assert.ok(!("floatSubject" in cmd), "no float routing key on the wire");
     });
 
     it("sends move-directional on a single output (core runs local R1-R3)", () => {
@@ -327,6 +344,18 @@ describe("world directional intent (core-owned crossing)", () => {
             adapter: "test-adapter",
             callDbus: (_service, _path, _iface, method, payload, callback) => {
                 calls.push({ method, payload, callback });
+                if (method === "QueueWorldCommand") {
+                    const queueBody = JSON.parse(payload) as Record<string, unknown>;
+                    callback(JSON.stringify({ v: 2, outcome: "queued", gen: "gen-1",
+                        client: queueBody["client"], clientCmd: queueBody["clientCmd"], globalCmd: "1" }));
+                } else if (method === "TakeCommandResult") {
+                    const stagedTake = (globalThis as Record<string, unknown>)["__takeResult"] as Record<string, unknown> | undefined;
+                    if (stagedTake !== undefined) {
+                        delete (globalThis as Record<string, unknown>)["__takeResult"];
+                        callback(JSON.stringify({ v: 2, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
+                    } else {
+                        callback(JSON.stringify({ v: 2, outcome: "pending", gen: "gen-1" }));
+                    }                }
             },
             scheduleOnce: (delay, cb) => {
                 timers.push({ delay, cb });

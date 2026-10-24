@@ -30,6 +30,7 @@ import { dirname, join, resolve } from "node:path";
 import { describe, it } from "node:test";
 
 import { WORLD_DEBOUNCE_MS, startWorldAdapterEntry } from "../src/world-entry";
+import { createMiniBroker, type MiniBroker } from "./world-wire-harness";
 
 function repoRoot(): string {
     let dir = resolve(process.cwd());
@@ -194,8 +195,18 @@ interface Faults {
     staleView: Map<string, { show: string; rounds: number }>;
 }
 
+function lastTakeResult(h: Harness): Record<string, unknown> {
+    const readys = h.takeReplies
+        .map((raw) => JSON.parse(raw) as Record<string, unknown>)
+        .filter((r) => r["outcome"] === "ready");
+    assert.ok(readys.length > 0, "at least one ready take result");
+    return (readys[readys.length - 1] as Record<string, unknown>)["result"] as Record<string, unknown>;
+}
+
 interface Harness {
     readonly bridge: WorldBridge;
+    readonly broker: MiniBroker;
+    readonly takeReplies: string[];
     readonly wins: FakeWindow[];
     readonly desktops: FakeDesktop[];
     readonly screens: Array<{ name: string; geometry: Record<string, number> }>;
@@ -282,6 +293,8 @@ async function makeProducerHarness(): Promise<Harness> {
     }
     const harness: Harness = {
         bridge: WorldBridge.start(),
+        broker: createMiniBroker(),
+        takeReplies: [],
         wins,
         desktops,
         screens,
@@ -325,10 +338,14 @@ async function makeProducerHarness(): Promise<Harness> {
         flush: async () => {
             const index = harness.calls.findIndex((call, at) => call.method === "DescribeWorld" && !harness.answered.has(at));
             assert.ok(index >= 0, "expected a queued DescribeWorld dispatch to flush to the real Engine");
-            const reply = await harness.bridge.send(
-                (harness.calls[index] as CapturedCall).method,
-                (harness.calls[index] as CapturedCall).payload,
-            );
+            // Mini-broker stamping: the envelope becomes the exact core
+            // report the sole broker would dispatch (own namespace plus at
+            // most one queued command), and the core reply returns bound
+            // with a nulled terminal result.
+            const envelope = (harness.calls[index] as CapturedCall).payload;
+            const stamped = harness.broker.stampCapture(envelope);
+            const coreReply = await harness.bridge.send("DescribeWorld", stamped);
+            const reply = harness.broker.bindReply(coreReply, envelope);
             harness.answered.add(index);
             harness.replies.set(index, reply);
             (harness.calls[index] as CapturedCall).callback(reply);
@@ -495,10 +512,17 @@ async function makeProducerHarness(): Promise<Harness> {
         owner: "owner-a",
         adapter: "test-adapter",
         callDbus: (_service, _path, _iface, method, payload, callback): void => {
-            if (method !== "DiscoverWorld" && method !== "DescribeWorld") {
+            if (method !== "DiscoverWorld" && method !== "DescribeWorld" && method !== "QueueWorldCommand" && method !== "TakeCommandResult") {
                 return;
             }
             harness.calls.push({ method, payload, callback });
+            if (method === "QueueWorldCommand") {
+                callback(harness.broker.answerQueue(payload));
+            } else if (method === "TakeCommandResult") {
+                const takeReply = harness.broker.answerTake(payload);
+                harness.takeReplies.push(takeReply);
+                callback(takeReply);
+            }
         },
         scheduleOnce: (delayMs, callback): (() => void) => {
             const timer: Timer = { delayMs, callback, cancelled: false, fired: false };
@@ -524,7 +548,8 @@ async function discover(h: Harness): Promise<void> {
     const discIndex = h.calls.findIndex((call) => call.method === "DiscoverWorld");
     assert.ok(discIndex >= 0, "entry discovers on start");
     const disc = h.calls[discIndex] as CapturedCall;
-    const reply = await h.bridge.send(disc.method, disc.payload);
+    const engineBootstrap = await h.bridge.send(disc.method, disc.payload);
+    const reply = h.broker.bindDiscovery(engineBootstrap);
     const parsed = JSON.parse(reply) as Record<string, unknown>;
     assert.equal(parsed["ready"], false, "bootstrap is not ready");
     disc.callback(reply);
@@ -549,10 +574,12 @@ function transfersOf(reply: Record<string, unknown>): Array<Record<string, unkno
 }
 
 function migrateCommands(h: Harness): Array<{ index: number; body: Record<string, unknown> }> {
+    // v2 command lane: presses file QueueWorldCommand (the broker drains
+    // at most one per capture); DescribeWorld envelopes carry no command.
     return h.calls
         .map((call, index) => ({ call, index }))
         .filter(({ call }) => {
-            if (call.method !== "DescribeWorld") {
+            if (call.method !== "QueueWorldCommand") {
                 return false;
             }
             try {
@@ -606,8 +633,8 @@ describe("world aligned migration producer", () => {
             h.fire("desktopsChanged");
             await h.settle();
 
-            const bindingsBefore = (payloadOf(h, h.calls.length - 1)["bindings"] as Array<Record<string, string>>);
-            const sourceLogical = (bindingsBefore.find((b) => b["out"] === RIGHT && b["native"] === "ws-1") as Record<string, string>)["logical"];
+            const settledBefore = lastReply(h);
+            const sourceLogical = ((settledBefore["workspaces"] as Array<Record<string, string>>).find((b) => b["out"] === RIGHT && b["bind"] === "ws-1") as Record<string, string> | undefined)?.["id"];
             assert.ok(typeof sourceLogical === "string" && sourceLogical !== "", "source cell has a logical identity");
 
             // Leg 1: migrate out-right/ws-1 (win-a plus floating win-c plus
@@ -631,8 +658,15 @@ describe("world aligned migration producer", () => {
             }
             const leg1cmds = migrateCommands(h);
             assert.equal(leg1cmds.length, 1, "one directional migration command, never replayed");
-            const leg1reply = JSON.parse(h.replies.get(leg1cmds[0]?.index as number) as string) as Record<string, unknown>;
-            const leg1result = leg1reply["result"] as Record<string, unknown>;
+            // v2: the filed command drains through the next capture; the
+            // terminal result rides the take lane (never the capture reply).
+            const drainIndex = h.calls.findIndex(
+                (call, at) => at > (leg1cmds[0]?.index as number) && call.method === "DescribeWorld",
+            );
+            assert.ok(drainIndex >= 0, "queued command drains on a fresh capture");
+            const leg1reply = JSON.parse(h.replies.get(drainIndex) as string) as Record<string, unknown>;
+            assert.equal(leg1reply["result"], null, "actuator lane never carries the terminal result");
+            const leg1result = lastTakeResult(h);
             assert.equal(leg1result["op"], "migrate-workspace");
             assert.equal(leg1result["sourceOut"], RIGHT);
             assert.equal(leg1result["targetOut"], LEFT);
@@ -711,8 +745,13 @@ describe("world aligned migration producer", () => {
             }
             const leg2cmds = migrateCommands(h).slice(1);
             assert.equal(leg2cmds.length, 1, "return migration dispatches exactly once (never refused-looped)");
-            const leg2reply = JSON.parse(h.replies.get(leg2cmds[0]?.index as number) as string) as Record<string, unknown>;
-            const leg2result = leg2reply["result"] as Record<string, unknown>;
+            const leg2drain = h.calls.findIndex(
+                (call, at) => at > (leg2cmds[0]?.index as number) && call.method === "DescribeWorld",
+            );
+            assert.ok(leg2drain >= 0, "return command drains on a fresh capture");
+            const leg2reply = JSON.parse(h.replies.get(leg2drain) as string) as Record<string, unknown>;
+            assert.equal(leg2reply["result"], null, "actuator lane never carries the terminal result");
+            const leg2result = lastTakeResult(h);
             assert.equal(leg2result["op"], "migrate-workspace");
             assert.equal(leg2result["sourceOut"], LEFT);
             assert.equal(leg2result["targetOut"], RIGHT);
@@ -766,8 +805,13 @@ describe("world aligned migration producer", () => {
             }
             const leg3cmds = migrateCommands(h).slice(2);
             assert.equal(leg3cmds.length, 1, "empty migration dispatches exactly once");
-            const leg3reply = JSON.parse(h.replies.get(leg3cmds[0]?.index as number) as string) as Record<string, unknown>;
-            const leg3result = leg3reply["result"] as Record<string, unknown>;
+            const leg3drain = h.calls.findIndex(
+                (call, at) => at > (leg3cmds[0]?.index as number) && call.method === "DescribeWorld",
+            );
+            assert.ok(leg3drain >= 0, "empty command drains on a fresh capture");
+            const leg3reply = JSON.parse(h.replies.get(leg3drain) as string) as Record<string, unknown>;
+            assert.equal(leg3reply["result"], null, "actuator lane never carries the terminal result");
+            const leg3result = lastTakeResult(h);
             assert.equal(leg3result["op"] ?? null, "migrate-workspace", "empty migration commits");
             assert.deepEqual(leg3result["members"] as string[], [], "empty migration carries no members");
             assert.equal(leg3result["sourceOut"], LEFT);

@@ -144,6 +144,18 @@ function makeHarness(wins: FakeWindow[], screens: Harness["world"]["screens"], d
         adapter: "test-adapter",
         callDbus: (_service, _path, _iface, method, payload, callback) => {
             calls.push({ method, payload, callback });
+            if (method === "QueueWorldCommand") {
+                const queueBody = JSON.parse(payload) as Record<string, unknown>;
+                callback(JSON.stringify({ v: 2, outcome: "queued", gen: "gen-1",
+                    client: queueBody["client"], clientCmd: queueBody["clientCmd"], globalCmd: "1" }));
+            } else if (method === "TakeCommandResult") {
+                const stagedTake = (globalThis as Record<string, unknown>)["__takeResult"] as Record<string, unknown> | undefined;
+                if (stagedTake !== undefined) {
+                    delete (globalThis as Record<string, unknown>)["__takeResult"];
+                    callback(JSON.stringify({ v: 2, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
+                } else {
+                    callback(JSON.stringify({ v: 2, outcome: "pending", gen: "gen-1" }));
+                }            }
         },
         scheduleOnce: (delay, cb) => {
             timers.push({ delay, cb });
@@ -172,9 +184,13 @@ function makeHarness(wins: FakeWindow[], screens: Harness["world"]["screens"], d
 }
 
 const BOOTSTRAP = (gen: string, req: string): string => JSON.stringify({
-    v: 1, adapter: "test-adapter", gen, req, obs: "0", rev: "0",
+    v: 2, adapter: "broker-1", gen, req, obs: "0", rev: "0",
     ready: false, consumed: false, scopes: [], workspaces: [], outputs: [],
-    windows: [], transfers: [], effects: [],
+    gestureSettled: null,
+    operationSettled: [],
+    warpCursor: null,
+    presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
+    windows: [], transfers: [], effects: [], result: null,
 });
 
 function discover(h: Harness, gen = "gen-1"): void {
@@ -185,16 +201,23 @@ function discover(h: Harness, gen = "gen-1"): void {
     const auto = [...h.calls].reverse().find((c) => c.method === "DescribeWorld");
     assert.ok(auto !== undefined);
     const autoBody = JSON.parse(auto.payload);
-    assert.equal(autoBody.command, null);
+    assert.equal((autoBody["report"] as Record<string, unknown>)["command"], undefined, "inner reports never carry a command");
     auto.callback(JSON.stringify({
-        v: 1, adapter: "test-adapter", gen, req: autoBody.req, obs: autoBody.obs, rev: "1",
+        v: 2, adapter: "broker-1", gen, req: autoBody.source, obs: "1", rev: "1",
         ready: true, consumed: false,
-        scopes: [], workspaces: [], outputs: [], windows: [], transfers: [], effects: [],
+        source: autoBody.source,
+        nativeInvalid: autoBody.nativeInvalid,
+        clock: "0",
+        gestureSettled: null,
+        operationSettled: [],
+        warpCursor: null,
+        presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
+        scopes: [], workspaces: [], outputs: [], windows: [], transfers: [], effects: [], result: null,
     }));
 }
 
-function describePayloads(h: Harness): Array<Record<string, unknown>> {
-    return h.calls.filter((c) => c.method === "DescribeWorld").map((c) => JSON.parse(c.payload) as Record<string, unknown>);
+function queuePayloads(h: Harness): Array<Record<string, unknown>> {
+    return h.calls.filter((c) => c.method === "QueueWorldCommand").map((c) => JSON.parse(c.payload) as Record<string, unknown>);
 }
 
 describe("world float-origin navigation", () => {
@@ -205,17 +228,12 @@ describe("world float-origin navigation", () => {
         const h = makeHarness(wins, screens, [ws], new Map([["out-a", ws]]));
         discover(h);
         h.world.focused.length = 0;
-        const callsBefore = describePayloads(h).length;
         h.handle?.requestFocus("right");
         assert.deepEqual(h.world.focused, ["win-g"], "exactly one native focus to the nearest right float");
         assert.ok(h.logs.some((l) => l.includes("focus-float-applied direction=right")));
         h.runTimers();
-        const after = describePayloads(h).slice(callsBefore);
-        for (const payload of after) {
-            const command = payload["command"] as Record<string, unknown> | null;
-            assert.ok(command === null || (command["op"] as string) !== "focus-directional", "no Planner focus intent for a local float target");
-            assert.ok(command === null || (command["op"] as string) !== "operation" || ((command["command"] as Record<string, unknown>)["op"] as string) !== "focus", "no legacy focus operation for a local float target");
-        }
+        // Local float focus is native-only: no Queue filed.
+        assert.equal(queuePayloads(h).length, 0, "no Planner focus intent for a local float target");
     });
 
     it("drives the shortcut through the same native local focus", () => {
@@ -245,13 +263,13 @@ describe("world float-origin navigation", () => {
         h.handle?.requestFocus("right");
         assert.deepEqual(h.world.focused, [], "miss performs no native focus");
         h.runTimers();
-        const payloads = describePayloads(h);
-        const focusOps = payloads
+        const qpayloads = queuePayloads(h);
+        const focusOps = qpayloads
             .map((p) => p["command"] as Record<string, unknown> | null)
             .filter((c) => c !== null && c["op"] === "focus-directional");
         assert.ok(focusOps.length >= 1, "fallback dispatches a focus-directional intent");
         const inner = focusOps[focusOps.length - 1] as Record<string, unknown>;
-        assert.equal(inner["floatSubject"], true);
+        assert.ok(!("floatSubject" in inner), "no float routing key on the wire");
         assert.equal(inner["win"], "win-f");
         assert.equal(inner["direction"], "right");
     });
@@ -266,19 +284,11 @@ describe("world float-origin navigation", () => {
         ];
         const h = makeHarness(wins, screens, [wsa, wsb], new Map([["out-a", wsa], ["out-b", wsb]]));
         discover(h);
-        const callsBefore = describePayloads(h).length;
         h.handle?.requestFocus("up");
         assert.deepEqual(h.world.focused, [], "up miss never focuses");
         assert.ok(h.logs.some((l) => l.includes("focus-float-retained direction=up")));
         h.runTimers();
-        const after = describePayloads(h).slice(callsBefore);
-        for (const payload of after) {
-            const command = payload["command"] as Record<string, unknown> | null;
-            assert.ok(command === null || (command["op"] as string) !== "focus-directional", "up miss dispatches no focus-directional intent");
-            if (command !== null && command["op"] === "operation") {
-                assert.notEqual(((command["command"] as Record<string, unknown>)["op"] as string), "focus", "up miss dispatches no legacy focus operation");
-            }
-        }
+        assert.equal(queuePayloads(h).length, 0, "up miss dispatches no focus-directional intent");
     });
 
     it("half-snaps a float move natively with no Planner move dispatch", () => {
@@ -287,18 +297,11 @@ describe("world float-origin navigation", () => {
         const screens = [{ name: "out-a", geometry: { x: 0, y: 0, width: 800, height: 600 } }];
         const h = makeHarness(wins, screens, [ws], new Map([["out-a", ws]]));
         discover(h);
-        const callsBefore = describePayloads(h).length;
         h.handle?.requestMove("right");
         assert.deepEqual(h.world.geometryWrites, ["win-f@404,8,388,584"], "exactly one native half-snap");
         assert.ok(h.logs.some((l) => l.includes("move-float-applied direction=right")));
         h.runTimers();
-        const after = describePayloads(h).slice(callsBefore);
-        for (const payload of after) {
-            const command = payload["command"] as Record<string, unknown> | null;
-            if (command !== null && command["op"] === "operation") {
-                assert.notEqual(((command["command"] as Record<string, unknown>)["op"] as string), "move", "float moves never dispatch a Planner move");
-            }
-        }
+        assert.equal(queuePayloads(h).length, 0, "float moves never dispatch a Planner move");
     });
 
     it("routes tiled focus direction-only without floatSubject", () => {
@@ -310,13 +313,13 @@ describe("world float-origin navigation", () => {
         h.handle?.requestFocus("right");
         assert.deepEqual(h.world.focused, [], "tiled focus never writes natively");
         h.runTimers();
-        const payloads = describePayloads(h);
-        const focusOps = payloads
+        const qps = queuePayloads(h);
+        const focusOps = qps
             .map((p) => p["command"] as Record<string, unknown> | null)
             .filter((c) => c !== null && c["op"] === "focus-directional");
         assert.ok(focusOps.length >= 1);
         const inner = focusOps[focusOps.length - 1] as Record<string, unknown>;
-        assert.equal(inner["floatSubject"], false);
+        assert.ok(!("floatSubject" in inner), "no float routing key on the wire");
     });
 
     it("never auto-focuses a fullscreen float candidate", () => {

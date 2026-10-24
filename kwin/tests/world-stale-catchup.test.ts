@@ -185,6 +185,18 @@ function makeHarness(): Harness {
         adapter: "test-adapter",
         callDbus: (_service, _path, _iface, method, payload, callback) => {
             calls.push({ method, payload, callback });
+            if (method === "QueueWorldCommand") {
+                const queueBody = JSON.parse(payload) as Record<string, unknown>;
+                callback(JSON.stringify({ v: 2, outcome: "queued", gen: "gen-1",
+                    client: queueBody["client"], clientCmd: queueBody["clientCmd"], globalCmd: "1" }));
+            } else if (method === "TakeCommandResult") {
+                const stagedTake = (globalThis as Record<string, unknown>)["__takeResult"] as Record<string, unknown> | undefined;
+                if (stagedTake !== undefined) {
+                    delete (globalThis as Record<string, unknown>)["__takeResult"];
+                    callback(JSON.stringify({ v: 2, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
+                } else {
+                    callback(JSON.stringify({ v: 2, outcome: "pending", gen: "gen-1" }));
+                }            }
         },
         scheduleOnce: (delay, cb) => {
             timers.push({ delay, cb });
@@ -237,21 +249,37 @@ function discover(h: Harness, gen = "gen-1"): void {
     assert.ok(disc !== undefined);
     const req = (JSON.parse(disc.payload) as Record<string, unknown>)["req"];
     disc.callback(JSON.stringify({
-        v: 1, adapter: "test-adapter", gen, req,
+        v: 2, adapter: "broker-1", gen, req,
         obs: "0", rev: "0", ready: false, consumed: false,
+        gestureSettled: null,
+        operationSettled: [],
+        warpCursor: null,
+        presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
         scopes: [], workspaces: [], outputs: [], windows: [],
-        transfers: [], effects: [],
+        transfers: [], effects: [], result: null,
     }));
     const auto = lastDescribe(h);
-    assert.equal(auto.payload["command"], null);
+    assert.deepEqual([...Object.keys(auto.payload)].sort(), ["adapter","gen","nativeInvalid","report","source","sourceSeq","v"].sort());
+    assert.ok(!("command" in (auto.payload["report"] as Record<string, unknown>)));
     auto.callback(acceptedReply(gen, auto.payload, "1"));
 }
 
-function acceptedReply(gen: string, dispatched: Record<string, unknown>, rev: string): string {
+function acceptedReply(gen: string, dispatched: Record<string, unknown>, rev: string, extra: Record<string, unknown> = {}): string {
     return JSON.stringify({
-        v: 1, adapter: "test-adapter", gen, req: dispatched["req"], obs: dispatched["obs"], rev,
+        v: 2, adapter: "broker-1", gen, req: dispatched["source"], obs: rev, rev,
         ready: true, consumed: false,
-        scopes: [], workspaces: [], outputs: [], windows: [], transfers: [], effects: [],
+        source: dispatched["source"],
+        nativeInvalid: dispatched["nativeInvalid"],
+        clock: "0",
+        gestureSettled: null,
+        operationSettled: [],
+        warpCursor: null,
+        presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
+        scopes: [{ scope: "out/ws1", auth: "controlled", reason: "" }],
+        workspaces: [{ id: "ws1", out: "out", bind: "ws1", scope: "out", order: 0, mode: "tiled", exist: true, hold: "" }],
+        outputs: [{ out: "out", view: "ws1", mode: "tiled", hold: "" }],
+        windows: [], transfers: [], effects: [], result: null,
+        ...extra,
     });
 }
 
@@ -259,17 +287,26 @@ function acceptedReply(gen: string, dispatched: Record<string, unknown>, rev: st
 // differing controlled frame, a view transfer, and a focus effect.
 function staleReply(gen: string, dispatched: Record<string, unknown>, rev: string, overrides: Record<string, unknown> = {}): string {
     return JSON.stringify({
-        v: 1, adapter: "test-adapter", gen, req: dispatched["req"], obs: dispatched["obs"], rev,
+        v: 2, adapter: "broker-1", gen, req: dispatched["source"], obs: rev, rev,
         ready: true, consumed: false,
+        source: dispatched["source"],
+        nativeInvalid: dispatched["nativeInvalid"],
+        clock: "0",
+        gestureSettled: null,
+        operationSettled: [],
+        warpCursor: null,
+        presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
         scopes: [],
         workspaces: [],
         outputs: [],
+        result: null,
         windows: [{
             win: "win-a", out: "out", ws: "ws1",
             alloc: [9, 9, 300, 300], frame: [9, 9, 300, 300],
             frame_auth: "controlled", frame_hold: "",
             member_auth: "controlled", member_hold: "",
             frame_op: "",
+            clear_op: "",
             floating: false, float_origin: "",
         }],
         transfers: [{ op: "op-9", kind: "view", win: "", out: "out", ws: "ws1", follow: false, held: false }],
@@ -303,30 +340,33 @@ describe("world stale-reply catchup liveness", () => {
         h.handle?.requestWorkspaceRelative(1);
         h.runDueTimers();
         const flight = lastDescribe(h);
-        assert.deepEqual((flight.payload["command"] as Record<string, unknown>)["op"], "select-relative");
-        // Native event advances the watermark past the flight obs.
+        const filed = JSON.parse([...h.calls].reverse().find((c) => c.method === "QueueWorldCommand")!.payload) as Record<string, unknown>;
+        assert.deepEqual((filed["command"] as Record<string, unknown>)["op"], "select-relative");
+        // Native event advances the watermark past the flight watermark.
         fireNativeEvent(h);
-        // Stale reply: exact req/adapter/gen, newer rev, old obs, with
-        // desired rows that would actuate if applied.
+        // Superseded reply: exact req/adapter/gen, newer rev, with
+        // desired rows that would actuate if applied. Accepted (rev advances)
+        // but setters skip via superseded-during-flight, then catchup.
         flight.callback(staleReply("gen-1", flight.payload, "9"));
-        assert.ok(h.logs.some((l) => l.includes("stale reason=stale-obs") && l.includes("recovery=catchup")));
-        assert.deepEqual(settersFired(h), [], "stale reply performs zero native setters");
+        assert.ok(h.logs.some((l) => l.includes("stale reason=superseded-during-flight") && l.includes("recovery=catchup")));
+        assert.deepEqual(settersFired(h), [], "superseded reply performs zero native setters");
         // Exactly one observation-only catchup redispatch, no replay.
         const before = describeCount(h);
         h.runDueTimers();
         assert.equal(describeCount(h), before + 1, "one catchup dispatch, no wedge");
         const catchup = lastDescribe(h);
-        assert.equal(catchup.payload["command"], null, "catchup is observation-only: the dropped command never replays");
-        // Accepted ack unwedges: a newer rev on the fresh flight applies.
-        catchup.callback(acceptedReply("gen-1", catchup.payload, "2"));
-        assert.ok(h.logs.some((l) => l.includes("omnitiler:world:applied rev=2")));
+        assert.ok(!("command" in (catchup.payload["report"] as Record<string, unknown>)), "catchup is observation-only: the dropped command never replays");
+        // Accepted ack: rev must advance past the superseded 9.
+        catchup.callback(acceptedReply("gen-1", catchup.payload, "10"));
+        assert.ok(h.logs.some((l) => l.includes("omnitiler:world:applied rev=10")));
         // A later explicit command dispatches and applies normally.
         h.handle?.requestWorkspaceRelative(1);
         h.runDueTimers();
+        const laterFiled = JSON.parse([...h.calls].reverse().find((c) => c.method === "QueueWorldCommand")!.payload) as Record<string, unknown>;
+        assert.deepEqual((laterFiled["command"] as Record<string, unknown>)["op"], "select-relative");
         const later = lastDescribe(h);
-        assert.deepEqual((later.payload["command"] as Record<string, unknown>)["op"], "select-relative");
-        later.callback(acceptedReply("gen-1", later.payload, "3"));
-        assert.ok(h.logs.some((l) => l.includes("omnitiler:world:applied rev=3")));
+        later.callback(acceptedReply("gen-1", later.payload, "11"));
+        assert.ok(h.logs.some((l) => l.includes("omnitiler:world:applied rev=11")));
     });
 
     it("wrong-req replies apply nothing and ack nothing but still redispatch observation-only", () => {
@@ -335,16 +375,16 @@ describe("world stale-reply catchup liveness", () => {
         h.handle?.requestWorkspaceRelative(1);
         h.runDueTimers();
         const flight = lastDescribe(h);
-        // Delayed arbitrary reply on the consumed callback: same gen/obs,
-        // high rev, but the wrong req. Must not ack rev 9.
-        flight.callback(staleReply("gen-1", flight.payload, "9", { req: "req-999" }));
+        // Delayed arbitrary reply on the consumed callback: same gen,
+        // high rev, but the wrong req/source. Must not ack rev 9.
+        flight.callback(JSON.stringify({ ...(JSON.parse(staleReply("gen-1", flight.payload, "9")) as Record<string, unknown>), req: "req-999", source: "req-999" }));
         assert.ok(h.logs.some((l) => l.includes("stale reason=stale-req")));
         assert.deepEqual(settersFired(h), [], "wrong-req reply performs zero native setters");
         const before = describeCount(h);
         h.runDueTimers();
         assert.equal(describeCount(h), before + 1, "wrong-req consumes its flight yet redispatches: no wedge");
         const catchup = lastDescribe(h);
-        assert.equal(catchup.payload["command"], null);
+        assert.ok(!("command" in (catchup.payload["report"] as Record<string, unknown>)));
         // The high rev was never acked: a lower rev still applies.
         catchup.callback(acceptedReply("gen-1", catchup.payload, "2"));
         assert.ok(h.logs.some((l) => l.includes("omnitiler:world:applied rev=2")), "unacked wrong rev does not poison ordering");
@@ -362,7 +402,7 @@ describe("world stale-reply catchup liveness", () => {
         const before = describeCount(h);
         h.runDueTimers();
         assert.equal(describeCount(h), before + 1, "foreign reply consumes its flight yet redispatches: no wedge");
-        assert.equal((lastDescribe(h).payload["command"] as null), null);
+        assert.ok(!("command" in (lastDescribe(h).payload["report"] as Record<string, unknown>)));
         const catchup = lastDescribe(h);
         catchup.callback(acceptedReply("gen-1", catchup.payload, "2"));
         assert.ok(h.logs.some((l) => l.includes("omnitiler:world:applied rev=2")));
@@ -374,7 +414,7 @@ describe("world stale-reply catchup liveness", () => {
         fireNativeEvent(h);
         h.runDueTimers();
         const flight = lastDescribe(h);
-        // Same req/obs/adapter, but rev equal to the last accepted: stale.
+        // Same req/adapter, but rev equal to the last accepted: stale.
         // The observation already reached the core, so no re-report is
         // owed — but the consumed flight must release.
         flight.callback(staleReply("gen-1", flight.payload, "1"));
@@ -387,7 +427,7 @@ describe("world stale-reply catchup liveness", () => {
         fireNativeEvent(h);
         h.runDueTimers();
         assert.equal(describeCount(h), clean + 1, "stale-rev releases the consumed flight");
-        assert.equal(lastDescribe(h).payload["command"], null);
+        assert.ok(!("command" in (lastDescribe(h).payload["report"] as Record<string, unknown>)));
     });
 
     it("pins the Meta+Y toggle to a set-workspace-tiling submission", () => {
@@ -395,8 +435,8 @@ describe("world stale-reply catchup liveness", () => {
         discover(h);
         h.handle?.requestWorkspaceTilingToggle();
         h.runDueTimers();
-        const sent = lastDescribe(h);
-        assert.deepEqual(sent.payload["command"], {
+        const filed = JSON.parse([...h.calls].reverse().find((c) => c.method === "QueueWorldCommand")!.payload) as Record<string, unknown>;
+        assert.deepEqual(filed["command"], {
             op: "set-workspace-tiling", out: "out", ws: "ws1", tiled: false,
         });
     });

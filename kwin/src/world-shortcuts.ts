@@ -14,6 +14,7 @@ import {
     cmdSelectTrailing,
     cmdSendRelative,
     cmdSetWorkspaceTiling,
+    explicitSource,
     type WorldCommand,
 } from "./world-report";
 import { workspaceShortcutCatalog } from "./workspace-native";
@@ -174,7 +175,7 @@ export function registerWorldShortcuts(env: WorldShortcutsEnv): void {
                 shortcutFailed(`focus-${d}`);
                 return;
             }
-            const cmd = cmdFocusDirectional(w, d, false);
+            const cmd = cmdFocusDirectional(w, d);
             if (cmd === null || !submitCommand(cmd, `focus-${d}`)) {
                 shortcutFailed(`focus-${d}`);
             }
@@ -327,7 +328,7 @@ export function registerWorldShortcuts(env: WorldShortcutsEnv): void {
                 tryRegister(row.action, row.text, row.sequence, () => {
                     const out = outName();
                     const w = focusedWin();
-                    const cmd = out === null || w === null ? null : cmdSendRelative(w, out, delta, follow);
+                    const cmd = out === null || w === null ? null : cmdSendRelative(w, explicitSource(out), delta, follow);
                     if (cmd === null || !submitCommand(cmd, row.action)) {
                         shortcutFailed(row.action);
                     }

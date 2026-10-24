@@ -124,6 +124,18 @@ function makeHarness() {
         adapter: "test-adapter",
         callDbus: (_s, _p, _i, method, payload, callback) => {
             calls.push({ method, payload, callback });
+            if (method === "QueueWorldCommand") {
+                const queueBody = JSON.parse(payload) as Record<string, unknown>;
+                callback(JSON.stringify({ v: 2, outcome: "queued", gen: "gen-1",
+                    client: queueBody["client"], clientCmd: queueBody["clientCmd"], globalCmd: "1" }));
+            } else if (method === "TakeCommandResult") {
+                const stagedTake = (globalThis as Record<string, unknown>)["__takeResult"] as Record<string, unknown> | undefined;
+                if (stagedTake !== undefined) {
+                    delete (globalThis as Record<string, unknown>)["__takeResult"];
+                    callback(JSON.stringify({ v: 2, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
+                } else {
+                    callback(JSON.stringify({ v: 2, outcome: "pending", gen: "gen-1" }));
+                }            }
         },
         scheduleOnce: (delay, cb) => {
             timers.push({ delay, cb });
@@ -153,24 +165,35 @@ function makeHarness() {
         assert.ok(found !== undefined, `expected ${method}`);
         return found as { method: string; payload: string; callback: (reply: unknown) => void };
     };
-    const accepted = (gen: string, req: string, obs: string, rev: string): string =>
+    const accepted = (gen: string, source: string, nativeInvalid: string, rev: string): string =>
         JSON.stringify({
-            v: 1, adapter: "test-adapter", gen, req, obs, rev,
+            v: 2, adapter: "broker-1", gen, req: source, obs: rev, rev,
             ready: true, consumed: false,
+            source,
+            nativeInvalid,
+            clock: "0",
+            gestureSettled: null,
+            operationSettled: [],
+            warpCursor: null,
+            presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
             scopes: [{ scope: `${OUT}/${WS_A}`, auth: "controlled", reason: "" }],
-            workspaces: [], outputs: [], windows: [], transfers: [], effects: [],
+            workspaces: [], outputs: [], windows: [], transfers: [], effects: [], result: null,
         });
     const discover = (gen = "gen-1"): void => {
         const call = lastCall("DiscoverWorld");
         const body = JSON.parse(call.payload);
         call.callback(JSON.stringify({
-            v: 1, adapter: "test-adapter", gen, req: body.req, obs: "0", rev: "0",
+            v: 2, adapter: "broker-1", gen, req: body.req, obs: "0", rev: "0",
             ready: false, consumed: false, scopes: [], workspaces: [], outputs: [],
-            windows: [], transfers: [], effects: [],
+            gestureSettled: null,
+            operationSettled: [],
+            warpCursor: null,
+            presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
+            windows: [], transfers: [], effects: [], result: null,
         }));
         const auto = lastCall("DescribeWorld");
         const autoBody = JSON.parse(auto.payload);
-        auto.callback(accepted(gen, autoBody.req, autoBody.obs, "0"));
+        auto.callback(accepted(gen, autoBody.source, autoBody.nativeInvalid, "0"));
     };
     const requestPayload = (): Record<string, unknown> =>
         JSON.parse(lastCall("DescribeWorld").payload) as Record<string, unknown>;
@@ -208,11 +231,10 @@ describe("world close braced qml regression", () => {
         (h.handle as NonNullable<typeof h.handle>).requestWorkspaceRelative(1);
         h.runTimers();
         let req = h.requestPayload();
-        let wins = (req["domains"] as Array<Record<string, unknown>>).flatMap(
-            (d) => d["windows"] as Array<Record<string, unknown>>,
-        );
+        const inner = req["report"] as Record<string, unknown>;
+        let wins = inner["windows"] as Array<Record<string, unknown>>;
         assert.ok(wins.some((w) => w["win"] === WIN_C), "added generic window observes as bare id");
-        h.lastCall("DescribeWorld").callback(h.accepted("gen-1", req["req"] as string, req["obs"] as string, "1"));
+        h.lastCall("DescribeWorld").callback(h.accepted("gen-1", req["source"] as string, "1", "1"));
         // Minimize WIN_A but keep it live: it must never read as closed.
         h.setLive([
             { braced: `{${WIN_A}}`, ws: WS_A, minimized: true },
@@ -242,37 +264,33 @@ describe("world close braced qml regression", () => {
         (h.handle as NonNullable<typeof h.handle>).requestWorkspaceRelative(1);
         h.runTimers();
         req = h.requestPayload();
-        const domains = req["domains"] as Array<Record<string, unknown>>;
-        const closed = domains.flatMap((d) => d["closed"] as Array<string>);
+        const inner2 = req["report"] as Record<string, unknown>;
+        const closed = inner2["closed"] as Array<string>;
         assert.deepEqual(closed, [WIN_B], "closed carries the bare uuid exactly once");
         assert.equal(getterCalls, 0, "removed payload getters never run");
-        const minimized = req["minimized"] as Array<Record<string, unknown>>;
-        assert.ok(minimized.some((m) => m["win"] === WIN_A), "minimized live window rides minimized");
+        const facts = inner2["windows"] as Array<Record<string, unknown>>;
+        assert.ok(facts.some((m) => m["win"] === WIN_A && m["minimized"] === true), "minimized live window rides minimized");
         assert.ok(!closed.includes(WIN_A), "minimized live window never closes");
-        wins = domains.flatMap((d) => d["windows"] as Array<Record<string, unknown>>);
+        wins = facts;
         assert.ok(!wins.some((w) => (w as Record<string, unknown>)["win"] === WIN_B));
         assert.ok(wins.some((w) => (w as Record<string, unknown>)["win"] === WIN_C));
         // Unknown-ref removal erases nothing: the retained close survives.
         // (Do not ack yet; the flight is still open so queue the event and
         // check after the ack round-trip below retains-then-clears.)
-        h.lastCall("DescribeWorld").callback(h.accepted("gen-1", req["req"] as string, req["obs"] as string, "2"));
+        h.lastCall("DescribeWorld").callback(h.accepted("gen-1", req["source"] as string, "1", "2"));
         // After ack the close clears on the next report.
         (h.handle as NonNullable<typeof h.handle>).requestWorkspaceRelative(1);
         h.runTimers();
         const after = h.requestPayload();
-        const afterClosed = (after["domains"] as Array<Record<string, unknown>>).flatMap(
-            (d) => d["closed"] as Array<string>,
-        );
+        const afterClosed = (after["report"] as Record<string, unknown>)["closed"] as Array<string>;
         assert.deepEqual(afterClosed, [], "acked close clears");
-        h.lastCall("DescribeWorld").callback(h.accepted("gen-1", after["req"] as string, after["obs"] as string, "3"));
+        h.lastCall("DescribeWorld").callback(h.accepted("gen-1", after["source"] as string, "1", "3"));
         // Unknown-ref removal with no live difference fabricates nothing.
         h.fire("windowRemoved", {});
         (h.handle as NonNullable<typeof h.handle>).requestWorkspaceRelative(1);
         h.runTimers();
         const unknown = h.requestPayload();
-        const unknownClosed = (unknown["domains"] as Array<Record<string, unknown>>).flatMap(
-            (d) => d["closed"] as Array<string>,
-        );
+        const unknownClosed = (unknown["report"] as Record<string, unknown>)["closed"] as Array<string>;
         assert.deepEqual(unknownClosed, [], "unknown removal fabricates no close");
     });
 

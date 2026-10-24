@@ -166,7 +166,7 @@ function floatObservation(
             maximized: opts.maximized === true,
             sticky: opts.sticky === true,
             fixedAuto: opts.fixedAuto !== false,
-            fixedSuppress: opts.fixedSuppress === true,
+            fixedSuppress: opts.fixedSuppress === true, nativeWs: null,
             hints: { minW: 640, minH: 480, maxW: 640, maxH: 480 },
             minimized: opts.minimized === true,
         };
@@ -198,6 +198,11 @@ function floatObservation(
         complete: true,
         gesture: false,
         focusedGlobal,
+        screens: [], windowFacts: [], views: [], closed: [], hostOwned: false, equalCount: true, native: [],
+        cursor: null, actionForeground: null, actionCached: null, actionOutputs: [],
+        focusFollowsCursor: false, cursorWarp: false,
+        switchTarget: "focused-output", freshPlacement: "focused-output-last-focused",
+        presentation: { foreground: "", minimized: false, maximized: false, fullscreen: false, cloaked: false, hiddenWorkspace: false, shell: false, frame: null, borderEnabled: false, underlayEnabled: false, borderGap: 0, borderWidth: 0, underlayExtension: 0, chordHeld: false, moveWindow: "", paused: false, pagerOrder: [], pagerFrames: [] },
     };
 }
 
@@ -446,7 +451,7 @@ function applyObservation(focused: string, focusIsFloat: boolean) {
         rect: { x: 0, y: 0, w: 100, h: 100 },
         floating, fitExcluded: floating,
         fullscreen: false, maximized: false, sticky: false,
-        fixedAuto, fixedSuppress: false,
+        fixedAuto, fixedSuppress: false, nativeWs: null,
         hints: { minW: null, minH: null, maxW: null, maxH: null },
         minimized: false,
     });
@@ -470,6 +475,11 @@ function applyObservation(focused: string, focusIsFloat: boolean) {
             complete: true,
             gesture: false,
             focusedGlobal: focused,
+            screens: [], windowFacts: [], views: [], closed: [], hostOwned: false, equalCount: true, native: [],
+            cursor: null, actionForeground: null, actionCached: null, actionOutputs: [],
+            focusFollowsCursor: false, cursorWarp: false,
+            switchTarget: "focused-output", freshPlacement: "focused-output-last-focused",
+            presentation: { foreground: "", minimized: false, maximized: false, fullscreen: false, cloaked: false, hiddenWorkspace: false, shell: false, frame: null, borderEnabled: false, underlayEnabled: false, borderGap: 0, borderWidth: 0, underlayExtension: 0, chordHeld: false, moveWindow: "", paused: false, pagerOrder: [], pagerFrames: [] },
         } as WorldObservation,
         refs: { floatRef: floatRef as object, tileRef: tileRef as object },
     };
@@ -479,6 +489,13 @@ function applyReply(obs: string, target: string, id = "fx-1") {
     return {
         adapter: "adapter-1", gen: "gen-1", req: "req-1", obs, rev: "7",
         ready: true, consumed: false,
+        source: "req-1",
+        nativeInvalid: "1",
+        clock: "0",
+        gestureSettled: null,
+        operationSettled: [],
+        warpCursor: null,
+        presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
         scopes: [], workspaces: [], outputs: [],
         windows: [], transfers: [],
         effects: [{ id, kind: "focus", target, rev: "7" }],
@@ -488,8 +505,8 @@ function applyReply(obs: string, target: string, id = "fx-1") {
 
 function applyState(obs: string): WorldAdapterState {
     const state = new WorldAdapterState("adapter-1", "owner-a");
-    state.onDiscovery("gen-1");
-    while (state.currentObs !== obs) {
+    state.onDiscovery("gen-1", "broker-1");
+    while (state.currentInvalid !== obs) {
         state.invalidate();
     }
     return state;
@@ -504,7 +521,7 @@ describe("world apply automatic-float focus preservation", () => {
         const state = applyState("3");
         const logs: string[] = [];
         const focusWrites: unknown[] = [];
-        const result = applyWorldReply({
+        const result = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null,
             state,
             observation,
             reply,
@@ -544,7 +561,7 @@ describe("world apply automatic-float focus preservation", () => {
         const state = applyState("3");
         const logs: string[] = [];
         const focusWrites: unknown[] = [];
-        const result = applyWorldReply({
+        const result = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null,
             state,
             observation,
             reply,
@@ -580,7 +597,7 @@ describe("world apply automatic-float focus preservation", () => {
         const state = applyState("3");
         const logs: string[] = [];
         const focusWrites: unknown[] = [];
-        const result = applyWorldReply({
+        const result = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null,
             state,
             observation,
             reply,
@@ -617,7 +634,7 @@ describe("world apply automatic-float focus preservation", () => {
         const state = applyState("3");
         const logs: string[] = [];
         const focusWrites: unknown[] = [];
-        const result = applyWorldReply({
+        const result = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null,
             state,
             observation,
             reply,
@@ -806,6 +823,18 @@ function makeEntryHarness(qmlLists = false): EntryHarness {
         adapter: "test-adapter",
         callDbus: (_service, _path, _iface, method, payload, callback) => {
             calls.push({ method, payload, callback });
+            if (method === "QueueWorldCommand") {
+                const queueBody = JSON.parse(payload) as Record<string, unknown>;
+                callback(JSON.stringify({ v: 2, outcome: "queued", gen: "gen-1",
+                    client: queueBody["client"], clientCmd: queueBody["clientCmd"], globalCmd: "1" }));
+            } else if (method === "TakeCommandResult") {
+                const stagedTake = (globalThis as Record<string, unknown>)["__takeResult"] as Record<string, unknown> | undefined;
+                if (stagedTake !== undefined) {
+                    delete (globalThis as Record<string, unknown>)["__takeResult"];
+                    callback(JSON.stringify({ v: 2, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
+                } else {
+                    callback(JSON.stringify({ v: 2, outcome: "pending", gen: "gen-1" }));
+                }            }
         },
         scheduleOnce: (delay, cb) => {
             timers.push({ delay, cb });
@@ -831,16 +860,24 @@ function makeEntryHarness(qmlLists = false): EntryHarness {
     return { wins, world, calls, timers, logs, aboveWrites, belowWrites, handle, runTimers, rev: { n: 0 } };
 }
 
-function entryAcceptedReply(gen: string, req: string, obs: string, rev: string, extra: Record<string, unknown> = {}): string {
+function entryAcceptedReply(gen: string, source: string, nativeInvalid: string, rev: string, extra: Record<string, unknown> = {}): string {
     return JSON.stringify({
-        v: 1, adapter: "test-adapter", gen, req, obs, rev,
+        v: 2, adapter: "broker-1", gen, req: source, obs: rev, rev,
         ready: true, consumed: false,
+        source,
+        nativeInvalid,
+        clock: "0",
+        gestureSettled: null,
+        operationSettled: [],
+        warpCursor: null,
+        presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
         scopes: [{ scope: "out/ws1", auth: "controlled", reason: "" }],
         workspaces: [],
         outputs: [],
         windows: [],
         transfers: [],
         effects: [],
+        result: null,
         ...extra,
     });
 }
@@ -850,14 +887,18 @@ function entryDiscover(h: EntryHarness, gen = "gen-1"): void {
     assert.ok(call !== undefined);
     const body = JSON.parse(call.payload);
     call.callback(JSON.stringify({
-        v: 1, adapter: "test-adapter", gen, req: body.req, obs: "0", rev: "0",
+        v: 2, adapter: "broker-1", gen, req: body.req, obs: "0", rev: "0",
         ready: false, consumed: false, scopes: [], workspaces: [], outputs: [],
-        windows: [], transfers: [], effects: [],
+        gestureSettled: null,
+        operationSettled: [],
+        warpCursor: null,
+        presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
+        windows: [], transfers: [], effects: [], result: null,
     }));
     const auto = [...h.calls].reverse().find((c) => c.method === "DescribeWorld");
     assert.ok(auto !== undefined);
     const autoBody = JSON.parse(auto.payload);
-    auto.callback(entryAcceptedReply(gen, autoBody.req, autoBody.obs, "0"));
+    auto.callback(entryAcceptedReply(gen, autoBody.source, autoBody.nativeInvalid, "0"));
 }
 
 function entryRound(h: EntryHarness, extra: Record<string, unknown> = {}): void {
@@ -867,7 +908,13 @@ function entryRound(h: EntryHarness, extra: Record<string, unknown> = {}): void 
     assert.ok(call !== undefined);
     const body = JSON.parse(call.payload);
     h.rev.n += 1;
-    call.callback(entryAcceptedReply("gen-1", body.req, body.obs, String(h.rev.n), extra));
+    // Terminal results ride the take lane requester-only, never the
+    // capture reply.
+    const { result, ...snapshot } = extra;
+    if (result !== undefined) {
+        (globalThis as Record<string, unknown>)["__takeResult"] = result;
+    }
+    call.callback(entryAcceptedReply("gen-1", body.source, body.nativeInvalid, String(h.rev.n), snapshot));
 }
 
 describe("world entry automatic-float stacking", () => {

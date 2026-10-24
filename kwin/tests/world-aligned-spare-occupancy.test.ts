@@ -19,6 +19,7 @@ import { dirname, join, resolve } from "node:path";
 import { describe, it } from "node:test";
 
 import { WORLD_DEBOUNCE_MS, startWorldAdapterEntry } from "../src/world-entry";
+import { createMiniBroker, type MiniBroker } from "./world-wire-harness";
 
 function repoRoot(): string {
     let dir = resolve(process.cwd());
@@ -180,6 +181,7 @@ interface Timer {
 
 interface Harness {
     readonly bridge: WorldBridge;
+    readonly broker: MiniBroker;
     readonly wins: FakeWindow[];
     readonly desktops: FakeDesktop[];
     readonly screens: Array<{ name: string; geometry: Record<string, number> }>;
@@ -187,6 +189,7 @@ interface Harness {
     readonly calls: CapturedCall[];
     readonly answered: Set<number>;
     readonly replies: Map<number, string>;
+    readonly takeReplies: string[];
     readonly timers: Timer[];
     readonly viewWrites: string[];
     activeScreen: { name: string };
@@ -260,6 +263,7 @@ async function makeSpareHarness(): Promise<Harness> {
     }
     const harness: Harness = {
         bridge: WorldBridge.start(),
+        broker: createMiniBroker(),
         wins,
         desktops,
         screens,
@@ -267,6 +271,7 @@ async function makeSpareHarness(): Promise<Harness> {
         calls: [],
         answered: new Set<number>(),
         replies: new Map<number, string>(),
+        takeReplies: [],
         timers: [],
         viewWrites: [],
         activeScreen: { name: LEFT },
@@ -291,10 +296,14 @@ async function makeSpareHarness(): Promise<Harness> {
         flush: async () => {
             const index = harness.calls.findIndex((call, at) => call.method === "DescribeWorld" && !harness.answered.has(at));
             assert.ok(index >= 0, "expected a queued DescribeWorld dispatch to flush to the real Engine");
-            const reply = await harness.bridge.send(
-                (harness.calls[index] as CapturedCall).method,
-                (harness.calls[index] as CapturedCall).payload,
-            );
+            // Mini-broker stamping: the envelope becomes the exact core
+            // report the sole broker would dispatch (own namespace plus at
+            // most one queued command), and the core reply returns bound
+            // with a nulled terminal result.
+            const envelope = (harness.calls[index] as CapturedCall).payload;
+            const stamped = harness.broker.stampCapture(envelope);
+            const coreReply = await harness.bridge.send("DescribeWorld", stamped);
+            const reply = harness.broker.bindReply(coreReply, envelope);
             harness.answered.add(index);
             harness.replies.set(index, reply);
             (harness.calls[index] as CapturedCall).callback(reply);
@@ -418,10 +427,17 @@ async function makeSpareHarness(): Promise<Harness> {
         owner: "owner-a",
         adapter: "test-adapter",
         callDbus: (_service, _path, _iface, method, payload, callback): void => {
-            if (method !== "DiscoverWorld" && method !== "DescribeWorld") {
+            if (method !== "DiscoverWorld" && method !== "DescribeWorld" && method !== "QueueWorldCommand" && method !== "TakeCommandResult") {
                 return;
             }
             harness.calls.push({ method, payload, callback });
+            if (method === "QueueWorldCommand") {
+                callback(harness.broker.answerQueue(payload));
+            } else if (method === "TakeCommandResult") {
+                const takeReply = harness.broker.answerTake(payload);
+                harness.takeReplies.push(takeReply);
+                callback(takeReply);
+            }
         },
         scheduleOnce: (delayMs, callback): (() => void) => {
             const timer: Timer = { delayMs, callback, cancelled: false, fired: false };
@@ -465,7 +481,8 @@ describe("world aligned spare occupancy-only", () => {
             const discIndex = h.calls.findIndex((call) => call.method === "DiscoverWorld");
             assert.ok(discIndex >= 0, "entry discovers on start");
             const disc = h.calls[discIndex] as CapturedCall;
-            const discReply = await h.bridge.send(disc.method, disc.payload);
+            const engineBootstrap = await h.bridge.send(disc.method, disc.payload);
+            const discReply = h.broker.bindDiscovery(engineBootstrap);
             disc.callback(discReply);
             await h.settle();
             assert.equal(h.desktops.length, 4, "no native appended while showing empty ends");

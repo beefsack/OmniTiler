@@ -10,8 +10,9 @@
 // list decoding can converge.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { parseWorldReply, isWorldRejection } from "../src/world-report";
+import { parseWorldReply, isWorldRejection, isCoreWorldReply } from "../src/world-report";
 import { applyWorldReply } from "../src/world-apply";
+import type { WorldObservation } from "../src/world-observe";
 import { WorldAdapterState } from "../src/world-state";
 import { createWorldApplyHost } from "../src/world-native";
 
@@ -32,26 +33,33 @@ const TRANSFER_OP = "op-3";
 // Synthetic reply: two controlled frames plus one retained unheld view
 // transfer to the non-shown workspace.
 const REPLY_TEXT = JSON.stringify({
-    v: 1, adapter: ADAPTER, gen: GEN, req: REQ, obs: OBS, rev: REV,
+    v: 2, adapter: "broker-1", gen: GEN, req: REQ, obs: OBS, rev: REV,
     ready: true, consumed: false,
+    source: REQ,
+    nativeInvalid: "1",
+    clock: "0",
+    gestureSettled: null,
+    operationSettled: [],
+    warpCursor: null,
+    presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
     scopes: [
         { scope: `${OUT}/${WS_A}`, auth: "controlled", reason: "" },
         { scope: `${OUT}/${WS_B}`, auth: "controlled", reason: "" },
     ],
     workspaces: [
-        { id: WS_A, out: OUT, bind: WS_A, logical: WS_A, scope: OUT, order: 0, mode: "tiled", exist: true, hold: "" },
-        { id: WS_B, out: OUT, bind: WS_B, logical: WS_B, scope: OUT, order: 1, mode: "tiled", exist: true, hold: "" },
+        { id: WS_A, out: OUT, bind: WS_A, scope: OUT, order: 0, mode: "tiled", exist: true, hold: "" },
+        { id: WS_B, out: OUT, bind: WS_B, scope: OUT, order: 1, mode: "tiled", exist: true, hold: "" },
     ],
     outputs: [{ out: OUT, view: WS_B, mode: "tiled", hold: "" }],
     windows: [
         {
             win: WIN_A, out: OUT, ws: WS_A, alloc: [0, 0, 400, 600], frame: [0, 0, 400, 600],
-            frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "",
+            frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "",
             floating: false, float_origin: "",
         },
         {
             win: WIN_B, out: OUT, ws: WS_B, alloc: [400, 0, 400, 600], frame: [400, 0, 400, 600],
-            frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "",
+            frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "",
             floating: false, float_origin: "",
         },
     ],
@@ -85,8 +93,8 @@ describe("world qml-list regression", () => {
     it("synthetic reply parses with its view transfer intact", () => {
         const parsed = parseWorldReply(REPLY_TEXT);
         assert.ok(parsed !== null, "synthetic reply must parse");
-        assert.ok(!isWorldRejection(parsed), "synthetic reply must not be a rejection");
-        if (parsed === null || isWorldRejection(parsed)) {
+        assert.ok(!isWorldRejection(parsed) && isCoreWorldReply(parsed), "synthetic reply must be a core reply");
+        if (parsed === null || isWorldRejection(parsed) || !isCoreWorldReply(parsed)) {
             return;
         }
         assert.equal(parsed.req, REQ);
@@ -107,8 +115,8 @@ describe("world qml-list regression", () => {
 
     it("actuates geometry and the retained view against array-like host lists", () => {
         const parsed = parseWorldReply(REPLY_TEXT);
-        assert.ok(parsed !== null && !isWorldRejection(parsed));
-        if (parsed === null || isWorldRejection(parsed)) {
+        assert.ok(parsed !== null && isCoreWorldReply(parsed));
+        if (!isCoreWorldReply(parsed)) {
             return;
         }
         // Live inventory behind the synthetic report: the same two windows
@@ -184,6 +192,7 @@ describe("world qml-list regression", () => {
                 floating: false, fitExcluded: false, fullscreen: false,
                 maximized: false, sticky: false, fixedAuto: false,
                 fixedSuppress: false,
+                nativeWs: null,
                 hints: { minW: null, minH: null, maxW: null, maxH: null },
                 minimized: false,
             };
@@ -192,7 +201,7 @@ describe("world qml-list regression", () => {
         // shaped (internalId plus readable properties), as in production;
         // the host under test re-resolves everything else from the
         // array-like surface on every read.
-        const observation = {
+        const observation: WorldObservation = {
             mode: "per-output-local" as const,
             topology: [{
                 out: OUT, order: [WS_A, WS_B], current: WS_A, complete: true,
@@ -226,14 +235,19 @@ describe("world qml-list regression", () => {
             complete: true,
             gesture: false,
             focusedGlobal: WIN_A,
+            screens: [], windowFacts: [], views: [], closed: [], hostOwned: false, equalCount: true, native: [],
+            cursor: null, actionForeground: null, actionCached: null, actionOutputs: [],
+            focusFollowsCursor: false, cursorWarp: false,
+            switchTarget: "focused-output", freshPlacement: "focused-output-last-focused",
+            presentation: { foreground: "", minimized: false, maximized: false, fullscreen: false, cloaked: false, hiddenWorkspace: false, shell: false, frame: null, borderEnabled: false, underlayEnabled: false, borderGap: 0, borderWidth: 0, underlayExtension: 0, chordHeld: false, moveWindow: "", paused: false, pagerOrder: [], pagerFrames: [] },
         };
         const state = new WorldAdapterState(ADAPTER, ADAPTER);
-        state.onDiscovery(GEN);
-        (state as unknown as { currentObs: string }).currentObs = OBS;
+        state.onDiscovery(GEN, "broker-1");
+        (state as unknown as { currentInvalid: string }).currentInvalid = OBS;
         // Production wiring: every read comes from the host under test;
         // only the two native effect setters are captured.
         const host = createWorldApplyHost(surface as unknown as object, readProp);
-        const result = applyWorldReply({
+        const result = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null,
             state,
             observation,
             reply: parsed,
@@ -266,9 +280,9 @@ describe("world qml-list regression", () => {
         );
         assert.equal(result.viewWrites, 1);
         assert.equal(liveCurrent, WS_B);
-        // The view attempt settles through feedback so the next report
-        // carries proof instead of silently repeating the no-op.
-        const feedback = (state as unknown as { pendingFeedback: Array<{ op: string }> }).pendingFeedback;
-        assert.ok(feedback.some((f) => f.op === TRANSFER_OP), "view settle must queue attempt feedback");
+        // The view attempt settles locally so the next report carries
+        // proof instead of silently repeating the no-op (verdict
+        // transport is deleted; the hold drains through take/apply).
+        assert.equal(state.isHeldAmbiguous(TRANSFER_OP), false, "view settle clears ambiguity");
     });
 });

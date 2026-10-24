@@ -17,6 +17,7 @@ import { dirname, join, resolve } from "node:path";
 import { describe, it } from "node:test";
 
 import { WORLD_DEBOUNCE_MS, startWorldAdapterEntry } from "../src/world-entry";
+import { createMiniBroker, type MiniBroker } from "./world-wire-harness";
 
 function repoRoot(): string {
     let dir = resolve(process.cwd());
@@ -178,6 +179,7 @@ interface Timer {
 
 interface Harness {
     readonly bridge: WorldBridge;
+    readonly broker: MiniBroker;
     readonly wins: FakeWindow[];
     readonly desktops: FakeDesktop[];
     readonly screens: Array<{ name: string; geometry: Record<string, number> }>;
@@ -185,6 +187,7 @@ interface Harness {
     readonly calls: CapturedCall[];
     readonly answered: Set<number>;
     readonly replies: Map<number, string>;
+    readonly takeReplies: string[];
     readonly timers: Timer[];
     readonly logs: string[];
     readonly workspaceFires: string[];
@@ -245,6 +248,7 @@ async function makeHarness(): Promise<Harness> {
     }
     const harness: Harness = {
         bridge: WorldBridge.start(),
+        broker: createMiniBroker(),
         wins,
         desktops,
         screens,
@@ -252,6 +256,7 @@ async function makeHarness(): Promise<Harness> {
         calls: [],
         answered: new Set<number>(),
         replies: new Map<number, string>(),
+        takeReplies: [],
         timers: [],
         logs: [],
         workspaceFires: [],
@@ -285,10 +290,14 @@ async function makeHarness(): Promise<Harness> {
         flush: async () => {
             const index = harness.calls.findIndex((call, at) => call.method === "DescribeWorld" && !harness.answered.has(at));
             assert.ok(index >= 0, "expected a queued DescribeWorld dispatch to flush to the real Engine");
-            const reply = await harness.bridge.send(
-                (harness.calls[index] as CapturedCall).method,
-                (harness.calls[index] as CapturedCall).payload,
-            );
+            // Mini-broker stamping: the envelope becomes the exact core
+            // report the sole broker would dispatch (own namespace plus at
+            // most one queued command), and the core reply returns bound
+            // with a nulled terminal result.
+            const envelope = (harness.calls[index] as CapturedCall).payload;
+            const stamped = harness.broker.stampCapture(envelope);
+            const coreReply = await harness.bridge.send("DescribeWorld", stamped);
+            const reply = harness.broker.bindReply(coreReply, envelope);
             harness.answered.add(index);
             harness.replies.set(index, reply);
             (harness.calls[index] as CapturedCall).callback(reply);
@@ -415,10 +424,17 @@ async function makeHarness(): Promise<Harness> {
         owner: "owner-a",
         adapter: "test-adapter",
         callDbus: (_service, _path, _iface, method, payload, callback): void => {
-            if (method !== "DiscoverWorld" && method !== "DescribeWorld") {
+            if (method !== "DiscoverWorld" && method !== "DescribeWorld" && method !== "QueueWorldCommand" && method !== "TakeCommandResult") {
                 return;
             }
             harness.calls.push({ method, payload, callback });
+            if (method === "QueueWorldCommand") {
+                callback(harness.broker.answerQueue(payload));
+            } else if (method === "TakeCommandResult") {
+                const takeReply = harness.broker.answerTake(payload);
+                harness.takeReplies.push(takeReply);
+                callback(takeReply);
+            }
         },
         scheduleOnce: (delayMs, callback): (() => void) => {
             const timer: Timer = { delayMs, callback, cancelled: false, fired: false };
@@ -444,7 +460,8 @@ async function discover(h: Harness): Promise<void> {
     const discIndex = h.calls.findIndex((call) => call.method === "DiscoverWorld");
     assert.ok(discIndex >= 0, "entry discovers on start");
     const disc = h.calls[discIndex] as CapturedCall;
-    const reply = await h.bridge.send(disc.method, disc.payload);
+    const engineBootstrap = await h.bridge.send(disc.method, disc.payload);
+    const reply = h.broker.bindDiscovery(engineBootstrap);
     disc.callback(reply);
     await h.settle();
 }
@@ -463,17 +480,14 @@ function transfersOf(reply: Record<string, unknown>): Array<Record<string, unkno
 }
 
 function homingOf(h: Harness, index: number, win: string): { out: string; ws: string } | null {
+    // v2: the inner report carries window facts with the observed native
+    // workspace (never a domains lane); native truth resolves through the
+    // producer-owned id.
     const body = JSON.parse((h.calls[index] as CapturedCall).payload) as Record<string, unknown>;
-    for (const d of (body["domains"] as Array<Record<string, unknown>>) ?? []) {
-        for (const w of (d["windows"] as Array<Record<string, unknown>>) ?? []) {
-            if (w["win"] === win) {
-                return { out: w["out"] as string, ws: w["ws"] as string };
-            }
-        }
-    }
-    for (const m of (body["minimized"] as Array<Record<string, unknown>>) ?? []) {
-        if (m["win"] === win) {
-            return { out: m["out"] as string, ws: m["ws"] as string };
+    const report = body["report"] as Record<string, unknown>;
+    for (const w of (report["windows"] as Array<Record<string, unknown>>) ?? []) {
+        if (w["win"] === win) {
+            return { out: w["out"] as string, ws: w["nativeWs"] as string };
         }
     }
     return null;
@@ -555,10 +569,14 @@ describe("world native homing", () => {
 
             // Leg 4: own window send still settles exactly once (no
             // loop/replay/stall from the new subscriptions).
+            // v2 command lane: presses file QueueWorldCommand; DescribeWorld
+            // envelopes carry no inline command.
             const sendsBefore = h.calls.filter((c) => {
+                if (c.method !== "QueueWorldCommand") {
+                    return false;
+                }
                 try {
-                    return (JSON.parse(c.payload) as Record<string, unknown>)["command"] !== null &&
-                        ((JSON.parse(c.payload) as Record<string, unknown>)["command"] as Record<string, unknown>)["op"] === "send-directional";
+                    return ((JSON.parse(c.payload) as Record<string, unknown>)["command"] as Record<string, unknown>)["op"] === "send-directional";
                 } catch {
                     return false;
                 }
@@ -573,9 +591,11 @@ describe("world native homing", () => {
             h.handle.requestSendToOutput("left", true);
             await h.settle();
             const sendsAfter = h.calls.filter((c) => {
+                if (c.method !== "QueueWorldCommand") {
+                    return false;
+                }
                 try {
-                    return (JSON.parse(c.payload) as Record<string, unknown>)["command"] !== null &&
-                        ((JSON.parse(c.payload) as Record<string, unknown>)["command"] as Record<string, unknown>)["op"] === "send-directional";
+                    return ((JSON.parse(c.payload) as Record<string, unknown>)["command"] as Record<string, unknown>)["op"] === "send-directional";
                 } catch {
                     return false;
                 }
@@ -605,6 +625,9 @@ describe("world native homing", () => {
             h.fire("currentDesktopChanged");
             await h.settle();
             const migrateBefore = h.calls.filter((c) => {
+                if (c.method !== "QueueWorldCommand") {
+                    return false;
+                }
                 try {
                     return ((JSON.parse(c.payload) as Record<string, unknown>)["command"] as Record<string, unknown> | null)?.["op"] === "migrate-directional";
                 } catch {
@@ -614,6 +637,9 @@ describe("world native homing", () => {
             h.handle.requestWorkspaceMigrate("left");
             await h.settle();
             const migrateAfter = h.calls.filter((c) => {
+                if (c.method !== "QueueWorldCommand") {
+                    return false;
+                }
                 try {
                     return ((JSON.parse(c.payload) as Record<string, unknown>)["command"] as Record<string, unknown> | null)?.["op"] === "migrate-directional";
                 } catch {

@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { startWorldAdapterEntry } from "../src/world-entry";
-import { parseWorldReply, isWorldRejection } from "../src/world-report";
+import { parseWorldReply, isCoreWorldReply } from "../src/world-report";
 
 const FIXTURE_DIR = join("..", "test-fixtures", "world-wire");
 const UPDATE = process.env["UPDATE_WORLD_FIXTURES"] === "1";
@@ -249,6 +249,18 @@ function startFlow(surface: object): Flow {
         adapter: "test-adapter",
         callDbus: (_s, _p, _i, method, payload, callback) => {
             calls.push({ method, payload, callback });
+            if (method === "QueueWorldCommand") {
+                const queueBody = JSON.parse(payload) as Record<string, unknown>;
+                callback(JSON.stringify({ v: 2, outcome: "queued", gen: "gen-1",
+                    client: queueBody["client"], clientCmd: queueBody["clientCmd"], globalCmd: "1" }));
+            } else if (method === "TakeCommandResult") {
+                const stagedTake = (globalThis as Record<string, unknown>)["__takeResult"] as Record<string, unknown> | undefined;
+                if (stagedTake !== undefined) {
+                    delete (globalThis as Record<string, unknown>)["__takeResult"];
+                    callback(JSON.stringify({ v: 2, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
+                } else {
+                    callback(JSON.stringify({ v: 2, outcome: "pending", gen: "gen-1" }));
+                }            }
         },
         scheduleOnce: (delay, cb) => {
             timers.push({ delay, cb });
@@ -289,37 +301,50 @@ function replyCall(flow: Flow, method: string): (reply: unknown) => void {
     return (call as { callback: (reply: unknown) => void }).callback;
 }
 
-function seedBinds(req: unknown, obs: unknown, rev: string): string {
+function seedBinds(source: unknown, nativeInvalid: string, rev: string): string {
     return JSON.stringify({
-        v: 1, adapter: "test-adapter", gen: "gen-1", req,
-        obs, rev, ready: true, consumed: false,
-        scopes: [], outputs: [], windows: [], transfers: [], effects: [],
+        v: 2, adapter: "broker-1", gen: "gen-1", req: source,
+        obs: rev, rev, ready: true, consumed: false,
+        source,
+        nativeInvalid,
+        clock: "1",
+        gestureSettled: null,
+        operationSettled: [],
+        warpCursor: null,
+        presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
+        scopes: [], outputs: [], windows: [], transfers: [], effects: [], result: null,
         workspaces: [
-            { id: "ws-1", out: "out-1", bind: "ws-1", logical: "desk-1", scope: "out-1", order: 0, mode: "tiled", exist: true, hold: "" },
-            { id: "ws-2", out: "out-2", bind: "ws-2", logical: "desk-2", scope: "out-2", order: 0, mode: "tiled", exist: true, hold: "" },
-            { id: "ws-3", out: "out-1", bind: "ws-3", logical: "desk-3", scope: "out-1", order: 1, mode: "tiled", exist: true, hold: "" },
+            { id: "ws-1", out: "out-1", bind: "ws-1", scope: "out-1", order: 0, mode: "tiled", exist: true, hold: "" },
+            { id: "ws-2", out: "out-2", bind: "ws-2", scope: "out-2", order: 0, mode: "tiled", exist: true, hold: "" },
+            { id: "ws-3", out: "out-1", bind: "ws-3", scope: "out-1", order: 1, mode: "tiled", exist: true, hold: "" },
         ],
     });
 }
 
-function seedSizeHintBinds(req: unknown, obs: unknown, rev: string): string {
+function bootstrap(gen: string, req: string): string {
     return JSON.stringify({
-        v: 1, adapter: "test-adapter", gen: "gen-1", req,
-        obs, rev, ready: true, consumed: false,
-        scopes: [], outputs: [], windows: [], transfers: [], effects: [],
-        workspaces: [
-            { id: "ws-1", out: "out-1", bind: "ws-1", logical: "desk-1", scope: "out-1", order: 0, mode: "tiled", exist: true, hold: "" },
-            { id: "ws-2", out: "out-1", bind: "ws-2", logical: "desk-2", scope: "out-1", order: 1, mode: "tiled", exist: true, hold: "" },
-        ],
-    });
-}
-
-function acceptEmpty(req: unknown, obs: unknown, rev: string): string {
-    return JSON.stringify({
-        v: 1, adapter: "test-adapter", gen: "gen-1", req,
-        obs, rev, ready: true, consumed: false,
+        v: 2, adapter: "broker-1", gen, req, obs: "0", rev: "0",
+        ready: false, consumed: false,
         scopes: [], workspaces: [], outputs: [], windows: [],
-        transfers: [], effects: [],
+        transfers: [], effects: [], result: null,
+        gestureSettled: null, operationSettled: [], warpCursor: null,
+        presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
+    });
+}
+
+function acceptEmpty(source: unknown, nativeInvalid: string, rev: string): string {
+    return JSON.stringify({
+        v: 2, adapter: "broker-1", gen: "gen-1", req: source,
+        obs: rev, rev, ready: true, consumed: false,
+        source,
+        nativeInvalid,
+        clock: "0",
+        gestureSettled: null,
+        operationSettled: [],
+        warpCursor: null,
+        presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
+        scopes: [], workspaces: [], outputs: [], windows: [],
+        transfers: [], effects: [], result: null,
     });
 }
 
@@ -342,9 +367,9 @@ describe("world shared byte fixtures", () => {
         // Settle discovery with the binding seed (rev 0 leaves room for
         // the Rust-produced golden rev 1 below), then settle the auto
         // report with the same binds to converge the mapping snapshot.
-        replyCall(flow, "DiscoverWorld")(seedBinds("disc-1", "0", "0"));
+        replyCall(flow, "DiscoverWorld")(bootstrap("gen-1", "disc-1"));
         const autoSeed = JSON.parse(lastPayload(flow, "DescribeWorld")) as Record<string, unknown>;
-        replyCall(flow, "DescribeWorld")(seedBinds(autoSeed["req"], autoSeed["obs"], "0"));
+        replyCall(flow, "DescribeWorld")(seedBinds(autoSeed["source"], "1", "0"));
         // A native close rides the next full report explicitly: the window
         // leaves the live inventory first, then the payload-free removal
         // event gates the cached-id difference (the payload is never read).
@@ -352,18 +377,21 @@ describe("world shared byte fixtures", () => {
         windowRemoved.emit();
         runTimers(flow);
         const observePayload = lastPayload(flow, "DescribeWorld");
-        checkOrWrite("report-observe.json", observePayload);
+        // The per-capture source correlation is a fresh nonce per
+        // dispatch: mask it for the byte gate (everything else matches
+        // exactly, including the broker envelope shape).
+        const observeMasked = JSON.stringify({ ...JSON.parse(observePayload), source: "src-masked" });
+        checkOrWrite("report-observe.json", observeMasked);
         const observeBody = JSON.parse(observePayload) as Record<string, unknown>;
+        const observeInner = observeBody["report"] as Record<string, unknown>;
         // The fixture covers the contract surface the byte gate locks:
-        // minimized lifetimes, bindings, hints, long ids, extrema.
-        const minimized = observeBody["minimized"] as Array<Record<string, unknown>>;
-        assert.ok(minimized.some((m) => m["win"] === "win-min"));
-        assert.ok((observeBody["bindings"] as Array<unknown>).length >= 3);
+        // minimized lifetimes, native order, hints, long ids, extrema.
+        const facts = observeInner["windows"] as Array<Record<string, unknown>>;
+        assert.ok(facts.some((m) => m["win"] === "win-min" && m["minimized"] === true));
+        assert.ok(((observeInner["native"] as Array<Record<string, unknown>>)[0]?.["order"] as Array<unknown>).length >= 3);
         assert.ok(observePayload.includes(LONG_ID), "128-char id rides verbatim");
         assert.ok(observePayload.includes("-16384"), "extrema ride verbatim");
-        const domains = observeBody["domains"] as Array<Record<string, unknown>>;
-        const game = domains.flatMap((d) => d["windows"] as Array<Record<string, unknown>>)
-            .find((w) => w["win"] === "win-game");
+        const game = facts.find((w) => w["win"] === "win-game");
         assert.ok(game !== undefined && game["fullscreen"] === true && game["fitExcluded"] === true);
         // The Rust golden reply for this exact report parses and applies
         // through the production entry (proves byte consumption in-flow).
@@ -378,29 +406,39 @@ describe("world shared byte fixtures", () => {
             golden = null;
         }
         if (golden !== null) {
-            const parsed = parseWorldReply(golden);
-            assert.ok(parsed !== null && !isWorldRejection(parsed), "golden reply parses");
-            replyCall(flow, "DescribeWorld")(golden);
+            // Rebind the golden to this capture's transport correlation:
+            // the fixture locks the core shape, the envelope binds the
+            // live source watermark.
+            const goldenBound = JSON.stringify({
+                ...JSON.parse(golden),
+                req: observeBody["source"], source: observeBody["source"],
+                nativeInvalid: observeBody["nativeInvalid"],
+            });
+            const parsed = parseWorldReply(goldenBound);
+            assert.ok(parsed !== null && isCoreWorldReply(parsed), "golden reply parses");
+            replyCall(flow, "DescribeWorld")(goldenBound);
             assert.ok(flow.logs.some((l) => l.includes("omnitiler:world:applied rev=1")), "golden reply applied");
         } else {
             assert.ok(UPDATE, "reply-golden.json must exist for verification runs");
-            replyCall(flow, "DescribeWorld")(acceptEmpty(observeBody["req"], observeBody["obs"], "1"));
+            replyCall(flow, "DescribeWorld")(acceptEmpty(observeBody["source"], "1", "1"));
         }
         // A directed send is direction-only (core resolves the target):
         // no endpoint is named, so no binding pins for the target.
         flow.handle.requestSendToOutput("right", false);
         runTimers(flow);
         const sendPayload = lastPayload(flow, "DescribeWorld");
-        checkOrWrite("report-send.json", sendPayload);
+        const sendMasked = JSON.stringify({ ...JSON.parse(sendPayload), source: "src-masked" });
+        checkOrWrite("report-send.json", sendMasked);
         const sendBody = JSON.parse(sendPayload) as Record<string, unknown>;
-        const sendCmd = sendBody["command"] as Record<string, unknown>;
+        const queued = JSON.parse(lastPayload(flow, "QueueWorldCommand")) as Record<string, unknown>;
+        const sendCmd = queued["command"] as Record<string, unknown>;
         assert.equal(sendCmd["op"], "send-directional");
         assert.equal(sendCmd["direction"], "right");
         assert.equal(sendCmd["follow"], false);
-        for (const b of sendBody["bindings"] as Array<Record<string, unknown>>) {
-            assert.equal(b["pin"], false, "direction-only send pins no binding");
-        }
-        replyCall(flow, "DescribeWorld")(acceptEmpty(sendBody["req"], sendBody["obs"], "2"));
+        // Direction-only sends name no endpoint on any lane: the inner
+        // report carries no command key at all.
+        assert.ok(!("command" in (sendBody["report"] as Record<string, unknown>)), "drained capture stays commandless");
+        replyCall(flow, "DescribeWorld")(acceptEmpty(sendBody["source"], "1", "2"));
         // A finished gesture routes an exact drop with source and null hover.
         // The final rect keeps the live start size (same-size move) at a
         // pointer far outside any plausible tiled layout.
@@ -420,9 +458,10 @@ describe("world shared byte fixtures", () => {
         }));
         runTimers(flow);
         const dragPayload = lastPayload(flow, "DescribeWorld");
-        checkOrWrite("report-dragdrop.json", dragPayload);
-        const dragBody = JSON.parse(dragPayload) as Record<string, unknown>;
-        const dragCmd = (dragBody["command"] as Record<string, unknown>)["command"] as Record<string, unknown>;
+        const dragMasked = JSON.stringify({ ...JSON.parse(dragPayload), source: "src-masked" });
+        checkOrWrite("report-dragdrop.json", dragMasked);
+        const dragQueued = JSON.parse(lastPayload(flow, "QueueWorldCommand")) as Record<string, unknown>;
+        const dragCmd = (dragQueued["command"] as Record<string, unknown>)["command"] as Record<string, unknown>;
         assert.equal(dragCmd["op"], "drag-drop");
         assert.equal(dragCmd["x"], 1500);
         assert.equal(dragCmd["y"], 900);
@@ -434,9 +473,10 @@ describe("world shared byte fixtures", () => {
     it("captures real Qt size-hint defaults byte-identically with a select follow-up", () => {
         const { surface } = makeSizeHintsSurface();
         const flow = startFlow(surface);
-        replyCall(flow, "DiscoverWorld")(seedSizeHintBinds("disc-1", "0", "0"));
+        replyCall(flow, "DiscoverWorld")(bootstrap("gen-1", "disc-1"));
         const observePayload = lastPayload(flow, "DescribeWorld");
-        checkOrWrite("report-kwin-size-hints.json", observePayload);
+        const hintsMasked = JSON.stringify({ ...JSON.parse(observePayload), source: "src-masked" });
+        checkOrWrite("report-kwin-size-hints.json", hintsMasked);
         const body = JSON.parse(observePayload) as Record<string, unknown>;
         // Real Qt QSize field shapes ride verbatim on the wire.
         assert.ok(observePayload.includes('"minW":0,"minH":0,"maxW":16777215,"maxH":16777215}'), "Qt default hints ride");
@@ -445,8 +485,8 @@ describe("world shared byte fixtures", () => {
         assert.ok(observePayload.includes('"minW":400,"minH":300,"maxW":400,"maxH":300}'), "fixed pin rides");
         // fixedAuto classification stays meaningful under the default
         // both-axes predicate: only the equal nonzero pin floats.
-        const domains = body["domains"] as Array<Record<string, unknown>>;
-        const rows = domains.flatMap((d) => d["windows"] as Array<Record<string, unknown>>);
+        const innerHints = body["report"] as Record<string, unknown>;
+        const rows = innerHints["windows"] as Array<Record<string, unknown>>;
         const flagOf = (id: string): boolean => {
             const row = rows.find((w) => w["win"] === id);
             assert.ok(row !== undefined, `expected row ${id}`);
@@ -458,14 +498,15 @@ describe("world shared byte fixtures", () => {
         assert.equal(flagOf("win-wide"), false);
         // Accepted, never catchup-held: the explicit select rides the next
         // dispatch instead of being dropped to observation-only.
-        replyCall(flow, "DescribeWorld")(acceptEmpty(body["req"], body["obs"], "1"));
+        replyCall(flow, "DescribeWorld")(acceptEmpty(body["source"], "1", "1"));
         flow.handle.requestWorkspaceSelect(2);
         runTimers(flow);
         assert.ok(!flow.logs.some((l) => l.includes("shortcut-failed")), "select dispatched with its command");
         const selectPayload = lastPayload(flow, "DescribeWorld");
-        checkOrWrite("report-kwin-size-hints-select.json", selectPayload);
-        const selectBody = JSON.parse(selectPayload) as Record<string, unknown>;
-        const cmd = selectBody["command"] as Record<string, unknown>;
+        const selectMasked = JSON.stringify({ ...JSON.parse(selectPayload), source: "src-masked" });
+        checkOrWrite("report-kwin-size-hints-select.json", selectMasked);
+        const selectQueued = JSON.parse(lastPayload(flow, "QueueWorldCommand")) as Record<string, unknown>;
+        const cmd = selectQueued["command"] as Record<string, unknown>;
         assert.equal(cmd["op"], "select-numbered");
         assert.equal(cmd["index"], 2);
         assert.equal(cmd["out"], "out-1");
@@ -509,7 +550,7 @@ describe("world shared byte fixtures", () => {
         // Under: ~2.7MB of long-id windows dispatches through the real builder.
         {
             const flow = startFlow(mkSurface(4000));
-            replyCall(flow, "DiscoverWorld")(acceptEmpty("disc-1", "1", "0"));
+            replyCall(flow, "DiscoverWorld")(bootstrap("gen-1", "disc-1"));
             const payload = lastPayload(flow, "DescribeWorld");
             assert.ok(payload.length < 4 * 1024 * 1024, `under-cap dispatches (${payload.length} bytes)`);
             assert.ok(!flow.logs.some((l) => l.includes("request-oversize")));
@@ -519,7 +560,7 @@ describe("world shared byte fixtures", () => {
         {
             const flow = startFlow(mkSurface(8000));
             const before = flow.calls.filter((c) => c.method === "DescribeWorld").length;
-            replyCall(flow, "DiscoverWorld")(acceptEmpty("disc-1", "1", "0"));
+            replyCall(flow, "DiscoverWorld")(bootstrap("gen-1", "disc-1"));
             const after = flow.calls.filter((c) => c.method === "DescribeWorld").length;
             assert.equal(after, before, "oversize report never dispatches");
             assert.ok(flow.logs.some((l) => l.includes("request-oversize")), "one bounded oversize line");
@@ -532,9 +573,10 @@ describe("world rejection log vocabulary", () => {
     function startRejectedFlow(message: unknown): string[] {
         const { surface } = makeSizeHintsSurface();
         const flow = startFlow(surface);
-        replyCall(flow, "DiscoverWorld")(acceptEmpty("disc-1", "0", "0"));
+        replyCall(flow, "DiscoverWorld")(bootstrap("gen-1", "disc-1"));
         replyCall(flow, "DescribeWorld")(JSON.stringify({
-            v: 1, outcome: "rejected", kind: "snapshot-invalid", message, gen: "gen-1",
+            v: 2, outcome: "rejected", kind: "snapshot-invalid", message, gen: "gen-1",
+            source: "", nativeInvalid: "0", clock: "0",
         }));
         const logs = [...flow.logs];
         flow.handle.stop();
@@ -615,11 +657,11 @@ describe("world T05 unbounded-maximum producer shape", () => {
         };
         const flow = startFlow(surface);
         try {
-            replyCall(flow, "DiscoverWorld")(seedSizeHintBinds("disc-1", "0", "0"));
+            replyCall(flow, "DiscoverWorld")(bootstrap("gen-1", "disc-1"));
             const payload = lastPayload(flow, "DescribeWorld");
             const body = JSON.parse(payload) as Record<string, unknown>;
-            const rows = (body["domains"] as Array<Record<string, unknown>>)
-                .flatMap((d) => d["windows"] as Array<Record<string, unknown>>);
+            const inner = body["report"] as Record<string, unknown>;
+            const rows = inner["windows"] as Array<Record<string, unknown>>;
             const rowOf = (id: string): Record<string, unknown> => {
                 const row = rows.find((w) => w["win"] === id);
                 assert.ok(row !== undefined, `expected row ${id}`);

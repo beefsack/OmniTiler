@@ -133,6 +133,7 @@ function observe(surf: ReturnType<typeof makeSurface>): WorldObservation {
         sticky: w.onAllDesktops,
         fixedAuto: false,
         fixedSuppress: false,
+        nativeWs: null,
         hints: { minW: null, minH: null, maxW: null, maxH: null },
         minimized: w.minimized,
     });
@@ -172,15 +173,20 @@ function observe(surf: ReturnType<typeof makeSurface>): WorldObservation {
         complete: true,
         gesture: false,
         focusedGlobal: "",
+        screens: [], windowFacts: [], views: [], closed: [], hostOwned: false, equalCount: true, native: [],
+        cursor: null, actionForeground: null, actionCached: null, actionOutputs: [],
+        focusFollowsCursor: false, cursorWarp: false,
+        switchTarget: "focused-output", freshPlacement: "focused-output-last-focused",
+        presentation: { foreground: "", minimized: false, maximized: false, fullscreen: false, cloaked: false, hiddenWorkspace: false, shell: false, frame: null, borderEnabled: false, underlayEnabled: false, borderGap: 0, borderWidth: 0, underlayExtension: 0, chordHeld: false, moveWindow: "", paused: false, pagerOrder: [], pagerFrames: [] },
     };
 }
 
 function freshState(reply: WorldReply): WorldAdapterState {
     const state = new WorldAdapterState("adapter-1", "owner-a");
-    state.onDiscovery("gen-1");
+    state.onDiscovery("gen-1", "broker-1");
     state.invalidate();
     state.invalidate();
-    reply.obs = state.currentObs;
+    reply.obs = state.currentInvalid;
     return state;
 }
 
@@ -190,7 +196,7 @@ function windowRow(win: string, out: string, ws: string): WorldReply["windows"][
         alloc: null, frame: null,
         frame_auth: "", frame_hold: "",
         member_auth: "controlled", member_hold: "",
-        frame_op: "", floating: false, float_origin: "",
+        frame_op: "", clear_op: "", floating: false, float_origin: "",
     };
 }
 
@@ -198,10 +204,17 @@ function conversionCreationReply(): WorldReply {
     return {
         adapter: "test-adapter", gen: "gen-1", req: "req-1", obs: "", rev: "1",
         ready: true, consumed: false,
+        source: "req-1",
+        nativeInvalid: "1",
+        clock: "0",
+        gestureSettled: null,
+        operationSettled: [],
+        warpCursor: null,
+        presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
         scopes: [],
         workspaces: [
             {
-                id: TOKEN, out: OUT_2, bind: "", logical: TOKEN,
+                id: TOKEN, out: OUT_2, bind: "",
                 scope: OUT_2, order: 0, mode: "tiled", exist: true, hold: "",
             },
         ],
@@ -223,53 +236,66 @@ function conversionMoveReply(): WorldReply {
     // Producer-faithful row shapes: tiled members carry controlled frames
     // (deferred behind pending membership arrival), the float member rides
     // an untouched float row, and the minimized lifetime rides an explicit
-    // minimized-hold row.
+    // minimized-hold row. Converted rows name the stable core LOGICAL id
+    // (TOKEN); the backing row below binds it to the created native.
     const tiledRow = (win: string): WorldReply["windows"][number] => ({
-        win, out: OUT_2, ws: WS_NEW,
+        win, out: OUT_2, ws: TOKEN,
         alloc: [0, 0, 800, 600], frame: [0, 0, 784, 584],
         frame_auth: "controlled", frame_hold: "",
         member_auth: "controlled", member_hold: "",
-        frame_op: "", floating: false, float_origin: "",
+        frame_op: "", clear_op: "", floating: false, float_origin: "",
     });
     return {
         adapter: "test-adapter", gen: "gen-1", req: "req-2", obs: "", rev: "2",
         ready: true, consumed: false,
+        source: "req-1",
+        nativeInvalid: "1",
+        clock: "0",
+        gestureSettled: null,
+        operationSettled: [],
+        warpCursor: null,
+        presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
         scopes: [],
-        workspaces: [],
+        workspaces: [
+            {
+                id: TOKEN, out: OUT_2, bind: WS_NEW,
+                scope: OUT_2, order: 0, mode: "tiled", exist: true, hold: "",
+            },
+        ],
         outputs: [],
         windows: [
             tiledRow("win-b"),
             {
-                win: "win-f", out: OUT_2, ws: WS_NEW,
+                win: "win-f", out: OUT_2, ws: TOKEN,
                 alloc: null, frame: null,
                 frame_auth: "untouched", frame_hold: "",
                 member_auth: "controlled", member_hold: "",
-                frame_op: "", floating: true, float_origin: "",
+                frame_op: "", clear_op: "", floating: true, float_origin: "",
             },
             tiledRow("win-m"),
             tiledRow("win-FS"),
             {
-                win: "win-z", out: OUT_2, ws: WS_NEW,
+                win: "win-z", out: OUT_2, ws: TOKEN,
                 alloc: null, frame: null,
                 frame_auth: "hold", frame_hold: "minimized",
                 member_auth: "controlled", member_hold: "",
-                frame_op: "", floating: false, float_origin: "",
+                frame_op: "", clear_op: "", floating: false, float_origin: "",
             },
             {
                 win: "win-ys", out: OUT_2, ws: WS_1,
                 alloc: null, frame: null,
                 frame_auth: "hold", frame_hold: "minimized",
                 member_auth: "controlled", member_hold: "",
-                frame_op: "", floating: false, float_origin: "",
+                frame_op: "", clear_op: "", floating: false, float_origin: "",
             },
         ],
         transfers: [
-            { op: "op-scm-1-0", kind: "window", win: "win-b", out: OUT_2, ws: WS_NEW, follow: false, held: false },
-            { op: "op-scm-1-1", kind: "window", win: "win-f", out: OUT_2, ws: WS_NEW, follow: false, held: false },
-            { op: "op-scm-1-2", kind: "window", win: "win-m", out: OUT_2, ws: WS_NEW, follow: false, held: false },
-            { op: "op-scm-1-3", kind: "window", win: "win-FS", out: OUT_2, ws: WS_NEW, follow: false, held: false },
-            { op: "op-scm-1-4", kind: "window", win: "win-z", out: OUT_2, ws: WS_NEW, follow: false, held: false },
-            { op: "op-scv-1-0", kind: "view", win: "", out: OUT_2, ws: WS_NEW, follow: false, held: false },
+            { op: "op-scm-1-0", kind: "window", win: "win-b", out: OUT_2, ws: TOKEN, follow: false, held: false },
+            { op: "op-scm-1-1", kind: "window", win: "win-f", out: OUT_2, ws: TOKEN, follow: false, held: false },
+            { op: "op-scm-1-2", kind: "window", win: "win-m", out: OUT_2, ws: TOKEN, follow: false, held: false },
+            { op: "op-scm-1-3", kind: "window", win: "win-FS", out: OUT_2, ws: TOKEN, follow: false, held: false },
+            { op: "op-scm-1-4", kind: "window", win: "win-z", out: OUT_2, ws: TOKEN, follow: false, held: false },
+            { op: "op-scv-1-0", kind: "view", win: "", out: OUT_2, ws: TOKEN, follow: false, held: false },
         ],
         effects: [],
         result: null,
@@ -282,7 +308,7 @@ describe("world startup conversion actuation", () => {
         const reply = conversionCreationReply();
         const state = freshState(reply);
         const host = createWorldApplyHost(surf.surface, readProp);
-        const out = applyWorldReply({ ...host, state, observation: observe(surf), reply, log: () => undefined });
+        const out = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null, ...host, state, observation: observe(surf), reply, log: () => undefined });
         // Exactly one void creation flight names the logical token; the new
         // desktop binds by exact-name enumeration, then takes its friendly
         // `Desktop N` name at its native one-based position.
@@ -305,7 +331,7 @@ describe("world startup conversion actuation", () => {
         const state = freshState(reply);
         const host = createWorldApplyHost(surf.surface, readProp);
         const framesBefore = surf.wins.map((w) => JSON.stringify(w.frameGeometry));
-        const out = applyWorldReply({ ...host, state, observation: observe(surf), reply, log: () => undefined });
+        const out = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null, ...host, state, observation: observe(surf), reply, log: () => undefined });
         // Membership-only: no output send, members stay on their output.
         assert.deepEqual(surf.sendCalls, [], "conversion never changes output");
         assert.deepEqual(
@@ -352,6 +378,13 @@ describe("world startup conversion actuation", () => {
         const reply: WorldReply = {
             adapter: "test-adapter", gen: "gen-1", req: "req-3", obs: "", rev: "3",
             ready: true, consumed: false,
+            source: "req-1",
+            nativeInvalid: "1",
+            clock: "0",
+            gestureSettled: null,
+            operationSettled: [],
+            warpCursor: null,
+            presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
             scopes: [],
             workspaces: [],
             outputs: [],
@@ -364,7 +397,7 @@ describe("world startup conversion actuation", () => {
         };
         const state = freshState(reply);
         const host = createWorldApplyHost(surf.surface, readProp);
-        const out = applyWorldReply({ ...host, state, observation: observe(surf), reply, log: () => undefined });
+        const out = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null, ...host, state, observation: observe(surf), reply, log: () => undefined });
         // The logical token is not a native id: the desktop does not
         // resolve, so the move holds with no native call.
         assert.equal(surf.wins.find((w) => w.internalId === "win-b")?.desktops[0]?.id, WS_1);

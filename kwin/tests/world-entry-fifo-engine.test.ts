@@ -19,6 +19,7 @@ import { dirname, join, resolve } from "node:path";
 import { describe, it } from "node:test";
 
 import { WORLD_DEBOUNCE_MS, startWorldAdapterEntry } from "../src/world-entry";
+import { createMiniBroker, type MiniBroker } from "./world-wire-harness";
 
 function repoRoot(): string {
     let dir = resolve(process.cwd());
@@ -176,11 +177,14 @@ interface Timer {
 
 interface Harness {
     readonly bridge: WorldBridge;
+    readonly broker: MiniBroker;
     workspace: Record<string, unknown>;
     readonly wins: FakeWindow[];
     readonly calls: CapturedCall[];
     readonly answered: Set<number>;
     readonly replies: Map<number, string>;
+    readonly takeReplies: string[];
+    readonly stampedCmds: Array<{ cmd: unknown; cmdSeq: unknown }>;
     readonly timers: Timer[];
     readonly logs: string[];
     readonly geometryWrites: string[];
@@ -237,11 +241,14 @@ async function makeHarness(focusId: string, ids: string[]): Promise<Harness> {
     }
     const harness: Harness = {
         bridge: WorldBridge.start(),
+        broker: createMiniBroker(),
         workspace: {},
         wins,
         calls: [],
         answered: new Set<number>(),
         replies: new Map<number, string>(),
+        takeReplies: [],
+        stampedCmds: [],
         timers: [],
         logs: [],
         geometryWrites,
@@ -288,7 +295,16 @@ async function makeHarness(focusId: string, ids: string[]): Promise<Harness> {
                 (harness.calls[index] as CapturedCall | undefined)?.method === "DescribeWorld" && !harness.answered.has(index),
                 "expected the targeted DescribeWorld dispatch to be unanswered",
             );
-            const reply = await harness.bridge.send(harness.calls[index]?.method as string, harness.calls[index]?.payload as string);
+            // Mini-broker stamping: the envelope becomes the exact core
+            // report the sole broker would dispatch (own namespace plus at
+            // most one queued command), and the core reply returns bound
+            // with a nulled terminal result.
+            const envelope = (harness.calls[index] as CapturedCall).payload;
+            const stamped = harness.broker.stampCapture(envelope);
+            const parsed = JSON.parse(stamped) as Record<string, unknown>;
+            harness.stampedCmds.push({ cmd: parsed["command"] ?? null, cmdSeq: parsed["cmdSeq"] ?? null });
+            const coreReply = await harness.bridge.send("DescribeWorld", stamped);
+            const reply = harness.broker.bindReply(coreReply, envelope);
             harness.answered.add(index);
             harness.replies.set(index, reply);
             (harness.calls[index] as CapturedCall).callback(reply);
@@ -318,9 +334,12 @@ async function makeHarness(focusId: string, ids: string[]): Promise<Harness> {
             throw new Error("settle did not converge");
         },
         commandPayloads: (op: string): Array<{ index: number; body: Record<string, unknown> }> => {
+            // v2 command lane: presses file QueueWorldCommand (the broker
+            // drains at most one per capture); DescribeWorld envelopes
+            // carry no inline command.
             const out: Array<{ index: number; body: Record<string, unknown> }> = [];
             harness.calls.forEach((call, index) => {
-                if (call.method !== "DescribeWorld") {
+                if (call.method !== "QueueWorldCommand") {
                     return;
                 }
                 try {
@@ -409,10 +428,17 @@ async function makeHarness(focusId: string, ids: string[]): Promise<Harness> {
         owner: "owner-a",
         adapter: "test-adapter",
         callDbus: (_service, _path, _iface, method, payload, callback): void => {
-            if (method !== "DiscoverWorld" && method !== "DescribeWorld") {
+            if (method !== "DiscoverWorld" && method !== "DescribeWorld" && method !== "QueueWorldCommand" && method !== "TakeCommandResult") {
                 return;
             }
             harness.calls.push({ method, payload, callback });
+            if (method === "QueueWorldCommand") {
+                callback(harness.broker.answerQueue(payload));
+            } else if (method === "TakeCommandResult") {
+                const takeReply = harness.broker.answerTake(payload);
+                harness.takeReplies.push(takeReply);
+                callback(takeReply);
+            }
         },
         scheduleOnce: (delayMs, callback): (() => void) => {
             const timer: Timer = { delayMs, callback, cancelled: false, fired: false };
@@ -438,7 +464,8 @@ async function discover(h: Harness): Promise<void> {
     const discIndex = h.calls.findIndex((call) => call.method === "DiscoverWorld");
     assert.ok(discIndex >= 0, "entry discovers on start");
     const disc = h.calls[discIndex] as CapturedCall;
-    const reply = await h.bridge.send(disc.method, disc.payload);
+    const engineBootstrap = await h.bridge.send(disc.method, disc.payload);
+    const reply = h.broker.bindDiscovery(engineBootstrap);
     const parsed = JSON.parse(reply) as Record<string, unknown>;
     assert.equal(parsed["ready"], false, "bootstrap is not ready");
     disc.callback(reply);
@@ -452,10 +479,14 @@ function winById(h: Harness, id: string): FakeWindow {
 }
 
 // Every window row the real Engine plans must match the live native
-// frame, output and membership exactly.
+// frame, output and membership exactly. Membership resolves through the
+// core-owned native binding (v2: reply `ws` is the logical id, natives
+// are producer-owned and never equal it by construction).
 function appliedMatchesReply(h: Harness, reply: Record<string, unknown>): void {
     const geometry = reply["windows"] as Array<Record<string, unknown>>;
     assert.ok(Array.isArray(geometry) && geometry.length > 0, "real reply carries desired window rows");
+    const rows = reply["workspaces"] as Array<Record<string, unknown>>;
+    assert.ok(Array.isArray(rows), "real reply carries workspace rows");
     for (const entry of geometry) {
         const frame = entry["frame"] as [number, number, number, number] | null;
         const win = winById(h, entry["win"] as string);
@@ -463,10 +494,12 @@ function appliedMatchesReply(h: Harness, reply: Record<string, unknown>): void {
             assert.deepEqual(frameOf(win), { x: frame[0], y: frame[1], w: frame[2], h: frame[3] }, `native frame of ${entry["win"]} matches the Engine plan`);
         }
         assert.equal(win.output.name, entry["out"], `native output of ${entry["win"]} matches the Engine plan`);
+        const planned = rows.find((row) => row["out"] === entry["out"] && row["id"] === entry["ws"]);
+        assert.ok(planned !== undefined, `Engine plans a workspace row for ${entry["win"]} at ${entry["out"]}/${entry["ws"]}`);
         assert.deepEqual(
             win.desktops.map((desk) => desk.id),
-            [entry["ws"]],
-            `native membership of ${entry["win"]} matches the Engine plan`,
+            [planned["bind"]],
+            `native membership of ${entry["win"]} matches the Engine plan through the core binding`,
         );
     }
 }
@@ -706,13 +739,16 @@ describe("world entry rapid directional FIFO against the real Engine", () => {
             // Rapid right twice from win-c: both plan focus-right onto win-a.
             h.handle.requestFocus("right");
             h.handle.requestFocus("right");
-            // Genuine native input under the flight moves the watermark, so
-            // the head's real reply resolves stale with no actuation.
+            // Genuine native input under the flight advances the watermark:
+            // the head reply still accepts at the transport, but the
+            // observation is superseded, so no setters run on it. The
+            // drained command already executed server-side; follow-up
+            // observes the newer watermark and drains the tail.
             h.fire("windowActivated");
             const writesBefore = h.focused.length;
             await h.flush();
-            assert.ok(h.logs.some((l) => l.includes("stale reason=stale-obs")));
-            assert.equal(h.focused.length, writesBefore, "stale head applies no native focus");
+            assert.ok(h.logs.some((l) => l.includes("stale reason=superseded-during-flight")));
+            assert.equal(h.focused.length, writesBefore, "superseded head applies no native focus");
             // Catchup stays observation-only, then the queued tail drains
             // and applies exactly once.
             h.runTimers();
@@ -732,9 +768,9 @@ describe("world entry rapid directional FIFO against the real Engine", () => {
         try {
             await discover(h);
             const mark = h.timers.length;
-            // Same applicable direction twice: the dropped head changes
-            // nothing, so the tail still applies against settled topology
-            // (A right of B, focus on A).
+            // Same applicable direction twice: the filed head drains on the
+            // catchup and applies, so the tail drains next against settled
+            // topology (A right of B, focus on A) where the repeat noops.
             const xs = (id: string): number => frameOf(winById(h, id)).x;
             assert.ok(xs("win-b") < xs("win-a"), "engine settles B left of focused win-a");
             h.handle.requestMove("left");
@@ -745,22 +781,34 @@ describe("world entry rapid directional FIFO against the real Engine", () => {
             h.fireNextTimer(2000, mark);
             h.fireNextTimer(2000, mark);
             assert.ok(h.logs.some((l) => l.includes("timeout")));
-            // Catchup answers cleanly (flushed by index: the dead head
-            // is never sent, so the Engine never sees it), then the tail
-            // drains and applies.
-            await h.flushAt(h.calls.length - 1);
+            // Catchup drains the already-filed head (filing is durable in
+            // v2: the timed-out capture never replays, but the filed head
+            // still drains once), then the tail drains against the settled
+            // topology where the repeated move is a noop.
+            const headIndex = await h.flushAt(h.calls.length - 1);
+            const headReply = JSON.parse(h.replies.get(headIndex) as string) as Record<string, unknown>;
+            assert.notEqual(headReply["outcome"], "rejected", "catchup drains the filed head");
+            appliedMatchesReply(h, headReply);
+            const framesAfterHead = h.wins.map((w) => ({ ...frameOf(w) }));
             h.runTimers();
             const moves = h.commandPayloads("move-directional");
             assert.equal(moves.length, 2, "timed-out head plus drained tail, nothing else");
             const tailIndex = await h.flushAt(h.calls.length - 1);
             const tailReply = JSON.parse(h.replies.get(tailIndex) as string) as Record<string, unknown>;
-            assert.notEqual(tailReply["outcome"], "rejected", "real Engine plans the drained tail move");
-            appliedMatchesReply(h, tailReply);
-            const seqs = h.calls
-                .filter((c) => c.method === "DescribeWorld")
-                .map((c) => JSON.parse(c.payload) as Record<string, unknown>)
-                .filter((req) => req["command"] !== null)
-                .map((req) => req["cmdSeq"] as string);
+            assert.equal(tailReply["outcome"], "rejected", "repeated tail move noops against settled topology");
+            assert.equal(tailReply["kind"], "planner-noop", "tail noop carries the exact engine verdict");
+            assert.deepEqual(
+                h.wins.map((w) => ({ ...frameOf(w) })),
+                framesAfterHead,
+                "no-op tail rewrites no geometry",
+            );
+            // Broker-owned sequence replaces the adapter-owned cmdSeq: the
+            // stamped captures (not the envelopes) carry each drained
+            // command exactly once under a unique broker cmdSeq.
+            const seqs = h.stampedCmds
+                .filter((entry) => entry.cmd !== null)
+                .map((entry) => entry.cmdSeq as string);
+            assert.ok(seqs.length > 0, "drained tail stamped exactly once");
             assert.equal(new Set(seqs).size, seqs.length, "sent head never replays");
         } finally {
             await h.stop();

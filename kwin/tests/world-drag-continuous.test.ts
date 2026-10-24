@@ -81,7 +81,7 @@ function observeFor(wins: Array<{ win: string; ref: object; out: string; ws: str
                 win: w.win, ref: w.ref, out: w.out, ws: w.ws,
                 rect: { x: 0, y: 0, w: 100, h: 100 },
                 floating: false, fitExcluded: false, fullscreen: false,
-                maximized: false, sticky: false, fixedAuto: false, fixedSuppress: false,
+                maximized: false, sticky: false, fixedAuto: false, fixedSuppress: false, nativeWs: null,
                 hints: { minW: null, minH: null, maxW: null, maxH: null },
                 minimized: false,
             })),
@@ -92,6 +92,11 @@ function observeFor(wins: Array<{ win: string; ref: object; out: string; ws: str
         complete: true,
         gesture: false,
         focusedGlobal: "",
+        screens: [], windowFacts: [], views: [], closed: [], hostOwned: false, equalCount: true, native: [],
+        cursor: null, actionForeground: null, actionCached: null, actionOutputs: [],
+        focusFollowsCursor: false, cursorWarp: false,
+        switchTarget: "focused-output", freshPlacement: "focused-output-last-focused",
+        presentation: { foreground: "", minimized: false, maximized: false, fullscreen: false, cloaked: false, hiddenWorkspace: false, shell: false, frame: null, borderEnabled: false, underlayEnabled: false, borderGap: 0, borderWidth: 0, underlayExtension: 0, chordHeld: false, moveWindow: "", paused: false, pagerOrder: [], pagerFrames: [] },
     };
 }
 

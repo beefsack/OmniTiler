@@ -5,6 +5,11 @@ KDE and macOS ports). The remote contract is strict v2 with no
 compatibility route: v1 payloads, field names and discovery paths
 refuse and are never shimmed.
 
+KDE's paired cutover remains parked, not an accepted implementation of this
+guide. Its [port record](../changes/kde-world-v2-port.md#stage-2-implementation-boundary)
+tracks partial offline evidence, command wake transport and native backing
+correlation; native settlement must not be inferred from wire acceptance.
+
 Source roots below are relative to the repository root. Core symbols
 live in `crates/tiler-core/src/`; the JSON codec lives in
 `crates/tiler-protocol/src/world_protocol.rs`.

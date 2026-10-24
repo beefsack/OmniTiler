@@ -12,7 +12,7 @@ import {
     normalizeNoSpaceResult,
     NO_SPACE_RESULT_DEFAULT,
 } from "../src/world-settings-live";
-import { buildWorldReportJson } from "../src/world-report";
+import { buildWorldInnerReportJson } from "../src/world-report";
 import type { WorldObservation } from "../src/world-observe";
 
 describe("capacity settings tolerant readers", () => {
@@ -93,22 +93,18 @@ function minimalObservation(): WorldObservation {
         complete: true,
         gesture: false,
         focusedGlobal: "",
+        screens: [], windowFacts: [], views: [], closed: [], hostOwned: false, equalCount: true, native: [],
+        cursor: null, actionForeground: null, actionCached: null, actionOutputs: [],
+        focusFollowsCursor: false, cursorWarp: false,
+        switchTarget: "focused-output", freshPlacement: "focused-output-last-focused",
+        presentation: { foreground: "", minimized: false, maximized: false, fullscreen: false, cloaked: false, hiddenWorkspace: false, shell: false, frame: null, borderEnabled: false, underlayEnabled: false, borderGap: 0, borderWidth: 0, underlayExtension: 0, chordHeld: false, moveWindow: "", paused: false, pagerOrder: [], pagerFrames: [] },
     };
 }
 
 describe("capacity settings report carriage", () => {
     it("encodes validated tokens on every full report", () => {
-        const json = buildWorldReportJson({
+        const json = buildWorldInnerReportJson({
             observation: minimalObservation(),
-            reqSeq: "1",
-            cmdSeq: null,
-            reqId: "req-1",
-            command: null,
-            owner: "owner-a",
-            adapter: "adapter-1",
-            boundGen: "gen-1",
-            currentObs: "1",
-            pendingFeedback: [],
             defaultTiled: true,
             refill: "last-remaining-workspace",
             anchorFallback: "closest-splittable-relative",
@@ -118,20 +114,17 @@ describe("capacity settings report carriage", () => {
         const body = JSON.parse(json as string) as Record<string, unknown>;
         assert.equal(body["anchorFallback"], "closest-splittable-relative");
         assert.equal(body["noSpaceResult"], "allow-overlap");
+        // Strict v2: the broker-owned namespace never rides the inner
+        // report; there is exactly one sequencing namespace.
+        for (const key of ["owner", "adapter", "gen", "obs", "reqSeq", "req", "cmdSeq", "command", "monotonicMs"]) {
+            assert.ok(!(key in body), `inner report carries no ${key}`);
+        }
+        assert.equal(body["v"], 2);
     });
 
     it("round-trips the documented wire alphabet shape", () => {
-        const json = buildWorldReportJson({
+        const json = buildWorldInnerReportJson({
             observation: minimalObservation(),
-            reqSeq: "1",
-            cmdSeq: null,
-            reqId: "req-1",
-            command: null,
-            owner: "owner-a",
-            adapter: "adapter-1",
-            boundGen: "gen-1",
-            currentObs: "1",
-            pendingFeedback: [],
             defaultTiled: true,
             refill: "last-remaining-workspace",
             anchorFallback: "largest-splittable-window",

@@ -39,6 +39,8 @@ Tentative index (user review pending; not approved product rules):
   ([port record](changes/kde-world-v2-port.md#tentative-technical-decisions))
 - Native adoption count: four native-bound workspaces plus ordinary trailing
   lifecycle ([below](#native-adoption-2026-10-24))
+- KDE broker capture-lifetime reset and sender/generation-bound command transport
+  ([port record](changes/kde-world-v2-port.md#tentative-technical-decisions))
 
 ## KDE rapid directional input
 

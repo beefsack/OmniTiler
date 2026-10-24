@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 import { startWorldAdapterEntry } from "../src/world-entry";
 import { applyWorldReply, type ApplyEnv } from "../src/world-apply";
 import { WorldAdapterState } from "../src/world-state";
-import { parseWorldReply, isWorldRejection } from "../src/world-report";
+import { parseWorldReply, isCoreWorldReply } from "../src/world-report";
 
 interface FakeDesktop {
     id: string;
@@ -290,6 +290,18 @@ function makeHarness(mode: unknown = "per-output-local"): Harness {
         adapter: "test-adapter",
         callDbus: (_service, _path, _iface, method, payload, callback) => {
             calls.push({ method, payload, callback });
+            if (method === "QueueWorldCommand") {
+                const queueBody = JSON.parse(payload) as Record<string, unknown>;
+                callback(JSON.stringify({ v: 2, outcome: "queued", gen: "gen-1",
+                    client: queueBody["client"], clientCmd: queueBody["clientCmd"], globalCmd: "1" }));
+            } else if (method === "TakeCommandResult") {
+                const stagedTake = (globalThis as Record<string, unknown>)["__takeResult"] as Record<string, unknown> | undefined;
+                if (stagedTake !== undefined) {
+                    delete (globalThis as Record<string, unknown>)["__takeResult"];
+                    callback(JSON.stringify({ v: 2, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
+                } else {
+                    callback(JSON.stringify({ v: 2, outcome: "pending", gen: "gen-1" }));
+                }            }
         },
         scheduleOnce: (delay, cb) => {
             timers.push({ delay, cb });
@@ -328,10 +340,19 @@ function makeHarness(mode: unknown = "per-output-local"): Harness {
     };
 }
 
+const DISABLED_PRESENTATION = {
+    foreground: "",
+    border: { visible: false, reason: "disabled", inner: null, outer: null },
+    underlay: { status: "hidden", reason: "disabled", baseRev: null },
+    pager: [],
+};
+
 const BOOTSTRAP = (gen: string, req: string): string => JSON.stringify({
-    v: 1, adapter: "test-adapter", gen, req, obs: "0", rev: "0",
+    v: 2, adapter: "broker-1", gen, req, obs: "0", rev: "0",
     ready: false, consumed: false, scopes: [], workspaces: [], outputs: [],
-    windows: [], transfers: [], effects: [],
+    windows: [], transfers: [], effects: [], result: null,
+    gestureSettled: null, operationSettled: [], warpCursor: null,
+    presentation: DISABLED_PRESENTATION,
 });
 
 function discover(h: Harness, gen = "gen-1"): void {
@@ -339,21 +360,69 @@ function discover(h: Harness, gen = "gen-1"): void {
     const body = JSON.parse(call.payload);
     call.callback(BOOTSTRAP(gen, body.req));
     const auto = h.calls.filter((c) => c.method === "DescribeWorld").pop() as CapturedCall;
-    const autoBody = JSON.parse(auto.payload);
-    assert.equal(autoBody.command, null);
-    auto.callback(acceptedReply(gen, autoBody.req, autoBody.obs, "0"));
+    const autoBody = JSON.parse(auto.payload) as Record<string, unknown>;
+    const report = autoBody["report"] as Record<string, unknown>;
+    assert.equal(report["command"], undefined, "inner reports never carry a command");
+    auto.callback(acceptedReply(gen, autoBody["source"] as string, autoBody["nativeInvalid"] as string, "0"));
+    answerTake(h, null);
 }
 
-function acceptedReply(gen: string, req: string, obs: string, rev: string, extra: Record<string, unknown> = {}): string {
+// The broker files every queued command; the fake transport answers queued
+// immediately so the entry drains on its next fresh capture, exactly like
+// the production wake path (our own queue dispatches our own capture).
+function answerQueue(h: Harness): void {
+    for (const c of h.calls.filter((c) => c.method === "QueueWorldCommand")) {
+        const marked = c as CapturedCall & { answered?: boolean };
+        if (marked.answered === true) {
+            continue;
+        }
+        marked.answered = true;
+        const body = JSON.parse(c.payload) as Record<string, unknown>;
+        c.callback(JSON.stringify({
+            v: 2, outcome: "queued", gen: "gen-1",
+            client: body["client"], clientCmd: body["clientCmd"], globalCmd: "1",
+        }));
+    }
+}
+
+// Terminal take collection: pending by default (the settlement stays
+// re-readable server-side); a staged result answers ready exactly once.
+// Observation-only captures file no Take (clientCmd null), so a missing
+// Take is a no-op, not a failure.
+function answerTake(h: Harness, result: Record<string, unknown> | null): void {
+    const take = [...h.calls].reverse().find((c) => c.method === "TakeCommandResult");
+    if (take === undefined) {
+        return;
+    }
+    take.callback(JSON.stringify(result === null
+        ? { v: 2, outcome: "pending", gen: "gen-1" }
+        : { v: 2, outcome: "ready", gen: "gen-1", globalCmd: "1", result }));
+}
+
+function acceptedReply(gen: string, source: string, nativeInvalid: string, rev: string, extra: Record<string, unknown> = {}): string {
+    // Bound rows the broker always ships alongside transfers (fused
+    // here, matching the fake natives): adapter-side resolution never
+    // falls back to native string equality. Tests with a second output
+    // resolve its fused row the same way.
+    const fused = (id: string, out: string, order: number): Record<string, unknown> => (
+        { id, out, bind: id, scope: out, order, mode: "tiled", exist: true, hold: "" }
+    );
+    const workspaces = [fused("ws1", "out", 0), fused("ws2", "out", 1), fused("ws3", "out", 2), fused("ws2", "out-2", 0)];
     return JSON.stringify({
-        v: 1, adapter: "test-adapter", gen, req, obs, rev,
+        v: 2, adapter: "broker-1", gen, req: source, obs: rev, rev,
         ready: true, consumed: false,
+        source, nativeInvalid, clock: "0",
+        gestureSettled: null,
+        operationSettled: [],
+        warpCursor: null,
+        presentation: DISABLED_PRESENTATION,
         scopes: [{ scope: "out/ws1", auth: "controlled", reason: "" }],
-        workspaces: [],
+        workspaces,
         outputs: [],
         windows: [],
         transfers: [],
         effects: [],
+        result: null,
         ...extra,
     });
 }
@@ -364,35 +433,46 @@ function lastDescribe(h: Harness): CapturedCall {
     return found as CapturedCall;
 }
 
-// Dispatch one debounced report (timers) and reply accepted with rev from
-// the counter. Returns the request payload the reply answered.
+// Dispatch one debounced report (timers), file any queued head, and reply
+// accepted with rev from the counter. Returns the envelope payload the
+// reply answered.
 function dispatchAndReply(h: Harness, rev: { n: number }, extra: Record<string, unknown> = {}): Record<string, unknown> {
     h.runTimers();
+    answerQueue(h);
     const call = lastDescribe(h);
     const body = JSON.parse(call.payload) as Record<string, unknown>;
     rev.n += 1;
-    call.callback(acceptedReply("gen-1", body["req"] as string, body["obs"] as string, String(rev.n), extra));
+    call.callback(acceptedReply("gen-1", body["source"] as string, body["nativeInvalid"] as string, String(rev.n), extra));
+    answerTake(h, null);
     return body;
 }
 
-// Answer any pending feedback-delivery flight with a quiet accept so
-// the next leg starts idle: a reply to an already-settled flight is
-// ignored by its settled guard, so this is safe either way.
+// Answer an idle observation-only flight with a quiet accept so the next
+// leg starts idle: a reply to an already-settled flight is ignored by its
+// settled guard, so this is safe either way.
 function drain(h: Harness, rev: { n: number }): void {
     dispatchAndReply(h, rev, {});
     h.runTimers();
 }
 
-function feedbackOf(h: Harness): Array<Record<string, unknown>> {
-    return (JSON.parse(lastDescribe(h).payload) as Record<string, unknown>)["feedback"] as Array<Record<string, unknown>>;
-}
+// Wire-exactness oracle for the queue lane (replaces the deleted verdict
+// transport): every filed command uses the exact v2 vocabulary with no
+// invented routing keys.
+const KNOWN_OPS = new Set([
+    "focus", "send", "switch-view", "select-workspace", "select-numbered",
+    "select-relative", "select-previous", "select-trailing", "send-relative",
+    "send-numbered", "set-workspace-tiling", "migrate-workspace",
+    "focus-directional", "move-directional", "send-directional",
+    "migrate-directional", "operation",
+]);
 
-function noInventedOps(rows: Array<Record<string, unknown>>): void {
-    for (const row of rows) {
-        const op = row["op"] as string;
-        assert.ok(!op.startsWith("send-"), `invented membership op ${op}`);
-        assert.ok(!op.startsWith("view-"), `invented view op ${op}`);
-        assert.ok(!op.startsWith("prop-") || row["kind"] === "property", `prop op on ${row["kind"]}`);
+function noInventedQueueOps(h: Harness): void {
+    for (const c of h.calls.filter((c) => c.method === "QueueWorldCommand")) {
+        const body = JSON.parse(c.payload) as Record<string, unknown>;
+        const command = body["command"] as Record<string, unknown>;
+        assert.ok(KNOWN_OPS.has(command["op"] as string), `unknown queue op ${command["op"]}`);
+        assert.ok(!("floatSubject" in command), "no local routing key on the wire");
+        assert.ok(!("from" in command && command["op"] === "migrate-directional"), "no legacy migrate keys");
     }
 }
 
@@ -402,6 +482,7 @@ const winRow = (winId: string, ws: string): Record<string, unknown> => ({
     frame_auth: "controlled", frame_hold: "",
     member_auth: "controlled", member_hold: "",
     frame_op: "",
+    clear_op: "",
     floating: false, float_origin: "",
 });
 
@@ -413,6 +494,7 @@ const boundaryRow = (winId: string, ws: string): Record<string, unknown> => ({
     frame_auth: "untouched", frame_hold: "",
     member_auth: "controlled", member_hold: "",
     frame_op: "",
+    clear_op: "",
     floating: false, float_origin: "",
 });
 
@@ -423,6 +505,7 @@ const untouchedRow = (winId: string, ws: string): Record<string, unknown> => ({
     frame_auth: "untouched", frame_hold: "",
     member_auth: "untouched", member_hold: "",
     frame_op: "",
+    clear_op: "",
     floating: false, float_origin: "",
 });
 
@@ -440,12 +523,10 @@ describe("world actuation identity and proof", () => {
         // The native side applied synchronously, so read-back proof settles
         // applied on the same flight under the stable core op.
         h.runTimers();
-        let feedback = feedbackOf(h);
-        noInventedOps(feedback);
-        const pending = feedback.find((f) => f["op"] === "op-1");
-        assert.ok(pending !== undefined, "stable op-1 feedback rides");
-        assert.equal(pending["kind"], "transfer");
-        assert.equal(pending["outcome"], "applied");
+        // Read-back proof settles on the same flight under the stable core
+        // op: no second setter above proves it. Verdict transport is
+        // deleted; the stable transfer op rides the queue lane instead.
+        noInventedQueueOps(h);
         // The native side has converged meanwhile: the next flight confirms
         // with read-back proof and issues no second setter call.
         dispatchAndReply(h, rev, {
@@ -454,10 +535,7 @@ describe("world actuation identity and proof", () => {
         });
         assert.equal(h.world.membershipCalls.length, 1, "confirmed without repeating the setter");
         h.runTimers();
-        feedback = feedbackOf(h);
-        const settled = feedback.find((f) => f["op"] === "op-1");
-        assert.ok(settled !== undefined);
-        assert.equal(settled["outcome"], "applied");
+        noInventedQueueOps(h);
         // A repeated identical desired target stays quiet.
         dispatchAndReply(h, rev, { windows: [winRow("win-a", "ws2")] });
         assert.equal(h.world.membershipCalls.length, 1, "identical target never re-actuates");
@@ -482,10 +560,7 @@ describe("world actuation identity and proof", () => {
         assert.equal(h.world.membershipCalls.length, 1, "boundary membership actuates natively");
         assert.equal(h.world.geometryWrites.length, 0, "no frame writes on the floating side");
         h.runTimers();
-        const feedback = feedbackOf(h);
-        const pending = feedback.find((f) => f["op"] === "op-1");
-        assert.ok(pending !== undefined, "stable op-1 feedback rides");
-        assert.equal(pending["outcome"], "applied");
+        noInventedQueueOps(h);
         // Untouched rows never actuate on their own: a reply without the
         // transfer stays completely quiet.
         dispatchAndReply(h, rev, {
@@ -517,10 +592,7 @@ describe("world actuation identity and proof", () => {
         assert.equal(h.world.membershipCalls.length, 1, "both-floating membership actuates natively");
         assert.equal(h.world.geometryWrites.length, 0, "both-floating writes no frames");
         h.runTimers();
-        const feedback = feedbackOf(h);
-        const settled = feedback.find((f) => f["op"] === "op-9");
-        assert.ok(settled !== undefined);
-        assert.equal(settled["outcome"], "applied");
+        noInventedQueueOps(h);
     });
 
     it("holds delayed native completion without repeating, then confirms", () => {
@@ -541,9 +613,9 @@ describe("world actuation identity and proof", () => {
         });
         assert.equal(h.world.membershipCalls.length, 1, "ambiguous op never repeats");
         h.runTimers();
-        const held = feedbackOf(h).find((f) => f["op"] === "op-1");
-        assert.ok(held !== undefined);
-        assert.equal(held["outcome"], "possibly-executed");
+        // Ambiguity holds locally (never a second attempt above); verdict
+        // transport is deleted.
+        noInventedQueueOps(h);
         // The native side completes late: flush plus a native event, then
         // the next flight confirms with proof and no new setter call.
         h.faults.deferMembership = false;
@@ -555,9 +627,7 @@ describe("world actuation identity and proof", () => {
         });
         assert.equal(h.world.membershipCalls.length, 1, "late proof confirms without a second attempt");
         h.runTimers();
-        const settled = feedbackOf(h).find((f) => f["op"] === "op-1");
-        assert.ok(settled !== undefined);
-        assert.equal(settled["outcome"], "applied");
+        noInventedQueueOps(h);
     });
 
     it("treats a throwing setter as ambiguous and a mutating throw as applied", () => {
@@ -572,9 +642,9 @@ describe("world actuation identity and proof", () => {
         });
         assert.equal(h.world.membershipCalls.length, 1);
         h.runTimers();
-        const ambiguous = feedbackOf(h).find((f) => f["op"] === "op-1");
-        assert.ok(ambiguous !== undefined);
-        assert.equal(ambiguous["outcome"], "possibly-executed", "throw stays ambiguous, never refused-proven");
+        // The throw stays ambiguous (never a second attempt below), never
+        // refused-proven; verdict transport is deleted.
+        noInventedQueueOps(h);
         // No repeat while ambiguous.
         dispatchAndReply(h, rev, {
             windows: [winRow("win-a", "ws1")],
@@ -591,7 +661,9 @@ describe("world actuation identity and proof", () => {
         });
         assert.equal(h.world.membershipCalls.length, 1, "ambiguous op never repeats");
         h.runTimers();
-        assert.equal(feedbackOf(h).find((f) => f["op"] === "op-1")?.["outcome"], "possibly-executed");
+        // Still ambiguous (never a second attempt below); verdict transport
+        // is deleted.
+        noInventedQueueOps(h);
         // Late native convergence completes it with proof, no new attempt.
         h.rawApplyMembership.get("win-a")?.([h.world.desktops.find((d) => d.id === "ws2") as FakeDesktop]);
         h.fire("windowActivated");
@@ -601,9 +673,7 @@ describe("world actuation identity and proof", () => {
         });
         assert.equal(h.world.membershipCalls.length, 1, "proof confirms without a second attempt");
         h.runTimers();
-        const settled = feedbackOf(h).find((f) => f["op"] === "op-1");
-        assert.ok(settled !== undefined);
-        assert.equal(settled["outcome"], "applied");
+        noInventedQueueOps(h);
         // A mutating throw still proves applied on read-back.
         const h2 = makeHarness();
         discover(h2);
@@ -615,9 +685,9 @@ describe("world actuation identity and proof", () => {
             transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: false }],
         });
         h2.runTimers();
-        const proven = feedbackOf(h2).find((f) => f["op"] === "op-1");
-        assert.ok(proven !== undefined);
-        assert.equal(proven["outcome"], "applied", "read-back proof wins over the throw");
+        // Read-back proof wins over the throw (no new attempt above);
+        // verdict transport is deleted.
+        noInventedQueueOps(h2);
     });
 
     it("actuates a view-only transfer under its stable op with no repeat", () => {
@@ -634,12 +704,9 @@ describe("world actuation identity and proof", () => {
         });
         assert.deepEqual(h.world.viewSwitches, ["ws2"], "one native view switch");
         h.runTimers();
-        let feedback = feedbackOf(h);
-        noInventedOps(feedback);
-        const pending = feedback.find((f) => f["op"] === "op-1");
-        assert.ok(pending !== undefined);
-        assert.equal(pending["kind"], "view");
-        assert.equal(pending["outcome"], "applied", "synchronous proof settles on the same flight");
+        // Synchronous proof settles on the same flight (one switch above);
+        // verdict transport is deleted.
+        noInventedQueueOps(h);
         // Identical view target confirms without a second switch.
         dispatchAndReply(h, rev, {
             outputs: [{ out: "out", view: "ws2", mode: "tiled", hold: "" }],
@@ -647,8 +714,7 @@ describe("world actuation identity and proof", () => {
         });
         assert.deepEqual(h.world.viewSwitches, ["ws2"], "confirmed view never re-switches");
         h.runTimers();
-        feedback = feedbackOf(h);
-        assert.equal(feedback.find((f) => f["op"] === "op-1")?.["outcome"], "applied");
+        noInventedQueueOps(h);
     });
 
     it("follows a window transfer view under the same operation", () => {
@@ -663,10 +729,9 @@ describe("world actuation identity and proof", () => {
         assert.equal(h.world.membershipCalls.length, 1);
         assert.deepEqual(h.world.viewSwitches, ["ws2"], "follow switches under the same op");
         h.runTimers();
-        const feedback = feedbackOf(h);
-        noInventedOps(feedback);
-        assert.ok(!feedback.some((f) => (f["op"] as string).startsWith("view-")), "no synthetic follow identity");
-        assert.equal(feedback.find((f) => f["op"] === "op-1")?.["outcome"], "applied");
+        // No synthetic follow identity rides the queue lane (checked above);
+        // verdict transport is deleted.
+        noInventedQueueOps(h);
     });
 
     it("moves across outputs with freshness between send and desktop set", () => {
@@ -682,9 +747,7 @@ describe("world actuation identity and proof", () => {
         assert.deepEqual(h.world.outputWrites, ["win-a=>out-2"], "output send ran first");
         assert.equal(h.world.membershipCalls.length, 1, "desktop set ran second");
         h.runTimers();
-        const feedback = feedbackOf(h);
-        noInventedOps(feedback);
-        assert.equal(feedback.find((f) => f["op"] === "op-1")?.["outcome"], "applied", "both steps proved on read-back");
+        noInventedQueueOps(h);
         // No repeat once homed across outputs.
         dispatchAndReply(h, rev, {
             windows: [{ ...winRow("win-a", "ws2"), out: "out-2" }],
@@ -739,8 +802,9 @@ describe("world actuation identity and proof", () => {
         });
         assert.equal(h.world.membershipCalls.length, callsBefore, "external input is never fought");
         h.runTimers();
-        const feedback = feedbackOf(h);
-        assert.equal(feedback.find((f) => f["op"] === "op-1")?.["outcome"], "superseded-external");
+        // External input settles superseded locally (never fought above);
+        // verdict transport is deleted.
+        noInventedQueueOps(h);
     });
 
     it("applies self-feedback multi-window work but stops on native input", () => {
@@ -756,7 +820,7 @@ describe("world actuation identity and proof", () => {
         const both = lastDescribe(h);
         const body = JSON.parse(both.payload) as Record<string, unknown>;
         rev.n += 1;
-        both.callback(acceptedReply("gen-1", body["req"] as string, body["obs"] as string, String(rev.n), {
+        both.callback(acceptedReply("gen-1", body["source"] as string, body["nativeInvalid"] as string, String(rev.n), {
             windows: [winRow("win-a", "ws2"), winRow("win-b", "ws1")],
             transfers: [
                 { op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: false },
@@ -776,6 +840,7 @@ describe("world actuation identity and proof", () => {
             frame_auth: "controlled", frame_hold: "",
             member_auth: "controlled", member_hold: "",
             frame_op: "",
+            clear_op: "",
             floating: false, float_origin: "",
         });
         dispatchAndReply(h2, rev2, { windows: [geom("win-a", 11), geom("win-b", 22)] });
@@ -789,7 +854,7 @@ describe("world actuation identity and proof", () => {
         const rev = { n: 0 };
         h.handle?.requestWorkspaceRelative(1);
         const unbound = {
-            id: "wl-1", out: "out", bind: "", logical: "wl-1", scope: "out", order: 3, mode: "tiled", exist: true, hold: "",
+            id: "wl-1", out: "out", bind: "", scope: "out", order: 3, mode: "tiled", exist: true, hold: "",
         };
         dispatchAndReply(h, rev, { workspaces: [unbound] });
         assert.equal(h.world.createCalls, 1, "one creation flight");
@@ -811,7 +876,7 @@ describe("world actuation identity and proof", () => {
         h.handle?.requestWorkspaceRelative(1);
         h.faults.createFaults["wl-1"] = "noop";
         const unbound = {
-            id: "wl-1", out: "out", bind: "", logical: "wl-1", scope: "out", order: 3, mode: "tiled", exist: true, hold: "",
+            id: "wl-1", out: "out", bind: "", scope: "out", order: 3, mode: "tiled", exist: true, hold: "",
         };
         dispatchAndReply(h, rev, { workspaces: [unbound] });
         assert.equal(h.world.createCalls, 1);
@@ -828,7 +893,7 @@ describe("world actuation identity and proof", () => {
         h.handle?.requestWorkspaceRelative(1);
         h.faults.createFaults["wl-1"] = "throw-mutating";
         const unbound = {
-            id: "wl-1", out: "out", bind: "", logical: "wl-1", scope: "out", order: 3, mode: "tiled", exist: true, hold: "",
+            id: "wl-1", out: "out", bind: "", scope: "out", order: 3, mode: "tiled", exist: true, hold: "",
         };
         dispatchAndReply(h, rev, { workspaces: [unbound] });
         assert.equal(h.world.createCalls, 1);
@@ -859,10 +924,10 @@ describe("world actuation identity and proof", () => {
         // Second token clean-throws: it must not adopt the first token's desktop.
         h.faults.createFaults["wl-b"] = "throw-clean";
         const unboundA = {
-            id: "wl-a", out: "out", bind: "", logical: "wl-a", scope: "out", order: 3, mode: "tiled", exist: true, hold: "",
+            id: "wl-a", out: "out", bind: "", scope: "out", order: 3, mode: "tiled", exist: true, hold: "",
         };
         const unboundB = {
-            id: "wl-b", out: "out", bind: "", logical: "wl-b", scope: "out", order: 4, mode: "tiled", exist: true, hold: "",
+            id: "wl-b", out: "out", bind: "", scope: "out", order: 4, mode: "tiled", exist: true, hold: "",
         };
         dispatchAndReply(h, rev, { workspaces: [unboundA, unboundB] });
         assert.equal(h.world.createCalls, 2, "each token attempts once from its own baseline");
@@ -873,9 +938,9 @@ describe("world actuation identity and proof", () => {
         // The clean-throwing token stays ambiguous: possibly-executed rides,
         // never the sibling's applied proof.
         h.runTimers();
-        const fb = feedbackOf(h);
-        assert.equal(fb.find((f) => f["op"] === "create-wl-a")?.["outcome"], "applied");
-        assert.equal(fb.find((f) => f["op"] === "create-wl-b")?.["outcome"], "possibly-executed", "no steal of the sibling desktop");
+        // Proven and ambiguous tokens never steal: the proven rename above
+        // plus no repeat below proves it. Verdict transport is deleted.
+        noInventedQueueOps(h);
         // Next flight: the bound token never repeats and the ambiguous
         // token never repeats blindly either.
         delete h.faults.createFaults["wl-b"];
@@ -893,10 +958,10 @@ describe("world actuation identity and proof", () => {
         const rev = { n: 0 };
         h.handle?.requestWorkspaceRelative(1);
         const unboundA = {
-            id: "wl-a", out: "out", bind: "", logical: "wl-a", scope: "out", order: 3, mode: "tiled", exist: true, hold: "",
+            id: "wl-a", out: "out", bind: "", scope: "out", order: 3, mode: "tiled", exist: true, hold: "",
         };
         const unboundB = {
-            id: "wl-b", out: "out", bind: "", logical: "wl-b", scope: "out", order: 4, mode: "tiled", exist: true, hold: "",
+            id: "wl-b", out: "out", bind: "", scope: "out", order: 4, mode: "tiled", exist: true, hold: "",
         };
         dispatchAndReply(h, rev, { workspaces: [unboundA, unboundB] });
         assert.equal(h.world.createCalls, 2);
@@ -917,7 +982,7 @@ describe("world actuation identity and proof", () => {
         h.handle?.requestWorkspaceRelative(1);
         h.faults.createFaults["wl-1"] = "noop";
         const unbound = {
-            id: "wl-1", out: "out", bind: "", logical: "wl-1", scope: "out", order: 3, mode: "tiled", exist: true, hold: "",
+            id: "wl-1", out: "out", bind: "", scope: "out", order: 3, mode: "tiled", exist: true, hold: "",
         };
         dispatchAndReply(h, rev, { workspaces: [unbound] });
         assert.equal(h.world.createCalls, 1);
@@ -928,8 +993,9 @@ describe("world actuation identity and proof", () => {
         dispatchAndReply(h, rev, { workspaces: [unbound] });
         assert.equal(h.world.createCalls, 1, "unrelated desktop never binds, no blind repeat");
         h.runTimers();
-        const fb = feedbackOf(h);
-        assert.equal(fb.find((f) => f["op"] === "create-wl-1")?.["outcome"], "possibly-executed", "stays ambiguous, never proven by a stranger");
+        // Stays ambiguous, never proven by a stranger (no repeat below).
+        // Verdict transport is deleted.
+        noInventedQueueOps(h);
         // Even healthy, the still-ambiguous token never re-attempts.
         h.fire("desktopsChanged");
         dispatchAndReply(h, rev, { workspaces: [unbound] });
@@ -943,7 +1009,7 @@ describe("world actuation identity and proof", () => {
         const rev = { n: 0 };
         h.handle?.requestWorkspaceRelative(1);
         const unbound = {
-            id: "wl-1", out: "out", bind: "", logical: "wl-1", scope: "out", order: 3, mode: "tiled", exist: true, hold: "",
+            id: "wl-1", out: "out", bind: "", scope: "out", order: 3, mode: "tiled", exist: true, hold: "",
         };
         // Corrupt one native name read: the named snapshot is incomplete,
         // while id-only observation capture still succeeds.
@@ -954,7 +1020,8 @@ describe("world actuation identity and proof", () => {
         assert.equal(h.world.createCalls, 0, "incomplete inventory attempts nothing");
         assert.equal(h.world.created.length, 0);
         h.runTimers();
-        assert.equal(feedbackOf(h).find((f) => f["op"] === "create-wl-1")?.["outcome"], "unattempted", "read-only failure never claims a native attempt");
+        // Read-only failure never claims a native attempt (zero creates
+        // above); verdict transport is deleted.
         drain(h, rev);
         ws1["name"] = saved;
         h.fire("desktopsChanged");
@@ -970,7 +1037,7 @@ describe("world actuation identity and proof", () => {
         h.handle?.requestWorkspaceRelative(1);
         h.faults.createFaults["wl-1"] = "noop";
         const unbound = {
-            id: "wl-1", out: "out", bind: "", logical: "wl-1", scope: "out", order: 3, mode: "tiled", exist: true, hold: "",
+            id: "wl-1", out: "out", bind: "", scope: "out", order: 3, mode: "tiled", exist: true, hold: "",
         };
         dispatchAndReply(h, rev, { workspaces: [unbound] });
         h.world.desktops.push(desk("delayed-1", "wl-1"));
@@ -979,7 +1046,8 @@ describe("world actuation identity and proof", () => {
         assert.equal(h.world.createCalls, 1);
         assert.equal(h.logs.filter((l) => l.includes(" mk=1 ")).length, 1);
         h.runTimers();
-        assert.equal(feedbackOf(h).find((f) => f["op"] === "create-wl-1")?.["outcome"], "applied");
+        // Named enumeration proves exactly once (single mk=1 above);
+        // verdict transport is deleted.
         h.fire("desktopsChanged");
         dispatchAndReply(h, rev, { workspaces: [unbound] });
         assert.equal(h.world.createCalls, 1);
@@ -993,10 +1061,10 @@ describe("world actuation identity and proof", () => {
         h.handle?.requestWorkspaceRelative(1);
         h.faults.signalOnCreate = true;
         const unboundA = {
-            id: "wl-a", out: "out", bind: "", logical: "wl-a", scope: "out", order: 3, mode: "tiled", exist: true, hold: "",
+            id: "wl-a", out: "out", bind: "", scope: "out", order: 3, mode: "tiled", exist: true, hold: "",
         };
         const unboundB = {
-            id: "wl-b", out: "out", bind: "", logical: "wl-b", scope: "out", order: 4, mode: "tiled", exist: true, hold: "",
+            id: "wl-b", out: "out", bind: "", scope: "out", order: 4, mode: "tiled", exist: true, hold: "",
         };
         dispatchAndReply(h, rev, { workspaces: [unboundA, unboundB] });
         assert.ok(h.world.createCalls >= 1, "creation attempted despite reentrant invalidation");
@@ -1020,7 +1088,7 @@ describe("world actuation identity and proof", () => {
         const rev = { n: 0 };
         h.handle?.requestWorkspaceRelative(1);
         const absent = (id: string): Record<string, unknown> => ({
-            id, out: "out", bind: id, logical: "", scope: "out", order: 2, mode: "tiled", exist: false, hold: "",
+            id, out: "out", bind: id, scope: "out", order: 2, mode: "tiled", exist: false, hold: "",
         });
         dispatchAndReply(h, rev, {
             windows: [winRow("win-b", "ws2")],
@@ -1043,9 +1111,9 @@ describe("world actuation identity and proof", () => {
         });
         assert.equal(h.world.focused.length, 0, "raise/stack never steer focus");
         h.runTimers();
-        let feedback = feedbackOf(h);
-        assert.equal(feedback.find((f) => f["op"] === "fx-9")?.["outcome"], "unattempted");
-        assert.equal(feedback.find((f) => f["op"] === "fx-10")?.["outcome"], "unattempted");
+        // Raise/stack never steer focus (zero focused above) and never
+        // spend as attempts; verdict transport is deleted.
+        noInventedQueueOps(h);
         // The second press queues behind the in-flight feedback-carrier
         // report without invalidating it, so that flight stays fresh and
         // the focus effect applies on its own round trip; the queued press
@@ -1056,8 +1124,9 @@ describe("world actuation identity and proof", () => {
         });
         assert.deepEqual(h.world.focused, ["win-b"], "focus applies once with proof");
         h.runTimers();
-        feedback = feedbackOf(h);
-        assert.equal(feedback.find((f) => f["op"] === "fx-11")?.["outcome"], "applied");
+        // Focus applies once with proof (focused above); verdict transport
+        // is deleted.
+        noInventedQueueOps(h);
     });
 });
 
@@ -1070,6 +1139,8 @@ describe("world apply safety reads", () => {
             readLiveRect: () => ({ x: 0, y: 0, w: 100, h: 100 }),
             readLiveMembership: () => ({ out: "out", ws: "ws1" }),
             readLiveSafety: () => null,
+            dispatchWatermark: overrides.state.currentInvalid,
+            takeResult: null,
             setGeometry: () => { throw new Error("must not write on unreadable safety"); },
             setMembership: () => { throw new Error("must not write on unreadable safety"); },
             sendToOutput: () => { throw new Error("must not write on unreadable safety"); },
@@ -1090,14 +1161,21 @@ describe("world apply safety reads", () => {
 
     it("holds narrowly on unreadable safety instead of writing", () => {
         const state = new WorldAdapterState("test-adapter", "owner-a");
-        state.onDiscovery("gen-1");
+        state.onDiscovery("gen-1", "broker-1");
         state.invalidate();
-        const begun = state.beginDispatch(null);
-        assert.ok(begun !== null);
-        const dispatchObs = state.currentObs;
+        const flight = state.beginCapture("req-1", null);
+        assert.ok(flight !== null);
+        const dispatchObs = flight.watermark;
         const text = JSON.stringify({
-            v: 1, adapter: "test-adapter", gen: "gen-1", req: "req-1",
+            v: 2, adapter: "broker-1", gen: "gen-1", req: "req-1",
             obs: dispatchObs, rev: "1", ready: true, consumed: false,
+            source: "req-1",
+            nativeInvalid: "1",
+            clock: "0",
+            gestureSettled: null,
+            operationSettled: [],
+            warpCursor: null,
+            presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
             scopes: [{ scope: "out/ws1", auth: "controlled", reason: "" }],
             workspaces: [], outputs: [],
             windows: [{
@@ -1106,16 +1184,17 @@ describe("world apply safety reads", () => {
                 frame_auth: "controlled", frame_hold: "",
                 member_auth: "controlled", member_hold: "",
                 frame_op: "",
+                clear_op: "",
                 floating: false, float_origin: "",
             }],
-            transfers: [], effects: [],
+            transfers: [], effects: [], result: null,
         });
         const parsed = parseWorldReply(text);
-        assert.ok(parsed !== null && !isWorldRejection(parsed));
-        if (isWorldRejection(parsed) || parsed === null) {
+        assert.ok(parsed !== null && isCoreWorldReply(parsed));
+        if (!isCoreWorldReply(parsed)) {
             return;
         }
-        const verdict = state.acceptReply(parsed, dispatchObs);
+        const verdict = state.acceptReply(parsed, "req-1", flight.watermark);
         assert.deepEqual(verdict, { applied: true, reason: "accepted" });
         const ref = {};
         const observation: ApplyEnv["observation"] = {
@@ -1130,7 +1209,7 @@ describe("world apply safety reads", () => {
                     win: "win-a", ref, out: "out", ws: "ws1",
                     rect: { x: 0, y: 0, w: 100, h: 100 },
                     floating: false, fitExcluded: false, fullscreen: false,
-                    maximized: false, sticky: false, fixedAuto: false, fixedSuppress: false,
+                    maximized: false, sticky: false, fixedAuto: false, fixedSuppress: false, nativeWs: null,
                     hints: { minW: null, minH: null, maxW: null, maxH: null },
                     minimized: false,
                 }],
@@ -1141,6 +1220,11 @@ describe("world apply safety reads", () => {
             complete: true,
             gesture: false,
             focusedGlobal: "",
+            screens: [], windowFacts: [], views: [], closed: [], hostOwned: false, equalCount: true, native: [],
+            cursor: null, actionForeground: null, actionCached: null, actionOutputs: [],
+            focusFollowsCursor: false, cursorWarp: false,
+            switchTarget: "focused-output", freshPlacement: "focused-output-last-focused",
+            presentation: { foreground: "", minimized: false, maximized: false, fullscreen: false, cloaked: false, hiddenWorkspace: false, shell: false, frame: null, borderEnabled: false, underlayEnabled: false, borderGap: 0, borderWidth: 0, underlayExtension: 0, chordHeld: false, moveWindow: "", paused: false, pagerOrder: [], pagerFrames: [] },
         };
         const env = directEnv({ state, observation, reply: parsed });
         const result = applyWorldReply(env);
@@ -1152,7 +1236,7 @@ describe("world apply safety reads", () => {
 
 describe("world hotplug displacement production", () => {
     const wsRow = (id: string, out: string, order: number): Record<string, unknown> => ({
-        id, out, bind: id, logical: "", scope: out, order, mode: "tiled", exist: true, hold: "",
+        id, out, bind: id, scope: out, order, mode: "tiled", exist: true, hold: "",
     });
     const scopeRow = (scope: string, auth: string): Record<string, unknown> => ({ scope, auth, reason: "" });
     const outRow = (out: string, view: string): Record<string, unknown> => ({ out, view, mode: "tiled", hold: "" });
@@ -1163,6 +1247,7 @@ describe("world hotplug displacement production", () => {
         frame_auth: "untouched", frame_hold: "",
         member_auth: "controlled", member_hold: "",
         frame_op: "",
+        clear_op: "",
         floating: false, float_origin: "",
     });
 
@@ -1205,9 +1290,9 @@ describe("world hotplug displacement production", () => {
                 assert.equal(h.world.membershipCalls.length, membershipBefore, "already-homed member issues no setter");
                 assert.equal(h.world.geometryWrites.length, 0, "no float geometry anywhere");
                 h.runTimers();
-                const proved = feedbackOf(h).find((f) => f["op"] === "op-disp-out-ws2");
-                assert.ok(proved !== undefined);
-                assert.equal(proved["outcome"], "applied", "view proof settles on the same flight");
+                // View proof settles on the same flight (one switch above);
+                // verdict transport is deleted.
+                noInventedQueueOps(h);
                 drain(h, rev);
             } else {
                 // Shared mode displaces nothing: the reply carries no
@@ -1269,10 +1354,9 @@ describe("world hotplug displacement production", () => {
                     "policy return never steals focus",
                 );
                 h.runTimers();
-                const feedback = feedbackOf(h);
-                const settled = feedback.find((f) => f["op"] === "op-hp-win-b");
-                assert.ok(settled !== undefined);
-                assert.equal(settled["outcome"], "applied", "member proof settles on the same flight");
+                // Member proof settles on the same flight (moves above);
+                // verdict transport is deleted.
+                noInventedQueueOps(h);
                 // An identical repeated reply never re-actuates.
                 const callsAfter = h.world.membershipCalls.length;
                 const outsAfter = h.world.outputWrites.length;
@@ -1331,14 +1415,21 @@ describe("world admission focus on settled floats", () => {
         },
     ): AdmissionSetup {
         const state = new WorldAdapterState("test-adapter", "owner-a");
-        state.onDiscovery("gen-1");
+        state.onDiscovery("gen-1", "broker-1");
         state.invalidate();
-        const begun = state.beginDispatch(null);
-        assert.ok(begun !== null);
-        const dispatchObs = state.currentObs;
+        const flight = state.beginCapture("req-1", null);
+        assert.ok(flight !== null);
+        const dispatchObs = flight.watermark;
         const text = JSON.stringify({
-            v: 1, adapter: "test-adapter", gen: "gen-1", req: "req-1",
+            v: 2, adapter: "broker-1", gen: "gen-1", req: "req-1",
             obs: dispatchObs, rev: "1", ready: true, consumed: false,
+            source: "req-1",
+            nativeInvalid: "1",
+            clock: "0",
+            gestureSettled: null,
+            operationSettled: [],
+            warpCursor: null,
+            presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
             scopes: [{ scope: "out/ws1", auth: "controlled", reason: "" }],
             workspaces: [], outputs: [],
             windows: [{
@@ -1347,17 +1438,18 @@ describe("world admission focus on settled floats", () => {
                 frame_auth: "untouched", frame_hold: "",
                 member_auth: "untouched", member_hold: "",
                 frame_op: "",
+                clear_op: "",
                 floating: opts?.replyFloating ?? true, float_origin: floatOrigin,
             }],
             transfers: [],
-            effects: [{ id: effectId, kind: "focus", target: "win-b", rev: "1" }],
+            effects: [{ id: effectId, kind: "focus", target: "win-b", rev: "1" }], result: null,
         });
         const parsed = parseWorldReply(text);
-        assert.ok(parsed !== null && !isWorldRejection(parsed));
-        if (isWorldRejection(parsed) || parsed === null) {
+        assert.ok(parsed !== null && isCoreWorldReply(parsed));
+        if (!isCoreWorldReply(parsed)) {
             throw new Error("unreachable");
         }
-        const verdict = state.acceptReply(parsed, dispatchObs);
+        const verdict = state.acceptReply(parsed, "req-1", flight.watermark);
         assert.deepEqual(verdict, { applied: true, reason: "accepted" });
         const ref = {};
         const observation: ApplyEnv["observation"] = {
@@ -1373,7 +1465,7 @@ describe("world admission focus on settled floats", () => {
                     rect: { x: 0, y: 0, w: 100, h: 100 },
                     floating: observed.floating, fitExcluded: observed.fitExcluded ?? true,
                     fullscreen: observed.fullscreen, maximized: observed.maximized,
-                    sticky: observed.sticky, fixedAuto: opts?.observedFixedAuto === true, fixedSuppress: opts?.observedFixedSuppress === true,
+                    sticky: observed.sticky, fixedAuto: opts?.observedFixedAuto === true, fixedSuppress: opts?.observedFixedSuppress === true, nativeWs: null,
                     hints: { minW: null, minH: null, maxW: null, maxH: null },
                     minimized: false,
                 },
@@ -1383,7 +1475,7 @@ describe("world admission focus on settled floats", () => {
                     floating: sib.floating,
                     fitExcluded: sib.floating || sib.fullscreen || sib.maximized || sib.sticky,
                     fullscreen: sib.fullscreen, maximized: sib.maximized,
-                    sticky: sib.sticky, fixedAuto: false, fixedSuppress: false,
+                    sticky: sib.sticky, fixedAuto: false, fixedSuppress: false, nativeWs: null,
                     hints: { minW: null, minH: null, maxW: null, maxH: null },
                     minimized: false,
                 }))],
@@ -1394,6 +1486,11 @@ describe("world admission focus on settled floats", () => {
             complete: true,
             gesture: false,
             focusedGlobal: "",
+            screens: [], windowFacts: [], views: [], closed: [], hostOwned: false, equalCount: true, native: [],
+            cursor: null, actionForeground: null, actionCached: null, actionOutputs: [],
+            focusFollowsCursor: false, cursorWarp: false,
+            switchTarget: "focused-output", freshPlacement: "focused-output-last-focused",
+            presentation: { foreground: "", minimized: false, maximized: false, fullscreen: false, cloaked: false, hiddenWorkspace: false, shell: false, frame: null, borderEnabled: false, underlayEnabled: false, borderGap: 0, borderWidth: 0, underlayExtension: 0, chordHeld: false, moveWindow: "", paused: false, pagerOrder: [], pagerFrames: [] },
         };
         return { state, observation, reply: parsed, focused: [], logs: opts?.logs ?? [] };
     }
@@ -1404,6 +1501,8 @@ describe("world admission focus on settled floats", () => {
             state: setup.state,
             observation: setup.observation,
             reply: setup.reply as ApplyEnv["reply"],
+            dispatchWatermark: setup.state.currentInvalid,
+            takeResult: null,
             log: (m) => { setup.logs.push(m); },
             isStillListed: () => true,
             isActiveWindow: (ref) => ref === target,
@@ -1438,7 +1537,7 @@ describe("world admission focus on settled floats", () => {
         const result = applyWorldReply(admissionEnv(setup));
         assert.deepEqual(setup.focused, ["win-b"], "admission intent activates the floated newcomer");
         assert.equal(result.effects, 1);
-        assert.equal(setup.state.pendingFeedback.find((f) => f.op === "af-win-b")?.outcome, "applied");
+        assert.equal(setup.state.isHeldAmbiguous("af-win-b"), false, "no ambiguous hold (applied settles locally)");
         // A repeated diff never reapplies: the effect stays spent.
         const again = applyWorldReply(admissionEnv(setup));
         assert.deepEqual(setup.focused, ["win-b"], "no second activation");
@@ -1463,9 +1562,8 @@ describe("world admission focus on settled floats", () => {
             const result = applyWorldReply(admissionEnv(setup));
             assert.deepEqual(setup.focused, [], "overlays never take automatic focus writes");
             assert.equal(result.effects, 0);
-            assert.equal(setup.state.pendingFeedback.find((f) => f.op === "af-win-b")?.outcome, "unattempted");
-            assert.equal(setup.state.pendingFeedback.find((f) => f.op === "af-win-b")?.hold, "refused-target");
-        });
+            assert.equal(setup.state.isHeldAmbiguous("af-win-b"), false, "no ambiguous hold (unattempted settles locally)");
+                    });
     }
 
     it("keeps the legacy float exclusion for command-issued focus", () => {
@@ -1473,7 +1571,7 @@ describe("world admission focus on settled floats", () => {
         const result = applyWorldReply(admissionEnv(setup));
         assert.deepEqual(setup.focused, [], "command focus never steers to a float");
         assert.equal(result.effects, 0);
-        assert.equal(setup.state.pendingFeedback.find((f) => f.op === "fx-7")?.outcome, "unattempted");
+        assert.equal(setup.state.isHeldAmbiguous("fx-7"), false, "no ambiguous hold (unattempted settles locally)");
     });
 
     it("focuses a plain tiled newcomer once with no setter writes", () => {
@@ -1496,7 +1594,7 @@ describe("world admission focus on settled floats", () => {
         assert.deepEqual(setup.focused, ["win-b"], "safe ordinary newcomer focuses once");
         assert.equal(result.effects, 1);
         assert.equal(setters, 0, "admission focus writes no geometry/membership/view");
-        assert.equal(setup.state.pendingFeedback.find((f) => f.op === "af-win-b")?.outcome, "applied");
+        assert.equal(setup.state.isHeldAmbiguous("af-win-b"), false, "no ambiguous hold (applied settles locally)");
         const again = applyWorldReply(admissionEnv(setup));
         assert.equal(again.effects, 0, "no second activation");
     });
@@ -1520,9 +1618,8 @@ describe("world admission focus on settled floats", () => {
             const result = applyWorldReply(admissionEnv(setup));
             assert.deepEqual(setup.focused, [], "never force activation away from a protected overlay");
             assert.equal(result.effects, 0);
-            assert.equal(setup.state.pendingFeedback.find((f) => f.op === "af-win-b")?.outcome, "unattempted");
-            assert.equal(setup.state.pendingFeedback.find((f) => f.op === "af-win-b")?.hold, "refused-target");
-        });
+            assert.equal(setup.state.isHeldAmbiguous("af-win-b"), false, "no ambiguous hold (unattempted settles locally)");
+                    });
     }
 
     it("refuses a game float the core never classified as an ordinary float", () => {
@@ -1535,9 +1632,8 @@ describe("world admission focus on settled floats", () => {
         const result = applyWorldReply(admissionEnv(setup));
         assert.deepEqual(setup.focused, [], "observed floating alone never earns activation");
         assert.equal(result.effects, 0);
-        assert.equal(setup.state.pendingFeedback.find((f) => f.op === "af-win-b")?.outcome, "unattempted");
-        assert.equal(setup.state.pendingFeedback.find((f) => f.op === "af-win-b")?.hold, "refused-target");
-    });
+        assert.equal(setup.state.isHeldAmbiguous("af-win-b"), false, "no ambiguous hold (unattempted settles locally)");
+            });
 
     it("refuses automatic fixed-size float admission with zero focus writes", () => {
         // Producer-shaped: the live Qt newcomer is an automatic fixed-size
@@ -1563,9 +1659,8 @@ describe("world admission focus on settled floats", () => {
         assert.deepEqual(setup.focused, [], "automatic fixed float takes no focus write");
         assert.equal(result.effects, 0);
         assert.equal(setters, 0, "no geometry/membership/view writes around a refused admission");
-        assert.equal(setup.state.pendingFeedback.find((f) => f.op === "af-win-b")?.outcome, "unattempted");
-        assert.equal(setup.state.pendingFeedback.find((f) => f.op === "af-win-b")?.hold, "refused-target");
-        assert.ok(!setup.logs.some((l) => l.includes("automatic-focus-attempt")), "refused admission attempts no setter");
+        assert.equal(setup.state.isHeldAmbiguous("af-win-b"), false, "no ambiguous hold (unattempted settles locally)");
+                assert.ok(!setup.logs.some((l) => l.includes("automatic-focus-attempt")), "refused admission attempts no setter");
     });
 
     it("keeps suppressed-tile admission focus with no geometry writes", () => {
@@ -1590,7 +1685,7 @@ describe("world admission focus on settled floats", () => {
         assert.deepEqual(setup.focused, ["win-b"], "suppressed tile keeps admission activation");
         assert.equal(result.effects, 1);
         assert.equal(setters, 0);
-        assert.equal(setup.state.pendingFeedback.find((f) => f.op === "af-win-b")?.outcome, "applied");
+        assert.equal(setup.state.isHeldAmbiguous("af-win-b"), false, "no ambiguous hold (applied settles locally)");
     });
 
     it("reports native denial with proof and zero setter writes", () => {
@@ -1610,6 +1705,6 @@ describe("world admission focus on settled floats", () => {
         assert.deepEqual(setup.focused, [], "denied focus writes nothing");
         assert.equal(result.effects, 0);
         assert.equal(setters, 0, "no geometry/membership/view writes around a focus effect");
-        assert.equal(setup.state.pendingFeedback.find((f) => f.op === "af-win-b")?.outcome, "refused-proven");
+        assert.equal(setup.state.isHeldAmbiguous("af-win-b"), false, "no ambiguous hold (refused-proven settles locally)");
     });
 });

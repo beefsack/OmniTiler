@@ -10,8 +10,9 @@ import assert from "node:assert/strict";
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { startWorldAdapterEntry } from "../src/world-entry";
-import { parseWorldReply, isWorldRejection } from "../src/world-report";
+import { parseWorldReply, isCoreWorldReply } from "../src/world-report";
 import { applyWorldReply } from "../src/world-apply";
+import type { WorldObservation } from "../src/world-observe";
 import { WorldAdapterState } from "../src/world-state";
 import { createWorldApplyHost } from "../src/world-native";
 
@@ -95,6 +96,18 @@ function startFlow(surface: object) {
         adapter: "test-adapter",
         callDbus: (_s, _p, _i, method, payload, callback) => {
             calls.push({ method, payload, callback });
+            if (method === "QueueWorldCommand") {
+                const queueBody = JSON.parse(payload) as Record<string, unknown>;
+                callback(JSON.stringify({ v: 2, outcome: "queued", gen: "gen-1",
+                    client: queueBody["client"], clientCmd: queueBody["clientCmd"], globalCmd: "1" }));
+            } else if (method === "TakeCommandResult") {
+                const stagedTake = (globalThis as Record<string, unknown>)["__takeResult"] as Record<string, unknown> | undefined;
+                if (stagedTake !== undefined) {
+                    delete (globalThis as Record<string, unknown>)["__takeResult"];
+                    callback(JSON.stringify({ v: 2, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
+                } else {
+                    callback(JSON.stringify({ v: 2, outcome: "pending", gen: "gen-1" }));
+                }            }
         },
         scheduleOnce: (delay, cb) => {
             timers.push({ delay, cb });
@@ -122,28 +135,36 @@ describe("world outer-gap regression", () => {
         assert.ok(disc !== undefined);
         disc.callback(
             JSON.stringify({
-                v: 1, adapter: "test-adapter", gen: "gen-1", req: "disc-1",
+                v: 2, adapter: "broker-1", gen: "gen-1", req: "disc-1",
                 obs: "0", rev: "0", ready: false, consumed: false,
-                scopes: [], outputs: [], windows: [], transfers: [], effects: [],
+                gestureSettled: null,
+                operationSettled: [],
+                warpCursor: null,
+                presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
+                scopes: [], outputs: [], windows: [], transfers: [], effects: [], result: null,
                 workspaces: [],
             }),
         );
         const reportCall = [...flow.calls].reverse().find((c) => c.method === "DescribeWorld");
         assert.ok(reportCall !== undefined);
         const payload = (reportCall as { payload: string }).payload;
+        // The per-capture source correlation is a fresh nonce per dispatch:
+        // mask it for the byte gate (everything else must match exactly).
+        const masked = JSON.stringify({ ...JSON.parse(payload), source: "src-masked" });
         if (UPDATE) {
             mkdirSync(FIXTURE_DIR, { recursive: true });
-            writeFileSync(join(FIXTURE_DIR, "report-outer-gap.json"), payload);
+            writeFileSync(join(FIXTURE_DIR, "report-outer-gap.json"), masked);
         } else {
             const expected = readFileSync(join(FIXTURE_DIR, "report-outer-gap.json"), "utf8");
-            assert.equal(payload, expected, "producer payload byte gate");
+            assert.equal(masked, expected, "producer payload byte gate");
         }
         const body = JSON.parse(payload) as Record<string, unknown>;
-        const domains = body["domains"] as Array<Record<string, unknown>>;
-        assert.equal(domains.length, 1);
-        assert.deepEqual((domains[0] as Record<string, unknown>)["bounds"], [0, 0, 800, 600]);
-        assert.equal((domains[0] as Record<string, unknown>)["gap"], 8);
-        assert.equal((domains[0] as Record<string, unknown>)["outer"], 12);
+        const inner = body["report"] as Record<string, unknown>;
+        const screens = inner["screens"] as Array<Record<string, unknown>>;
+        assert.equal(screens.length, 1);
+        assert.deepEqual(screens[0]?.["full"], [0, 0, 800, 600]);
+        assert.equal(screens[0]?.["gap"], 8);
+        assert.equal(screens[0]?.["outer"], 12);
         // Generic Qt defaults ride verbatim (host-boundary fidelity).
         assert.ok(payload.includes('"minW":0,"minH":0,"maxW":16777215,"maxH":16777215}'));
         flow.handle.stop();
@@ -159,8 +180,8 @@ describe("world outer-gap regression", () => {
             return;
         }
         const parsed = parseWorldReply(golden);
-        assert.ok(parsed !== null && !isWorldRejection(parsed));
-        if (parsed === null || isWorldRejection(parsed)) {
+        assert.ok(parsed !== null && isCoreWorldReply(parsed));
+        if (!isCoreWorldReply(parsed)) {
             return;
         }
         // Semantic edge assertions (never a bare golden compare): inset
@@ -242,10 +263,11 @@ describe("world outer-gap regression", () => {
             floating: false, fitExcluded: false, fullscreen: false,
             maximized: false, sticky: false, fixedAuto: false,
             fixedSuppress: false,
+            nativeWs: null,
             hints: { minW: null, minH: null, maxW: null, maxH: null },
             minimized: false,
         });
-        const observation = {
+        const observation: WorldObservation = {
             mode: "per-output-local" as const,
             topology: [{
                 out: OUT, order: [WS], current: WS, complete: true,
@@ -265,13 +287,18 @@ describe("world outer-gap regression", () => {
             minimized: [],
             predicate: "both-axes-fixed" as const,
             complete: true, gesture: false, focusedGlobal: WIN_A,
+            screens: [], windowFacts: [], views: [], closed: [], hostOwned: false, equalCount: true, native: [],
+            cursor: null, actionForeground: null, actionCached: null, actionOutputs: [],
+            focusFollowsCursor: false, cursorWarp: false,
+            switchTarget: "focused-output", freshPlacement: "focused-output-last-focused",
+            presentation: { foreground: "", minimized: false, maximized: false, fullscreen: false, cloaked: false, hiddenWorkspace: false, shell: false, frame: null, borderEnabled: false, underlayEnabled: false, borderGap: 0, borderWidth: 0, underlayExtension: 0, chordHeld: false, moveWindow: "", paused: false, pagerOrder: [], pagerFrames: [] },
         };
         const state = new WorldAdapterState("test-adapter", "test-adapter");
-        state.onDiscovery("gen-1");
-        (state as unknown as { currentObs: string }).currentObs = parsed.obs;
+        state.onDiscovery("gen-1", "broker-1");
+        (state as unknown as { currentInvalid: string }).currentInvalid = parsed.obs;
         const writes: string[] = [];
         const host = createWorldApplyHost(applySurface as unknown as object, readProp);
-        const result = applyWorldReply({
+        const result = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null,
             state,
             observation,
             reply: parsed,

@@ -252,6 +252,8 @@ describe("world observation aligned binding replication", () => {
         });
         assert.ok(obs !== null);
         assert.equal(obs.bindings.length, 2);
-        assert.deepEqual(seen, ["ws-0", "ws-1"]);
+        // Bindings invoke once per native; views invoke once per output
+        // current (same natives here), so the spy sees bindings + views.
+        assert.deepEqual(seen.slice(0, 2), ["ws-0", "ws-1"]);
     });
 });

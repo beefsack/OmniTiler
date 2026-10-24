@@ -2,22 +2,29 @@
 //!
 //! Contract identity: service `com.omnitiler.Planner`, object
 //! `/com/omnitiler/Planner`, interface `com.omnitiler.Planner1`,
-//! methods `DiscoverWorld`, `DescribeWorld`, `ReadFloatIntent`,
-//! `WriteFloatIntent`. The world route carries the retained world
-//! backend; the intent routes carry the session-scoped float-intent
-//! membership store.
+//! methods `DiscoverWorld`, `DescribeWorld`, `QueueWorldCommand`,
+//! `TakeCommandResult`, `ReadWorldPresentation`, `ReadFloatIntent`,
+//! `WriteFloatIntent`. The world capture route carries the sole broker; the
+//! query/command routes share its backend; the intent routes carry the
+//! session-scoped float-intent membership store.
 //!
 //! Boundary rules: no Rust-to-KWin calls except `org.freedesktop.DBus`
 //! identity/owner queries (`GetConnectionUnixUser` for same-UID caller
 //! verification, `GetId` plus `GetNameOwner(org.kde.KWin)` for float-intent
-//! namespace derivation and current-KWin-owner authorization), no other
+//! namespace derivation and live-KWin-owner authorization), no other
 //! persistence beyond the session-scoped float-intent membership store, no
 //! tray coupling, no autostart, no native mutation. Bounded single-flight
-//! endpoint handling via independent world and intent non-queuing async
-//! locks. Name acquisition uses `DoNotQueue`; name loss is terminal. World
-//! and intent calls authorize fail-closed: the caller unique name's Unix UID
-//! must equal the Planner geteuid, and world/intent calls additionally
-//! require the current KWin unique owner as caller.
+//! endpoint handling via independent world-capture and intent non-queuing
+//! async locks (the query/command routes are short broker critical sections
+//! under the backend mutex and never take the capture lock, so they stay
+//! responsive during a capture flight). Name acquisition uses `DoNotQueue`;
+//! name loss is terminal. Capture/discovery calls authorize fail-closed: the
+//! caller unique name's Unix UID must equal the Planner geteuid AND the
+//! caller must be the current KWin unique owner (single live sender). The
+//! query/command routes authorize same-UID only (independent role):
+//! presenting, queueing, and collecting never actuate. WorldWake signals
+//! (`WorldWake(gen, rev, kind)`) wake the actuator after queued commands and
+//! subscribers after accepted captures; both are best-effort.
 //!
 //! Rust returns domain rejections in-band; the KWin adapter journals the
 //! bounded command and rejection lines after it receives each reply.
@@ -41,6 +48,10 @@ use crate::world_service::{
 pub const SERVICE: &str = "com.omnitiler.Planner";
 pub const OBJECT: &str = "/com/omnitiler/Planner";
 pub const INTERFACE: &str = "com.omnitiler.Planner1";
+/// Best-effort wake signal: `WorldWake(gen, rev, kind)` with kind
+/// `presentation-updated` (accepted capture, subscribers re-read) or
+/// `command-queued` (new queued command, actuator sends a fresh capture).
+pub const WORLD_WAKE_SIGNAL: &str = "WorldWake";
 /// Well-known KWin service name for intent caller authorization and
 /// namespace derivation. Never accepted from the caller.
 pub const KWIN_SERVICE: &str = "org.kde.KWin";
@@ -82,6 +93,47 @@ fn plan_early_exit_summary(exit: PlanEarlyExit) -> &'static str {
 
 fn emit_plan_early_exit(exit: PlanEarlyExit) {
     eprintln!("{}", plan_early_exit_summary(exit));
+}
+
+/// True when a broker reply carries the named outcome token.
+fn is_outcome(reply: &str, outcome: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(reply)
+        .ok()
+        .and_then(|v| v.get("outcome").cloned())
+        .and_then(|v| v.as_str().map(ToOwned::to_owned))
+        .is_some_and(|got| got == outcome)
+}
+
+/// Best-effort `WorldWake` emission for replies carrying a generation plus a
+/// decimal revision (`rev` on accepted captures, `globalCmd` on queued
+/// commands). Emission failure never fails the call: the wake is a latency
+/// hint, and both sides re-sync on their next poll.
+async fn emit_world_wake_if_ready(connection: &zbus::Connection, reply: &str, kind: &str) {
+    let parsed: Option<serde_json::Value> = serde_json::from_str(reply).ok();
+    let generation = parsed
+        .as_ref()
+        .and_then(|v| v.get("gen"))
+        .and_then(serde_json::Value::as_str);
+    let revision = parsed.as_ref().and_then(|v| {
+        v.get("rev")
+            .or_else(|| v.get("globalCmd"))
+            .and_then(serde_json::Value::as_str)
+    });
+    let (Some(generation), Some(revision)) = (generation, revision) else {
+        return;
+    };
+    if revision == "null" {
+        return;
+    }
+    let _ = connection
+        .emit_signal(
+            None::<&str>,
+            OBJECT,
+            INTERFACE,
+            WORLD_WAKE_SIGNAL,
+            &(generation, revision, kind),
+        )
+        .await;
 }
 
 #[derive(Debug, zbus::DBusError, PartialEq, Eq)]
@@ -269,10 +321,10 @@ impl PlannerEndpoint {
     /// errors bound to the serving generation; only oversize/closed surface
     /// as D-Bus errors. Lock-free: the backend mutex serializes against
     /// world flights, and poison replacement mints a fresh generation
-    /// rather than serving partial state. KWin restart surfaces as a new
-    /// owner that re-discovers (same generation, fresh observation);
-    /// service restart surfaces as a new generation that rejects stale
-    /// reports until re-discovery.
+    /// rather than serving partial state. A new producer lifetime (KWin
+    /// restart) rotates the broker onto a fresh generation and incarnation
+    /// and re-observes from rev 0; a service restart does the same and
+    /// rejects stale reports until re-discovery.
     #[zbus(name = "DiscoverWorld")]
     async fn discover_world(
         &self,
@@ -319,18 +371,20 @@ impl PlannerEndpoint {
         Ok(reply)
     }
 
-    /// World planning route. Bounded non-queuing single-flight with
-    /// same-UID verification plus the current-KWin-owner check (single
-    /// active adapter; see [`PlannerEndpoint::discover_world`]),
-    /// connection-loss, and reply-size checks. A delayed reply or request
-    /// from a superseded generation or a non-owner sender can never reset
-    /// ordering: generation binding rejects before evaluation and the owner
-    /// check rejects before any state access. Authorized requests evaluate
-    /// against the retained world backend; accepted/duplicate/consumed
-    /// outcomes return the ready full-state reply, core rejections return
-    /// bounded in-band errors, and only oversize replies fail closed as
-    /// `Unavailable`. One bounded ingress plus one bounded egress summary
-    /// line each; diagnostics never echo payload bytes.
+    /// World capture/actuator route. Bounded non-queuing single-flight with
+    /// same-UID verification plus the current-KWin-owner check (single live
+    /// sender; see [`PlannerEndpoint::discover_world`]), connection-loss,
+    /// and reply-size checks. A delayed reply or request from a superseded
+    /// generation or a non-owner sender can never reset ordering: generation
+    /// binding rejects before evaluation and the owner check rejects before
+    /// any state access. Authorized calls evaluate one broker capture
+    /// envelope against the sole broker: watermark binding, redelivery
+    /// replay, broker-owned sequencing, and at most one drained command.
+    /// Accepted/duplicate/consumed outcomes return the bound reply, core
+    /// rejections return bounded in-band errors, and only oversize replies
+    /// fail closed as `Unavailable`. One bounded ingress plus one bounded
+    /// egress summary line each; diagnostics never echo payload bytes. An
+    /// accepted capture best-effort emits `WorldWake`/`presentation-updated`.
     #[zbus(name = "DescribeWorld")]
     async fn describe_world(
         &self,
@@ -377,7 +431,7 @@ impl PlannerEndpoint {
             emit_plan_early_exit(PlanEarlyExit::Unauthorized);
             return Ok(self.world.error_body(reason, reason));
         }
-        let reply = match self.world.evaluate_world_request(&request) {
+        let reply = match self.world.evaluate_capture(&request) {
             Ok(reply) => reply,
             Err(WorldServiceError::Oversized) => {
                 drop(_guard);
@@ -411,6 +465,187 @@ impl PlannerEndpoint {
             ));
         }
         drop(_guard);
+        eprintln!("{}", world_ingress_summary(&request));
+        eprintln!("{}", world_egress_summary(&request, &reply));
+        emit_world_wake_if_ready(emitter.connection(), &reply, "presentation-updated").await;
+        Ok(reply)
+    }
+
+    /// External command queue route. Same-UID only (independent
+    /// query/command role): presenting clients file commands here without
+    /// actuating anything themselves. The client namespace binds the
+    /// authenticated sender. No KWin-owner gate, no capture-lock
+    /// contention: short broker critical section only. The command waits for
+    /// the next fresh actuator capture, which drains at most one queued
+    /// command per call; duplicates at or below the per-sender per-client
+    /// high-water never re-execute. Malformed requests and authorization
+    /// failures return bounded in-band errors; only oversize/closed surface
+    /// as D-Bus errors. A newly queued command best-effort emits
+    /// `WorldWake`/`command-queued` so the actuator sends a fresh capture.
+    #[zbus(name = "QueueWorldCommand")]
+    async fn queue_world_command(
+        &self,
+        request: String,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(signal_emitter)] emitter: zbus::object_server::SignalEmitter<'_>,
+    ) -> Result<String, PlannerError> {
+        use crate::world_service::WorldServiceError;
+        if request.len() > WORLD_SERVICE_MAX_REQUEST {
+            emit_plan_early_exit(PlanEarlyExit::Oversize);
+            return Err(PlannerError::Unavailable(
+                "request exceeds size bound".to_owned(),
+            ));
+        }
+        if emitter.connection().is_closed() {
+            emit_plan_early_exit(PlanEarlyExit::Closed);
+            return Err(PlannerError::Unavailable(
+                "planner serving connection was lost".to_owned(),
+            ));
+        }
+        let caller = header.sender().map(ToString::to_string);
+        let Some(caller) = caller.as_deref() else {
+            emit_plan_early_exit(PlanEarlyExit::Unauthorized);
+            return Ok(self.world.error_body("unauthorized", "unauthorized"));
+        };
+        if !verify_planner_caller(emitter.connection(), caller).await {
+            emit_plan_early_exit(PlanEarlyExit::Unauthorized);
+            return Ok(self.world.error_body("unauthorized", "unauthorized"));
+        }
+        let reply = match self.world.queue_command(caller, &request) {
+            Ok(reply) => reply,
+            Err(WorldServiceError::Oversized) => {
+                emit_plan_early_exit(PlanEarlyExit::Oversize);
+                return Err(PlannerError::Unavailable(
+                    "request exceeds size bound".to_owned(),
+                ));
+            }
+            Err(WorldServiceError::Unavailable(message)) => {
+                return Err(PlannerError::Unavailable(message));
+            }
+        };
+        if reply.len() > WORLD_SERVICE_MAX_REPLY {
+            return Err(PlannerError::Unavailable(
+                "reply exceeds size bound".to_owned(),
+            ));
+        }
+        eprintln!("{}", world_ingress_summary(&request));
+        eprintln!("{}", world_egress_summary(&request, &reply));
+        if is_outcome(&reply, "queued") {
+            emit_world_wake_if_ready(emitter.connection(), &reply, "command-queued").await;
+        }
+        Ok(reply)
+    }
+
+    /// Command result route. Same-UID only: the issuing client collects the
+    /// terminal outcome of its filed command. `pending` while queued or
+    /// undispatched; `ready` (with the core result) or `failed` (with the
+    /// explicit rejection kind/message) once the world verdict lands,
+    /// re-served while remembered; `duplicate` after bounded eviction;
+    /// unknown-command rejection for anything else. The client namespace
+    /// binds the authenticated sender, so one sender can never collect
+    /// another's results. Never re-executes, never touches the engine.
+    #[zbus(name = "TakeCommandResult")]
+    async fn take_command_result(
+        &self,
+        request: String,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(signal_emitter)] emitter: zbus::object_server::SignalEmitter<'_>,
+    ) -> Result<String, PlannerError> {
+        use crate::world_service::WorldServiceError;
+        if request.len() > WORLD_SERVICE_MAX_REQUEST {
+            emit_plan_early_exit(PlanEarlyExit::Oversize);
+            return Err(PlannerError::Unavailable(
+                "request exceeds size bound".to_owned(),
+            ));
+        }
+        if emitter.connection().is_closed() {
+            emit_plan_early_exit(PlanEarlyExit::Closed);
+            return Err(PlannerError::Unavailable(
+                "planner serving connection was lost".to_owned(),
+            ));
+        }
+        let caller = header.sender().map(ToString::to_string);
+        let Some(caller) = caller.as_deref() else {
+            emit_plan_early_exit(PlanEarlyExit::Unauthorized);
+            return Ok(self.world.error_body("unauthorized", "unauthorized"));
+        };
+        if !verify_planner_caller(emitter.connection(), caller).await {
+            emit_plan_early_exit(PlanEarlyExit::Unauthorized);
+            return Ok(self.world.error_body("unauthorized", "unauthorized"));
+        }
+        let reply = match self.world.take_result(caller, &request) {
+            Ok(reply) => reply,
+            Err(WorldServiceError::Oversized) => {
+                emit_plan_early_exit(PlanEarlyExit::Oversize);
+                return Err(PlannerError::Unavailable(
+                    "request exceeds size bound".to_owned(),
+                ));
+            }
+            Err(WorldServiceError::Unavailable(message)) => {
+                return Err(PlannerError::Unavailable(message));
+            }
+        };
+        if reply.len() > WORLD_SERVICE_MAX_REPLY {
+            return Err(PlannerError::Unavailable(
+                "reply exceeds size bound".to_owned(),
+            ));
+        }
+        eprintln!("{}", world_ingress_summary(&request));
+        eprintln!("{}", world_egress_summary(&request, &reply));
+        Ok(reply)
+    }
+
+    /// Presentation query route. Same-UID only: any client reads the cached
+    /// accepted presentation (snapshot plus presentation, no transfers,
+    /// effects, terminal results, settlements, or warp desires). Rejects
+    /// not-ready before the first accepted capture. Never touches the
+    /// engine and never actuates.
+    #[zbus(name = "ReadWorldPresentation")]
+    async fn read_world_presentation(
+        &self,
+        request: String,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(signal_emitter)] emitter: zbus::object_server::SignalEmitter<'_>,
+    ) -> Result<String, PlannerError> {
+        use crate::world_service::WorldServiceError;
+        if request.len() > WORLD_SERVICE_MAX_REQUEST {
+            emit_plan_early_exit(PlanEarlyExit::Oversize);
+            return Err(PlannerError::Unavailable(
+                "request exceeds size bound".to_owned(),
+            ));
+        }
+        if emitter.connection().is_closed() {
+            emit_plan_early_exit(PlanEarlyExit::Closed);
+            return Err(PlannerError::Unavailable(
+                "planner serving connection was lost".to_owned(),
+            ));
+        }
+        let caller = header.sender().map(ToString::to_string);
+        let Some(caller) = caller.as_deref() else {
+            emit_plan_early_exit(PlanEarlyExit::Unauthorized);
+            return Ok(self.world.error_body("unauthorized", "unauthorized"));
+        };
+        if !verify_planner_caller(emitter.connection(), caller).await {
+            emit_plan_early_exit(PlanEarlyExit::Unauthorized);
+            return Ok(self.world.error_body("unauthorized", "unauthorized"));
+        }
+        let reply = match self.world.read_presentation(&request) {
+            Ok(reply) => reply,
+            Err(WorldServiceError::Oversized) => {
+                emit_plan_early_exit(PlanEarlyExit::Oversize);
+                return Err(PlannerError::Unavailable(
+                    "request exceeds size bound".to_owned(),
+                ));
+            }
+            Err(WorldServiceError::Unavailable(message)) => {
+                return Err(PlannerError::Unavailable(message));
+            }
+        };
+        if reply.len() > WORLD_SERVICE_MAX_REPLY {
+            return Err(PlannerError::Unavailable(
+                "reply exceeds size bound".to_owned(),
+            ));
+        }
         eprintln!("{}", world_ingress_summary(&request));
         eprintln!("{}", world_egress_summary(&request, &reply));
         Ok(reply)
@@ -988,10 +1223,27 @@ mod tests {
 
     #[test]
     fn world_method_identity_is_exact_and_distinct() {
-        use crate::world_service::{DISCOVERY_METHOD, WORLD_METHOD};
+        use crate::world_service::{
+            DISCOVERY_METHOD, QUEUE_METHOD, READ_METHOD, TAKE_METHOD, WORLD_METHOD,
+        };
         assert_eq!(WORLD_METHOD, "DescribeWorld");
         assert_eq!(DISCOVERY_METHOD, "DiscoverWorld");
-        assert_ne!(WORLD_METHOD, DISCOVERY_METHOD);
+        assert_eq!(QUEUE_METHOD, "QueueWorldCommand");
+        assert_eq!(TAKE_METHOD, "TakeCommandResult");
+        assert_eq!(READ_METHOD, "ReadWorldPresentation");
+        assert_eq!(WORLD_WAKE_SIGNAL, "WorldWake");
+        let methods = [
+            WORLD_METHOD,
+            DISCOVERY_METHOD,
+            QUEUE_METHOD,
+            TAKE_METHOD,
+            READ_METHOD,
+        ];
+        for (i, first) in methods.iter().enumerate() {
+            for second in &methods[i + 1..] {
+                assert_ne!(first, second);
+            }
+        }
         assert_eq!(SERVICE, "com.omnitiler.Planner");
         assert_eq!(OBJECT, "/com/omnitiler/Planner");
         assert_eq!(INTERFACE, "com.omnitiler.Planner1");
@@ -1426,6 +1678,157 @@ mod tests {
         assert_eq!(stored["outcome"], "stored");
         assert_eq!(stored["stored"], 1);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn private_bus_world_broker_splits_capture_and_query_roles() {
+        use crate::world_service::WORLD_METHOD;
+        use crate::world_service::{DISCOVERY_METHOD, QUEUE_METHOD, READ_METHOD, TAKE_METHOD};
+        let Some(bus) = PrivateBus::start() else {
+            eprintln!("SKIP: dbus-daemon unavailable for hermetic world test");
+            return;
+        };
+        let Some(server) = bus.session() else {
+            eprintln!("SKIP: private bus daemon never listened");
+            return;
+        };
+        serve_intent_endpoint(&server, PlannerEndpoint::new());
+        let Some(owner) = bus.session() else {
+            eprintln!("SKIP: private bus daemon dropped the second connection");
+            return;
+        };
+        // The actuator holds the live KWin name; the outsider shares only
+        // the UID.
+        owner
+            .request_name(KWIN_SERVICE)
+            .expect("claim KWin name on private bus");
+        let Some(outsider) = bus.session() else {
+            eprintln!("SKIP: private bus daemon dropped the third connection");
+            return;
+        };
+        let owner_proxy = intent_proxy(&owner);
+        let outsider_proxy = intent_proxy(&outsider);
+        let discovery: serde_json::Value = serde_json::from_str(&call_intent(
+            &owner_proxy,
+            DISCOVERY_METHOD,
+            r#"{"v":2,"adapter":"test-adapter","req":"d-1"}"#,
+        ))
+        .expect("discovery reply is JSON");
+        assert_eq!(discovery["ready"], false);
+        let generation = discovery["gen"].as_str().expect("gen").to_owned();
+        let incarnation = discovery["adapter"].as_str().expect("incarnation");
+        assert!(!incarnation.is_empty());
+        // The outsider is not the KWin owner: capture and discovery reject
+        // in-band without touching broker state.
+        let denied: serde_json::Value = serde_json::from_str(&call_intent(
+            &outsider_proxy,
+            WORLD_METHOD,
+            &format!(
+                "{{\"v\":2,\"adapter\":\"test-adapter\",\"gen\":\"{generation}\",\
+                  \"source\":\"outsider-1\",\"sourceSeq\":\"1\",\
+                  \"nativeInvalid\":\"1\",\"report\":{{\"v\":2}}}}"
+            ),
+        ))
+        .expect("rejection is JSON");
+        assert_eq!(denied["outcome"], "rejected");
+        assert_eq!(denied["kind"], "not-kwin-owner");
+        let denied: serde_json::Value = serde_json::from_str(&call_intent(
+            &outsider_proxy,
+            DISCOVERY_METHOD,
+            r#"{"v":2,"adapter":"outsider","req":"d-9"}"#,
+        ))
+        .expect("rejection is JSON");
+        assert_eq!(denied["outcome"], "rejected");
+        assert_eq!(denied["kind"], "not-kwin-owner");
+        // The independent query/command role needs no KWin ownership:
+        // reads report not-ready, queues file.
+        let not_ready: serde_json::Value = serde_json::from_str(&call_intent(
+            &outsider_proxy,
+            READ_METHOD,
+            r#"{"v":2,"req":"r-0"}"#,
+        ))
+        .expect("rejection is JSON");
+        assert_eq!(not_ready["outcome"], "rejected");
+        assert_eq!(not_ready["kind"], "not-ready");
+        assert_eq!(not_ready["gen"], generation.as_str());
+        let queued: serde_json::Value = serde_json::from_str(&call_intent(
+            &outsider_proxy,
+            QUEUE_METHOD,
+            &format!(
+                "{{\"v\":2,\"gen\":\"{generation}\",\"client\":\"panel-1\",\"clientCmd\":\"1\",\
+                 \"command\":{{\"op\":\"select-numbered\",\"out\":null,\"index\":1}}}}"
+            ),
+        ))
+        .expect("queue reply is JSON");
+        assert_eq!(queued["outcome"], "queued");
+        // The owner's fresh capture drains the outsider's queued command.
+        let inner = "{\"v\":2,\"mode\":\"per-output-local\",\
+          \"screens\":[{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
+          \"work\":[0,0,1920,1040],\"gap\":8,\"outer\":4,\"complete\":true,\"primary\":true}],\
+          \"windows\":[],\"views\":[{\"out\":\"DP-1\",\"view\":\"\"}],\"closed\":[],\
+          \"hostOwned\":false,\"equalCount\":false,\"native\":[],\
+          \"predicate\":\"both-axes-fixed\",\"refill\":\"last-remaining-workspace\",\
+          \"defaultTiled\":true,\"focused\":\"\",\
+          \"complete\":true,\"gesture\":false,\"switchTarget\":\"cursor-output\",\
+          \"freshPlacement\":\"cursor-output-last-focused\",\
+          \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
+          \"actionOutputs\":[\"DP-1\"],\"focusFollowsCursor\":false,\"cursorWarp\":false,\
+          \"presentation\":{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\
+          \"fullscreen\":false,\"cloaked\":false,\"hiddenWorkspace\":false,\"shell\":false,\
+          \"frame\":null,\"borderEnabled\":false,\"underlayEnabled\":false,\"borderGap\":0,\
+          \"borderWidth\":0,\"underlayExtension\":0,\"chordHeld\":false,\"moveWindow\":\"\",\
+          \"paused\":false,\"pagerOrder\":[],\"pagerFrames\":[]}}";
+        let envelope = format!(
+            "{{\"v\":2,\"adapter\":\"test-adapter\",\"gen\":\"{generation}\",\
+              \"source\":\"actuator-1\",\"sourceSeq\":\"1\",\
+              \"nativeInvalid\":\"1\",\"report\":{inner}}}"
+        );
+        let accepted_text = call_intent(&owner_proxy, WORLD_METHOD, &envelope);
+        let accepted: serde_json::Value =
+            serde_json::from_str(&accepted_text).expect("capture reply is JSON");
+        assert_eq!(accepted["ready"], true);
+        assert_eq!(accepted["adapter"], incarnation);
+        assert_eq!(accepted["source"], "actuator-1");
+        assert_eq!(accepted["nativeInvalid"], "1");
+        // The outsider's command settled for the issuer only: the owner's
+        // sender cannot collect it, and the presentation cache carries no
+        // terminal lanes.
+        let theft: serde_json::Value = serde_json::from_str(&call_intent(
+            &owner_proxy,
+            TAKE_METHOD,
+            &format!(
+                "{{\"v\":2,\"gen\":\"{generation}\",\"client\":\"panel-1\",\"clientCmd\":\"1\"}}"
+            ),
+        ))
+        .expect("take reply is JSON");
+        assert_eq!(theft["outcome"], "rejected");
+        assert_eq!(theft["kind"], "unknown-command");
+        // The outsider's command settled exactly once for the issuer; the
+        // owner's presentation cache carries no terminal lanes.
+        let ready: serde_json::Value = serde_json::from_str(&call_intent(
+            &outsider_proxy,
+            TAKE_METHOD,
+            &format!(
+                "{{\"v\":2,\"gen\":\"{generation}\",\"client\":\"panel-1\",\"clientCmd\":\"1\"}}"
+            ),
+        ))
+        .expect("take reply is JSON");
+        assert_eq!(ready["outcome"], "ready");
+        let projection: serde_json::Value = serde_json::from_str(&call_intent(
+            &owner_proxy,
+            READ_METHOD,
+            r#"{"v":2,"req":"pager-1"}"#,
+        ))
+        .expect("presentation reply is JSON");
+        assert_eq!(projection["outcome"], "presentation");
+        assert!(projection.get("effects").is_none());
+        assert!(projection.get("result").is_none());
+        // Byte-identical redelivery replays without progress.
+        let replay = call_intent(&owner_proxy, WORLD_METHOD, &envelope);
+        assert_eq!(
+            replay, accepted_text,
+            "redelivery replays the bound response"
+        );
     }
 
     #[test]

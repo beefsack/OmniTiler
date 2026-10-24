@@ -88,6 +88,18 @@ function start(surface: object) {
         adapter: "test-adapter",
         callDbus: (_s, _p, _i, method, payload, callback) => {
             calls.push({ method, payload, callback });
+            if (method === "QueueWorldCommand") {
+                const queueBody = JSON.parse(payload) as Record<string, unknown>;
+                callback(JSON.stringify({ v: 2, outcome: "queued", gen: "gen-1",
+                    client: queueBody["client"], clientCmd: queueBody["clientCmd"], globalCmd: "1" }));
+            } else if (method === "TakeCommandResult") {
+                const stagedTake = (globalThis as Record<string, unknown>)["__takeResult"] as Record<string, unknown> | undefined;
+                if (stagedTake !== undefined) {
+                    delete (globalThis as Record<string, unknown>)["__takeResult"];
+                    callback(JSON.stringify({ v: 2, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
+                } else {
+                    callback(JSON.stringify({ v: 2, outcome: "pending", gen: "gen-1" }));
+                }            }
         },
         scheduleOnce: (delay, cb) => {
             timers.push({ delay, cb });
@@ -102,10 +114,14 @@ function start(surface: object) {
     const discover = calls.find((c) => c.method === "DiscoverWorld");
     assert.ok(discover !== undefined);
     (discover as { callback: (reply: unknown) => void }).callback(JSON.stringify({
-        v: 1, adapter: "test-adapter", gen: "gen-1", req: JSON.parse(discover.payload).req,
+        v: 2, adapter: "broker-1", gen: "gen-1", req: JSON.parse(discover.payload).req,
         obs: "0", rev: "0", ready: false, consumed: false,
+        gestureSettled: null,
+        operationSettled: [],
+        warpCursor: null,
+        presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
         scopes: [], workspaces: [], outputs: [], windows: [],
-        transfers: [], effects: [],
+        transfers: [], effects: [], result: null,
     }));
     const auto = calls.find((c) => c.method === "DescribeWorld");
     assert.ok(auto !== undefined);
@@ -116,10 +132,9 @@ describe("world overlay safety", () => {
     it("classifies native fullScreen/maximizeMode/onAllDesktops like legacy exclusions", () => {
         const { surface, world } = makeSurface();
         const { handle, auto } = start(surface);
-        const body = JSON.parse(auto.payload) as {
-            domains: Array<{ windows: Array<Record<string, unknown>> }>;
-        };
-        const wins = body.domains.flatMap((d) => d.windows);
+        const envelope = JSON.parse(auto.payload) as Record<string, unknown>;
+        const inner = envelope["report"] as Record<string, unknown>;
+        const wins = inner["windows"] as Array<Record<string, unknown>>;
         const game = wins.find((w) => w["win"] === "win-game");
         assert.ok(game !== undefined, "fullscreen game window is observed");
         assert.equal(game["fullscreen"], true);
@@ -143,8 +158,15 @@ describe("world overlay safety", () => {
         // applies: the setter must fail closed.
         (world.wins[0] as { fullScreen: boolean }).fullScreen = true;
         auto.callback(JSON.stringify({
-            v: 1, adapter: "test-adapter", gen: "gen-1", req: body["req"],
-            obs: body["obs"], rev: "1", ready: true, consumed: false,
+            v: 2, adapter: "broker-1", gen: "gen-1", req: body["source"],
+            obs: "1", rev: "1", ready: true, consumed: false,
+            source: body["source"],
+            nativeInvalid: body["nativeInvalid"],
+            clock: "0",
+            gestureSettled: null,
+            operationSettled: [],
+            warpCursor: null,
+            presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
             scopes: [{ scope: "out-1/ws-1", auth: "controlled", reason: "" }],
             workspaces: [], outputs: [],
             windows: [{
@@ -153,9 +175,10 @@ describe("world overlay safety", () => {
                 frame_auth: "controlled", frame_hold: "",
                 member_auth: "controlled", member_hold: "",
                 frame_op: "",
+                clear_op: "",
                 floating: false, float_origin: "",
             }],
-            transfers: [], effects: [],
+            transfers: [], effects: [], result: null,
         }));
         assert.equal(world.geometryWrites.length, 0, "flipped overlay takes no frame write");
         handle.stop();
@@ -167,8 +190,15 @@ describe("world overlay safety", () => {
         const body = JSON.parse(auto.payload) as Record<string, unknown>;
         (world.wins[0] as { minimized: boolean }).minimized = true;
         auto.callback(JSON.stringify({
-            v: 1, adapter: "test-adapter", gen: "gen-1", req: body["req"],
-            obs: body["obs"], rev: "1", ready: true, consumed: false,
+            v: 2, adapter: "broker-1", gen: "gen-1", req: body["source"],
+            obs: "1", rev: "1", ready: true, consumed: false,
+            source: body["source"],
+            nativeInvalid: body["nativeInvalid"],
+            clock: "0",
+            gestureSettled: null,
+            operationSettled: [],
+            warpCursor: null,
+            presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
             scopes: [{ scope: "out-1/ws-1", auth: "controlled", reason: "" }],
             workspaces: [], outputs: [],
             windows: [{
@@ -177,9 +207,10 @@ describe("world overlay safety", () => {
                 frame_auth: "controlled", frame_hold: "",
                 member_auth: "controlled", member_hold: "",
                 frame_op: "",
+                clear_op: "",
                 floating: false, float_origin: "",
             }],
-            transfers: [], effects: [],
+            transfers: [], effects: [], result: null,
         }));
         assert.equal((world.wins[0] as { desktops: Array<{ id: string }> }).desktops[0]?.id, "ws-1", "minimized flip blocks the move");
         handle.stop();
@@ -191,12 +222,19 @@ describe("world overlay safety", () => {
         const body = JSON.parse(auto.payload) as Record<string, unknown>;
         const before = world.activeWindow;
         auto.callback(JSON.stringify({
-            v: 1, adapter: "test-adapter", gen: "gen-1", req: body["req"],
-            obs: body["obs"], rev: "1", ready: true, consumed: false,
+            v: 2, adapter: "broker-1", gen: "gen-1", req: body["source"],
+            obs: "1", rev: "1", ready: true, consumed: false,
+            source: body["source"],
+            nativeInvalid: body["nativeInvalid"],
+            clock: "0",
+            gestureSettled: null,
+            operationSettled: [],
+            warpCursor: null,
+            presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
             scopes: [{ scope: "out-1/ws-1", auth: "controlled", reason: "" }],
             workspaces: [], outputs: [],
             windows: [],
-            transfers: [], effects: [{ id: "fx-1", kind: "focus", target: "win-game", rev: "1" }],
+            transfers: [], effects: [{ id: "fx-1", kind: "focus", target: "win-game", rev: "1" }], result: null,
         }));
         assert.equal(world.activeWindow, before, "overlay focus effect held, never stolen");
         handle.stop();
@@ -208,12 +246,19 @@ describe("world overlay safety", () => {
         const { handle, auto } = start(surface);
         const body = JSON.parse(auto.payload) as Record<string, unknown>;
         auto.callback(JSON.stringify({
-            v: 1, adapter: "test-adapter", gen: "gen-1", req: body["req"],
-            obs: body["obs"], rev: "1", ready: true, consumed: false,
+            v: 2, adapter: "broker-1", gen: "gen-1", req: body["source"],
+            obs: "1", rev: "1", ready: true, consumed: false,
+            source: body["source"],
+            nativeInvalid: body["nativeInvalid"],
+            clock: "0",
+            gestureSettled: null,
+            operationSettled: [],
+            warpCursor: null,
+            presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
             scopes: [{ scope: "out-1/ws-1", auth: "controlled", reason: "" }],
             workspaces: [], outputs: [],
             windows: [],
-            transfers: [], effects: [{ id: "fx-2", kind: "focus", target: "win-tiled", rev: "1" }],
+            transfers: [], effects: [{ id: "fx-2", kind: "focus", target: "win-tiled", rev: "1" }], result: null,
         }));
         assert.equal(
             ((world.activeWindow as unknown as { internalId: string }).internalId),

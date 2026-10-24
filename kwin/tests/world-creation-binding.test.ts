@@ -5,6 +5,32 @@ import { startWorldAdapterEntry } from "../src/world-entry";
 interface FakeDesktop { id: string; name: string }
 const desk = (id: string, name?: string): FakeDesktop => ({ id, name: name ?? id });
 
+interface FakeSignal {
+    readonly handlers: Array<(payload?: unknown) => void>;
+    readonly signal: {
+        connect: (handler: (payload?: unknown) => void) => void;
+        disconnect: (handler: (payload?: unknown) => void) => void;
+    };
+}
+
+function makeSignal(): FakeSignal {
+    const handlers: Array<(payload?: unknown) => void> = [];
+    return {
+        handlers,
+        signal: {
+            connect: (handler: (payload?: unknown) => void): void => {
+                handlers.push(handler);
+            },
+            disconnect: (handler: (payload?: unknown) => void): void => {
+                const index = handlers.indexOf(handler);
+                if (index >= 0) {
+                    handlers.splice(index, 1);
+                }
+            },
+        },
+    };
+}
+
 function makeTwoOutput(opts: { throwOnce?: boolean } = {}) {
     const wa1 = desk("wa-1", "wa-1");
     const wb1 = desk("wb-1", "wb-1");
@@ -22,19 +48,31 @@ function makeTwoOutput(opts: { throwOnce?: boolean } = {}) {
     };
     const calls: Array<{ method: string; payload: string; callback: (r: unknown) => void }> = [];
     const timers: Array<{ delay: number; cb: () => void }> = [];
+    const signals: Record<string, FakeSignal> = {};
+    for (const name of [
+        "windowAdded",
+        "windowRemoved",
+        "windowActivated",
+        "desktopsChanged",
+        "screensChanged",
+        "currentDesktopChanged",
+        "activeScreenChanged",
+    ] as const) {
+        signals[name] = makeSignal();
+    }
     const surface: Record<string, unknown> = {
         windowList: () => world.wins,
         screens: world.screens,
         get desktops() { return world.desktops; },
         activeScreen: world.activeScreen,
         activeWindow: null,
-        windowAdded: { connect: () => undefined, disconnect: () => undefined },
-        windowRemoved: { connect: () => undefined, disconnect: () => undefined },
-        windowActivated: { connect: () => undefined, disconnect: () => undefined },
-        desktopsChanged: { connect: () => undefined, disconnect: () => undefined },
-        screensChanged: { connect: () => undefined, disconnect: () => undefined },
-        currentDesktopChanged: { connect: () => undefined, disconnect: () => undefined },
-        activeScreenChanged: { connect: () => undefined, disconnect: () => undefined },
+        windowAdded: (signals["windowAdded"] as FakeSignal).signal,
+        windowRemoved: (signals["windowRemoved"] as FakeSignal).signal,
+        windowActivated: (signals["windowActivated"] as FakeSignal).signal,
+        desktopsChanged: (signals["desktopsChanged"] as FakeSignal).signal,
+        screensChanged: (signals["screensChanged"] as FakeSignal).signal,
+        currentDesktopChanged: (signals["currentDesktopChanged"] as FakeSignal).signal,
+        activeScreenChanged: (signals["activeScreenChanged"] as FakeSignal).signal,
         clientArea: () => ({ x: 0, y: 0, width: 800, height: 600 }),
         currentDesktopForScreen: (out: { name: string }) => world.currentByOut.get(out.name),
         setCurrentDesktopForScreen: (d: FakeDesktop, out: { name: string }) => { world.currentByOut.set(out.name, d); },
@@ -66,28 +104,48 @@ function makeTwoOutput(opts: { throwOnce?: boolean } = {}) {
     assert.ok(handle !== null);
     const runTimers = () => { for (let i = 0; i < timers.length; i += 1) { const t = timers[i] as { delay: number; cb: () => void }; if (t.delay <= 120) { timers.splice(i, 1); i -= 1; t.cb(); } } };
     const lastCall = (m: string) => { const f = [...calls].reverse().find((c) => c.method === m); assert.ok(f !== undefined); return f as { method: string; payload: string; callback: (r: unknown) => void }; };
-    return { world, calls, handle, runTimers, lastCall };
+    const fire = (name: string, payload?: unknown): void => {
+        for (const handler of [...(signals[name] as FakeSignal).handlers]) {
+            handler(payload);
+        }
+    };
+    return { world, calls, handle, runTimers, lastCall, fire };
 }
 
-const BOOT = (gen: string, req: string): string => JSON.stringify({ v: 1, adapter: "test-adapter", gen, req, obs: "0", rev: "0", ready: false, consumed: false, scopes: [], workspaces: [], outputs: [], windows: [], transfers: [], effects: [] });
-const ACC = (gen: string, req: string, obs: string, rev: string, extra: Record<string, unknown> = {}): string => JSON.stringify({ v: 1, adapter: "test-adapter", gen, req, obs, rev, ready: true, consumed: false, scopes: [], workspaces: [], outputs: [], windows: [], transfers: [], effects: [], ...extra });
+const DISABLED_PRESENTATION = { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] };
+const BOOT = (gen: string, req: string): string => JSON.stringify({ v: 2, adapter: "broker-1", gen, req, obs: "0", rev: "0", ready: false, consumed: false, scopes: [], workspaces: [], outputs: [], windows: [], transfers: [], effects: [], result: null, gestureSettled: null, operationSettled: [], warpCursor: null, presentation: DISABLED_PRESENTATION });
+const ACC = (gen: string, source: string, nativeInvalid: string, rev: string, extra: Record<string, unknown> = {}): string => JSON.stringify({ v: 2, adapter: "broker-1", gen, req: source, obs: rev, rev, ready: true, consumed: false, source, nativeInvalid, clock: "1", gestureSettled: null, operationSettled: [], warpCursor: null, presentation: DISABLED_PRESENTATION, scopes: [], workspaces: [], outputs: [], windows: [], transfers: [], effects: [], result: null, ...extra });
 
 function discover(h: ReturnType<typeof makeTwoOutput>, gen = "gen-1"): void {
     const c = h.lastCall("DiscoverWorld");
     c.callback(BOOT(gen, (JSON.parse(c.payload) as { req: string }).req));
     const auto = h.lastCall("DescribeWorld");
-    const b = JSON.parse(auto.payload) as { req: string; obs: string };
-    auto.callback(ACC(gen, b.req, b.obs, "0"));
+    const b = JSON.parse(auto.payload) as { source: string; nativeInvalid: string };
+    auto.callback(ACC(gen, b.source, b.nativeInvalid, "0"));
 }
 
-function bindingsOf(h: ReturnType<typeof makeTwoOutput>): Array<{ logical: string; native: string; out: string }> {
-    return (JSON.parse(h.lastCall("DescribeWorld").payload) as { bindings: Array<{ logical: string; native: string; out: string }> }).bindings;
+// V2 publication oracle: adapter-owned pending bindings publish as the
+// logical view per output (the inner report carries no bindings lane).
+function viewsOf(h: ReturnType<typeof makeTwoOutput>): Array<{ out: string; view: string }> {
+    return (JSON.parse(h.lastCall("DescribeWorld").payload) as { report: { views: Array<{ out: string; view: string }> } }).report.views;
 }
 
-function dispatchObserve(h: ReturnType<typeof makeTwoOutput>): { req: string; obs: string } {
-    h.handle?.requestWorkspaceRelative(1);
+function dispatchObserve(h: ReturnType<typeof makeTwoOutput>): { source: string; nativeInvalid: string } {
+    // Signal-driven observation round (production path): a native inventory
+    // event invalidates and the debounce dispatches a fresh capture. Press
+    // intents queue instead of dispatching, so they cannot drive the round.
+    h.fire("desktopsChanged");
     h.runTimers();
-    return JSON.parse(h.lastCall("DescribeWorld").payload) as { req: string; obs: string };
+    return JSON.parse(h.lastCall("DescribeWorld").payload) as { source: string; nativeInvalid: string };
+}
+
+// Show a native desktop on an output (ordinary native view input): pending
+// bindings publish through the views lane only for the current native, so
+// observing publication requires the created desktop to be shown.
+function showNative(h: ReturnType<typeof makeTwoOutput>, out: string, nativeId: string): void {
+    const ref = h.world.desktops.find((d) => d.id === nativeId);
+    assert.ok(ref !== undefined, `native ${nativeId} exists`);
+    h.world.currentByOut.set(out, ref);
 }
 
 describe("creation binding handoff", () => {
@@ -95,20 +153,20 @@ describe("creation binding handoff", () => {
         const h = makeTwoOutput();
         discover(h);
         const req = dispatchObserve(h);
-        h.lastCall("DescribeWorld").callback(ACC("gen-1", req.req, req.obs, "1", {
+        h.lastCall("DescribeWorld").callback(ACC("gen-1", req.source, req.nativeInvalid, "1", {
             workspaces: [
-                { id: "wa-1", out: "out-primary", bind: "wa-1", logical: "", scope: "out", order: 0, mode: "tiled", exist: true, hold: "" },
-                { id: "wl-1", out: "out-secondary", bind: "", logical: "wl-1", scope: "out", order: 2, mode: "tiled", exist: true, hold: "" },
+                { id: "wa-1", out: "out-primary", bind: "wa-1", scope: "out", order: 0, mode: "tiled", exist: true, hold: "" },
+                { id: "wl-1", out: "out-secondary", bind: "", scope: "out", order: 2, mode: "tiled", exist: true, hold: "" },
             ],
         }));
         assert.equal(h.world.created.length, 1);
         const native = h.world.desktops.find((d) => d.id === h.world.created[0]);
         assert.ok(native !== undefined);
         assert.equal(native.name, "Desktop 3", "proven desktop renamed to its native one-based position");
+        showNative(h, "out-secondary", native.id);
         dispatchObserve(h);
-        const row = bindingsOf(h).find((b) => b.logical === "wl-1");
-        assert.ok(row !== undefined, `expected wl-1 binding, got ${JSON.stringify(bindingsOf(h))}`);
-        assert.equal(row.native, native.id);
+        const row = viewsOf(h).find((b) => b.view === "wl-1");
+        assert.ok(row !== undefined, `expected wl-1 view, got ${JSON.stringify(viewsOf(h))}`);
         assert.equal(row.out, "out-secondary");
         h.handle?.stop();
     });
@@ -117,10 +175,10 @@ describe("creation binding handoff", () => {
         const h = makeTwoOutput();
         discover(h);
         const req = dispatchObserve(h);
-        h.lastCall("DescribeWorld").callback(ACC("gen-1", req.req, req.obs, "1", {
+        h.lastCall("DescribeWorld").callback(ACC("gen-1", req.source, req.nativeInvalid, "1", {
             workspaces: [
-                { id: "wa-1", out: "out-primary", bind: "wa-1", logical: "", scope: "out", order: 0, mode: "tiled", exist: true, hold: "" },
-                { id: "wl-1", out: "out-secondary", bind: "", logical: "wl-1", scope: "out", order: 2, mode: "tiled", exist: true, hold: "" },
+                { id: "wa-1", out: "out-primary", bind: "wa-1", scope: "out", order: 0, mode: "tiled", exist: true, hold: "" },
+                { id: "wl-1", out: "out-secondary", bind: "", scope: "out", order: 2, mode: "tiled", exist: true, hold: "" },
             ],
         }));
         const native = h.world.desktops.find((d) => d.id === h.world.created[0]);
@@ -128,44 +186,45 @@ describe("creation binding handoff", () => {
         assert.equal(native.name, "Desktop 3", "proven desktop renamed to its native one-based position");
         // Generic fallback echo must still be corrected by pending.
         const r2 = dispatchObserve(h);
-        h.lastCall("DescribeWorld").callback(ACC("gen-1", r2.req, r2.obs, "2", {
+        h.lastCall("DescribeWorld").callback(ACC("gen-1", r2.source, r2.nativeInvalid, "2", {
             workspaces: [
-                { id: "wa-1", out: "out-primary", bind: "wa-1", logical: "", scope: "out", order: 0, mode: "tiled", exist: true, hold: "" },
-                { id: "wl-1", out: "out-secondary", bind: native.id, logical: "", scope: "out", order: 2, mode: "tiled", exist: true, hold: "" },
+                { id: "wa-1", out: "out-primary", bind: "wa-1", scope: "out", order: 0, mode: "tiled", exist: true, hold: "" },
+                { id: "wl-1", out: "out-secondary", bind: native.id, scope: "out", order: 2, mode: "tiled", exist: true, hold: "" },
             ],
         }));
         assert.equal(h.world.created.length, 1, "fallback echo must not re-create");
+        showNative(h, "out-secondary", (h.world.desktops.find((d) => d.id === h.world.created[0]) as FakeDesktop).id);
         dispatchObserve(h);
-        const corrected = bindingsOf(h).find((b) => b.native === native.id);
+        const corrected = viewsOf(h).find((b) => b.out === "out-secondary");
         assert.ok(corrected !== undefined);
-        assert.equal(corrected.logical, "wl-1", "pending corrects generic fallback");
-        assert.equal(corrected.out, "out-secondary");
+        assert.equal(corrected.view, "wl-1", "pending corrects generic fallback");
         // Real ack consumes pending: no second creation.
-        const r3 = JSON.parse(h.lastCall("DescribeWorld").payload) as { req: string; obs: string };
-        h.lastCall("DescribeWorld").callback(ACC("gen-1", r3.req, r3.obs, "3", {
+        const r3 = JSON.parse(h.lastCall("DescribeWorld").payload) as { source: string; nativeInvalid: string };
+        h.lastCall("DescribeWorld").callback(ACC("gen-1", r3.source, r3.nativeInvalid, "3", {
             workspaces: [
-                { id: "wa-1", out: "out-primary", bind: "wa-1", logical: "", scope: "out", order: 0, mode: "tiled", exist: true, hold: "" },
-                { id: "wl-1", out: "out-secondary", bind: native.id, logical: "wl-1", scope: "out", order: 2, mode: "tiled", exist: true, hold: "" },
+                { id: "wa-1", out: "out-primary", bind: "wa-1", scope: "out", order: 0, mode: "tiled", exist: true, hold: "" },
+                { id: "wl-1", out: "out-secondary", bind: native.id, scope: "out", order: 2, mode: "tiled", exist: true, hold: "" },
             ],
         }));
         assert.equal(h.world.created.length, 1);
         dispatchObserve(h);
-        const acked = bindingsOf(h).find((b) => b.native === native.id);
+        const acked = viewsOf(h).find((b) => b.out === "out-secondary");
         assert.ok(acked !== undefined);
-        assert.equal(acked.logical, "wl-1");
+        assert.equal(acked.view, "wl-1");
         assert.equal(acked.out, "out-secondary");
         // Later legitimate migration of the same native to a new output wins.
-        const r4 = JSON.parse(h.lastCall("DescribeWorld").payload) as { req: string; obs: string };
-        h.lastCall("DescribeWorld").callback(ACC("gen-1", r4.req, r4.obs, "4", {
+        const r4 = JSON.parse(h.lastCall("DescribeWorld").payload) as { source: string; nativeInvalid: string };
+        h.lastCall("DescribeWorld").callback(ACC("gen-1", r4.source, r4.nativeInvalid, "4", {
             workspaces: [
-                { id: "wa-1", out: "out-primary", bind: "wa-1", logical: "", scope: "out", order: 0, mode: "tiled", exist: true, hold: "" },
-                { id: "wl-1", out: "out-primary", bind: native.id, logical: "wl-1", scope: "out", order: 2, mode: "tiled", exist: true, hold: "" },
+                { id: "wa-1", out: "out-primary", bind: "wa-1", scope: "out", order: 0, mode: "tiled", exist: true, hold: "" },
+                { id: "wl-1", out: "out-primary", bind: native.id, scope: "out", order: 2, mode: "tiled", exist: true, hold: "" },
             ],
         }));
+        showNative(h, "out-primary", native.id);
         dispatchObserve(h);
-        const migrated = bindingsOf(h).find((b) => b.native === native.id);
+        const migrated = viewsOf(h).find((b) => b.out === "out-primary");
         assert.ok(migrated !== undefined);
-        assert.equal(migrated.logical, "wl-1");
+        assert.equal(migrated.view, "wl-1");
         assert.equal(migrated.out, "out-primary", "core migration must override stale pending out");
         assert.equal(h.world.created.length, 1, "migration must not re-create");
         h.handle?.stop();
@@ -175,10 +234,10 @@ describe("creation binding handoff", () => {
         const h = makeTwoOutput({ throwOnce: true });
         discover(h);
         const req = dispatchObserve(h);
-        h.lastCall("DescribeWorld").callback(ACC("gen-1", req.req, req.obs, "1", {
+        h.lastCall("DescribeWorld").callback(ACC("gen-1", req.source, req.nativeInvalid, "1", {
             workspaces: [
-                { id: "wa-1", out: "out-primary", bind: "wa-1", logical: "", scope: "out", order: 0, mode: "tiled", exist: true, hold: "" },
-                { id: "wl-1", out: "out-secondary", bind: "", logical: "wl-1", scope: "out", order: 2, mode: "tiled", exist: true, hold: "" },
+                { id: "wa-1", out: "out-primary", bind: "wa-1", scope: "out", order: 0, mode: "tiled", exist: true, hold: "" },
+                { id: "wl-1", out: "out-secondary", bind: "", scope: "out", order: 2, mode: "tiled", exist: true, hold: "" },
             ],
         }));
         // Throw left the native uncreated; nothing bound yet.
@@ -186,10 +245,10 @@ describe("creation binding handoff", () => {
         // Delayed native appearance with the exact requested name.
         h.world.desktops.push(desk("native-9", "wl-1"));
         const r2 = dispatchObserve(h);
-        h.lastCall("DescribeWorld").callback(ACC("gen-1", r2.req, r2.obs, "2", {
+        h.lastCall("DescribeWorld").callback(ACC("gen-1", r2.source, r2.nativeInvalid, "2", {
             workspaces: [
-                { id: "wa-1", out: "out-primary", bind: "wa-1", logical: "", scope: "out", order: 0, mode: "tiled", exist: true, hold: "" },
-                { id: "wl-1", out: "out-secondary", bind: "", logical: "wl-1", scope: "out", order: 2, mode: "tiled", exist: true, hold: "" },
+                { id: "wa-1", out: "out-primary", bind: "wa-1", scope: "out", order: 0, mode: "tiled", exist: true, hold: "" },
+                { id: "wl-1", out: "out-secondary", bind: "", scope: "out", order: 2, mode: "tiled", exist: true, hold: "" },
             ],
         }));
         assert.equal(h.world.created.length, 0, "delayed recovery must not append");
@@ -198,10 +257,10 @@ describe("creation binding handoff", () => {
             "Desktop 3",
             "delayed proof renames to its enumerated position",
         );
+        showNative(h, "out-secondary", "native-9");
         dispatchObserve(h);
-        const row = bindingsOf(h).find((b) => b.logical === "wl-1");
-        assert.ok(row !== undefined, `delayed recovery should publish, got ${JSON.stringify(bindingsOf(h))}`);
-        assert.equal(row.native, "native-9");
+        const row = viewsOf(h).find((b) => b.view === "wl-1");
+        assert.ok(row !== undefined, `delayed recovery should publish, got ${JSON.stringify(viewsOf(h))}`);
         assert.equal(row.out, "out-secondary");
         h.handle?.stop();
     });
@@ -210,10 +269,10 @@ describe("creation binding handoff", () => {
         const h = makeTwoOutput();
         discover(h);
         const req = dispatchObserve(h);
-        h.lastCall("DescribeWorld").callback(ACC("gen-1", req.req, req.obs, "1", {
+        h.lastCall("DescribeWorld").callback(ACC("gen-1", req.source, req.nativeInvalid, "1", {
             workspaces: [
-                { id: "wl-1", out: "out-secondary", bind: "", logical: "wl-1", scope: "out", order: 2, mode: "tiled", exist: true, hold: "" },
-                { id: "wl-2", out: "out-primary", bind: "", logical: "wl-2", scope: "out", order: 3, mode: "tiled", exist: true, hold: "" },
+                { id: "wl-1", out: "out-secondary", bind: "", scope: "out", order: 2, mode: "tiled", exist: true, hold: "" },
+                { id: "wl-2", out: "out-primary", bind: "", scope: "out", order: 3, mode: "tiled", exist: true, hold: "" },
             ],
         }));
         assert.equal(h.world.created.length, 2);
@@ -223,28 +282,27 @@ describe("creation binding handoff", () => {
         assert.notEqual(n1.id, n2.id, "no duplicate native binding");
         assert.equal(n1.name, "Desktop 3");
         assert.equal(n2.name, "Desktop 4", "second token uses its own enumerated position");
+        showNative(h, "out-secondary", n1.id);
+        showNative(h, "out-primary", n2.id);
         dispatchObserve(h);
-        const rows = bindingsOf(h);
-        const r1 = rows.find((b) => b.logical === "wl-1");
-        const r2 = rows.find((b) => b.logical === "wl-2");
+        const rows = viewsOf(h);
+        const r1 = rows.find((b) => b.view === "wl-1");
+        const r2 = rows.find((b) => b.view === "wl-2");
         assert.ok(r1 !== undefined && r2 !== undefined);
-        assert.equal(r1.native, n1.id);
         assert.equal(r1.out, "out-secondary");
-        assert.equal(r2.native, n2.id);
         assert.equal(r2.out, "out-primary");
-        assert.notEqual(r1.native, r2.native);
         // Ack only wl-1: wl-2 pending must survive (no map-wide clear).
-        const ack = JSON.parse(h.lastCall("DescribeWorld").payload) as { req: string; obs: string };
-        h.lastCall("DescribeWorld").callback(ACC("gen-1", ack.req, ack.obs, "2", {
+        const ack = JSON.parse(h.lastCall("DescribeWorld").payload) as { source: string; nativeInvalid: string };
+        h.lastCall("DescribeWorld").callback(ACC("gen-1", ack.source, ack.nativeInvalid, "2", {
             workspaces: [
-                { id: "wl-1", out: "out-secondary", bind: n1.id, logical: "wl-1", scope: "out", order: 2, mode: "tiled", exist: true, hold: "" },
-                { id: "wl-2", out: "out-primary", bind: n2.id, logical: "", scope: "out", order: 3, mode: "tiled", exist: true, hold: "" },
+                { id: "wl-1", out: "out-secondary", bind: n1.id, scope: "out", order: 2, mode: "tiled", exist: true, hold: "" },
+                { id: "wl-2", out: "out-primary", bind: n2.id, scope: "out", order: 3, mode: "tiled", exist: true, hold: "" },
             ],
         }));
         dispatchObserve(h);
-        const after = bindingsOf(h);
-        assert.equal(after.find((b) => b.logical === "wl-1")?.native, n1.id);
-        assert.equal(after.find((b) => b.logical === "wl-2")?.native, n2.id);
+        const after = viewsOf(h);
+        assert.equal(after.find((b) => b.view === "wl-1")?.out, "out-secondary");
+        assert.equal(after.find((b) => b.view === "wl-2")?.out, "out-primary");
         assert.equal(h.world.created.length, 2);
         h.handle?.stop();
     });

@@ -155,6 +155,18 @@ function makeHarness(initial: LiveSpec[]) {
         adapter: "test-adapter",
         callDbus: (_s, _p, _i, method, payload, callback) => {
             calls.push({ method, payload, callback });
+            if (method === "QueueWorldCommand") {
+                const queueBody = JSON.parse(payload) as Record<string, unknown>;
+                callback(JSON.stringify({ v: 2, outcome: "queued", gen: "gen-1",
+                    client: queueBody["client"], clientCmd: queueBody["clientCmd"], globalCmd: "1" }));
+            } else if (method === "TakeCommandResult") {
+                const stagedTake = (globalThis as Record<string, unknown>)["__takeResult"] as Record<string, unknown> | undefined;
+                if (stagedTake !== undefined) {
+                    delete (globalThis as Record<string, unknown>)["__takeResult"];
+                    callback(JSON.stringify({ v: 2, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
+                } else {
+                    callback(JSON.stringify({ v: 2, outcome: "pending", gen: "gen-1" }));
+                }            }
         },
         scheduleOnce: (delay, cb) => {
             timers.push({ delay, cb });
@@ -186,29 +198,47 @@ function makeHarness(initial: LiveSpec[]) {
     };
     const accepted = (
         gen: string,
-        req: string,
-        obs: string,
+        source: string,
+        nativeInvalid: string,
         rev: string,
         extra: Record<string, unknown> = {},
-    ): string =>
-        JSON.stringify({
-            v: 1, adapter: "test-adapter", gen, req, obs, rev,
+    ): string => {
+        // Terminal results ride the take lane requester-only, never the
+        // capture reply.
+        const { result, ...snapshot } = extra;
+        if (result !== undefined) {
+            (globalThis as Record<string, unknown>)["__takeResult"] = result;
+        }
+        return JSON.stringify({
+            v: 2, adapter: "broker-1", gen, req: source, obs: rev, rev,
             ready: true, consumed: false,
+            source,
+            nativeInvalid,
+            clock: "0",
+            gestureSettled: null,
+            operationSettled: [],
+            warpCursor: null,
+            presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
             scopes: [{ scope: `${OUT}/${WS_A}`, auth: "controlled", reason: "" }],
-            workspaces: [], outputs: [], windows: [], transfers: [], effects: [],
-            ...extra,
+            workspaces: [], outputs: [], windows: [], transfers: [], effects: [], result: null,
+            ...snapshot,
         });
+    };
     const discover = (gen = "gen-1"): void => {
         const call = lastCall("DiscoverWorld");
         const body = JSON.parse(call.payload);
         call.callback(JSON.stringify({
-            v: 1, adapter: "test-adapter", gen, req: body.req, obs: "0", rev: "0",
+            v: 2, adapter: "broker-1", gen, req: body.req, obs: "0", rev: "0",
             ready: false, consumed: false, scopes: [], workspaces: [], outputs: [],
-            windows: [], transfers: [], effects: [],
+            gestureSettled: null,
+            operationSettled: [],
+            warpCursor: null,
+            presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
+            windows: [], transfers: [], effects: [], result: null,
         }));
         const auto = lastCall("DescribeWorld");
         const autoBody = JSON.parse(auto.payload);
-        auto.callback(accepted(gen, autoBody.req, autoBody.obs, "0"));
+        auto.callback(accepted(gen, autoBody.source, autoBody.nativeInvalid, "0"));
     };
     const fire = (name: keyof typeof signals, payload?: unknown): void => {
         for (const h of [...(signals[name] as { handlers: Handler[] }).handlers]) {
@@ -258,6 +288,7 @@ const winRow = (
     frame_auth: auth, frame_hold: "",
     member_auth: auth, member_hold: "",
     frame_op: "",
+    clear_op: "",
     floating: false, float_origin: "",
     ...extra,
 });
@@ -277,13 +308,14 @@ describe("world unfloat immediate retile", () => {
         h.runTimers();
         let call = h.lastCall("DescribeWorld");
         let body = JSON.parse(call.payload) as Record<string, unknown>;
+        const filedFloat = JSON.parse(h.lastCall("QueueWorldCommand").payload) as Record<string, unknown>;
         assert.deepEqual(
-            (body["command"] as Record<string, unknown>)["command"],
+            (filedFloat["command"] as Record<string, unknown>)["command"],
             { op: "toggle-float", win: WIN_A, rect: null },
         );
-        call.callback(h.accepted("gen-1", body["req"] as string, body["obs"] as string, "1", {
+        call.callback(h.accepted("gen-1", body["source"] as string, body["nativeInvalid"] as string, "1", {
             windows: [
-                winRow(WIN_A, FLOAT_A, "untouched", { frame_op: "op-1", floating: true }),
+                winRow(WIN_A, FLOAT_A, "untouched", { frame_op: "op-1", clear_op: "", floating: true }),
                 winRow(WIN_B, TILE_B_FULL, "controlled"),
             ],
             result: { op: "toggle-float", win: WIN_A, rect: FLOAT_A },
@@ -300,11 +332,12 @@ describe("world unfloat immediate retile", () => {
         h.runTimers();
         call = h.lastCall("DescribeWorld");
         body = JSON.parse(call.payload) as Record<string, unknown>;
+        const filedUnfloat = JSON.parse(h.lastCall("QueueWorldCommand").payload) as Record<string, unknown>;
         assert.deepEqual(
-            (body["command"] as Record<string, unknown>)["command"],
+            (filedUnfloat["command"] as Record<string, unknown>)["command"],
             { op: "toggle-float", win: WIN_A, rect: [...FLOAT_A] },
         );
-        call.callback(h.accepted("gen-1", body["req"] as string, body["obs"] as string, "2", {
+        call.callback(h.accepted("gen-1", body["source"] as string, body["nativeInvalid"] as string, "2", {
             windows: [
                 winRow(WIN_A, TILE_A, "controlled"),
                 winRow(WIN_B, TILE_B_HALF, "controlled"),
@@ -322,8 +355,8 @@ describe("world unfloat immediate retile", () => {
         h.runTimers();
         call = h.lastCall("DescribeWorld");
         body = JSON.parse(call.payload) as Record<string, unknown>;
-        assert.equal(body["command"], null, "repeat is observation-only");
-        call.callback(h.accepted("gen-1", body["req"] as string, body["obs"] as string, "3", {
+        assert.ok(!("command" in (body["report"] as Record<string, unknown>)), "repeat is observation-only");
+        call.callback(h.accepted("gen-1", body["source"] as string, body["nativeInvalid"] as string, "3", {
             windows: [
                 winRow(WIN_A, TILE_A, "controlled"),
                 winRow(WIN_B, TILE_B_HALF, "controlled"),
@@ -353,8 +386,8 @@ describe("world unfloat immediate retile", () => {
         h.runTimers();
         let seed = h.lastCall("DescribeWorld");
         let seedBody = JSON.parse(seed.payload) as Record<string, unknown>;
-        assert.equal(seedBody["command"], null);
-        seed.callback(h.accepted("gen-1", seedBody["req"] as string, seedBody["obs"] as string, "1", {
+        assert.ok(!("command" in (seedBody["report"] as Record<string, unknown>)));
+        seed.callback(h.accepted("gen-1", seedBody["source"] as string, seedBody["nativeInvalid"] as string, "1", {
             windows: [winRow(WIN_F, FLOAT_F, "untouched", { floating: true })],
             result: null,
         }));
@@ -364,12 +397,13 @@ describe("world unfloat immediate retile", () => {
         h.runTimers();
         const call = h.lastCall("DescribeWorld");
         const body = JSON.parse(call.payload) as Record<string, unknown>;
+        const filedFixed = JSON.parse(h.lastCall("QueueWorldCommand").payload) as Record<string, unknown>;
         assert.deepEqual(
-            (body["command"] as Record<string, unknown>)["command"],
+            (filedFixed["command"] as Record<string, unknown>)["command"],
             { op: "toggle-float", win: WIN_F, rect: [...FLOAT_F] },
         );
         const writesBefore = h.geometryWrites.length;
-        call.callback(h.accepted("gen-1", body["req"] as string, body["obs"] as string, "2", {
+        call.callback(h.accepted("gen-1", body["source"] as string, body["nativeInvalid"] as string, "2", {
             windows: [winRow(WIN_F, TILE_F, "controlled")],
             result: { op: "toggle-float", win: WIN_F, rect: null },
         }));
@@ -382,7 +416,7 @@ describe("world unfloat immediate retile", () => {
         h.runTimers();
         const repeat = h.lastCall("DescribeWorld");
         const repeatBody = JSON.parse(repeat.payload) as Record<string, unknown>;
-        repeat.callback(h.accepted("gen-1", repeatBody["req"] as string, repeatBody["obs"] as string, "3", {
+        repeat.callback(h.accepted("gen-1", repeatBody["source"] as string, repeatBody["nativeInvalid"] as string, "3", {
             windows: [winRow(WIN_F, TILE_F, "controlled")],
             result: null,
         }));
@@ -401,7 +435,7 @@ describe("world unfloat immediate retile", () => {
         const call = h.lastCall("DescribeWorld");
         const body = JSON.parse(call.payload) as Record<string, unknown>;
         const writesBefore = h.geometryWrites.length;
-        call.callback(h.accepted("gen-1", body["req"] as string, body["obs"] as string, "1", {
+        call.callback(h.accepted("gen-1", body["source"] as string, body["nativeInvalid"] as string, "1", {
             windows: [winRow(WIN_O, TILE_A, "controlled")],
             result: null,
         }));

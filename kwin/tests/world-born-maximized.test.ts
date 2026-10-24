@@ -107,6 +107,7 @@ function freshObservation(wins: Array<{ win: string; out: string; ws: string; fl
                 sticky: w.flags?.sticky ?? false,
                 fixedAuto: w.flags?.fixedAuto ?? false,
                 fixedSuppress: w.flags?.fixedSuppress ?? false,
+                nativeWs: null,
                 hints: { minW: null, minH: null, maxW: null, maxH: null },
                 minimized: false,
             })),
@@ -117,6 +118,11 @@ function freshObservation(wins: Array<{ win: string; out: string; ws: string; fl
         complete: true,
         gesture: false,
         focusedGlobal: "",
+        screens: [], windowFacts: [], views: [], closed: [], hostOwned: false, equalCount: true, native: [],
+        cursor: null, actionForeground: null, actionCached: null, actionOutputs: [],
+        focusFollowsCursor: false, cursorWarp: false,
+        switchTarget: "focused-output", freshPlacement: "focused-output-last-focused",
+        presentation: { foreground: "", minimized: false, maximized: false, fullscreen: false, cloaked: false, hiddenWorkspace: false, shell: false, frame: null, borderEnabled: false, underlayEnabled: false, borderGap: 0, borderWidth: 0, underlayExtension: 0, chordHeld: false, moveWindow: "", paused: false, pagerOrder: [], pagerFrames: [] },
     };
 }
 
@@ -134,16 +140,23 @@ function readyReply(win: string, out: string, ws: string, proof?: ScopeProof): W
     return {
         adapter: "test-adapter", gen: "gen-1", req: "req-1", obs: "1", rev: "1",
         ready: true, consumed: false,
+        source: "req-1",
+        nativeInvalid: "1",
+        clock: "0",
+        gestureSettled: null,
+        operationSettled: [],
+        warpCursor: null,
+        presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
         scopes: [{ scope: `${out}/${ws}`, auth: (p.scopeAuth ?? "controlled") as "controlled", reason: "" }],
         workspaces: [{
-            id: ws, out, bind: p.wsBind ?? ws, logical: ws, scope: out,
+            id: ws, out, bind: p.wsBind ?? ws, scope: out,
             order: 0, mode: p.wsMode ?? "tiled", exist: p.wsExist ?? true, hold: p.wsHold ?? "",
         }],
         outputs: [{ out, view: ws, mode: "tiled", hold: p.outHold ?? "" }],
         windows: [{
             win, out, ws, alloc: [0, 0, 100, 100], frame: [0, 0, 100, 100],
             frame_auth: "controlled", frame_hold: "",
-            member_auth: "controlled", member_hold: "", frame_op: "",
+            member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "",
             floating: false, float_origin: "",
         }],
         transfers: [], effects: [], result: null,
@@ -801,6 +814,18 @@ function startBornEntry(
         adapter: "test-adapter",
         callDbus: (_s, _p, _i, method, payload, callback) => {
             calls.push({ method, payload, callback });
+            if (method === "QueueWorldCommand") {
+                const queueBody = JSON.parse(payload) as Record<string, unknown>;
+                callback(JSON.stringify({ v: 2, outcome: "queued", gen: "gen-1",
+                    client: queueBody["client"], clientCmd: queueBody["clientCmd"], globalCmd: "1" }));
+            } else if (method === "TakeCommandResult") {
+                const stagedTake = (globalThis as Record<string, unknown>)["__takeResult"] as Record<string, unknown> | undefined;
+                if (stagedTake !== undefined) {
+                    delete (globalThis as Record<string, unknown>)["__takeResult"];
+                    callback(JSON.stringify({ v: 2, outcome: "ready", gen: "gen-1", globalCmd: "1", result: stagedTake }));
+                } else {
+                    callback(JSON.stringify({ v: 2, outcome: "pending", gen: "gen-1" }));
+                }            }
         },
         scheduleOnce: (delay, cb) => {
             timers.push({ delay, cb });
@@ -825,10 +850,14 @@ function discoverBorn(
     const discover = calls.find((c) => c.method === "DiscoverWorld");
     assert.ok(discover !== undefined);
     discover.callback(JSON.stringify({
-        v: 1, adapter: "test-adapter", gen: "gen-1", req: JSON.parse(discover.payload).req,
+        v: 2, adapter: "broker-1", gen: "gen-1", req: JSON.parse(discover.payload).req,
         obs: "0", rev: "0", ready: false, consumed: false,
+        gestureSettled: null,
+        operationSettled: [],
+        warpCursor: null,
+        presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
         scopes: [], workspaces: [], outputs: [], windows: [],
-        transfers: [], effects: [],
+        transfers: [], effects: [], result: null,
     }));
 }
 
@@ -843,13 +872,20 @@ function acceptReady(
     win: string,
     overrides?: { wsMode?: string; scopeAuth?: string; rev?: string },
 ): void {
-    const body = JSON.parse(call.payload) as { req: string; obs: string };
+    const body = JSON.parse(call.payload) as { req: string; obs: string; source: string; nativeInvalid: string };
     call.callback(JSON.stringify({
-        v: 1, adapter: "test-adapter", gen: "gen-1", req: body.req,
-        obs: body.obs, rev: overrides?.rev ?? "1", ready: true, consumed: false,
+        v: 2, adapter: "broker-1", gen: "gen-1", req: body.source,
+        obs: "1", rev: overrides?.rev ?? "1", ready: true, consumed: false,
+        source: body.source,
+        nativeInvalid: body.nativeInvalid,
+        clock: "0",
+        gestureSettled: null,
+        operationSettled: [],
+        warpCursor: null,
+        presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
         scopes: [{ scope: "out/ws1", auth: overrides?.scopeAuth ?? "controlled", reason: "" }],
         workspaces: [{
-            id: "ws1", out: "out", bind: "ws1", logical: "ws1", scope: "out",
+            id: "ws1", out: "out", bind: "ws1", scope: "out",
             order: 0, mode: overrides?.wsMode ?? "tiled", exist: true, hold: "",
         }],
         outputs: [{ out: "out", view: "ws1", mode: "tiled", hold: "" }],
@@ -857,7 +893,7 @@ function acceptReady(
             win, out: "out", ws: "ws1",
             alloc: [12, 12, 376, 576], frame: [12, 12, 376, 576],
             frame_auth: "controlled", frame_hold: "",
-            member_auth: "controlled", member_hold: "", frame_op: "",
+            member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "",
             floating: false, float_origin: "",
         }],
         transfers: [], effects: [], result: null,
@@ -878,10 +914,9 @@ describe("world born-maximized entry flow", () => {
         // The pre-ready auto report actuates nothing: the overlay is
         // reserved until the ready reply confirms the tile.
         const auto = lastDescribe(calls);
-        const body = JSON.parse(auto.payload) as {
-            domains: Array<{ windows: Array<{ win: string; maximized: boolean }> }>;
-        };
-        assert.ok(body.domains.flatMap((d) => d.windows).some((w) => w.maximized), "birth rides unproven");
+        const body = JSON.parse(auto.payload) as Record<string, unknown>;
+        const innerAuto = body["report"] as Record<string, unknown>;
+        assert.ok(((innerAuto["windows"] as Array<Record<string, unknown>>).some((w) => w["maximized"])), "birth rides unproven");
         assert.equal(backing.get("win-b")?.setMaximizeCalls, 0, "zero actuation before bootstrap");
         assert.equal(backing.get("win-b")?.fullScreenWrites, 0, "no fullscreen writes");
         handle?.stop();
@@ -906,13 +941,11 @@ describe("world born-maximized entry flow", () => {
         assert.ok(catchup !== undefined, "catchup redispatched");
         catchup.cb();
         const next = lastDescribe(calls);
-        const body = JSON.parse(next.payload) as {
-            command: unknown;
-            domains: Array<{ windows: Array<{ win: string; maximized: boolean }> }>;
-        };
-        assert.equal(body.command, null, "no command replay");
+        const body = JSON.parse(next.payload) as Record<string, unknown>;
+        const innerNext = body["report"] as Record<string, unknown>;
+        assert.ok(!("command" in innerNext), "no command replay");
         assert.ok(
-            body.domains.flatMap((d) => d.windows).some((w) => w.win === BARE && !w.maximized),
+            ((innerNext["windows"] as Array<Record<string, unknown>>).some((w) => w["win"] === BARE && !w["maximized"])),
             "recaptured truth carries the restored tile",
         );
         handle?.stop();
@@ -1025,30 +1058,46 @@ describe("world born-maximized entry flow", () => {
         const debounce = timers.find((t) => t.delay <= 120);
         assert.ok(debounce !== undefined, "redispatched");
         debounce.cb();
-        lastDescribe(calls).callback(JSON.stringify({
-            outcome: "rejected", kind: "generation-mismatch", message: "planner restarted", gen: "gen-1",
-        }));
+        {
+            const flight = lastDescribe(calls);
+            const flightBody = JSON.parse(flight.payload) as Record<string, unknown>;
+            flight.callback(JSON.stringify({
+                v: 2, outcome: "rejected", kind: "generation-mismatch", message: "planner restarted", gen: "gen-2",
+                source: flightBody["source"], nativeInvalid: flightBody["nativeInvalid"], clock: "0",
+            }));
+        }
         assert.ok(logs.some((line) => line.includes("generation-mismatch")), "reset observed");
         const rediscover = [...calls].reverse().find((c) => c.method === "DiscoverWorld");
         assert.ok(rediscover !== undefined, "re-discovery dispatched");
         const discBody = JSON.parse(rediscover.payload) as { req: string };
         rediscover.callback(JSON.stringify({
-            v: 1, adapter: "test-adapter", gen: "gen-2", req: discBody.req,
+            v: 2, adapter: "broker-1", gen: "gen-2", req: discBody.req,
             obs: "0", rev: "0", ready: false, consumed: false,
+            gestureSettled: null,
+            operationSettled: [],
+            warpCursor: null,
+            presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
             scopes: [], workspaces: [], outputs: [], windows: [],
-            transfers: [], effects: [],
+            transfers: [], effects: [], result: null,
         }));
         // The post-reset ready reply arrives with a null previous snapshot:
         // the settled keep-mode maximize is admitted, not a new birth, so
         // the default issues no clear.
         const describe = lastDescribe(calls);
-        const readyBody = JSON.parse(describe.payload) as { req: string; obs: string };
+        const readyBody = JSON.parse(describe.payload) as Record<string, unknown>;
         describe.callback(JSON.stringify({
-            v: 1, adapter: "test-adapter", gen: "gen-2", req: readyBody.req,
-            obs: readyBody.obs, rev: "1", ready: true, consumed: false,
+            v: 2, adapter: "broker-1", gen: "gen-2", req: readyBody["source"],
+            obs: "1", rev: "1", ready: true, consumed: false,
+            source: readyBody["source"],
+            nativeInvalid: readyBody["nativeInvalid"],
+            clock: "0",
+            gestureSettled: null,
+            operationSettled: [],
+            warpCursor: null,
+            presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
             scopes: [{ scope: "out/ws1", auth: "controlled", reason: "" }],
             workspaces: [{
-                id: "ws1", out: "out", bind: "ws1", logical: "ws1", scope: "out",
+                id: "ws1", out: "out", bind: "ws1", scope: "out",
                 order: 0, mode: "tiled", exist: true, hold: "",
             }],
             outputs: [{ out: "out", view: "ws1", mode: "tiled", hold: "" }],
@@ -1056,7 +1105,7 @@ describe("world born-maximized entry flow", () => {
                 win: BARE, out: "out", ws: "ws1",
                 alloc: [12, 12, 376, 576], frame: [12, 12, 376, 576],
                 frame_auth: "controlled", frame_hold: "",
-                member_auth: "controlled", member_hold: "", frame_op: "",
+                member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "",
                 floating: false, float_origin: "",
             }],
             transfers: [], effects: [], result: null,
@@ -1076,11 +1125,10 @@ describe("world born-maximized entry flow", () => {
         void BRACED;
         const handle = startBornEntry(surface, calls, timers, logs);
         discoverBorn(calls);
-        const body = JSON.parse(lastDescribe(calls).payload) as {
-            domains: Array<{ windows: Array<{ win: string }> }>;
-        };
+        const body = JSON.parse(lastDescribe(calls).payload) as Record<string, unknown>;
+        const innerBraced = body["report"] as Record<string, unknown>;
         assert.ok(
-            body.domains.flatMap((d) => d.windows).some((w) => w.win === BARE),
+            ((innerBraced["windows"] as Array<Record<string, unknown>>).some((w) => w["win"] === BARE)),
             "braced internalId unwraps to the canonical id",
         );
         handle?.stop();

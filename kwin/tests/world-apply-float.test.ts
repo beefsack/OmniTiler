@@ -18,8 +18,9 @@ import type { WorldObservation } from "../src/world-observe";
 
 const FIXTURE = path.resolve("..", "test-fixtures", "world-wire", "reply-float.json");
 // Stable core property operation identity for the float command that
-// produced the shared fixture (matches the protocol byte gate cmdSeq).
-const OP = "op-24";
+// produced the shared fixture (the broker command sequence of the
+// fixture-generation session).
+const OP = "op-1";
 // Centered 60% float placement in the outer-inset work area (800x600 inset
 // by outer 4 gives 792x592 at (4,4); 60% is 475x355 centered at
 // (162,122)): respects the screen-edge gap like tiled frames.
@@ -29,7 +30,10 @@ function loadReply(): WorldReply {
     const parsed = parseWorldReply(fs.readFileSync(FIXTURE, "utf8"));
     assert.ok(parsed !== null && !isWorldRejection(parsed));
     const reply = parsed as WorldReply;
-    assert.equal(reply.result?.op, "toggle-float");
+    // v2 capture lane always carries result null; the terminal toggle-float
+    // result rides TakeCommandResult (tested in command-result). Float
+    // placement here uses the retained frame_op token.
+    assert.equal(reply.result, null);
     assert.equal(reply.windows.find((w) => w.win === "win-a")?.frame_op, OP);
     return reply;
 }
@@ -47,7 +51,7 @@ function makeObservation(world: FakeWorld): WorldObservation {
             win: id, ref: { id }, out: "out", ws: "ws",
             rect: { ...rect },
             floating: false, fitExcluded: false, fullscreen: false,
-            maximized: false, sticky: false, fixedAuto: false, fixedSuppress: false,
+            maximized: false, sticky: false, fixedAuto: false, fixedSuppress: false, nativeWs: null,
             hints: { minW: null, minH: null, maxW: null, maxH: null },
             minimized: false,
         };
@@ -68,6 +72,11 @@ function makeObservation(world: FakeWorld): WorldObservation {
         complete: true,
         gesture: world.gesture,
         focusedGlobal: "",
+        screens: [], windowFacts: [], views: [], closed: [], hostOwned: false, equalCount: true, native: [],
+        cursor: null, actionForeground: null, actionCached: null, actionOutputs: [],
+        focusFollowsCursor: false, cursorWarp: false,
+        switchTarget: "focused-output", freshPlacement: "focused-output-last-focused",
+        presentation: { foreground: "", minimized: false, maximized: false, fullscreen: false, cloaked: false, hiddenWorkspace: false, shell: false, frame: null, borderEnabled: false, underlayEnabled: false, borderGap: 0, borderWidth: 0, underlayExtension: 0, chordHeld: false, moveWindow: "", paused: false, pagerOrder: [], pagerFrames: [] },
     };
 }
 
@@ -122,15 +131,17 @@ function makeEnv(state: WorldAdapterState, world: FakeWorld, opts: EnvOpts = {})
 
 function freshState(reply: WorldReply): WorldAdapterState {
     const state = new WorldAdapterState("adapter-1", "owner-a");
-    state.onDiscovery("gen-1");
-    while (state.currentObs !== reply.obs) {
+    state.onDiscovery("gen-1", "broker-1");
+    while (state.currentInvalid !== reply.obs) {
         state.invalidate();
     }
     return state;
 }
 
-function feedback(state: WorldAdapterState, op: string) {
-    return state.pendingFeedback.find((f) => f.op === op);
+// Local ambiguity oracle (verdict transport deleted): settled outcomes
+// clear the possibly-executed hold, ambiguity keeps it.
+function heldAmbiguous(state: WorldAdapterState, op: string): boolean {
+    return state.isHeldAmbiguous(op);
 }
 
 describe("world float placement", () => {
@@ -150,7 +161,7 @@ describe("world float placement", () => {
         reply.windows.find((w) => w.win === "win-b")!.alloc = [0, 0, 800, 600];
         world.frames.set("win-b", { x: 0, y: 0, w: 800, h: 600 });
         const state = freshState(reply);
-        const first = applyWorldReply({
+        const first = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null,
             ...makeEnv(state, world),
             observation: makeObservation(world),
             reply,
@@ -158,10 +169,9 @@ describe("world float placement", () => {
         assert.deepEqual(world.sets.filter((c) => c.startsWith("win-a@")), ["win-a@162,122,475,355"]);
         assert.ok(first.geometryWrites >= 1);
         assert.deepEqual(world.frames.get("win-a"), TARGET);
-        assert.equal(feedback(state, OP)?.outcome, "applied");
-        assert.equal(feedback(state, OP)?.kind, "property");
+        assert.equal(heldAmbiguous(state, OP), false, "read-back proof settles applied");
         // A duplicate reply (same operation) never double-places.
-        const second = applyWorldReply({
+        const second = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null,
             ...makeEnv(state, world),
             observation: makeObservation(world),
             reply,
@@ -189,7 +199,7 @@ describe("world float placement", () => {
         // The next unrelated snapshot carries no result but retains the
         // same explicit operation token with the same target.
         const later: WorldReply = { ...reply, rev: "3", result: null };
-        const applied = applyWorldReply({
+        const applied = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null,
             ...makeEnv(state, world),
             observation: makeObservation(world),
             reply: later,
@@ -197,7 +207,7 @@ describe("world float placement", () => {
         assert.ok(applied.geometryWrites >= 1);
         assert.deepEqual(world.sets.filter((c) => c.startsWith("win-a@")), ["win-a@162,122,475,355"]);
         assert.deepEqual(world.frames.get("win-a"), TARGET);
-        assert.equal(feedback(state, OP)?.outcome, "applied");
+        assert.equal(heldAmbiguous(state, OP), false, "settled, never ambiguous");
     });
 
     it("lets unrelated later replies keep the retained frame without stealing", () => {
@@ -213,7 +223,7 @@ describe("world float placement", () => {
         reply.windows.find((w) => w.win === "win-b")!.frame = [0, 0, 800, 600];
         reply.windows.find((w) => w.win === "win-b")!.alloc = [0, 0, 800, 600];
         const state = freshState(reply);
-        applyWorldReply({ ...makeEnv(state, world), observation: makeObservation(world), reply });
+        applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null, ...makeEnv(state, world), observation: makeObservation(world), reply });
         assert.deepEqual(world.frames.get("win-a"), TARGET);
         // An unrelated later reply without the token and without a result:
         // the native frame stands untouched.
@@ -225,7 +235,7 @@ describe("world float placement", () => {
                 w.win === "win-a" ? { ...w, frame_op: "" } : w,
             ),
         };
-        const again = applyWorldReply({
+        const again = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null,
             ...makeEnv(state, world),
             observation: makeObservation(world),
             reply: later,
@@ -256,7 +266,7 @@ describe("world float placement", () => {
             ),
         };
         const state = freshState(tokenless);
-        const out = applyWorldReply({
+        const out = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null,
             ...makeEnv(state, world),
             observation: makeObservation(world),
             reply: tokenless,
@@ -279,16 +289,17 @@ describe("world float placement", () => {
         reply.windows.find((w) => w.win === "win-b")!.frame = [0, 0, 800, 600];
         reply.windows.find((w) => w.win === "win-b")!.alloc = [0, 0, 800, 600];
         const state = freshState(reply);
+        const mark = state.currentInvalid;
         state.invalidate();
         const stale: WorldReply = { ...reply };
-        const out = applyWorldReply({
+        const out = applyWorldReply({ dispatchWatermark: mark, takeResult: null,
             ...makeEnv(state, world),
             observation: makeObservation(world),
             reply: stale,
         });
         assert.equal(out.geometryWrites, 0);
         assert.deepEqual(world.sets, []);
-        assert.equal(feedback(state, OP), undefined);
+        assert.equal(heldAmbiguous(state, OP), false, "unrelated reply without the token settles nothing new");
     });
 
     it("a throw after the setter holds ambiguous without repeating", () => {
@@ -312,6 +323,8 @@ describe("world float placement", () => {
         };
         const throwing = {
             ...env,
+            dispatchWatermark: state.currentInvalid,
+            takeResult: null,
             setGeometry: (ref: object, rect: { x: number; y: number; w: number; h: number }) => {
                 calls += 1;
                 void rect;
@@ -322,9 +335,9 @@ describe("world float placement", () => {
         const out = applyWorldReply(throwing);
         assert.ok(out.held >= 1);
         assert.equal(calls, 1);
-        assert.equal(feedback(state, OP)?.outcome, "possibly-executed");
+        assert.equal(heldAmbiguous(state, OP), true, "ambiguous hold, never repeated without proof");
         // The ambiguous operation never repeats without fresh proof.
-        const again = applyWorldReply({
+        const again = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null,
             ...makeEnv(state, world),
             observation: makeObservation(world),
             reply,
@@ -349,7 +362,7 @@ describe("world float placement", () => {
         state.armPossiblyExecuted(OP, "property", "out/ws");
         let calls = 0;
         const env = makeEnv(state, world);
-        const out = applyWorldReply({
+        const out = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null,
             ...env,
             setGeometry: (ref: object, rect: { x: number; y: number; w: number; h: number }) => {
                 calls += 1;
@@ -375,12 +388,12 @@ describe("world float placement", () => {
         reply.windows.find((w) => w.win === "win-b")!.frame = [0, 0, 800, 600];
         reply.windows.find((w) => w.win === "win-b")!.alloc = [0, 0, 800, 600];
         const state = freshState(reply);
-        applyWorldReply({ ...makeEnv(state, world), observation: makeObservation(world), reply });
-        assert.equal(feedback(state, OP)?.outcome, "applied");
+        applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null, ...makeEnv(state, world), observation: makeObservation(world), reply });
+        assert.equal(heldAmbiguous(state, OP), false, "settled, never ambiguous");
         // The user moves the float elsewhere; the retained token still rides
         // a later reply (the core has not settled yet).
         world.frames.set("win-a", { x: 300, y: 300, w: 200, h: 150 });
-        const moved = applyWorldReply({
+        const moved = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null,
             ...makeEnv(state, world),
             observation: makeObservation(world),
             reply: { ...reply, rev: "3", result: null },
@@ -388,7 +401,7 @@ describe("world float placement", () => {
         assert.equal(moved.geometryWrites, 0);
         assert.deepEqual(world.sets.filter((c) => c.startsWith("win-a@")), ["win-a@162,122,475,355"]);
         assert.deepEqual(world.frames.get("win-a"), { x: 300, y: 300, w: 200, h: 150 });
-        assert.equal(feedback(state, OP)?.outcome, "superseded-external");
+        assert.equal(heldAmbiguous(state, OP), false, "proven external input supersedes");
     });
 
     it("an explicit refusal settles proven without repeating", () => {
@@ -406,7 +419,7 @@ describe("world float placement", () => {
         const state = freshState(reply);
         let calls = 0;
         const env = makeEnv(state, world, { refuseSet: true });
-        const out = applyWorldReply({
+        const out = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null,
             ...env,
             setGeometry: (ref: object, rect: { x: number; y: number; w: number; h: number }) => {
                 calls += 1;
@@ -416,8 +429,8 @@ describe("world float placement", () => {
             reply,
         });
         assert.equal(calls, 1);
-        assert.equal(feedback(state, OP)?.outcome, "refused-proven");
-        const again = applyWorldReply({
+        assert.equal(heldAmbiguous(state, OP), false, "proven refusal settles without repeating");
+        const again = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null,
             ...makeEnv(state, world),
             observation: makeObservation(world),
             reply,
@@ -435,7 +448,7 @@ describe("world float placement", () => {
             gesture: true,
         };
         const state = freshState(reply);
-        const held = applyWorldReply({
+        const held = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null,
             ...makeEnv(state, world),
             observation: makeObservation(world),
             reply,
@@ -445,13 +458,13 @@ describe("world float placement", () => {
         assert.ok(!state.floatSpent.has(OP), "gesture hold stays unspent so the target retries");
         // After the barrier lifts the same retained token still places.
         world.gesture = false;
-        const placed = applyWorldReply({
+        const placed = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null,
             ...makeEnv(state, world),
             observation: makeObservation(world),
             reply,
         });
         assert.deepEqual(world.sets.filter((c) => c.startsWith("win-a@")), ["win-a@162,122,475,355"]);
-        assert.equal(feedback(state, OP)?.outcome, "applied");
+        assert.equal(heldAmbiguous(state, OP), false, "settled, never ambiguous");
         void placed;
     });
 
@@ -471,9 +484,9 @@ describe("world float placement", () => {
         const state = freshState(reply);
         const env = makeEnv(state, world, { setFilter: (id) => id === "win-a" });
         for (let i = 0; i < 5; i += 1) {
-            applyWorldReply({ ...env, observation: makeObservation(world), reply });
+            applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null, ...env, observation: makeObservation(world), reply });
         }
         assert.deepEqual(world.sets.filter((c) => c.startsWith("win-a@")), ["win-a@162,122,475,355"]);
-        assert.equal(feedback(state, OP)?.outcome, "applied");
+        assert.equal(heldAmbiguous(state, OP), false, "settled, never ambiguous");
     });
 });

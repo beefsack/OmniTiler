@@ -25,6 +25,7 @@ import { dirname, join, resolve } from "node:path";
 import { describe, it } from "node:test";
 
 import { WORLD_DEBOUNCE_MS, startWorldAdapterEntry } from "../src/world-entry";
+import { createMiniBroker, type MiniBroker } from "./world-wire-harness";
 
 function repoRoot(): string {
     let dir = resolve(process.cwd());
@@ -180,6 +181,7 @@ interface CapturedCall {
 
 interface Harness {
     readonly bridge: WorldBridge;
+    readonly broker: MiniBroker;
     workspace: Record<string, unknown>;
     readonly screens: { top: FakeScreen; bottom: FakeScreen; bottomRight: FakeScreen };
     readonly desktops: { a: FakeDesktop; b: FakeDesktop; c: FakeDesktop };
@@ -189,6 +191,8 @@ interface Harness {
     readonly calls: CapturedCall[];
     readonly answered: Set<number>;
     readonly replies: Map<number, string>;
+    readonly takeReplies: string[];
+    readonly drainCapture: Map<unknown, number>;
     readonly timers: Array<{ delayMs: number; callback: () => void; cancelled: boolean; fired: boolean }>;
     readonly logs: string[];
     readonly geometryWrites: string[];
@@ -222,7 +226,6 @@ async function makeHarness(moverX: number, soloTop = false): Promise<Harness> {
     const wsB: FakeDesktop = { id: "ws-b", name: "WS B" };
     const wsC: FakeDesktop = { id: "ws-c", name: "WS C" };
     const liveDesktops: FakeDesktop[] = [wsA, wsB, wsC];
-    const created: string[] = [];
     const removed: string[] = [];
     const currentByOutput = new Map<string, FakeDesktop>([
         ["out-top", wsA],
@@ -276,6 +279,7 @@ async function makeHarness(moverX: number, soloTop = false): Promise<Harness> {
     }
     const harness: Harness = {
         bridge: WorldBridge.start(),
+        broker: createMiniBroker(),
         workspace: {},
         screens: { top, bottom, bottomRight },
         desktops: { a: wsA, b: wsB, c: wsC },
@@ -285,6 +289,8 @@ async function makeHarness(moverX: number, soloTop = false): Promise<Harness> {
         calls: [],
         answered: new Set<number>(),
         replies: new Map<number, string>(),
+        takeReplies: [],
+        drainCapture: new Map<unknown, number>(),
         timers: [],
         logs: [],
         geometryWrites,
@@ -315,7 +321,19 @@ async function makeHarness(moverX: number, soloTop = false): Promise<Harness> {
         flush: async () => {
             const index = harness.calls.findIndex((call, at) => call.method === "DescribeWorld" && !harness.answered.has(at));
             assert.ok(index >= 0, "expected a queued DescribeWorld dispatch to flush to the real Engine");
-            const reply = await harness.bridge.send(harness.calls[index]?.method as string, harness.calls[index]?.payload as string);
+            // Mini-broker stamping: the envelope becomes the exact core
+            // report the sole broker would dispatch (own namespace plus at
+            // most one queued command), and the core reply returns bound
+            // with a nulled terminal result.
+            const envelope = (harness.calls[index] as CapturedCall).payload;
+            const drainedBefore = harness.broker.drained.length;
+            const stamped = harness.broker.stampCapture(envelope);
+            if (harness.broker.drained.length > drainedBefore) {
+                const drained = harness.broker.drained[harness.broker.drained.length - 1] as { clientCmd: unknown };
+                harness.drainCapture.set(drained.clientCmd, index);
+            }
+            const coreReply = await harness.bridge.send("DescribeWorld", stamped);
+            const reply = harness.broker.bindReply(coreReply, envelope);
             harness.answered.add(index);
             harness.replies.set(index, reply);
             (harness.calls[index] as CapturedCall).callback(reply);
@@ -351,9 +369,12 @@ async function makeHarness(moverX: number, soloTop = false): Promise<Harness> {
             throw new Error("settle did not converge");
         },
         commandPayloads: (op: string): Array<{ index: number; body: Record<string, unknown> }> => {
+            // v2 command lane: presses file QueueWorldCommand (the broker
+            // drains at most one per capture); DescribeWorld envelopes
+            // carry no inline command.
             const out: Array<{ index: number; body: Record<string, unknown> }> = [];
             harness.calls.forEach((call, index) => {
-                if (call.method !== "DescribeWorld") {
+                if (call.method !== "QueueWorldCommand") {
                     return;
                 }
                 try {
@@ -433,15 +454,16 @@ async function makeHarness(moverX: number, soloTop = false): Promise<Harness> {
             win.output = output as FakeScreen;
             harness.outputWrites.push(`${win.internalId}=>${(output as FakeScreen).name}`);
         },
+        // No-op creation (tree convention for real-Engine harnesses):
+        // the creation flow is covered by unit tests; engine legs assert
+        // wire/engine semantics. A faithful appending fake diverges here
+        // (adapter creates for core-owned unbound spares every round,
+        // core adopts them as fresh and mints more; see blocker report).
         createDesktop: (...args: ReadonlyArray<unknown>): void => {
             if (args.length !== 2 || typeof args[0] !== "number" || typeof args[1] !== "string" || (args[1] as string) === "") {
                 throw new Error("Insufficient arguments");
             }
-            const position = args[0] as number;
-            const name = args[1] as string;
-            const id = `native-${liveDesktops.length + 1}`;
-            liveDesktops.splice(Math.max(0, Math.min(position, liveDesktops.length)), 0, { id, name });
-            created.push(id);
+            void args;
         },
         removeDesktop: (ref: unknown): void => {
             const at = liveDesktops.indexOf(ref as FakeDesktop);
@@ -481,10 +503,17 @@ async function makeHarness(moverX: number, soloTop = false): Promise<Harness> {
         owner: "owner-a",
         adapter: "test-adapter",
         callDbus: (_service, _path, _iface, method, payload, callback): void => {
-            if (method !== "DiscoverWorld" && method !== "DescribeWorld") {
+            if (method !== "DiscoverWorld" && method !== "DescribeWorld" && method !== "QueueWorldCommand" && method !== "TakeCommandResult") {
                 return;
             }
             harness.calls.push({ method, payload, callback });
+            if (method === "QueueWorldCommand") {
+                callback(harness.broker.answerQueue(payload));
+            } else if (method === "TakeCommandResult") {
+                const takeReply = harness.broker.answerTake(payload);
+                harness.takeReplies.push(takeReply);
+                callback(takeReply);
+            }
         },
         scheduleOnce: (delayMs, callback): (() => void) => {
             const timer = { delayMs, callback, cancelled: false, fired: false };
@@ -510,7 +539,8 @@ async function discover(h: Harness): Promise<void> {
     const discIndex = h.calls.findIndex((call) => call.method === "DiscoverWorld");
     assert.ok(discIndex >= 0, "entry discovers on start");
     const disc = h.calls[discIndex] as CapturedCall;
-    const reply = await h.bridge.send(disc.method, disc.payload);
+    const engineBootstrap = await h.bridge.send(disc.method, disc.payload);
+    const reply = h.broker.bindDiscovery(engineBootstrap);
     const parsed = JSON.parse(reply) as Record<string, unknown>;
     assert.equal(parsed["ready"], false, "bootstrap is not ready");
     assert.ok(typeof parsed["gen"] === "string" && (parsed["gen"] as string).length > 0, "bootstrap binds a generation");
@@ -520,6 +550,14 @@ async function discover(h: Harness): Promise<void> {
     await h.settle();
     assert.equal(h.commandPayloads("move-directional").length, 0);
     assert.equal(h.commandPayloads("send-directional").length, 0);
+}
+
+function lastTakeResult(h: Harness): Record<string, unknown> {
+    const readys = h.takeReplies
+        .map((raw) => JSON.parse(raw) as Record<string, unknown>)
+        .filter((r) => r["outcome"] === "ready");
+    assert.ok(readys.length > 0, "at least one ready take result");
+    return (readys[readys.length - 1] as Record<string, unknown>)["result"] as Record<string, unknown>;
 }
 
 function frameOf(win: FakeWindow): { x: number; y: number; w: number; h: number } {
@@ -533,11 +571,25 @@ function winById(h: Harness, id: string): FakeWindow {
     return found as FakeWindow;
 }
 
+// v2: reply workspace `id` is the core logical; producer natives resolve
+// through the core-owned binding (`bind`), never by string equality.
+function boundNativeOf(reply: Record<string, unknown>, out: string, logical: string): string | null {
+    const rows = reply["workspaces"] as Array<Record<string, unknown>>;
+    const row = rows.find((entry) => entry["out"] === out && entry["id"] === logical);
+    assert.ok(row !== undefined, `Engine plans a workspace row for ${out}/${logical}`);
+    const bind = row["bind"] as string;
+    return bind === "" ? null : bind;
+}
+
 // Desired window rows carry `frame` as [x,y,w,h] plus homing: every row
-// the real Engine names must be natively present.
+// the real Engine names must be natively present. Membership resolves
+// through the core-owned native binding (v2: reply `ws` is the logical
+// id, producer natives never equal it by construction).
 function appliedMatchesReply(h: Harness, reply: Record<string, unknown>): void {
     const geometry = reply["windows"] as Array<Record<string, unknown>>;
     assert.ok(Array.isArray(geometry) && geometry.length > 0, "real reply carries desired window rows");
+    const rows = reply["workspaces"] as Array<Record<string, unknown>>;
+    assert.ok(Array.isArray(rows), "real reply carries workspace rows");
     for (const entry of geometry) {
         const frame = entry["frame"] as [number, number, number, number] | null;
         const win = winById(h, entry["win"] as string);
@@ -545,10 +597,12 @@ function appliedMatchesReply(h: Harness, reply: Record<string, unknown>): void {
             assert.deepEqual(frameOf(win), { x: frame[0], y: frame[1], w: frame[2], h: frame[3] }, `native frame of ${entry["win"]} matches the Engine plan`);
         }
         assert.equal(win.output.name, entry["out"], `native output of ${entry["win"]} matches the Engine plan`);
+        const planned = rows.find((row) => row["out"] === entry["out"] && row["id"] === entry["ws"]);
+        assert.ok(planned !== undefined, `Engine plans a workspace row for ${entry["win"]} at ${entry["out"]}/${entry["ws"]}`);
         assert.deepEqual(
             win.desktops.map((desk) => desk.id),
-            [entry["ws"]],
-            `native membership of ${entry["win"]} matches the Engine plan`,
+            [planned["bind"]],
+            `native membership of ${entry["win"]} matches the Engine plan through the core binding`,
         );
     }
 }
@@ -570,9 +624,11 @@ describe("world split-edge selection through the production entry (real Engine)"
             const cmd = (moves[0] as { body: Record<string, unknown> }).body["command"] as Record<string, unknown>;
             assert.equal(cmd["op"], "move-directional");
             assert.deepEqual(Object.keys(cmd).sort(), ["direction", "op", "sameAxis", "win"], "command carries no endpoint or cross flag");
-            const answered = moves.filter(({ index }) => h.answered.has(index));
-            assert.equal(answered.length, 1, "the core answered the move");
-            const reply = JSON.parse(h.replies.get(answered[0]?.index as number) as string) as Record<string, unknown>;
+            // v2: the filed move drains through a capture; the draining
+            // capture's bound reply carries the plan.
+            const captureIndex = h.drainCapture.get((moves[0] as { body: Record<string, unknown> }).body["clientCmd"]);
+            assert.ok(captureIndex !== undefined, "the core drained the move");
+            const reply = JSON.parse(h.replies.get(captureIndex as number) as string) as Record<string, unknown>;
             assert.notEqual(reply["outcome"], "rejected", `real Engine plans the cross, got ${JSON.stringify(reply).slice(0, 160)}`);
             // The real Engine selects the mover-ranked target and retains
             // one identity-pinned window transfer (existing send
@@ -584,13 +640,13 @@ describe("world split-edge selection through the production entry (real Engine)"
             const planned = rows.find((entry) => entry["win"] === "w-move");
             assert.ok(planned !== undefined, "Engine plans the crossing mover");
             assert.equal(planned["out"], "out-bottom-right", "selection resolves the non-left/top target");
-            assert.equal(planned["ws"], "ws-c", "selection lands in the target view");
+            assert.equal(boundNativeOf(reply, planned["out"] as string, planned["ws"] as string), "ws-c", "selection lands in the target view");
             const transfers = reply["transfers"] as Array<Record<string, unknown>>;
             assert.equal(transfers.length, 1, "exactly one retained transfer");
             assert.equal(transfers[0]?.["kind"], "window");
             assert.equal(transfers[0]?.["win"], "w-move");
             assert.equal(transfers[0]?.["out"], "out-bottom-right");
-            assert.equal(transfers[0]?.["ws"], "ws-c");
+            assert.equal(boundNativeOf(reply, transfers[0]?.["out"] as string, transfers[0]?.["ws"] as string), "ws-c", "transfer targets the ws-c cell");
             assert.equal(transfers[0]?.["follow"], true, "move follows the mover to the target view");
             assert.match(transfers[0]?.["op"] as string, /^op-\d+$/, "stable command identity");
             appliedMatchesReply(h, reply);
@@ -636,9 +692,9 @@ describe("world split-edge selection through the production entry (real Engine)"
             const cmd = sends[0]?.body["command"] as Record<string, unknown>;
             assert.equal(cmd["follow"], true);
             assert.deepEqual(Object.keys(cmd).sort(), ["direction", "follow", "op", "win"], "send carries no endpoint");
-            const answered = sends.filter(({ index }) => h.answered.has(index));
-            assert.equal(answered.length, 1, "the core answered the send");
-            const reply = JSON.parse(h.replies.get(answered[0]?.index as number) as string) as Record<string, unknown>;
+            const captureIndex = h.drainCapture.get((sends[0] as { body: Record<string, unknown> }).body["clientCmd"]);
+            assert.ok(captureIndex !== undefined, "the core drained the send");
+            const reply = JSON.parse(h.replies.get(captureIndex as number) as string) as Record<string, unknown>;
             assert.notEqual(reply["outcome"], "rejected", "real Engine plans the send");
             appliedMatchesReply(h, reply);
             assert.equal(h.mover.output.name, "out-bottom-right", "send lands on the mover-selected target");
@@ -674,11 +730,13 @@ describe("world split-edge selection through the production entry (real Engine)"
             const migrates = h.commandPayloads("migrate-directional");
             assert.equal(migrates.length, 1, "exactly one direction-only migrate dispatch, never replayed");
             const cmd = migrates[0]?.body["command"] as Record<string, unknown>;
-            assert.deepEqual(Object.keys(cmd).sort(), ["direction", "from", "op", "ws"], "migrate names source only, never the target");
-            const answered = migrates.filter(({ index }) => h.answered.has(index));
-            assert.ok(answered.length >= 1, "the core answered the migrate");
-            const reply = JSON.parse(h.replies.get(answered[0]?.index as number) as string) as Record<string, unknown>;
-            const result = reply["result"] as Record<string, unknown>;
+            // v2: direction only; legacy from/ws keys refuse as unknown fields.
+            assert.deepEqual(Object.keys(cmd).sort(), ["direction", "op"], "migrate names direction only, never the target");
+            const captureIndex = h.drainCapture.get((migrates[0] as { body: Record<string, unknown> }).body["clientCmd"]);
+            assert.ok(captureIndex !== undefined, "the core drained the migrate");
+            // v2: terminal results ride the take lane (requester-only), never
+            // the capture reply.
+            const result = lastTakeResult(h);
             assert.equal(result["op"], "migrate-workspace", "real Engine resolves the migration");
             assert.equal(result["targetOut"], "out-bottom-right", "largest edge wins independent of the mover");
             assert.equal(result["sourceOut"], "out-top", "source names the active output");
@@ -720,9 +778,9 @@ describe("world split-edge selection through the production entry (real Engine)"
             await h.settle();
             const focuses = h.commandPayloads("focus-directional");
             assert.equal(focuses.length, 1, "exactly one direction-only focus dispatch");
-            const answeredFocus = focuses.filter(({ index }) => h.answered.has(index));
-            assert.equal(answeredFocus.length, 1, "the core answered the focus");
-            const focusReply = JSON.parse(h.replies.get(answeredFocus[0]?.index as number) as string) as Record<string, unknown>;
+            const focusCapture = h.drainCapture.get((focuses[0] as { body: Record<string, unknown> }).body["clientCmd"]);
+            assert.ok(focusCapture !== undefined, "the core drained the focus");
+            const focusReply = JSON.parse(h.replies.get(focusCapture as number) as string) as Record<string, unknown>;
             assert.equal(focusReply["outcome"], "rejected", "strict split edge refuses the cross");
             assert.equal(focusReply["kind"], "unchanged", "no local target either: strict unchanged");
             const active = h.workspace["activeWindow"] as FakeWindow;
@@ -743,11 +801,17 @@ describe("world split-edge selection through the production entry (real Engine)"
             await h.settle();
             assert.equal(h.commandPayloads("move-directional").length, 1, "move dispatches once after the catchup");
             assert.equal(h.mover.output.name, "out-top", "two-tile move stays local on the same edge");
-            const localMoves = h.commandPayloads("move-directional").filter(({ index }) => h.answered.has(index));
-            assert.equal(localMoves.length, 1, "the core answered the local move");
-            const localReply = JSON.parse(h.replies.get(localMoves[0]?.index as number) as string) as Record<string, unknown>;
+            const localCapture = h.drainCapture.get(((h.commandPayloads("move-directional")[0] as { body: Record<string, unknown> }).body)["clientCmd"]);
+            assert.ok(localCapture !== undefined, "the core drained the local move");
+            const localReply = JSON.parse(h.replies.get(localCapture as number) as string) as Record<string, unknown>;
             assert.equal((localReply["transfers"] as Array<unknown>).length, 0, "local R1-R3 move retains no transfer");
-            assert.equal((localReply["effects"] as Array<unknown>).length, 0, "local move focus unchanged");
+            // v2: the executed local move carries an explicit focus effect
+            // for the mover (already focused): it actuates with no redundant
+            // native write, so focus is unchanged.
+            const localEffects = localReply["effects"] as Array<Record<string, unknown>>;
+            assert.equal(localEffects.length, 1, "local move carries exactly the mover focus effect");
+            assert.equal(localEffects[0]?.["kind"], "focus", "mover focus effect");
+            assert.equal(localEffects[0]?.["target"], "w-move", "focus stays on the mover");
             assert.equal(h.outputWrites.length, 0, "local move writes no output transfer");
             assert.equal(h.membershipWrites.length, 0, "local move writes no membership");
             assert.equal(h.commandPayloads("move-directional").length, 1, "no move replay after settlement");
@@ -892,8 +956,8 @@ describe("world split-edge selection through the production entry (real Engine)"
             await h.flushAll();
             const moves = h.commandPayloads("move-directional");
             assert.equal(moves.length, 1, "refused command still dispatches once for the core verdict");
-            const answered = moves.filter(({ index }) => h.answered.has(index));
-            assert.equal(answered.length, 1, "the core answered the refused move");
+            const refusedCapture = h.drainCapture.get((moves[0] as { body: Record<string, unknown> }).body["clientCmd"]);
+            assert.ok(refusedCapture !== undefined, "the core drained the refused move");
             assert.equal(h.mover.output.name, "out-top", "no output transfer on refusal");
             for (const win of h.wins) {
                 assert.deepEqual({ ...win.frameGeometry }, framesBefore.get(win.internalId), `no geometry write on ${win.internalId}`);
