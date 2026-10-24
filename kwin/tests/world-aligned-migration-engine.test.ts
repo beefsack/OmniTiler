@@ -383,7 +383,21 @@ async function makeHarness(): Promise<Harness> {
             win.output = { name };
             harness.outputWrites.push(`${win.internalId}->${name}`);
         },
-        createDesktop: (): null => null,
+        // Production void creation: synchronously append one native
+        // desktop carrying the logical token as its name. Same-turn
+        // before/after enumeration proves the created id causally; the
+        // synchronous desktop signal is the pinned reentrant path the
+        // apply loop spends before.
+        createDesktop: (position: unknown, name: unknown): void => {
+            assert.equal(typeof position, "number", "creation carries a numeric position");
+            assert.equal(typeof name, "string", "creation carries a logical token name");
+            const id = `ws-${harness.desktops.length + 1}`;
+            const desk: FakeDesktop = { id, name: name as string };
+            const at = Math.max(0, Math.min(position as number, harness.desktops.length));
+            harness.desktops.splice(at, 0, desk);
+            byId.set(id, desk);
+            harness.fire("desktopsChanged");
+        },
         removeDesktop: (): boolean => false,
     };
     for (const win of wins) {

@@ -6,7 +6,10 @@
 // unambiguous proof; Applied settles only on read-back proof; throws and
 // partial writes stay ambiguous; proven external input supersedes; creation
 // recovers by enumeration against the pre-attempt baseline; raise/stack
-// never focus.
+// never focus. Native creation follows the Stage 1b contract: only explicit
+// core desires execute (at most once per stable op), the same-turn
+// before/after delta proves the created id, and receipts persist until the
+// core incorporates them. Unbound rows never authorize.
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -40,6 +43,10 @@ interface Faults {
     createFaults: Record<string, "noop" | "throw-clean" | "throw-mutating">;
     signalOnCreate: boolean;
     geometryEchoSignal: boolean;
+    // Corrupt the first desktop name inside createDesktop (after the
+    // native side effect) so only the same-turn post-call readback is
+    // unreadable; the test restores the name before the next capture.
+    corruptAfterCreate: boolean;
 }
 interface FakeWorld {
     screens: Array<{ name: string; geometry: { x: number; y: number; width: number; height: number } }>;
@@ -119,7 +126,7 @@ const win = (id: string, out: string, ws: FakeDesktop, x = 0): FakeWindow => ({
 });
 
 function makeHarness(mode: unknown = "per-output-local"): Harness {
-    const faults: Faults = { deferMembership: false, throwMembership: null, createFaults: {}, signalOnCreate: false, geometryEchoSignal: false };
+    const faults: Faults = { deferMembership: false, throwMembership: null, createFaults: {}, signalOnCreate: false, geometryEchoSignal: false, corruptAfterCreate: false };
     const pendingMembership = new Map<string, FakeDesktop[]>();
     const rawApplyMembership = new Map<string, (refs: FakeDesktop[]) => void>();
     const ws1 = desk("ws1", "WS1");
@@ -231,6 +238,9 @@ function makeHarness(mode: unknown = "per-output-local"): Harness {
             const id = `native-${world.desktops.length + 1}`;
             world.desktops.push(desk(id, name));
             world.created.push(id);
+            if (faults.corruptAfterCreate) {
+                (world.desktops[0] as unknown as Record<string, unknown>)["name"] = 42;
+            }
             if (fault === "throw-mutating") {
                 throw new Error("create-boom-after-side-effect");
             }
@@ -351,7 +361,7 @@ const BOOTSTRAP = (gen: string, req: string): string => JSON.stringify({
     v: 2, adapter: "broker-1", gen, req, obs: "0", rev: "0",
     ready: false, consumed: false, scopes: [], workspaces: [], outputs: [],
     windows: [], transfers: [], effects: [], result: null,
-    gestureSettled: null, operationSettled: [], warpCursor: null,
+    gestureSettled: null, operationSettled: [], nativeCreations: [], warpCursor: null,
     presentation: DISABLED_PRESENTATION,
 });
 
@@ -413,7 +423,7 @@ function acceptedReply(gen: string, source: string, nativeInvalid: string, rev: 
         ready: true, consumed: false,
         source, nativeInvalid, clock: "0",
         gestureSettled: null,
-        operationSettled: [],
+        operationSettled: [], nativeCreations: [],
         warpCursor: null,
         presentation: DISABLED_PRESENTATION,
         scopes: [{ scope: "out/ws1", auth: "controlled", reason: "" }],
@@ -508,6 +518,26 @@ const untouchedRow = (winId: string, ws: string): Record<string, unknown> => ({
     clear_op: "",
     floating: false, float_origin: "",
 });
+
+// Explicit native creation desires (Stage 1b contract): the core authorizes
+// exactly one native create per outstanding stable op. An unbound row
+// without a desire row authorizes nothing.
+const desire = (op: string, ws: string, out = "out"): Record<string, unknown> => ({ op, ws, out });
+const unboundRow = (id: string, out = "out", order = 3): Record<string, unknown> => (
+    { id, out, bind: "", scope: out, order, mode: "tiled", exist: true, hold: "" }
+);
+const boundRow = (id: string, bind: string, out = "out", order = 3): Record<string, unknown> => (
+    { id, out, bind, scope: out, order, mode: "tiled", exist: true, hold: "" }
+);
+// Retained creation receipts riding the last dispatched report lane.
+function lastCreationAttempts(h: Harness): Array<Record<string, unknown>> {
+    const call = lastDescribe(h);
+    const body = JSON.parse(call.payload) as Record<string, unknown>;
+    const report = (body["report"] ?? body) as Record<string, unknown>;
+    const attempts = report["creationAttempts"];
+    assert.ok(Array.isArray(attempts), "report carries the creation lane");
+    return attempts as Array<Record<string, unknown>>;
+}
 
 describe("world actuation identity and proof", () => {
     it("moves under the stable transfer op and never repeats while ambiguous", () => {
@@ -848,72 +878,121 @@ describe("world actuation identity and proof", () => {
         assert.ok(!h2.world.geometryWrites.some((w) => w.startsWith("win-b@22,22")), "input invalidation stops the rest");
     });
 
-    it("creates with zero-based position/name and proves by enumeration", () => {
+    it("creates only explicit desires at most once with a causal created id", () => {
         const h = makeHarness();
         discover(h);
         const rev = { n: 0 };
         h.handle?.requestWorkspaceRelative(1);
-        const unbound = {
-            id: "wl-1", out: "out", bind: "", scope: "out", order: 3, mode: "tiled", exist: true, hold: "",
-        };
+        const unbound = unboundRow("wl-1");
+        // An unbound row alone authorizes nothing: no desire, no create.
         dispatchAndReply(h, rev, { workspaces: [unbound] });
-        assert.equal(h.world.createCalls, 1, "one creation flight");
+        assert.equal(h.world.createCalls, 0, "unbound rows never authorize creation");
+        // The explicit core desire executes exactly once with the causal
+        // same-turn delta as the created id.
+        h.fire("desktopsChanged");
+        dispatchAndReply(h, rev, {
+            workspaces: [unbound],
+            nativeCreations: [desire("op-native-1", "wl-1")],
+        });
+        assert.equal(h.world.createCalls, 1, "one creation flight per stable op");
         assert.deepEqual(h.world.createArgs[0], [3, "wl-1"], "explicit zero-based position plus logical name");
-        assert.equal(h.world.created.length, 1, "void native created, enumeration proves");
-        // Identical unbound rows never repeat: enumeration already bound.
+        assert.equal(h.world.created.length, 1, "void native created, same-turn delta proves");
+        const created = h.world.created[0] as string;
+        // The receipt rides the next report lane until the core incorporates it.
         h.fire("desktopsChanged");
-        dispatchAndReply(h, rev, { workspaces: [unbound] });
-        assert.equal(h.world.createCalls, 1, "bound create never repeats");
+        dispatchAndReply(h, rev, {
+            workspaces: [unbound],
+            nativeCreations: [desire("op-native-1", "wl-1")],
+        });
+        assert.equal(h.world.createCalls, 1, "spent op never re-executes");
+        const attempts = lastCreationAttempts(h);
+        assert.equal(attempts.length, 1, "one retained receipt");
+        assert.equal(attempts[0]?.["op"], "op-native-1");
+        assert.equal(attempts[0]?.["created"], created, "causal created id preserved");
+        // The core publishes the bind: the receipt incorporates with no
+        // second creation, and the following report rides clean.
         h.fire("desktopsChanged");
-        dispatchAndReply(h, rev, { workspaces: [unbound] });
-        assert.equal(h.world.createCalls, 1, "still exactly one native create");
+        dispatchAndReply(h, rev, { workspaces: [boundRow("wl-1", created)] });
+        assert.equal(h.world.createCalls, 1, "incorporated desire never repeats");
+        h.fire("desktopsChanged");
+        dispatchAndReply(h, rev, { workspaces: [boundRow("wl-1", created)] });
+        const after = lastCreationAttempts(h);
+        assert.equal(after.length, 0, "incorporated receipt retires");
     });
 
-    it("holds a no-op void create ambiguous without repeating", () => {
+    it("records an uncorrelated receipt for a no-op without repeating", () => {
         const h = makeHarness();
         discover(h);
         const rev = { n: 0 };
         h.handle?.requestWorkspaceRelative(1);
         h.faults.createFaults["wl-1"] = "noop";
-        const unbound = {
-            id: "wl-1", out: "out", bind: "", scope: "out", order: 3, mode: "tiled", exist: true, hold: "",
-        };
-        dispatchAndReply(h, rev, { workspaces: [unbound] });
+        const unbound = unboundRow("wl-1");
+        dispatchAndReply(h, rev, {
+            workspaces: [unbound],
+            nativeCreations: [desire("op-native-1", "wl-1")],
+        });
         assert.equal(h.world.createCalls, 1);
         assert.equal(h.world.created.length, 0, "no-op created nothing");
+        // Uncorrelated (created null): the receipt rides pending, the op
+        // never re-executes even while the desire is retained.
         h.fire("desktopsChanged");
-        dispatchAndReply(h, rev, { workspaces: [unbound] });
-        assert.equal(h.world.createCalls, 1, "ambiguous no-op never repeats blindly");
+        h.fire("desktopsChanged");
+        dispatchAndReply(h, rev, {
+            workspaces: [unbound],
+            nativeCreations: [desire("op-native-1", "wl-1")],
+        });
+        assert.equal(h.world.createCalls, 1, "spent op never repeats blindly");
+        const attempts = lastCreationAttempts(h);
+        assert.equal(attempts.length, 1, "receipt preserved");
+        assert.equal(attempts[0]?.["created"], null, "no delta claims no id");
+        assert.equal(attempts[0]?.["setter"], "accepted", "void acceptance stays pending, never a refusal latch");
     });
 
-    it("recovers a mutating throw by name and holds a clean throw", () => {
+    it("records a throwing create with its side-effect id and never repeats", () => {
         const h = makeHarness();
         discover(h);
         const rev = { n: 0 };
         h.handle?.requestWorkspaceRelative(1);
         h.faults.createFaults["wl-1"] = "throw-mutating";
-        const unbound = {
-            id: "wl-1", out: "out", bind: "", scope: "out", order: 3, mode: "tiled", exist: true, hold: "",
-        };
-        dispatchAndReply(h, rev, { workspaces: [unbound] });
+        const unbound = unboundRow("wl-1");
+        dispatchAndReply(h, rev, {
+            workspaces: [unbound],
+            nativeCreations: [desire("op-native-1", "wl-1")],
+        });
         assert.equal(h.world.createCalls, 1);
         assert.equal(h.world.created.length, 1, "throw happened after the side-effect");
+        const created = h.world.created[0] as string;
         delete h.faults.createFaults["wl-1"];
         h.fire("desktopsChanged");
-        dispatchAndReply(h, rev, { workspaces: [unbound] });
+        dispatchAndReply(h, rev, {
+            workspaces: [unbound],
+            nativeCreations: [desire("op-native-1", "wl-1")],
+        });
         assert.equal(h.world.createCalls, 1, "throw+side-effect proves, never repeats");
+        const attempts = lastCreationAttempts(h);
+        assert.equal(attempts[0]?.["created"], created, "side-effect id preserved causally");
+        assert.equal(attempts[0]?.["setter"], "threw");
         const h2 = makeHarness();
         discover(h2);
         const rev2 = { n: 0 };
         h2.handle?.requestWorkspaceRelative(1);
         h2.faults.createFaults["wl-1"] = "throw-clean";
-        dispatchAndReply(h2, rev2, { workspaces: [unbound] });
+        dispatchAndReply(h2, rev2, {
+            workspaces: [unbound],
+            nativeCreations: [desire("op-native-1", "wl-1")],
+        });
         assert.equal(h2.world.createCalls, 1);
         assert.equal(h2.world.created.length, 0, "clean throw created nothing");
         delete h2.faults.createFaults["wl-1"];
         h2.fire("desktopsChanged");
-        dispatchAndReply(h2, rev2, { workspaces: [unbound] });
-        assert.equal(h2.world.createCalls, 1, "clean throw stays ambiguous, never repeats blindly");
+        dispatchAndReply(h2, rev2, {
+            workspaces: [unbound],
+            nativeCreations: [desire("op-native-1", "wl-1")],
+        });
+        assert.equal(h2.world.createCalls, 1, "clean throw never repeats blindly");
+        const attempts2 = lastCreationAttempts(h2);
+        assert.equal(attempts2[0]?.["created"], null);
+        assert.equal(attempts2[0]?.["setter"], "threw");
     });
 
     it("never shares one native desktop between two tokens in the same reply", () => {
@@ -921,32 +1000,24 @@ describe("world actuation identity and proof", () => {
         discover(h);
         const rev = { n: 0 };
         h.handle?.requestWorkspaceRelative(1);
-        // Second token clean-throws: it must not adopt the first token's desktop.
+        // Second desire clean-throws: it must not adopt the first desire's desktop.
         h.faults.createFaults["wl-b"] = "throw-clean";
-        const unboundA = {
-            id: "wl-a", out: "out", bind: "", scope: "out", order: 3, mode: "tiled", exist: true, hold: "",
-        };
-        const unboundB = {
-            id: "wl-b", out: "out", bind: "", scope: "out", order: 4, mode: "tiled", exist: true, hold: "",
-        };
-        dispatchAndReply(h, rev, { workspaces: [unboundA, unboundB] });
-        assert.equal(h.world.createCalls, 2, "each token attempts once from its own baseline");
-        assert.deepEqual(h.world.createArgs[0], [3, "wl-a"], "first token appends at count");
-        assert.deepEqual(h.world.createArgs[1], [4, "wl-b"], "second token baselines past the first creation");
-        assert.equal(h.world.created.length, 1, "only the first token created");
-        assert.ok(h.logs.some((l) => l.includes(" mk=1 ")), "only the proven token counts, no steal");
-        // The clean-throwing token stays ambiguous: possibly-executed rides,
-        // never the sibling's applied proof.
+        const unboundA = unboundRow("wl-a", "out", 3);
+        const unboundB = unboundRow("wl-b", "out", 4);
+        const desires = [desire("op-native-1", "wl-a"), desire("op-native-2", "wl-b")];
+        dispatchAndReply(h, rev, { workspaces: [unboundA, unboundB], nativeCreations: desires });
+        assert.equal(h.world.createCalls, 2, "each desire attempts once from its own baseline");
+        assert.deepEqual(h.world.createArgs[0], [3, "wl-a"], "first desire appends at count");
+        assert.deepEqual(h.world.createArgs[1], [4, "wl-b"], "second desire baselines past the first creation");
+        assert.equal(h.world.created.length, 1, "only the first desire created");
+        assert.ok(h.logs.some((l) => l.includes(" mk=1 ")), "only the proven desire counts, no steal");
         h.runTimers();
-        // Proven and ambiguous tokens never steal: the proven rename above
-        // plus no repeat below proves it. Verdict transport is deleted.
         noInventedQueueOps(h);
-        // Next flight: the bound token never repeats and the ambiguous
-        // token never repeats blindly either.
+        // Next flight: both ops spent, neither repeats.
         delete h.faults.createFaults["wl-b"];
         h.fire("desktopsChanged");
-        dispatchAndReply(h, rev, { workspaces: [unboundA, unboundB] });
-        assert.equal(h.world.createCalls, 2, "ambiguous token never repeats, bound token never repeats");
+        dispatchAndReply(h, rev, { workspaces: [unboundA, unboundB], nativeCreations: desires });
+        assert.equal(h.world.createCalls, 2, "spent ops never repeat, bound token never repeats");
         const names = h.world.desktops.map((d) => d.name);
         assert.equal(names.filter((n) => n === "Desktop 4").length, 1, "proven token renamed to its enumerated position");
         assert.ok(!names.includes("wl-b"), "no fabricated binding");
@@ -957,13 +1028,10 @@ describe("world actuation identity and proof", () => {
         discover(h);
         const rev = { n: 0 };
         h.handle?.requestWorkspaceRelative(1);
-        const unboundA = {
-            id: "wl-a", out: "out", bind: "", scope: "out", order: 3, mode: "tiled", exist: true, hold: "",
-        };
-        const unboundB = {
-            id: "wl-b", out: "out", bind: "", scope: "out", order: 4, mode: "tiled", exist: true, hold: "",
-        };
-        dispatchAndReply(h, rev, { workspaces: [unboundA, unboundB] });
+        const unboundA = unboundRow("wl-a", "out", 3);
+        const unboundB = unboundRow("wl-b", "out", 4);
+        const desires = [desire("op-native-1", "wl-a"), desire("op-native-2", "wl-b")];
+        dispatchAndReply(h, rev, { workspaces: [unboundA, unboundB], nativeCreations: desires });
         assert.equal(h.world.createCalls, 2);
         assert.equal(h.world.created.length, 2, "two natives created");
         assert.ok(h.logs.some((l) => l.includes(" mk=2 ")), "both creations prove same-flight");
@@ -971,35 +1039,40 @@ describe("world actuation identity and proof", () => {
         assert.ok(names.includes("Desktop 4") && names.includes("Desktop 5"), "each proven native carries its friendly position name");
         assert.ok(!names.includes("wl-a") && !names.includes("wl-b"), "token names leave the inventory after binding");
         h.fire("desktopsChanged");
-        dispatchAndReply(h, rev, { workspaces: [unboundA, unboundB] });
+        dispatchAndReply(h, rev, { workspaces: [unboundA, unboundB], nativeCreations: desires });
         assert.equal(h.world.createCalls, 2, "no perpetual ambiguity, no repeats");
+        // Both receipts ride causally until the core incorporates them.
+        const attempts = lastCreationAttempts(h);
+        assert.equal(attempts.length, 2, "both receipts preserved");
+        assert.ok(attempts.every((a) => a["created"] !== null), "both causally correlated");
     });
 
-    it("never adopts an unrelated user-appended desktop while ambiguous", () => {
+    it("never claims an unrelated user-appended desktop as its own", () => {
         const h = makeHarness();
         discover(h);
         const rev = { n: 0 };
         h.handle?.requestWorkspaceRelative(1);
         h.faults.createFaults["wl-1"] = "noop";
-        const unbound = {
-            id: "wl-1", out: "out", bind: "", scope: "out", order: 3, mode: "tiled", exist: true, hold: "",
-        };
-        dispatchAndReply(h, rev, { workspaces: [unbound] });
+        const unbound = unboundRow("wl-1");
+        const desires = [desire("op-native-1", "wl-1")];
+        dispatchAndReply(h, rev, { workspaces: [unbound], nativeCreations: desires });
         assert.equal(h.world.createCalls, 1);
-        // The user appends an unrelated desktop natively (different name).
+        // The user appends an unrelated desktop natively (different id).
         h.world.desktops.push(desk("user-9", "User 9"));
         delete h.faults.createFaults["wl-1"];
         h.fire("desktopsChanged");
-        dispatchAndReply(h, rev, { workspaces: [unbound] });
-        assert.equal(h.world.createCalls, 1, "unrelated desktop never binds, no blind repeat");
+        dispatchAndReply(h, rev, { workspaces: [unbound], nativeCreations: desires });
+        assert.equal(h.world.createCalls, 1, "spent op never re-executes, user desktop never claimed");
         h.runTimers();
-        // Stays ambiguous, never proven by a stranger (no repeat below).
-        // Verdict transport is deleted.
         noInventedQueueOps(h);
-        // Even healthy, the still-ambiguous token never re-attempts.
+        // Even healthy, the spent op never re-attempts; the receipt stays
+        // uncorrelated (the later user desktop is core-side evidence, never
+        // an adapter claim).
         h.fire("desktopsChanged");
-        dispatchAndReply(h, rev, { workspaces: [unbound] });
-        assert.equal(h.world.createCalls, 1, "still held, still no repeat");
+        dispatchAndReply(h, rev, { workspaces: [unbound], nativeCreations: desires });
+        assert.equal(h.world.createCalls, 1, "still spent, still no repeat");
+        const attempts = lastCreationAttempts(h);
+        assert.equal(attempts[0]?.["created"], null, "adapter claims no id it did not prove");
         assert.ok(!h.world.desktops.map((d) => d.name).includes("wl-1"), "no fabricated binding");
     });
 
@@ -1008,15 +1081,14 @@ describe("world actuation identity and proof", () => {
         discover(h);
         const rev = { n: 0 };
         h.handle?.requestWorkspaceRelative(1);
-        const unbound = {
-            id: "wl-1", out: "out", bind: "", scope: "out", order: 3, mode: "tiled", exist: true, hold: "",
-        };
+        const unbound = unboundRow("wl-1");
+        const desires = [desire("op-native-1", "wl-1")];
         // Corrupt one native name read: the named snapshot is incomplete,
         // while id-only observation capture still succeeds.
         const ws1 = h.world.desktops[0] as unknown as Record<string, unknown>;
         const saved = ws1["name"];
         ws1["name"] = 42;
-        dispatchAndReply(h, rev, { workspaces: [unbound] });
+        dispatchAndReply(h, rev, { workspaces: [unbound], nativeCreations: desires });
         assert.equal(h.world.createCalls, 0, "incomplete inventory attempts nothing");
         assert.equal(h.world.created.length, 0);
         h.runTimers();
@@ -1025,33 +1097,74 @@ describe("world actuation identity and proof", () => {
         drain(h, rev);
         ws1["name"] = saved;
         h.fire("desktopsChanged");
-        dispatchAndReply(h, rev, { workspaces: [unbound] });
+        dispatchAndReply(h, rev, { workspaces: [unbound], nativeCreations: desires });
         assert.equal(h.world.createCalls, 1, "fresh readable baseline permits the first native attempt");
         assert.equal(h.world.desktops.filter((d) => d.name === "Desktop 4").length, 1, "proven desktop carries its friendly position name");
+        // The op spends on the readable attempt, so a retained desire never duplicates.
+        h.fire("desktopsChanged");
+        dispatchAndReply(h, rev, { workspaces: [unbound], nativeCreations: desires });
+        assert.equal(h.world.createCalls, 1, "spent op never duplicates");
     });
 
-    it("settles a named delayed creation exactly once without another native call", () => {
+    it("defers the receipt when the post-call readback is unavailable, then completes once uncorrelated", () => {
+        const h = makeHarness();
+        discover(h);
+        const rev = { n: 0 };
+        h.handle?.requestWorkspaceRelative(1);
+        const unbound = unboundRow("wl-1");
+        const desires = [desire("op-native-1", "wl-1")];
+        // The native call executes, but the same-turn post-call readback
+        // is unreadable: no receipt is emitted yet (never `after: []`, no
+        // `before` copy, no invented causal id).
+        h.faults.corruptAfterCreate = true;
+        dispatchAndReply(h, rev, { workspaces: [unbound], nativeCreations: desires });
+        assert.equal(h.world.createCalls, 1, "executed exactly once");
+        assert.equal(h.world.created.length, 1, "side effect happened despite the unreadable readback");
+        assert.equal(lastCreationAttempts(h).length, 0, "unavailable read emits no false evidence");
+        h.faults.corruptAfterCreate = false;
+        (h.world.desktops[0] as unknown as Record<string, unknown>)["name"] = "WS1";
+        // The next capture completes the preserved evidence once against
+        // the first successfully observed full native order, uncorrelated.
+        h.fire("desktopsChanged");
+        dispatchAndReply(h, rev, { workspaces: [unbound], nativeCreations: desires });
+        assert.equal(h.world.createCalls, 1, "completion never re-creates");
+        const attempts = lastCreationAttempts(h);
+        assert.equal(attempts.length, 1, "receipt completed once");
+        assert.equal(attempts[0]?.["created"], null, "later turn never claims a causal id");
+        assert.deepEqual(attempts[0]?.["after"], h.world.desktops.map((d) => d.id), "after is the observed order, never fabricated");
+        assert.equal(attempts[0]?.["setter"], "accepted");
+        assert.ok(!h.world.desktops.map((d) => d.name).includes("Desktop 4"), "deferred proof never renames");
+        // The retained desire still never re-executes; the receipt rides
+        // until the core incorporates it.
+        h.fire("desktopsChanged");
+        dispatchAndReply(h, rev, { workspaces: [unbound], nativeCreations: desires });
+        assert.equal(h.world.createCalls, 1, "spent op never repeats");
+        assert.equal(lastCreationAttempts(h).length, 1, "receipt rides until incorporation");
+    });
+
+    it("keeps a spent receipt without another native call when proof lands late", () => {
         const h = makeHarness();
         discover(h);
         const rev = { n: 0 };
         h.handle?.requestWorkspaceRelative(1);
         h.faults.createFaults["wl-1"] = "noop";
-        const unbound = {
-            id: "wl-1", out: "out", bind: "", scope: "out", order: 3, mode: "tiled", exist: true, hold: "",
-        };
-        dispatchAndReply(h, rev, { workspaces: [unbound] });
+        const unbound = unboundRow("wl-1");
+        const desires = [desire("op-native-1", "wl-1")];
+        dispatchAndReply(h, rev, { workspaces: [unbound], nativeCreations: desires });
+        assert.equal(h.world.createCalls, 1);
+        // The desktop lands late natively (outside visibility timing): the
+        // spent op never fires a second native call for it.
         h.world.desktops.push(desk("delayed-1", "wl-1"));
         h.fire("desktopsChanged");
-        dispatchAndReply(h, rev, { workspaces: [unbound] });
+        dispatchAndReply(h, rev, { workspaces: [unbound], nativeCreations: desires });
         assert.equal(h.world.createCalls, 1);
-        assert.equal(h.logs.filter((l) => l.includes(" mk=1 ")).length, 1);
+        assert.equal(h.logs.filter((l) => l.includes(" mk=1 ")).length, 0, "no causal proof, no mk count");
         h.runTimers();
-        // Named enumeration proves exactly once (single mk=1 above);
-        // verdict transport is deleted.
         h.fire("desktopsChanged");
-        dispatchAndReply(h, rev, { workspaces: [unbound] });
-        assert.equal(h.world.createCalls, 1);
-        assert.equal(h.logs.filter((l) => l.includes(" mk=1 ")).length, 1);
+        dispatchAndReply(h, rev, { workspaces: [unbound], nativeCreations: desires });
+        assert.equal(h.world.createCalls, 1, "still exactly one native call");
+        const attempts = lastCreationAttempts(h);
+        assert.equal(attempts[0]?.["created"], null, "late desktop never rewrites the spent receipt");
     });
 
     it("survives a synchronous desktop signal during creation without duplication", () => {
@@ -1060,22 +1173,18 @@ describe("world actuation identity and proof", () => {
         const rev = { n: 0 };
         h.handle?.requestWorkspaceRelative(1);
         h.faults.signalOnCreate = true;
-        const unboundA = {
-            id: "wl-a", out: "out", bind: "", scope: "out", order: 3, mode: "tiled", exist: true, hold: "",
-        };
-        const unboundB = {
-            id: "wl-b", out: "out", bind: "", scope: "out", order: 4, mode: "tiled", exist: true, hold: "",
-        };
-        dispatchAndReply(h, rev, { workspaces: [unboundA, unboundB] });
+        const unboundA = unboundRow("wl-a", "out", 3);
+        const unboundB = unboundRow("wl-b", "out", 4);
+        const desires = [desire("op-native-1", "wl-a"), desire("op-native-2", "wl-b")];
+        dispatchAndReply(h, rev, { workspaces: [unboundA, unboundB], nativeCreations: desires });
         assert.ok(h.world.createCalls >= 1, "creation attempted despite reentrant invalidation");
         assert.ok(h.world.createCalls <= 2, "reentrancy never duplicates within one flight");
         h.faults.signalOnCreate = false;
         h.fire("desktopsChanged");
-        const before = h.world.createCalls;
-        dispatchAndReply(h, rev, { workspaces: [unboundA, unboundB] });
+        dispatchAndReply(h, rev, { workspaces: [unboundA, unboundB], nativeCreations: desires });
         h.fire("desktopsChanged");
-        dispatchAndReply(h, rev, { workspaces: [unboundA, unboundB] });
-        assert.ok(h.world.createCalls <= before + 2, "recovery converges without duplication");
+        dispatchAndReply(h, rev, { workspaces: [unboundA, unboundB], nativeCreations: desires });
+        assert.equal(h.world.createCalls, 2, "each stable op executes exactly once, then converges");
         const boundNames = h.world.desktops.map((d) => d.name);
         const aCount = boundNames.filter((n) => n === "Desktop 4").length;
         const bCount = boundNames.filter((n) => n === "Desktop 5").length;
@@ -1173,7 +1282,7 @@ describe("world apply safety reads", () => {
             nativeInvalid: "1",
             clock: "0",
             gestureSettled: null,
-            operationSettled: [],
+            operationSettled: [], nativeCreations: [],
             warpCursor: null,
             presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
             scopes: [{ scope: "out/ws1", auth: "controlled", reason: "" }],
@@ -1427,7 +1536,7 @@ describe("world admission focus on settled floats", () => {
             nativeInvalid: "1",
             clock: "0",
             gestureSettled: null,
-            operationSettled: [],
+            operationSettled: [], nativeCreations: [],
             warpCursor: null,
             presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
             scopes: [{ scope: "out/ws1", auth: "controlled", reason: "" }],

@@ -113,8 +113,8 @@ function makeTwoOutput(opts: { throwOnce?: boolean } = {}) {
 }
 
 const DISABLED_PRESENTATION = { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] };
-const BOOT = (gen: string, req: string): string => JSON.stringify({ v: 2, adapter: "broker-1", gen, req, obs: "0", rev: "0", ready: false, consumed: false, scopes: [], workspaces: [], outputs: [], windows: [], transfers: [], effects: [], result: null, gestureSettled: null, operationSettled: [], warpCursor: null, presentation: DISABLED_PRESENTATION });
-const ACC = (gen: string, source: string, nativeInvalid: string, rev: string, extra: Record<string, unknown> = {}): string => JSON.stringify({ v: 2, adapter: "broker-1", gen, req: source, obs: rev, rev, ready: true, consumed: false, source, nativeInvalid, clock: "1", gestureSettled: null, operationSettled: [], warpCursor: null, presentation: DISABLED_PRESENTATION, scopes: [], workspaces: [], outputs: [], windows: [], transfers: [], effects: [], result: null, ...extra });
+const BOOT = (gen: string, req: string): string => JSON.stringify({ v: 2, adapter: "broker-1", gen, req, obs: "0", rev: "0", ready: false, consumed: false, scopes: [], workspaces: [], outputs: [], windows: [], transfers: [], effects: [], result: null, gestureSettled: null, operationSettled: [], nativeCreations: [], warpCursor: null, presentation: DISABLED_PRESENTATION });
+const ACC = (gen: string, source: string, nativeInvalid: string, rev: string, extra: Record<string, unknown> = {}): string => JSON.stringify({ v: 2, adapter: "broker-1", gen, req: source, obs: rev, rev, ready: true, consumed: false, source, nativeInvalid, clock: "1", gestureSettled: null, operationSettled: [], nativeCreations: [], warpCursor: null, presentation: DISABLED_PRESENTATION, scopes: [], workspaces: [], outputs: [], windows: [], transfers: [], effects: [], result: null, ...extra });
 
 function discover(h: ReturnType<typeof makeTwoOutput>, gen = "gen-1"): void {
     const c = h.lastCall("DiscoverWorld");
@@ -124,11 +124,20 @@ function discover(h: ReturnType<typeof makeTwoOutput>, gen = "gen-1"): void {
     auto.callback(ACC(gen, b.source, b.nativeInvalid, "0"));
 }
 
-// V2 publication oracle: adapter-owned pending bindings publish as the
-// logical view per output (the inner report carries no bindings lane).
+// Core-owned publication oracle: only core-published binds resolve to
+// logical views (the adapter owns no binding table; the inner report
+// carries no bindings lane).
 function viewsOf(h: ReturnType<typeof makeTwoOutput>): Array<{ out: string; view: string }> {
     return (JSON.parse(h.lastCall("DescribeWorld").payload) as { report: { views: Array<{ out: string; view: string }> } }).report.views;
 }
+
+// Retained creation receipts riding the last dispatched report lane.
+function attemptsOf(h: ReturnType<typeof makeTwoOutput>): Array<Record<string, unknown>> {
+    const payload = JSON.parse(h.lastCall("DescribeWorld").payload) as { report: { creationAttempts: Array<Record<string, unknown>> } };
+    return payload.report.creationAttempts;
+}
+
+const DESIRE = (op: string, ws: string, out: string): Record<string, unknown> => ({ op, ws, out });
 
 function dispatchObserve(h: ReturnType<typeof makeTwoOutput>): { source: string; nativeInvalid: string } {
     // Signal-driven observation round (production path): a native inventory
@@ -149,7 +158,7 @@ function showNative(h: ReturnType<typeof makeTwoOutput>, out: string, nativeId: 
 }
 
 describe("creation binding handoff", () => {
-    it("publishes locally-created native as logical token on next report", () => {
+    it("executes one explicit desire and reports the causal receipt without publishing", () => {
         const h = makeTwoOutput();
         discover(h);
         const req = dispatchObserve(h);
@@ -158,60 +167,72 @@ describe("creation binding handoff", () => {
                 { id: "wa-1", out: "out-primary", bind: "wa-1", scope: "out", order: 0, mode: "tiled", exist: true, hold: "" },
                 { id: "wl-1", out: "out-secondary", bind: "", scope: "out", order: 2, mode: "tiled", exist: true, hold: "" },
             ],
+            nativeCreations: [DESIRE("op-native-1", "wl-1", "out-secondary")],
         }));
         assert.equal(h.world.created.length, 1);
         const native = h.world.desktops.find((d) => d.id === h.world.created[0]);
         assert.ok(native !== undefined);
         assert.equal(native.name, "Desktop 3", "proven desktop renamed to its native one-based position");
+        // No core bind yet: the adapter publishes no logical view and claims
+        // only the causal receipt, never a binding.
         showNative(h, "out-secondary", native.id);
         dispatchObserve(h);
-        const row = viewsOf(h).find((b) => b.view === "wl-1");
-        assert.ok(row !== undefined, `expected wl-1 view, got ${JSON.stringify(viewsOf(h))}`);
-        assert.equal(row.out, "out-secondary");
-        h.handle?.stop();
-    });
-
-    it("accepted echo prunes pending: no repeats and later migration stays core-authoritative", () => {
-        const h = makeTwoOutput();
-        discover(h);
-        const req = dispatchObserve(h);
-        h.lastCall("DescribeWorld").callback(ACC("gen-1", req.source, req.nativeInvalid, "1", {
-            workspaces: [
-                { id: "wa-1", out: "out-primary", bind: "wa-1", scope: "out", order: 0, mode: "tiled", exist: true, hold: "" },
-                { id: "wl-1", out: "out-secondary", bind: "", scope: "out", order: 2, mode: "tiled", exist: true, hold: "" },
-            ],
-        }));
-        const native = h.world.desktops.find((d) => d.id === h.world.created[0]);
-        assert.ok(native !== undefined);
-        assert.equal(native.name, "Desktop 3", "proven desktop renamed to its native one-based position");
-        // Generic fallback echo must still be corrected by pending.
-        const r2 = dispatchObserve(h);
+        const pending = viewsOf(h).find((b) => b.out === "out-secondary");
+        assert.ok(pending !== undefined);
+        assert.equal(pending.view, "", "unbound logical publishes no view before the core binds");
+        const receipts = attemptsOf(h);
+        assert.equal(receipts.length, 1, "one retained receipt rides the report lane");
+        assert.equal(receipts[0]?.["op"], "op-native-1");
+        assert.equal(receipts[0]?.["created"], native.id, "causal created id preserved");
+        // The core publishes the bind: the receipt incorporates and the
+        // view publishes with no second creation.
+        const r2 = JSON.parse(h.lastCall("DescribeWorld").payload) as { source: string; nativeInvalid: string };
         h.lastCall("DescribeWorld").callback(ACC("gen-1", r2.source, r2.nativeInvalid, "2", {
             workspaces: [
                 { id: "wa-1", out: "out-primary", bind: "wa-1", scope: "out", order: 0, mode: "tiled", exist: true, hold: "" },
                 { id: "wl-1", out: "out-secondary", bind: native.id, scope: "out", order: 2, mode: "tiled", exist: true, hold: "" },
             ],
         }));
-        assert.equal(h.world.created.length, 1, "fallback echo must not re-create");
-        showNative(h, "out-secondary", (h.world.desktops.find((d) => d.id === h.world.created[0]) as FakeDesktop).id);
+        assert.equal(h.world.created.length, 1, "incorporation never re-creates");
         dispatchObserve(h);
-        const corrected = viewsOf(h).find((b) => b.out === "out-secondary");
-        assert.ok(corrected !== undefined);
-        assert.equal(corrected.view, "wl-1", "pending corrects generic fallback");
-        // Real ack consumes pending: no second creation.
-        const r3 = JSON.parse(h.lastCall("DescribeWorld").payload) as { source: string; nativeInvalid: string };
-        h.lastCall("DescribeWorld").callback(ACC("gen-1", r3.source, r3.nativeInvalid, "3", {
+        const row = viewsOf(h).find((b) => b.view === "wl-1");
+        assert.ok(row !== undefined, `expected wl-1 view, got ${JSON.stringify(viewsOf(h))}`);
+        assert.equal(row.out, "out-secondary");
+        assert.equal(attemptsOf(h).length, 0, "incorporated receipt retires");
+        h.handle?.stop();
+    });
+
+    it("incorporated desires never repeat and later core migration stays authoritative", () => {
+        const h = makeTwoOutput();
+        discover(h);
+        const req = dispatchObserve(h);
+        h.lastCall("DescribeWorld").callback(ACC("gen-1", req.source, req.nativeInvalid, "1", {
+            workspaces: [
+                { id: "wa-1", out: "out-primary", bind: "wa-1", scope: "out", order: 0, mode: "tiled", exist: true, hold: "" },
+                { id: "wl-1", out: "out-secondary", bind: "", scope: "out", order: 2, mode: "tiled", exist: true, hold: "" },
+            ],
+            nativeCreations: [DESIRE("op-native-1", "wl-1", "out-secondary")],
+        }));
+        const native = h.world.desktops.find((d) => d.id === h.world.created[0]);
+        assert.ok(native !== undefined);
+        assert.equal(native.name, "Desktop 3", "proven desktop renamed to its native one-based position");
+        // The core publishes the bind: the spent desire never re-creates.
+        const r2 = dispatchObserve(h);
+        h.lastCall("DescribeWorld").callback(ACC("gen-1", r2.source, r2.nativeInvalid, "2", {
             workspaces: [
                 { id: "wa-1", out: "out-primary", bind: "wa-1", scope: "out", order: 0, mode: "tiled", exist: true, hold: "" },
                 { id: "wl-1", out: "out-secondary", bind: native.id, scope: "out", order: 2, mode: "tiled", exist: true, hold: "" },
             ],
+            nativeCreations: [DESIRE("op-native-1", "wl-1", "out-secondary")],
         }));
-        assert.equal(h.world.created.length, 1);
+        assert.equal(h.world.created.length, 1, "spent desire must not re-create");
+        showNative(h, "out-secondary", (h.world.desktops.find((d) => d.id === h.world.created[0]) as FakeDesktop).id);
         dispatchObserve(h);
         const acked = viewsOf(h).find((b) => b.out === "out-secondary");
         assert.ok(acked !== undefined);
         assert.equal(acked.view, "wl-1");
         assert.equal(acked.out, "out-secondary");
+        assert.equal(attemptsOf(h).length, 0, "incorporated receipt retires");
         // Later legitimate migration of the same native to a new output wins.
         const r4 = JSON.parse(h.lastCall("DescribeWorld").payload) as { source: string; nativeInvalid: string };
         h.lastCall("DescribeWorld").callback(ACC("gen-1", r4.source, r4.nativeInvalid, "4", {
@@ -225,12 +246,12 @@ describe("creation binding handoff", () => {
         const migrated = viewsOf(h).find((b) => b.out === "out-primary");
         assert.ok(migrated !== undefined);
         assert.equal(migrated.view, "wl-1");
-        assert.equal(migrated.out, "out-primary", "core migration must override stale pending out");
+        assert.equal(migrated.out, "out-primary", "core migration wins");
         assert.equal(h.world.created.length, 1, "migration must not re-create");
         h.handle?.stop();
     });
 
-    it("delayed named recovery publishes without duplicate creation", () => {
+    it("throwing create records a threw receipt with no binding until the core binds", () => {
         const h = makeTwoOutput({ throwOnce: true });
         discover(h);
         const req = dispatchObserve(h);
@@ -239,10 +260,12 @@ describe("creation binding handoff", () => {
                 { id: "wa-1", out: "out-primary", bind: "wa-1", scope: "out", order: 0, mode: "tiled", exist: true, hold: "" },
                 { id: "wl-1", out: "out-secondary", bind: "", scope: "out", order: 2, mode: "tiled", exist: true, hold: "" },
             ],
+            nativeCreations: [DESIRE("op-native-1", "wl-1", "out-secondary")],
         }));
         // Throw left the native uncreated; nothing bound yet.
         assert.equal(h.world.created.length, 0);
-        // Delayed native appearance with the exact requested name.
+        // A later desktop is core-side evidence only: the spent op never
+        // claims it and never fires a second native call.
         h.world.desktops.push(desk("native-9", "wl-1"));
         const r2 = dispatchObserve(h);
         h.lastCall("DescribeWorld").callback(ACC("gen-1", r2.source, r2.nativeInvalid, "2", {
@@ -250,22 +273,31 @@ describe("creation binding handoff", () => {
                 { id: "wa-1", out: "out-primary", bind: "wa-1", scope: "out", order: 0, mode: "tiled", exist: true, hold: "" },
                 { id: "wl-1", out: "out-secondary", bind: "", scope: "out", order: 2, mode: "tiled", exist: true, hold: "" },
             ],
+            nativeCreations: [DESIRE("op-native-1", "wl-1", "out-secondary")],
         }));
-        assert.equal(h.world.created.length, 0, "delayed recovery must not append");
-        assert.equal(
-            h.world.desktops.find((d) => d.id === "native-9")?.name,
-            "Desktop 3",
-            "delayed proof renames to its enumerated position",
-        );
+        assert.equal(h.world.created.length, 0, "spent throwing op must not append");
+        const receipts = attemptsOf(h);
+        assert.equal(receipts[0]?.["setter"], "threw", "threw receipt preserved");
+        assert.equal(receipts[0]?.["created"], null, "no same-turn delta claims no id");
+        // Only the core bind publishes the view: show the desktop, dispatch
+        // a fresh capture, then answer it with the core-published bind.
         showNative(h, "out-secondary", "native-9");
+        const r3 = dispatchObserve(h);
+        h.lastCall("DescribeWorld").callback(ACC("gen-1", r3.source, r3.nativeInvalid, "3", {
+            workspaces: [
+                { id: "wa-1", out: "out-primary", bind: "wa-1", scope: "out", order: 0, mode: "tiled", exist: true, hold: "" },
+                { id: "wl-1", out: "out-secondary", bind: "native-9", scope: "out", order: 2, mode: "tiled", exist: true, hold: "" },
+            ],
+        }));
         dispatchObserve(h);
         const row = viewsOf(h).find((b) => b.view === "wl-1");
-        assert.ok(row !== undefined, `delayed recovery should publish, got ${JSON.stringify(viewsOf(h))}`);
+        assert.ok(row !== undefined, `core bind should publish, got ${JSON.stringify(viewsOf(h))}`);
         assert.equal(row.out, "out-secondary");
+        assert.equal(attemptsOf(h).length, 0, "core bind incorporates the receipt");
         h.handle?.stop();
     });
 
-    it("two tokens on two outputs publish independently with no shared native", () => {
+    it("two desires on two outputs execute independently with no shared native", () => {
         const h = makeTwoOutput();
         discover(h);
         const req = dispatchObserve(h);
@@ -274,6 +306,7 @@ describe("creation binding handoff", () => {
                 { id: "wl-1", out: "out-secondary", bind: "", scope: "out", order: 2, mode: "tiled", exist: true, hold: "" },
                 { id: "wl-2", out: "out-primary", bind: "", scope: "out", order: 3, mode: "tiled", exist: true, hold: "" },
             ],
+            nativeCreations: [DESIRE("op-native-1", "wl-1", "out-secondary"), DESIRE("op-native-2", "wl-2", "out-primary")],
         }));
         assert.equal(h.world.created.length, 2);
         const n1 = h.world.desktops.find((d) => d.id === h.world.created[0]);
@@ -282,28 +315,39 @@ describe("creation binding handoff", () => {
         assert.notEqual(n1.id, n2.id, "no duplicate native binding");
         assert.equal(n1.name, "Desktop 3");
         assert.equal(n2.name, "Desktop 4", "second token uses its own enumerated position");
+        // Before any core bind, the adapter publishes no logical views:
+        // both receipts ride causally instead.
         showNative(h, "out-secondary", n1.id);
         showNative(h, "out-primary", n2.id);
         dispatchObserve(h);
         const rows = viewsOf(h);
-        const r1 = rows.find((b) => b.view === "wl-1");
-        const r2 = rows.find((b) => b.view === "wl-2");
-        assert.ok(r1 !== undefined && r2 !== undefined);
-        assert.equal(r1.out, "out-secondary");
-        assert.equal(r2.out, "out-primary");
-        // Ack only wl-1: wl-2 pending must survive (no map-wide clear).
+        assert.equal(rows.find((b) => b.view === "wl-1"), undefined, "no binding, no view");
+        assert.equal(rows.find((b) => b.view === "wl-2"), undefined, "no binding, no view");
+        assert.equal(attemptsOf(h).length, 2, "both receipts preserved");
+        // Ack only wl-1: the wl-2 receipt must survive (no map-wide clear).
         const ack = JSON.parse(h.lastCall("DescribeWorld").payload) as { source: string; nativeInvalid: string };
         h.lastCall("DescribeWorld").callback(ACC("gen-1", ack.source, ack.nativeInvalid, "2", {
             workspaces: [
                 { id: "wl-1", out: "out-secondary", bind: n1.id, scope: "out", order: 2, mode: "tiled", exist: true, hold: "" },
-                { id: "wl-2", out: "out-primary", bind: n2.id, scope: "out", order: 3, mode: "tiled", exist: true, hold: "" },
+                { id: "wl-2", out: "out-primary", bind: "", scope: "out", order: 3, mode: "tiled", exist: true, hold: "" },
             ],
         }));
         dispatchObserve(h);
         const after = viewsOf(h);
         assert.equal(after.find((b) => b.view === "wl-1")?.out, "out-secondary");
-        assert.equal(after.find((b) => b.view === "wl-2")?.out, "out-primary");
+        assert.equal(after.find((b) => b.view === "wl-2"), undefined, "unincorporated logical publishes no view");
+        assert.equal(attemptsOf(h).length, 1, "only the wl-2 receipt survives");
         assert.equal(h.world.created.length, 2);
+        // The wl-2 desire stays spent: still no second native call.
+        const ack2 = JSON.parse(h.lastCall("DescribeWorld").payload) as { source: string; nativeInvalid: string };
+        h.lastCall("DescribeWorld").callback(ACC("gen-1", ack2.source, ack2.nativeInvalid, "3", {
+            workspaces: [
+                { id: "wl-1", out: "out-secondary", bind: n1.id, scope: "out", order: 2, mode: "tiled", exist: true, hold: "" },
+                { id: "wl-2", out: "out-primary", bind: "", scope: "out", order: 3, mode: "tiled", exist: true, hold: "" },
+            ],
+            nativeCreations: [DESIRE("op-native-2", "wl-2", "out-primary")],
+        }));
+        assert.equal(h.world.created.length, 2, "retained desire never re-executes");
         h.handle?.stop();
     });
 });

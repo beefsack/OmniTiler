@@ -1418,7 +1418,7 @@ fn result_of(encoded: &str) -> serde_json::Value {
         .unwrap_or(serde_json::Value::Null)
 }
 
-/// Foreign-epoch guard over the four mechanical attempt lanes: every present
+/// Foreign-epoch guard over the mechanical attempt lanes: every present
 /// canonical `attemptMs` must fit the dispatch clock. Malformed stamps are
 /// the codec's business; only comparable stamps gate here. Never adjusts or
 /// manufactures evidence.
@@ -1428,6 +1428,7 @@ fn attempts_clock_valid(inner: &serde_json::Map<String, serde_json::Value>, cloc
         "memberAttempts",
         "viewAttempts",
         "clearAttempts",
+        "creationAttempts",
     ] {
         let Some(items) = inner.get(lane).and_then(|v| v.as_array()) else {
             continue;
@@ -1796,6 +1797,17 @@ mod tests {
             .clone();
         assert!(attempts_clock_valid(&inner, 9));
         assert!(!attempts_clock_valid(&inner, 8));
+        // The creation lane gates exactly like the other attempt lanes.
+        let created: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str::<serde_json::Value>(
+                "{\"creationAttempts\":[{\"attemptMs\":\"9\"}]}",
+            )
+            .expect("object")
+            .as_object()
+            .expect("map")
+            .clone();
+        assert!(attempts_clock_valid(&created, 9));
+        assert!(!attempts_clock_valid(&created, 8));
         // Missing lanes and unparseable stamps are the codec's business.
         let empty: serde_json::Map<String, serde_json::Value> =
             serde_json::from_str::<serde_json::Value>("{}")

@@ -306,7 +306,7 @@ const BOOTSTRAP = (gen: string, req: string): string => JSON.stringify({
     v: 2, adapter: "broker-1", gen, req, obs: "0", rev: "0",
     ready: false, consumed: false, scopes: [], workspaces: [], outputs: [],
     windows: [], transfers: [], effects: [], result: null,
-    gestureSettled: null, operationSettled: [], warpCursor: null,
+    gestureSettled: null, operationSettled: [], nativeCreations: [], warpCursor: null,
     presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
 });
 
@@ -329,7 +329,7 @@ function acceptedReply(gen: string, source: string, nativeInvalid: string, rev: 
         v: 2, adapter: "broker-1", gen, req: source, obs: rev, rev,
         ready: true, consumed: false,
         source, nativeInvalid, clock: "1",
-        gestureSettled: null, operationSettled: [], warpCursor: null,
+        gestureSettled: null, operationSettled: [], nativeCreations: [], warpCursor: null,
         presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
         scopes: [{ scope: "out/ws1", auth: "controlled", reason: "" }],
         workspaces: [],
@@ -686,6 +686,7 @@ describe("world entry discovery and observation", () => {
                 // Desired-absent but occupied: the fresh occupancy gate keeps it.
                 { id: "ws2", out: "out", bind: "ws2", scope: "out", order: 1, mode: "tiled", exist: false, hold: "" },
             ],
+            nativeCreations: [{ op: "op-native-1", ws: "wl-1", out: "out" }],
         }));
         assert.equal(h.world.created.length, 1);
         assert.equal(h.world.removed.length, 0);

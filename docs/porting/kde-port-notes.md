@@ -7,9 +7,10 @@ describes the delivered baseline, not an accepted v2 KDE runtime.
 The staged implementation and parked boundaries are tracked in
 [KDE world-v2 port](../changes/kde-world-v2-port.md). Stages 0/1 are delivered
 at the core-only boundary; KDE runtime adoption and native acceptance remain
-outstanding. Stage 2 has a paired v2 draft but is parked: six offline
-integration cases, event-driven external-command delivery and native backing
-correlation remain unresolved. The draft pulls in only the v2 observation,
+outstanding. Stage 1b core creation correlation and its KDE consumer are delivered
+offline. Stage 2 remains partial: five offline integration cases, event-driven
+external-command delivery and migration/reuse/lifecycle expectations remain
+unresolved. The draft pulls in only the v2 observation,
 token and target-resolution pieces needed by the wire cutover; no stage 3
 or native acceptance is claimed.
 
@@ -71,9 +72,14 @@ API checks use `git show <pin>:<path>` and `git grep <pattern>
   does not prove broker authentication/replay; Rust flow/private-bus tests do.
 - Logical targets resolve only through accepted output-specific native bindings.
   Unbound migration/creation targets hold, never native-id equality or ordinal
-  guesses. [N3/N4](../changes/kde-world-v2-port.md#n3-empty-native-creation-versus-an-unbound-logical-spare-parked)
-  remain unresolved. Raw attempt production is still pending; omission is not
-  settlement proof. Do not run this draft live as accepted behavior.
+  guesses. Explicit `nativeCreations` now authorizes exactly-once native calls;
+  `creationAttempts` returns same-turn causal ids or uncorrelated evidence, and
+  only core binds. If immediate post-read fails, preserve incomplete execution
+  evidence until a successful full read, then report `created:null` and the
+  original write stamp. Never fabricate an empty after-order. Raw frame/member/
+  view/clear production remains pending. [N3/N4](../changes/kde-world-v2-port.md#n3-empty-native-creation-versus-an-unbound-logical-spare-parked)
+  migration/reuse expectations remain open; five red oracles are preserved.
+  Omission is not settlement proof. Do not run this draft live as accepted behavior.
 
 ## Delivered-baseline inventory (port or delete)
 

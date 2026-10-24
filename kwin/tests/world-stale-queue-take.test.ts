@@ -151,7 +151,7 @@ function bootstrap(gen: string, req: string): string {
         obs: "0", rev: "0", ready: false, consumed: false,
         scopes: [], workspaces: [], outputs: [], windows: [],
         transfers: [], effects: [], result: null,
-        gestureSettled: null, operationSettled: [], warpCursor: null,
+        gestureSettled: null, operationSettled: [], nativeCreations: [], warpCursor: null,
         presentation: DISABLED_PRESENTATION,
     });
 }
@@ -169,7 +169,7 @@ function acceptCapture(
         workspaces: [], outputs: [],
         windows: [windowRow(frame)],
         transfers: [], effects: [], result: null,
-        gestureSettled: null, operationSettled: [], warpCursor: null,
+        gestureSettled: null, operationSettled: [], nativeCreations: [], warpCursor: null,
         presentation: DISABLED_PRESENTATION,
         source: envelope["source"], nativeInvalid: envelope["nativeInvalid"], clock: "7",
     });

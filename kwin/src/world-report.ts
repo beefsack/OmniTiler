@@ -149,6 +149,32 @@ export interface WorldReplyOperationSettlement {
     outcome: string;
     cause: string;
 }
+// Explicit native creation authorization (capability-gated core desire):
+// at most one entry per outstanding core-owned creation, each executed at
+// most once per stable `op`. An unbound workspace row without a desire row
+// authorizes nothing. Core owns binding; the adapter never owns a
+// logical binding table.
+export interface WorldNativeCreation {
+    op: string;
+    ws: string;
+    out: string;
+}
+// Raw native creation evidence for the report lane: the mechanical facts
+// behind one native desktop create call (live native orders immediately
+// before/after plus the host-correlated created id when the host can prove
+// which fresh desktop its call produced). `created` null means
+// uncorrelated. At most one entry per outstanding creation op; receipts
+// persist across reports until the core incorporates them.
+export interface WorldCreationAttempt {
+    op: string;
+    ws: string;
+    out: string;
+    setter: "accepted" | "refused" | "threw";
+    before: string[];
+    after: string[];
+    created: string | null;
+    attemptMs: string;
+}
 // Uniform per-reply presentation (mirrors
 // tiler-core world_sizing::encode_presentation exactly): the tick-time
 // foreground token the shapes were computed for (the renderer revalidates
@@ -216,6 +242,9 @@ export interface WorldReply {
     result: WorldReplyResult | null;
     gestureSettled: { id: string; committed: boolean } | null;
     operationSettled: WorldReplyOperationSettlement[];
+    // Core-owned native creation authorizations for this reply: explicit
+    // desires only, at most one entry per outstanding creation op.
+    nativeCreations: WorldNativeCreation[];
     // Desired cursor warp point (cross-output focus only) or null. The
     // adapter never warps (unsupported): null or ignored, never chased.
     warpCursor: [number, number] | null;
@@ -733,13 +762,32 @@ function parseOperationSettledRow(e: unknown): WorldReplyOperationSettlement {
     };
 }
 
-// Exact v2 core reply shape: the 19 core keys the Rust canonical encoder
+// Explicit native creation desire row: exactly {op,ws,out}, all non-empty
+// strings. Unknown keys refuse like every other core row.
+function parseNativeCreationRow(e: unknown): WorldNativeCreation {
+    const o = e as Record<string, unknown>;
+    if (Object.keys(o).length !== 3 || !("op" in o && "ws" in o && "out" in o)) {
+        throw new Error("creation-keys");
+    }
+    if (typeof o["op"] !== "string" || typeof o["ws"] !== "string" || typeof o["out"] !== "string") {
+        throw new Error("creation");
+    }
+    const op = o["op"] as string;
+    const ws = o["ws"] as string;
+    const out = o["out"] as string;
+    if (op === "" || ws === "" || out === "") {
+        throw new Error("creation-empty");
+    }
+    return { op, ws, out };
+}
+
+// Exact v2 core reply shape: the 20 core keys the Rust canonical encoder
 // emits, plus source/nativeInvalid/clock on the bound (capture) lane. Any
 // unknown key refuses. The bootstrap lane (no capture flown yet) carries
-// exactly the 19 core keys; the bindings default without validation.
+// exactly the 20 core keys; the bindings default without validation.
 const CORE_REPLY_KEYS = ["v", "adapter", "gen", "req", "obs", "rev", "ready", "consumed",
     "scopes", "workspaces", "outputs", "windows", "transfers", "effects", "result",
-    "gestureSettled", "operationSettled", "warpCursor", "presentation"] as const;
+    "gestureSettled", "operationSettled", "nativeCreations", "warpCursor", "presentation"] as const;
 const BOUND_REPLY_KEYS = [...CORE_REPLY_KEYS, "source", "nativeInvalid", "clock"] as const;
 
 function parseCoreReply(r: Record<string, unknown>, allowUnbound: boolean): WorldReply | null {
@@ -785,7 +833,8 @@ function parseCoreReply(r: Record<string, unknown>, allowUnbound: boolean): Worl
     const trRaw = arr("transfers");
     const fxRaw = arr("effects");
     const opSettledRaw = arr("operationSettled");
-    if (!scopesRaw || !wsRaw || !outRaw || !winRaw || !trRaw || !fxRaw || !opSettledRaw) {
+    const creationsRaw = arr("nativeCreations");
+    if (!scopesRaw || !wsRaw || !outRaw || !winRaw || !trRaw || !fxRaw || !opSettledRaw || !creationsRaw) {
         return null;
     }
     try {
@@ -796,6 +845,7 @@ function parseCoreReply(r: Record<string, unknown>, allowUnbound: boolean): Worl
         const transfers: WorldReplyTransfer[] = trRaw.map(parseTransferRow);
         const effects: WorldReplyEffect[] = fxRaw.map(parseEffectRow);
         const operationSettled: WorldReplyOperationSettlement[] = opSettledRaw.map(parseOperationSettledRow);
+        const nativeCreations: WorldNativeCreation[] = creationsRaw.map(parseNativeCreationRow);
         // The actuator lane never carries a terminal result (requester-only
         // via TakeCommandResult): a non-null result here is malformed.
         if (r["result"] !== null && r["result"] !== undefined) {
@@ -830,7 +880,7 @@ function parseCoreReply(r: Record<string, unknown>, allowUnbound: boolean): Worl
             adapter, gen, req, obs, rev,
             ready: r["ready"] as boolean, consumed: r["consumed"] as boolean,
             scopes, workspaces, outputs, windows, transfers, effects, result: null,
-            gestureSettled, operationSettled, warpCursor, presentation,
+            gestureSettled, operationSettled, nativeCreations, warpCursor, presentation,
             source, nativeInvalid, clock,
         };
     } catch (error) {
@@ -1272,8 +1322,8 @@ export function buildReadRequest(req: string): string {
 // JSON.stringify so every value stays exact. Minimal injected context: the
 // caller owns lifecycle state and the saved defaults; this only formats one
 // observation. Old verdict `feedback` transport is deleted: mechanical
-// attempt evidence rides the tolerant frame/member/view/clear lanes or is
-// absent (backfills []), never converted from verdicts.
+// creation evidence rides the tolerant `creationAttempts` lane (absent
+// backfills []), never converted from verdicts.
 export interface WorldInnerReportInput {
     readonly observation: WorldObservation;
     readonly defaultTiled: boolean;
@@ -1287,6 +1337,10 @@ export interface WorldInnerReportInput {
     // decisions only, never reflowing retained state on Apply.
     readonly anchorFallback: string;
     readonly noSpaceResult: string;
+    // Raw native creation evidence retained by the apply loop (at most one
+    // entry per outstanding creation op; empty when nothing was executed).
+    // Core owns binding and settlement over the fresh native[] readback.
+    readonly creationAttempts: ReadonlyArray<WorldCreationAttempt>;
 }
 
 export function buildWorldInnerReportJson(input: WorldInnerReportInput): string {
@@ -1333,6 +1387,12 @@ export function buildWorldInnerReportJson(input: WorldInnerReportInput): string 
         `"borderGap":${presentation.borderGap},"borderWidth":${presentation.borderWidth},"underlayExtension":${presentation.underlayExtension},` +
         `"chordHeld":${presentation.chordHeld ? "true" : "false"},"moveWindow":${esc(presentation.moveWindow)},` +
         `"paused":${presentation.paused ? "true" : "false"},"pagerOrder":[${pagerOrder}],"pagerFrames":[${pagerFrames}]}`;
+    const creationAttempts = input.creationAttempts.map((a) =>
+        `{"op":${esc(a.op)},"ws":${esc(a.ws)},"out":${esc(a.out)},` +
+        `"setter":${esc(a.setter)},"before":[${a.before.map(esc).join(",")}],` +
+        `"after":[${a.after.map(esc).join(",")}],` +
+        `"created":${a.created === null ? "null" : esc(a.created)},"attemptMs":${JSON.stringify(a.attemptMs)}}`,
+    ).join(",");
     return `{"v":${WORLD_CONTRACT_VERSION},"mode":${esc(observation.mode)},` +
         `"screens":[${screens}],"windows":[${windows}],"views":[${views}],"closed":[${closed}],` +
         `"hostOwned":${observation.hostOwned ? "true" : "false"},"equalCount":${observation.equalCount ? "true" : "false"},` +
@@ -1347,6 +1407,6 @@ export function buildWorldInnerReportJson(input: WorldInnerReportInput): string 
         `"actionOutputs":[${actionOutputs}],` +
         `"focusFollowsCursor":${observation.focusFollowsCursor ? "true" : "false"},` +
         `"cursorWarp":${observation.cursorWarp ? "true" : "false"},` +
-        `"presentation":${presentationJson},` +
+        `"presentation":${presentationJson},"creationAttempts":[${creationAttempts}],` +
         `"anchorFallback":${esc(input.anchorFallback)},"noSpaceResult":${esc(input.noSpaceResult)}}`;
 }

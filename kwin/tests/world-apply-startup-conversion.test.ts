@@ -209,6 +209,7 @@ function conversionCreationReply(): WorldReply {
         clock: "0",
         gestureSettled: null,
         operationSettled: [],
+        nativeCreations: [{ op: "op-native-1", ws: TOKEN, out: OUT_2 }],
         warpCursor: null,
         presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
         scopes: [],
@@ -252,7 +253,7 @@ function conversionMoveReply(): WorldReply {
         nativeInvalid: "1",
         clock: "0",
         gestureSettled: null,
-        operationSettled: [],
+        operationSettled: [], nativeCreations: [],
         warpCursor: null,
         presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
         scopes: [],
@@ -309,13 +310,13 @@ describe("world startup conversion actuation", () => {
         const state = freshState(reply);
         const host = createWorldApplyHost(surf.surface, readProp);
         const out = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null, ...host, state, observation: observe(surf), reply, log: () => undefined });
-        // Exactly one void creation flight names the logical token; the new
-        // desktop binds by exact-name enumeration, then takes its friendly
-        // `Desktop N` name at its native one-based position.
+        // Exactly one void creation flight runs for the explicit desire; the
+        // same-turn fresh-id delta proves the created desktop, which then
+        // takes its friendly `Desktop N` name at its native one-based position.
         assert.deepEqual(surf.createCalls, [[3, TOKEN]]);
         assert.ok(
             (surf.surface["desktops"] as FakeDesk[]).some((d) => d.id === WS_NEW && d.name === "Desktop 4"),
-            "fresh backing binds by exact token name, then renames friendly",
+            "fresh backing proves by same-turn delta, then renames friendly",
         );
         assert.deepEqual(surf.sendCalls, [], "no output change while converting");
         assert.equal(out.membershipWrites, 0);
@@ -382,7 +383,7 @@ describe("world startup conversion actuation", () => {
             nativeInvalid: "1",
             clock: "0",
             gestureSettled: null,
-            operationSettled: [],
+            operationSettled: [], nativeCreations: [],
             warpCursor: null,
             presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
             scopes: [],

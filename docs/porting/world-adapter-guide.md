@@ -176,6 +176,11 @@ missing facts. Shape:
   changed evidence, refusal or invalid timing holds. A correlated id not yet
   observed stays pending, never falls back to an unrelated singleton. Only fresh
   complete native order proves backing. Adapters retain native lookups, not maps.
+  `before` is sampled immediately before the write; `after` is the first
+  successfully observed full post-call order. When unavailable, keep execution
+  evidence locally until readable, preserve the original write stamp, and do not
+  invent an empty after-order. A later-turn list delta is uncorrelated (`created`
+  null); it cannot supply KDE's same-turn causal proof.
 - `minimized=true` is not "never move": frame/clear work and ordinary focus/send
   refuse, and occupancy retains the workspace, but whole-workspace migration,
   output displacement and in-flight membership transfers can relocate it. Do not

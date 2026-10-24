@@ -109,6 +109,7 @@ describe("capacity settings report carriage", () => {
             refill: "last-remaining-workspace",
             anchorFallback: "closest-splittable-relative",
             noSpaceResult: "allow-overlap",
+            creationAttempts: [],
         });
         assert.ok(json !== null);
         const body = JSON.parse(json as string) as Record<string, unknown>;
@@ -129,6 +130,7 @@ describe("capacity settings report carriage", () => {
             refill: "last-remaining-workspace",
             anchorFallback: "largest-splittable-window",
             noSpaceResult: "float",
+            creationAttempts: [],
         });
         assert.ok(json !== null);
         const text = json as string;

@@ -454,16 +454,19 @@ async function makeHarness(moverX: number, soloTop = false): Promise<Harness> {
             win.output = output as FakeScreen;
             harness.outputWrites.push(`${win.internalId}=>${(output as FakeScreen).name}`);
         },
-        // No-op creation (tree convention for real-Engine harnesses):
-        // the creation flow is covered by unit tests; engine legs assert
-        // wire/engine semantics. A faithful appending fake diverges here
-        // (adapter creates for core-owned unbound spares every round,
-        // core adopts them as fresh and mints more; see blocker report).
+        // Production void creation: synchronously append one native
+        // desktop carrying the logical token as its name. Explicit core
+        // desires alone authorize creation; same-turn enumeration proves
+        // the created id causally. Fresh backing versus existing-desktop
+        // reuse remains the retained migration oracle's open distinction.
         createDesktop: (...args: ReadonlyArray<unknown>): void => {
             if (args.length !== 2 || typeof args[0] !== "number" || typeof args[1] !== "string" || (args[1] as string) === "") {
                 throw new Error("Insufficient arguments");
             }
-            void args;
+            const id = `native-${liveDesktops.length + 1}`;
+            const at = Math.max(0, Math.min(args[0] as number, liveDesktops.length));
+            liveDesktops.splice(at, 0, { id, name: args[1] as string });
+            harness.fire("desktopsChanged");
         },
         removeDesktop: (ref: unknown): void => {
             const at = liveDesktops.indexOf(ref as FakeDesktop);

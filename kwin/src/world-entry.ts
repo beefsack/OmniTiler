@@ -475,19 +475,11 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         knownClosed: () => closeTracker.snapshotClosed(),
         scopeClass,
         logicalBindingOf: (nativeId, out) => {
-            // Locally-created but not yet core-acknowledged bindings publish
-            // here so core pending consumes them: a bound pending creation
-            // overrides only an absent entry or a generic native->native
-            // fallback echo (logical === native). A real core mapping stays
-            // authoritative and the pending row is pruned on accept. The
-            // pending lookup scopes to the requesting output; the snapshot
-            // lookup keys per (output, native) for the aligned grid. An
-            // output-less lookup (shared mode, never replicated) resolves
-            // through the first cell bound to that native.
-            const pending = state.pendingCreations.find((c) =>
-                c.bound === nativeId && c.logical !== "" && c.out !== "" &&
-                (out === undefined || c.out === out),
-            );
+            // Core-owned bindings only: the converged core mapping published
+            // through accepted replies is authoritative. The adapter keeps
+            // live native-id/handle lookups, never a native-to-logical
+            // table of its own. Outstanding local creation receipts prove
+            // nothing until the core publishes the bind.
             let base: { logical: string; out: string } | undefined;
             if (out !== undefined) {
                 base = logicalOfNative.get(bindingKey(out, nativeId));
@@ -498,15 +490,6 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         break;
                     }
                 }
-            }
-            if (
-                pending !== undefined &&
-                (base === undefined || base.logical === nativeId)
-            ) {
-                return {
-                    logical: pending.logical, out: pending.out,
-                    pin: route.pinRetained(nativeId), disp: false, managed: true,
-                };
             }
             if (base === undefined) {
                 return null;
@@ -634,7 +617,22 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     const route = createWorldCommandContext({
         observe: () => capture(),
         isDirection,
-        isCreationBound: (nativeId) => state.pendingCreations.some((c) => c.bound === nativeId),
+        isCreationBound: (nativeId) => {
+            // A fresh native id named by an outstanding local creation
+            // receipt (causal created id, a same-turn after-image delta,
+            // or a deferred receipt completed at the next capture)
+            // carries adapter-retained intent against core cleanup until the
+            // core incorporates the binding. Never a logical mapping.
+            for (const attempt of state.creationAttempts.values()) {
+                if (attempt.created !== null && attempt.created === nativeId) {
+                    return true;
+                }
+                if (attempt.created === null && !attempt.before.includes(nativeId) && attempt.after.includes(nativeId)) {
+                    return true;
+                }
+            }
+            return false;
+        },
         // Retention sees every unsent queued intent (union, press order
         // irrelevant): direction-only commands name no workspace, sends
         // and migrations name their workspace refs.
@@ -1477,14 +1475,11 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                                 logical: ws.id !== "" ? ws.id : ws.bind,
                                 out: ws.out,
                             });
-                            // Handoff: a real (non-fallback) core mapping
-                            // consumes the matching pending creation so the
-                            // stale pending out never overrides a later
-                            // legitimate migration. Generic fallback echoes
-                            // never consume the pending logical.
-                            if (ws.id !== "" && ws.id !== ws.bind) {
-                                state.acknowledgeCreationBinding(ws.bind, ws.id);
-                            }
+                            // No adapter-owned pending table remains:
+                            // executed creations retire apply-side when the
+                            // core publishes the bind
+                            // (incorporateCreationBindings); nothing is
+                            // consumed here.
                         }
                     }
                     // Ack the closes that rode the accepted dispatch BEFORE the
@@ -1892,12 +1887,30 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         if (state.boundGen === null || state.brokerIncarnation === null) {
             return;
         }
+        // Flush deferred creation evidence first: a spent desire whose
+        // same-turn post-call readback was unavailable must not wait for
+        // another apply. The first successful complete readback completes
+        // the receipt once, uncorrelated (created null); an unavailable
+        // read preserves the evidence silently for a later capture.
+        if (state.creationPending.size > 0) {
+            let order: Array<{ readonly id: string; readonly name: string }> | null = null;
+            try {
+                order = applyHostBase.listDesktops?.() ?? null;
+            } catch (error) {
+                void error;
+                order = null;
+            }
+            if (order !== null) {
+                state.completeDeferredCreations(order.map((d) => d.id));
+            }
+        }
         const inner = buildWorldInnerReportJson({
             observation,
             defaultTiled: settings.readDefaultTiled(),
             refill: settings.readRefillLive(),
             anchorFallback: settings.readAnchorFallbackLive(),
             noSpaceResult: settings.readNoSpaceResultLive(),
+            creationAttempts: state.creationAttemptsForReport(),
         });
         const source = mintSource();
         const seq = mintSourceSeq();
@@ -2525,20 +2538,14 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         }
         // Stable core logical id for commands (v2 commands name logical
         // workspaces, never native desktop ids): resolve through the
-        // converged core mapping, including pending local creations.
-        // Unmapped natives fail closed (never an invented logical).
+        // converged core mapping only. Unmapped natives fail closed (never
+        // an invented logical); outstanding local receipts prove nothing
+        // until the core publishes the bind.
         try {
             const key = bindingKey(out, native);
             const bound = logicalOfNative.get(key);
             if (bound !== undefined && bound.logical !== "") {
                 return bound.logical;
-            }
-            const pending = state.pendingCreations.find((c) =>
-                c.bound === native && c.logical !== "" && c.out !== "" &&
-                (c.out === out),
-            );
-            if (pending !== undefined) {
-                return pending.logical;
             }
         } catch (error) {
             void error;

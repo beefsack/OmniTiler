@@ -1151,8 +1151,9 @@ export function createWorldApplyHost(
             }
             // KWin 6.7 void API: required zero-based position in [0, count]
             // plus name, returns nothing. Throws (including Insufficient
-            // arguments) propagate so the apply loop holds ambiguous and
-            // recovers by named enumeration; no return value is ever read.
+            // arguments) propagate so the apply loop records the truthful
+            // setter and either proves causally same-turn or defers the
+            // execution evidence; no return value is ever read.
             Reflect.apply(fn as (...a: ReadonlyArray<unknown>) => unknown, surface, [position, name]);
         },
         listDesktops: () => {

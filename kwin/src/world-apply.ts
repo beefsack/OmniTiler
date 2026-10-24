@@ -19,6 +19,7 @@
 
 import type { ObservedWindow, WorldObservation } from "./world-observe";
 import { type WorldReply, type WorldReplyTransfer, type WorldReplyWindow, type WorldReplyResult } from "./world-report";
+import { isCanonicalU64 } from "./world-seq";
 import { WorldAdapterState } from "./world-state";
 
 export interface ApplyEnv {
@@ -59,8 +60,10 @@ export interface ApplyEnv {
     switchView: (desktopRef: object, outRef: object) => boolean;
     // KWin 6.7 void creation (workspace_wrapper.h, virtualdesktops.cpp):
     // required zero-based position in [0, count] plus name, returns
-    // nothing. Proof comes only from fresh named enumeration
-    // (listDesktops), never a return value.
+    // nothing. Proof comes only from fresh complete enumeration
+    // (listDesktops) - same-turn for the causal id, or the first
+    // successful later readback completing a deferred receipt,
+    // uncorrelated - never a return value.
     createDesktop: (position: number, name: string) => void;
     // Fresh complete native inventory for creation proof (id plus native
     // name per desktop). Null when unreadable or incomplete: hold, never
@@ -266,8 +269,8 @@ function friendlyDesktopName(
 // Rename exactly the proven desktop while it still carries its logical
 // token name. Adopted, unproven, already-renamed, and existing desktops
 // never match (their names differ from the token). Best-effort after the
-// id-based binding is stored: any failure keeps the proof, never
-// re-creates, and never steals another desktop.
+// causal created id is proven same-turn: any failure keeps the receipt,
+// never re-creates, and never steals another desktop.
 function renameProvenDesktop(
     env: ApplyEnv,
     live: ReadonlyArray<{ readonly id: string; readonly name: string }>,
@@ -1114,67 +1117,46 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
     if (result.stoppedMidApply) {
         return result;
     }
-    // 2. Workspace lifecycle: creation one-flight per logical id with
-    // enumeration recovery against the pre-attempt baseline; dependent
-    // membership writes blocked until bound.
+    // 2. Native creation: explicit core desires only (`nativeCreations`,
+    // at most one entry per outstanding stable op). An unbound workspace
+    // row without a desire row authorizes nothing and never creates. Each
+    // desire executes at most once per stable op: spent BEFORE the native
+    // call (synchronous KWin signals make the call reentrant), then the
+    // raw receipt rides the next report lane until the core incorporates
+    // it. The fast path records same-turn before/after plus the causal
+    // created id from the unique fresh delta; when the same-turn post-call
+    // readback is unavailable, execution evidence is preserved locally as
+    // incomplete (never fabricated) and completes once against the first
+    // successful later full native-order readback, uncorrelated. Core owns
+    // binding; the adapter never maps native ids to logical ids and never
+    // guesses by ordinal or name. Dependent membership writes stay blocked
+    // until the core publishes the bind.
     // Removal only after a fresh all-window occupancy/min-count/pin/mapping
     // visibility gate; unknown occupancy keeps.
-    for (const ws of reply.workspaces) {
-        if (ws.bind !== "") {
-            if (ws.id !== "") {
-                state.bindCreation(ws.id, ws.bind);
-            }
-            continue;
-        }
-        // Unbound row: pending logical token. Exactly one flight per id,
-        // armed before the native call and never repeated while ambiguous.
-        const logical = ws.id;
-        if (logical === "") {
-            continue;
-        }
-        const existing = state.creationFor(logical);
-        if (existing !== null && existing.bound !== null) {
-            continue;
-        }
-        if (existing !== null && existing.bound === null) {
-            // Ambiguous create result: recover by FRESH complete named
-            // enumeration with exact-name attribution before any further
-            // attempt; never append blindly on identical replies and never
-            // steal an unrelated appended desktop.
-            let delayed: Array<{ readonly id: string; readonly name: string }> | null = null;
-            try {
-                delayed = env.listDesktops?.() ?? null;
-            } catch (error) {
-                void error;
-                delayed = null;
-            }
-            if (delayed === null) {
-                result.held += 1;
-                continue;
-            }
-            const recovered = state.recoverCreationByName(logical, delayed);
-            if (recovered === null) {
-                result.held += 1;
-                continue;
-            }
-            renameProvenDesktop(env, delayed, logical, recovered);
-            state.settleAttempt(`create-${logical}`, "applied", "");
-            result.creations += 1;
-            continue;
-        }
-        if (state.isHeldAmbiguous(`create-${logical}`)) {
+    state.incorporateCreationBindings(reply);
+    for (const desire of reply.nativeCreations) {
+        const op = desire.op;
+        const logical = desire.ws;
+        const out = desire.out;
+        if (op === "" || logical === "" || out === "") {
             result.held += 1;
+            continue;
+        }
+        if (state.creationSpent.has(op)) {
+            // Already executed for this stable op (receipt retained or
+            // incorporated): never re-execute.
             continue;
         }
         if (!replyFresh(env, reply, entryObs)) {
             result.stoppedMidApply = true;
             break;
         }
-        // Fresh complete pre-attempt baseline per individual create: each
-        // token in the same reply starts from current native truth, never
-        // the shared stale observation, so a sibling creation never leaks
-        // into this token's baseline. Unreadable/incomplete holds with no
-        // native call and no row, so a later readable inventory can proceed.
+        // Fresh complete pre-attempt enumeration per individual desire:
+        // each desire in the same reply starts from current native truth,
+        // never the shared stale observation, so a sibling creation never
+        // leaks into this desire's baseline. Unreadable holds with no
+        // native call and no receipt, so a later readable inventory can
+        // proceed (the desire is retained core-side).
         let before: Array<{ readonly id: string; readonly name: string }> | null = null;
         try {
             before = env.listDesktops?.() ?? null;
@@ -1183,30 +1165,38 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             before = null;
         }
         if (before === null) {
-            state.noteFeedback({ op: `create-${logical}`, kind: "creation", outcome: "unattempted", hold: "incomplete-inventory" });
+            state.noteFeedback({ op, kind: "creation", outcome: "unattempted", hold: "incomplete-inventory" });
             result.held += 1;
             continue;
         }
         const beforeIds = before.map((d) => d.id);
-        const flight = state.startCreation(logical, ws.out, beforeIds);
-        if (flight === null) {
-            result.held += 1;
+        // Spend the stable op BEFORE the native call: synchronous desktop
+        // signals fire inside the call, and a reentrant apply must see the
+        // op as executed rather than firing a second desktop.
+        if (!state.markCreationSpent(op)) {
             continue;
         }
+        state.armPossiblyExecuted(op, "creation", out);
         // Zero-based append position in [0, count] (virtualdesktops.cpp
-        // clamp); the logical token rides as the native name for later
-        // exact-name attribution.
-        state.armPossiblyExecuted(`create-${logical}`, "creation", ws.out);
+        // clamp); the logical token rides as the native name only as a
+        // diagnostic (identity comes from the id delta, never the name).
+        let threw = false;
         try {
             env.createDesktop(beforeIds.length, logical);
         } catch (error) {
             void error;
+            threw = true;
         }
-        // Void native proof only: a return value never binds. A throw, a
-        // no-op, or a silent success all stay ambiguous unless the fresh
-        // post-attempt snapshot shows exactly one desktop with this token's
-        // name beyond the pre-attempt baseline (throw+side-effect proves
-        // via the same path; unrelated names never bind).
+        // Post-call proof: read the full ids immediately after the call
+        // in the same JS turn; a unique fresh delta proves the created id.
+        // No delta (cap no-op, delayed visibility) records an uncorrelated
+        // receipt; several fresh ids never bind here (the core holds
+        // ambiguous rather than guessing). Position is never identity.
+        // When this readback is unavailable, nothing is emitted: the
+        // execution evidence is preserved locally as incomplete and the
+        // next capture completes it once against the first successfully
+        // observed full native order, uncorrelated (causality is lost
+        // across the JS turn).
         let after: Array<{ readonly id: string; readonly name: string }> | null = null;
         try {
             after = env.listDesktops?.() ?? null;
@@ -1214,13 +1204,28 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             void error;
             after = null;
         }
+        const stamp = isCanonicalU64(state.lastClock) ? state.lastClock : "0";
         if (after === null) {
+            state.deferCreationReceipt({
+                op, ws: logical, out,
+                setter: threw ? "threw" : "accepted",
+                before: beforeIds,
+                attemptMs: stamp,
+            });
             result.held += 1;
         } else {
-            const bound = state.recoverCreationByName(logical, after);
-            if (bound !== null) {
-                renameProvenDesktop(env, after, logical, bound);
-                state.settleAttempt(`create-${logical}`, "applied", "");
+            const afterIds = after.map((d) => d.id);
+            const beforeSet = new Set(beforeIds);
+            const fresh = afterIds.filter((id) => !beforeSet.has(id));
+            const created = fresh.length === 1 ? (fresh[0] as string) : null;
+            state.recordCreationAttempt({
+                op, ws: logical, out,
+                setter: threw ? "threw" : "accepted",
+                before: beforeIds, after: afterIds, created,
+                attemptMs: stamp,
+            });
+            if (created !== null) {
+                renameProvenDesktop(env, after, logical, created);
                 result.creations += 1;
             } else {
                 result.held += 1;

@@ -63,7 +63,7 @@ const ACCEPTED = (
     effects: [],
     result: null,
     gestureSettled: null,
-    operationSettled: [],
+    operationSettled: [], nativeCreations: [],
     warpCursor: null,
     presentation: DISABLED_PRESENTATION,
     source: "req-1",
@@ -256,41 +256,56 @@ describe("world adapter lifetime state", () => {
         assert.equal(state.pendingClosed.length, 0);
     });
 
-    it("holds one creation flight per logical id and recovers by enumeration", () => {
+    it("defers execution evidence without fabricating and completes it once, uncorrelated", () => {
         const state = bound();
-        const first = state.startCreation("wl-1", "out");
-        assert.ok(first !== null);
-        assert.equal(state.startCreation("wl-1", "out"), null);
-        // Ambiguous result: enumeration with exactly one fresh native id binds.
-        assert.equal(state.recoverCreationByEnumeration("wl-1", ["ws", "native-9"], ["ws"]), "native-9");
-        assert.equal(state.creationFor("wl-1")?.bound, "native-9");
+        // Evidence is only ever kept for an executed call: defer requires
+        // the op already spent.
+        assert.equal(state.deferCreationReceipt({
+            op: "op-native-1", ws: "wl-1", out: "out",
+            setter: "accepted", before: ["ws1"], attemptMs: "7",
+        }), false, "unspent op keeps no evidence");
+        assert.ok(state.markCreationSpent("op-native-1"));
+        assert.equal(state.deferCreationReceipt({
+            op: "op-native-1", ws: "wl-1", out: "out",
+            setter: "accepted", before: ["ws1"], attemptMs: "7",
+        }), true);
+        // While deferred, nothing rides the report lane: no `after: []`,
+        // no `before` copy, no invented causal id.
+        assert.equal(state.creationAttemptsForReport().length, 0, "deferred evidence never emits");
+        // A null readback completes nothing and preserves the evidence.
+        assert.equal(state.completeDeferredCreations(null), 0);
+        assert.equal(state.creationAttemptsForReport().length, 0);
+        // The first successful full readback completes once, uncorrelated:
+        // created null (causality lost across the turn), after is the
+        // actually observed order, the stamp stays the write clock.
+        assert.equal(state.completeDeferredCreations(["ws1", "native-4"]), 1);
+        const attempts = state.creationAttemptsForReport();
+        assert.equal(attempts.length, 1);
+        assert.equal(attempts[0]?.["op"], "op-native-1");
+        assert.equal(attempts[0]?.["created"], null, "later turn never claims a causal id");
+        assert.deepEqual(attempts[0]?.["after"], ["ws1", "native-4"], "after is the observed order, never fabricated");
+        assert.equal(attempts[0]?.["attemptMs"], "7", "original write clock preserved");
+        // Completion is once: a second flush completes nothing, and the
+        // spent op never re-executes.
+        assert.equal(state.completeDeferredCreations(["ws1", "native-4", "native-5"]), 0);
+        assert.equal(state.creationAttemptsForReport().length, 1);
+        assert.equal(state.markCreationSpent("op-native-1"), false);
     });
 
-    it("never binds one native desktop to two logical tokens", () => {
+    it("generation rotation clears deferred evidence, receipts, and spent ops together", () => {
         const state = bound();
-        const a = state.startCreation("wl-a", "out", ["ws1"]);
-        assert.ok(a !== null);
-        // Same-flight proof binds by exact native name.
-        assert.equal(state.recoverCreationByName("wl-a", [
-            { id: "ws1", name: "WS1" },
-            { id: "native-4", name: "wl-a" },
-        ]), "native-4");
-        // A sibling token from a stale baseline must not adopt it: name
-        // mismatch and already claimed.
-        const b = state.startCreation("wl-b", "out", ["ws1"]);
-        assert.ok(b !== null);
-        assert.equal(state.recoverCreationByName("wl-b", [
-            { id: "ws1", name: "WS1" },
-            { id: "native-4", name: "wl-a" },
-        ]), null, "sibling desktop never adopted");
-        assert.equal(state.recoverCreationByEnumeration("wl-b", ["ws1", "native-4"], ["ws1"]), null, "any-fresh-id fallback never steals a claimed native");
-        assert.equal(state.creationFor("wl-b")?.bound, null);
-        // An unrelated user desktop never binds either.
-        assert.equal(state.recoverCreationByName("wl-b", [
-            { id: "ws1", name: "WS1" },
-            { id: "native-4", name: "wl-a" },
-            { id: "user-9", name: "User 9" },
-        ]), null);
+        assert.ok(state.markCreationSpent("op-native-1"));
+        assert.equal(state.deferCreationReceipt({
+            op: "op-native-1", ws: "wl-1", out: "out",
+            setter: "threw", before: ["ws1"], attemptMs: "7",
+        }), true);
+        assert.equal(state.completeDeferredCreations(["ws1", "native-4"]), 1);
+        assert.equal(state.creationAttemptsForReport().length, 1);
+        const changed = state.onDiscovery("gen-2", "broker-2");
+        assert.equal(changed, true);
+        assert.equal(state.completeDeferredCreations(["ws1", "native-4"]), 0);
+        assert.equal(state.creationAttemptsForReport().length, 0);
+        assert.equal(state.markCreationSpent("op-native-1"), true, "spent resets with the generation");
     });
 
     it("spends one-shot effects and frame/clear tokens once and settles attempts explicitly", () => {

@@ -138,7 +138,7 @@ describe("world outer-gap regression", () => {
                 v: 2, adapter: "broker-1", gen: "gen-1", req: "disc-1",
                 obs: "0", rev: "0", ready: false, consumed: false,
                 gestureSettled: null,
-                operationSettled: [],
+                operationSettled: [], nativeCreations: [],
                 warpCursor: null,
                 presentation: { foreground: "", border: { visible: false, reason: "disabled", inner: null, outer: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
                 scopes: [], outputs: [], windows: [], transfers: [], effects: [], result: null,

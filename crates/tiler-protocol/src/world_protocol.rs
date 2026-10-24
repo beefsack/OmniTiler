@@ -106,8 +106,9 @@
 //!    created:id|null (optional, tolerant: missing/null/empty backfills
 //!    null for adapters predating the correlated receipt),
 //!    attemptMs:"u64"} - mechanical native
-//!   creation write/readback facts only (live native orders immediately
-//!   before/after the create call, plus the host-correlated created native
+//!   creation write/readback facts only (live native order immediately
+//!   before and first successfully observed full order after the create call,
+//!   plus the host-correlated created native
 //!   id when the host can prove which fresh desktop its create call
 //!   produced); at most one entry per outstanding
 //!   creation operation (requires hostOwned). The core owns binding and

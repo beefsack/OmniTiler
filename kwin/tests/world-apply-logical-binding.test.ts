@@ -104,7 +104,7 @@ function coreReply(workspaces: Array<Record<string, unknown>>, transfers: Array<
         v: 2, adapter: "broker-1", gen: "gen-1", req: "req-1",
         obs: "1", rev: "1", ready: true, consumed: false,
         source: "req-1", nativeInvalid: "1", clock: "0",
-        gestureSettled: null, operationSettled: [], warpCursor: null,
+        gestureSettled: null, operationSettled: [], nativeCreations: [], warpCursor: null,
         presentation: PRESENTATION,
         scopes: [{ scope: "out-1/wl-1", auth: "controlled", reason: "" }],
         workspaces,

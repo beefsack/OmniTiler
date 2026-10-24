@@ -6,10 +6,11 @@
 // counter. No KWin or D-Bus imports: the entry drives this with captured
 // observations and transport results.
 
-import { compareU64, incrementU64, isCanonicalU64 } from "./world-seq";
+import { compareU64, incrementU64, isCanonicalU64, isOpaqueId } from "./world-seq";
 import {
     isWorldRejection,
     type WorldCommand,
+    type WorldCreationAttempt,
     type WorldReply,
     type WorldReplyResult,
 } from "./world-report";
@@ -34,16 +35,20 @@ export interface PendingAttempt {
     target: string;
 }
 
-// One in-flight native creation per logical id, with enumeration recovery.
-export interface PendingCreation {
-    logical: string;
+// Executed-but-unproven native creation: the native call ran (op spent)
+// but the same-turn post-call readback was unavailable, so no causal id
+// can be proven from that turn. Preserved locally - never emitted - until
+// the first successful later full native-order readback completes it as
+// an uncorrelated receipt (created null: causality is lost across the JS
+// turn and the hybrid uncorrelated rule applies). The stamp stays the
+// original write clock.
+export interface PendingCreationReceipt {
+    op: string;
+    ws: string;
     out: string;
-    bound: string | null;
-    // Native inventory baseline captured BEFORE the create attempt: recovery
-    // adopts exactly one fresh id beyond this baseline. Never rebuilt from
-    // the current list at recover time (identical lists always recover
-    // nothing).
-    knownBefore: string[];
+    setter: "accepted" | "threw";
+    before: string[];
+    attemptMs: string;
 }
 
 // One queued user intent awaiting the queue-then-capture route. keepSubject
@@ -111,7 +116,20 @@ export class WorldAdapterState {
     // never reused, so same-op means same intent.
     appliedWindowTarget = new Map<string, { op: string; out: string; ws: string }>();
     appliedViewTarget = new Map<string, { op: string; ws: string }>();
-    pendingCreations: PendingCreation[] = [];
+    // Explicit native creation desires spent at most once per stable core
+    // op (`op-native-<serial>`): spent BEFORE the native call so reentrant
+    // invalidation (synchronous KWin signals) never double-executes.
+    creationSpent = new Set<string>();
+    // Raw creation receipts preserved across reports until the core
+    // incorporates them (a bound row for the logical) or the generation
+    // rotates. Unchanged redelivery is idempotent server-side. Core owns
+    // binding; this table never maps native ids to logical ids.
+    creationAttempts = new Map<string, WorldCreationAttempt>();
+    // Executed-but-unproven creation evidence (op spent, post-call
+    // readback unavailable): never emitted, completed once against the
+    // first successful later full native-order readback. Cleared with
+    // everything else on generation rotation.
+    creationPending = new Map<string, PendingCreationReceipt>();
     // Bounded per-context clamp reassertions.
     clampAttempts = new Map<string, number>();
     // Last accepted desired snapshot for per-property diffing.
@@ -151,9 +169,9 @@ export class WorldAdapterState {
     }
 
     // Local attempt-outcome bookkeeping (possibly-executed gating for
-    // mid-apply causality). Never a wire transport: no verdicts ride
-    // captures, and raw attempt lanes stay absent until truthful producers
-    // exist (absent backfills [] server-side).
+    // mid-apply causality). Never a wire verdict: raw creation receipts ride
+    // the report lane; other raw attempt lanes stay absent until truthful
+    // producers exist (absent backfills [] server-side).
     noteFeedback(feedback: AttemptFeedback): void {
         if (feedback.outcome === "possibly-executed") {
             this.possiblyExecuted.add(feedback.op);
@@ -232,106 +250,122 @@ export class WorldAdapterState {
         }
     }
 
-    creationFor(logical: string): PendingCreation | null {
-        return this.pendingCreations.find((c) => c.logical === logical) ?? null;
+    // Spend one explicit native creation desire before its possible native
+    // call. Returns false when this exact stable op already executed
+    // (never double-execute, including across duplicate replies and
+    // unrelated later replies still carrying the retained desire).
+    markCreationSpent(op: string): boolean {
+        if (op === "") {
+            return false;
+        }
+        if (this.creationSpent.has(op)) {
+            return false;
+        }
+        this.creationSpent.add(op);
+        return true;
     }
 
-    // At most one in-flight creation per logical id. Returns null when a
-    // flight is already outstanding (caller must recover by enumeration).
-    // Captures the pre-attempt native baseline for later recovery.
-    startCreation(logical: string, out: string, knownBefore: ReadonlyArray<string> = []): PendingCreation | null {
-        const existing = this.creationFor(logical);
-        if (existing !== null && existing.bound === null) {
-            return null;
+    // Record the raw receipt of one executed creation desire for the next
+    // report lane. Survives across reports until the core incorporates it;
+    // unchanged redelivery is idempotent. Invalid rows refuse (never
+    // stored): empty op/ws/out, unknown setter, non-opaque native ids, or
+    // a non-canonical stamp.
+    recordCreationAttempt(attempt: WorldCreationAttempt): boolean {
+        if (
+            attempt.op === "" || attempt.ws === "" || attempt.out === "" ||
+            (attempt.setter !== "accepted" && attempt.setter !== "refused" && attempt.setter !== "threw") ||
+            !isCanonicalU64(attempt.attemptMs)
+        ) {
+            return false;
         }
-        if (existing !== null) {
-            return existing;
+        if (attempt.created !== null && !isOpaqueId(attempt.created)) {
+            return false;
         }
-        const row: PendingCreation = { logical, out, bound: null, knownBefore: [...knownBefore] };
-        this.pendingCreations.push(row);
-        return row;
-    }
-
-    bindCreation(logical: string, native: string): void {
-        const row = this.creationFor(logical);
-        if (row === null) {
-            return;
-        }
-        // Never share one native binding between two logical tokens.
-        if (this.claimedNative(native, logical)) {
-            return;
-        }
-        row.bound = native;
-    }
-
-    // A native id already bound to a different pending logical token is
-    // never adopted or rebound elsewhere.
-    claimedNative(native: string, exceptLogical?: string): boolean {
-        return this.pendingCreations.some((c) => c.logical !== exceptLogical && c.bound === native);
-    }
-
-    // Recover a creation binding by enumeration: when the logical token has
-    // no binding but the native inventory grew by exactly one id beyond the
-    // pre-attempt baseline, adopt it. Null when ambiguous. An explicit
-    // baseline overrides the stored one; otherwise the stored pre-attempt
-    // baseline applies (never a freshly rebuilt identical list).
-    recoverCreationByEnumeration(logical: string, liveNative: ReadonlyArray<string>, knownBefore?: ReadonlyArray<string>): string | null {
-        const row = this.creationFor(logical);
-        if (row === null || row.bound !== null) {
-            return row?.bound ?? null;
-        }
-        const base = knownBefore ?? row.knownBefore;
-        const fresh = liveNative.filter((id) => !base.includes(id));
-        if (fresh.length === 1) {
-            const bound = fresh[0] as string;
-            if (this.claimedNative(bound, logical)) {
-                return null;
+        for (const id of [...attempt.before, ...attempt.after]) {
+            if (!isOpaqueId(id)) {
+                return false;
             }
-            row.bound = bound;
-            return bound;
         }
-        return null;
+        this.creationAttempts.set(attempt.op, { ...attempt, before: [...attempt.before], after: [...attempt.after] });
+        this.dirty = true;
+        return true;
     }
 
-    // Name-attributed recovery for the void KWin create path: bind only the
-    // exact unique desktop whose native name matches the requested logical
-    // token among ids fresh beyond the pre-attempt baseline. Unrelated
-    // appended desktops (different names), duplicates, and already-claimed
-    // natives never bind. An explicit baseline overrides the stored one.
-    recoverCreationByName(
-        logical: string,
-        live: ReadonlyArray<{ readonly id: string; readonly name: string }>,
-        knownBefore?: ReadonlyArray<string>,
-    ): string | null {
-        const row = this.creationFor(logical);
-        if (row === null || row.bound !== null) {
-            return row?.bound ?? null;
+    // Preserve execution evidence for a spent desire whose same-turn
+    // post-call readback was unavailable. Never fabricated: no after-image
+    // is invented here (`after: []` or a `before` copy would be false
+    // evidence on the wire). Requires the op already spent (evidence is
+    // only ever kept for an executed call, never a desire alone).
+    // First completion wins; a duplicate defer for the same op keeps the
+    // first evidence.
+    deferCreationReceipt(receipt: PendingCreationReceipt): boolean {
+        if (
+            receipt.op === "" || receipt.ws === "" || receipt.out === "" ||
+            (receipt.setter !== "accepted" && receipt.setter !== "threw") ||
+            !isCanonicalU64(receipt.attemptMs) ||
+            !this.creationSpent.has(receipt.op)
+        ) {
+            return false;
         }
-        const base = new Set<string>(knownBefore ?? row.knownBefore);
-        const candidates = live.filter((d) => d.name === logical && !base.has(d.id));
-        if (candidates.length !== 1) {
-            return null;
+        for (const id of receipt.before) {
+            if (!isOpaqueId(id)) {
+                return false;
+            }
         }
-        const bound = (candidates[0] as { id: string }).id;
-        if (this.claimedNative(bound, logical)) {
-            return null;
+        if (!this.creationPending.has(receipt.op)) {
+            this.creationPending.set(receipt.op, { ...receipt, before: [...receipt.before] });
         }
-        row.bound = bound;
-        return bound;
+        this.dirty = true;
+        return true;
     }
 
-    // Core-authoritative handoff for locally-created bindings: once the
-    // core acknowledges a real (non-fallback) binding for a native id or a
-    // logical token, the adapter-owned pending creation is consumed so a
-    // later legitimate migration/rehoming stays core-owned. Targeted to the
-    // acknowledged native/logical pair only; never a map-wide clear.
-    acknowledgeCreationBinding(native: string, logical: string): void {
-        if (native === "" || logical === "") {
+    // Complete deferred execution evidence against the first successfully
+    // observed post-call full native order. Uncorrelated only (created
+    // null): a later-turn readback can never prove causality, so the
+    // hybrid uncorrelated rule applies. Null readback completes nothing
+    // and preserves the evidence. Returns the count completed.
+    completeDeferredCreations(afterIds: string[] | null): number {
+        if (afterIds === null || this.creationPending.size === 0) {
+            return 0;
+        }
+        let done = 0;
+        for (const [op, pending] of [...this.creationPending]) {
+            if (this.recordCreationAttempt({
+                op: pending.op, ws: pending.ws, out: pending.out, setter: pending.setter,
+                before: [...pending.before], after: [...afterIds], created: null,
+                attemptMs: pending.attemptMs,
+            })) {
+                this.creationPending.delete(op);
+                done += 1;
+            }
+        }
+        return done;
+    }
+
+    // Incorporate core-published bindings: a reply workspace row binding a
+    // recorded attempt's logical on its output proves the core consumed the
+    // receipt, so the attempt retires (and its possibly-executed arm
+    // settles applied). Never invents binding locally: rows without a core
+    // bind keep their receipts for the next report.
+    incorporateCreationBindings(reply: WorldReply): void {
+        if (this.creationAttempts.size === 0) {
             return;
         }
-        this.pendingCreations = this.pendingCreations.filter(
-            (c) => c.bound !== native && c.logical !== logical,
-        );
+        for (const [op, attempt] of [...this.creationAttempts]) {
+            const bound = reply.workspaces.some(
+                (row) => row.out === attempt.out && row.id === attempt.ws && row.bind !== "",
+            );
+            if (bound) {
+                this.creationAttempts.delete(op);
+                this.settleAttempt(op, "applied", "");
+            }
+        }
+    }
+
+    // Ordered retained receipts for the report lane (insertion order is
+    // stable per op; at most one entry per outstanding creation op).
+    creationAttemptsForReport(): WorldCreationAttempt[] {
+        return [...this.creationAttempts.values()].map((a) => ({ ...a, before: [...a.before], after: [...a.after] }));
     }
 
     clampKey(win: string, target: string, constraints: string): string {
@@ -487,7 +521,9 @@ export class WorldAdapterState {
             this.clearSpent.clear();
             this.appliedWindowTarget.clear();
             this.appliedViewTarget.clear();
-            this.pendingCreations = [];
+            this.creationSpent.clear();
+            this.creationAttempts.clear();
+            this.creationPending.clear();
             this.clampAttempts.clear();
             return true;
         }

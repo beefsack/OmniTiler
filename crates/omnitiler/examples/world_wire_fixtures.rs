@@ -39,13 +39,14 @@ const FIXTURE_DIR: &str = concat!(
 const LIFETIME: &str = "test-adapter";
 const SENDER: &str = ":1.42";
 
-const BOUND_KEYS: [&str; 22] = [
+const BOUND_KEYS: [&str; 23] = [
     "adapter",
     "clock",
     "consumed",
     "effects",
     "gen",
     "gestureSettled",
+    "nativeCreations",
     "nativeInvalid",
     "obs",
     "operationSettled",

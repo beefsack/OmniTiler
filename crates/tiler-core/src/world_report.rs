@@ -749,9 +749,12 @@ pub struct NativeCreationDesire {
 /// operation. Follows the existing raw-attempt pattern (setter plus
 /// before/after evidence, never a policy conclusion): the adapter writes,
 /// re-reads the native order, and reports; the core owns binding and
-/// settlement. `order_before`/`order_after` are the live native orders
-/// immediately before/after the write; the report `native[]` row is the
-/// fresh readback the core settles against. `created_native` is the neutral
+/// settlement. `order_before` is the live native order immediately before
+/// the write; `order_after` is the first successfully observed full order
+/// afterwards. If that read is deferred, omit the receipt until readable,
+/// keep the original write stamp and leave `created_native` unknown unless
+/// independent host evidence proves causality. The report `native[]` row
+/// is the fresh readback the core settles against. `created_native` is the neutral
 /// optional host-correlated created native id: when the host can prove which
 /// fresh desktop its create call produced, it names that id here (`None`
 /// when it cannot). A correlated id binds exactly that newly created id
